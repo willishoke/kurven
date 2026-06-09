@@ -80,6 +80,8 @@ def main():
                         help="Surface mesh density for depth buffer")
     parser.add_argument("--clip-margin", type=float, default=0.01,
                         help="Z-margin for hidden-line clipping (tiny eps with correct mesh)")
+    parser.add_argument("--stitch-tolerance", type=float, default=None,
+                        help="Weld same-level coarse/fine contour paths whose endpoints meet within this distance near a zone boundary. Default: ~1 coarse cell.")
     args = parser.parse_args()
 
     if args.backend:
@@ -140,18 +142,28 @@ def main():
             coarse_res=args.coarse_res, fine_res=res, fine_zones=fine_zones,
         )
 
+        if args.stitch_tolerance is None:
+            coarse_cell = max((r_max - r_min) / args.coarse_res, (i_max - i_min) / args.coarse_res)
+            stitch_tol = 1.5 * coarse_cell
+        else:
+            stitch_tol = args.stitch_tolerance
+
         _tick("contour_adaptive x4")
         ang_major_xyz, ang_major_idx = contour_adaptive(
-            samples, angle_major_interval, height, contour_op=np.angle,
+            samples, angle_major_interval, height,
+            contour_op=np.angle, stitch_tolerance=stitch_tol,
         )
         ang_minor_xyz, ang_minor_idx = contour_adaptive(
-            samples, angle_minor_interval, height, contour_op=np.angle,
+            samples, angle_minor_interval, height,
+            contour_op=np.angle, stitch_tolerance=stitch_tol,
         )
         mag_major_xyz, mag_major_idx = contour_adaptive(
-            samples, magnitude_major_interval, height, contour_op=np.abs,
+            samples, magnitude_major_interval, height,
+            contour_op=np.abs, stitch_tolerance=stitch_tol,
         )
         mag_minor_xyz, mag_minor_idx = contour_adaptive(
-            samples, magnitude_minor_interval, height, contour_op=np.abs,
+            samples, magnitude_minor_interval, height,
+            contour_op=np.abs, stitch_tolerance=stitch_tol,
         )
     else:
         _tick("eval grid")
