@@ -14,6 +14,7 @@ Smoke-test at lower resolution:
 """
 
 import argparse
+import time
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -21,6 +22,30 @@ import numpy as np
 import scipy.special
 from scipy.spatial import Delaunay
 from scipy.spatial.transform import Rotation as R
+
+
+_TIMINGS = []
+_LAST_TICK = [None]
+
+
+def _tick(name):
+    """Close the previous timing interval, start a new one. Call between phases."""
+    now = time.perf_counter()
+    if _LAST_TICK[0] is not None:
+        dt = now - _LAST_TICK[0][1]
+        _TIMINGS.append((_LAST_TICK[0][0], dt))
+        print(f"  [{_LAST_TICK[0][0]:>26s}] {dt:7.2f}s", flush=True)
+    _LAST_TICK[0] = (name, now)
+
+
+def _tick_done():
+    _tick("__end__")
+    _TIMINGS.pop()  # drop the dummy
+    total = sum(dt for _, dt in _TIMINGS)
+    print("  " + "-" * 40)
+    for name, dt in _TIMINGS:
+        print(f"  [{name:>26s}] {dt:7.2f}s  {100*dt/total:4.1f}%")
+    print(f"  [{'total':>26s}] {total:7.2f}s")
 
 from kurven.contours import (
     decimate_outside_critical_zone,
@@ -54,6 +79,7 @@ def main():
     real_bounds = (r_min, r_max)
     imag_bounds = (i_min, i_max)
 
+    _tick("eval grid")
     real = np.linspace(r_min, r_max, res)
     imag = np.linspace(i_min, i_max, res)
     grid = real[:, None] + 1j * imag
@@ -85,7 +111,7 @@ def main():
         if np.all(np.abs(magnitude_major_interval - x) > 1e-6)
     ])
 
-    # Generate matplotlib ContourSets without rendering to screen
+    _tick("mpl.contour x4")
     fig_cs, ax_cs = plt.subplots()
     try:
         mag_major_cs = ax_cs.contour(magnitude, levels=magnitude_major_interval)
@@ -98,7 +124,7 @@ def main():
     def height(z):
         return np.abs(scipy.special.gamma(z))
 
-    print("Extracting contours...")
+    _tick("extract_contours x4")
     ang_major_xyz, ang_major_idx = extract_contours(
         ang_major_cs, height, real_bounds, imag_bounds, res
     )
@@ -112,8 +138,7 @@ def main():
         mag_minor_cs, height, real_bounds, imag_bounds, res
     )
 
-    # Phase-angle contour along the real axis (excluded by mpl's contour because
-    # angle has a branch cut there). Build it manually.
+    _tick("decimate + mirror")
     centerline_xy = np.vstack((np.zeros((1, res)), np.linspace(r_min, r_max, res)))
     centerline_z = np.abs(scipy.special.gamma(centerline_xy[1] + centerline_xy[0] * 1j))
     centerline_xyz = np.vstack((centerline_xy, centerline_z.reshape(-1))).T
@@ -143,13 +168,13 @@ def main():
     mag_minor_xyz, mag_minor_idx = mag_minor_xyz[::20], mag_minor_idx[::20]
     mag_minor_xyz, mag_minor_idx = mirror_x(mag_minor_xyz, mag_minor_idx)
 
-    print("Building top-of-pole contours...")
+    _tick("top-of-pole contours")
     top_contours = _build_top_pole_contours(
         magnitude_major_interval, real_bounds, imag_bounds, res,
         z_range=z_range,
     )
 
-    print("Applying pole-cutoff truncation...")
+    _tick("pole-cutoff truncation")
     epsilon = 0.1
     for y, z in zip([-3.5, -2.5, -1.5, .5], z_range):
         cond = ~((mag_major_xyz[:, 1] < y) & (mag_major_xyz[:, 2] > z + epsilon))
@@ -210,7 +235,7 @@ def main():
     ang_minor_xyz = ang_minor_xyz[cond]
     ang_minor_idx = ang_minor_idx[cond]
 
-    print("Building base/back boundary geometry...")
+    _tick("base/back boundary")
     isometric_scale_factor = 0.5
     x_angle = -55
     z_angle = -90
@@ -260,9 +285,9 @@ def main():
     minor_rotated = rx.apply(rz.apply(minor_xyz_shear))
 
     all_rotated = np.vstack((major_rotated, minor_rotated))
-    print(f"  projected shape: {all_rotated.shape}")
+    print(f"      projected shape: {all_rotated.shape}")
 
-    # Pre-clip raw render (matches the original 'gamma_raw.svg')
+    _tick("save raw.svg")
     fig_raw, ax_raw = plt.subplots(figsize=(16, 16))
     for _, xy in group_by_index(major_rotated, major_idx):
         ax_raw.plot(xy[:, 0], xy[:, 1], lw=0.3, c="k")
@@ -276,8 +301,9 @@ def main():
     fig_raw.savefig(f"{args.output_prefix}_raw.svg")
     plt.close(fig_raw)
 
-    print("Delaunay-triangulating projected points...")
+    _tick("Delaunay")
     tri_cone = Delaunay(np.array(all_xyz)[:, :2])
+    print(f"      {len(tri_cone.simplices)} simplices")
 
     x_values, y_values, z_values = all_rotated.T
     zb = ZBuffer(
@@ -285,9 +311,7 @@ def main():
         x_values.min(), x_values.max(),
         buffer_shape,
     )
-    # Match original orientation: rows = x-axis of rotated plane, cols = y-axis.
-    # Pass them in that order so coord_to_index([x, y]) → [row, col].
-    print("Rasterizing triangle mesh...")
+    _tick("rasterize")
     rasterize_triangles(
         zb,
         tri_cone.simplices,
@@ -295,7 +319,7 @@ def main():
         progress=progress,
     )
 
-    print("Extracting outline and clipping hidden lines...")
+    _tick("outline + clip")
     outline = extract_outline(
         zb,
         cutoff_min=np.array([-4, 0]),
@@ -304,6 +328,7 @@ def main():
 
     segments = clip_hidden_lines(zb, major_rotated, major_idx)
 
+    _tick("save hi_res.svg")
     fig_final, ax_final = plt.subplots(figsize=(16, 16))
     for xy in segments:
         ax_final.plot(xy[:, 0], xy[:, 1], lw=0.4, c="k")
@@ -317,6 +342,7 @@ def main():
     ax_final.axis("off")
     fig_final.savefig(f"{args.output_prefix}_hi_res.svg")
     plt.close(fig_final)
+    _tick_done()
     print(f"Wrote {args.output_prefix}_raw.svg and {args.output_prefix}_hi_res.svg.")
 
 
