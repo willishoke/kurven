@@ -1,0 +1,113 @@
+import numpy as np
+
+try:
+    from tqdm import tqdm as _tqdm
+except ImportError:
+    _tqdm = lambda x, **k: x
+
+
+class ZBuffer:
+    """Coord ↔ pixel mapping plus a depth buffer.
+
+    Axis 0 of the buffer corresponds to `axis0_min..axis0_max`; axis 1 to
+    `axis1_min..axis1_max`. The caller decides which projected coordinate is
+    which — `ZBuffer` doesn't care about x/y semantics.
+    """
+
+    def __init__(
+        self,
+        axis0_min,
+        axis0_max,
+        axis1_min,
+        axis1_max,
+        shape,
+        fill=-np.inf,
+    ):
+        self.buffer = np.full(shape, fill, dtype=float)
+        self.lower = np.array([axis0_min, axis1_min], dtype=float)
+        self.image_size = np.array(
+            [axis0_max - axis0_min, axis1_max - axis1_min], dtype=float
+        )
+        self.buffer_size = np.array(shape, dtype=float)
+
+    def coord_to_index(self, coord):
+        # +0.01 nudge: keeps coord==lower from floor()ing to -1 under float jitter.
+        return np.floor(0.01 + (self.buffer_size - 1) * (coord - self.lower) / self.image_size)
+
+    def index_to_coord(self, index):
+        return (index / (self.buffer_size - 1)) * self.image_size + self.lower
+
+
+def rasterize_triangles(
+    zb,
+    simplices,
+    axis0_values,
+    axis1_values,
+    z_values,
+    *,
+    progress=False,
+):
+    """Z-buffer rasterize a triangle mesh into `zb`.
+
+    `simplices` is (N, 3) int indices into the per-vertex arrays.
+    `axis0_values`, `axis1_values`, `z_values` are (V,) per-vertex arrays.
+
+    The inner loop computes barycentric weights directly from the three vertex
+    positions instead of invoking `scipy.spatial.Delaunay()` per triangle, which
+    is what the original notebook did and what made cell 14 the bottleneck.
+    """
+    bh, bw = int(zb.buffer_size[0]), int(zb.buffer_size[1])
+    iterator = _tqdm(simplices) if progress else simplices
+
+    for t in iterator:
+        i0, i1, i2 = int(t[0]), int(t[1]), int(t[2])
+        x0, x1, x2 = axis0_values[i0], axis0_values[i1], axis0_values[i2]
+        y0, y1, y2 = axis1_values[i0], axis1_values[i1], axis1_values[i2]
+        z0, z1, z2 = z_values[i0], z_values[i1], z_values[i2]
+
+        bot_left = zb.coord_to_index(np.array([min(x0, x1, x2), min(y0, y1, y2)]))
+        top_right = zb.coord_to_index(np.array([max(x0, x1, x2), max(y0, y1, y2)]))
+        bottom = max(0, int(bot_left[0]))
+        left = max(0, int(bot_left[1]))
+        top = min(bh - 1, int(top_right[0]))
+        right = min(bw - 1, int(top_right[1]))
+        if top < bottom or right < left:
+            continue
+
+        x_ind, y_ind = np.meshgrid(
+            np.arange(bottom, top + 1),
+            np.arange(left, right + 1),
+            indexing="ij",
+        )
+        xi_flat = x_ind.ravel()
+        yi_flat = y_ind.ravel()
+        xy = zb.index_to_coord(np.column_stack([xi_flat, yi_flat]))
+
+        p0 = np.array([x0, y0])
+        v0 = np.array([x1 - x0, y1 - y0])
+        v1 = np.array([x2 - x0, y2 - y0])
+        d00 = v0 @ v0
+        d01 = v0 @ v1
+        d11 = v1 @ v1
+        denom = d00 * d11 - d01 * d01
+        if denom == 0:
+            continue
+
+        v2 = xy - p0
+        d20 = v2 @ v0
+        d21 = v2 @ v1
+        wv = (d11 * d20 - d01 * d21) / denom
+        ww = (d00 * d21 - d01 * d20) / denom
+        wu = 1.0 - wv - ww
+
+        inside = (wu >= 0) & (wv >= 0) & (ww >= 0)
+        if not inside.any():
+            continue
+
+        zs = wu * z0 + wv * z1 + ww * z2
+        xi = xi_flat[inside]
+        yi = yi_flat[inside]
+        zi = zs[inside]
+        # (xi, yi) pairs are unique within a single triangle's meshgrid, so a
+        # plain assignment is safe and faster than np.maximum.at().
+        zb.buffer[xi, yi] = np.maximum(zi, zb.buffer[xi, yi])
