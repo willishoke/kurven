@@ -81,6 +81,8 @@ def main():
                         help="Resolution outside high-gradient zones (adaptive only)")
     parser.add_argument("--probe-res", type=int, default=400,
                         help="Resolution for gradient-zone discovery")
+    parser.add_argument("--zone-pad", type=float, default=0.05,
+                        help="Fractional outward padding on each gradient-discovered fine zone. Larger = seam falls in calmer territory.")
     parser.add_argument("--surface-res", type=int, default=1000,
                         help="Surface mesh density for depth buffer")
     parser.add_argument("--clip-margin", type=float, default=0.01,
@@ -137,7 +139,7 @@ def main():
         _tick("gradient zones")
         fine_zones = gradient_zones(
             scipy.special.gamma, real_bounds, imag_bounds,
-            probe_res=args.probe_res,
+            probe_res=args.probe_res, pad=args.zone_pad,
         )
         print(f"      {len(fine_zones)} fine zone(s):")
         for zr_lo, zr_hi, zi_lo, zi_hi in fine_zones:
