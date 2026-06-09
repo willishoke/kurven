@@ -158,3 +158,90 @@ def rasterize_triangles(
         # (xi, yi) pairs are unique within a single triangle's meshgrid, so a
         # plain assignment is safe and faster than np.maximum.at().
         zb.buffer[xi, yi] = np.maximum(zi, zb.buffer[xi, yi])
+
+
+# Sentinel value representing "empty pixel" on the GPU path: GL has no -inf,
+# and we want to round-trip the (h, w) buffer through an R32F texture, so we
+# clear to this large negative value and remap back to -inf on read.
+_GPU_EMPTY_SENTINEL = -1e30
+
+
+def rasterize_triangles_gpu(zb, simplices, axis0_values, axis1_values, z_values):
+    """GPU rasterization via moderngl. Same max-z semantics as the CPU loop.
+
+    Renders the mesh into an R32F color texture with `GL_MAX` blend equation,
+    then reads the texture back into `zb.buffer`. Existing values in `zb.buffer`
+    are NOT preserved — the buffer is overwritten with the GPU result. (Matches
+    the typical call pattern where `zb` is freshly constructed.)
+
+    Requires `moderngl` (install with `pip install kurven[gpu]`).
+    """
+    try:
+        import moderngl
+    except ImportError as e:
+        raise RuntimeError(
+            "rasterize_triangles_gpu requires moderngl. "
+            "Install with `pip install kurven[gpu]` or `uv sync --extra gpu`."
+        ) from e
+
+    h, w = int(zb.buffer_size[0]), int(zb.buffer_size[1])
+    a0_min, a1_min = float(zb.lower[0]), float(zb.lower[1])
+    a0_range, a1_range = float(zb.image_size[0]), float(zb.image_size[1])
+
+    vbo_data = np.column_stack(
+        [np.asarray(axis0_values), np.asarray(axis1_values), np.asarray(z_values)]
+    ).astype(np.float32)
+    ibo_data = np.asarray(simplices, dtype=np.int32)
+
+    ctx = moderngl.create_standalone_context()
+    try:
+        prog = ctx.program(
+            vertex_shader="""
+                #version 330
+                in vec3 in_vert;
+                uniform vec2 a_min;
+                uniform vec2 a_range;
+                out float v_z;
+                void main() {
+                    // in_vert.x = axis 0 coord (mapped to NDC.y / framebuffer rows).
+                    // in_vert.y = axis 1 coord (mapped to NDC.x / framebuffer cols).
+                    float ndc_x = (in_vert.y - a_min.y) / a_range.y * 2.0 - 1.0;
+                    float ndc_y = (in_vert.x - a_min.x) / a_range.x * 2.0 - 1.0;
+                    gl_Position = vec4(ndc_x, ndc_y, 0.0, 1.0);
+                    v_z = in_vert.z;
+                }
+            """,
+            fragment_shader="""
+                #version 330
+                in float v_z;
+                out float frag_z;
+                void main() {
+                    frag_z = v_z;
+                }
+            """,
+        )
+        prog["a_min"].value = (a0_min, a1_min)
+        prog["a_range"].value = (a0_range, a1_range)
+
+        vbo = ctx.buffer(vbo_data.tobytes())
+        ibo = ctx.buffer(ibo_data.tobytes())
+        vao = ctx.vertex_array(prog, [(vbo, "3f", "in_vert")], ibo)
+
+        color_tex = ctx.texture((w, h), 1, dtype="f4")
+        fbo = ctx.framebuffer(color_attachments=[color_tex])
+        fbo.use()
+        ctx.viewport = (0, 0, w, h)
+        fbo.clear(color=(_GPU_EMPTY_SENTINEL, 0.0, 0.0, 0.0))
+
+        ctx.enable(moderngl.BLEND)
+        ctx.blend_equation = moderngl.MAX
+        ctx.blend_func = (moderngl.ONE, moderngl.ONE)
+
+        vao.render(moderngl.TRIANGLES)
+
+        raw = fbo.read(components=1, dtype="f4")
+        buf = np.frombuffer(raw, dtype=np.float32).reshape((h, w)).copy()
+        buf[buf <= _GPU_EMPTY_SENTINEL + 1e20] = -np.inf
+        zb.buffer[:] = buf
+    finally:
+        ctx.release()

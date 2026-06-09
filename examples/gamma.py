@@ -56,7 +56,12 @@ from kurven.contours import (
 )
 from kurven.outline import clip_hidden_lines, extract_outline
 from kurven.sampling import gradient_zones, sample_adaptive
-from kurven.zbuffer import ZBuffer, rasterize_triangles, surface_grid_mesh
+from kurven.zbuffer import (
+    ZBuffer,
+    rasterize_triangles,
+    rasterize_triangles_gpu,
+    surface_grid_mesh,
+)
 
 
 def main():
@@ -82,6 +87,8 @@ def main():
                         help="Z-margin for hidden-line clipping (tiny eps with correct mesh)")
     parser.add_argument("--stitch-tolerance", type=float, default=None,
                         help="Weld same-level coarse/fine contour paths whose endpoints meet within this distance near a zone boundary. Default: ~1 coarse cell.")
+    parser.add_argument("--gpu", action="store_true",
+                        help="Use moderngl-backed GPU rasterizer (much faster). Requires `pip install kurven[gpu]`.")
     args = parser.parse_args()
 
     if args.backend:
@@ -388,8 +395,12 @@ def main():
     # axis 0 of buffer = x (matches rasterizer's axis0_values=x); axis 1 = y.
     zb = ZBuffer(sx.min(), sx.max(), sy.min(), sy.max(), buffer_shape)
 
-    _tick("rasterize surface")
-    rasterize_triangles(zb, surf_simplices, sx, sy, sz, progress=progress)
+    if args.gpu:
+        _tick("rasterize surface (gpu)")
+        rasterize_triangles_gpu(zb, surf_simplices, sx, sy, sz)
+    else:
+        _tick("rasterize surface")
+        rasterize_triangles(zb, surf_simplices, sx, sy, sz, progress=progress)
 
     _tick("outline + clip")
     outline = extract_outline(

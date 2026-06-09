@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+gpu = ["moderngl>=5.10"]
 
 [tool.setuptools.packages.find]
 include = ["kurven*"]
