@@ -228,6 +228,8 @@ def _segs_per_level_from_array(
         **gen_kwargs,
     )
 
+    will_chunk = threaded and chunk_count > 1
+
     seen = set()
     out = {}
     for level in levels:
@@ -255,7 +257,109 @@ def _segs_per_level_from_array(
             xy[:, 1] *= (r_max - r_min) / n_real
             xy[:, 1] += r_min
             kept.append(xy)
+        if will_chunk and len(kept) >= 2:
+            kept = _stitch_chunk_seams(kept)
         out[level_f] = kept
+    return out
+
+
+def _stitch_chunk_seams(paths):
+    """Weld contourpy chunk-boundary pieces of one level via exact endpoint
+    matching. Across a chunk boundary, both pieces share identical coordinates
+    at the interface (the marching-squares interpolation depends only on the
+    cell's shared grid-vertex values), so a hash lookup pairs them without
+    the false matches a tolerance-based approach can produce when several
+    contour pieces converge near the same chunk boundary line.
+    """
+    if len(paths) < 2:
+        return list(paths)
+
+    n = len(paths)
+    endpoint_buckets = {}
+    # Round to 9 decimals to absorb the few ULPs of float jitter that the
+    # grid-index → real-coord multiplication introduces. Chunk-boundary
+    # endpoints share the same underlying interpolated value but the post-
+    # conversion floats can differ in the last bit; without this they hash to
+    # different buckets and the stitch silently drops the pair.
+    for i, p in enumerate(paths):
+        for end_label, pt in ((0, p[0]), (1, p[-1])):
+            key = (round(float(pt[0]), 9), round(float(pt[1]), 9))
+            endpoint_buckets.setdefault(key, []).append((i, end_label))
+
+    partner = np.full(2 * n, -1, dtype=np.int64)
+    for entries in endpoint_buckets.values():
+        if len(entries) != 2:
+            continue
+        (p1, e1), (p2, e2) = entries
+        if p1 == p2:
+            continue
+        a, b = 2 * p1 + e1, 2 * p2 + e2
+        if partner[a] != -1 or partner[b] != -1:
+            continue
+        partner[a] = b
+        partner[b] = a
+
+    visited = np.zeros(n, dtype=bool)
+    out = []
+
+    def walk(start, free_label):
+        """Walk an open chain starting from a piece with `free_label` free,
+        traversing through its partnered end forward until hitting another
+        free end or a visited piece. Returns the (possibly reversed) sub-paths
+        in chain order."""
+        chain = []
+        seg = paths[start]
+        if free_label == 1:
+            seg = seg[::-1]
+        chain.append(seg)
+        visited[start] = True
+        current_idx = start
+        tail_label = 1 - free_label
+        while True:
+            next_endpoint = partner[2 * current_idx + tail_label]
+            if next_endpoint == -1:
+                break
+            next_path_idx = next_endpoint // 2
+            next_label = next_endpoint % 2
+            if visited[next_path_idx]:
+                break
+            seg = paths[next_path_idx]
+            if next_label == 1:
+                seg = seg[::-1]
+            chain.append(seg)
+            visited[next_path_idx] = True
+            current_idx = next_path_idx
+            tail_label = 1 - next_label
+        return chain
+
+    def emit(chain):
+        if len(chain) == 1:
+            out.append(chain[0])
+            return
+        parts = [chain[0]]
+        for seg in chain[1:]:
+            if len(seg) >= 2:
+                parts.append(seg[1:])
+        out.append(np.concatenate(parts))
+
+    # Pass 1: walk open chains from their free endpoints. Skipping internal
+    # pieces here is essential — starting an internal piece would walk to one
+    # of its two partnered chain ends and orphan everything on the other side.
+    for start in range(n):
+        if visited[start]:
+            continue
+        if partner[2 * start] == -1:
+            emit(walk(start, 0))
+        elif partner[2 * start + 1] == -1:
+            emit(walk(start, 1))
+
+    # Pass 2: any pieces still unvisited belong to closed cycles (both ends
+    # partnered, no free anchor). Pick any starting orientation.
+    for start in range(n):
+        if visited[start]:
+            continue
+        emit(walk(start, 0))
+
     return out
 
 
@@ -328,25 +432,31 @@ def _near_zone_boundary(pt, zones, tolerance):
 
 def _stitch_paths(paths, zones, tolerance):
     """Greedy endpoint matching: pair distinct paths whose endpoints are within
-    `tolerance` and at least one of which is near a zone boundary. Concatenate
-    matched paths into single polylines (reversing as needed).
+    `tolerance` and (if `zones` is non-empty) at least one of which is near a
+    zone boundary. Concatenate matched paths into single polylines (reversing
+    as needed).
 
-    Avoids welding unrelated nearby contours in dense regions by requiring
-    proximity to a zone boundary, where coarse/fine seams actually live.
+    When `zones` is None or empty, the boundary-proximity guard is skipped —
+    any pair of distinct paths with close enough endpoints gets welded. Use
+    that mode for stitching contourpy chunk seams, where every endpoint that
+    lands on a chunk boundary should fuse with its neighbor on the other side.
     """
-    if len(paths) < 2 or not zones:
+    if len(paths) < 2:
         return list(paths)
 
     from scipy.spatial import cKDTree
 
+    check_boundary = bool(zones)
     n = len(paths)
     positions = np.empty((2 * n, 2))
-    near_boundary = np.zeros(2 * n, dtype=bool)
+    if check_boundary:
+        near_boundary = np.zeros(2 * n, dtype=bool)
     for i, p in enumerate(paths):
         positions[2 * i] = p[0]
         positions[2 * i + 1] = p[-1]
-        near_boundary[2 * i] = _near_zone_boundary(p[0], zones, tolerance)
-        near_boundary[2 * i + 1] = _near_zone_boundary(p[-1], zones, tolerance)
+        if check_boundary:
+            near_boundary[2 * i] = _near_zone_boundary(p[0], zones, tolerance)
+            near_boundary[2 * i + 1] = _near_zone_boundary(p[-1], zones, tolerance)
 
     tree = cKDTree(positions)
     pairs = tree.query_pairs(tolerance, output_type="ndarray")
@@ -363,7 +473,7 @@ def _stitch_paths(paths, zones, tolerance):
             continue
         if partner[a] != -1 or partner[b] != -1:
             continue
-        if not (near_boundary[a] or near_boundary[b]):
+        if check_boundary and not (near_boundary[a] or near_boundary[b]):
             continue
         partner[a] = b
         partner[b] = a
