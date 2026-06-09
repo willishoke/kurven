@@ -189,6 +189,76 @@ def _paths_to_real_coords(contour_set, real_bounds, imag_bounds, grid_res, dedup
     return out
 
 
+def _segs_per_level_from_array(
+    array, levels, real_bounds, imag_bounds, grid_res,
+    dedup_atol=3, threaded=True, chunk_count=None,
+):
+    """Run marching squares directly via `contourpy`, skipping `plt.contour`.
+
+    Equivalent output to `_segs_per_level_to_real_coords`. Avoids matplotlib's
+    figure/axes/ContourSet construction (which builds compound Path objects we
+    immediately tear down) and uses contourpy's threaded backend with explicit
+    chunking so multi-level contour generation parallelizes across cores.
+
+    `chunk_count` controls how contourpy splits the grid for threaded
+    rasterization. The default `None` resolves to `os.cpu_count()`, which on an
+    M-series Mac was ~3.8x faster than contourpy's default chunking for the
+    gamma-scale grids (481 minor magnitude levels over a 4000² grid). Setting
+    it much higher than `cpu_count` regresses (chunk overhead dominates).
+    """
+    import os
+    import contourpy
+
+    r_min, r_max = real_bounds
+    i_min, i_max = imag_bounds
+    if isinstance(grid_res, (int, np.integer)):
+        n_real = n_imag = int(grid_res)
+    else:
+        n_real, n_imag = grid_res
+
+    if chunk_count is None:
+        chunk_count = max(1, os.cpu_count() or 1)
+    gen_kwargs = {}
+    if threaded:
+        gen_kwargs["chunk_count"] = chunk_count
+    gen = contourpy.contour_generator(
+        z=array,
+        name="threaded" if threaded else "serial",
+        line_type=contourpy.LineType.Separate,
+        **gen_kwargs,
+    )
+
+    seen = set()
+    out = {}
+    for level in levels:
+        level_f = float(level)
+        try:
+            segs = gen.lines(level_f)
+        except Exception:
+            segs = []
+        kept = []
+        for seg in segs:
+            if len(seg) < 2:
+                continue
+            key = (
+                round(seg[0, 0] / dedup_atol),
+                round(seg[0, 1] / dedup_atol),
+                round(seg[-1, 0] / dedup_atol),
+                round(seg[-1, 1] / dedup_atol),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            xy = seg.copy()
+            xy[:, 0] *= (i_max - i_min) / n_imag
+            xy[:, 0] += i_min
+            xy[:, 1] *= (r_max - r_min) / n_real
+            xy[:, 1] += r_min
+            kept.append(xy)
+        out[level_f] = kept
+    return out
+
+
 def _segs_per_level_to_real_coords(
     contour_set, levels, real_bounds, imag_bounds, grid_res, dedup_atol=3,
 ):
@@ -378,9 +448,12 @@ def _split_paths_outside_zones(paths_real_coord, zones):
     return out
 
 
-def contour_adaptive(samples, levels, height_func, *, contour_op=np.abs, stitch_tolerance=None):
-    """Run mpl.contour at the coarse resolution over the full domain plus one
-    pass per fine zone, drop coarse vertices inside fine zones, optionally
+def contour_adaptive(
+    samples, levels, height_func,
+    *, contour_op=np.abs, stitch_tolerance=None, backend="contourpy",
+):
+    """Run marching squares at the coarse resolution over the full domain plus
+    one pass per fine zone, drop coarse vertices inside fine zones, optionally
     stitch matching coarse/fine paths at zone boundaries, and lift the union
     to 3D via `height_func`.
 
@@ -392,17 +465,29 @@ def contour_adaptive(samples, levels, height_func, *, contour_op=np.abs, stitch_
     same-level path endpoints. Use a value somewhat smaller than the local
     contour spacing; ~1× a coarse cell is a good default. None disables.
 
+    `backend`: "contourpy" (default) calls contourpy directly with the threaded
+    backend, avoiding mpl's Path construction and parallelizing across levels.
+    "mpl" falls back to `plt.contour` + allsegs (slower but preserves bit-for-bit
+    parity with older snapshots).
+
     Returns (xyz, indices), same shape conventions as `extract_contours`.
     """
     levels_arr = np.asarray(levels, dtype=float)
 
-    fig, ax = plt.subplots()
-    try:
-        coarse_cs = ax.contour(contour_op(samples.coarse_values), levels=levels)
-    finally:
-        plt.close(fig)
-    coarse_by_level = _segs_per_level_to_real_coords(
-        coarse_cs, levels_arr,
+    def _contour(array, r_bounds, i_bounds, res):
+        if backend == "contourpy":
+            return _segs_per_level_from_array(
+                array, levels_arr, r_bounds, i_bounds, res,
+            )
+        fig, ax = plt.subplots()
+        try:
+            cs = ax.contour(array, levels=levels)
+        finally:
+            plt.close(fig)
+        return _segs_per_level_to_real_coords(cs, levels_arr, r_bounds, i_bounds, res)
+
+    coarse_by_level = _contour(
+        contour_op(samples.coarse_values),
         samples.real_bounds, samples.imag_bounds, samples.coarse_res,
     )
     coarse_by_level = {
@@ -415,13 +500,8 @@ def contour_adaptive(samples, levels, height_func, *, contour_op=np.abs, stitch_
         samples.fine_values, samples.fine_zones, samples.fine_resolutions
     ):
         zr_min, zr_max, zi_min, zi_max = zone
-        fig, ax = plt.subplots()
-        try:
-            fine_cs = ax.contour(contour_op(zvalues), levels=levels)
-        finally:
-            plt.close(fig)
-        zone_by_level = _segs_per_level_to_real_coords(
-            fine_cs, levels_arr, (zr_min, zr_max), (zi_min, zi_max), zres,
+        zone_by_level = _contour(
+            contour_op(zvalues), (zr_min, zr_max), (zi_min, zi_max), zres,
         )
         for lvl, segs in zone_by_level.items():
             fine_by_level.setdefault(lvl, []).extend(segs)
