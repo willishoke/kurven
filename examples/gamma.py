@@ -14,6 +14,7 @@ Smoke-test at lower resolution:
 """
 
 import argparse
+import os
 import time
 
 import matplotlib
@@ -450,26 +451,29 @@ def _build_top_pole_contours(
         res // top_contour_real_scale,
     )
     grid2 = real2[:, None] + 1j * imag2
-    gamma2 = scipy.special.gamma(grid2)
-    magnitude2 = np.abs(gamma2)
+    magnitude2 = np.abs(scipy.special.gamma(grid2))
 
+    # Compute only the 4 spire-cap levels we use (the original code contoured
+    # all 23 and threw away 19). Stay on mpl.contour for this one call because
+    # the downstream `path.contains_point` test relies on mpl's grid-edge
+    # closure of open contours; contourpy direct leaves them open and the
+    # polygon test then returns garbage.
+    cutoff_indices = list(reversed([-1, -4, -6, -7]))
+    target_levels = [float(magnitude_major_interval[i]) for i in cutoff_indices]
     fig, ax = plt.subplots()
     try:
-        mag_cs2 = ax.contour(magnitude2, levels=magnitude_major_interval)
+        mag_cs2 = ax.contour(magnitude2, levels=target_levels)
     finally:
         plt.close(fig)
-
-    contours_of_interest = []
-    cutoff_indices = list(reversed([-1, -4, -6, -7]))
     if hasattr(mag_cs2, "collections") and mag_cs2.collections:
-        cutoff_paths = [mag_cs2.collections[i].get_paths() for i in cutoff_indices]
+        cutoff_paths = [list(c.get_paths()) for c in mag_cs2.collections]
     else:
-        # mpl 3.8+: get_paths() is consolidated; allsegs is the level-grouped version
-        all_paths_by_level = [
+        cutoff_paths = [
             [_pathify(seg) for seg in level_segs]
             for level_segs in mag_cs2.allsegs
         ]
-        cutoff_paths = [all_paths_by_level[i] for i in cutoff_indices]
+
+    contours_of_interest = []
 
     for paths, limit in zip(cutoff_paths, [-3.5, -2.5, -1.5, .5]):
         for path in paths:
