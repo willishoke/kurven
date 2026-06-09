@@ -2,15 +2,28 @@ from itertools import groupby
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.path import Path as MplPath
+
+
+def _split_path_by_moves(path):
+    verts = path.vertices
+    codes = path.codes
+    if codes is None or len(verts) == 0:
+        return [verts] if len(verts) else []
+    moves = np.where(codes == MplPath.MOVETO)[0]
+    if len(moves) <= 1:
+        return [verts]
+    boundaries = list(moves) + [len(verts)]
+    return [verts[boundaries[i]:boundaries[i + 1]] for i in range(len(boundaries) - 1)]
 
 
 def extract_outline(zb, *, cutoff_min=None, cutoff_max=None):
     """Trace the silhouette of the filled region of a Z-buffer.
 
     Binarize (filled→1, empty→-1), find the level-0 contour in pixel space,
-    map back to coord space. Optional axis-aligned clip via cutoff_min/max
-    (each a length-2 array; semantics match the original notebook's
-    `outline_min_cutoff` / `outline_max_cutoff`).
+    map back to coord space. Returns ALL silhouette polylines joined with NaN
+    separators, so `plt.plot(*outline.T)` renders disconnected components as
+    separate strokes rather than bridging them with straight lines.
     """
     binarized = zb.buffer.T.copy()
     binarized[np.isnan(binarized)] = -1
@@ -25,20 +38,51 @@ def extract_outline(zb, *, cutoff_min=None, cutoff_max=None):
         plt.close(fig)
 
     if hasattr(cs, "collections") and cs.collections:
-        paths = [p for c in cs.collections for p in c.get_paths()]
+        raw_paths = [p for c in cs.collections for p in c.get_paths()]
     else:
-        paths = list(cs.get_paths())
-    if not paths:
+        raw_paths = list(cs.get_paths())
+    if not raw_paths:
         return np.zeros((0, 2))
 
-    pts = zb.index_to_coord(paths[0].vertices)
+    polylines = []
+    for p in raw_paths:
+        polylines.extend(_split_path_by_moves(p))
 
-    mask = np.ones(len(pts), dtype=bool)
-    if cutoff_min is not None:
-        mask &= np.all(pts > np.asarray(cutoff_min), axis=1)
-    if cutoff_max is not None:
-        mask &= np.all(pts < np.asarray(cutoff_max), axis=1)
-    return pts[mask]
+    sep = np.array([[np.nan, np.nan]])
+    pieces = []
+    for verts in polylines:
+        if len(verts) < 2:
+            continue
+        pts = zb.index_to_coord(verts)
+        if cutoff_min is not None or cutoff_max is not None:
+            mask = np.ones(len(pts), dtype=bool)
+            if cutoff_min is not None:
+                mask &= np.all(pts > np.asarray(cutoff_min), axis=1)
+            if cutoff_max is not None:
+                mask &= np.all(pts < np.asarray(cutoff_max), axis=1)
+            # Drop full-run if no pixels survive; otherwise keep with internal NaNs
+            # at mask transitions so plot doesn't bridge across gaps.
+            if not mask.any():
+                continue
+            # Split into runs of True
+            keep_int = mask.astype(np.int8)
+            boundaries = np.diff(np.concatenate(([0], keep_int, [0])))
+            starts = np.where(boundaries == 1)[0]
+            ends = np.where(boundaries == -1)[0]
+            for s, e in zip(starts, ends):
+                if e - s >= 2:
+                    pieces.append(pts[s:e])
+                    pieces.append(sep)
+        else:
+            pieces.append(pts)
+            pieces.append(sep)
+
+    if not pieces:
+        return np.zeros((0, 2))
+    # Trailing sep is fine for plot but drop it for cleanliness
+    if np.all(np.isnan(pieces[-1])):
+        pieces = pieces[:-1]
+    return np.vstack(pieces)
 
 
 def clip_hidden_lines(zb, xyz_view, indices, *, margin=0.01):

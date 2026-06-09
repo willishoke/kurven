@@ -2,12 +2,46 @@ from itertools import groupby
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.path import Path as MplPath
 
 
 def _get_paths(contour_set):
     if hasattr(contour_set, "collections") and contour_set.collections:
         return [p for c in contour_set.collections for p in c.get_paths()]
     return list(contour_set.get_paths())
+
+
+def _split_path_by_moves(path):
+    """Split a `matplotlib.path.Path` into a list of (N, 2) vertex arrays, one
+    per contiguous sub-polyline (a `MOVETO` code starts a new sub-polyline).
+
+    Without this, a single Path representing several disconnected contour loops
+    (e.g. one loop per pole) gets flattened to a single (N, 2) array, and any
+    code that just plots `path.vertices` bridges across the disjoint loops.
+    """
+    verts = path.vertices
+    codes = path.codes
+    if codes is None or len(verts) == 0:
+        return [verts] if len(verts) else []
+    moves = np.where(codes == MplPath.MOVETO)[0]
+    if len(moves) <= 1:
+        return [verts]
+    boundaries = list(moves) + [len(verts)]
+    out = []
+    for i in range(len(boundaries) - 1):
+        seg = verts[boundaries[i]:boundaries[i + 1]]
+        if len(seg) >= 2:
+            out.append(seg)
+    return out
+
+
+def _get_subpolylines(contour_set):
+    """Yield (vertices_in_grid_index_space,) for every distinct sub-polyline
+    across every path in the contour set."""
+    out = []
+    for path in _get_paths(contour_set):
+        out.extend(_split_path_by_moves(path))
+    return out
 
 
 def extract_contours(
@@ -33,13 +67,12 @@ def extract_contours(
     """
     r_min, r_max = real_bounds
     i_min, i_max = imag_bounds
-    paths = _get_paths(contour_set)
+    polylines = _get_subpolylines(contour_set)
 
     seen = set()
     kept = []
-    for path in paths:
-        verts = path.vertices
-        if len(verts) < 1:
+    for verts in polylines:
+        if len(verts) < 2:
             continue
         key = (
             round(verts[0, 0] / dedup_atol),
@@ -50,14 +83,14 @@ def extract_contours(
         if key in seen:
             continue
         seen.add(key)
-        kept.append(path)
+        kept.append(verts)
 
     if not kept:
         return np.zeros((0, 3)), np.zeros(0, dtype=np.int64)
 
     chunks_xy, chunks_z, chunks_i = [], [], []
-    for i, path in enumerate(kept):
-        xy = path.vertices.copy()
+    for i, verts in enumerate(kept):
+        xy = verts.copy()
         xy[:, 0] *= (i_max - i_min) / grid_res
         xy[:, 1] *= (r_max - r_min) / grid_res
         xy[:, 1] -= (r_max - r_min) / 2
@@ -116,9 +149,10 @@ def group_by_index(xyz, indices):
 
 
 def _paths_to_real_coords(contour_set, real_bounds, imag_bounds, grid_res, dedup_atol=3):
-    """Pull paths from a mpl ContourSet, dedup, return list of (N, 2) arrays
-    in real-coord space (col 0 = imag, col 1 = real). `grid_res` is either an
-    int (square grid) or a (n_real, n_imag) tuple."""
+    """Pull paths from a mpl ContourSet, split each into sub-polylines on
+    MOVETO codes, dedup, and convert vertices to real-coord space
+    (col 0 = imag, col 1 = real). `grid_res` is either an int (square grid)
+    or a (n_real, n_imag) tuple."""
     r_min, r_max = real_bounds
     i_min, i_max = imag_bounds
     if isinstance(grid_res, (int, np.integer)):
@@ -126,13 +160,12 @@ def _paths_to_real_coords(contour_set, real_bounds, imag_bounds, grid_res, dedup
     else:
         n_real, n_imag = grid_res
 
-    raw = _get_paths(contour_set)
+    polylines = _get_subpolylines(contour_set)
 
     seen = set()
     kept = []
-    for path in raw:
-        verts = path.vertices
-        if len(verts) < 1:
+    for verts in polylines:
+        if len(verts) < 2:
             continue
         key = (
             round(verts[0, 0] / dedup_atol),
@@ -143,11 +176,11 @@ def _paths_to_real_coords(contour_set, real_bounds, imag_bounds, grid_res, dedup
         if key in seen:
             continue
         seen.add(key)
-        kept.append(path)
+        kept.append(verts)
 
     out = []
-    for path in kept:
-        xy = path.vertices.copy()
+    for verts in kept:
+        xy = verts.copy()
         xy[:, 0] *= (i_max - i_min) / n_imag
         xy[:, 0] += i_min
         xy[:, 1] *= (r_max - r_min) / n_real
