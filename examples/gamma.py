@@ -56,7 +56,7 @@ from kurven.contours import (
 )
 from kurven.outline import clip_hidden_lines, extract_outline
 from kurven.sampling import gradient_zones, sample_adaptive
-from kurven.zbuffer import ZBuffer, rasterize_triangles
+from kurven.zbuffer import ZBuffer, rasterize_triangles, surface_grid_mesh
 
 
 def main():
@@ -76,6 +76,10 @@ def main():
                         help="Resolution outside high-gradient zones (adaptive only)")
     parser.add_argument("--probe-res", type=int, default=400,
                         help="Resolution for gradient-zone discovery")
+    parser.add_argument("--surface-res", type=int, default=1000,
+                        help="Surface mesh density for depth buffer")
+    parser.add_argument("--clip-margin", type=float, default=0.01,
+                        help="Z-margin for hidden-line clipping (tiny eps with correct mesh)")
     args = parser.parse_args()
 
     if args.backend:
@@ -343,23 +347,37 @@ def main():
     fig_raw.savefig(f"{args.output_prefix}_raw.svg")
     plt.close(fig_raw)
 
-    _tick("Delaunay")
-    tri_cone = Delaunay(np.array(all_xyz)[:, :2])
-    print(f"      {len(tri_cone.simplices)} simplices")
+    _tick("surface mesh")
+    surf_res = args.surface_res
+    surf_real = np.linspace(r_min, r_max, surf_res)
+    surf_imag = np.linspace(-i_max, i_max, surf_res)
+    surf_grid = surf_real[:, None] + 1j * surf_imag
 
-    x_values, y_values, z_values = all_rotated.T
-    zb = ZBuffer(
-        y_values.min(), y_values.max(),
-        x_values.min(), x_values.max(),
-        buffer_shape,
+    # Per-region z caps — must match the contour-truncation caps, otherwise the
+    # surface silhouette protrudes above the truncated contours on shorter
+    # spires (and the contours protrude above the surface on taller ones).
+    # Pole-region bands paired with z_range = [2.5, 3, 4, 5.5] for real bands
+    # (<-3.5, <-2.5, <-1.5, <0.5); calm region (real >= 0.5) caps at z_limit.
+    surf_caps_1d = np.full_like(surf_real, z_limit)
+    surf_caps_1d[surf_real < 0.5] = z_range[3]
+    surf_caps_1d[surf_real < -1.5] = z_range[2]
+    surf_caps_1d[surf_real < -2.5] = z_range[1]
+    surf_caps_1d[surf_real < -3.5] = z_range[0]
+    surf_z = np.minimum(np.abs(scipy.special.gamma(surf_grid)), surf_caps_1d[:, None])
+    # Vertex (i, j) at (imag[j], real[i], z[i, j]) — matches the (imag, real, z) convention
+    surf_vertices, surf_simplices = surface_grid_mesh(
+        coords_x=surf_imag, coords_y=surf_real, z_values=surf_z,
     )
-    _tick("rasterize")
-    rasterize_triangles(
-        zb,
-        tri_cone.simplices,
-        x_values, y_values, z_values,
-        progress=progress,
-    )
+    surf_vertices[:, 1] += isometric_scale_factor * surf_vertices[:, 0]
+    surf_rotated = rx.apply(rz.apply(surf_vertices))
+    print(f"      {len(surf_simplices)} surface triangles")
+
+    sx, sy, sz = surf_rotated.T
+    # axis 0 of buffer = x (matches rasterizer's axis0_values=x); axis 1 = y.
+    zb = ZBuffer(sx.min(), sx.max(), sy.min(), sy.max(), buffer_shape)
+
+    _tick("rasterize surface")
+    rasterize_triangles(zb, surf_simplices, sx, sy, sz, progress=progress)
 
     _tick("outline + clip")
     outline = extract_outline(
@@ -368,7 +386,7 @@ def main():
         cutoff_max=np.array([0.8, 5]),
     )
 
-    segments = clip_hidden_lines(zb, major_rotated, major_idx)
+    segments = clip_hidden_lines(zb, major_rotated, major_idx, margin=args.clip_margin)
 
     _tick("save hi_res.svg")
     fig_final, ax_final = plt.subplots(figsize=(16, 16))

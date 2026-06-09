@@ -13,7 +13,7 @@ from kurven.contours import (
     mirror_x,
 )
 from kurven.projection import isometric_project, rotate_xz
-from kurven.zbuffer import ZBuffer, rasterize_triangles
+from kurven.zbuffer import ZBuffer, rasterize_triangles, surface_grid_mesh
 from kurven.outline import extract_outline, clip_hidden_lines
 
 __all__ = [
@@ -31,6 +31,7 @@ __all__ = [
     "rotate_xz",
     "ZBuffer",
     "rasterize_triangles",
+    "surface_grid_mesh",
     "extract_outline",
     "clip_hidden_lines",
 ]

@@ -38,6 +38,53 @@ class ZBuffer:
         return (index / (self.buffer_size - 1)) * self.image_size + self.lower
 
 
+def surface_grid_mesh(coords_x, coords_y, z_values):
+    """Build a regular triangulation of a 2D sample grid lifted to 3D.
+
+    `coords_x`: shape (nx,) — x-axis coordinates
+    `coords_y`: shape (ny,) — y-axis coordinates
+    `z_values`: shape (ny, nx) — `z_values[i, j]` is the height at `(coords_x[j], coords_y[i])`
+
+    Returns `(vertices, simplices)`:
+      `vertices`: shape (ny*nx, 3) — vertex (i, j) at `(coords_x[j], coords_y[i], z_values[i, j])`
+      `simplices`: shape (2*(ny-1)*(nx-1), 3) — two triangles per cell, indexing into `vertices`
+
+    This is the right input to `rasterize_triangles` for a depth-buffer pass over
+    the actual surface (as opposed to triangulating contour vertices, which has
+    no meaningful relationship to the underlying surface).
+    """
+    coords_x = np.asarray(coords_x)
+    coords_y = np.asarray(coords_y)
+    z_values = np.asarray(z_values)
+    ny, nx = z_values.shape
+    if coords_x.shape[0] != nx or coords_y.shape[0] != ny:
+        raise ValueError(
+            f"z_values shape {z_values.shape} disagrees with "
+            f"len(coords_x)={coords_x.shape[0]}, len(coords_y)={coords_y.shape[0]}"
+        )
+
+    X, Y = np.meshgrid(coords_x, coords_y)
+    vertices = np.column_stack([X.ravel(), Y.ravel(), z_values.ravel()])
+
+    i_idx, j_idx = np.meshgrid(np.arange(ny - 1), np.arange(nx - 1), indexing="ij")
+    i_idx = i_idx.ravel()
+    j_idx = j_idx.ravel()
+    v00 = i_idx * nx + j_idx
+    v01 = i_idx * nx + (j_idx + 1)
+    v10 = (i_idx + 1) * nx + j_idx
+    v11 = (i_idx + 1) * nx + (j_idx + 1)
+
+    n_cells = len(i_idx)
+    simplices = np.empty((2 * n_cells, 3), dtype=np.int64)
+    simplices[0::2, 0] = v00
+    simplices[0::2, 1] = v01
+    simplices[0::2, 2] = v10
+    simplices[1::2, 0] = v01
+    simplices[1::2, 1] = v11
+    simplices[1::2, 2] = v10
+    return vertices, simplices
+
+
 def rasterize_triangles(
     zb,
     simplices,
