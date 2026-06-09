@@ -1,17 +1,28 @@
-from kurven.sampling import sample_grid, complex_grid
+from kurven.sampling import (
+    AdaptiveSamples,
+    complex_grid,
+    gradient_zones,
+    sample_adaptive,
+    sample_grid,
+)
 from kurven.contours import (
-    extract_contours,
+    contour_adaptive,
     decimate_outside_critical_zone,
-    mirror_x,
+    extract_contours,
     group_by_index,
+    mirror_x,
 )
 from kurven.projection import isometric_project, rotate_xz
 from kurven.zbuffer import ZBuffer, rasterize_triangles
 from kurven.outline import extract_outline, clip_hidden_lines
 
 __all__ = [
+    "AdaptiveSamples",
     "sample_grid",
     "complex_grid",
+    "gradient_zones",
+    "sample_adaptive",
+    "contour_adaptive",
     "extract_contours",
     "decimate_outside_critical_zone",
     "mirror_x",

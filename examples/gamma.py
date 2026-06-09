@@ -48,23 +48,34 @@ def _tick_done():
     print(f"  [{'total':>26s}] {total:7.2f}s")
 
 from kurven.contours import (
+    contour_adaptive,
     decimate_outside_critical_zone,
     extract_contours,
     group_by_index,
     mirror_x,
 )
 from kurven.outline import clip_hidden_lines, extract_outline
+from kurven.sampling import gradient_zones, sample_adaptive
 from kurven.zbuffer import ZBuffer, rasterize_triangles
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--res", type=int, default=10000)
+    parser.add_argument("--res", type=int, default=10000,
+                        help="Effective fine resolution (matches original uniform 10000²)")
     parser.add_argument("--buffer", type=int, default=20000)
     parser.add_argument("--output-prefix", type=str, default="gamma")
     parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--backend", type=str, default=None,
                         help="Matplotlib backend (e.g. 'Agg' for headless)")
+    parser.add_argument("--adaptive", dest="adaptive", action="store_true", default=True,
+                        help="Use multi-resolution sampling (default)")
+    parser.add_argument("--no-adaptive", dest="adaptive", action="store_false",
+                        help="Use single-pass uniform sampling at --res")
+    parser.add_argument("--coarse-res", type=int, default=2000,
+                        help="Resolution outside high-gradient zones (adaptive only)")
+    parser.add_argument("--probe-res", type=int, default=400,
+                        help="Resolution for gradient-zone discovery")
     args = parser.parse_args()
 
     if args.backend:
@@ -79,13 +90,8 @@ def main():
     real_bounds = (r_min, r_max)
     imag_bounds = (i_min, i_max)
 
-    _tick("eval grid")
     real = np.linspace(r_min, r_max, res)
     imag = np.linspace(i_min, i_max, res)
-    grid = real[:, None] + 1j * imag
-    gamma = scipy.special.gamma(grid)
-    magnitude = np.abs(gamma)
-    angle = np.angle(gamma)
 
     min_log_value = -4
     max_log_value = 1
@@ -111,32 +117,68 @@ def main():
         if np.all(np.abs(magnitude_major_interval - x) > 1e-6)
     ])
 
-    _tick("mpl.contour x4")
-    fig_cs, ax_cs = plt.subplots()
-    try:
-        mag_major_cs = ax_cs.contour(magnitude, levels=magnitude_major_interval)
-        mag_minor_cs = ax_cs.contour(magnitude, levels=magnitude_minor_interval)
-        ang_major_cs = ax_cs.contour(angle, levels=angle_major_interval)
-        ang_minor_cs = ax_cs.contour(angle, levels=angle_minor_interval)
-    finally:
-        plt.close(fig_cs)
-
     def height(z):
         return np.abs(scipy.special.gamma(z))
 
-    _tick("extract_contours x4")
-    ang_major_xyz, ang_major_idx = extract_contours(
-        ang_major_cs, height, real_bounds, imag_bounds, res
-    )
-    ang_minor_xyz, ang_minor_idx = extract_contours(
-        ang_minor_cs, height, real_bounds, imag_bounds, res
-    )
-    mag_major_xyz, mag_major_idx = extract_contours(
-        mag_major_cs, height, real_bounds, imag_bounds, res
-    )
-    mag_minor_xyz, mag_minor_idx = extract_contours(
-        mag_minor_cs, height, real_bounds, imag_bounds, res
-    )
+    if args.adaptive:
+        _tick("gradient zones")
+        fine_zones = gradient_zones(
+            scipy.special.gamma, real_bounds, imag_bounds,
+            probe_res=args.probe_res,
+        )
+        print(f"      {len(fine_zones)} fine zone(s):")
+        for zr_lo, zr_hi, zi_lo, zi_hi in fine_zones:
+            print(f"        real=[{zr_lo:+.2f},{zr_hi:+.2f}] imag=[{zi_lo:.3f},{zi_hi:.3f}]")
+
+        _tick("sample adaptive")
+        samples = sample_adaptive(
+            scipy.special.gamma, real_bounds, imag_bounds,
+            coarse_res=args.coarse_res, fine_res=res, fine_zones=fine_zones,
+        )
+
+        _tick("contour_adaptive x4")
+        ang_major_xyz, ang_major_idx = contour_adaptive(
+            samples, angle_major_interval, height, contour_op=np.angle,
+        )
+        ang_minor_xyz, ang_minor_idx = contour_adaptive(
+            samples, angle_minor_interval, height, contour_op=np.angle,
+        )
+        mag_major_xyz, mag_major_idx = contour_adaptive(
+            samples, magnitude_major_interval, height, contour_op=np.abs,
+        )
+        mag_minor_xyz, mag_minor_idx = contour_adaptive(
+            samples, magnitude_minor_interval, height, contour_op=np.abs,
+        )
+    else:
+        _tick("eval grid")
+        grid = real[:, None] + 1j * imag
+        gamma = scipy.special.gamma(grid)
+        magnitude = np.abs(gamma)
+        angle = np.angle(gamma)
+
+        _tick("mpl.contour x4")
+        fig_cs, ax_cs = plt.subplots()
+        try:
+            mag_major_cs = ax_cs.contour(magnitude, levels=magnitude_major_interval)
+            mag_minor_cs = ax_cs.contour(magnitude, levels=magnitude_minor_interval)
+            ang_major_cs = ax_cs.contour(angle, levels=angle_major_interval)
+            ang_minor_cs = ax_cs.contour(angle, levels=angle_minor_interval)
+        finally:
+            plt.close(fig_cs)
+
+        _tick("extract_contours x4")
+        ang_major_xyz, ang_major_idx = extract_contours(
+            ang_major_cs, height, real_bounds, imag_bounds, res
+        )
+        ang_minor_xyz, ang_minor_idx = extract_contours(
+            ang_minor_cs, height, real_bounds, imag_bounds, res
+        )
+        mag_major_xyz, mag_major_idx = extract_contours(
+            mag_major_cs, height, real_bounds, imag_bounds, res
+        )
+        mag_minor_xyz, mag_minor_idx = extract_contours(
+            mag_minor_cs, height, real_bounds, imag_bounds, res
+        )
 
     _tick("decimate + mirror")
     centerline_xy = np.vstack((np.zeros((1, res)), np.linspace(r_min, r_max, res)))
