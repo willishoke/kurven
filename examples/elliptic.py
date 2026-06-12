@@ -29,11 +29,11 @@ import contourpy
 
 from kurven.contours import _stitch_chunk_seams
 from kurven.outline import clip_hidden_lines
+from kurven.surface import Surface
 from kurven.zbuffer import (
     ZBuffer,
     rasterize_triangles,
     rasterize_triangles_gpu,
-    surface_grid_mesh,
 )
 
 
@@ -149,10 +149,10 @@ def main():
     res = args.res
     real = np.linspace(r_min, r_max, res)
     imag = np.linspace(i_min, i_max, res)
-    grid = real[:, None] + 1j * imag
-    cn = _ellipj_complex_cn(grid, m)
-    mag = np.abs(cn)
-    angle = np.angle(cn)
+    surface = Surface.from_function(
+        lambda z: _ellipj_complex_cn(z, m), real, imag, z_limit=z_limit)
+    mag = surface.mag
+    angle = surface.angle
     print(f"      tile: shape={mag.shape}, |cn| ∈ [{mag.min():.3f}, {mag.max():.3f}]")
 
     # Contour levels per cell 1
@@ -325,10 +325,7 @@ def main():
     # watertight stitching is needed; the cutout concavity is handled by
     # omission, not bridging. Caps fall out of the clamp (the flat plateau).
     occ_step = max(1, res // args.occluder_res)
-    g_im = imag[::occ_step]
-    g_re = real[::occ_step]
-    g_z = np.minimum(z_limit, mag[::occ_step, ::occ_step])  # [re, im] -> height
-    tile_grid, grid_tris = surface_grid_mesh(g_im, g_re, g_z)
+    tile_grid, grid_tris = surface.grid_mesh(occ_step)
 
     def _tile_xform(V, i, r):
         # Same reflection/offset as tile_data, applied to grid vertices.
@@ -342,9 +339,6 @@ def main():
         else:
             d[:, 1] = d[:, 1] + r * K_eff
         return d
-
-    def _cn_h(re_a, im_a):
-        return np.minimum(z_limit, np.abs(_ellipj_complex_cn(re_a + 1j * im_a, m)))
 
     def _wall(perim_imre, heights):
         # Ruled strip: perimeter polyline extruded from z=0 up to the surface.
@@ -362,10 +356,10 @@ def main():
     re3 = np.linspace(0, 5 * K, 5 * nw)
     im4 = np.linspace(0, 3 * K_prime, 3 * nw)
     walls = [
-        _wall(np.column_stack([np.full(nw, -K_prime), re1]), _cn_h(re1, -K_prime)),
-        _wall(np.column_stack([im2, np.zeros(nw)]), _cn_h(0.0, im2)),
-        _wall(np.column_stack([np.zeros(len(re3)), re3]), _cn_h(re3, 0.0)),
-        _wall(np.column_stack([im4, np.full(len(im4), 5 * K)]), _cn_h(5 * K, im4)),
+        _wall(np.column_stack([np.full(nw, -K_prime), re1]), surface.height_at(re1, -K_prime)),
+        _wall(np.column_stack([im2, np.zeros(nw)]), surface.height_at(0.0, im2)),
+        _wall(np.column_stack([np.zeros(len(re3)), re3]), surface.height_at(re3, 0.0)),
+        _wall(np.column_stack([im4, np.full(len(im4), 5 * K)]), surface.height_at(5 * K, im4)),
     ]
 
     pieces = [tile_grid] + [_tile_xform(tile_grid, i, r)
@@ -382,7 +376,8 @@ def main():
     occ_verts = np.vstack(occ_v)
     occ_tris = np.vstack(occ_t)
     print(f"      occluder: {len(occ_verts)} verts, {len(occ_tris)} tris "
-          f"({len(g_re)}x{len(g_im)} grid x{len(pieces)} tiles + {len(walls)} walls)")
+          f"({len(real[::occ_step])}x{len(imag[::occ_step])} grid "
+          f"x{len(pieces)} tiles + {len(walls)} walls)")
 
     _tick("rasterize buffer")
     occ_rot = project(occ_verts)
