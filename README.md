@@ -12,6 +12,14 @@ The upper half-plane Re(z) ∈ [−4.5, 4.5], Im(z) ∈ [0, 2.5]. Four pole spir
 
 ---
 
+### cn(z, m) — Jacobi elliptic function
+
+![Jacobi elliptic cn analytic landscape](docs/elliptic_hi_res.svg)
+
+The doubly periodic function cn(z, m = 0.64). One fundamental tile [−K, 0] × [−K′, 0] is sampled and reflected across the quarter-period lattice to fill a 3×6 plate; a spire rises at each tile corner where cn has a pole, every surface truncated at |cn| = 4 so the caps read from above. Magnitude and phase contours are draped over the landscape and hidden-line-clipped against a depth buffer meshed from the surface itself — the clamped |cn| heightfield plus the vertical cut-face walls — so the front-left cutout, which exposes the cross-section through one spire, occludes what lies behind it.
+
+---
+
 ## Algorithm
 
 The pipeline has six stages: **sample → contour → lift → project → depth-buffer → clip**.

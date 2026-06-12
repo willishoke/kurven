@@ -7,8 +7,9 @@ spire at its singularity corner.
 
 Uses kurven for rasterize/clip, follows the notebook's pipeline:
 contour extraction → tile via reflection → angle_major_zeros along
-periodic K_prime/K lines → Delaunay-of-vertices buffer → GPU rasterize
-→ clip → boundary/base/top geometry.
+periodic K_prime/K lines → grid-mesh occluder (clamped heightfield tiles
++ cut-face wall curtains) → GPU rasterize → clip → boundary/base/top
+geometry.
 
 Run:
     python examples/elliptic.py --gpu
@@ -22,7 +23,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.special as sp
-from scipy.spatial import Delaunay
 from scipy.spatial.transform import Rotation as R
 
 import contourpy
@@ -33,6 +33,7 @@ from kurven.zbuffer import (
     ZBuffer,
     rasterize_triangles,
     rasterize_triangles_gpu,
+    surface_grid_mesh,
 )
 
 
@@ -118,6 +119,9 @@ def main():
     parser.add_argument("--backend", type=str, default=None)
     parser.add_argument("--gpu", action="store_true")
     parser.add_argument("--clip-margin", type=float, default=0.01)
+    parser.add_argument("--occluder-res", type=int, default=400,
+                        help="Per-tile grid resolution for the Z-buffer "
+                             "occluder mesh (subsamples the sample grid)")
     args = parser.parse_args()
 
     if args.backend:
@@ -242,7 +246,13 @@ def main():
         im_arr = np.full(res, K_prime_eff * i)
         z = np.minimum(z_limit, np.abs(_ellipj_complex_cn(re_arr + 1j * im_arr, m)))
         xyz = np.column_stack([im_arr, re_arr, z])
-        idx_per = np.ceil(re_arr / K_eff).astype(np.int64) + 7 * (i + 1) + next_idx
+        # Per-spine offset must exceed the per-spine bucket span (~6 here) or
+        # spine i's last ceil-bucket collides with spine i+1's first, and since
+        # the chunks are concatenated in order clip_hidden_lines' groupby welds
+        # the far end of one row to the near end of the next (a full-width
+        # chord). Stride 100 clears that and the i=-1 slot clears the contour
+        # max; stays below the imag-axis loop's 1000 base.
+        idx_per = np.ceil(re_arr / K_eff).astype(np.int64) + 100 * (i + 2) + next_idx
         ang_zeros_chunks_xyz.append(xyz)
         ang_zeros_chunks_idx.append(idx_per)
     for r in range(-1, 6):
@@ -296,29 +306,96 @@ def main():
     major_indices = np.hstack((mag_major_indices, ang_major_indices))
     minor_data = np.vstack((mag_minor_data, ang_minor_data))
     minor_indices = np.hstack((mag_minor_indices, ang_minor_indices))
-    all_data = np.vstack((major_data, minor_data))
-
     major_rotated = project(major_data)
     minor_rotated = project(minor_data)
     print(f"      major: {len(major_data)} verts, minor: {len(minor_data)} verts")
 
-    _tick("Delaunay")
-    tri = Delaunay(all_data[:, :2])
-    print(f"      {len(tri.simplices)} simplices")
+    _tick("build occluder mesh")
+    # Build the Z-buffer occluder by directly meshing the surfaces that actually
+    # block sight lines, instead of running Delaunay over scattered contour
+    # vertices. Delaunay triangulates the convex hull, so the non-convex contour
+    # footprint (the cutout notch, the vertex-free disks at the clamped spire
+    # tips) got bridged by phantom triangles that falsely occluded the front
+    # face. A regular grid has a trivially correct triangulation — no hull, no
+    # phantom triangles, no threshold. Two contributors, one buffer:
+    #   (1) the clamped magnitude heightfield z = min(|cn|, z_limit) as a grid,
+    #       tiled with the same reflections/offsets as the contours (tile_data);
+    #   (2) vertical cut-face curtains along the cutout perimeter.
+    # GL_MAX blending resolves overlapping tile seams to the nearest depth, so no
+    # watertight stitching is needed; the cutout concavity is handled by
+    # omission, not bridging. Caps fall out of the clamp (the flat plateau).
+    occ_step = max(1, res // args.occluder_res)
+    g_im = imag[::occ_step]
+    g_re = real[::occ_step]
+    g_z = np.minimum(z_limit, mag[::occ_step, ::occ_step])  # [re, im] -> height
+    tile_grid, grid_tris = surface_grid_mesh(g_im, g_re, g_z)
+
+    def _tile_xform(V, i, r):
+        # Same reflection/offset as tile_data, applied to grid vertices.
+        d = V.copy()
+        if not (i % 2):
+            d[:, 0] = -d[:, 0] + i * K_prime_eff
+        else:
+            d[:, 0] = d[:, 0] + 2 * i * K_prime_eff
+        if r % 2:
+            d[:, 1] = -d[:, 1] + (r - 1) * K_eff
+        else:
+            d[:, 1] = d[:, 1] + r * K_eff
+        return d
+
+    def _cn_h(re_a, im_a):
+        return np.minimum(z_limit, np.abs(_ellipj_complex_cn(re_a + 1j * im_a, m)))
+
+    def _wall(perim_imre, heights):
+        # Ruled strip: perimeter polyline extruded from z=0 up to the surface.
+        n = len(perim_imre)
+        a = np.arange(n - 1)
+        V = np.vstack([np.column_stack([perim_imre, heights]),
+                       np.column_stack([perim_imre, np.zeros(n)])])
+        T = np.vstack([np.stack([a, a + 1, a + n], axis=1),
+                       np.stack([a + 1, a + 1 + n, a + n], axis=1)])
+        return V, T
+
+    nw = 300
+    re1 = np.linspace(-K, 0, nw)
+    im2 = np.linspace(-K_prime, 0, nw)
+    re3 = np.linspace(0, 5 * K, 5 * nw)
+    im4 = np.linspace(0, 3 * K_prime, 3 * nw)
+    walls = [
+        _wall(np.column_stack([np.full(nw, -K_prime), re1]), _cn_h(re1, -K_prime)),
+        _wall(np.column_stack([im2, np.zeros(nw)]), _cn_h(0.0, im2)),
+        _wall(np.column_stack([np.zeros(len(re3)), re3]), _cn_h(re3, 0.0)),
+        _wall(np.column_stack([im4, np.full(len(im4), 5 * K)]), _cn_h(5 * K, im4)),
+    ]
+
+    pieces = [tile_grid] + [_tile_xform(tile_grid, i, r)
+                            for i in range(3) for r in range(6)]
+    occ_v, occ_t, voff = [], [], 0
+    for V in pieces:
+        occ_v.append(V)
+        occ_t.append(grid_tris + voff)
+        voff += len(V)
+    for V, T in walls:
+        occ_v.append(V)
+        occ_t.append(T + voff)
+        voff += len(V)
+    occ_verts = np.vstack(occ_v)
+    occ_tris = np.vstack(occ_t)
+    print(f"      occluder: {len(occ_verts)} verts, {len(occ_tris)} tris "
+          f"({len(g_re)}x{len(g_im)} grid x{len(pieces)} tiles + {len(walls)} walls)")
 
     _tick("rasterize buffer")
-    # Project all_data and rasterize using projected coordinates.
+    occ_rot = project(occ_verts)
+    ox, oy, oz = occ_rot[:, 0], occ_rot[:, 1], occ_rot[:, 2]
+    # Buffer frame must also cover the contour points clip_hidden_lines looks up.
     all_rotated = np.vstack((major_rotated, minor_rotated))
-    ax_val = all_rotated[:, 0]
-    ay_val = all_rotated[:, 1]
-    az_val = all_rotated[:, 2]
-    zb = ZBuffer(ax_val.min(), ax_val.max(),
-                 ay_val.min(), ay_val.max(), buffer_shape)
+    xs = np.concatenate([ox, all_rotated[:, 0]])
+    ys = np.concatenate([oy, all_rotated[:, 1]])
+    zb = ZBuffer(xs.min(), xs.max(), ys.min(), ys.max(), buffer_shape)
     if args.gpu:
-        rasterize_triangles_gpu(zb, tri.simplices, ax_val, ay_val, az_val)
+        rasterize_triangles_gpu(zb, occ_tris, ox, oy, oz)
     else:
-        rasterize_triangles(zb, tri.simplices, ax_val, ay_val, az_val,
-                            progress=progress)
+        rasterize_triangles(zb, occ_tris, ox, oy, oz, progress=progress)
 
     _tick("clip major")
     major_segs = clip_hidden_lines(zb, major_rotated, major_indices,
