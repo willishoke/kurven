@@ -21,6 +21,7 @@ from scipy.spatial.transform import Rotation as R
 from kurven.contours import contour_levels
 from kurven.occluder import build_occluder, wall_curtain
 from kurven.outline import clip_hidden_lines
+from kurven.scaffold import wall_hatch
 from kurven.surface import Surface
 from kurven.zbuffer import ZBuffer, rasterize_triangles, rasterize_triangles_gpu
 
@@ -125,11 +126,8 @@ def main():
     minor_segs = clip_hidden_lines(zb, minor_rot, minor_idx, margin=a.clip_margin)
 
     # Vertical hatching on the front (real-axis) wall — the scalloped zeros edge.
-    front_im = np.full(80, i_min)
-    front_re = np.linspace(r_min, r_max, 80)
-    front_h = surface.height_at(front_re, front_im)
-    hatch = [project(np.array([[i, r, 0.0], [i, r, h]]))[:, :2]
-             for i, r, h in zip(front_im, front_re, front_h)]
+    hatch = wall_hatch(np.full(80, i_min), np.linspace(r_min, r_max, 80),
+                       surface, project)
 
     fig, ax = plt.subplots(figsize=(16, 11))
     for xy in major_segs:

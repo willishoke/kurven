@@ -27,6 +27,7 @@ from kurven.bench import PhaseTimer
 from kurven.contours import contour_levels
 from kurven.occluder import build_occluder, wall_curtain
 from kurven.outline import clip_hidden_lines
+from kurven.scaffold import wall_hatch
 from kurven.surface import Surface
 from kurven.zbuffer import (
     ZBuffer,
@@ -375,29 +376,24 @@ def main():
 
     base_xy_major = [project(seg)[:, :2] for seg in base_xyz_major_3d]
 
-    # base_contours: vertical hatching from ground to surface along the
-    # cutout perimeter (per cell 4)
-    base_contour_density = 40
-    base_contours_3d = []
-
-    for i in np.linspace(-K, 0, base_contour_density)[1:-1]:
-        h = -3 * eps_b + min(z_limit, cn_mag(i, -K_prime))
-        base_contours_3d.append(np.array([[-K_prime, i, eps_b],
-                                          [-K_prime, i, h]]))
-    for i in np.linspace(-K_prime, 0, base_contour_density)[1:-1]:
-        h = -eps_b + min(z_limit, cn_mag(0.0, i))
-        base_contours_3d.append(np.array([[i, 0.0, eps_b],
-                                          [i, 0.0, h]]))
-    for i in np.linspace(0, 5 * K, 5 * base_contour_density)[1:-1]:
-        h = -eps_b + min(z_limit, cn_mag(i, 0.0))
-        base_contours_3d.append(np.array([[0.0, i, eps_b],
-                                          [0.0, i, h]]))
-    for i in np.linspace(0, 3 * K_prime, 3 * base_contour_density)[1:-1]:
-        h = -eps_b + min(z_limit, cn_mag(5 * K, i))
-        base_contours_3d.append(np.array([[i, 5 * K, eps_b],
-                                          [i, 5 * K, h]]))
-
-    base_contours_xy = [project(seg)[:, :2] for seg in base_contours_3d]
+    # base_contours: vertical hatch curtains from ground to surface along the
+    # cutout perimeter (per cell 4). One wall_hatch call per cutout edge; the
+    # front edge tucks 3*eps_b under the silhouette, the rest 1*eps_b.
+    bc = 40
+    e_front = np.linspace(-K, 0, bc)[1:-1]
+    e_left = np.linspace(-K_prime, 0, bc)[1:-1]
+    e_long = np.linspace(0, 5 * K, 5 * bc)[1:-1]
+    e_back = np.linspace(0, 3 * K_prime, 3 * bc)[1:-1]
+    base_contours_xy = (
+        wall_hatch(np.full_like(e_front, -K_prime), e_front, surface, project,
+                   base=eps_b, top_offset=-3 * eps_b)
+        + wall_hatch(e_left, np.zeros_like(e_left), surface, project,
+                     base=eps_b, top_offset=-eps_b)
+        + wall_hatch(np.zeros_like(e_long), e_long, surface, project,
+                     base=eps_b, top_offset=-eps_b)
+        + wall_hatch(e_back, np.full_like(e_back, 5 * K), surface, project,
+                     base=eps_b, top_offset=-eps_b)
+    )
 
     # top_contours: horizontal hatching at z=4 marking each spire's cap
     top_contour_density = 16
