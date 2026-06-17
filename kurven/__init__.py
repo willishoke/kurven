@@ -7,6 +7,7 @@ from kurven.sampling import (
 )
 from kurven.contours import (
     contour_adaptive,
+    contour_levels,
     decimate_outside_critical_zone,
     extract_contours,
     group_by_index,
@@ -28,6 +29,7 @@ __all__ = [
     "gradient_zones",
     "sample_adaptive",
     "contour_adaptive",
+    "contour_levels",
     "extract_contours",
     "decimate_outside_critical_zone",
     "mirror_x",

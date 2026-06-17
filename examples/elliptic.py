@@ -16,7 +16,6 @@ Run:
 """
 
 import argparse
-import os
 import time
 
 import matplotlib
@@ -25,9 +24,7 @@ import numpy as np
 import scipy.special as sp
 from scipy.spatial.transform import Rotation as R
 
-import contourpy
-
-from kurven.contours import _stitch_chunk_seams
+from kurven.contours import contour_levels
 from kurven.occluder import build_occluder, wall_curtain
 from kurven.outline import clip_hidden_lines
 from kurven.surface import Surface
@@ -84,32 +81,6 @@ def _ellipj_complex_cn(z, m):
     return (num_re + 1j * num_im) / denom
 
 
-def _contour_per_level(array, levels, real_bounds, imag_bounds):
-    r_min, r_max = real_bounds
-    i_min, i_max = imag_bounds
-    n_real, n_imag = array.shape
-    gen = contourpy.contour_generator(
-        z=array, name="threaded",
-        line_type=contourpy.LineType.Separate,
-        chunk_count=max(1, os.cpu_count() or 1),
-    )
-    out = []
-    for lvl in levels:
-        segs = _stitch_chunk_seams(gen.lines(float(lvl)))
-        converted = []
-        for seg in segs:
-            if len(seg) < 2:
-                continue
-            xy = seg.copy()
-            xy[:, 0] *= (i_max - i_min) / n_imag
-            xy[:, 0] += i_min
-            xy[:, 1] *= (r_max - r_min) / n_real
-            xy[:, 1] += r_min
-            converted.append(xy)
-        out.append((float(lvl), converted))
-    return out
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--res", type=int, default=2000,
@@ -163,10 +134,10 @@ def main():
     ang_minor_levels = np.setdiff1d(np.linspace(-np.pi / 2, 0, 21), ang_major_levels)
 
     _tick("contour generation")
-    mag_major_paths = _contour_per_level(mag, mag_major_levels, (r_min, r_max), (i_min, i_max))
-    mag_minor_paths = _contour_per_level(mag, mag_minor_levels, (r_min, r_max), (i_min, i_max))
-    ang_major_paths = _contour_per_level(angle, ang_major_levels, (r_min, r_max), (i_min, i_max))
-    ang_minor_paths = _contour_per_level(angle, ang_minor_levels, (r_min, r_max), (i_min, i_max))
+    mag_major_paths = contour_levels(mag, mag_major_levels, (r_min, r_max), (i_min, i_max))
+    mag_minor_paths = contour_levels(mag, mag_minor_levels, (r_min, r_max), (i_min, i_max))
+    ang_major_paths = contour_levels(angle, ang_major_levels, (r_min, r_max), (i_min, i_max))
+    ang_minor_paths = contour_levels(angle, ang_minor_levels, (r_min, r_max), (i_min, i_max))
 
     _tick("build tile data")
     # For each path, build xyz where z = |cn| at vertex (clipped at 4), and

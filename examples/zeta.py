@@ -15,7 +15,6 @@ Run:
 """
 
 import argparse
-import os
 import time
 
 import matplotlib
@@ -25,9 +24,7 @@ import scipy.special
 from scipy.spatial import Delaunay
 from scipy.spatial.transform import Rotation as R
 
-import contourpy
-
-from kurven.contours import _stitch_chunk_seams
+from kurven.contours import contour_levels
 from kurven.outline import clip_hidden_lines
 from kurven.zbuffer import (
     ZBuffer,
@@ -72,34 +69,6 @@ def _cutout_kept(xyz_view):
     c3 = (im > -15) & (re > -0.5) & (im < 28) & (im > -28)
     c4 = (re > 0.5) & (im > -28) & (im < 28)
     return c1 | c2 | c3 | c4
-
-
-def _contour_per_level(array, levels, real_bounds, imag_bounds):
-    """contourpy direct (threaded + chunked + stitched). Returns
-    [(level, [list of (N,2) arrays in (imag, real) real-coord]), ...]."""
-    r_min, r_max = real_bounds
-    i_min, i_max = imag_bounds
-    n_real, n_imag = array.shape
-    gen = contourpy.contour_generator(
-        z=array, name="threaded",
-        line_type=contourpy.LineType.Separate,
-        chunk_count=max(1, os.cpu_count() or 1),
-    )
-    out = []
-    for lvl in levels:
-        segs = _stitch_chunk_seams(gen.lines(float(lvl)))
-        converted = []
-        for seg in segs:
-            if len(seg) < 2:
-                continue
-            xy = seg.copy()
-            xy[:, 0] *= (i_max - i_min) / n_imag
-            xy[:, 0] += i_min
-            xy[:, 1] *= (r_max - r_min) / n_real
-            xy[:, 1] += r_min
-            converted.append(xy)
-        out.append((float(lvl), converted))
-    return out
 
 
 def main():
@@ -157,9 +126,9 @@ def main():
     peak_levels = [2.5, 3.5, 4.5, 5.5]
 
     _tick("contour generation")
-    mag_paths = _contour_per_level(mag, mag_major_levels, (r_min, r_max), (i_min, i_max))
-    angle_paths = _contour_per_level(angle, angle_major_levels, (r_min, r_max), (i_min, i_max))
-    peak_paths = _contour_per_level(mag, peak_levels, (r_min, r_max), (i_min, i_max))
+    mag_paths = contour_levels(mag, mag_major_levels, (r_min, r_max), (i_min, i_max))
+    angle_paths = contour_levels(angle, angle_major_levels, (r_min, r_max), (i_min, i_max))
+    peak_paths = contour_levels(mag, peak_levels, (r_min, r_max), (i_min, i_max))
 
     _tick("assemble major_data")
     mag_chunks_xyz, mag_chunks_idx = [], []

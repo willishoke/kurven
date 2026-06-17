@@ -11,7 +11,6 @@ Run:
 """
 
 import argparse
-import os
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -19,36 +18,11 @@ import numpy as np
 import scipy.special as ss
 from scipy.spatial.transform import Rotation as R
 
-import contourpy
-
-from kurven.contours import _stitch_chunk_seams
+from kurven.contours import contour_levels
 from kurven.occluder import build_occluder, wall_curtain
 from kurven.outline import clip_hidden_lines
 from kurven.surface import Surface
 from kurven.zbuffer import ZBuffer, rasterize_triangles, rasterize_triangles_gpu
-
-
-def _contour_per_level(array, levels, real_bounds, imag_bounds):
-    """contourpy extraction mapped to (imag, real) domain coords. (Shared with
-    the other examples — a future library abstraction.)"""
-    r_min, r_max = real_bounds
-    i_min, i_max = imag_bounds
-    n_real, n_imag = array.shape
-    gen = contourpy.contour_generator(
-        z=array, name="threaded", line_type=contourpy.LineType.Separate,
-        chunk_count=max(1, os.cpu_count() or 1))
-    out = []
-    for lvl in levels:
-        conv = []
-        for seg in _stitch_chunk_seams(gen.lines(float(lvl))):
-            if len(seg) < 2:
-                continue
-            xy = seg.copy()
-            xy[:, 0] = xy[:, 0] * (i_max - i_min) / n_imag + i_min
-            xy[:, 1] = xy[:, 1] * (r_max - r_min) / n_real + r_min
-            conv.append(xy)
-        out.append((float(lvl), conv))
-    return out
 
 
 def main():
@@ -103,10 +77,10 @@ def main():
         return np.concatenate(xs), np.concatenate(idx), pi
 
     p = 0
-    Mm, Mmi, p = to_xyz(_contour_per_level(mag, mag_major, rb, ib), p)
-    mm, mmi, p = to_xyz(_contour_per_level(mag, mag_minor, rb, ib), p)
-    Am, Ami, p = to_xyz(_contour_per_level(angle, ang_major, rb, ib), p)
-    am, ami, p = to_xyz(_contour_per_level(angle, ang_minor, rb, ib), p)
+    Mm, Mmi, p = to_xyz(contour_levels(mag, mag_major, rb, ib), p)
+    mm, mmi, p = to_xyz(contour_levels(mag, mag_minor, rb, ib), p)
+    Am, Ami, p = to_xyz(contour_levels(angle, ang_major, rb, ib), p)
+    am, ami, p = to_xyz(contour_levels(angle, ang_minor, rb, ib), p)
     major_data = np.vstack([Mm, Am]); major_idx = np.hstack([Mmi, Ami])
     minor_data = np.vstack([mm, am]); minor_idx = np.hstack([mmi, ami])
 
