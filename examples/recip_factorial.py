@@ -18,10 +18,10 @@ import numpy as np
 import scipy.special as ss
 
 from kurven.contours import contour_levels
-from kurven.occluder import build_occluder, wall_curtain
+from kurven.occluder import build_occluder
 from kurven.outline import clip_hidden_lines
+from kurven.perimeter import Perimeter
 from kurven.projection import Projection
-from kurven.scaffold import wall_hatch
 from kurven.surface import Surface
 from kurven.zbuffer import ZBuffer, rasterize_triangles, rasterize_triangles_gpu
 
@@ -96,13 +96,8 @@ def main():
     # the back-left cap falls out of the clamp.
     occ_step = max(1, res // a.occluder_res)
     NW = 600
-    edges = [
-        (np.full(NW, i_min), np.linspace(r_min, r_max, NW)),   # front (real axis)
-        (np.full(NW, i_max), np.linspace(r_min, r_max, NW)),   # back
-        (np.linspace(i_min, i_max, NW), np.full(NW, r_min)),   # left
-        (np.linspace(i_min, i_max, NW), np.full(NW, r_max)),   # right
-    ]
-    walls = [wall_curtain(im_a, re_a, surface) for im_a, re_a in edges]
+    perim = Perimeter.rectangle((i_min, i_max), (r_min, r_max))
+    walls = perim.wall_curtains(surface, NW)
     occ_verts, occ_tris = build_occluder(surface, occ_step, walls=walls)
     print(f"occluder: {len(occ_verts)} verts, {len(occ_tris)} tris")
 
@@ -120,8 +115,8 @@ def main():
     minor_segs = clip_hidden_lines(zb, minor_rot, minor_idx, margin=a.clip_margin)
 
     # Vertical hatching on the front (real-axis) wall — the scalloped zeros edge.
-    hatch = wall_hatch(np.full(80, i_min), np.linspace(r_min, r_max, 80),
-                       surface, project)
+    # The front edge (index 0) of the same perimeter that built the occluder.
+    hatch = perim.edges[0].wall_hatch(surface, project, 80)
 
     fig, ax = plt.subplots(figsize=(16, 11))
     for xy in major_segs:
