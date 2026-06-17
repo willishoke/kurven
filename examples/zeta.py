@@ -26,6 +26,8 @@ from scipy.spatial.transform import Rotation as R
 from kurven.bench import PhaseTimer
 from kurven.contours import contour_levels
 from kurven.outline import clip_hidden_lines
+from kurven.scaffold import wall_hatch
+from kurven.surface import Surface
 from kurven.zbuffer import (
     ZBuffer,
     rasterize_triangles,
@@ -72,31 +74,10 @@ def main():
 
     timer.tick("load cache")
     comp = np.load(args.cache)
-    n_real, n_imag = comp.shape
-    real = np.linspace(r_min, r_max, n_real)
-    imag = np.linspace(i_min, i_max, n_imag)
-    mag = np.abs(comp)
-    angle = np.angle(comp)
+    surface = Surface.from_cache(comp, (r_min, r_max), (i_min, i_max), z_limit=z_limit)
+    mag, angle = surface.mag, surface.angle
     print(f"      cached grid: {comp.shape}, |zeta| ∈ "
           f"[{mag.min():.3f}, {mag.max():.3f}]")
-
-    def mag_at(re_val, im_val):
-        """Nearest-pixel lookup into cached |zeta| array, scalar in/scalar out."""
-        r_idx = int(np.clip(round((re_val - r_min) / (r_max - r_min) * (n_real - 1)),
-                            0, n_real - 1))
-        i_idx = int(np.clip(round((im_val - i_min) / (i_max - i_min) * (n_imag - 1)),
-                            0, n_imag - 1))
-        return float(mag[r_idx, i_idx])
-
-    def mag_at_vec(xy):
-        """Vector version: xy[:,0]=imag, xy[:,1]=real."""
-        i_idx = np.clip(
-            np.floor((xy[:, 0] - i_min) / (i_max - i_min) * (n_imag - 1) + 0.5).astype(np.int64),
-            0, n_imag - 1)
-        r_idx = np.clip(
-            np.floor((xy[:, 1] - r_min) / (r_max - r_min) * (n_real - 1) + 0.5).astype(np.int64),
-            0, n_real - 1)
-        return mag[r_idx, i_idx]
 
     # Contour levels exactly per the notebook
     mag_major_levels = np.array([0.0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0])
@@ -127,7 +108,7 @@ def main():
     ang_chunks_xyz, ang_chunks_idx = [], []
     for lvl, paths in angle_paths:
         for xy in paths:
-            z = mag_at_vec(xy)
+            z = surface.mag_at(xy[:, 1], xy[:, 0])
             # Cell 9: angle contours drop vertices where |zeta| > 6 BEFORE cutout.
             mask = z <= z_limit
             xy_kept = xy[mask]
@@ -167,16 +148,16 @@ def main():
     # Find boundary cutoffs the same way the notebook does.
     eps = 0.01
     top_rear_cutoff = -2.0
-    while mag_at(top_rear_cutoff, 28.0) > z_limit:
+    while surface.mag_at(top_rear_cutoff, 28.0) > z_limit:
         top_rear_cutoff += eps
     top_rear_cutoff -= eps
     top_front_cutoff = 10.0
-    while mag_at(r_min, top_front_cutoff) > z_limit:
+    while surface.mag_at(r_min, top_front_cutoff) > z_limit:
         top_front_cutoff -= eps
     top_front_cutoff += eps
 
     def sample_curve(im_arr, re_arr):
-        zs = mag_at_vec(np.column_stack([im_arr, re_arr]))
+        zs = surface.mag_at(re_arr, im_arr)
         return np.column_stack([im_arr, re_arr, zs])
 
     top_xyz_chunks, top_idx_chunks = [], []
@@ -275,46 +256,42 @@ def main():
         np.array([[-14., -0.5, 0.], [-14., 0.5, 0.]]),
         np.array([[-14., 0.5, 0.], [-28., 0.5, 0.]]),
         np.array([[-28., 0.5, 0.], [-28., r_max, 0.]]),
-        np.array([[-5., -2., 0.], [-5., -2., mag_at(-2., -5.)]]),
-        np.array([[-5., -0.5, 0.], [-5., -0.5, mag_at(-0.5, -5.)]]),
-        np.array([[-14., -0.5, 0.], [-14., -0.5, mag_at(-0.5, -14.)]]),
-        np.array([[-14., 0.5, 0.], [-14., 0.5, mag_at(0.5, -14.)]]),
-        np.array([[-28., 0.5, 0.], [-28., 0.5, mag_at(0.5, -28.)]]),
-        np.array([[-28., r_max, 0.], [-28., r_max, mag_at(r_max, -28.)]]),
+        np.array([[-5., -2., 0.], [-5., -2., surface.mag_at(-2., -5.)]]),
+        np.array([[-5., -0.5, 0.], [-5., -0.5, surface.mag_at(-0.5, -5.)]]),
+        np.array([[-14., -0.5, 0.], [-14., -0.5, surface.mag_at(-0.5, -14.)]]),
+        np.array([[-14., 0.5, 0.], [-14., 0.5, surface.mag_at(0.5, -14.)]]),
+        np.array([[-28., 0.5, 0.], [-28., 0.5, surface.mag_at(0.5, -28.)]]),
+        np.array([[-28., r_max, 0.], [-28., r_max, surface.mag_at(r_max, -28.)]]),
     ]
     base_xy_major = [project(seg)[:, :2] for seg in base_xyz_major_3d]
 
-    # base_contours: vertical hatching from ground to surface, sampled along
-    # the cutout polygon edges (cell 11)
+    # base_contours: vertical hatch curtains from ground to surface, sampled
+    # along the cutout polygon edges (cell 11). One wall_hatch per edge — the
+    # first four run along imag (const real), the last three along real.
     base_density = 6
-    base_contours_3d = []
-
-    def add_vertical(re_v, im_v):
-        h = min(z_limit, mag_at(re_v, im_v))
-        base_contours_3d.append(np.array([[im_v, re_v, 0.0], [im_v, re_v, h]]))
-
-    for im in np.linspace(28, 0, int(28 * base_density))[1:-1]:
-        add_vertical(r_min, im)
-    for im in np.linspace(0, -5, int(5 * base_density))[1:-1]:
-        add_vertical(-2.0, im)
-    for im in np.linspace(-5, -14, int(9 * base_density))[1:-1]:
-        add_vertical(-0.5, im)
-    for im in np.linspace(-14, -28, int(14 * base_density))[1:-1]:
-        add_vertical(0.5, im)
-    for re in np.linspace(-2, -0.5, int(2 * 2.5 * base_density))[1:-1]:
-        add_vertical(re, -5.0)
-    for re in np.linspace(-0.5, 0.5, int(2 * base_density))[1:-1]:
-        add_vertical(re, -14.0)
-    for re in np.linspace(0.5, r_max, int(2 * (r_max - 0.5) * base_density))[1:-1]:
-        add_vertical(re, -28.0)
-    base_contours_xy = [project(seg)[:, :2] for seg in base_contours_3d]
+    s1 = np.linspace(28, 0, int(28 * base_density))[1:-1]
+    s2 = np.linspace(0, -5, int(5 * base_density))[1:-1]
+    s3 = np.linspace(-5, -14, int(9 * base_density))[1:-1]
+    s4 = np.linspace(-14, -28, int(14 * base_density))[1:-1]
+    s5 = np.linspace(-2, -0.5, int(2 * 2.5 * base_density))[1:-1]
+    s6 = np.linspace(-0.5, 0.5, int(2 * base_density))[1:-1]
+    s7 = np.linspace(0.5, r_max, int(2 * (r_max - 0.5) * base_density))[1:-1]
+    base_contours_xy = (
+        wall_hatch(s1, np.full_like(s1, r_min), surface, project)
+        + wall_hatch(s2, np.full_like(s2, -2.0), surface, project)
+        + wall_hatch(s3, np.full_like(s3, -0.5), surface, project)
+        + wall_hatch(s4, np.full_like(s4, 0.5), surface, project)
+        + wall_hatch(np.full_like(s5, -5.0), s5, surface, project)
+        + wall_hatch(np.full_like(s6, -14.0), s6, surface, project)
+        + wall_hatch(np.full_like(s7, -28.0), s7, surface, project)
+    )
 
     # top_contours: horizontal hatching at z=6 marking the s=1 pole cap (cell 11)
     top_contours_3d = []
     for im in np.linspace(28, top_front_cutoff,
                           max(2, int((28 - top_front_cutoff) * base_density // 2)))[1:-1]:
         cutoff = r_min
-        while mag_at(cutoff, im) > z_limit:
+        while surface.mag_at(cutoff, im) > z_limit:
             cutoff += eps
         top_contours_3d.append(np.array([[im, r_min, z_limit],
                                          [im, cutoff - eps, z_limit]]))
