@@ -21,11 +21,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.special
 from scipy.spatial import Delaunay
-from scipy.spatial.transform import Rotation as R
 
 from kurven.bench import PhaseTimer
 from kurven.contours import contour_levels
 from kurven.outline import clip_hidden_lines
+from kurven.projection import Projection
 from kurven.scaffold import wall_hatch
 from kurven.surface import Surface
 from kurven.zbuffer import (
@@ -197,20 +197,10 @@ def main():
     major_indices[major_data[:, 0] < 0] += BUMP
 
     # Projection per cell 11
-    isometric_scale_factor = -0.18
-    real_scale_factor = 0.75
-    x_angle = -79.5  # zeta2 value; cell 11 of zeta.ipynb showed 0 but the saved output uses ~-79.5
-    z_angle = -90
-    rx = R.from_euler("x", x_angle, degrees=True)
-    rz = R.from_euler("z", z_angle, degrees=True)
-
-    def project(xyz):
-        out = xyz.copy()
-        out[:, 1] *= real_scale_factor
-        out[:, 2] = np.minimum(z_limit, out[:, 2])
-        out[:, 0] *= -1
-        out[:, 1] -= isometric_scale_factor * out[:, 0]
-        return rx.apply(rz.apply(out))
+    # x_angle -79.5 is the zeta2 value; cell 11 of zeta.ipynb showed 0 but the
+    # saved output uses ~-79.5. real-scale + z-clamp are zeta-specific.
+    project = Projection(shear=-0.18, x_angle=-79.5, z_angle=-90, flip_x=True,
+                         y_scale=0.75, z_clamp=z_limit)
 
     timer.tick("project major_data")
     major_rotated = project(major_data)

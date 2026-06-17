@@ -21,12 +21,12 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.special as sp
-from scipy.spatial.transform import Rotation as R
 
 from kurven.bench import PhaseTimer
 from kurven.contours import contour_levels
 from kurven.occluder import build_occluder, wall_curtain
 from kurven.outline import clip_hidden_lines
+from kurven.projection import Projection
 from kurven.scaffold import wall_hatch
 from kurven.surface import Surface
 from kurven.zbuffer import (
@@ -241,17 +241,7 @@ def main():
 
     timer.tick("project")
     # Cell 4 projection
-    isometric_scale_factor = 0.51
-    x_angle = -63
-    z_angle = -90
-    rx = R.from_euler("x", x_angle, degrees=True)
-    rz = R.from_euler("z", z_angle, degrees=True)
-
-    def project(xyz):
-        out = xyz.copy()
-        out[:, 0] *= -1
-        out[:, 1] -= isometric_scale_factor * out[:, 0]
-        return rx.apply(rz.apply(out))
+    project = Projection(shear=0.51, x_angle=-63, z_angle=-90, flip_x=True)
 
     major_data = np.vstack((mag_major_data, ang_major_data))
     major_indices = np.hstack((mag_major_indices, ang_major_indices))

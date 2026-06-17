@@ -13,7 +13,7 @@ from kurven.contours import (
     group_by_index,
     mirror_x,
 )
-from kurven.projection import isometric_project, rotate_xz
+from kurven.projection import Projection, isometric_project, rotate_xz
 from kurven.zbuffer import (
     ZBuffer,
     rasterize_triangles,
@@ -34,6 +34,7 @@ __all__ = [
     "decimate_outside_critical_zone",
     "mirror_x",
     "group_by_index",
+    "Projection",
     "isometric_project",
     "rotate_xz",
     "ZBuffer",

@@ -16,11 +16,11 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.special as ss
-from scipy.spatial.transform import Rotation as R
 
 from kurven.contours import contour_levels
 from kurven.occluder import build_occluder, wall_curtain
 from kurven.outline import clip_hidden_lines
+from kurven.projection import Projection
 from kurven.scaffold import wall_hatch
 from kurven.surface import Surface
 from kurven.zbuffer import ZBuffer, rasterize_triangles, rasterize_triangles_gpu
@@ -85,14 +85,8 @@ def main():
     major_data = np.vstack([Mm, Am]); major_idx = np.hstack([Mmi, Ami])
     minor_data = np.vstack([mm, am]); minor_idx = np.hstack([mmi, ami])
 
-    rx = R.from_euler("x", a.x_angle, degrees=True)
-    rz = R.from_euler("z", a.z_angle, degrees=True)
-
-    def project(xyz):
-        out = xyz.copy()
-        out[:, 0] *= -1
-        out[:, 1] -= a.scale * out[:, 0]
-        return rx.apply(rz.apply(out))
+    project = Projection(shear=a.scale, x_angle=a.x_angle, z_angle=a.z_angle,
+                         flip_x=True)
 
     major_rot = project(major_data)
     minor_rot = project(minor_data)
