@@ -24,10 +24,10 @@ import scipy.special as sp
 
 from kurven.bench import PhaseTimer
 from kurven.contours import contour_levels
-from kurven.occluder import build_occluder, wall_curtain
+from kurven.occluder import build_occluder
 from kurven.outline import clip_hidden_lines
+from kurven.perimeter import Edge, Perimeter
 from kurven.projection import Projection
-from kurven.scaffold import wall_hatch
 from kurven.surface import Surface
 from kurven.zbuffer import (
     ZBuffer,
@@ -281,16 +281,16 @@ def main():
         return d
 
     nw = 300
-    re1 = np.linspace(-K, 0, nw)
-    im2 = np.linspace(-K_prime, 0, nw)
-    re3 = np.linspace(0, 5 * K, 5 * nw)
-    im4 = np.linspace(0, 3 * K_prime, 3 * nw)
-    walls = [
-        wall_curtain(np.full(nw, -K_prime), re1, surface),
-        wall_curtain(im2, np.zeros(nw), surface),
-        wall_curtain(np.zeros(len(re3)), re3, surface),
-        wall_curtain(im4, np.full(len(im4), 5 * K), surface),
-    ]
+    # The cutout boundary, defined once here and reused below for the ground
+    # polygon and the base-contour hatch. Four edges; the long real-axis edge
+    # and the back edge are 5x/3x longer, so sampled 5x/3x denser.
+    cutout = Perimeter([
+        Edge((-K_prime, -K), (-K_prime, 0)),     # front (im = -K')
+        Edge((-K_prime, 0), (0, 0)),             # left  (re = 0)
+        Edge((0, 0), (0, 5 * K)),                # long  (im = 0, the real axis)
+        Edge((0, 5 * K), (3 * K_prime, 5 * K)),  # back  (re = 5K)
+    ])
+    walls = cutout.wall_curtains(surface, [nw, nw, 5 * nw, 3 * nw])
     tile_transforms = [lambda V, i=i, r=r: _tile_xform(V, i, r)
                        for i in range(3) for r in range(6)]
     occ_verts, occ_tris = build_occluder(
@@ -326,13 +326,13 @@ def main():
         return float(np.abs(_ellipj_complex_cn(np.array([re_v + 1j * im_v]), m)[0]))
 
     eps_b = 0.005
+    # The cutout's ground outline (its four edges at z=0) comes from the same
+    # `cutout` perimeter that built the walls and hatch. What stays bespoke here
+    # are the spire corner posts (vertical lines rising to each spire's height)
+    # and, below, the spire-cap radius lines — both genuinely spire-specific.
     base_xyz_major_3d = [
-        np.array([[-K_prime, -K, 0.0], [-K_prime, 0.0, 0.0]]),
         np.array([[-K_prime, -K - eps_b, 0.0],
                   [-K_prime, -K - eps_b, cn_mag(-K, -K_prime)]]),
-        np.array([[-K_prime, 0.0, 0.0], [0.0, 0.0, 0.0]]),
-        np.array([[0.0, 0.0, 0.0], [0.0, 5 * K, 0.0]]),
-        np.array([[0.0, 5 * K, 0.0], [3 * K_prime, 5 * K, 0.0]]),
         np.array([[-K_prime, -K, 0.0],
                   [-K_prime, -K, cn_mag(-K, -K_prime)]]),
         np.array([[-K_prime, 0.0, 0.0], [-K_prime, 0.0, z_limit]]),
@@ -364,25 +364,23 @@ def main():
     base_xyz_major_3d.append(np.array([[3 * K_prime, 4 * K - real_radius, z_limit],
                                        [3 * K_prime, 4 * K + real_radius, z_limit]]))
 
-    base_xy_major = [project(seg)[:, :2] for seg in base_xyz_major_3d]
+    base_xy_major = cutout.ground_polygon(project) + [
+        project(seg)[:, :2] for seg in base_xyz_major_3d]
 
     # base_contours: vertical hatch curtains from ground to surface along the
-    # cutout perimeter (per cell 4). One wall_hatch call per cutout edge; the
-    # front edge tucks 3*eps_b under the silhouette, the rest 1*eps_b.
+    # same cutout perimeter that built the occluder walls (per cell 4). Trimmed
+    # at shared corners; the front edge tucks 3*eps_b under the silhouette, the
+    # rest 1*eps_b. Same edge density ratios as the walls (1, 1, 5, 3).
     bc = 40
-    e_front = np.linspace(-K, 0, bc)[1:-1]
-    e_left = np.linspace(-K_prime, 0, bc)[1:-1]
-    e_long = np.linspace(0, 5 * K, 5 * bc)[1:-1]
-    e_back = np.linspace(0, 3 * K_prime, 3 * bc)[1:-1]
     base_contours_xy = (
-        wall_hatch(np.full_like(e_front, -K_prime), e_front, surface, project,
-                   base=eps_b, top_offset=-3 * eps_b)
-        + wall_hatch(e_left, np.zeros_like(e_left), surface, project,
-                     base=eps_b, top_offset=-eps_b)
-        + wall_hatch(np.zeros_like(e_long), e_long, surface, project,
-                     base=eps_b, top_offset=-eps_b)
-        + wall_hatch(e_back, np.full_like(e_back, 5 * K), surface, project,
-                     base=eps_b, top_offset=-eps_b)
+        cutout.edges[0].wall_hatch(surface, project, bc, trim=True,
+                                   base=eps_b, top_offset=-3 * eps_b)
+        + cutout.edges[1].wall_hatch(surface, project, bc, trim=True,
+                                     base=eps_b, top_offset=-eps_b)
+        + cutout.edges[2].wall_hatch(surface, project, 5 * bc, trim=True,
+                                     base=eps_b, top_offset=-eps_b)
+        + cutout.edges[3].wall_hatch(surface, project, 3 * bc, trim=True,
+                                     base=eps_b, top_offset=-eps_b)
     )
 
     # top_contours: horizontal hatching at z=4 marking each spire's cap

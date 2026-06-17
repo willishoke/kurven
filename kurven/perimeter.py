@@ -39,9 +39,15 @@ class Edge:
         im, re = self.samples(density)
         return wall_curtain(im, re, surface, base=base)
 
-    def wall_hatch(self, surface, project, density, *, base=0.0, top_offset=0.0):
-        """The ink hatch strokes for this edge (see `scaffold.wall_hatch`)."""
+    def wall_hatch(self, surface, project, density, *, trim=False,
+                   base=0.0, top_offset=0.0):
+        """The ink hatch strokes for this edge (see `scaffold.wall_hatch`).
+
+        `trim` drops the first and last sample (`[1:-1]`) so adjacent edges'
+        hatch strokes don't double up at shared corners."""
         im, re = self.samples(density)
+        if trim:
+            im, re = im[1:-1], re[1:-1]
         return wall_hatch(im, re, surface, project, base=base, top_offset=top_offset)
 
 
@@ -67,6 +73,21 @@ class Perimeter:
         ])
 
     def wall_curtains(self, surface, density, *, base=0.0):
-        """One occluder curtain per edge, sampled at `density` — pass straight
-        to `build_occluder(..., walls=...)`."""
-        return [e.wall_curtain(surface, density, base=base) for e in self.edges]
+        """One occluder curtain per edge — pass straight to
+        `build_occluder(..., walls=...)`. `density` is either an int (same for
+        every edge) or a per-edge sequence (e.g. longer edges sampled denser)."""
+        if isinstance(density, (int, np.integer)):
+            density = [density] * len(self.edges)
+        return [e.wall_curtain(surface, d, base=base)
+                for e, d in zip(self.edges, density)]
+
+    def ground_polygon(self, project, *, z=0.0):
+        """Each edge as a straight ground line at height `z`, projected to 2D —
+        the outline the cutout casts on the base plane. Returns a list of (2, 2)
+        segments (one per edge), the same corners the wall curtains rise from."""
+        out = []
+        for e in self.edges:
+            seg = np.array([[e.start[0], e.start[1], z],
+                            [e.end[0], e.end[1], z]])
+            out.append(project(seg)[:, :2])
+        return out
