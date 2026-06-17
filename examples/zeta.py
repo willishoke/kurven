@@ -15,7 +15,6 @@ Run:
 """
 
 import argparse
-import time
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -24,6 +23,7 @@ import scipy.special
 from scipy.spatial import Delaunay
 from scipy.spatial.transform import Rotation as R
 
+from kurven.bench import PhaseTimer
 from kurven.contours import contour_levels
 from kurven.outline import clip_hidden_lines
 from kurven.zbuffer import (
@@ -31,29 +31,6 @@ from kurven.zbuffer import (
     rasterize_triangles,
     rasterize_triangles_gpu,
 )
-
-
-_TIMINGS = []
-_LAST_TICK = [None]
-
-
-def _tick(name):
-    now = time.perf_counter()
-    if _LAST_TICK[0] is not None:
-        dt = now - _LAST_TICK[0][1]
-        _TIMINGS.append((_LAST_TICK[0][0], dt))
-        print(f"  [{_LAST_TICK[0][0]:>26s}] {dt:7.2f}s", flush=True)
-    _LAST_TICK[0] = (name, now)
-
-
-def _tick_done():
-    _tick("__end__")
-    _TIMINGS.pop()
-    total = sum(dt for _, dt in _TIMINGS)
-    print("  " + "-" * 40)
-    for name, dt in _TIMINGS:
-        print(f"  [{name:>26s}] {dt:7.2f}s  {100*dt/total:4.1f}%")
-    print(f"  [{'total':>26s}] {total:7.2f}s")
 
 
 DEFAULT_CACHE = "/Users/willishoke/journal/2401/zeta_5000.npy"
@@ -87,12 +64,13 @@ def main():
         matplotlib.use(args.backend)
     buffer_shape = (args.buffer, args.buffer)
     progress = not args.no_progress
+    timer = PhaseTimer()
 
     r_min, r_max = -6.0, 8.0
     i_min, i_max = -30.0, 30.0
     z_limit = 6.0
 
-    _tick("load cache")
+    timer.tick("load cache")
     comp = np.load(args.cache)
     n_real, n_imag = comp.shape
     real = np.linspace(r_min, r_max, n_real)
@@ -125,12 +103,12 @@ def main():
     angle_major_levels = np.linspace(-np.pi, np.pi, 11)
     peak_levels = [2.5, 3.5, 4.5, 5.5]
 
-    _tick("contour generation")
+    timer.tick("contour generation")
     mag_paths = contour_levels(mag, mag_major_levels, (r_min, r_max), (i_min, i_max))
     angle_paths = contour_levels(angle, angle_major_levels, (r_min, r_max), (i_min, i_max))
     peak_paths = contour_levels(mag, peak_levels, (r_min, r_max), (i_min, i_max))
 
-    _tick("assemble major_data")
+    timer.tick("assemble major_data")
     mag_chunks_xyz, mag_chunks_idx = [], []
     path_idx = 0
     for lvl, paths in mag_paths:
@@ -181,7 +159,7 @@ def main():
             peak_chunks_idx.append(np.full(len(xyz), path_idx, dtype=np.int64))
             path_idx += 1
 
-    _tick("top_xyz boundary curves")
+    timer.tick("top_xyz boundary curves")
     # Cell 11's top_xyz: sample the actual surface (|zeta|) along the cutout
     # polygon perimeter so the buffer has good coverage AT the polygon edges.
     # This is the piece I'd been missing entirely. Without it the buffer
@@ -253,10 +231,10 @@ def main():
         out[:, 1] -= isometric_scale_factor * out[:, 0]
         return rx.apply(rz.apply(out))
 
-    _tick("project major_data")
+    timer.tick("project major_data")
     major_rotated = project(major_data)
 
-    _tick("Delaunay")
+    timer.tick("Delaunay")
     # Cell 14 takes Delaunay of the FIRST TWO columns of all_data (i.e., the
     # ORIGINAL imag/real coords) and rasterizes using x_values/y_values from
     # the rotated coords. This is the bizarre buffer construction the notebook
@@ -272,18 +250,18 @@ def main():
                  y_values.min(), y_values.max(), buffer_shape)
 
     if args.gpu:
-        _tick("rasterize (gpu)")
+        timer.tick("rasterize (gpu)")
         rasterize_triangles_gpu(zb, tri.simplices, x_values, y_values, z_values)
     else:
-        _tick("rasterize")
+        timer.tick("rasterize")
         rasterize_triangles(zb, tri.simplices, x_values, y_values, z_values,
                             progress=progress)
 
-    _tick("clip contours")
+    timer.tick("clip contours")
     segments = clip_hidden_lines(zb, major_rotated, major_indices,
                                  margin=args.clip_margin)
 
-    _tick("boundary + shading lines")
+    timer.tick("boundary + shading lines")
     # base_xy_major: cutout polygon walls + vertical corners (cell 11)
     base_xyz_major_3d = [
         np.array([[28., r_min, z_limit], [28., r_min, 0.]]),
@@ -346,7 +324,7 @@ def main():
           f"{len(base_contours_xy)} vertical, "
           f"{len(top_contours_xy)} top")
 
-    _tick("save hi_res.svg")
+    timer.tick("save hi_res.svg")
     fig, ax = plt.subplots(figsize=(16, 16))
     for xy in segments:
         ax.plot(xy[:, 0], xy[:, 1], lw=0.4, c="k")
@@ -360,7 +338,7 @@ def main():
     ax.axis("off")
     fig.savefig(f"{args.output_prefix}_hi_res.svg")
     plt.close(fig)
-    _tick_done()
+    timer.done()
     print(f"Wrote {args.output_prefix}_hi_res.svg.")
 
 

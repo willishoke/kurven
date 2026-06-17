@@ -16,7 +16,6 @@ Run:
 """
 
 import argparse
-import time
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -24,6 +23,7 @@ import numpy as np
 import scipy.special as sp
 from scipy.spatial.transform import Rotation as R
 
+from kurven.bench import PhaseTimer
 from kurven.contours import contour_levels
 from kurven.occluder import build_occluder, wall_curtain
 from kurven.outline import clip_hidden_lines
@@ -33,29 +33,6 @@ from kurven.zbuffer import (
     rasterize_triangles,
     rasterize_triangles_gpu,
 )
-
-
-_TIMINGS = []
-_LAST_TICK = [None]
-
-
-def _tick(name):
-    now = time.perf_counter()
-    if _LAST_TICK[0] is not None:
-        dt = now - _LAST_TICK[0][1]
-        _TIMINGS.append((_LAST_TICK[0][0], dt))
-        print(f"  [{_LAST_TICK[0][0]:>26s}] {dt:7.2f}s", flush=True)
-    _LAST_TICK[0] = (name, now)
-
-
-def _tick_done():
-    _tick("__end__")
-    _TIMINGS.pop()
-    total = sum(dt for _, dt in _TIMINGS)
-    print("  " + "-" * 40)
-    for name, dt in _TIMINGS:
-        print(f"  [{name:>26s}] {dt:7.2f}s  {100*dt/total:4.1f}%")
-    print(f"  [{'total':>26s}] {total:7.2f}s")
 
 
 def _cn(z, m):
@@ -100,6 +77,7 @@ def main():
         matplotlib.use(args.backend)
     buffer_shape = (args.buffer, args.buffer)
     progress = not args.no_progress
+    timer = PhaseTimer()
 
     # Constants from cell 1
     m = 0.8 ** 2
@@ -117,7 +95,7 @@ def main():
     K_eff = K - 2 * eps
     K_prime_eff = K_prime - 2 * eps
 
-    _tick("sample tile")
+    timer.tick("sample tile")
     res = args.res
     real = np.linspace(r_min, r_max, res)
     imag = np.linspace(i_min, i_max, res)
@@ -133,13 +111,13 @@ def main():
     ang_major_levels = np.linspace(-np.pi / 2, 0, 6)
     ang_minor_levels = np.setdiff1d(np.linspace(-np.pi / 2, 0, 21), ang_major_levels)
 
-    _tick("contour generation")
+    timer.tick("contour generation")
     mag_major_paths = contour_levels(mag, mag_major_levels, (r_min, r_max), (i_min, i_max))
     mag_minor_paths = contour_levels(mag, mag_minor_levels, (r_min, r_max), (i_min, i_max))
     ang_major_paths = contour_levels(angle, ang_major_levels, (r_min, r_max), (i_min, i_max))
     ang_minor_paths = contour_levels(angle, ang_minor_levels, (r_min, r_max), (i_min, i_max))
 
-    _tick("build tile data")
+    timer.tick("build tile data")
     # For each path, build xyz where z = |cn| at vertex (clipped at 4), and
     # tag with a global index. Matches cell 3's `extractContours`.
     def paths_to_xyz_idx(paths, start_idx):
@@ -171,7 +149,7 @@ def main():
     ang_major_tile, ang_major_idx_tile, p = paths_to_xyz_idx(ang_major_paths, p)
     ang_minor_tile, ang_minor_idx_tile, p = paths_to_xyz_idx(ang_minor_paths, p)
 
-    _tick("tile 3x6 with reflections")
+    timer.tick("tile 3x6 with reflections")
     # Reproduce cell 3's tiling: 3 columns (imag direction) × 6 rows (real
     # direction). Even columns are reflected across the imag axis; even rows
     # are reflected across the real axis.
@@ -207,7 +185,7 @@ def main():
         diff = np.abs(mag_major_data[:, 2:3] - mag_major_levels.reshape(1, -1))
         mag_major_data[:, 2] = mag_major_levels[np.argmin(diff, axis=1)]
 
-    _tick("angle_major_zeros")
+    timer.tick("angle_major_zeros")
     # Cell 3: extra angle major contours along K_prime*i (imag axis) and K*r
     # (real axis) for i, r in their respective ranges. These add the radial
     # phase lines through each spire.
@@ -241,7 +219,7 @@ def main():
     ang_major_data = np.vstack([ang_major_data] + ang_zeros_chunks_xyz)
     ang_major_indices = np.hstack([ang_major_indices] + ang_zeros_chunks_idx)
 
-    _tick("angle minor truncation")
+    timer.tick("angle minor truncation")
     # Cell 3's diff-and-even-K filter: keep only angle minor vertices on
     # transitions AND not near (even K, odd K_prime) lattice intersections.
     def trim_angle(data, indices, eps=0.01):
@@ -260,7 +238,7 @@ def main():
     ang_minor_data, ang_minor_indices = trim_angle(ang_minor_data, ang_minor_indices)
     ang_major_data, ang_major_indices = trim_angle(ang_major_data, ang_major_indices)
 
-    _tick("project")
+    timer.tick("project")
     # Cell 4 projection
     isometric_scale_factor = 0.51
     x_angle = -63
@@ -282,7 +260,7 @@ def main():
     minor_rotated = project(minor_data)
     print(f"      major: {len(major_data)} verts, minor: {len(minor_data)} verts")
 
-    _tick("build occluder mesh")
+    timer.tick("build occluder mesh")
     # Build the Z-buffer occluder by directly meshing the surfaces that actually
     # block sight lines, instead of running Delaunay over scattered contour
     # vertices. Delaunay triangulates the convex hull, so the non-convex contour
@@ -330,7 +308,7 @@ def main():
           f"({len(real[::occ_step])}x{len(imag[::occ_step])} grid "
           f"x{1 + len(tile_transforms)} tiles + {len(walls)} walls)")
 
-    _tick("rasterize buffer")
+    timer.tick("rasterize buffer")
     occ_rot = project(occ_verts)
     ox, oy, oz = occ_rot[:, 0], occ_rot[:, 1], occ_rot[:, 2]
     # Buffer frame must also cover the contour points clip_hidden_lines looks up.
@@ -343,13 +321,13 @@ def main():
     else:
         rasterize_triangles(zb, occ_tris, ox, oy, oz, progress=progress)
 
-    _tick("clip major")
+    timer.tick("clip major")
     major_segs = clip_hidden_lines(zb, major_rotated, major_indices,
                                    margin=args.clip_margin)
     minor_segs = clip_hidden_lines(zb, minor_rotated, minor_indices,
                                    margin=args.clip_margin)
 
-    _tick("boundary geometry")
+    timer.tick("boundary geometry")
     # Cell 4: explicit cutout polygon walls + spire-base + spire-top hatching.
     # All values verbatim from cell 4 (with scipy.special.ellipj as the
     # function evaluator).
@@ -445,7 +423,7 @@ def main():
           f"{len(base_contours_xy)} vertical, "
           f"{len(top_contours_xy)} top")
 
-    _tick("save hi_res.svg")
+    timer.tick("save hi_res.svg")
     fig, ax = plt.subplots(figsize=(16, 12))
     for xy in major_segs:
         ax.plot(xy[:, 0], xy[:, 1], lw=0.3, c="k")
@@ -461,7 +439,7 @@ def main():
     ax.axis("off")
     fig.savefig(f"{args.output_prefix}_hi_res.svg")
     plt.close(fig)
-    _tick_done()
+    timer.done()
     print(f"Wrote {args.output_prefix}_hi_res.svg.")
 
 

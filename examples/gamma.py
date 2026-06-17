@@ -14,8 +14,6 @@ Smoke-test at lower resolution:
 """
 
 import argparse
-import os
-import time
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -24,30 +22,7 @@ import scipy.special
 from scipy.spatial import Delaunay
 from scipy.spatial.transform import Rotation as R
 
-
-_TIMINGS = []
-_LAST_TICK = [None]
-
-
-def _tick(name):
-    """Close the previous timing interval, start a new one. Call between phases."""
-    now = time.perf_counter()
-    if _LAST_TICK[0] is not None:
-        dt = now - _LAST_TICK[0][1]
-        _TIMINGS.append((_LAST_TICK[0][0], dt))
-        print(f"  [{_LAST_TICK[0][0]:>26s}] {dt:7.2f}s", flush=True)
-    _LAST_TICK[0] = (name, now)
-
-
-def _tick_done():
-    _tick("__end__")
-    _TIMINGS.pop()  # drop the dummy
-    total = sum(dt for _, dt in _TIMINGS)
-    print("  " + "-" * 40)
-    for name, dt in _TIMINGS:
-        print(f"  [{name:>26s}] {dt:7.2f}s  {100*dt/total:4.1f}%")
-    print(f"  [{'total':>26s}] {total:7.2f}s")
-
+from kurven.bench import PhaseTimer
 from kurven.contours import (
     contour_adaptive,
     decimate_outside_critical_zone,
@@ -100,6 +75,7 @@ def main():
     res = args.res
     buffer_shape = (args.buffer, args.buffer)
     progress = not args.no_progress
+    timer = PhaseTimer()
 
     r_min, r_max = -4.5, 4.5
     i_min, i_max = 0.0001, 2.5
@@ -137,7 +113,7 @@ def main():
         return np.abs(scipy.special.gamma(z))
 
     if args.adaptive:
-        _tick("gradient zones")
+        timer.tick("gradient zones")
         fine_zones = gradient_zones(
             scipy.special.gamma, real_bounds, imag_bounds,
             probe_res=args.probe_res, pad=args.zone_pad,
@@ -146,7 +122,7 @@ def main():
         for zr_lo, zr_hi, zi_lo, zi_hi in fine_zones:
             print(f"        real=[{zr_lo:+.2f},{zr_hi:+.2f}] imag=[{zi_lo:.3f},{zi_hi:.3f}]")
 
-        _tick("sample adaptive")
+        timer.tick("sample adaptive")
         samples = sample_adaptive(
             scipy.special.gamma, real_bounds, imag_bounds,
             coarse_res=args.coarse_res, fine_res=res, fine_zones=fine_zones,
@@ -158,7 +134,7 @@ def main():
         else:
             stitch_tol = args.stitch_tolerance
 
-        _tick("contour_adaptive x4")
+        timer.tick("contour_adaptive x4")
         ang_major_xyz, ang_major_idx = contour_adaptive(
             samples, angle_major_interval, height,
             contour_op=np.angle, stitch_tolerance=stitch_tol,
@@ -176,13 +152,13 @@ def main():
             contour_op=np.abs, stitch_tolerance=stitch_tol,
         )
     else:
-        _tick("eval grid")
+        timer.tick("eval grid")
         grid = real[:, None] + 1j * imag
         gamma = scipy.special.gamma(grid)
         magnitude = np.abs(gamma)
         angle = np.angle(gamma)
 
-        _tick("mpl.contour x4")
+        timer.tick("mpl.contour x4")
         fig_cs, ax_cs = plt.subplots()
         try:
             mag_major_cs = ax_cs.contour(magnitude, levels=magnitude_major_interval)
@@ -192,7 +168,7 @@ def main():
         finally:
             plt.close(fig_cs)
 
-        _tick("extract_contours x4")
+        timer.tick("extract_contours x4")
         ang_major_xyz, ang_major_idx = extract_contours(
             ang_major_cs, height, real_bounds, imag_bounds, res
         )
@@ -206,7 +182,7 @@ def main():
             mag_minor_cs, height, real_bounds, imag_bounds, res
         )
 
-    _tick("decimate + mirror")
+    timer.tick("decimate + mirror")
     centerline_xy = np.vstack((np.zeros((1, res)), np.linspace(r_min, r_max, res)))
     centerline_z = np.abs(scipy.special.gamma(centerline_xy[1] + centerline_xy[0] * 1j))
     centerline_xyz = np.vstack((centerline_xy, centerline_z.reshape(-1))).T
@@ -236,13 +212,13 @@ def main():
     mag_minor_xyz, mag_minor_idx = mag_minor_xyz[::20], mag_minor_idx[::20]
     mag_minor_xyz, mag_minor_idx = mirror_x(mag_minor_xyz, mag_minor_idx)
 
-    _tick("top-of-pole contours")
+    timer.tick("top-of-pole contours")
     top_contours = _build_top_pole_contours(
         magnitude_major_interval, real_bounds, imag_bounds, res,
         z_range=z_range,
     )
 
-    _tick("pole-cutoff truncation")
+    timer.tick("pole-cutoff truncation")
     epsilon = 0.1
     for y, z in zip([-3.5, -2.5, -1.5, .5], z_range):
         cond = ~((mag_major_xyz[:, 1] < y) & (mag_major_xyz[:, 2] > z + epsilon))
@@ -303,7 +279,7 @@ def main():
     ang_minor_xyz = ang_minor_xyz[cond]
     ang_minor_idx = ang_minor_idx[cond]
 
-    _tick("base/back boundary")
+    timer.tick("base/back boundary")
     isometric_scale_factor = 0.5
     x_angle = -55
     z_angle = -90
@@ -355,7 +331,7 @@ def main():
     all_rotated = np.vstack((major_rotated, minor_rotated))
     print(f"      projected shape: {all_rotated.shape}")
 
-    _tick("save raw.svg")
+    timer.tick("save raw.svg")
     fig_raw, ax_raw = plt.subplots(figsize=(16, 16))
     for _, xy in group_by_index(major_rotated, major_idx):
         ax_raw.plot(xy[:, 0], xy[:, 1], lw=0.3, c="k")
@@ -369,7 +345,7 @@ def main():
     fig_raw.savefig(f"{args.output_prefix}_raw.svg")
     plt.close(fig_raw)
 
-    _tick("surface mesh")
+    timer.tick("surface mesh")
     surf_res = args.surface_res
     surf_real = np.linspace(r_min, r_max, surf_res)
     surf_imag = np.linspace(-i_max, i_max, surf_res)
@@ -399,13 +375,13 @@ def main():
     zb = ZBuffer(sx.min(), sx.max(), sy.min(), sy.max(), buffer_shape)
 
     if args.gpu:
-        _tick("rasterize surface (gpu)")
+        timer.tick("rasterize surface (gpu)")
         rasterize_triangles_gpu(zb, surf_simplices, sx, sy, sz)
     else:
-        _tick("rasterize surface")
+        timer.tick("rasterize surface")
         rasterize_triangles(zb, surf_simplices, sx, sy, sz, progress=progress)
 
-    _tick("outline + clip")
+    timer.tick("outline + clip")
     outline = extract_outline(
         zb,
         cutoff_min=np.array([-4, 0]),
@@ -414,7 +390,7 @@ def main():
 
     segments = clip_hidden_lines(zb, major_rotated, major_idx, margin=args.clip_margin)
 
-    _tick("save hi_res.svg")
+    timer.tick("save hi_res.svg")
     fig_final, ax_final = plt.subplots(figsize=(16, 16))
     for xy in segments:
         ax_final.plot(xy[:, 0], xy[:, 1], lw=0.4, c="k")
@@ -428,7 +404,7 @@ def main():
     ax_final.axis("off")
     fig_final.savefig(f"{args.output_prefix}_hi_res.svg")
     plt.close(fig_final)
-    _tick_done()
+    timer.done()
     print(f"Wrote {args.output_prefix}_raw.svg and {args.output_prefix}_hi_res.svg.")
 
 
