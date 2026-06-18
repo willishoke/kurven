@@ -63,25 +63,11 @@ def main():
     ang_major = np.linspace(-np.pi, np.pi, 5)                    # every 90 deg
     ang_minor = np.setdiff1d(np.linspace(-np.pi, np.pi, 13), ang_major)  # 30 deg
 
-    def to_xyz(paths, start):
-        xs, idx, pi = [], [], start
-        for _, segs in paths:
-            for xy in segs:
-                if len(xy) < 2:
-                    continue
-                z = surface.height_at(xy[:, 1], xy[:, 0])   # height at (re, im)
-                xs.append(np.column_stack([xy, z]))
-                idx.append(np.full(len(xy), pi, dtype=np.int64))
-                pi += 1
-        if not xs:
-            return np.zeros((0, 3)), np.zeros(0, dtype=np.int64), pi
-        return np.concatenate(xs), np.concatenate(idx), pi
-
     p = 0
-    Mm, Mmi, p = to_xyz(contour_levels(mag, mag_major, rb, ib), p)
-    mm, mmi, p = to_xyz(contour_levels(mag, mag_minor, rb, ib), p)
-    Am, Ami, p = to_xyz(contour_levels(angle, ang_major, rb, ib), p)
-    am, ami, p = to_xyz(contour_levels(angle, ang_minor, rb, ib), p)
+    Mm, Mmi, p = surface.lift_contours(contour_levels(mag, mag_major, rb, ib), start=p)
+    mm, mmi, p = surface.lift_contours(contour_levels(mag, mag_minor, rb, ib), start=p)
+    Am, Ami, p = surface.lift_contours(contour_levels(angle, ang_major, rb, ib), start=p)
+    am, ami, p = surface.lift_contours(contour_levels(angle, ang_minor, rb, ib), start=p)
     major_data = np.vstack([Mm, Am]); major_idx = np.hstack([Mmi, Ami])
     minor_data = np.vstack([mm, am]); minor_idx = np.hstack([mmi, ami])
 

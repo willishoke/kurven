@@ -82,6 +82,54 @@ class Surface:
         h = self.mag_at(re, im)
         return h if self.z_limit is None else np.minimum(self.z_limit, h)
 
+    def lift_contours(self, level_paths, *, start=0, height="surface", keep=None):
+        """Lift contour level-paths to indexed 3D polylines, tagging each path
+        with a running index — the shared 'assemble contour data' loop the
+        examples all wrote by hand.
+
+        `level_paths`: ordered iterable of `(level, [ (N, 2) xy arrays ])` as
+        `contours.contour_levels` returns (col 0 = imag, col 1 = real).
+
+        `height` sets each vertex's z:
+            "surface"   z = self.height_at(re, im)  — clamped magnitude, the
+                        height the contour lies on (magnitude OR phase contours)
+            "level"     z = the contour level       — a magnitude isocontour
+                        sits at exactly its level
+            "magnitude" z = self.mag_at(re, im)     — unclamped magnitude
+
+        `keep`: optional `xyz -> bool mask` applied per path to drop vertices
+        (e.g. a cutout filter); a path left with < 2 vertices is skipped and its
+        index is not consumed.
+
+        Returns `(xyz, indices, next_index)`. Thread `next_index` into the next
+        call to keep indices globally unique across several contour families.
+        """
+        chunks_xyz, chunks_idx = [], []
+        path_idx = start
+        for level, segs in level_paths:
+            for xy in segs:
+                if len(xy) < 2:
+                    continue
+                if height == "surface":
+                    z = self.height_at(xy[:, 1], xy[:, 0])
+                elif height == "level":
+                    z = np.full(len(xy), level)
+                elif height == "magnitude":
+                    z = self.mag_at(xy[:, 1], xy[:, 0])
+                else:
+                    raise ValueError(f"unknown height policy {height!r}")
+                xyz = np.column_stack([xy, z])
+                if keep is not None:
+                    xyz = xyz[keep(xyz)]
+                    if len(xyz) < 2:
+                        continue
+                chunks_xyz.append(xyz)
+                chunks_idx.append(np.full(len(xyz), path_idx, dtype=np.int64))
+                path_idx += 1
+        if not chunks_xyz:
+            return np.zeros((0, 3)), np.zeros(0, dtype=np.int64), path_idx
+        return np.concatenate(chunks_xyz), np.concatenate(chunks_idx), path_idx
+
     def grid_mesh(self, step=1):
         """Heightfield triangulation of the clamped surface, subsampled by
         `step`. Vertices are (imag, real, z). Returns (vertices, triangles)."""

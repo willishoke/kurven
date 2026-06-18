@@ -119,36 +119,14 @@ def main():
     ang_minor_paths = contour_levels(angle, ang_minor_levels, (r_min, r_max), (i_min, i_max))
 
     timer.tick("build tile data")
-    # For each path, build xyz where z = |cn| at vertex (clipped at 4), and
-    # tag with a global index. Matches cell 3's `extractContours`.
-    def paths_to_xyz_idx(paths, start_idx):
-        chunks_xyz, chunks_idx = [], []
-        path_idx = start_idx
-        for _, segs in paths:
-            for xy in segs:
-                if len(xy) < 2:
-                    continue
-                z = np.minimum(
-                    z_limit,
-                    np.abs(_ellipj_complex_cn(xy[:, 1] + 1j * xy[:, 0], m)),
-                )
-                xyz = np.column_stack([xy, z])
-                chunks_xyz.append(xyz)
-                chunks_idx.append(np.full(len(xy), path_idx, dtype=np.int64))
-                path_idx += 1
-        if not chunks_xyz:
-            return np.zeros((0, 3)), np.zeros(0, dtype=np.int64), path_idx
-        return (
-            np.concatenate(chunks_xyz),
-            np.concatenate(chunks_idx),
-            path_idx,
-        )
-
+    # For each path, build xyz where z = |cn| at vertex (clipped at 4 via
+    # Surface.height_at), and tag with a global index. Matches cell 3's
+    # `extractContours`.
     p = 0
-    mag_major_tile, mag_major_idx_tile, p = paths_to_xyz_idx(mag_major_paths, p)
-    mag_minor_tile, mag_minor_idx_tile, p = paths_to_xyz_idx(mag_minor_paths, p)
-    ang_major_tile, ang_major_idx_tile, p = paths_to_xyz_idx(ang_major_paths, p)
-    ang_minor_tile, ang_minor_idx_tile, p = paths_to_xyz_idx(ang_minor_paths, p)
+    mag_major_tile, mag_major_idx_tile, p = surface.lift_contours(mag_major_paths, start=p)
+    mag_minor_tile, mag_minor_idx_tile, p = surface.lift_contours(mag_minor_paths, start=p)
+    ang_major_tile, ang_major_idx_tile, p = surface.lift_contours(ang_major_paths, start=p)
+    ang_minor_tile, ang_minor_idx_tile, p = surface.lift_contours(ang_minor_paths, start=p)
 
     timer.tick("tile 3x6 with reflections")
     # Reproduce cell 3's tiling: 3 columns (imag direction) × 6 rows (real

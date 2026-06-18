@@ -90,55 +90,20 @@ def main():
     peak_paths = contour_levels(mag, peak_levels, (r_min, r_max), (i_min, i_max))
 
     timer.tick("assemble major_data")
-    mag_chunks_xyz, mag_chunks_idx = [], []
-    path_idx = 0
-    for lvl, paths in mag_paths:
-        for xy in paths:
-            z = np.full(len(xy), lvl)
-            xyz = np.column_stack([xy, z])
-            # Apply cutout filter (matches cell 9's c1|c2|c3|c4)
-            keep = _cutout_kept(xyz)
-            xyz = xyz[keep]
-            if len(xyz) < 2:
-                continue
-            mag_chunks_xyz.append(xyz)
-            mag_chunks_idx.append(np.full(len(xyz), path_idx, dtype=np.int64))
-            path_idx += 1
-
-    ang_chunks_xyz, ang_chunks_idx = [], []
-    for lvl, paths in angle_paths:
-        for xy in paths:
-            z = surface.mag_at(xy[:, 1], xy[:, 0])
-            # Cell 9: angle contours drop vertices where |zeta| > 6 BEFORE cutout.
-            mask = z <= z_limit
-            xy_kept = xy[mask]
-            z_kept = z[mask]
-            if len(xy_kept) < 2:
-                continue
-            xyz = np.column_stack([xy_kept, z_kept])
-            keep = _cutout_kept(xyz)
-            xyz = xyz[keep]
-            if len(xyz) < 2:
-                continue
-            ang_chunks_xyz.append(xyz)
-            ang_chunks_idx.append(np.full(len(xyz), path_idx, dtype=np.int64))
-            path_idx += 1
-
-    # Peak contours: cell 10 — same extractor as magnitude, additionally
-    # filtered to |imag| < 5 (focuses detail on the s=1 pole region).
-    peak_chunks_xyz, peak_chunks_idx = [], []
-    for lvl, paths in peak_paths:
-        for xy in paths:
-            z = np.full(len(xy), lvl)
-            xyz = np.column_stack([xy, z])
-            keep = _cutout_kept(xyz)
-            xyz = xyz[keep]
-            xyz = xyz[(xyz[:, 0] < 5) & (xyz[:, 0] > -5)]
-            if len(xyz) < 2:
-                continue
-            peak_chunks_xyz.append(xyz)
-            peak_chunks_idx.append(np.full(len(xyz), path_idx, dtype=np.int64))
-            path_idx += 1
+    # Magnitude isocontours sit at their level; angle contours take the
+    # unclamped surface magnitude and drop vertices above z_limit (cell 9 does
+    # this before the cutout). All are restricted to the staircase kept region
+    # (cell 9's c1|c2|c3|c4 == _cutout_kept).
+    mag_xyz, mag_idx, path_idx = surface.lift_contours(
+        mag_paths, start=0, height="level", keep=_cutout_kept)
+    ang_xyz, ang_idx, path_idx = surface.lift_contours(
+        angle_paths, start=path_idx, height="magnitude",
+        keep=lambda xyz: (xyz[:, 2] <= z_limit) & _cutout_kept(xyz))
+    # Peak contours (cell 10): magnitude levels, additionally restricted to
+    # |imag| < 5 (focuses detail on the s=1 pole region).
+    peak_xyz, peak_idx, path_idx = surface.lift_contours(
+        peak_paths, start=path_idx, height="level",
+        keep=lambda xyz: _cutout_kept(xyz) & (xyz[:, 0] < 5) & (xyz[:, 0] > -5))
 
     timer.tick("top_xyz boundary curves")
     # Cell 11's top_xyz: sample the actual surface (|zeta|) along the cutout
@@ -181,11 +146,10 @@ def main():
     add_curve(np.linspace(-28, 28, 1000), np.full(1000, r_max))
     add_curve(np.full(100, 28.0), np.linspace(top_rear_cutoff, r_max, 100))
 
-    # Concatenate everything into major_data
-    all_chunks_xyz = mag_chunks_xyz + ang_chunks_xyz + peak_chunks_xyz + top_xyz_chunks
-    all_chunks_idx = mag_chunks_idx + ang_chunks_idx + peak_chunks_idx + top_idx_chunks
-    major_data = np.concatenate(all_chunks_xyz)
-    major_indices = np.concatenate(all_chunks_idx)
+    # Concatenate everything into major_data: the three contour families
+    # (already assembled) plus the per-edge boundary curves.
+    major_data = np.concatenate([mag_xyz, ang_xyz, peak_xyz] + top_xyz_chunks)
+    major_indices = np.concatenate([mag_idx, ang_idx, peak_idx] + top_idx_chunks)
     print(f"      {len(major_data)} total contour+boundary vertices "
           f"across {path_idx} paths")
 
