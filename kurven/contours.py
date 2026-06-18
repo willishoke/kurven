@@ -263,6 +263,51 @@ def _segs_per_level_from_array(
     return out
 
 
+def contour_levels(array, levels, real_bounds, imag_bounds, *, chunk_count=None):
+    """Marching-squares contours per level via contourpy's threaded backend,
+    mapped from grid-index space into domain coords (col 0 = imag, col 1 = real).
+
+    Unlike `extract_contours`/`contour_adaptive`, this keeps every level's paths
+    independently (no cross-level dedup) and returns them in level order — what
+    the analytic-landscape examples want: each contour level is a distinct
+    visual stratum, lifted to 3D and tagged with its own running path index
+    downstream (see `Surface.lift_contours`). Threaded-backend chunk seams are
+    welded with `_stitch_chunk_seams`.
+
+    `chunk_count` defaults to `os.cpu_count()`. Pass 1 for fully deterministic
+    output (single chunk → no seam-stitch ordering), e.g. in tests.
+
+    Returns: list of `(level_value, [ (N, 2) array, ... ])`, one tuple per level.
+    """
+    import os
+    import contourpy
+
+    r_min, r_max = real_bounds
+    i_min, i_max = imag_bounds
+    n_real, n_imag = array.shape
+    if chunk_count is None:
+        chunk_count = max(1, os.cpu_count() or 1)
+    gen = contourpy.contour_generator(
+        z=array, name="threaded",
+        line_type=contourpy.LineType.Separate,
+        chunk_count=chunk_count,
+    )
+    out = []
+    for lvl in levels:
+        converted = []
+        for seg in _stitch_chunk_seams(gen.lines(float(lvl))):
+            if len(seg) < 2:
+                continue
+            xy = seg.copy()
+            xy[:, 0] *= (i_max - i_min) / n_imag
+            xy[:, 0] += i_min
+            xy[:, 1] *= (r_max - r_min) / n_real
+            xy[:, 1] += r_min
+            converted.append(xy)
+        out.append((float(lvl), converted))
+    return out
+
+
 def _stitch_chunk_seams(paths):
     """Weld contourpy chunk-boundary pieces of one level via exact endpoint
     matching. Across a chunk boundary, both pieces share identical coordinates

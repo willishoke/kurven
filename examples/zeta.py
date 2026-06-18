@@ -15,48 +15,24 @@ Run:
 """
 
 import argparse
-import os
-import time
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.special
 from scipy.spatial import Delaunay
-from scipy.spatial.transform import Rotation as R
 
-import contourpy
-
-from kurven.contours import _stitch_chunk_seams
+from kurven.bench import PhaseTimer
+from kurven.contours import contour_levels
 from kurven.outline import clip_hidden_lines
+from kurven.projection import Projection
+from kurven.scaffold import wall_hatch
+from kurven.surface import Surface
 from kurven.zbuffer import (
     ZBuffer,
     rasterize_triangles,
     rasterize_triangles_gpu,
 )
-
-
-_TIMINGS = []
-_LAST_TICK = [None]
-
-
-def _tick(name):
-    now = time.perf_counter()
-    if _LAST_TICK[0] is not None:
-        dt = now - _LAST_TICK[0][1]
-        _TIMINGS.append((_LAST_TICK[0][0], dt))
-        print(f"  [{_LAST_TICK[0][0]:>26s}] {dt:7.2f}s", flush=True)
-    _LAST_TICK[0] = (name, now)
-
-
-def _tick_done():
-    _tick("__end__")
-    _TIMINGS.pop()
-    total = sum(dt for _, dt in _TIMINGS)
-    print("  " + "-" * 40)
-    for name, dt in _TIMINGS:
-        print(f"  [{name:>26s}] {dt:7.2f}s  {100*dt/total:4.1f}%")
-    print(f"  [{'total':>26s}] {total:7.2f}s")
 
 
 DEFAULT_CACHE = "/Users/willishoke/journal/2401/zeta_5000.npy"
@@ -72,34 +48,6 @@ def _cutout_kept(xyz_view):
     c3 = (im > -15) & (re > -0.5) & (im < 28) & (im > -28)
     c4 = (re > 0.5) & (im > -28) & (im < 28)
     return c1 | c2 | c3 | c4
-
-
-def _contour_per_level(array, levels, real_bounds, imag_bounds):
-    """contourpy direct (threaded + chunked + stitched). Returns
-    [(level, [list of (N,2) arrays in (imag, real) real-coord]), ...]."""
-    r_min, r_max = real_bounds
-    i_min, i_max = imag_bounds
-    n_real, n_imag = array.shape
-    gen = contourpy.contour_generator(
-        z=array, name="threaded",
-        line_type=contourpy.LineType.Separate,
-        chunk_count=max(1, os.cpu_count() or 1),
-    )
-    out = []
-    for lvl in levels:
-        segs = _stitch_chunk_seams(gen.lines(float(lvl)))
-        converted = []
-        for seg in segs:
-            if len(seg) < 2:
-                continue
-            xy = seg.copy()
-            xy[:, 0] *= (i_max - i_min) / n_imag
-            xy[:, 0] += i_min
-            xy[:, 1] *= (r_max - r_min) / n_real
-            xy[:, 1] += r_min
-            converted.append(xy)
-        out.append((float(lvl), converted))
-    return out
 
 
 def main():
@@ -118,101 +66,46 @@ def main():
         matplotlib.use(args.backend)
     buffer_shape = (args.buffer, args.buffer)
     progress = not args.no_progress
+    timer = PhaseTimer()
 
     r_min, r_max = -6.0, 8.0
     i_min, i_max = -30.0, 30.0
     z_limit = 6.0
 
-    _tick("load cache")
+    timer.tick("load cache")
     comp = np.load(args.cache)
-    n_real, n_imag = comp.shape
-    real = np.linspace(r_min, r_max, n_real)
-    imag = np.linspace(i_min, i_max, n_imag)
-    mag = np.abs(comp)
-    angle = np.angle(comp)
+    surface = Surface.from_cache(comp, (r_min, r_max), (i_min, i_max), z_limit=z_limit)
+    mag, angle = surface.mag, surface.angle
     print(f"      cached grid: {comp.shape}, |zeta| ∈ "
           f"[{mag.min():.3f}, {mag.max():.3f}]")
-
-    def mag_at(re_val, im_val):
-        """Nearest-pixel lookup into cached |zeta| array, scalar in/scalar out."""
-        r_idx = int(np.clip(round((re_val - r_min) / (r_max - r_min) * (n_real - 1)),
-                            0, n_real - 1))
-        i_idx = int(np.clip(round((im_val - i_min) / (i_max - i_min) * (n_imag - 1)),
-                            0, n_imag - 1))
-        return float(mag[r_idx, i_idx])
-
-    def mag_at_vec(xy):
-        """Vector version: xy[:,0]=imag, xy[:,1]=real."""
-        i_idx = np.clip(
-            np.floor((xy[:, 0] - i_min) / (i_max - i_min) * (n_imag - 1) + 0.5).astype(np.int64),
-            0, n_imag - 1)
-        r_idx = np.clip(
-            np.floor((xy[:, 1] - r_min) / (r_max - r_min) * (n_real - 1) + 0.5).astype(np.int64),
-            0, n_real - 1)
-        return mag[r_idx, i_idx]
 
     # Contour levels exactly per the notebook
     mag_major_levels = np.array([0.0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0])
     angle_major_levels = np.linspace(-np.pi, np.pi, 11)
     peak_levels = [2.5, 3.5, 4.5, 5.5]
 
-    _tick("contour generation")
-    mag_paths = _contour_per_level(mag, mag_major_levels, (r_min, r_max), (i_min, i_max))
-    angle_paths = _contour_per_level(angle, angle_major_levels, (r_min, r_max), (i_min, i_max))
-    peak_paths = _contour_per_level(mag, peak_levels, (r_min, r_max), (i_min, i_max))
+    timer.tick("contour generation")
+    mag_paths = contour_levels(mag, mag_major_levels, (r_min, r_max), (i_min, i_max))
+    angle_paths = contour_levels(angle, angle_major_levels, (r_min, r_max), (i_min, i_max))
+    peak_paths = contour_levels(mag, peak_levels, (r_min, r_max), (i_min, i_max))
 
-    _tick("assemble major_data")
-    mag_chunks_xyz, mag_chunks_idx = [], []
-    path_idx = 0
-    for lvl, paths in mag_paths:
-        for xy in paths:
-            z = np.full(len(xy), lvl)
-            xyz = np.column_stack([xy, z])
-            # Apply cutout filter (matches cell 9's c1|c2|c3|c4)
-            keep = _cutout_kept(xyz)
-            xyz = xyz[keep]
-            if len(xyz) < 2:
-                continue
-            mag_chunks_xyz.append(xyz)
-            mag_chunks_idx.append(np.full(len(xyz), path_idx, dtype=np.int64))
-            path_idx += 1
+    timer.tick("assemble major_data")
+    # Magnitude isocontours sit at their level; angle contours take the
+    # unclamped surface magnitude and drop vertices above z_limit (cell 9 does
+    # this before the cutout). All are restricted to the staircase kept region
+    # (cell 9's c1|c2|c3|c4 == _cutout_kept).
+    mag_xyz, mag_idx, path_idx = surface.lift_contours(
+        mag_paths, start=0, height="level", keep=_cutout_kept)
+    ang_xyz, ang_idx, path_idx = surface.lift_contours(
+        angle_paths, start=path_idx, height="magnitude",
+        keep=lambda xyz: (xyz[:, 2] <= z_limit) & _cutout_kept(xyz))
+    # Peak contours (cell 10): magnitude levels, additionally restricted to
+    # |imag| < 5 (focuses detail on the s=1 pole region).
+    peak_xyz, peak_idx, path_idx = surface.lift_contours(
+        peak_paths, start=path_idx, height="level",
+        keep=lambda xyz: _cutout_kept(xyz) & (xyz[:, 0] < 5) & (xyz[:, 0] > -5))
 
-    ang_chunks_xyz, ang_chunks_idx = [], []
-    for lvl, paths in angle_paths:
-        for xy in paths:
-            z = mag_at_vec(xy)
-            # Cell 9: angle contours drop vertices where |zeta| > 6 BEFORE cutout.
-            mask = z <= z_limit
-            xy_kept = xy[mask]
-            z_kept = z[mask]
-            if len(xy_kept) < 2:
-                continue
-            xyz = np.column_stack([xy_kept, z_kept])
-            keep = _cutout_kept(xyz)
-            xyz = xyz[keep]
-            if len(xyz) < 2:
-                continue
-            ang_chunks_xyz.append(xyz)
-            ang_chunks_idx.append(np.full(len(xyz), path_idx, dtype=np.int64))
-            path_idx += 1
-
-    # Peak contours: cell 10 — same extractor as magnitude, additionally
-    # filtered to |imag| < 5 (focuses detail on the s=1 pole region).
-    peak_chunks_xyz, peak_chunks_idx = [], []
-    for lvl, paths in peak_paths:
-        for xy in paths:
-            z = np.full(len(xy), lvl)
-            xyz = np.column_stack([xy, z])
-            keep = _cutout_kept(xyz)
-            xyz = xyz[keep]
-            xyz = xyz[(xyz[:, 0] < 5) & (xyz[:, 0] > -5)]
-            if len(xyz) < 2:
-                continue
-            peak_chunks_xyz.append(xyz)
-            peak_chunks_idx.append(np.full(len(xyz), path_idx, dtype=np.int64))
-            path_idx += 1
-
-    _tick("top_xyz boundary curves")
+    timer.tick("top_xyz boundary curves")
     # Cell 11's top_xyz: sample the actual surface (|zeta|) along the cutout
     # polygon perimeter so the buffer has good coverage AT the polygon edges.
     # This is the piece I'd been missing entirely. Without it the buffer
@@ -220,16 +113,16 @@ def main():
     # Find boundary cutoffs the same way the notebook does.
     eps = 0.01
     top_rear_cutoff = -2.0
-    while mag_at(top_rear_cutoff, 28.0) > z_limit:
+    while surface.mag_at(top_rear_cutoff, 28.0) > z_limit:
         top_rear_cutoff += eps
     top_rear_cutoff -= eps
     top_front_cutoff = 10.0
-    while mag_at(r_min, top_front_cutoff) > z_limit:
+    while surface.mag_at(r_min, top_front_cutoff) > z_limit:
         top_front_cutoff -= eps
     top_front_cutoff += eps
 
     def sample_curve(im_arr, re_arr):
-        zs = mag_at_vec(np.column_stack([im_arr, re_arr]))
+        zs = surface.mag_at(re_arr, im_arr)
         return np.column_stack([im_arr, re_arr, zs])
 
     top_xyz_chunks, top_idx_chunks = [], []
@@ -253,11 +146,10 @@ def main():
     add_curve(np.linspace(-28, 28, 1000), np.full(1000, r_max))
     add_curve(np.full(100, 28.0), np.linspace(top_rear_cutoff, r_max, 100))
 
-    # Concatenate everything into major_data
-    all_chunks_xyz = mag_chunks_xyz + ang_chunks_xyz + peak_chunks_xyz + top_xyz_chunks
-    all_chunks_idx = mag_chunks_idx + ang_chunks_idx + peak_chunks_idx + top_idx_chunks
-    major_data = np.concatenate(all_chunks_xyz)
-    major_indices = np.concatenate(all_chunks_idx)
+    # Concatenate everything into major_data: the three contour families
+    # (already assembled) plus the per-edge boundary curves.
+    major_data = np.concatenate([mag_xyz, ang_xyz, peak_xyz] + top_xyz_chunks)
+    major_indices = np.concatenate([mag_idx, ang_idx, peak_idx] + top_idx_chunks)
     print(f"      {len(major_data)} total contour+boundary vertices "
           f"across {path_idx} paths")
 
@@ -269,25 +161,15 @@ def main():
     major_indices[major_data[:, 0] < 0] += BUMP
 
     # Projection per cell 11
-    isometric_scale_factor = -0.18
-    real_scale_factor = 0.75
-    x_angle = -79.5  # zeta2 value; cell 11 of zeta.ipynb showed 0 but the saved output uses ~-79.5
-    z_angle = -90
-    rx = R.from_euler("x", x_angle, degrees=True)
-    rz = R.from_euler("z", z_angle, degrees=True)
+    # x_angle -79.5 is the zeta2 value; cell 11 of zeta.ipynb showed 0 but the
+    # saved output uses ~-79.5. real-scale + z-clamp are zeta-specific.
+    project = Projection(shear=-0.18, x_angle=-79.5, z_angle=-90, flip_x=True,
+                         y_scale=0.75, z_clamp=z_limit)
 
-    def project(xyz):
-        out = xyz.copy()
-        out[:, 1] *= real_scale_factor
-        out[:, 2] = np.minimum(z_limit, out[:, 2])
-        out[:, 0] *= -1
-        out[:, 1] -= isometric_scale_factor * out[:, 0]
-        return rx.apply(rz.apply(out))
-
-    _tick("project major_data")
+    timer.tick("project major_data")
     major_rotated = project(major_data)
 
-    _tick("Delaunay")
+    timer.tick("Delaunay")
     # Cell 14 takes Delaunay of the FIRST TWO columns of all_data (i.e., the
     # ORIGINAL imag/real coords) and rasterizes using x_values/y_values from
     # the rotated coords. This is the bizarre buffer construction the notebook
@@ -303,18 +185,18 @@ def main():
                  y_values.min(), y_values.max(), buffer_shape)
 
     if args.gpu:
-        _tick("rasterize (gpu)")
+        timer.tick("rasterize (gpu)")
         rasterize_triangles_gpu(zb, tri.simplices, x_values, y_values, z_values)
     else:
-        _tick("rasterize")
+        timer.tick("rasterize")
         rasterize_triangles(zb, tri.simplices, x_values, y_values, z_values,
                             progress=progress)
 
-    _tick("clip contours")
+    timer.tick("clip contours")
     segments = clip_hidden_lines(zb, major_rotated, major_indices,
                                  margin=args.clip_margin)
 
-    _tick("boundary + shading lines")
+    timer.tick("boundary + shading lines")
     # base_xy_major: cutout polygon walls + vertical corners (cell 11)
     base_xyz_major_3d = [
         np.array([[28., r_min, z_limit], [28., r_min, 0.]]),
@@ -328,46 +210,42 @@ def main():
         np.array([[-14., -0.5, 0.], [-14., 0.5, 0.]]),
         np.array([[-14., 0.5, 0.], [-28., 0.5, 0.]]),
         np.array([[-28., 0.5, 0.], [-28., r_max, 0.]]),
-        np.array([[-5., -2., 0.], [-5., -2., mag_at(-2., -5.)]]),
-        np.array([[-5., -0.5, 0.], [-5., -0.5, mag_at(-0.5, -5.)]]),
-        np.array([[-14., -0.5, 0.], [-14., -0.5, mag_at(-0.5, -14.)]]),
-        np.array([[-14., 0.5, 0.], [-14., 0.5, mag_at(0.5, -14.)]]),
-        np.array([[-28., 0.5, 0.], [-28., 0.5, mag_at(0.5, -28.)]]),
-        np.array([[-28., r_max, 0.], [-28., r_max, mag_at(r_max, -28.)]]),
+        np.array([[-5., -2., 0.], [-5., -2., surface.mag_at(-2., -5.)]]),
+        np.array([[-5., -0.5, 0.], [-5., -0.5, surface.mag_at(-0.5, -5.)]]),
+        np.array([[-14., -0.5, 0.], [-14., -0.5, surface.mag_at(-0.5, -14.)]]),
+        np.array([[-14., 0.5, 0.], [-14., 0.5, surface.mag_at(0.5, -14.)]]),
+        np.array([[-28., 0.5, 0.], [-28., 0.5, surface.mag_at(0.5, -28.)]]),
+        np.array([[-28., r_max, 0.], [-28., r_max, surface.mag_at(r_max, -28.)]]),
     ]
     base_xy_major = [project(seg)[:, :2] for seg in base_xyz_major_3d]
 
-    # base_contours: vertical hatching from ground to surface, sampled along
-    # the cutout polygon edges (cell 11)
+    # base_contours: vertical hatch curtains from ground to surface, sampled
+    # along the cutout polygon edges (cell 11). One wall_hatch per edge — the
+    # first four run along imag (const real), the last three along real.
     base_density = 6
-    base_contours_3d = []
-
-    def add_vertical(re_v, im_v):
-        h = min(z_limit, mag_at(re_v, im_v))
-        base_contours_3d.append(np.array([[im_v, re_v, 0.0], [im_v, re_v, h]]))
-
-    for im in np.linspace(28, 0, int(28 * base_density))[1:-1]:
-        add_vertical(r_min, im)
-    for im in np.linspace(0, -5, int(5 * base_density))[1:-1]:
-        add_vertical(-2.0, im)
-    for im in np.linspace(-5, -14, int(9 * base_density))[1:-1]:
-        add_vertical(-0.5, im)
-    for im in np.linspace(-14, -28, int(14 * base_density))[1:-1]:
-        add_vertical(0.5, im)
-    for re in np.linspace(-2, -0.5, int(2 * 2.5 * base_density))[1:-1]:
-        add_vertical(re, -5.0)
-    for re in np.linspace(-0.5, 0.5, int(2 * base_density))[1:-1]:
-        add_vertical(re, -14.0)
-    for re in np.linspace(0.5, r_max, int(2 * (r_max - 0.5) * base_density))[1:-1]:
-        add_vertical(re, -28.0)
-    base_contours_xy = [project(seg)[:, :2] for seg in base_contours_3d]
+    s1 = np.linspace(28, 0, int(28 * base_density))[1:-1]
+    s2 = np.linspace(0, -5, int(5 * base_density))[1:-1]
+    s3 = np.linspace(-5, -14, int(9 * base_density))[1:-1]
+    s4 = np.linspace(-14, -28, int(14 * base_density))[1:-1]
+    s5 = np.linspace(-2, -0.5, int(2 * 2.5 * base_density))[1:-1]
+    s6 = np.linspace(-0.5, 0.5, int(2 * base_density))[1:-1]
+    s7 = np.linspace(0.5, r_max, int(2 * (r_max - 0.5) * base_density))[1:-1]
+    base_contours_xy = (
+        wall_hatch(s1, np.full_like(s1, r_min), surface, project)
+        + wall_hatch(s2, np.full_like(s2, -2.0), surface, project)
+        + wall_hatch(s3, np.full_like(s3, -0.5), surface, project)
+        + wall_hatch(s4, np.full_like(s4, 0.5), surface, project)
+        + wall_hatch(np.full_like(s5, -5.0), s5, surface, project)
+        + wall_hatch(np.full_like(s6, -14.0), s6, surface, project)
+        + wall_hatch(np.full_like(s7, -28.0), s7, surface, project)
+    )
 
     # top_contours: horizontal hatching at z=6 marking the s=1 pole cap (cell 11)
     top_contours_3d = []
     for im in np.linspace(28, top_front_cutoff,
                           max(2, int((28 - top_front_cutoff) * base_density // 2)))[1:-1]:
         cutoff = r_min
-        while mag_at(cutoff, im) > z_limit:
+        while surface.mag_at(cutoff, im) > z_limit:
             cutoff += eps
         top_contours_3d.append(np.array([[im, r_min, z_limit],
                                          [im, cutoff - eps, z_limit]]))
@@ -377,7 +255,7 @@ def main():
           f"{len(base_contours_xy)} vertical, "
           f"{len(top_contours_xy)} top")
 
-    _tick("save hi_res.svg")
+    timer.tick("save hi_res.svg")
     fig, ax = plt.subplots(figsize=(16, 16))
     for xy in segments:
         ax.plot(xy[:, 0], xy[:, 1], lw=0.4, c="k")
@@ -391,7 +269,7 @@ def main():
     ax.axis("off")
     fig.savefig(f"{args.output_prefix}_hi_res.svg")
     plt.close(fig)
-    _tick_done()
+    timer.done()
     print(f"Wrote {args.output_prefix}_hi_res.svg.")
 
 

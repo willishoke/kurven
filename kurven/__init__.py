@@ -7,12 +7,13 @@ from kurven.sampling import (
 )
 from kurven.contours import (
     contour_adaptive,
+    contour_levels,
     decimate_outside_critical_zone,
     extract_contours,
     group_by_index,
     mirror_x,
 )
-from kurven.projection import isometric_project, rotate_xz
+from kurven.projection import Projection, isometric_project, rotate_xz
 from kurven.zbuffer import (
     ZBuffer,
     rasterize_triangles,
@@ -28,10 +29,12 @@ __all__ = [
     "gradient_zones",
     "sample_adaptive",
     "contour_adaptive",
+    "contour_levels",
     "extract_contours",
     "decimate_outside_critical_zone",
     "mirror_x",
     "group_by_index",
+    "Projection",
     "isometric_project",
     "rotate_xz",
     "ZBuffer",

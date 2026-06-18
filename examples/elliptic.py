@@ -16,48 +16,24 @@ Run:
 """
 
 import argparse
-import os
-import time
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.special as sp
-from scipy.spatial.transform import Rotation as R
 
-import contourpy
-
-from kurven.contours import _stitch_chunk_seams
+from kurven.bench import PhaseTimer
+from kurven.contours import contour_levels
+from kurven.occluder import build_occluder
 from kurven.outline import clip_hidden_lines
+from kurven.perimeter import Edge, Perimeter
+from kurven.projection import Projection
+from kurven.surface import Surface
 from kurven.zbuffer import (
     ZBuffer,
     rasterize_triangles,
     rasterize_triangles_gpu,
-    surface_grid_mesh,
 )
-
-
-_TIMINGS = []
-_LAST_TICK = [None]
-
-
-def _tick(name):
-    now = time.perf_counter()
-    if _LAST_TICK[0] is not None:
-        dt = now - _LAST_TICK[0][1]
-        _TIMINGS.append((_LAST_TICK[0][0], dt))
-        print(f"  [{_LAST_TICK[0][0]:>26s}] {dt:7.2f}s", flush=True)
-    _LAST_TICK[0] = (name, now)
-
-
-def _tick_done():
-    _tick("__end__")
-    _TIMINGS.pop()
-    total = sum(dt for _, dt in _TIMINGS)
-    print("  " + "-" * 40)
-    for name, dt in _TIMINGS:
-        print(f"  [{name:>26s}] {dt:7.2f}s  {100*dt/total:4.1f}%")
-    print(f"  [{'total':>26s}] {total:7.2f}s")
 
 
 def _cn(z, m):
@@ -83,32 +59,6 @@ def _ellipj_complex_cn(z, m):
     return (num_re + 1j * num_im) / denom
 
 
-def _contour_per_level(array, levels, real_bounds, imag_bounds):
-    r_min, r_max = real_bounds
-    i_min, i_max = imag_bounds
-    n_real, n_imag = array.shape
-    gen = contourpy.contour_generator(
-        z=array, name="threaded",
-        line_type=contourpy.LineType.Separate,
-        chunk_count=max(1, os.cpu_count() or 1),
-    )
-    out = []
-    for lvl in levels:
-        segs = _stitch_chunk_seams(gen.lines(float(lvl)))
-        converted = []
-        for seg in segs:
-            if len(seg) < 2:
-                continue
-            xy = seg.copy()
-            xy[:, 0] *= (i_max - i_min) / n_imag
-            xy[:, 0] += i_min
-            xy[:, 1] *= (r_max - r_min) / n_real
-            xy[:, 1] += r_min
-            converted.append(xy)
-        out.append((float(lvl), converted))
-    return out
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--res", type=int, default=2000,
@@ -128,6 +78,7 @@ def main():
         matplotlib.use(args.backend)
     buffer_shape = (args.buffer, args.buffer)
     progress = not args.no_progress
+    timer = PhaseTimer()
 
     # Constants from cell 1
     m = 0.8 ** 2
@@ -145,14 +96,14 @@ def main():
     K_eff = K - 2 * eps
     K_prime_eff = K_prime - 2 * eps
 
-    _tick("sample tile")
+    timer.tick("sample tile")
     res = args.res
     real = np.linspace(r_min, r_max, res)
     imag = np.linspace(i_min, i_max, res)
-    grid = real[:, None] + 1j * imag
-    cn = _ellipj_complex_cn(grid, m)
-    mag = np.abs(cn)
-    angle = np.angle(cn)
+    surface = Surface.from_function(
+        lambda z: _ellipj_complex_cn(z, m), real, imag, z_limit=z_limit)
+    mag = surface.mag
+    angle = surface.angle
     print(f"      tile: shape={mag.shape}, |cn| ∈ [{mag.min():.3f}, {mag.max():.3f}]")
 
     # Contour levels per cell 1
@@ -161,45 +112,23 @@ def main():
     ang_major_levels = np.linspace(-np.pi / 2, 0, 6)
     ang_minor_levels = np.setdiff1d(np.linspace(-np.pi / 2, 0, 21), ang_major_levels)
 
-    _tick("contour generation")
-    mag_major_paths = _contour_per_level(mag, mag_major_levels, (r_min, r_max), (i_min, i_max))
-    mag_minor_paths = _contour_per_level(mag, mag_minor_levels, (r_min, r_max), (i_min, i_max))
-    ang_major_paths = _contour_per_level(angle, ang_major_levels, (r_min, r_max), (i_min, i_max))
-    ang_minor_paths = _contour_per_level(angle, ang_minor_levels, (r_min, r_max), (i_min, i_max))
+    timer.tick("contour generation")
+    mag_major_paths = contour_levels(mag, mag_major_levels, (r_min, r_max), (i_min, i_max))
+    mag_minor_paths = contour_levels(mag, mag_minor_levels, (r_min, r_max), (i_min, i_max))
+    ang_major_paths = contour_levels(angle, ang_major_levels, (r_min, r_max), (i_min, i_max))
+    ang_minor_paths = contour_levels(angle, ang_minor_levels, (r_min, r_max), (i_min, i_max))
 
-    _tick("build tile data")
-    # For each path, build xyz where z = |cn| at vertex (clipped at 4), and
-    # tag with a global index. Matches cell 3's `extractContours`.
-    def paths_to_xyz_idx(paths, start_idx):
-        chunks_xyz, chunks_idx = [], []
-        path_idx = start_idx
-        for _, segs in paths:
-            for xy in segs:
-                if len(xy) < 2:
-                    continue
-                z = np.minimum(
-                    z_limit,
-                    np.abs(_ellipj_complex_cn(xy[:, 1] + 1j * xy[:, 0], m)),
-                )
-                xyz = np.column_stack([xy, z])
-                chunks_xyz.append(xyz)
-                chunks_idx.append(np.full(len(xy), path_idx, dtype=np.int64))
-                path_idx += 1
-        if not chunks_xyz:
-            return np.zeros((0, 3)), np.zeros(0, dtype=np.int64), path_idx
-        return (
-            np.concatenate(chunks_xyz),
-            np.concatenate(chunks_idx),
-            path_idx,
-        )
-
+    timer.tick("build tile data")
+    # For each path, build xyz where z = |cn| at vertex (clipped at 4 via
+    # Surface.height_at), and tag with a global index. Matches cell 3's
+    # `extractContours`.
     p = 0
-    mag_major_tile, mag_major_idx_tile, p = paths_to_xyz_idx(mag_major_paths, p)
-    mag_minor_tile, mag_minor_idx_tile, p = paths_to_xyz_idx(mag_minor_paths, p)
-    ang_major_tile, ang_major_idx_tile, p = paths_to_xyz_idx(ang_major_paths, p)
-    ang_minor_tile, ang_minor_idx_tile, p = paths_to_xyz_idx(ang_minor_paths, p)
+    mag_major_tile, mag_major_idx_tile, p = surface.lift_contours(mag_major_paths, start=p)
+    mag_minor_tile, mag_minor_idx_tile, p = surface.lift_contours(mag_minor_paths, start=p)
+    ang_major_tile, ang_major_idx_tile, p = surface.lift_contours(ang_major_paths, start=p)
+    ang_minor_tile, ang_minor_idx_tile, p = surface.lift_contours(ang_minor_paths, start=p)
 
-    _tick("tile 3x6 with reflections")
+    timer.tick("tile 3x6 with reflections")
     # Reproduce cell 3's tiling: 3 columns (imag direction) × 6 rows (real
     # direction). Even columns are reflected across the imag axis; even rows
     # are reflected across the real axis.
@@ -235,7 +164,7 @@ def main():
         diff = np.abs(mag_major_data[:, 2:3] - mag_major_levels.reshape(1, -1))
         mag_major_data[:, 2] = mag_major_levels[np.argmin(diff, axis=1)]
 
-    _tick("angle_major_zeros")
+    timer.tick("angle_major_zeros")
     # Cell 3: extra angle major contours along K_prime*i (imag axis) and K*r
     # (real axis) for i, r in their respective ranges. These add the radial
     # phase lines through each spire.
@@ -269,7 +198,7 @@ def main():
     ang_major_data = np.vstack([ang_major_data] + ang_zeros_chunks_xyz)
     ang_major_indices = np.hstack([ang_major_indices] + ang_zeros_chunks_idx)
 
-    _tick("angle minor truncation")
+    timer.tick("angle minor truncation")
     # Cell 3's diff-and-even-K filter: keep only angle minor vertices on
     # transitions AND not near (even K, odd K_prime) lattice intersections.
     def trim_angle(data, indices, eps=0.01):
@@ -288,19 +217,9 @@ def main():
     ang_minor_data, ang_minor_indices = trim_angle(ang_minor_data, ang_minor_indices)
     ang_major_data, ang_major_indices = trim_angle(ang_major_data, ang_major_indices)
 
-    _tick("project")
+    timer.tick("project")
     # Cell 4 projection
-    isometric_scale_factor = 0.51
-    x_angle = -63
-    z_angle = -90
-    rx = R.from_euler("x", x_angle, degrees=True)
-    rz = R.from_euler("z", z_angle, degrees=True)
-
-    def project(xyz):
-        out = xyz.copy()
-        out[:, 0] *= -1
-        out[:, 1] -= isometric_scale_factor * out[:, 0]
-        return rx.apply(rz.apply(out))
+    project = Projection(shear=0.51, x_angle=-63, z_angle=-90, flip_x=True)
 
     major_data = np.vstack((mag_major_data, ang_major_data))
     major_indices = np.hstack((mag_major_indices, ang_major_indices))
@@ -310,7 +229,7 @@ def main():
     minor_rotated = project(minor_data)
     print(f"      major: {len(major_data)} verts, minor: {len(minor_data)} verts")
 
-    _tick("build occluder mesh")
+    timer.tick("build occluder mesh")
     # Build the Z-buffer occluder by directly meshing the surfaces that actually
     # block sight lines, instead of running Delaunay over scattered contour
     # vertices. Delaunay triangulates the convex hull, so the non-convex contour
@@ -325,10 +244,6 @@ def main():
     # watertight stitching is needed; the cutout concavity is handled by
     # omission, not bridging. Caps fall out of the clamp (the flat plateau).
     occ_step = max(1, res // args.occluder_res)
-    g_im = imag[::occ_step]
-    g_re = real[::occ_step]
-    g_z = np.minimum(z_limit, mag[::occ_step, ::occ_step])  # [re, im] -> height
-    tile_grid, grid_tris = surface_grid_mesh(g_im, g_re, g_z)
 
     def _tile_xform(V, i, r):
         # Same reflection/offset as tile_data, applied to grid vertices.
@@ -343,48 +258,26 @@ def main():
             d[:, 1] = d[:, 1] + r * K_eff
         return d
 
-    def _cn_h(re_a, im_a):
-        return np.minimum(z_limit, np.abs(_ellipj_complex_cn(re_a + 1j * im_a, m)))
-
-    def _wall(perim_imre, heights):
-        # Ruled strip: perimeter polyline extruded from z=0 up to the surface.
-        n = len(perim_imre)
-        a = np.arange(n - 1)
-        V = np.vstack([np.column_stack([perim_imre, heights]),
-                       np.column_stack([perim_imre, np.zeros(n)])])
-        T = np.vstack([np.stack([a, a + 1, a + n], axis=1),
-                       np.stack([a + 1, a + 1 + n, a + n], axis=1)])
-        return V, T
-
     nw = 300
-    re1 = np.linspace(-K, 0, nw)
-    im2 = np.linspace(-K_prime, 0, nw)
-    re3 = np.linspace(0, 5 * K, 5 * nw)
-    im4 = np.linspace(0, 3 * K_prime, 3 * nw)
-    walls = [
-        _wall(np.column_stack([np.full(nw, -K_prime), re1]), _cn_h(re1, -K_prime)),
-        _wall(np.column_stack([im2, np.zeros(nw)]), _cn_h(0.0, im2)),
-        _wall(np.column_stack([np.zeros(len(re3)), re3]), _cn_h(re3, 0.0)),
-        _wall(np.column_stack([im4, np.full(len(im4), 5 * K)]), _cn_h(5 * K, im4)),
-    ]
-
-    pieces = [tile_grid] + [_tile_xform(tile_grid, i, r)
-                            for i in range(3) for r in range(6)]
-    occ_v, occ_t, voff = [], [], 0
-    for V in pieces:
-        occ_v.append(V)
-        occ_t.append(grid_tris + voff)
-        voff += len(V)
-    for V, T in walls:
-        occ_v.append(V)
-        occ_t.append(T + voff)
-        voff += len(V)
-    occ_verts = np.vstack(occ_v)
-    occ_tris = np.vstack(occ_t)
+    # The cutout boundary, defined once here and reused below for the ground
+    # polygon and the base-contour hatch. Four edges; the long real-axis edge
+    # and the back edge are 5x/3x longer, so sampled 5x/3x denser.
+    cutout = Perimeter([
+        Edge((-K_prime, -K), (-K_prime, 0)),     # front (im = -K')
+        Edge((-K_prime, 0), (0, 0)),             # left  (re = 0)
+        Edge((0, 0), (0, 5 * K)),                # long  (im = 0, the real axis)
+        Edge((0, 5 * K), (3 * K_prime, 5 * K)),  # back  (re = 5K)
+    ])
+    walls = cutout.wall_curtains(surface, [nw, nw, 5 * nw, 3 * nw])
+    tile_transforms = [lambda V, i=i, r=r: _tile_xform(V, i, r)
+                       for i in range(3) for r in range(6)]
+    occ_verts, occ_tris = build_occluder(
+        surface, occ_step, walls=walls, tile_transforms=tile_transforms)
     print(f"      occluder: {len(occ_verts)} verts, {len(occ_tris)} tris "
-          f"({len(g_re)}x{len(g_im)} grid x{len(pieces)} tiles + {len(walls)} walls)")
+          f"({len(real[::occ_step])}x{len(imag[::occ_step])} grid "
+          f"x{1 + len(tile_transforms)} tiles + {len(walls)} walls)")
 
-    _tick("rasterize buffer")
+    timer.tick("rasterize buffer")
     occ_rot = project(occ_verts)
     ox, oy, oz = occ_rot[:, 0], occ_rot[:, 1], occ_rot[:, 2]
     # Buffer frame must also cover the contour points clip_hidden_lines looks up.
@@ -397,13 +290,13 @@ def main():
     else:
         rasterize_triangles(zb, occ_tris, ox, oy, oz, progress=progress)
 
-    _tick("clip major")
+    timer.tick("clip major")
     major_segs = clip_hidden_lines(zb, major_rotated, major_indices,
                                    margin=args.clip_margin)
     minor_segs = clip_hidden_lines(zb, minor_rotated, minor_indices,
                                    margin=args.clip_margin)
 
-    _tick("boundary geometry")
+    timer.tick("boundary geometry")
     # Cell 4: explicit cutout polygon walls + spire-base + spire-top hatching.
     # All values verbatim from cell 4 (with scipy.special.ellipj as the
     # function evaluator).
@@ -411,13 +304,13 @@ def main():
         return float(np.abs(_ellipj_complex_cn(np.array([re_v + 1j * im_v]), m)[0]))
 
     eps_b = 0.005
+    # The cutout's ground outline (its four edges at z=0) comes from the same
+    # `cutout` perimeter that built the walls and hatch. What stays bespoke here
+    # are the spire corner posts (vertical lines rising to each spire's height)
+    # and, below, the spire-cap radius lines — both genuinely spire-specific.
     base_xyz_major_3d = [
-        np.array([[-K_prime, -K, 0.0], [-K_prime, 0.0, 0.0]]),
         np.array([[-K_prime, -K - eps_b, 0.0],
                   [-K_prime, -K - eps_b, cn_mag(-K, -K_prime)]]),
-        np.array([[-K_prime, 0.0, 0.0], [0.0, 0.0, 0.0]]),
-        np.array([[0.0, 0.0, 0.0], [0.0, 5 * K, 0.0]]),
-        np.array([[0.0, 5 * K, 0.0], [3 * K_prime, 5 * K, 0.0]]),
         np.array([[-K_prime, -K, 0.0],
                   [-K_prime, -K, cn_mag(-K, -K_prime)]]),
         np.array([[-K_prime, 0.0, 0.0], [-K_prime, 0.0, z_limit]]),
@@ -449,31 +342,24 @@ def main():
     base_xyz_major_3d.append(np.array([[3 * K_prime, 4 * K - real_radius, z_limit],
                                        [3 * K_prime, 4 * K + real_radius, z_limit]]))
 
-    base_xy_major = [project(seg)[:, :2] for seg in base_xyz_major_3d]
+    base_xy_major = cutout.ground_polygon(project) + [
+        project(seg)[:, :2] for seg in base_xyz_major_3d]
 
-    # base_contours: vertical hatching from ground to surface along the
-    # cutout perimeter (per cell 4)
-    base_contour_density = 40
-    base_contours_3d = []
-
-    for i in np.linspace(-K, 0, base_contour_density)[1:-1]:
-        h = -3 * eps_b + min(z_limit, cn_mag(i, -K_prime))
-        base_contours_3d.append(np.array([[-K_prime, i, eps_b],
-                                          [-K_prime, i, h]]))
-    for i in np.linspace(-K_prime, 0, base_contour_density)[1:-1]:
-        h = -eps_b + min(z_limit, cn_mag(0.0, i))
-        base_contours_3d.append(np.array([[i, 0.0, eps_b],
-                                          [i, 0.0, h]]))
-    for i in np.linspace(0, 5 * K, 5 * base_contour_density)[1:-1]:
-        h = -eps_b + min(z_limit, cn_mag(i, 0.0))
-        base_contours_3d.append(np.array([[0.0, i, eps_b],
-                                          [0.0, i, h]]))
-    for i in np.linspace(0, 3 * K_prime, 3 * base_contour_density)[1:-1]:
-        h = -eps_b + min(z_limit, cn_mag(5 * K, i))
-        base_contours_3d.append(np.array([[i, 5 * K, eps_b],
-                                          [i, 5 * K, h]]))
-
-    base_contours_xy = [project(seg)[:, :2] for seg in base_contours_3d]
+    # base_contours: vertical hatch curtains from ground to surface along the
+    # same cutout perimeter that built the occluder walls (per cell 4). Trimmed
+    # at shared corners; the front edge tucks 3*eps_b under the silhouette, the
+    # rest 1*eps_b. Same edge density ratios as the walls (1, 1, 5, 3).
+    bc = 40
+    base_contours_xy = (
+        cutout.edges[0].wall_hatch(surface, project, bc, trim=True,
+                                   base=eps_b, top_offset=-3 * eps_b)
+        + cutout.edges[1].wall_hatch(surface, project, bc, trim=True,
+                                     base=eps_b, top_offset=-eps_b)
+        + cutout.edges[2].wall_hatch(surface, project, 5 * bc, trim=True,
+                                     base=eps_b, top_offset=-eps_b)
+        + cutout.edges[3].wall_hatch(surface, project, 3 * bc, trim=True,
+                                     base=eps_b, top_offset=-eps_b)
+    )
 
     # top_contours: horizontal hatching at z=4 marking each spire's cap
     top_contour_density = 16
@@ -499,7 +385,7 @@ def main():
           f"{len(base_contours_xy)} vertical, "
           f"{len(top_contours_xy)} top")
 
-    _tick("save hi_res.svg")
+    timer.tick("save hi_res.svg")
     fig, ax = plt.subplots(figsize=(16, 12))
     for xy in major_segs:
         ax.plot(xy[:, 0], xy[:, 1], lw=0.3, c="k")
@@ -515,7 +401,7 @@ def main():
     ax.axis("off")
     fig.savefig(f"{args.output_prefix}_hi_res.svg")
     plt.close(fig)
-    _tick_done()
+    timer.done()
     print(f"Wrote {args.output_prefix}_hi_res.svg.")
 
 
