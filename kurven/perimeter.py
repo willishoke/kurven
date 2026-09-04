@@ -81,10 +81,27 @@ class Perimeter:
             Edge((i0, r1), (i1, r1)),   # right (re = r1)
         ])
 
+    def is_closed(self, tol=1e-9):
+        """True when the edges form a traversal — each edge's end is the next
+        one's start, and the last closes onto the first.
+
+        Not every `Perimeter` is one. `rectangle()` emits front/back/left/right
+        because that is the order its consumers want to index (the front edge is
+        `edges[0]`), which is a set of walls, not a loop. Only a traversal has an
+        interior, so only a traversal can answer `contains`.
+        """
+        n = len(self.edges)
+        return n >= 3 and all(
+            abs(self.edges[k].end[0] - self.edges[(k + 1) % n].start[0]) <= tol
+            and abs(self.edges[k].end[1] - self.edges[(k + 1) % n].start[1]) <= tol
+            for k in range(n))
+
     def corners(self):
-        """The polygon's vertices, `(im, re)`, one per edge start. Meaningful
-        only for a closed perimeter, where each edge's end is the next edge's
-        start."""
+        """The polygon's vertices, `(im, re)`, one per edge start."""
+        if not self.is_closed():
+            raise ValueError(
+                "perimeter is not a closed traversal; its edges have no interior "
+                "(Perimeter.rectangle() is a set of walls, not a loop)")
         return np.array([e.start for e in self.edges], dtype=float)
 
     def contains(self, im, re):
