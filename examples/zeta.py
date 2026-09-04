@@ -1,14 +1,28 @@
 """Riemann zeta analytic landscape.
 
-Direct port of 2401/zeta.ipynb. Uses kurven for the rasterizer and clip
-primitives but follows the notebook's Z-buffer construction faithfully:
-Delaunay-triangulate the union of contour vertices + boundary curves +
-peak contours, rasterize that mesh, clip the major contours against it.
+Ported from 2401/zeta.ipynb, with one deliberate departure: the notebook built
+its Z-buffer by Delaunay-triangulating the union of contour vertices and
+boundary curves, which produced a cutout-shaped buffer only as a side effect of
+the contour filter (no vertices in the notch, so no triangles there). That is a
+notebook trick, not a surface. Here the occluder is what it is in every other
+example — the clamped |ζ| heightfield, meshed over the staircase region and
+skirted with cut-face wall curtains — and the staircase is a single
+`Perimeter` from which the mesh mask, the walls, the ground ink and the hatch
+all derive.
 
-The notebook's approach naturally produces the right cutout because the
-contour vertices live only inside the kept region (after the c1|c2|c3|c4
-filter), and the triangulation only covers regions with vertices — so
-the buffer has a low/empty region exactly where the staircase cutout is.
+Two visible consequences, both accepted:
+
+  - The occluder now tracks the surface everywhere inside the staircase rather
+    than only where contour vertices happened to fall, so hidden-line removal
+    is correct in the vertex-free plateaus instead of accidentally permissive.
+  - The notebook's `c1|c2|c3|c4` keep-predicate disagreed with the polygon it
+    was meant to describe by one unit in imag (it kept `im > -15` where the
+    drawn ground line sits at `im = -14`). The polygon wins; a sliver of
+    contour beyond the drawn edge is gone.
+
+`Projection.z_clamp` also goes away: the cap is a property of the model, not
+the camera, so heights come from `Surface.height_at` (clamped) and the
+projection is pure camera.
 
 Run:
     python examples/zeta.py --gpu
@@ -19,14 +33,15 @@ import argparse
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.special
-from scipy.spatial import Delaunay
 
 from kurven.bench import PhaseTimer
+from kurven.bundle import Affine2, CameraPreset, PlateProjection, UniformCap
 from kurven.contours import contour_levels
+from kurven.occluder import build_occluder
 from kurven.outline import clip_hidden_lines
+from kurven.perimeter import Edge, Perimeter
 from kurven.projection import Projection
-from kurven.scaffold import wall_hatch
+from kurven.scene import InkLayer, Scene
 from kurven.surface import Surface
 from kurven.zbuffer import (
     ZBuffer,
@@ -37,234 +52,273 @@ from kurven.zbuffer import (
 
 DEFAULT_CACHE = "/Users/willishoke/journal/2401/zeta_5000.npy"
 
+R_MIN, R_MAX = -6.0, 8.0
+I_MIN, I_MAX = -30.0, 30.0
+Z_LIMIT = 6.0
 
-def _cutout_kept(xyz_view):
-    """Mirror of cell 9's c1|c2|c3|c4 filter — keep contour vertices inside
-    the staircase kept region. xyz_view col 0=imag, col 1=real."""
-    im = xyz_view[:, 0]
-    re = xyz_view[:, 1]
-    c1 = (im > 0) & (im < 28)
-    c2 = (im > -5) & (re > -2) & (im < 28) & (im > -28)
-    c3 = (im > -15) & (re > -0.5) & (im < 28) & (im > -28)
-    c4 = (re > 0.5) & (im > -28) & (im < 28)
-    return c1 | c2 | c3 | c4
+#: The staircase cutout, closed, in `(imag, real)`. Edges 0-7 are the drawn
+#: ground outline; 8 and 9 close the loop along the far and right boundaries of
+#: the sampled rectangle, where there is a cut face but no ink.
+CUTOUT_CORNERS = [
+    (28.0, R_MIN), (0.0, R_MIN), (0.0, -2.0), (-5.0, -2.0), (-5.0, -0.5),
+    (-14.0, -0.5), (-14.0, 0.5), (-28.0, 0.5), (-28.0, R_MAX), (28.0, R_MAX),
+]
+GROUND_EDGES = 8          # of the 10, the ones drawn at z = 0
+
+#: Hatch strokes per unit length along a cut face, and which edges get them
+#: (the notebook hatches every staircase edge but the short re-axis one at
+#: im = 0).
+HATCH_PER_UNIT = 6
+HATCH_EDGES = (0, 2, 4, 6, 3, 5, 7)
+#: Wall-curtain samples per unit length; the occluder wants more than the ink.
+WALL_PER_UNIT = 20
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cache", type=str, default=DEFAULT_CACHE)
-    parser.add_argument("--buffer", type=int, default=8000)
-    parser.add_argument("--output-prefix", type=str, default="zeta")
-    parser.add_argument("--no-progress", action="store_true")
-    parser.add_argument("--backend", type=str, default=None)
-    parser.add_argument("--gpu", action="store_true")
-    parser.add_argument("--clip-margin", type=float, default=0.2,
-                        help="Matches the notebook's cell 22 margin.")
-    args = parser.parse_args()
+def cutout():
+    """The staircase `Perimeter`. One definition; four consumers."""
+    n = len(CUTOUT_CORNERS)
+    return Perimeter([Edge(CUTOUT_CORNERS[i], CUTOUT_CORNERS[(i + 1) % n])
+                      for i in range(n)])
 
-    if args.backend:
-        matplotlib.use(args.backend)
-    buffer_shape = (args.buffer, args.buffer)
-    progress = not args.no_progress
-    timer = PhaseTimer()
 
-    r_min, r_max = -6.0, 8.0
-    i_min, i_max = -30.0, 30.0
-    z_limit = 6.0
+def _edge_lengths(perim):
+    return [float(np.hypot(e.end[0] - e.start[0], e.end[1] - e.start[1]))
+            for e in perim.edges]
 
-    timer.tick("load cache")
-    comp = np.load(args.cache)
-    surface = Surface.from_cache(comp, (r_min, r_max), (i_min, i_max), z_limit=z_limit)
+
+def parser():
+    p = argparse.ArgumentParser()
+    p.add_argument("--cache", type=str, default=DEFAULT_CACHE)
+    p.add_argument("--buffer", type=int, default=8000)
+    p.add_argument("--output-prefix", type=str, default="zeta")
+    p.add_argument("--no-progress", action="store_true")
+    p.add_argument("--backend", type=str, default=None)
+    p.add_argument("--gpu", action="store_true")
+    p.add_argument("--clip-margin", type=float, default=0.2,
+                   help="Matches the notebook's cell 22 margin.")
+    p.add_argument("--occluder-res", type=int, default=2500,
+                   help="Target resolution along the cache's long axis for the "
+                        "heightfield occluder mesh.")
+    p.add_argument("--chunk-count", type=int, default=None,
+                   help="contourpy chunks; 1 makes contouring deterministic")
+    return p
+
+
+def build_scene(a, *, verbose=True, timer=None):
+    """The camera-independent half: load the cached ζ grid, contour it, lift the
+    contours, and build the staircase boundary and its ink."""
+    tick = timer.tick if timer is not None else (lambda _: None)
+
+    tick("load cache")
+    comp = np.load(a.cache)
+    surface = Surface.from_cache(comp, (R_MIN, R_MAX), (I_MIN, I_MAX),
+                                 z_limit=Z_LIMIT)
     mag, angle = surface.mag, surface.angle
-    print(f"      cached grid: {comp.shape}, |zeta| ∈ "
-          f"[{mag.min():.3f}, {mag.max():.3f}]")
+    if verbose:
+        print(f"      cached grid: {comp.shape}, |zeta| ∈ "
+              f"[{mag.min():.3f}, {mag.max():.3f}]")
+
+    perim = cutout()
+    inside = lambda xyz: perim.contains(xyz[:, 0], xyz[:, 1])
 
     # Contour levels exactly per the notebook
-    mag_major_levels = np.array([0.0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0])
-    angle_major_levels = np.linspace(-np.pi, np.pi, 11)
+    mag_levels = np.array([0.0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0,
+                           3.0, 4.0, 5.0, 6.0])
+    angle_levels = np.linspace(-np.pi, np.pi, 11)
     peak_levels = [2.5, 3.5, 4.5, 5.5]
 
-    timer.tick("contour generation")
-    mag_paths = contour_levels(mag, mag_major_levels, (r_min, r_max), (i_min, i_max))
-    angle_paths = contour_levels(angle, angle_major_levels, (r_min, r_max), (i_min, i_max))
-    peak_paths = contour_levels(mag, peak_levels, (r_min, r_max), (i_min, i_max))
+    tick("contour generation")
+    cc = a.chunk_count
+    rb, ib = (R_MIN, R_MAX), (I_MIN, I_MAX)
+    mag_paths = contour_levels(mag, mag_levels, rb, ib, chunk_count=cc)
+    angle_paths = contour_levels(angle, angle_levels, rb, ib, chunk_count=cc)
+    peak_paths = contour_levels(mag, peak_levels, rb, ib, chunk_count=cc)
 
-    timer.tick("assemble major_data")
+    tick("lift contours")
     # Magnitude isocontours sit at their level; angle contours take the
-    # unclamped surface magnitude and drop vertices above z_limit (cell 9 does
-    # this before the cutout). All are restricted to the staircase kept region
-    # (cell 9's c1|c2|c3|c4 == _cutout_kept).
-    mag_xyz, mag_idx, path_idx = surface.lift_contours(
-        mag_paths, start=0, height="level", keep=_cutout_kept)
-    ang_xyz, ang_idx, path_idx = surface.lift_contours(
-        angle_paths, start=path_idx, height="magnitude",
-        keep=lambda xyz: (xyz[:, 2] <= z_limit) & _cutout_kept(xyz))
-    # Peak contours (cell 10): magnitude levels, additionally restricted to
-    # |imag| < 5 (focuses detail on the s=1 pole region).
-    peak_xyz, peak_idx, path_idx = surface.lift_contours(
-        peak_paths, start=path_idx, height="level",
-        keep=lambda xyz: _cutout_kept(xyz) & (xyz[:, 0] < 5) & (xyz[:, 0] > -5))
+    # unclamped surface magnitude and drop vertices above the cap. All are
+    # restricted to the staircase. Peak contours are additionally restricted to
+    # |imag| < 5, which is what focuses detail on the s = 1 pole.
+    mag_xyz, mag_idx, p = surface.lift_contours(
+        mag_paths, start=0, height="level", keep=inside)
+    ang_xyz, ang_idx, p = surface.lift_contours(
+        angle_paths, start=p, height="magnitude",
+        keep=lambda xyz: (xyz[:, 2] <= Z_LIMIT) & inside(xyz))
+    peak_xyz, peak_idx, p = surface.lift_contours(
+        peak_paths, start=p, height="level",
+        keep=lambda xyz: inside(xyz) & (xyz[:, 0] < 5) & (xyz[:, 0] > -5))
 
-    timer.tick("top_xyz boundary curves")
-    # Cell 11's top_xyz: sample the actual surface (|zeta|) along the cutout
-    # polygon perimeter so the buffer has good coverage AT the polygon edges.
-    # This is the piece I'd been missing entirely. Without it the buffer
-    # near the cutout boundary doesn't track the real surface height.
-    # Find boundary cutoffs the same way the notebook does.
+    tick("rim curves")
+    # The crest of each cut face: sample the surface along the staircase so the
+    # top edge of every wall is drawn. In the notebook these existed to give the
+    # Delaunay buffer coverage at the polygon edges; with a heightfield occluder
+    # they are purely ink, and they are exactly the perimeter at surface height.
     eps = 0.01
     top_rear_cutoff = -2.0
-    while surface.mag_at(top_rear_cutoff, 28.0) > z_limit:
+    while surface.mag_at(top_rear_cutoff, 28.0) > Z_LIMIT:
         top_rear_cutoff += eps
     top_rear_cutoff -= eps
     top_front_cutoff = 10.0
-    while surface.mag_at(r_min, top_front_cutoff) > z_limit:
+    while surface.mag_at(R_MIN, top_front_cutoff) > Z_LIMIT:
         top_front_cutoff -= eps
     top_front_cutoff += eps
 
-    def sample_curve(im_arr, re_arr):
-        zs = surface.mag_at(re_arr, im_arr)
-        return np.column_stack([im_arr, re_arr, zs])
+    def rim(im_arr, re_arr):
+        return np.column_stack([im_arr, re_arr,
+                                surface.height_at(re_arr, im_arr)])
 
-    top_xyz_chunks, top_idx_chunks = [], []
-
-    def add_curve(im_arr, re_arr):
-        nonlocal path_idx
-        xyz = sample_curve(im_arr, re_arr)
-        if len(xyz) >= 2:
-            top_xyz_chunks.append(xyz)
-            top_idx_chunks.append(np.full(len(xyz), path_idx, dtype=np.int64))
-            path_idx += 1
-
-    # 9 boundary curves from cell 11
-    add_curve(np.linspace(0, top_front_cutoff, 100), np.full(100, r_min))
-    add_curve(np.linspace(0, -5, 100), np.full(100, -2.0))
-    add_curve(np.full(100, -5.0), np.linspace(-2, -0.5, 100))
-    add_curve(np.linspace(-5, -14, 100), np.full(100, -0.5))
-    add_curve(np.full(100, -14.0), np.linspace(0.5, -0.5, 100))
-    add_curve(np.linspace(-14, -28, 100), np.full(100, 0.5))
-    add_curve(np.full(100, -28.0), np.linspace(0.5, r_max, 100))
-    add_curve(np.linspace(-28, 28, 1000), np.full(1000, r_max))
-    add_curve(np.full(100, 28.0), np.linspace(top_rear_cutoff, r_max, 100))
-
-    # Concatenate everything into major_data: the three contour families
-    # (already assembled) plus the per-edge boundary curves.
-    major_data = np.concatenate([mag_xyz, ang_xyz, peak_xyz] + top_xyz_chunks)
-    major_indices = np.concatenate([mag_idx, ang_idx, peak_idx] + top_idx_chunks)
-    print(f"      {len(major_data)} total contour+boundary vertices "
-          f"across {path_idx} paths")
-
-    # Stratum-bump indices (cell 11) so paths spanning imag boundaries split.
-    BUMP = 1_000_000
-    major_indices = major_indices.copy()
-    major_indices[major_data[:, 0] < 14] += BUMP
-    major_indices[major_data[:, 0] < 5] += BUMP
-    major_indices[major_data[:, 0] < 0] += BUMP
-
-    # Projection per cell 11
-    # x_angle -79.5 is the zeta2 value; cell 11 of zeta.ipynb showed 0 but the
-    # saved output uses ~-79.5. real-scale + z-clamp are zeta-specific.
-    project = Projection(shear=-0.18, x_angle=-79.5, z_angle=-90, flip_x=True,
-                         y_scale=0.75, z_clamp=z_limit)
-
-    timer.tick("project major_data")
-    major_rotated = project(major_data)
-
-    timer.tick("Delaunay")
-    # Cell 14 takes Delaunay of the FIRST TWO columns of all_data (i.e., the
-    # ORIGINAL imag/real coords) and rasterizes using x_values/y_values from
-    # the rotated coords. This is the bizarre buffer construction the notebook
-    # uses to get the cutout-shaped buffer naturally.
-    tri = Delaunay(major_data[:, :2])
-    print(f"      {len(tri.simplices)} simplices")
-
-    x_values = major_rotated[:, 0]
-    y_values = major_rotated[:, 1]
-    z_values = major_rotated[:, 2]
-
-    zb = ZBuffer(x_values.min(), x_values.max(),
-                 y_values.min(), y_values.max(), buffer_shape)
-
-    if args.gpu:
-        timer.tick("rasterize (gpu)")
-        rasterize_triangles_gpu(zb, tri.simplices, x_values, y_values, z_values)
-    else:
-        timer.tick("rasterize")
-        rasterize_triangles(zb, tri.simplices, x_values, y_values, z_values,
-                            progress=progress)
-
-    timer.tick("clip contours")
-    segments = clip_hidden_lines(zb, major_rotated, major_indices,
-                                 margin=args.clip_margin)
-
-    timer.tick("boundary + shading lines")
-    # base_xy_major: cutout polygon walls + vertical corners (cell 11)
-    base_xyz_major_3d = [
-        np.array([[28., r_min, z_limit], [28., r_min, 0.]]),
-        np.array([[28., r_min, 0.], [0., r_min, 0.]]),
-        np.array([[28., r_min, z_limit], [28., top_rear_cutoff, z_limit]]),
-        np.array([[28., r_min, z_limit], [top_front_cutoff, r_min, z_limit]]),
-        np.array([[0., r_min, 0.], [0., -2., 0.]]),
-        np.array([[0., -2., 0.], [-5., -2., 0.]]),
-        np.array([[-5., -2., 0.], [-5., -0.5, 0.]]),
-        np.array([[-5., -0.5, 0.], [-14., -0.5, 0.]]),
-        np.array([[-14., -0.5, 0.], [-14., 0.5, 0.]]),
-        np.array([[-14., 0.5, 0.], [-28., 0.5, 0.]]),
-        np.array([[-28., 0.5, 0.], [-28., r_max, 0.]]),
-        np.array([[-5., -2., 0.], [-5., -2., surface.mag_at(-2., -5.)]]),
-        np.array([[-5., -0.5, 0.], [-5., -0.5, surface.mag_at(-0.5, -5.)]]),
-        np.array([[-14., -0.5, 0.], [-14., -0.5, surface.mag_at(-0.5, -14.)]]),
-        np.array([[-14., 0.5, 0.], [-14., 0.5, surface.mag_at(0.5, -14.)]]),
-        np.array([[-28., 0.5, 0.], [-28., 0.5, surface.mag_at(0.5, -28.)]]),
-        np.array([[-28., r_max, 0.], [-28., r_max, surface.mag_at(r_max, -28.)]]),
+    rim_3d = [
+        rim(np.linspace(0, top_front_cutoff, 100), np.full(100, R_MIN)),
+        rim(np.linspace(0, -5, 100), np.full(100, -2.0)),
+        rim(np.full(100, -5.0), np.linspace(-2, -0.5, 100)),
+        rim(np.linspace(-5, -14, 100), np.full(100, -0.5)),
+        rim(np.full(100, -14.0), np.linspace(0.5, -0.5, 100)),
+        rim(np.linspace(-14, -28, 100), np.full(100, 0.5)),
+        rim(np.full(100, -28.0), np.linspace(0.5, R_MAX, 100)),
+        rim(np.linspace(-28, 28, 1000), np.full(1000, R_MAX)),
+        rim(np.full(100, 28.0), np.linspace(top_rear_cutoff, R_MAX, 100)),
     ]
-    base_xy_major = [project(seg)[:, :2] for seg in base_xyz_major_3d]
 
-    # base_contours: vertical hatch curtains from ground to surface, sampled
-    # along the cutout polygon edges (cell 11). One wall_hatch per edge — the
-    # first four run along imag (const real), the last three along real.
-    base_density = 6
-    s1 = np.linspace(28, 0, int(28 * base_density))[1:-1]
-    s2 = np.linspace(0, -5, int(5 * base_density))[1:-1]
-    s3 = np.linspace(-5, -14, int(9 * base_density))[1:-1]
-    s4 = np.linspace(-14, -28, int(14 * base_density))[1:-1]
-    s5 = np.linspace(-2, -0.5, int(2 * 2.5 * base_density))[1:-1]
-    s6 = np.linspace(-0.5, 0.5, int(2 * base_density))[1:-1]
-    s7 = np.linspace(0.5, r_max, int(2 * (r_max - 0.5) * base_density))[1:-1]
-    base_contours_xy = (
-        wall_hatch(s1, np.full_like(s1, r_min), surface, project)
-        + wall_hatch(s2, np.full_like(s2, -2.0), surface, project)
-        + wall_hatch(s3, np.full_like(s3, -0.5), surface, project)
-        + wall_hatch(s4, np.full_like(s4, 0.5), surface, project)
-        + wall_hatch(np.full_like(s5, -5.0), s5, surface, project)
-        + wall_hatch(np.full_like(s6, -14.0), s6, surface, project)
-        + wall_hatch(np.full_like(s7, -28.0), s7, surface, project)
+    tick("boundary geometry")
+    # The staircase at z = 0, plus the corner posts that stand the cut faces up
+    # and the two radius lines across the pole cap. The ground lines come from
+    # the perimeter; only the posts are bespoke.
+    posts_3d = [
+        np.array([[28., R_MIN, Z_LIMIT], [28., R_MIN, 0.]]),
+        np.array([[28., R_MIN, Z_LIMIT], [28., top_rear_cutoff, Z_LIMIT]]),
+        np.array([[28., R_MIN, Z_LIMIT], [top_front_cutoff, R_MIN, Z_LIMIT]]),
+    ] + [
+        np.array([[im, re, 0.], [im, re, float(surface.height_at(re, im))]])
+        for im, re in [(-5., -2.), (-5., -0.5), (-14., -0.5), (-14., 0.5),
+                       (-28., 0.5), (-28., R_MAX)]
+    ]
+    ground_3d = perim.ground_polygon_3d()[:GROUND_EDGES] + posts_3d
+
+    lengths = _edge_lengths(perim)
+    hatch_3d = []
+    for k in HATCH_EDGES:
+        n = max(3, int(lengths[k] * HATCH_PER_UNIT))
+        hatch_3d += perim.edges[k].wall_hatch_3d(surface, n, trim=True)
+
+    # The pole cap at z = Z_LIMIT: horizontal strokes from the front wall in to
+    # wherever |ζ| drops back under the cap.
+    caps_3d = []
+    n_cap = max(2, int((28 - top_front_cutoff) * HATCH_PER_UNIT // 2))
+    for im in np.linspace(28, top_front_cutoff, n_cap)[1:-1]:
+        edge = R_MIN
+        while surface.mag_at(edge, im) > Z_LIMIT:
+            edge += eps
+        caps_3d.append(np.array([[im, R_MIN, Z_LIMIT], [im, edge - eps, Z_LIMIT]]))
+
+    if verbose:
+        print(f"      {len(ground_3d)} polygon lines, {len(hatch_3d)} vertical, "
+              f"{len(caps_3d)} top")
+
+    layers = (
+        InkLayer("mag", "magnitude", mag_xyz, _strata(mag_xyz, mag_idx), 0.4,
+                 height_policy="level"),
+        InkLayer("ang", "phase", ang_xyz, _strata(ang_xyz, ang_idx), 0.4,
+                 height_policy="magnitude"),
+        InkLayer("peak", "magnitude", peak_xyz, _strata(peak_xyz, peak_idx), 0.4,
+                 height_policy="level"),
+        InkLayer.from_segments("rim", "scaffold", rim_3d, 0.4),
+        InkLayer.from_segments("ground", "scaffold", ground_3d, 0.3, clipped=False),
+        InkLayer.from_segments("wall_hatch", "scaffold", hatch_3d, 0.3, clipped=False),
+        InkLayer.from_segments("cap_hatch", "scaffold", caps_3d, 0.3, clipped=False),
     )
 
-    # top_contours: horizontal hatching at z=6 marking the s=1 pole cap (cell 11)
-    top_contours_3d = []
-    for im in np.linspace(28, top_front_cutoff,
-                          max(2, int((28 - top_front_cutoff) * base_density // 2)))[1:-1]:
-        cutoff = r_min
-        while surface.mag_at(cutoff, im) > z_limit:
-            cutoff += eps
-        top_contours_3d.append(np.array([[im, r_min, z_limit],
-                                         [im, cutoff - eps, z_limit]]))
-    top_contours_xy = [project(seg)[:, :2] for seg in top_contours_3d]
+    wall_density = [max(3, int(l * WALL_PER_UNIT)) for l in lengths]
+    return Scene(
+        function="zeta",
+        params={"cache": a.cache, "rMin": R_MIN, "rMax": R_MAX, "iMin": I_MIN,
+                "iMax": I_MAX, "zLimit": Z_LIMIT,
+                "nReal": int(comp.shape[0]), "nImag": int(comp.shape[1])},
+        surface=surface,
+        layers=layers,
+        preset=CameraPreset(
+            "zeta", PlateProjection(-0.18, -79.5, -90.0, True, 0.75),
+            a.clip_margin, a.buffer),
+        caps=UniformCap(Z_LIMIT),
+        occluder_step=max(1, max(comp.shape) // a.occluder_res),
+        tiles=(Affine2.identity(),),
+        perimeter=perim.to_world(wall_density),
+        walls=tuple(perim.wall_curtains(surface, wall_density)),
+    )
 
-    print(f"      {len(base_xy_major)} polygon lines, "
-          f"{len(base_contours_xy)} vertical, "
-          f"{len(top_contours_xy)} top")
+
+#: Imag values at which a contour path is cut into separate strokes. A ζ level
+#: set can wander the full 60 units of imag; without the cuts one path welds
+#: into a single stroke that jumps the cutout.
+STRATA = (14.0, 5.0, 0.0)
+_BUMP = 1_000_000
+
+
+def _strata(xyz, indices):
+    """Split path tags by imag stratum (the notebook's BUMP arithmetic)."""
+    out = np.asarray(indices).copy()
+    for s in STRATA:
+        out[xyz[:, 0] < s] += _BUMP
+    return out
+
+
+def render_plate(scene, project, *, buffer, gpu=False, clip_margin=0.2,
+                 progress=True, verbose=True, timer=None):
+    """The camera-dependent half: project, rasterize the occluder, clip."""
+    tick = timer.tick if timer is not None else (lambda _: None)
+    perim = cutout()
+
+    tick("build occluder mesh")
+    occ_verts, occ_tris = build_occluder(
+        scene.surface, scene.occluder_step, walls=scene.walls,
+        keep=lambda im, re: perim.contains(im, re))
+    if verbose:
+        print(f"      occluder: {len(occ_verts)} verts, {len(occ_tris)} tris")
+
+    tick("project")
+    occ_rot = project(occ_verts)
+    ox, oy, oz = occ_rot[:, 0], occ_rot[:, 1], occ_rot[:, 2]
+    rotated = [project(l.xyz) for l in scene.layers]
+
+    tick("rasterize")
+    clipped = [r for l, r in zip(scene.layers, rotated) if l.clipped]
+    allr = np.vstack(clipped) if clipped else np.zeros((0, 3))
+    xs = np.concatenate([ox, allr[:, 0]])
+    ys = np.concatenate([oy, allr[:, 1]])
+    zb = ZBuffer(xs.min(), xs.max(), ys.min(), ys.max(), (buffer, buffer))
+    if gpu:
+        rasterize_triangles_gpu(zb, occ_tris, ox, oy, oz)
+    else:
+        rasterize_triangles(zb, occ_tris, ox, oy, oz, progress=progress)
+
+    tick("clip")
+    out = []
+    for layer, rot in zip(scene.layers, rotated):
+        if layer.clipped:
+            out.append((layer, clip_hidden_lines(zb, rot, layer.indices,
+                                                 margin=clip_margin)))
+        else:
+            out.append((layer, layer.split(rot[:, :2])))
+    return out
+
+
+def main():
+    args = parser().parse_args()
+    if args.backend:
+        matplotlib.use(args.backend)
+    timer = PhaseTimer()
+
+    scene = build_scene(args, timer=timer)
+    project = Projection(shear=-0.18, x_angle=-79.5, z_angle=-90, flip_x=True,
+                         y_scale=0.75)
+    drawn = render_plate(scene, project, buffer=args.buffer, gpu=args.gpu,
+                         clip_margin=args.clip_margin,
+                         progress=not args.no_progress, timer=timer)
 
     timer.tick("save hi_res.svg")
     fig, ax = plt.subplots(figsize=(16, 16))
-    for xy in segments:
-        ax.plot(xy[:, 0], xy[:, 1], lw=0.4, c="k")
-    for xy in base_xy_major:
-        ax.plot(*xy.T, c="k", lw=0.3)
-    for xy in base_contours_xy:
-        ax.plot(*xy.T, c="k", lw=0.3)
-    for xy in top_contours_xy:
-        ax.plot(*xy.T, c="k", lw=0.3)
+    for layer, segments in drawn:
+        for xy in segments:
+            ax.plot(xy[:, 0], xy[:, 1], lw=layer.width, c=layer.color)
     ax.set_aspect("equal")
     ax.axis("off")
     fig.savefig(f"{args.output_prefix}_hi_res.svg")

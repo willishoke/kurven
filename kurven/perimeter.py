@@ -81,6 +81,33 @@ class Perimeter:
             Edge((i0, r1), (i1, r1)),   # right (re = r1)
         ])
 
+    def corners(self):
+        """The polygon's vertices, `(im, re)`, one per edge start. Meaningful
+        only for a closed perimeter, where each edge's end is the next edge's
+        start."""
+        return np.array([e.start for e in self.edges], dtype=float)
+
+    def contains(self, im, re):
+        """Even-odd point-in-polygon over the closed perimeter. Broadcasts.
+
+        This is what makes a cutout one definition rather than three: the walls,
+        the ground ink, and the region the heightfield occluder is meshed over
+        all come from these same corners, instead of a hand-written predicate
+        that can drift from the polygon it is supposed to describe (zeta's did,
+        by one unit in imag).
+        """
+        im = np.asarray(im, dtype=float)
+        re = np.asarray(re, dtype=float)
+        P = self.corners()
+        inside = np.zeros(np.broadcast(im, re).shape, dtype=bool)
+        for a, b in zip(P, np.roll(P, -1, axis=0)):
+            straddles = (a[0] > im) != (b[0] > im)
+            if a[0] == b[0]:
+                continue
+            crossing = (b[1] - a[1]) * (im - a[0]) / (b[0] - a[0]) + a[1]
+            inside ^= straddles & (re < crossing)
+        return inside
+
     def wall_curtains(self, surface, density, *, base=0.0):
         """One occluder curtain per edge — pass straight to
         `build_occluder(..., walls=...)`. `density` is either an int (same for

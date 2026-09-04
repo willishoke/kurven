@@ -130,10 +130,22 @@ class Surface:
             return np.zeros((0, 3)), np.zeros(0, dtype=np.int64), path_idx
         return np.concatenate(chunks_xyz), np.concatenate(chunks_idx), path_idx
 
-    def grid_mesh(self, step=1):
+    def grid_mesh(self, step=1, *, keep=None):
         """Heightfield triangulation of the clamped surface, subsampled by
-        `step`. Vertices are (imag, real, z). Returns (vertices, triangles)."""
+        `step`. Vertices are (imag, real, z). Returns (vertices, triangles).
+
+        `keep(im, re) -> bool array` restricts the mesh to a region: it is
+        called on the (n_re, n_im) meshgrid of the subsampled vertices, in the
+        emitted `(imag, real)` order, and a cell survives only if all four of
+        its corners do. This is how a non-rectangular footprint — zeta's
+        staircase cutout — becomes an occluder: the notch is empty because no
+        triangle covers it, rather than because something masked it afterwards.
+        """
         g_im = self.imag[::step]
         g_re = self.real[::step]
         g_z = self.clamped[::step, ::step]
-        return surface_grid_mesh(g_im, g_re, g_z)
+        mask = None
+        if keep is not None:
+            IM, RE = np.meshgrid(g_im, g_re)
+            mask = keep(IM, RE)
+        return surface_grid_mesh(g_im, g_re, g_z, keep=mask)
