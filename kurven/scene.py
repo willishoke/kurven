@@ -82,7 +82,12 @@ class InkLayer:
 class Scene:
     """Everything about a plate that survives moving the camera.
 
-    `tiles` and `perimeter` are in **world** `(x = real, y = imag)` order — they
+    `region` is the footprint the heightfield is meshed over, `None` meaning the
+    whole sampled rectangle. It is a separate field from `perimeter` because the
+    two are separate facts that happen to coincide in zeta: one says where the
+    cut faces stand, the other says where there is any surface at all.
+
+    `tiles`, `perimeter` and `region` are in **world** `(x = real, y = imag)` order — they
     are descriptions destined for the manifest, not arrays the Python pipeline
     indexes, so there is no reason to carry them in the legacy order. `walls` is
     mesh data and stays in `(imag, real, z)` like every other mesh here.
@@ -97,6 +102,7 @@ class Scene:
     occluder_step: int = 1
     tiles: tuple[Affine2, ...] = (Affine2.identity(),)
     perimeter: Perimeter | None = None
+    region: Perimeter | None = None      # heightfield footprint; None = the full rectangle
     walls: tuple = ()                    # ((vertices, triangles), ...)
     wall_base: float = 0.0
 

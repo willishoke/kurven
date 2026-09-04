@@ -212,6 +212,10 @@ class Perimeter:
 
     edges: tuple[Edge, ...]
 
+    def contains(self, x, y):
+        """Even-odd point-in-polygon in world `(x, y)`. Broadcasts."""
+        return point_in_polygon(x, y, [e.start for e in self.edges])
+
     def to_dict(self):
         return {"edges": [e.to_dict() for e in self.edges]}
 
@@ -358,6 +362,42 @@ class WallPerimeter(Walls):
                 "base": float(self.base)}
 
 
+class Region:
+    """The footprint the heightfield is rasterized over.
+
+    zeta's landscape is a staircase, not a rectangle: the notch in front of the
+    s = 1 pole is where the plate cuts away to show the cross-section. The notch
+    is not a mask applied afterwards -- it is an absence of geometry, so a cell
+    contributes triangles only when all four of its corners are inside. Carrying
+    it as a polygon rather than as a second mask array is what lets the same
+    outline drive the walls, the ground ink and the mesh.
+    """
+
+    @staticmethod
+    def from_dict(d):
+        kind = _tag(d, "Region")
+        if kind == "full":
+            return FullRegion()
+        if kind == "inside":
+            return InsideRegion(
+                Perimeter.from_dict(_require(d, "perimeter", "Region.inside")))
+        raise BundleError(f"Region: unknown kind {kind!r}")
+
+
+@dataclass(frozen=True)
+class FullRegion(Region):
+    def to_dict(self):
+        return {"kind": "full"}
+
+
+@dataclass(frozen=True)
+class InsideRegion(Region):
+    perimeter: Perimeter
+
+    def to_dict(self):
+        return {"kind": "inside", "perimeter": self.perimeter.to_dict()}
+
+
 @dataclass(frozen=True)
 class Occluder:
     """What blocks sight lines.
@@ -369,18 +409,21 @@ class Occluder:
     what one affine list already says.) Only the walls are geometry, and they
     are a few thousand triangles.
 
-    `tiles` always contains the identity as its first entry.
+    `tiles` always contains the identity as its first entry, and `region` is the
+    footprint each tile is clipped to.
     """
 
     step: int
     tiles: tuple[Affine2, ...]
     walls: Walls
+    region: Region = field(default_factory=lambda: FullRegion())
     base: float = 0.0
 
     def to_dict(self):
         return {"step": int(self.step),
                 "tiles": [t.to_dict() for t in self.tiles],
                 "walls": self.walls.to_dict(),
+                "region": self.region.to_dict(),
                 "base": float(self.base)}
 
     @classmethod
@@ -388,6 +431,7 @@ class Occluder:
         return cls(int(_require(d, "step", "Occluder")),
                    tuple(Affine2.from_dict(t) for t in _require(d, "tiles", "Occluder")),
                    Walls.from_dict(_require(d, "walls", "Occluder")),
+                   Region.from_dict(_require(d, "region", "Occluder")),
                    float(d.get("base", 0.0)))
 
 
@@ -625,6 +669,31 @@ class Manifest:
 # --------------------------------------------------------------------------
 # world-order conversion
 # --------------------------------------------------------------------------
+
+
+def point_in_polygon(x, y, corners):
+    """Even-odd ray crossing, scanning along **world x (= real)**. Broadcasts.
+
+    The single definition of "inside" in kurven. Both `Perimeter` types call it
+    -- `kurven.perimeter.Perimeter` by exchanging its `(imag, real)` corners
+    first -- so the mask the occluder mesh is cut with, the predicate the
+    contours are filtered by, and whatever a consumer computes from the manifest
+    are the same function of the same corners, down to the boundary cases where
+    a scan along the other axis would disagree.
+
+    `corners` is a closed polygon in world order; the last corner joins the
+    first.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    P = np.asarray(corners, dtype=float)
+    inside = np.zeros(np.broadcast(x, y).shape, dtype=bool)
+    for a, b in zip(P, np.roll(P, -1, axis=0)):
+        if a[0] == b[0]:
+            continue
+        crossing = (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0]) + a[1]
+        inside ^= ((a[0] > x) != (b[0] > x)) & (y < crossing)
+    return inside
 
 
 def swap_to_world(imrez):

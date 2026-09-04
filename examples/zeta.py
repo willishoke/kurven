@@ -242,6 +242,7 @@ def build_scene(a, *, verbose=True, timer=None):
         occluder_step=max(1, max(comp.shape) // a.occluder_res),
         tiles=(Affine2.identity(),),
         perimeter=perim.to_world(wall_density),
+        region=perim.to_world(wall_density),
         walls=tuple(perim.wall_curtains(surface, wall_density)),
     )
 
@@ -265,12 +266,14 @@ def render_plate(scene, project, *, buffer, gpu=False, clip_margin=0.2,
                  progress=True, verbose=True, timer=None):
     """The camera-dependent half: project, rasterize the occluder, clip."""
     tick = timer.tick if timer is not None else (lambda _: None)
-    perim = cutout()
 
     tick("build occluder mesh")
+    # The footprint comes off the scene, not off a second copy of the polygon:
+    # what the bundle declares is what the plate rasterizes.
+    region = scene.region
     occ_verts, occ_tris = build_occluder(
         scene.surface, scene.occluder_step, walls=scene.walls,
-        keep=lambda im, re: perim.contains(im, re))
+        keep=None if region is None else (lambda im, re: region.contains(re, im)))
     if verbose:
         print(f"      occluder: {len(occ_verts)} verts, {len(occ_tris)} tris")
 

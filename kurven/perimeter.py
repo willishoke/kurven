@@ -113,17 +113,14 @@ class Perimeter:
         that can drift from the polygon it is supposed to describe (zeta's did,
         by one unit in imag).
         """
-        im = np.asarray(im, dtype=float)
-        re = np.asarray(re, dtype=float)
-        P = self.corners()
-        inside = np.zeros(np.broadcast(im, re).shape, dtype=bool)
-        for a, b in zip(P, np.roll(P, -1, axis=0)):
-            straddles = (a[0] > im) != (b[0] > im)
-            if a[0] == b[0]:
-                continue
-            crossing = (b[1] - a[1]) * (im - a[0]) / (b[0] - a[0]) + a[1]
-            inside ^= straddles & (re < crossing)
-        return inside
+
+        from kurven.bundle import point_in_polygon
+
+        # Delegate in world order rather than scanning along imag, so this and
+        # `kurven.bundle.Perimeter.contains` are the same function -- an even-odd
+        # test scanning along the other axis agrees everywhere except on the
+        # boundary, and the boundary is exactly where a staircase cutout lives.
+        return point_in_polygon(re, im, self.corners()[:, ::-1])
 
     def wall_curtains(self, surface, density, *, base=0.0):
         """One occluder curtain per edge — pass straight to

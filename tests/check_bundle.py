@@ -79,6 +79,7 @@ def check_schema_rejection():
         ("wrong axes", lambda d: d.update(axes=["imag", "real", "magnitude"])),
         ("unknown caps", lambda d: d.update(caps={"kind": "logarithmic"})),
         ("unknown walls", lambda d: d["occluder"].update(walls={"kind": "spline"})),
+        ("unknown region", lambda d: d["occluder"].update(region={"kind": "mask"})),
         ("missing domain", lambda d: d.pop("domain")),
     ]:
         d = json.loads(json.dumps(good))

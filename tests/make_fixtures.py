@@ -43,8 +43,10 @@ from kurven.bundle import (  # noqa: E402
     CameraPreset,
     Domain,
     Edge,
+    FullRegion,
     GridRef,
     Interval,
+    InsideRegion,
     LayerSpec,
     Manifest,
     NoCaps,
@@ -69,6 +71,17 @@ from kurven.surface import Surface  # noqa: E402
 from kurven.zbuffer import ZBuffer, rasterize_triangles  # noqa: E402
 
 FIXTURES = ROOT / "tests" / "fixtures"
+
+
+def save(path, array):
+    """`np.save`, C-contiguous.
+
+    scipy's `Rotation.apply` returns Fortran-order arrays, and `np.save` records
+    that faithfully. The Swift reader refuses Fortran order rather than silently
+    reinterpreting it as C order and returning a transposed landscape -- which is
+    correct of it, and means the fixtures must say what they mean.
+    """
+    np.save(path, np.ascontiguousarray(array))
 
 #: The three plate cameras, as the examples set them. Kept here rather than
 #: imported so a change to an example is a *visible* fixture change.
@@ -124,7 +137,7 @@ def contract_fixtures(out):
         Occluder(2,
                  (Affine2.identity(), Affine2.scale_offset(-1.0, 1.0, 3.0, 0.0)),
                  WallMesh("occluder/walls.npy", "occluder/walls.tri.npy"),
-                 0.0),
+                 FullRegion(), 0.0),
         layers,
         (CameraPreset("recip", PRESETS["recip"], 0.02, 512),),
         _provenance("tiny", res=4))
@@ -149,7 +162,8 @@ def contract_fixtures(out):
         GridRef("height.npy", (ny, nx), "<f4"), None,
         RealBandCaps((RealBand(-3.5, 8.0), RealBand(-2.5, 6.0),
                       RealBand(-1.5, 4.0))),
-        Occluder(1, (Affine2.identity(),), WallPerimeter(perim, 0.0), 0.0),
+        Occluder(1, (Affine2.identity(),), WallPerimeter(perim, 0.0),
+                 InsideRegion(perim), 0.0),
         (LayerSpec("ang", "phase", "layers/ang.npy", "layers/ang.idx.npy",
                    0.15, "magnitude"),),
         tuple(CameraPreset(n, p, 0.01, 1024) for n, p in PRESETS.items()),
@@ -162,7 +176,7 @@ def contract_fixtures(out):
         SCHEMA, AXES, domain,
         GridRef("height.npy", (ny, nx), "<f4"), None,
         NoCaps(),
-        Occluder(1, (Affine2.identity(),), NoWalls(), 0.0),
+        Occluder(1, (Affine2.identity(),), NoWalls(), FullRegion(), 0.0),
         (), (), _provenance("tiny_empty"))
     write_bundle(out / "empty.kurven", manifest=m, height=height, layers={})
 
@@ -176,15 +190,15 @@ def npy_fixtures(out):
     """One file per dtype the reader must accept, and two it must reject with a
     typed error rather than a wrong answer."""
     rng = np.random.default_rng(7)
-    np.save(out / "f4.npy", rng.normal(size=(3, 5)).astype(np.float32))
-    np.save(out / "f8.npy", rng.normal(size=(4, 2)).astype(np.float64))
-    np.save(out / "i8.npy", rng.integers(-2**40, 2**40, size=(6,)).astype(np.int64))
-    np.save(out / "c16.npy",
+    save(out / "f4.npy", rng.normal(size=(3, 5)).astype(np.float32))
+    save(out / "f8.npy", rng.normal(size=(4, 2)).astype(np.float64))
+    save(out / "i8.npy", rng.integers(-2**40, 2**40, size=(6,)).astype(np.int64))
+    save(out / "c16.npy",
             (rng.normal(size=(2, 3)) + 1j * rng.normal(size=(2, 3))).astype(np.complex128))
-    np.save(out / "f8_1d.npy", np.arange(7, dtype=np.float64))
+    save(out / "f8_1d.npy", np.arange(7, dtype=np.float64))
     # Rejected: Fortran order, and an unsupported dtype.
     np.save(out / "reject_fortran.npy", np.asfortranarray(rng.normal(size=(3, 3))))
-    np.save(out / "reject_dtype.npy", rng.integers(0, 200, size=(4,)).astype(np.uint8))
+    save(out / "reject_dtype.npy", rng.integers(0, 200, size=(4,)).astype(np.uint8))
 
 
 # --------------------------------------------------------------------------
@@ -218,8 +232,8 @@ def camera_fixtures(out):
         proj = Projection(shear=plate.shear, x_angle=plate.x_angle,
                           z_angle=plate.z_angle, flip_x=plate.flip_x,
                           y_scale=plate.y_scale)
-        np.save(out / f"{name}.points.npy", world)
-        np.save(out / f"{name}.projected.npy", proj.apply(legacy))
+        save(out / f"{name}.points.npy", world)
+        save(out / f"{name}.projected.npy", proj.apply(legacy))
         (out / f"{name}.json").write_text(json.dumps(
             {"name": name, "plate": plate.to_dict()},
             sort_keys=True, separators=(",", ":")) + "\n")
@@ -275,18 +289,18 @@ def clip_fixture(out, *, res=200, occluder_res=100, buffer=320, margin=0.02):
     zb.buffer = zb.buffer.astype(np.float32).astype(np.float64)
     segments = clip_hidden_lines(zb, rot, indices, margin=margin)
 
-    np.save(out / "depth.npy", zb.buffer.astype(np.float32))
-    np.save(out / "view.npy", rot)
-    np.save(out / "view.idx.npy",
+    save(out / "depth.npy", zb.buffer.astype(np.float32))
+    save(out / "view.npy", rot)
+    save(out / "view.idx.npy",
             np.concatenate([[0], np.cumsum([len(p) for p in paths])]).astype(np.int64))
     if segments:
-        np.save(out / "expected.npy", np.concatenate(segments))
-        np.save(out / "expected.idx.npy",
+        save(out / "expected.npy", np.concatenate(segments))
+        save(out / "expected.idx.npy",
                 np.concatenate([[0], np.cumsum([len(s) for s in segments])]
                                ).astype(np.int64))
     else:
-        np.save(out / "expected.npy", np.zeros((0, 2)))
-        np.save(out / "expected.idx.npy", np.zeros(1, dtype=np.int64))
+        save(out / "expected.npy", np.zeros((0, 2)))
+        save(out / "expected.idx.npy", np.zeros(1, dtype=np.int64))
 
     (out / "meta.json").write_text(json.dumps({
         # ZBuffer's mapping, verbatim. `coordToIndex` is
