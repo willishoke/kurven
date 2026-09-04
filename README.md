@@ -86,6 +86,14 @@ examples/
   recip_factorial.py — 1/Γ(z): the reciprocal-factorial relief
 
 KurvenSwift/     — the Swift/Metal frontend (see below)
+  KurvenCore/    — pure values: spaces, camera, navigation, npy, clip, SVG
+  KurvenMetal/   — the depth pass, the preview, the resource cache
+  KurvenBake/    — scene -> strokes; tiling; PNG
+  kurven-cli/    — bake, preview, depth, bench, inspect, contract
+  kurven-test/   — the Swift lane of the tests (an executable, not swift test)
+  KurvenApp/     — the window
+scripts/
+  bundle-app.sh  — assembles Kurven.app (no Xcode required)
 tests/
   make_fixtures.py  — writes tests/fixtures, the oracle both lanes are held to
   check_bundle.py   — the Python lane of the contract tests
@@ -169,9 +177,41 @@ navigation costs one uniform upload plus the depth pass — 1.6 ms for recip and
 frame if they were rebuilt. `kurven-cli bench` measures it.
 
 A GPU depth test *is* hidden-line removal, so the realtime preview and the exact
-bake are the same computation at two resolutions: the bake reads the depth
-texture back and clips line vertices against it with exactly the semantics of
-`outline.clip_hidden_lines`.
+bake are the same computation at two resolutions. The preview draws the depth
+pass, then tests each line fragment against it; the bake reads the same depth
+back and clips line vertices against it with exactly the semantics of
+`outline.clip_hidden_lines`. The only difference is per-fragment versus
+per-vertex, which can disagree on runs shorter than a pixel and nowhere else.
+
+### The app
+
+```bash
+scripts/bundle-app.sh                    # assembles build/Kurven.app
+open -a build/Kurven.app recip.kurven    # or double-click the bundle
+```
+
+Left-drag orbits, shift-drag pans, scroll zooms toward the cursor, double-click
+re-targets the turn onto the point you clicked, `f` fits, `1`/`2`/`3` switch
+between the plate, a shaded surface, and the raw depth buffer. The inspector
+carries the camera as numbers, the plate presets, per-layer visibility, the
+hidden-line margin, and a bake panel.
+
+Navigation is a pure function: input handling produces `Gesture` values and
+`Navigator.applying` folds them, so orbit, pan, zoom and re-target are tested
+without a window (`swift run kurven-test`). The app is scriptable for the same
+reason it is testable:
+
+```bash
+Kurven.app/Contents/MacOS/Kurven recip.kurven --screenshot out.png
+Kurven.app/Contents/MacOS/Kurven recip.kurven --bake out.svg --resolution 4000
+```
+
+The second is how "the app bakes what the CLI bakes" is checked — it is the
+same `Scene` value through the same function, and the two SVGs are byte-identical.
+
+Frame times, full preview at 3200² (`kurven-cli bench`): recip 2.2 ms, elliptic
+6.8 ms, zeta 12.1 ms. The cost is vertex-bound rather than fill-bound, so it
+barely moves between 1600² and 3200².
 
 ### Testing across the two lanes
 
@@ -182,7 +222,8 @@ writes `tests/fixtures/`; both lanes read the same files.
 python tests/make_fixtures.py         # regenerate the oracle
 python tests/check_bundle.py          # python lane: schema, CSR, camera, clip
 swift run --package-path KurvenSwift kurven-test    # swift lane, same fixtures
-python tests/compare_bake.py recip    # end to end: swift bake vs python plate
+python tests/compare_bake.py recip     # end to end: swift bake vs python plate
+python tests/compare_preview.py recip # and the preview, as pixels
 ```
 
 The cheapest test is the sharpest: a fixture manifest decoded by Swift and

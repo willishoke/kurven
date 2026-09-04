@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "KurvenBake", targets: ["KurvenBake"]),
         .executable(name: "kurven-cli", targets: ["kurven-cli"]),
         .executable(name: "kurven-test", targets: ["kurven-test"]),
+        .executable(name: "KurvenApp", targets: ["KurvenApp"]),
     ],
     targets: [
         // Pure values. No Metal, no AppKit; its tests run without a GPU.
@@ -52,5 +53,11 @@ let package = Package(
         // Python side does (`tests/check_bundle.py`), for the same reason
         // (pytest is not installed either), so both lanes run the same way.
         .executableTarget(name: "kurven-test", dependencies: ["KurvenBake"]),
+
+        // The window. A bare SwiftPM executable has no bundle, so
+        // scripts/bundle-app.sh assembles Kurven.app around this binary with a
+        // hand-written Info.plist and an ad hoc signature -- all of which
+        // Command Line Tools can do.
+        .executableTarget(name: "KurvenApp", dependencies: ["KurvenBake"]),
     ]
 )

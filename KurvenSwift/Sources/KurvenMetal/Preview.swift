@@ -203,3 +203,33 @@ public extension MetalRenderer {
                      Float(n & 0xFF) / 255, 1)
     }
 }
+
+public extension MetalRenderer {
+    /// The view depth the last preview left at a pixel, or nil where nothing was
+    /// drawn.
+    func previewDepth(atPixel p: SIMD2<Int>) -> Double? {
+        guard let texture = lastPreviewDepth,
+              p.x >= 0, p.y >= 0, p.x < texture.width, p.y < texture.height else { return nil }
+        var value: Float = 0
+        withUnsafeMutableBytes(of: &value) { bytes in
+            texture.getBytes(bytes.baseAddress!, bytesPerRow: MemoryLayout<Float>.stride,
+                             from: MTLRegionMake2D(p.x, p.y, 1, 1), mipmapLevel: 0)
+        }
+        return value > Self.emptySentinel ? Double(value) : nil
+    }
+
+    /// The world point under a pixel: the depth the preview drew there, taken
+    /// back through the camera.
+    ///
+    /// Under an orthographic camera the view coordinates of a pixel are known
+    /// exactly from the framing, so the only unknown is depth -- and the depth
+    /// buffer the preview already drew is holding it. Nothing is re-rendered and
+    /// nothing is intersected.
+    func worldPoint(atPixel p: SIMD2<Double>, navigator: Navigator,
+                    viewport: Viewport) -> P3<WorldSpace>? {
+        guard let z = previewDepth(atPixel: SIMD2(Int(p.x.rounded(.down)),
+                                                  Int(p.y.rounded(.down)))) else { return nil }
+        let v = navigator.framing.viewPoint(atPixel: p, in: viewport)
+        return navigator.camera.view.inverse(P3<ViewSpace>(v.x, v.y, z))
+    }
+}

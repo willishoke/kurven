@@ -42,6 +42,9 @@ public let metalTextureLimit = 16384
 public final class MetalRenderer {
     public let device: MTLDevice
     let queue: MTLCommandQueue
+    /// The queue this renderer submits on. A bake makes its own renderer, and
+    /// therefore its own queue, so it never contends with a preview.
+    public var commandQueue: MTLCommandQueue { queue }
     let heightPipeline: MTLRenderPipelineState
     let meshPipeline: MTLRenderPipelineState
     // The preview's second pass. Same geometry, different fragment work.
@@ -149,6 +152,8 @@ public final class MetalRenderer {
     private var cachedLines: (content: ContentID, geometry: LineGeometry)?
     private var target: DepthTarget?
     private var previewDepth: MTLTexture?
+    /// The depth attachment the last preview frame wrote, for pixel queries.
+    var lastPreviewDepth: MTLTexture? { previewDepth }
 
     func resources(for scene: Scene) throws -> SceneResources {
         if let r = cachedResources, r.content == scene.content { return r }
@@ -166,14 +171,18 @@ public final class MetalRenderer {
         return g
     }
 
-    /// The preview's depth attachment. Unlike the bake's, it is never read back,
-    /// so it wants no linear backing -- only `shaderRead`, for the second pass.
+    /// The preview's depth attachment.
+    ///
+    /// Shared rather than private, because double-clicking to re-target reads
+    /// one pixel of it: the depth under the cursor, unprojected through the
+    /// camera's inverse, is the world point you clicked on. One pixel is not
+    /// worth a blit, and on unified memory `shared` costs nothing.
     func depthTexture(rows: Int, cols: Int) throws -> MTLTexture {
         if let t = previewDepth, t.width == cols, t.height == rows { return t }
         let d = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .r32Float, width: cols, height: rows, mipmapped: false)
         d.usage = [.renderTarget, .shaderRead]
-        d.storageMode = .private
+        d.storageMode = .shared
         guard let t = device.makeTexture(descriptor: d) else {
             throw RendererError.allocation("a \(cols)x\(rows) preview depth texture")
         }

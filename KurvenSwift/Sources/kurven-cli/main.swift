@@ -202,6 +202,7 @@ func bench(_ args: Args) throws {
     let (bundle, preset, base) = try loadScene(args)
     let resolution = try args.int("resolution", 1024)
     let frames = try args.int("frames", 60)
+    let viewport = Viewport(width: resolution, height: resolution)
     guard let bounds = base.viewBounds() else { throw CLIError("the scene is empty") }
     let frame = DepthFrame(covering: bounds, resolution: resolution)
     let renderer = try MetalRenderer()
@@ -217,26 +218,57 @@ func bench(_ args: Args) throws {
         return .plate(plate)
     }
 
-    let warmup = try clock.measure {
-        _ = try renderer.renderDepth(base.looking(camera(0)), frame: frame)
+    // Two things are worth timing separately: the depth pass alone, which is
+    // what a bake pays per tile, and the whole preview, which is what a drag
+    // pays per frame. Reporting only the first would flatter the app.
+    let modeName = args.flags["mode"] ?? "plate"
+    let mode: PreviewMode = modeName == "shaded" ? .shaded(Lighting())
+        : modeName == "depth" ? .depth : .plate
+    let target = try renderer.makePreviewTarget(viewport)
+    var navigator = Navigator(orbit: Orbit(matching: preset.plate),
+                              framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
+    if let bounds = base.looking(camera(0)).quickBounds() {
+        navigator.framing = .fitting(bounds, in: viewport)
     }
 
-    var times: [Double] = []
-    times.reserveCapacity(frames)
-    for i in 1...frames {
-        let scene = base.looking(camera(i))
-        let d = try clock.measure { _ = try renderer.renderDepth(scene, frame: frame) }
-        times.append(Double(d.components.attoseconds) / 1e18
-                     + Double(d.components.seconds))
+    let warmup = try clock.measure {
+        _ = try renderer.renderDepth(base.looking(camera(0)), frame: frame)
+        try renderer.renderPreview(base, navigator: navigator, viewport: viewport,
+                                   options: PreviewOptions(mode: mode), into: target)
+    }
+
+    func measure(_ body: (Int) throws -> Void) rethrows -> [Double] {
+        var times: [Double] = []
+        times.reserveCapacity(frames)
+        for i in 1...frames {
+            let d = try clock.measure { try body(i) }
+            times.append(Double(d.components.attoseconds) / 1e18
+                         + Double(d.components.seconds))
+        }
+        times.sort()
+        return times
+    }
+
+    let depthTimes = try measure { i in
+        _ = try renderer.renderDepth(base.looking(camera(i)), frame: frame)
+    }
+    var times = try measure { i in
+        navigator.orbit = Orbit(matching: preset.plate)
+        navigator.orbit.azimuth = Angle(degrees: preset.plate.zAngle + Double(i) * 0.25)
+        try renderer.renderPreview(base, navigator: navigator, viewport: viewport,
+                                   options: PreviewOptions(mode: mode), into: target)
     }
     times.sort()
     let median = times[times.count / 2]
     let p95 = times[min(times.count - 1, Int(Double(times.count) * 0.95))]
 
     func ms(_ t: Double) -> String { String(format: "%.2f ms", t * 1000) }
-    print("\(bundle.url.lastPathComponent)  [\(preset.name)]  \(frame.rows)x\(frame.cols)")
+    let depthMedian = depthTimes[depthTimes.count / 2]
+    print("\(bundle.url.lastPathComponent)  [\(preset.name), \(modeName)]  "
+          + "\(frame.rows)x\(frame.cols)")
     print("  first frame  \(warmup)  (builds the resources)")
-    print("  then         median \(ms(median))  p95 \(ms(p95))  "
+    print("  depth+read   median \(ms(depthMedian))   (what one bake tile costs)")
+    print("  full preview median \(ms(median))  p95 \(ms(p95))  "
           + "min \(ms(times[0]))  max \(ms(times[times.count - 1]))")
     print("  that is      \(String(format: "%.0f", 1 / median)) fps at the median"
           + (renderer.hasLinearReadback ? "" : "   (readback is NOT linear here)"))

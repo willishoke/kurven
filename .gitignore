@@ -21,3 +21,5 @@ venv/
 
 KurvenSwift/.build/
 *.xcodeproj/
+
+build/
