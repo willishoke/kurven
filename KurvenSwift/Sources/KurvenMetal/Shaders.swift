@@ -14,7 +14,7 @@ public enum Shaders {
     static let shaderTypes = """
     typedef struct {
         float4x4 view;
-        float2 ndcScale;
+        float2x2 ndcLinear;
         float2 ndcOffset;
         float2 domainLo;
         float2 domainSize;
@@ -68,9 +68,8 @@ public enum Shaders {
         float3 v = (u.view * float4(world, 1.0)).xyz;
         // Depth is carried in the color attachment and MAX-blended, so the
         // position's own z is only there to pass the clip test.
-        return float4(u.ndcScale.x * v.y + u.ndcOffset.x,
-                      u.ndcScale.y * v.x + u.ndcOffset.y,
-                      0.5, 1.0);
+        float2 ndc = u.ndcLinear * v.xy + u.ndcOffset;
+        return float4(ndc, 0.5, 1.0);
     }
 
     static float view_depth(constant KVUniforms &u, float3 world) {

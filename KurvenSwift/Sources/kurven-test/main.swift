@@ -307,23 +307,35 @@ func coreTests() {
     }
 
     Check.suite("core: the NDC transform puts each sample point on its lattice vertex") {
-        let frame = DepthFrame(axis0: Interval(lo: -2, hi: 3), axis1: Interval(lo: 10, hi: 14),
-                               rows: 6, cols: 5)
-        let (scale, offset) = frame.metalNDC
-        var worst = 0.0
-        for r in 0..<frame.rows {
-            for c in 0..<frame.cols {
-                let p = frame.coordinate(row: r, col: c)
-                // Metal samples pixel (col, row) at NDC ((2c+1)/cols - 1,
-                // 1 - (2r+1)/rows): y counted from the top of the target.
-                worst = max(worst, abs(scale.x * p.y + offset.x
-                                       - (Double(2 * c + 1) / Double(frame.cols) - 1)))
-                worst = max(worst, abs(scale.y * p.x + offset.y
-                                       - (1 - Double(2 * r + 1) / Double(frame.rows))))
+        // Both raster orders, and the screen order's descending row axis, have
+        // to land on the same lattice the clipper indexes -- a half-pixel shift
+        // here shows up as ink leaking through the surface along silhouettes
+        // and nowhere else.
+        for (name, frame) in [
+            ("buffer order", DepthFrame(axis0: Interval(lo: -2, hi: 3),
+                                        axis1: Interval(lo: 10, hi: 14),
+                                        rows: 6, cols: 5, order: .buffer)),
+            ("screen order", DepthFrame(axis0: Interval(lo: 3, hi: -2),
+                                        axis1: Interval(lo: 10, hi: 14),
+                                        rows: 6, cols: 5, order: .screen)),
+        ] {
+            let (linear, offset) = frame.metalNDC
+            var worst = 0.0
+            var roundTrips = true
+            for r in 0..<frame.rows {
+                for c in 0..<frame.cols {
+                    let p = frame.coordinate(row: r, col: c)
+                    if frame.index(of: p) != SIMD2(r, c) { roundTrips = false }
+                    // Metal samples pixel (col, row) at NDC
+                    // ((2c+1)/cols - 1, 1 - (2r+1)/rows): y from the top.
+                    let ndc = linear * SIMD2(p.x, p.y) + offset
+                    worst = max(worst, abs(ndc.x - (Double(2 * c + 1) / Double(frame.cols) - 1)))
+                    worst = max(worst, abs(ndc.y - (1 - Double(2 * r + 1) / Double(frame.rows))))
+                }
             }
+            Check.expect(roundTrips, "\(name): every lattice vertex indexes its own pixel")
+            Check.expect(worst < 1e-12, "\(name): no half-pixel shift", "worst |Δ| = \(worst)")
         }
-        Check.expect(worst < 1e-12, "no half-pixel shift between renderer and clipper",
-                     "worst |Δ| = \(worst)")
     }
 
     Check.suite("core: bake tiles partition the plate's lattice exactly") {
@@ -425,6 +437,169 @@ func shaderTests() {
     }
 }
 
+// MARK: - 7. navigation
+
+func navigationTests() {
+    let plates: [(String, PlateProjection)] = [
+        ("recip", PlateProjection(shear: 0.5, xAngle: -55, zAngle: -90, flipX: true, yScale: nil)),
+        ("elliptic", PlateProjection(shear: 0.51, xAngle: -63, zAngle: -90, flipX: true, yScale: nil)),
+        ("zeta", PlateProjection(shear: -0.18, xAngle: -79.5, zAngle: -90, flipX: true, yScale: 0.75)),
+    ]
+
+    // The bridge between "a plate" and "a thing you can orbit". If this fails,
+    // loading a preset jumps rather than starting where the plate is.
+    Check.suite("navigation: an orbit matching a preset IS the plate camera") {
+        let rng = SplitMix(seed: 4)
+        for (name, plate) in plates {
+            let a = Camera.plate(plate).view
+            let b = Orbit(matching: plate).camera.view
+            var worst = 0.0
+            for _ in 0..<200 {
+                let p = P3<WorldSpace>(rng.next(-8, 8), rng.next(-30, 30), rng.next(0, 6))
+                worst = max(worst, simd_reduce_max(abs(a(p).v - b(p).v)))
+            }
+            Check.expect(worst == 0, "\(name)", "worst |Δ| = \(worst)")
+        }
+    }
+
+    Check.suite("navigation: orbiting and orbiting back is the identity") {
+        let v = Viewport(width: 1200, height: 800)
+        let rng = SplitMix(seed: 9)
+        var worst = 0.0
+        for (_, plate) in plates {
+            var n = Navigator(orbit: Orbit(matching: plate),
+                              framing: Framing(center: P2(0, 0), unitsPerPixel: 0.01))
+            let start = n
+            var back: [Gesture] = []
+            for _ in 0..<12 {
+                // Stay clear of the elevation clamp, which is deliberately not
+                // invertible -- past vertical the landscape turns inside out.
+                let d = SIMD2(rng.next(-40, 40), rng.next(-6, 6))
+                n = n.applying(.orbit(d), in: v)
+                back.append(.orbit(-d))
+            }
+            n = n.applying(back.reversed(), in: v)
+            worst = max(worst, abs(n.orbit.azimuth.degrees - start.orbit.azimuth.degrees))
+            worst = max(worst, abs(n.orbit.elevation.degrees - start.orbit.elevation.degrees))
+        }
+        Check.expect(worst < 1e-9, "azimuth and elevation return exactly",
+                     "worst |Δ| = \(worst) degrees")
+    }
+
+    Check.suite("navigation: zoom holds the point under the cursor") {
+        let v = Viewport(width: 1440, height: 900)
+        let rng = SplitMix(seed: 17)
+        var worst = 0.0
+        for _ in 0..<200 {
+            let n = Navigator(orbit: Orbit(matching: plates[0].1),
+                              framing: Framing(center: P2(rng.next(-5, 5), rng.next(-5, 5)),
+                                               unitsPerPixel: rng.next(0.001, 0.05)))
+            let at = SIMD2(rng.next(0, 1440), rng.next(0, 900))
+            let before = n.framing.viewPoint(atPixel: at, in: v)
+            let after = n.applying(.zoom(factor: rng.next(0.2, 5), at: at), in: v)
+                .framing.viewPoint(atPixel: at, in: v)
+            worst = max(worst, max(abs(after.x - before.x), abs(after.y - before.y)))
+        }
+        Check.expect(worst < 1e-9, "the anchor does not drift", "worst |Δ| = \(worst)")
+    }
+
+    Check.suite("navigation: pan is invertible and zoom-independent") {
+        let v = Viewport(width: 800, height: 600)
+        let n = Navigator(orbit: Orbit(matching: plates[1].1),
+                          framing: Framing(center: P2(1.5, -2), unitsPerPixel: 0.02))
+        let d = SIMD2(37.0, -19.0)
+        let there = n.applying(.pan(d), in: v).applying(.pan(-d), in: v)
+        Check.expect(there.framing == n.framing, "panning back lands where it started")
+
+        // A pixel drag moves the picture by that many pixels whatever the zoom.
+        let zoomed = n.applying(.zoom(factor: 4, at: SIMD2(400, 300)), in: v)
+        let moved = zoomed.applying(.pan(SIMD2(100, 0)), in: v)
+        let dx = (moved.framing.center.x - zoomed.framing.center.x) / zoomed.framing.unitsPerPixel
+        Check.expect(abs(dx + 100) < 1e-9, "100 px of drag is 100 px of travel",
+                     "moved \(-dx) px")
+    }
+
+    Check.suite("navigation: pixels are square and round trip") {
+        let v = Viewport(width: 1237, height: 811)
+        let f = Framing(center: P2(-3, 7), unitsPerPixel: 0.013)
+        let frame = f.frame(v)
+        let upp = frame.unitsPerPixel
+        Check.expect(abs(upp.x - upp.y) < 1e-12 && abs(upp.x - 0.013) < 1e-12,
+                     "the raster has square pixels of the size asked for",
+                     "\(upp.x) x \(upp.y)")
+        Check.expect(frame.rows == 811 && frame.cols == 1237 && frame.order == .screen,
+                     "one sample per pixel, in screen order")
+
+        var worst = 0.0
+        let rng = SplitMix(seed: 23)
+        for _ in 0..<500 {
+            let px = SIMD2(rng.next(0, 1237), rng.next(0, 811))
+            let back = f.pixel(of: f.viewPoint(atPixel: px, in: v), in: v)
+            worst = max(worst, simd_reduce_max(abs(back - px)))
+        }
+        Check.expect(worst < 1e-9, "pixel -> view -> pixel is the identity",
+                     "worst |Δ| = \(worst)")
+
+        // The top-left pixel really is the top left: view y decreasing downward.
+        let topLeft = f.viewPoint(atPixel: SIMD2(0, 0), in: v)
+        let bottomRight = f.viewPoint(atPixel: SIMD2(1236, 810), in: v)
+        Check.expect(topLeft.x < bottomRight.x && topLeft.y > bottomRight.y,
+                     "the picture is the right way up")
+    }
+
+    Check.suite("navigation: re-targeting turns about a new point without moving it") {
+        let v = Viewport(width: 1000, height: 700)
+        let n = Navigator(orbit: Orbit(matching: plates[2].1),
+                          framing: Framing(center: P2(0.4, -1.1), unitsPerPixel: 0.03))
+        let p = P3<WorldSpace>(2.5, -7, 3.25)
+        let before = n.framing.pixel(of: n.camera.view(p).xy, in: v)
+        let after = n.applying(.retarget(p), in: v)
+        let moved = after.framing.pixel(of: after.camera.view(p).xy, in: v)
+        Check.expect(simd_reduce_max(abs(moved - before)) < 1e-9,
+                     "the clicked point stays under the cursor")
+        Check.expect(after.orbit.target == p, "and becomes the centre of rotation")
+
+        // Orbiting now leaves it alone, which is the point of re-targeting.
+        let turned = after.applying(.orbit(SIMD2(120, 25)), in: v)
+        let still = turned.framing.pixel(of: turned.camera.view(p).xy, in: v)
+        Check.expect(simd_reduce_max(abs(still - before)) < 1e-6,
+                     "and stays put through a turn", "moved \(simd_reduce_max(abs(still - before))) px")
+    }
+
+    Check.suite("navigation: fitting shows everything, with a margin") {
+        let v = Viewport(width: 900, height: 600)
+        let bounds = AABB<ViewSpace>(lo: SIMD3(-4, -2, 0), hi: SIMD3(6, 3, 1))
+        let f = Framing.fitting(bounds, in: v)
+        let corners = [SIMD2(-4.0, -2.0), SIMD2(6, -2), SIMD2(-4, 3), SIMD2(6, 3)]
+        var inside = true
+        for c in corners {
+            let px = f.pixel(of: P2<ViewSpace>(c.x, c.y), in: v)
+            if px.x < 0 || px.x > 900 || px.y < 0 || px.y > 600 { inside = false }
+        }
+        Check.expect(inside, "every corner of the bounds lands on screen")
+        Check.expect(abs(f.center.x - 1) < 1e-12 && abs(f.center.y - 0.5) < 1e-12,
+                     "centred on the bounds")
+    }
+}
+
+/// A deterministic generator. The property tests want the same hundred cases
+/// every run, so a failure is reproducible rather than a story about last
+/// Tuesday.
+final class SplitMix {
+    private var state: UInt64
+    init(seed: UInt64) { state = seed }
+    func nextBits() -> UInt64 {
+        state &+= 0x9E3779B97F4A7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        return z ^ (z >> 31)
+    }
+    func next(_ lo: Double, _ hi: Double) -> Double {
+        lo + (hi - lo) * Double(nextBits() >> 11) * (1.0 / 9007199254740992.0)
+    }
+}
+
 // MARK: - 6. the bake
 
 func bakeTests() {
@@ -495,6 +670,7 @@ npyTests()
 cameraTests()
 clipTests()
 coreTests()
+navigationTests()
 shaderTests()
 bakeTests()
 exit(Check.summary())

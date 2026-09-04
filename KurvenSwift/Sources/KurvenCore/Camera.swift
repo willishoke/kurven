@@ -46,24 +46,15 @@ public struct Camera: Sendable, Equatable {
     ///
     ///     view = Rx(xAngle) * Rz(zAngle) * pre
     ///
+    /// The three factors are `Orbit`'s elevation, azimuth and `PlateStyle`, so
+    /// this is `Orbit(matching:).camera` and a preset is a starting point for
+    /// navigation rather than a fixed picture.
+    ///
     /// Folding the exchange in here is what keeps it out of everywhere else:
     /// the arrays a bundle carries are already world order, and no stage between
     /// the decoder and the plate touches a column index again.
     public static func plate(_ p: PlateProjection) -> Camera {
-        let fx = p.flipX ? -1.0 : 1.0
-        let ys = p.yScale ?? 1.0
-        let pre = simd_double3x3(rows: [
-            SIMD3(0, fx, 0),
-            SIMD3(ys, -p.shear * fx, 0),
-            SIMD3(0, 0, 1),
-        ])
-        let rot = rotationX(Angle(degrees: p.xAngle)) * rotationZ(Angle(degrees: p.zAngle))
-        let m = rot * pre
-        return Camera(
-            view: Transform(rows: (m.transpose.columns.0,
-                                   m.transpose.columns.1,
-                                   m.transpose.columns.2)),
-            projection: .orthographic(oblique: Oblique(shear: p.shear)))
+        Orbit(matching: p).camera
     }
 
     /// The plate's 2D coordinates of a world point: the first two view

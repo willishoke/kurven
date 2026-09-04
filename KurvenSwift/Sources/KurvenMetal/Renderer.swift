@@ -189,7 +189,8 @@ public final class MetalRenderer {
         let d = res.latticeDomain
         return KVUniforms(
             view: scene.camera.view.float4x4,
-            ndcScale: SIMD2<Float>(Float(ndc.scale.x), Float(ndc.scale.y)),
+            ndcLinear: simd_float2x2(SIMD2<Float>(ndc.linear.columns.0),
+                                     SIMD2<Float>(ndc.linear.columns.1)),
             ndcOffset: SIMD2<Float>(Float(ndc.offset.x), Float(ndc.offset.y)),
             domainLo: SIMD2<Float>(Float(d.real.lo), Float(d.imag.lo)),
             domainSize: SIMD2<Float>(Float(d.real.length), Float(d.imag.length)),

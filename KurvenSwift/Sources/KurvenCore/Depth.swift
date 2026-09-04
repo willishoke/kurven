@@ -15,29 +15,64 @@ import simd
 /// and indexes columns. That is the Python convention and the reason `ZBuffer`
 /// documents that it "doesn't care about x/y semantics" -- here the phantom
 /// space says which is which.
+public enum RasterOrder: Sendable, Equatable {
+    /// Rows index view x and columns index view y -- `kurven.zbuffer.ZBuffer`'s
+    /// convention. The bake must use this: it is the lattice the Python oracle
+    /// describes, and a buffer is a lookup table, never something anyone looks
+    /// at, so its orientation is free to be inconvenient.
+    case buffer
+    /// Rows index view y downward and columns index view x -- the picture the
+    /// right way up, with view x running across the screen as it does in the
+    /// SVG. What a preview wants, and the same rectangle either way.
+    case screen
+}
+
 public struct DepthFrame: Sendable, Equatable {
+    /// The value at row 0 and at row `rows - 1`. Directed: for `.screen` order
+    /// `lo` is the *top* of the picture, so `hi < lo`. Every formula below is
+    /// sign-agnostic, which is why the direction can live in the data instead of
+    /// in a branch.
     public var axis0: Interval
+    /// The value at column 0 and at column `cols - 1`.
     public var axis1: Interval
     public var rows: Int
     public var cols: Int
     public var nudge: Double
+    public var order: RasterOrder
 
     public init(axis0: Interval, axis1: Interval, rows: Int, cols: Int,
-                nudge: Double = 0.01) {
+                nudge: Double = 0.01, order: RasterOrder = .buffer) {
         self.axis0 = axis0; self.axis1 = axis1
-        self.rows = rows; self.cols = cols; self.nudge = nudge
+        self.rows = rows; self.cols = cols; self.nudge = nudge; self.order = order
     }
 
-    /// The frame that covers `bounds` at `resolution` squared.
+    /// The frame that covers `bounds` at `resolution` squared, in buffer order.
     public init(covering bounds: AABB<ViewSpace>, resolution: Int) {
         self.init(axis0: Interval(lo: bounds.lo.x, hi: bounds.hi.x),
                   axis1: Interval(lo: bounds.lo.y, hi: bounds.hi.y),
                   rows: resolution, cols: resolution)
     }
 
+    /// The view components that drive rows and columns, in this order.
+    public func components(of p: P2<ViewSpace>) -> (row: Double, col: Double) {
+        switch order {
+        case .buffer: (p.x, p.y)
+        case .screen: (p.y, p.x)
+        }
+    }
+
     public func index(of p: P2<ViewSpace>) -> SIMD2<Int> {
-        SIMD2(Int((nudge + Double(rows - 1) * (p.x - axis0.lo) / axis0.length).rounded(.down)),
-              Int((nudge + Double(cols - 1) * (p.y - axis1.lo) / axis1.length).rounded(.down)))
+        let c = components(of: p)
+        return SIMD2(
+            Int((nudge + Double(rows - 1) * (c.row - axis0.lo) / axis0.length).rounded(.down)),
+            Int((nudge + Double(cols - 1) * (c.col - axis1.lo) / axis1.length).rounded(.down)))
+    }
+
+    /// Pixel size in view units along each screen axis. Equal for a frame a
+    /// `Framing` built, which is what keeps preview pixels square.
+    public var unitsPerPixel: SIMD2<Double> {
+        SIMD2(abs(axis1.length) / Double(max(cols - 1, 1)),
+              abs(axis0.length) / Double(max(rows - 1, 1)))
     }
 
     /// Whether this frame's lattice contains a view point.
@@ -69,8 +104,12 @@ public struct DepthFrame: Sendable, Equatable {
     }
 
     public func coordinate(row: Int, col: Int) -> P2<ViewSpace> {
-        P2(Double(row) / Double(rows - 1) * axis0.length + axis0.lo,
-           Double(col) / Double(cols - 1) * axis1.length + axis1.lo)
+        let a = Double(row) / Double(rows - 1) * axis0.length + axis0.lo
+        let b = Double(col) / Double(cols - 1) * axis1.length + axis1.lo
+        switch order {
+        case .buffer: return P2(a, b)
+        case .screen: return P2(b, a)
+        }
     }
 
     /// The affine map from a view coordinate to Metal's normalized device
@@ -91,12 +130,27 @@ public struct DepthFrame: Sendable, Equatable {
     ///   NDC +1 at the *top* of the render target, i.e. at row 0, while the
     ///   OpenGL path the Python side uses puts it at the bottom; negating keeps
     ///   row `r` reading the coordinate `coordinate(row: r, col:)` names.
-    public var metalNDC: (scale: SIMD2<Double>, offset: SIMD2<Double>) {
+    /// Returned as a 2x2 rather than two scales because which view component
+    /// drives which screen axis is a property of the frame, not of the shader.
+    /// Columns of the matrix multiply `(view.x, view.y)`.
+    public var metalNDC: (linear: simd_double2x2, offset: SIMD2<Double>) {
         let sx = 2 * Double(cols - 1) / (Double(cols) * axis1.length)
         let sy = 2 * Double(rows - 1) / (Double(rows) * axis0.length)
         let ox = 1 / Double(cols) - 1 - sx * axis1.lo
         let oy = 1 / Double(rows) - 1 - sy * axis0.lo
-        return (SIMD2(sx, -sy), SIMD2(ox, -oy))
+        // ndc.x from the column value, ndc.y from the row value, negated: Metal
+        // puts NDC +1 at the top of the target, which is row 0.
+        let (cx, cy) = (sx, -sy)
+        let m: simd_double2x2
+        switch order {
+        case .buffer:
+            // rows <- view.x, cols <- view.y
+            m = simd_double2x2(rows: [SIMD2(0, cx), SIMD2(cy, 0)])
+        case .screen:
+            // rows <- view.y, cols <- view.x
+            m = simd_double2x2(rows: [SIMD2(cx, 0), SIMD2(0, cy)])
+        }
+        return (m, SIMD2(ox, -oy))
     }
 }
 
