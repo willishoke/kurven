@@ -67,15 +67,30 @@ Both are saved as SVG polylines via matplotlib.
 kurven/
   sampling.py    — uniform + adaptive grid evaluation, gradient-zone discovery
   contours.py    — marching-squares extraction, seam stitching, path lifting
+  surface.py     — the sampled |f| landscape; contour lifting, heightfield mesh
+  perimeter.py   — a boundary outline: walls, ground ink and mask from one definition
+  occluder.py    — heightfield + wall curtains, tiled, as one mesh
+  scaffold.py    — the drawn structural line-work (the ink twin of occluder.py)
   projection.py  — isometric shear + rotation
   zbuffer.py     — Z-buffer class, CPU and GPU triangle rasterizers
   outline.py     — hidden-line clipping, silhouette extraction
+  scene.py       — Scene: the camera-independent half of a plate
+  bundle.py      — the .kurven bundle: typed manifest + npy arrays
+  export.py      — python -m kurven.export: a Scene, serialized
   pipeline.py    — thin convenience wrapper for the generic stages
 
 examples/
   gamma.py       — Γ(z): faithful reproduction of the Jahnke-Emde gamma plate
   elliptic.py    — cn(z, m): Jacobi elliptic function landscape
-  zeta.py        — ζ(s): Riemann zeta function (work in progress)
+  zeta.py        — ζ(s): Riemann zeta function
+  recip_factorial.py — 1/Γ(z): the reciprocal-factorial relief
+
+KurvenSwift/     — the Swift/Metal frontend (see below)
+tests/
+  make_fixtures.py  — writes tests/fixtures, the oracle both lanes are held to
+  check_bundle.py   — the Python lane of the contract tests
+  compare_bake.py   — end-to-end: the Swift bake against the Python plate
+  verify_refactor.py — pixel-identical before/after diffing for refactors
 ```
 
 ## Installation
@@ -100,6 +115,69 @@ python examples/elliptic.py --gpu
 # Both write <prefix>_hi_res.svg (and gamma also writes <prefix>_raw.svg)
 python examples/gamma.py --gpu --output-prefix out/my_gamma
 ```
+
+## The camera seam, and the Swift frontend
+
+The pipeline divides cleanly in two, and not where you would expect. The seam
+is not "library versus application" but **camera-independent** work (sample →
+contour → lift) versus **camera-dependent** work (project → depth-buffer → clip
+→ ink). The first half is the expensive one, needs scipy, and does not change
+when you move the camera; the second half is cheap and must run again for every
+new viewpoint.
+
+Each example is split at that seam: `build_scene()` returns a
+`kurven.scene.Scene` — everything a plate is before anyone decides how to look
+at it — and `render_plate(scene, projection)` draws it. `main()` is their
+composition, so the plates are unchanged.
+
+A **`.kurven` bundle** is a `Scene`, serialized: a directory holding a typed
+`manifest.json` and `.npy` arrays.
+
+```bash
+python -m kurven.export recip    -o recip.kurven --res 1600
+python -m kurven.export elliptic -o elliptic.kurven --res 2000
+python -m kurven.export zeta     -o zeta.kurven
+```
+
+Bundle arrays are in world order — `x = real`, `y = imag`, `z = |f|` — which is
+*not* the `(imag, real, z)` column order the library carries internally. The
+exchange happens in one function (`kurven.bundle.swap_to_world`) and the
+convention is written into the manifest, because forgetting it is the single
+most common bug in this codebase's history.
+
+`KurvenSwift/` reads bundles and does the camera-dependent half in Swift and
+Metal — realtime navigation means every camera-dependent stage runs per frame.
+It is a pure SwiftPM package with no third-party dependencies and no Xcode
+requirement: shaders compile at runtime from a string, and the test suite is an
+executable rather than a `.testTarget` (Command Line Tools ships
+`Testing.framework` without a `.swiftmodule`).
+
+```bash
+swift build --package-path KurvenSwift
+KurvenSwift/.build/debug/kurven-cli bake recip.kurven -o recip.svg
+KurvenSwift/.build/debug/kurven-cli inspect recip.kurven
+```
+
+A GPU depth test *is* hidden-line removal, so the realtime preview and the exact
+bake are the same computation at two resolutions: the bake reads the depth
+texture back and clips line vertices against it with exactly the semantics of
+`outline.clip_hidden_lines`.
+
+### Testing across the two lanes
+
+Correctness is anchored on the Python pipeline as oracle. `tests/make_fixtures.py`
+writes `tests/fixtures/`; both lanes read the same files.
+
+```bash
+python tests/make_fixtures.py         # regenerate the oracle
+python tests/check_bundle.py          # python lane: schema, CSR, camera, clip
+swift run --package-path KurvenSwift kurven-test    # swift lane, same fixtures
+python tests/compare_bake.py recip    # end to end: swift bake vs python plate
+```
+
+The cheapest test is the sharpest: a fixture manifest decoded by Swift and
+re-encoded must come back byte for byte. That is the only check that the two
+schema definitions agree, and it is why the Swift mirror needs no codegen.
 
 ## References
 

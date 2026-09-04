@@ -398,7 +398,11 @@ def build_scene(a, *, verbose=True, timer=None):
 def render_plate(scene, project, *, buffer, gpu=False, clip_margin=0.01,
                  progress=True, verbose=True, timer=None):
     """The camera-dependent half: project, rasterize the occluder, clip the ink.
-    Returns `(layer, segments)` pairs in draw order."""
+
+    Returns `(drawn, zb)`: `drawn` is `(layer, segments)` pairs in draw order,
+    `zb` the Z-buffer they were clipped against. The buffer is an output, not a
+    scratch value -- the silhouette comes off it, and so does any comparison
+    against another renderer's depth (`tests/compare_bake.py`)."""
     tick = timer.tick if timer is not None else (lambda _: None)
 
     tick("build occluder mesh")
@@ -434,7 +438,7 @@ def render_plate(scene, project, *, buffer, gpu=False, clip_margin=0.01,
                                                  margin=clip_margin)))
         else:
             out.append((layer, layer.split(rot[:, :2])))
-    return out
+    return out, zb
 
 
 def main():
@@ -445,9 +449,9 @@ def main():
 
     scene = build_scene(args, timer=timer)
     project = Projection(shear=0.51, x_angle=-63, z_angle=-90, flip_x=True)
-    drawn = render_plate(scene, project, buffer=args.buffer, gpu=args.gpu,
-                         clip_margin=args.clip_margin,
-                         progress=not args.no_progress, timer=timer)
+    drawn, _ = render_plate(scene, project, buffer=args.buffer, gpu=args.gpu,
+                            clip_margin=args.clip_margin,
+                            progress=not args.no_progress, timer=timer)
 
     timer.tick("save hi_res.svg")
     fig, ax = plt.subplots(figsize=(16, 12))

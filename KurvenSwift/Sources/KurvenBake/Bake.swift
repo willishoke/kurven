@@ -13,7 +13,7 @@ import KurvenMetal
 public struct BakeOptions: Sendable {
     /// Depth resolution, in pixels along each axis of the whole plate.
     public var resolution: Int
-    /// How many tiles to split the depth pass into per axis. `nil` picks the
+    /// How many tiles to split the depth *pass* into per axis. `nil` picks the
     /// smallest number that fits Metal's texture limit.
     public var tiles: Int?
     /// Hidden-line margin; `nil` takes the scene's.
@@ -25,7 +25,7 @@ public struct BakeOptions: Sendable {
 
     func tileCount(for resolution: Int) -> Int {
         if let tiles { return max(tiles, 1) }
-        return (resolution + metalTextureLimit - 1) / metalTextureLimit
+        return max(1, (resolution + metalTextureLimit - 1) / metalTextureLimit)
     }
 }
 
@@ -41,77 +41,66 @@ public enum BakeError: Error, CustomStringConvertible {
 
 public struct Bake: Sendable {
     public let strokes: Strokes
-    public let frame: DepthFrame
-    /// One depth image per tile, in row-major tile order. Kept so the CLI can
-    /// dump them and a test can compare them against the Python oracle.
-    public let depths: [DepthImage]
+    /// The whole plate's depth, stitched from however many passes it took.
+    public let depth: DepthImage
+    /// How many passes that was, per axis.
+    public let tiles: Int
 }
 
 public extension MetalRenderer {
     /// Bake a scene to strokes.
     ///
-    /// Tiling is a pure operation on the depth frame: each tile is the same
-    /// scene rendered into a sub-rectangle of the same lattice, so a clipped
-    /// vertex gets the same answer whichever tile it lands in. Only the *depth*
-    /// pass tiles; the clip is done once per tile over the layers whose vertices
-    /// fall inside it, and the runs are reassembled in path order.
+    /// Tiling splits the *render*, never the clip. A path that crosses a tile
+    /// boundary has vertices decided by two different passes, and clipping each
+    /// pass separately breaks the path at the seam: the segment joining the last
+    /// vertex on one side to the first on the other is drawn by neither, and a
+    /// single stranded vertex is dropped as a run shorter than two. So the
+    /// passes are stitched into one `DepthImage` first and the clip runs once
+    /// over the whole plate. That costs the full buffer in memory -- 1.6 GB for
+    /// gamma's 20000-square bake, held while the tiles are still being drawn --
+    /// and buys a bake that does not depend on how it was split.
+    ///
+    /// Tiles meet on pixel boundaries -- `DepthFrame.tile` splits the lattice,
+    /// not the coordinate range -- so a coordinate lands on the same pixel
+    /// however the pass was divided, and the stitched buffer has no seam.
+    ///
+    /// It is not bit-identical to a single pass, and cannot be: each pass
+    /// derives its NDC mapping from its own sub-frame in float32, so a triangle
+    /// edge landing on a pixel centre may round to either side and interpolated
+    /// depths differ in their last bits. Both effects are confined to triangle
+    /// edges. Measured on the fixture bundle, a 5x5 split moves depth by at
+    /// most 3e-6 over a span of 0.57 and changes coverage on well under a tenth
+    /// of a percent of pixels -- and changes no stroke at all, which is the
+    /// property that matters and the one `kurven-test` asserts.
     func bake(_ scene: Scene, options: BakeOptions) throws -> Bake {
         guard let bounds = scene.viewBounds() else { throw BakeError.emptyScene }
         let frame = DepthFrame(covering: bounds, resolution: options.resolution)
         let n = options.tileCount(for: options.resolution)
         let margin = options.margin ?? scene.margin
 
-        let projected = scene.projectedLayers()
-
-        var depths: [DepthImage] = []
-        // Per layer, per path, the visible runs found so far. Collected across
-        // tiles and concatenated at the end so paths stay in declaration order
-        // however the depth pass was split.
-        var runs: [[[[P3<PlateSpace>]]]] = projected.map {
-            Array(repeating: [], count: $0.1.count)
-        }
-
+        var values = [Float](repeating: -.infinity, count: frame.rows * frame.cols)
         for ti in 0..<n {
             for tj in 0..<n {
                 let sub = frame.tile(ti, tj, of: n)
-                let depth = try renderDepth(scene, frame: sub)
-                depths.append(depth)
-                for (li, (layer, paths)) in projected.enumerated() where layer.spec.clipped {
-                    for pi in 0..<paths.count {
-                        let path = paths[path: pi]
-                        // Only vertices this tile actually covers can be
-                        // decided here; the rest belong to another tile.
-                        guard path.contains(where: { sub.contains($0.xy) }) else { continue }
-                        var run: [P3<PlateSpace>] = []
-                        for v in path {
-                            guard sub.contains(v.xy) else {
-                                if run.count >= 2 { runs[li][pi].append(run) }
-                                run = []
-                                continue
-                            }
-                            if v.z + margin > depth.depth(under: v.xy) {
-                                run.append(P3(v.x, v.y, v.z))
-                            } else {
-                                if run.count >= 2 { runs[li][pi].append(run) }
-                                run = []
-                            }
-                        }
-                        if run.count >= 2 { runs[li][pi].append(run) }
-                    }
+                let tile = try renderDepth(scene, frame: sub)
+                let row0 = frame.rows * ti / n
+                let col0 = frame.cols * tj / n
+                for r in 0..<sub.rows {
+                    let dst = (row0 + r) * frame.cols + col0
+                    let src = r * sub.cols
+                    for c in 0..<sub.cols { values[dst + c] = tile.values[src + c] }
                 }
             }
         }
+        let depth = DepthImage(frame: frame, values: values)
 
         var layers: [(style: Style, paths: PolylineSet<PlateSpace>)] = []
-        for (li, (layer, paths)) in projected.enumerated() {
-            let set: PolylineSet<PlateSpace>
-            if layer.spec.clipped {
-                set = PolylineSet(paths: runs[li].flatMap { $0 })
-            } else {
-                set = HiddenLine.pass(paths)
-            }
-            layers.append((Style(layer.spec), set))
+        for (layer, projected) in scene.projectedLayers() {
+            let clipped = layer.spec.clipped
+                ? HiddenLine.clip(projected, against: depth, margin: margin)
+                : HiddenLine.pass(projected)
+            layers.append((Style(layer.spec), clipped))
         }
-        return Bake(strokes: Strokes(layers: layers), frame: frame, depths: depths)
+        return Bake(strokes: Strokes(layers: layers), depth: depth, tiles: n)
     }
 }

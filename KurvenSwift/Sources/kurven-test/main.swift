@@ -399,6 +399,59 @@ func shaderTests() {
     }
 }
 
+// MARK: - 6. the bake
+
+func bakeTests() {
+    // Tiling splits the render, never the clip. Clipping each pass separately
+    // breaks a path at the seam -- the segment joining the last vertex on one
+    // side to the first on the other is drawn by neither -- so the passes are
+    // stitched into one depth image and the clip runs once. The property that
+    // buys is this one: however the pass was divided, the drawing is the same.
+    Check.suite("bake: a tiled bake draws what a single-pass bake draws") {
+        guard let url = Fixtures.contractBundles.first(where: {
+            $0.lastPathComponent == "uniform_mesh.kurven"
+        }) else { Check.expect(false, "the uniform_mesh fixture is present"); return }
+
+        let bundle = try KurvenBundle.read(at: url)
+        let scene = Scene(bundle: bundle, preset: try bundle.manifest.preset("recip"))
+        let renderer = try MetalRenderer()
+
+        let whole = try renderer.bake(scene, options: BakeOptions(resolution: 240, tiles: 1))
+        for n in [2, 3, 5] {
+            let split = try renderer.bake(scene, options: BakeOptions(resolution: 240, tiles: n))
+            // Neither the coverage nor the values are bit-identical, and
+            // neither can be: each pass derives its NDC mapping from its own
+            // sub-frame in float32, so a triangle edge landing on a pixel
+            // centre can round to either side of it and the interpolated depth
+            // across a triangle rounds slightly differently. Both effects are
+            // confined to triangle edges and to the last few bits of a float.
+            // What must hold is the consequence -- that no visibility decision
+            // changes -- and the stroke check below asserts exactly that.
+            var uncovered = 0
+            var worst: Float = 0
+            var span: Float = 0
+            for i in whole.depth.values.indices {
+                let a = whole.depth.values[i], b = split.depth.values[i]
+                if a.isFinite != b.isFinite { uncovered += 1; continue }
+                if a.isFinite { worst = max(worst, abs(a - b)); span = max(span, abs(a)) }
+            }
+            let coverage = Double(uncovered) / Double(whole.depth.values.count)
+            Check.expect(coverage < 0.001,
+                         "\(n)x\(n) passes cover the same pixels bar triangle edges",
+                         "\(uncovered) of \(whole.depth.values.count) differ")
+            Check.expect(worst <= 1e-5 * max(span, 1),
+                         "\(n)x\(n) passes agree on depth to float32 rounding",
+                         "worst |Δ| \(worst) over a span of \(span)")
+
+            var strokesMatch = split.strokes.layers.count == whole.strokes.layers.count
+            for (a, b) in zip(whole.strokes.layers, split.strokes.layers) {
+                strokesMatch = strokesMatch && a.paths == b.paths
+            }
+            Check.expect(strokesMatch, "\(n)x\(n) passes produce the same strokes")
+        }
+    }
+}
+
 // MARK: - entry
 
 import Metal
@@ -413,4 +466,5 @@ cameraTests()
 clipTests()
 coreTests()
 shaderTests()
+bakeTests()
 exit(Check.summary())

@@ -64,11 +64,15 @@ struct Args {
 let usage = """
 usage: kurven-cli <command> [options]
 
-  bake <bundle> [--preset NAME] [--resolution N] [--tiles N] [--margin M] -o out.svg
+  bake <bundle> [--preset NAME] [--resolution N] [--tiles N] [--margin M]
+       [--dump PREFIX] -o out.svg
         Render a bundle's plate to SVG through the depth-tested hidden-line
         pipeline. Defaults to the bundle's first preset and that preset's own
         depth resolution and clip margin -- the settings the published plate
-        was made with.
+        was made with. --dump also writes each layer's strokes as
+        PREFIX.<layer>.npy plus CSR offsets, which is what
+        tests/compare_bake.py reads to check the result against the Python
+        plate stroke for stroke.
 
   depth <bundle> [--preset NAME] [--resolution N] -o depth.npy
         Dump the depth buffer as float32 .npy, for comparison against the
@@ -120,10 +124,35 @@ func bake(_ args: Args) throws {
     let elapsed = try clock.measure { result = try renderer.bake(scene, options: options) }
     try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
 
+    if let prefix = args.flags["dump"] {
+        // Strokes as arrays, so the comparison against the Python plate is on
+        // geometry rather than on rasterized pixels. An SVG diff would measure
+        // the renderer; this measures the drawing.
+        for (index, entry) in result.strokes.layers.enumerated() {
+            let name = scene.layers[index].spec.name
+            let flat = entry.paths.vertices.flatMap { [Float($0.x), Float($0.y)] }
+            try NPY.write(flat, shape: [entry.paths.vertices.count, 2],
+                          to: URL(fileURLWithPath: "\(prefix).\(name).npy"))
+            try NPY.write(entry.paths.offsets.map(Float.init),
+                          shape: [entry.paths.offsets.count],
+                          to: URL(fileURLWithPath: "\(prefix).\(name).idx.npy"))
+        }
+        let f = result.depth.frame
+        let meta = JSONValue.object([
+            "axis0": .array([.double(f.axis0.lo), .double(f.axis0.hi)]),
+            "axis1": .array([.double(f.axis1.lo), .double(f.axis1.hi)]),
+            "shape": .array([.int(f.rows), .int(f.cols)]),
+            "margin": .double(options.margin ?? scene.margin),
+            "layers": .array(scene.layers.map { .string($0.spec.name) }),
+        ])
+        try (meta.canonical + "\n").write(to: URL(fileURLWithPath: "\(prefix).frame.json"),
+                                          atomically: true, encoding: .utf8)
+    }
+
     print("""
         \(bundle.url.lastPathComponent) -> \(output.lastPathComponent)  [\(preset.name)]
-          depth      \(result.frame.rows)x\(result.frame.cols) \
-        in \(result.depths.count) tile\(result.depths.count == 1 ? "" : "s")
+          depth      \(result.depth.frame.rows)x\(result.depth.frame.cols) \
+        in \(result.tiles * result.tiles) pass\(result.tiles == 1 ? "" : "es")
           strokes    \(result.strokes.pathCount) paths, \
         ink \(String(format: "%.1f", result.strokes.inkLength))
           took       \(elapsed)

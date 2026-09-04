@@ -133,8 +133,12 @@ def build_scene(a, *, verbose=True):
 def render_plate(scene, project, *, buffer, gpu=False, clip_margin=0.02,
                  progress=True, verbose=True):
     """The camera-dependent half: project the scene, rasterize the occluder into
-    a Z-buffer, and clip the ink against it. Returns `(layer, segments)` pairs in
-    draw order."""
+    a Z-buffer, and clip the ink against it.
+
+    Returns `(drawn, zb)`: `drawn` is `(layer, segments)` pairs in draw order,
+    `zb` the Z-buffer they were clipped against. The buffer is an output, not a
+    scratch value -- the silhouette comes off it, and so does any comparison
+    against another renderer's depth (`tests/compare_bake.py`)."""
     occ_verts, occ_tris = build_occluder(
         scene.surface, scene.occluder_step, walls=scene.walls)
     if verbose:
@@ -161,7 +165,7 @@ def render_plate(scene, project, *, buffer, gpu=False, clip_margin=0.02,
                                                  margin=clip_margin)))
         else:
             out.append((layer, layer.split(rot[:, :2])))
-    return out
+    return out, zb
 
 
 def main():
@@ -172,8 +176,8 @@ def main():
     scene = build_scene(a)
     project = Projection(shear=a.scale, x_angle=a.x_angle, z_angle=a.z_angle,
                          flip_x=True)
-    drawn = render_plate(scene, project, buffer=a.buffer, gpu=a.gpu,
-                         clip_margin=a.clip_margin, progress=not a.no_progress)
+    drawn, _ = render_plate(scene, project, buffer=a.buffer, gpu=a.gpu,
+                            clip_margin=a.clip_margin, progress=not a.no_progress)
 
     fig, ax = plt.subplots(figsize=(16, 11))
     for layer, segments in drawn:
