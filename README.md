@@ -153,10 +153,14 @@ executable rather than a `.testTarget` (Command Line Tools ships
 `Testing.framework` without a `.swiftmodule`).
 
 ```bash
-swift build --package-path KurvenSwift
-KurvenSwift/.build/debug/kurven-cli bake recip.kurven -o recip.svg
-KurvenSwift/.build/debug/kurven-cli inspect recip.kurven
+swift build -c release --package-path KurvenSwift
+KurvenSwift/.build/release/kurven-cli bake recip.kurven -o recip.svg
+KurvenSwift/.build/release/kurven-cli inspect recip.kurven
 ```
+
+Build release for anything larger than a smoke test: the depth stitch and the
+clip are tight scalar loops, and a 20000² four-pass bake takes 2 s in release
+against 110 s in debug.
 
 A GPU depth test *is* hidden-line removal, so the realtime preview and the exact
 bake are the same computation at two resolutions: the bake reads the depth
