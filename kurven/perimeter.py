@@ -15,7 +15,7 @@ It bridges the two sibling modules — `occluder` (the hidden mesh) and `scaffol
 import numpy as np
 
 from kurven.occluder import wall_curtain
-from kurven.scaffold import wall_hatch
+from kurven.scaffold import wall_hatch, wall_hatch_3d
 
 
 class Edge:
@@ -39,16 +39,25 @@ class Edge:
         im, re = self.samples(density)
         return wall_curtain(im, re, surface, base=base)
 
-    def wall_hatch(self, surface, project, density, *, trim=False,
-                   base=0.0, top_offset=0.0):
-        """The ink hatch strokes for this edge (see `scaffold.wall_hatch`).
+    def wall_hatch_3d(self, surface, density, *, trim=False,
+                      base=0.0, top_offset=0.0):
+        """The ink hatch strokes for this edge as 3D `(2, 3)` segments (see
+        `scaffold.wall_hatch_3d`) — the camera-independent form, which is what a
+        `Scene` carries.
 
         `trim` drops the first and last sample (`[1:-1]`) so adjacent edges'
         hatch strokes don't double up at shared corners."""
         im, re = self.samples(density)
         if trim:
             im, re = im[1:-1], re[1:-1]
-        return wall_hatch(im, re, surface, project, base=base, top_offset=top_offset)
+        return wall_hatch_3d(im, re, surface, base=base, top_offset=top_offset)
+
+    def wall_hatch(self, surface, project, density, *, trim=False,
+                   base=0.0, top_offset=0.0):
+        """`wall_hatch_3d` projected to 2D (see `scaffold.wall_hatch`)."""
+        return [project(seg)[:, :2]
+                for seg in self.wall_hatch_3d(surface, density, trim=trim,
+                                              base=base, top_offset=top_offset)]
 
 
 class Perimeter:
@@ -81,13 +90,29 @@ class Perimeter:
         return [e.wall_curtain(surface, d, base=base)
                 for e, d in zip(self.edges, density)]
 
+    def to_world(self, density):
+        """This perimeter as a `kurven.bundle.Perimeter` in world `(x, y)`
+        order, with the per-edge sample densities the occluder used.
+
+        The bundle's boundary description and the wall curtains that were built
+        from it must agree; deriving one from the other here is what keeps them
+        from being listed twice."""
+        from kurven.bundle import Edge as BEdge, Perimeter as BPerimeter
+
+        if isinstance(density, (int, np.integer)):
+            density = [density] * len(self.edges)
+        return BPerimeter(tuple(
+            BEdge((e.start[1], e.start[0]), (e.end[1], e.end[0]), int(d))
+            for e, d in zip(self.edges, density)))
+
+    def ground_polygon_3d(self, *, z=0.0):
+        """Each edge as a straight `(2, 3)` line at height `z`, in `(im, re, z)`
+        — the camera-independent form of `ground_polygon`."""
+        return [np.array([[e.start[0], e.start[1], z],
+                          [e.end[0], e.end[1], z]]) for e in self.edges]
+
     def ground_polygon(self, project, *, z=0.0):
         """Each edge as a straight ground line at height `z`, projected to 2D —
         the outline the cutout casts on the base plane. Returns a list of (2, 2)
         segments (one per edge), the same corners the wall curtains rise from."""
-        out = []
-        for e in self.edges:
-            seg = np.array([[e.start[0], e.start[1], z],
-                            [e.end[0], e.end[1], z]])
-            out.append(project(seg)[:, :2])
-        return out
+        return [project(seg)[:, :2] for seg in self.ground_polygon_3d(z=z)]
