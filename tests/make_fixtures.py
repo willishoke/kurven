@@ -15,6 +15,9 @@ side must answer identically, cheapest first:
                before any GPU code exists.
     clip/      a depth buffer, view-space polylines, and the visible segments
                `clip_hidden_lines` produces from them. Pure, no GPU in the loop.
+    contour/   contourpy's iso-lines on three awkward grids -- nested loops,
+               nothing but saddles, and a step function -- so the native
+               marching squares can be held to them.
 
 Determinism: contouring runs single-chunk, the point sets come from a seeded
 generator, and the depth buffer is stored as float32 with the expected clip
@@ -37,6 +40,7 @@ import scipy.special as ss
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from kurven.contours import contour_levels  # noqa: E402
 from kurven.bundle import (  # noqa: E402
     AXES,
     Affine2,
@@ -202,6 +206,72 @@ def npy_fixtures(out):
 
 
 # --------------------------------------------------------------------------
+# contour
+# --------------------------------------------------------------------------
+
+
+def contour_fixture(out):
+    """contourpy's answer on grids chosen to exercise the awkward cases.
+
+    Three fields, contoured at levels that are deliberately not round numbers
+    relative to the data:
+
+      ripple   smooth, many nested closed loops, contours that leave the grid
+      saddles  a product of sines: nothing but saddle points, which is the one
+               case marching squares has to make a choice about
+      cliff    a step function, so contours run along cell boundaries and every
+               interpolation lands at an endpoint
+
+    Stored as one flat array per level plus path offsets, in domain coordinates.
+    """
+    n = 61
+    real = np.linspace(-3.0, 3.0, n)
+    imag = np.linspace(-2.0, 2.0, n)
+    R, I = np.meshgrid(real, imag, indexing="ij")
+
+    fields = {
+        "ripple": np.sin(1.7 * R) * np.cos(2.3 * I) + 0.35 * R,
+        "saddles": np.sin(3.0 * R) * np.sin(3.0 * I),
+        "cliff": np.where(R + 0.5 * I > 0.3, 1.0, -1.0) + 0.001 * I,
+    }
+    levels = {
+        "ripple": [-0.9, -0.31, 0.0, 0.17, 0.62, 1.05],
+        "saddles": [-0.5, -0.02, 0.0, 0.02, 0.5],
+        "cliff": [0.0, 0.5],
+    }
+
+    index = {}
+    for name, field in fields.items():
+        # Contour the float32 array, not the float64 one it came from: the Swift
+        # side reads float32 out of the bundle, and two implementations
+        # interpolating between different numbers disagree for a reason that has
+        # nothing to do with either of them.
+        field = field.astype(np.float32)
+        save(out / f"{name}.npy", field.T)                      # (ny, nx), world order
+        for lvl in levels[name]:
+            paths = contour_levels(field, [lvl], (-3.0, 3.0), (-2.0, 2.0), chunk_count=1)
+            segs = [np.asarray(s) for _, ss in paths for s in ss if len(s) >= 2]
+            tag = f"{name}_{lvl}".replace("-", "m").replace(".", "p")
+            if segs:
+                save(out / f"{tag}.npy", np.concatenate(segs))
+                save(out / f"{tag}.idx.npy",
+                     np.concatenate([[0], np.cumsum([len(s) for s in segs])]).astype(np.int64))
+            else:
+                save(out / f"{tag}.npy", np.zeros((0, 2)))
+                save(out / f"{tag}.idx.npy", np.zeros(1, dtype=np.int64))
+            index.setdefault(name, []).append({"level": lvl, "tag": tag,
+                                               "paths": len(segs)})
+
+    (out / "index.json").write_text(json.dumps({
+        "grid": {"nx": n, "ny": n, "real": [-3.0, 3.0], "imag": [-2.0, 2.0]},
+        "fields": index,
+        # contourpy returns (imag, real); the arrays saved here are in that
+        # order, and the Swift side works in world (real, imag).
+        "columns": ["imag", "real"],
+    }, sort_keys=True, indent=1) + "\n")
+
+
+# --------------------------------------------------------------------------
 # camera
 # --------------------------------------------------------------------------
 
@@ -324,10 +394,11 @@ def clip_fixture(out, *, res=200, occluder_res=100, buffer=320, margin=0.02):
 def main():
     if FIXTURES.exists():
         shutil.rmtree(FIXTURES)
-    for sub in ("contract", "npy", "camera", "clip"):
+    for sub in ("contract", "npy", "camera", "clip", "contour"):
         (FIXTURES / sub).mkdir(parents=True)
 
     contract_fixtures(FIXTURES / "contract")
+    contour_fixture(FIXTURES / "contour")
     npy_fixtures(FIXTURES / "npy")
     camera_fixtures(FIXTURES / "camera")
     n = clip_fixture(FIXTURES / "clip")

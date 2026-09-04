@@ -498,6 +498,135 @@ func shaderTests() {
     }
 }
 
+// MARK: - 8. contouring
+
+func contourTests() {
+    // Comparing two sets of polylines directly means comparing decisions the
+    // shape does not depend on: where a closed loop starts, which way round it
+    // goes, whether an open run was traced from one end or the other. The
+    // canonical form is the multiset of *segment midpoints*, which is invariant
+    // to all three and still distinguishes any two different curve sets.
+    func midpoints(_ paths: [[P2<DomainSpace>]]) -> [SIMD2<Double>] {
+        var out: [SIMD2<Double>] = []
+        for path in paths {
+            for (a, b) in zip(path, path.dropFirst()) {
+                out.append(SIMD2((a.x + b.x) / 2, (a.y + b.y) / 2))
+            }
+        }
+        return out
+    }
+
+    /// How many midpoints of one set have no counterpart in the other, and how
+    /// far the worst stray is. Sorting and zipping would be cheaper and wrong:
+    /// crossings on vertical grid edges share an x exactly, so a difference in
+    /// the last bit permutes the order and then compares unrelated points.
+    func separation(_ a: [SIMD2<Double>], _ b: [SIMD2<Double>])
+        -> (unmatched: Int, worst: Double) {
+        func directed(_ from: [SIMD2<Double>], _ to: [SIMD2<Double>]) -> (Int, Double) {
+            var count = 0, worst = 0.0
+            for p in from {
+                var best = Double.infinity
+                for q in to { best = min(best, ((p - q) * (p - q)).sum()) }
+                let d = best.squareRoot()
+                if d > 1e-9 { count += 1; worst = max(worst, d) }
+            }
+            return (count, worst)
+        }
+        let (ca, wa) = directed(a, b)
+        let (cb, wb) = directed(b, a)
+        return (ca + cb, max(wa, wb))
+    }
+
+    Check.suite("contour: the native marching squares reproduces contourpy") {
+        let index = try Fixtures.json("contour/index.json")
+        let grid = try index.value("grid", "contour index").object("grid")
+        let nx = try grid.int("nx", "grid"), ny = try grid.int("ny", "grid")
+        let realBounds = try grid.doubles("real", "grid")
+        let imagBounds = try grid.doubles("imag", "grid")
+        let domain = Domain(real: Interval(lo: realBounds[0], hi: realBounds[1]),
+                            imag: Interval(lo: imagBounds[0], hi: imagBounds[1]))
+        let fields = try index.value("fields", "contour index").object("fields")
+
+        for (name, entries) in fields.sorted(by: { $0.key < $1.key }) {
+            let values = try NPY.read(contentsOf: Fixtures.url("contour/\(name).npy")).floats()
+            let g = Grid2D(width: nx, height: ny, domain: domain, values: values)
+            guard case .array(let list) = entries else {
+                Check.expect(false, "\(name): the index lists levels"); continue
+            }
+            for entry in list {
+                let e = try entry.object("contour entry")
+                let level = try e.double("level", "contour entry")
+                let tag = try e.string("tag", "contour entry")
+                let wantPaths = try e.int("paths", "contour entry")
+
+                // The fixture is in contourpy's (imag, real) column order; the
+                // grid, and everything downstream of the bundle, is world order.
+                let flat = try NPY.read(contentsOf: Fixtures.url("contour/\(tag).npy")).doubles()
+                let offsets = try NPY.read(contentsOf: Fixtures.url("contour/\(tag).idx.npy")).ints()
+                var want: [[P2<DomainSpace>]] = []
+                for i in 0..<max(offsets.count - 1, 0) {
+                    want.append((offsets[i]..<offsets[i + 1]).map {
+                        P2<DomainSpace>(flat[2 * $0 + 1], flat[2 * $0])
+                    })
+                }
+
+                let got = Contour.lines(of: g, level: level)
+                let a = midpoints(got), b = midpoints(want)
+                let (unmatched, worst) = separation(a, b)
+                Check.expect(got.count == wantPaths && a.count == b.count && unmatched == 0,
+                             "\(tag): \(got.count) paths, \(a.count) segments",
+                             unmatched == 0 ? "exact"
+                                : "vs \(wantPaths)/\(b.count); \(unmatched) of "
+                                  + "\(a.count + b.count) midpoints unmatched, worst \(worst)")
+            }
+        }
+    }
+
+    Check.suite("contour: closed loops close and open runs reach the edge") {
+        // A cone: one nested closed loop per level, none of them touching the
+        // grid boundary.
+        let n = 81
+        var values = [Float](repeating: 0, count: n * n)
+        for y in 0..<n {
+            for x in 0..<n {
+                let dx = Double(x - n / 2) / Double(n / 2)
+                let dy = Double(y - n / 2) / Double(n / 2)
+                values[y * n + x] = Float(1 - (dx * dx + dy * dy).squareRoot())
+            }
+        }
+        let g = Grid2D(width: n, height: n,
+                       domain: Domain(real: Interval(lo: -1, hi: 1),
+                                      imag: Interval(lo: -1, hi: 1)),
+                       values: values)
+        let loops = Contour.lines(of: g, level: 0.5)
+        Check.expect(loops.count == 1, "one level set, one loop", "\(loops.count)")
+        if let loop = loops.first {
+            let closed = loop.first == loop.last
+            Check.expect(closed, "and it closes")
+            // Radius 0.5 of a unit cone: circumference pi.
+            var length = 0.0
+            for (a, b) in zip(loop, loop.dropFirst()) {
+                length += (SIMD2(b.x - a.x, b.y - a.y) * SIMD2(b.x - a.x, b.y - a.y)).sum().squareRoot()
+            }
+            Check.expect(abs(length - .pi / 2 * 2) < 0.02,
+                         "with the circumference of a circle of radius 1/2",
+                         "\(length) vs \(Double.pi)")
+        }
+
+        // A ramp: one open run per level, ending on the grid boundary.
+        var ramp = [Float](repeating: 0, count: n * n)
+        for y in 0..<n { for x in 0..<n { ramp[y * n + x] = Float(x) / Float(n - 1) } }
+        let r = Grid2D(width: n, height: n, domain: g.domain, values: ramp)
+        let runs = Contour.lines(of: r, level: 0.5)
+        Check.expect(runs.count == 1 && runs[0].first != runs[0].last,
+                     "a ramp gives one open run, not a loop")
+        if let run = runs.first {
+            let straight = run.allSatisfy { abs($0.x - 0.0) < 1e-9 }
+            Check.expect(straight, "at exactly the level's coordinate")
+        }
+    }
+}
+
 // MARK: - 7. navigation
 
 func navigationTests() {
@@ -733,6 +862,7 @@ cameraTests()
 clipTests()
 coreTests()
 navigationTests()
+contourTests()
 shaderTests()
 bakeTests()
 exit(Check.summary())
