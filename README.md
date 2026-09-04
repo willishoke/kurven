@@ -156,11 +156,17 @@ executable rather than a `.testTarget` (Command Line Tools ships
 swift build -c release --package-path KurvenSwift
 KurvenSwift/.build/release/kurven-cli bake recip.kurven -o recip.svg
 KurvenSwift/.build/release/kurven-cli inspect recip.kurven
+KurvenSwift/.build/release/kurven-cli bench recip.kurven   # per-frame depth cost
 ```
 
-Build release for anything larger than a smoke test: the depth stitch and the
-clip are tight scalar loops, and a 20000² four-pass bake takes 2 s in release
-against 110 s in debug.
+Build release for anything larger than a smoke test: the readback and the clip
+are tight scalar loops, and unoptimized Swift bounds-checks every element of a
+several-hundred-megabyte buffer.
+
+GPU resources are keyed on `Scene.content`, which survives a camera change, so
+navigation costs one uniform upload plus the depth pass — 1.6 ms for recip and
+5.9 ms for zeta at 1024², against 33 ms of redundant heightfield upload per
+frame if they were rebuilt. `kurven-cli bench` measures it.
 
 A GPU depth test *is* hidden-line removal, so the realtime preview and the exact
 bake are the same computation at two resolutions: the bake reads the depth

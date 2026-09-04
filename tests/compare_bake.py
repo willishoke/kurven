@@ -55,7 +55,18 @@ from kurven.bundle import indices_from_csr  # noqa: E402
 from kurven.export import export, load_example  # noqa: E402
 from kurven.projection import Projection  # noqa: E402
 
-CLI = ROOT / "KurvenSwift" / ".build" / "debug" / "kurven-cli"
+def _cli():
+    """Prefer the release binary: the depth readback and the clip are tight
+    scalar loops, and a debug build spends more time bounds-checking them than
+    the GPU spends drawing."""
+    for config in ("release", "debug"):
+        path = ROOT / "KurvenSwift" / ".build" / config / "kurven-cli"
+        if path.exists():
+            return path
+    return ROOT / "KurvenSwift" / ".build" / "release" / "kurven-cli"
+
+
+CLI = _cli()
 
 
 def python_plate(module, ex_args, gpu=True):
@@ -177,7 +188,7 @@ def main():
 
     if not CLI.exists():
         raise SystemExit(f"{CLI} is not built; run "
-                         f"swift build --package-path KurvenSwift")
+                         f"swift build -c release --package-path KurvenSwift")
 
     module = load_example(args.example)
     ex_args = module.parser().parse_args(rest)

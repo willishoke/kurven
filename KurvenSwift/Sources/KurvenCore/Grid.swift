@@ -24,9 +24,31 @@ public struct Grid2D<T>: Sendable where T: Sendable {
 
     public subscript(x: Int, y: Int) -> T { values[y * width + x] }
 
+    /// The *shape* a `decimated(by:)` grid would have, without building it.
+    ///
+    /// The renderer needs four numbers from the decimated lattice -- its two
+    /// dimensions and its domain -- and nothing else, because the heights come
+    /// from the texture. Materializing the grid to read them off costs a full
+    /// copy of the samples: 43 ms per pass on zeta's 25-million-sample grid, to
+    /// produce four doubles.
+    public func decimatedExtent(by step: Int) -> (width: Int, height: Int, domain: Domain) {
+        guard step > 1 else { return (width, height, domain) }
+        let w = (width + step - 1) / step
+        let h = (height + step - 1) / step
+        let dx = domain.real.length / Double(max(width - 1, 1))
+        let dy = domain.imag.length / Double(max(height - 1, 1))
+        return (w, h, Domain(
+            real: Interval(lo: domain.real.lo,
+                           hi: domain.real.lo + dx * Double((w - 1) * step)),
+            imag: Interval(lo: domain.imag.lo,
+                           hi: domain.imag.lo + dy * Double((h - 1) * step))))
+    }
+
     /// Keep every `step`-th sample in both directions. The domain is unchanged
     /// only if the last sample survives, so the decimated grid's domain is
     /// narrowed to the samples it actually kept.
+    ///
+    /// Prefer `decimatedExtent(by:)` when only the shape is wanted.
     public func decimated(by step: Int) -> Grid2D<T> {
         guard step > 1 else { return self }
         let xs = stride(from: 0, to: width, by: step).map { $0 }

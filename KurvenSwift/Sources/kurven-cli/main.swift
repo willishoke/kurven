@@ -78,6 +78,12 @@ usage: kurven-cli <command> [options]
         Dump the depth buffer as float32 .npy, for comparison against the
         Python Z-buffer. This is what stands in for a GPU frame capture.
 
+  bench <bundle> [--preset NAME] [--resolution N] [--frames N]
+        Render the depth pass repeatedly from a moving camera and report the
+        frame time. This is the Phase 2 question -- whether navigation can hold
+        60 fps -- asked without a window: the preview does exactly this work
+        per frame, plus a line pass that costs a fraction of it.
+
   inspect <bundle>
         Print the manifest: domain, caps, occluder, layers, presets, provenance.
 
@@ -185,6 +191,50 @@ func depth(_ args: Args) throws {
         """)
 }
 
+func bench(_ args: Args) throws {
+    let (bundle, preset, base) = try loadScene(args)
+    let resolution = try args.int("resolution", 1024)
+    let frames = try args.int("frames", 60)
+    guard let bounds = base.viewBounds() else { throw CLIError("the scene is empty") }
+    let frame = DepthFrame(covering: bounds, resolution: resolution)
+    let renderer = try MetalRenderer()
+    let clock = ContinuousClock()
+
+    // A camera that moves: the plate's own projection, orbited. Every frame
+    // shares the scene's `content`, so this measures what navigation costs
+    // once the resources are built -- which is the whole reason they are
+    // separated from the camera.
+    func camera(_ i: Int) -> Camera {
+        var plate = preset.plate
+        plate.zAngle = preset.plate.zAngle + Double(i) * 0.25
+        return .plate(plate)
+    }
+
+    let warmup = try clock.measure {
+        _ = try renderer.renderDepth(base.looking(camera(0)), frame: frame)
+    }
+
+    var times: [Double] = []
+    times.reserveCapacity(frames)
+    for i in 1...frames {
+        let scene = base.looking(camera(i))
+        let d = try clock.measure { _ = try renderer.renderDepth(scene, frame: frame) }
+        times.append(Double(d.components.attoseconds) / 1e18
+                     + Double(d.components.seconds))
+    }
+    times.sort()
+    let median = times[times.count / 2]
+    let p95 = times[min(times.count - 1, Int(Double(times.count) * 0.95))]
+
+    func ms(_ t: Double) -> String { String(format: "%.2f ms", t * 1000) }
+    print("\(bundle.url.lastPathComponent)  [\(preset.name)]  \(frame.rows)x\(frame.cols)")
+    print("  first frame  \(warmup)  (builds the resources)")
+    print("  then         median \(ms(median))  p95 \(ms(p95))  "
+          + "min \(ms(times[0]))  max \(ms(times[times.count - 1]))")
+    print("  that is      \(String(format: "%.0f", 1 / median)) fps at the median"
+          + (renderer.hasLinearReadback ? "" : "   (readback is NOT linear here)"))
+}
+
 func inspect(_ args: Args) throws {
     let (bundle, _, _) = try loadScene(args)
     let m = bundle.manifest
@@ -270,6 +320,7 @@ do {
     switch args.positional.first {
     case "bake": try bake(args)
     case "depth": try depth(args)
+    case "bench": try bench(args)
     case "inspect": try inspect(args)
     case "contract": try contract(args)
     default:

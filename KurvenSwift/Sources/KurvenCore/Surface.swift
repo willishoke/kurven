@@ -53,6 +53,26 @@ public struct Surface: Sendable {
         min(magnitude(at: p), caps.height(atX: p.x))
     }
 
+    /// Every `step`-th sample, capped and lifted, without materializing a grid.
+    ///
+    /// The bounds pass folds over three million points on elliptic and six
+    /// million on zeta; it wants none of them kept. `clamped().decimated()`
+    /// would allocate both intermediates to hand them over one at a time.
+    public func forEachSample(step: Int, _ body: (P3<WorldSpace>) -> Void) {
+        let g = height
+        let columns = Array(stride(from: 0, to: g.width, by: max(step, 1)))
+        // The cap depends only on x, so it is one lookup per sampled column
+        // rather than one per sample -- which is the whole difference between
+        // `Caps.realBands` costing nothing and costing a branch per point.
+        let columnCap = columns.map { caps.height(atX: g.position(x: $0, y: 0).x) }
+        for y in stride(from: 0, to: g.height, by: max(step, 1)) {
+            for (i, x) in columns.enumerated() {
+                let p = g.position(x: x, y: y)
+                body(P3(p.x, p.y, min(Double(g[x, y]), columnCap[i])))
+            }
+        }
+    }
+
     /// Lift a domain point onto the (capped) surface.
     public func lift(_ p: P2<DomainSpace>) -> P3<WorldSpace> {
         P3(p.x, p.y, height(at: p))

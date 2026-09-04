@@ -101,6 +101,34 @@ public final class MetalRenderer {
 
     // MARK: - rendering
 
+    /// Resources for the scene being drawn.
+    ///
+    /// A single-entry memo. The renderer belongs to one document -- one window,
+    /// or one bake -- so it draws one scene's content over and over from
+    /// different places, which is exactly the shape a single entry serves. Two
+    /// bundles means two renderers.
+    private var resources: SceneResources?
+    private var target: DepthTarget?
+
+    private func resources(for scene: Scene) throws -> SceneResources {
+        if let r = resources, r.content == scene.content { return r }
+        let r = try SceneResources(scene: scene, device: device)
+        resources = r
+        return r
+    }
+
+    private func target(rows: Int, cols: Int) throws -> DepthTarget {
+        if let t = target, t.rows == rows, t.cols == cols { return t }
+        let t = try DepthTarget(rows: rows, cols: cols, device: device)
+        target = t
+        return t
+    }
+
+    /// Whether the depth target's memory is directly readable, or has to be
+    /// detiled on the way out. Reported by `kurven-cli` so a slow bake on some
+    /// future device has an obvious first suspect.
+    public var hasLinearReadback: Bool { target?.isLinear ?? false }
+
     /// Rasterize a scene's occluding geometry into a depth image.
     public func renderDepth(_ scene: Scene, frame: DepthFrame) throws -> DepthImage {
         guard frame.cols <= metalTextureLimit, frame.rows <= metalTextureLimit else {
@@ -108,28 +136,12 @@ public final class MetalRenderer {
                                                 limit: metalTextureLimit)
         }
 
-        let lattice = scene.surface.clamped().decimated(by: scene.step)
-        let (heights, capped) = try uploadHeights(scene)
-        let target = try makeTarget(frame)
-
-        var uniforms = self.uniforms(scene, frame: frame, lattice: lattice,
-                                     capped: capped)
-        let tiles = scene.tiles.map {
-            KVTile(linear: SIMD4<Float>(Float($0.a), Float($0.b), Float($0.c), Float($0.d)),
-                   offset: SIMD2<Float>(Float($0.tx), Float($0.ty)))
-        }
-        let region: [SIMD2<Float>] = {
-            guard case .inside(let p) = scene.region else { return [] }
-            return p.edges.map { SIMD2(Float($0.start.x), Float($0.start.y)) }
-        }()
-        let wallVertices = scene.occluder.triangles.flatMap { t in
-            t.indices.map { i in
-                KVVertex(position: SIMD3<Float>(scene.occluder.vertices[Int(t[i])].v))
-            }
-        }
+        let res = try resources(for: scene)
+        let out = try target(rows: frame.rows, cols: frame.cols)
+        var uniforms = self.uniforms(scene, frame: frame, resources: res)
 
         let descriptor = MTLRenderPassDescriptor()
-        descriptor.colorAttachments[0].texture = target
+        descriptor.colorAttachments[0].texture = out.texture
         descriptor.colorAttachments[0].loadAction = .clear
         descriptor.colorAttachments[0].storeAction = .store
         descriptor.colorAttachments[0].clearColor =
@@ -144,30 +156,21 @@ public final class MetalRenderer {
 
         // The heightfield: no vertex or index buffer, six vertices per cell,
         // one instance per tile.
-        let cells = max(lattice.width - 1, 0) * max(lattice.height - 1, 0)
-        if cells > 0 {
+        if res.cells > 0 {
             encoder.setRenderPipelineState(heightPipeline)
-            encoder.setVertexBuffer(try buffer(tiles, "tile transforms"), offset: 0, index: 1)
-            if !region.isEmpty {
-                encoder.setVertexBuffer(try buffer(region, "the region polygon"),
-                                        offset: 0, index: 2)
-            } else {
-                // Bound anyway: Metal validation requires every declared buffer
-                // argument to have a binding even when the shader never reads it.
-                encoder.setVertexBuffer(try buffer([SIMD2<Float>.zero], "a region placeholder"),
-                                        offset: 0, index: 2)
-            }
-            encoder.setVertexTexture(heights, index: 0)
+            encoder.setVertexBuffer(res.tiles, offset: 0, index: 1)
+            encoder.setVertexBuffer(res.region, offset: 0, index: 2)
+            encoder.setVertexTexture(res.heights, index: 0)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0,
-                                   vertexCount: cells * 6, instanceCount: tiles.count)
+                                   vertexCount: res.cells * 6,
+                                   instanceCount: res.tileCount)
         }
 
-        if !wallVertices.isEmpty {
+        if let walls = res.walls {
             encoder.setRenderPipelineState(meshPipeline)
-            encoder.setVertexBuffer(try buffer(wallVertices, "wall vertices"),
-                                    offset: 0, index: 3)
+            encoder.setVertexBuffer(walls, offset: 0, index: 3)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0,
-                                   vertexCount: wallVertices.count)
+                                   vertexCount: res.wallVertexCount)
         }
 
         encoder.endEncoding()
@@ -175,76 +178,26 @@ public final class MetalRenderer {
         commands.waitUntilCompleted()
         if let error = commands.error { throw RendererError.pipeline("\(error)") }
 
-        return DepthReadback.read(target, frame: frame, empty: Self.emptySentinel)
+        return out.read(frame: frame, empty: Self.emptySentinel)
     }
 
-    // MARK: - resources
+    // MARK: - uniforms
 
     private func uniforms(_ scene: Scene, frame: DepthFrame,
-                          lattice: Grid2D<Float>, capped: Bool) -> KVUniforms {
+                          resources res: SceneResources) -> KVUniforms {
         let ndc = frame.metalNDC
-        let d = lattice.domain
+        let d = res.latticeDomain
         return KVUniforms(
             view: scene.camera.view.float4x4,
             ndcScale: SIMD2<Float>(Float(ndc.scale.x), Float(ndc.scale.y)),
             ndcOffset: SIMD2<Float>(Float(ndc.offset.x), Float(ndc.offset.y)),
             domainLo: SIMD2<Float>(Float(d.real.lo), Float(d.imag.lo)),
             domainSize: SIMD2<Float>(Float(d.real.length), Float(d.imag.length)),
-            lattice: SIMD2<UInt32>(UInt32(lattice.width), UInt32(lattice.height)),
-            gridSize: SIMD2<UInt32>(UInt32(scene.surface.height.width),
-                                    UInt32(scene.surface.height.height)),
+            lattice: SIMD2<UInt32>(UInt32(res.latticeWidth), UInt32(res.latticeHeight)),
+            gridSize: SIMD2<UInt32>(UInt32(res.gridWidth), UInt32(res.gridHeight)),
             step: UInt32(scene.step),
-            cap: capped ? .infinity : Float(scene.surface.caps.height(atX: 0)),
-            regionCount: {
-                if case .inside(let p) = scene.region { return UInt32(p.edges.count) }
-                return 0
-            }(),
+            cap: res.capBaked ? .infinity : Float(scene.surface.caps.height(atX: 0)),
+            regionCount: UInt32(res.regionCount),
             empty: Self.emptySentinel)
-    }
-
-    /// Upload the height grid. A uniform cap stays a live knob applied in the
-    /// shader; band caps depend on x and are baked in here, which is the whole
-    /// difference between the two arms and the reason `capped` comes back.
-    private func uploadHeights(_ scene: Scene) throws -> (MTLTexture, capped: Bool) {
-        let grid: Grid2D<Float>
-        let capped: Bool
-        switch scene.surface.caps {
-        case .none, .uniform: grid = scene.surface.height; capped = false
-        case .realBands: grid = scene.surface.clamped(); capped = true
-        }
-        let d = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r32Float, width: grid.width, height: grid.height,
-            mipmapped: false)
-        d.usage = .shaderRead
-        d.storageMode = .shared
-        guard let t = device.makeTexture(descriptor: d) else {
-            throw RendererError.allocation("a \(grid.width)x\(grid.height) height texture")
-        }
-        grid.values.withUnsafeBytes { bytes in
-            t.replace(region: MTLRegionMake2D(0, 0, grid.width, grid.height),
-                      mipmapLevel: 0, withBytes: bytes.baseAddress!,
-                      bytesPerRow: grid.width * MemoryLayout<Float>.stride)
-        }
-        return (t, capped)
-    }
-
-    private func makeTarget(_ frame: DepthFrame) throws -> MTLTexture {
-        let d = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r32Float, width: frame.cols, height: frame.rows,
-            mipmapped: false)
-        d.usage = [.renderTarget, .shaderRead]
-        d.storageMode = .shared
-        guard let t = device.makeTexture(descriptor: d) else {
-            throw RendererError.allocation("a \(frame.cols)x\(frame.rows) depth target")
-        }
-        return t
-    }
-
-    private func buffer<T>(_ values: [T], _ what: String) throws -> MTLBuffer {
-        guard let b = values.withUnsafeBytes({ bytes in
-            device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count,
-                              options: .storageModeShared)
-        }) else { throw RendererError.allocation(what) }
-        return b
     }
 }

@@ -254,6 +254,32 @@ func clipTests() {
         Check.expect(exact, "every surviving vertex is bit-identical")
     }
 
+    Check.suite("clip: the GPU's empty sentinel and Python's -infinity decide alike") {
+        // Carrying the sentinel instead of rewriting it saves a pass over every
+        // pixel of the buffer. It is only sound because the visibility test
+        // cannot tell the two apart, which is what this asserts.
+        let frame = DepthFrame(axis0: Interval(lo: 0, hi: 1), axis1: Interval(lo: 0, hi: 1),
+                               rows: 2, cols: 2)
+        let sentinel: Float = -1e30
+        let heights: [Float] = [-1e6, -1, 0, 1e6]
+        let python = DepthImage(frame: frame,
+                                values: [Float](repeating: -.infinity, count: 4))
+        let metal = DepthImage(frame: frame,
+                               values: [Float](repeating: sentinel, count: 4),
+                               empty: sentinel)
+        var alike = true
+        for z in heights.map(Double.init) {
+            for margin in [0.0, 0.02, 0.2] {
+                let a = z + margin > python.depth(under: P2(0.25, 0.25))
+                let b = z + margin > metal.depth(under: P2(0.25, 0.25))
+                if a != b { alike = false }
+            }
+        }
+        Check.expect(alike, "every visibility test agrees over both conventions")
+        Check.expect(!python.isCovered(row: 0, col: 0) && !metal.isCovered(row: 0, col: 0),
+                     "and coverage still reads as empty under both")
+    }
+
     Check.suite("clip: out-of-frame vertices read as occluded, as they do in Python") {
         let frame = DepthFrame(axis0: Interval(lo: 0, hi: 1), axis1: Interval(lo: 0, hi: 1),
                                rows: 4, cols: 4)
@@ -432,8 +458,12 @@ func bakeTests() {
             var span: Float = 0
             for i in whole.depth.values.indices {
                 let a = whole.depth.values[i], b = split.depth.values[i]
-                if a.isFinite != b.isFinite { uncovered += 1; continue }
-                if a.isFinite { worst = max(worst, abs(a - b)); span = max(span, abs(a)) }
+                // "Covered" is `> empty`, not `isFinite`: the GPU clear value is
+                // a large negative sentinel, because Metal cannot clear a float
+                // attachment to infinity.
+                let ca = a > whole.depth.empty, cb = b > split.depth.empty
+                if ca != cb { uncovered += 1; continue }
+                if ca { worst = max(worst, abs(a - b)); span = max(span, abs(a)) }
             }
             let coverage = Double(uncovered) / Double(whole.depth.values.count)
             Check.expect(coverage < 0.001,

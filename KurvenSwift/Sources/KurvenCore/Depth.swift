@@ -102,19 +102,35 @@ public struct DepthFrame: Sendable, Equatable {
 
 /// A rendered depth buffer as a value.
 ///
-/// Empty pixels are `-.infinity`, matching the Python fill, so the visibility
-/// test needs no separate coverage mask: nothing is ever behind nothing.
+/// `empty` is the value stored where nothing was drawn -- `-.infinity` for a
+/// buffer built the way Python builds one, and a large negative sentinel for one
+/// that came off the GPU, because Metal cannot clear a float attachment to
+/// infinity. The two are interchangeable for the visibility test (`z + margin`
+/// beats either for any real depth), so carrying the sentinel rather than
+/// rewriting it costs nothing and saves a pass over the whole buffer: on a
+/// 16000-square bake that pass was 400 ms of the 1600 the bake took.
+///
+/// Coverage is the one question that does distinguish them, and it asks
+/// `isCovered` rather than testing for a magic value.
 public struct DepthImage: Sendable {
     public let frame: DepthFrame
     public let values: [Float]
+    /// The value meaning "nothing was drawn here".
+    public let empty: Float
 
-    public init(frame: DepthFrame, values: [Float]) {
+    public init(frame: DepthFrame, values: [Float], empty: Float = -.infinity) {
         precondition(values.count == frame.rows * frame.cols,
                      "depth image is \(frame.rows)x\(frame.cols) but has \(values.count) values")
-        self.frame = frame; self.values = values
+        self.frame = frame; self.values = values; self.empty = empty
     }
 
     public subscript(row: Int, col: Int) -> Double { Double(values[row * frame.cols + col]) }
+
+    /// Whether anything was drawn at a pixel. With a MAX blend a written value
+    /// is `max(empty, z)`, so "covered" is exactly "greater than empty".
+    public func isCovered(row: Int, col: Int) -> Bool {
+        values[row * frame.cols + col] > empty
+    }
 
     /// The stored depth under a view point, or `+.infinity` outside the frame --
     /// which reads as "occluded by the edge of the world", the same convention

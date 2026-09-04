@@ -1,23 +1,44 @@
 import Foundation
 import simd
 
+/// The identity of a piece of content.
+///
+/// GPU resources are a memo keyed by *what* is being drawn, and "what" cannot be
+/// a hash: hashing a hundred megabytes of heightfield every frame costs more
+/// than re-uploading it. So identity is assigned once, when the content is
+/// built, and carried. Two scenes with the same `ContentID` are the same
+/// geometry seen from possibly different places.
+public struct ContentID: Hashable, Sendable {
+    private let raw: UUID
+    public init() { raw = UUID() }
+}
+
 /// An immutable snapshot of everything a frame needs.
 ///
-/// The renderer's signature is `draw(scene:viewport:)`: a frame is a function of
-/// a value, not of accumulated state. Moving the camera means producing a new
-/// `Scene` that differs in one field; the GPU buffers behind it are a memo keyed
-/// by the bundle's identity, not something the scene mutates.
+/// The renderer's signature is `renderDepth(scene:frame:)`: a frame is a
+/// function of a value, not of accumulated state. Moving the camera means
+/// producing a `Scene` that differs in one field, and the GPU buffers behind it
+/// are a memo keyed by `content`.
+///
+/// The geometry is `let` and the camera is `var`, deliberately. If the surface
+/// could be reassigned in place, `content` would go stale and the memo would
+/// serve the wrong texture -- so the type makes the memo's premise true rather
+/// than documenting it. Producing different geometry means producing a new
+/// `Scene`, which mints a new `ContentID`.
 public struct Scene: Sendable {
-    public var surface: Surface
+    /// Identifies everything below except the camera, the mode and the margin.
+    public let content: ContentID
+    public let surface: Surface
     /// Wall curtains, in world coordinates.
-    public var occluder: Mesh<WorldSpace>
+    public let occluder: Mesh<WorldSpace>
     /// Heightfield instances; always at least the identity.
-    public var tiles: [Affine2]
+    public let tiles: [Affine2]
     /// The footprint each instance is clipped to.
-    public var region: Region
+    public let region: Region
     /// Subsampling step for the heightfield when it is rasterized.
-    public var step: Int
-    public var layers: [Layer]
+    public let step: Int
+    public let layers: [Layer]
+
     public var camera: Camera
     public var mode: PreviewMode
     /// Hidden-line margin, in world units of depth.
@@ -26,6 +47,7 @@ public struct Scene: Sendable {
     public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],
                 region: Region = .full, step: Int, layers: [Layer], camera: Camera,
                 mode: PreviewMode = .plate, margin: Double) {
+        self.content = ContentID()
         self.surface = surface; self.occluder = occluder; self.tiles = tiles
         self.region = region; self.step = step; self.layers = layers
         self.camera = camera; self.mode = mode; self.margin = margin
@@ -41,6 +63,13 @@ public struct Scene: Sendable {
                   layers: bundle.layers,
                   camera: .plate(preset.plate),
                   margin: preset.margin)
+    }
+
+    /// The same content, looked at from somewhere else. Keeps `content`, so the
+    /// renderer's resources survive the move -- which is the whole point of
+    /// separating them.
+    public func looking(_ camera: Camera) -> Scene {
+        var out = self; out.camera = camera; return out
     }
 
     /// Every layer's vertices in view space, in declaration (draw) order.
@@ -84,19 +113,12 @@ public struct Scene: Sendable {
 
     /// Every vertex of the decimated, capped heightfield, once per tile.
     ///
-    /// The lattice is `clamped().decimated(by: step)`, which is exactly
-    /// `Surface.grid_mesh`'s `self.clamped[::step, ::step]`. Not materialized:
-    /// elliptic's is three million points and the caller only ever folds over
-    /// them.
+    /// The lattice is `Surface.grid_mesh`'s `self.clamped[::step, ::step]`. Not
+    /// materialized: elliptic's is three million points, zeta's six, and the
+    /// caller only ever folds over them.
     public func forEachHeightfieldSample(_ body: (P3<WorldSpace>) -> Void) {
-        let lattice = surface.clamped().decimated(by: step)
         for tile in tiles {
-            for y in 0..<lattice.height {
-                for x in 0..<lattice.width {
-                    let p = lattice.position(x: x, y: y)
-                    body(tile(P3(p.x, p.y, Double(lattice[x, y]))))
-                }
-            }
+            surface.forEachSample(step: step) { body(tile($0)) }
         }
     }
 }
