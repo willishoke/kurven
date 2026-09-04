@@ -111,6 +111,37 @@ public struct Scene: Sendable {
         return any ? AABB(lo: lo, hi: hi) : nil
     }
 
+    /// A cheap approximate view-space bound, from a coarse subsample.
+    ///
+    /// `viewBounds()` folds over every heightfield sample because the bake has
+    /// to frame the picture exactly the way Python does. Nothing interactive can
+    /// afford that -- a "fit to window" that scans six million points is not a
+    /// fit, it is a stall -- and nothing interactive needs it, because a frame
+    /// that is a fraction of a percent loose is a frame nobody can see is loose.
+    ///
+    /// The bounding *box* would be cheaper still and is much worse: the box of a
+    /// rotated landscape is far bigger than the hull of its samples, so fitting
+    /// to it leaves the picture small and off-centre. Subsampling keeps the
+    /// shape of the hull and only loses its last few percent.
+    public func quickBounds(budget: Int = 20_000) -> AABB<ViewSpace>? {
+        var lo = SIMD3<Double>(repeating: .infinity)
+        var hi = SIMD3<Double>(repeating: -.infinity)
+        var any = false
+        func add(_ p: P3<ViewSpace>) {
+            lo = simd_min(lo, p.v); hi = simd_max(hi, p.v); any = true
+        }
+
+        let g = surface.height
+        let perTile = max(budget / max(tiles.count, 1), 16)
+        let side = max(Int(Double(perTile).squareRoot()), 4)
+        let stride = max(step, max(g.width / side, g.height / side))
+        for tile in tiles {
+            surface.forEachSample(step: stride) { add(camera.view(tile($0))) }
+        }
+        for v in occluder.vertices { add(camera.view(v)) }
+        return any ? AABB(lo: lo, hi: hi) : nil
+    }
+
     /// Every vertex of the decimated, capped heightfield, once per tile.
     ///
     /// The lattice is `Surface.grid_mesh`'s `self.clamped[::step, ::step]`. Not

@@ -44,13 +44,24 @@ public final class MetalRenderer {
     let queue: MTLCommandQueue
     let heightPipeline: MTLRenderPipelineState
     let meshPipeline: MTLRenderPipelineState
+    // The preview's second pass. Same geometry, different fragment work.
+    let paperSurfacePipeline: MTLRenderPipelineState
+    let paperWallPipeline: MTLRenderPipelineState
+    let shadedSurfacePipeline: MTLRenderPipelineState
+    let shadedWallPipeline: MTLRenderPipelineState
+    let linePipeline: MTLRenderPipelineState
+    let depthViewPipeline: MTLRenderPipelineState
+    /// The pixel format the preview draws into; the depth pass is always
+    /// r32Float.
+    public let previewFormat: MTLPixelFormat
 
     /// Written where nothing was drawn. Metal cannot clear to -infinity, so the
     /// buffer clears to this and `readback` maps it back -- the same trick, and
     /// the same sentinel magnitude, as the Python moderngl path.
     static let emptySentinel: Float = -1e30
 
-    public init(device: MTLDevice? = nil) throws {
+    public init(device: MTLDevice? = nil,
+                previewFormat: MTLPixelFormat = .bgra8Unorm) throws {
         guard let device = device ?? MTLCreateSystemDefaultDevice() else {
             throw RendererError.noDevice
         }
@@ -87,6 +98,33 @@ public final class MetalRenderer {
         }
         self.heightPipeline = try pipeline(vertex: "kv_height_vertex")
         self.meshPipeline = try pipeline(vertex: "kv_mesh_vertex")
+
+        // The colour pass has no depth attachment. It does not need one: pass 1
+        // already holds the front-most view depth at every pixel, and both the
+        // shaded surface and the ink decide visibility by reading it. That is
+        // one depth semantic in the program rather than two, and it is the same
+        // one `clip_hidden_lines` uses.
+        func colorPipeline(_ vertex: String, _ fragment: String,
+                           primitive: MTLPrimitiveTopologyClass = .triangle) throws
+            -> MTLRenderPipelineState
+        {
+            let d = MTLRenderPipelineDescriptor()
+            d.vertexFunction = try function(vertex)
+            d.fragmentFunction = try function(fragment)
+            d.colorAttachments[0].pixelFormat = previewFormat
+            d.inputPrimitiveTopology = primitive
+            do { return try device.makeRenderPipelineState(descriptor: d) }
+            catch { throw RendererError.pipeline("\(vertex)/\(fragment): \(error)") }
+        }
+        self.previewFormat = previewFormat
+        self.paperSurfacePipeline = try colorPipeline("kv_surface_vertex", "kv_paper_fragment")
+        self.paperWallPipeline = try colorPipeline("kv_wall_vertex", "kv_paper_fragment")
+        self.shadedSurfacePipeline = try colorPipeline("kv_surface_vertex", "kv_shaded_fragment")
+        self.shadedWallPipeline = try colorPipeline("kv_wall_vertex", "kv_shaded_fragment")
+        self.linePipeline = try colorPipeline("kv_line_vertex", "kv_line_fragment",
+                                              primitive: .line)
+        self.depthViewPipeline = try colorPipeline("kv_fullscreen_vertex",
+                                                   "kv_depth_view_fragment")
     }
 
     /// Compile `Shaders.source`. Exposed so a test can fail `swift test` on a
@@ -107,14 +145,67 @@ public final class MetalRenderer {
     /// or one bake -- so it draws one scene's content over and over from
     /// different places, which is exactly the shape a single entry serves. Two
     /// bundles means two renderers.
-    private var resources: SceneResources?
+    private var cachedResources: SceneResources?
+    private var cachedLines: (content: ContentID, geometry: LineGeometry)?
     private var target: DepthTarget?
+    private var previewDepth: MTLTexture?
 
-    private func resources(for scene: Scene) throws -> SceneResources {
-        if let r = resources, r.content == scene.content { return r }
+    func resources(for scene: Scene) throws -> SceneResources {
+        if let r = cachedResources, r.content == scene.content { return r }
         let r = try SceneResources(scene: scene, device: device)
-        resources = r
+        cachedResources = r
         return r
+    }
+
+    /// Line geometry, cached on the same key as everything else. Toggling a
+    /// layer must not rebuild it.
+    func lineGeometry(for scene: Scene) throws -> LineGeometry {
+        if let c = cachedLines, c.content == scene.content { return c.geometry }
+        let g = try LineGeometry(scene: scene, device: device)
+        cachedLines = (scene.content, g)
+        return g
+    }
+
+    /// The preview's depth attachment. Unlike the bake's, it is never read back,
+    /// so it wants no linear backing -- only `shaderRead`, for the second pass.
+    func depthTexture(rows: Int, cols: Int) throws -> MTLTexture {
+        if let t = previewDepth, t.width == cols, t.height == rows { return t }
+        let d = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r32Float, width: cols, height: rows, mipmapped: false)
+        d.usage = [.renderTarget, .shaderRead]
+        d.storageMode = .private
+        guard let t = device.makeTexture(descriptor: d) else {
+            throw RendererError.allocation("a \(cols)x\(rows) preview depth texture")
+        }
+        previewDepth = t
+        return t
+    }
+
+    /// Draw the occluding geometry: the implicit heightfield, then the walls.
+    /// Shared by the depth pass and the preview's surface pass, so the two
+    /// cannot draw different things.
+    func encodeGeometry(_ encoder: MTLRenderCommandEncoder, res: SceneResources,
+                        height: MTLRenderPipelineState, mesh: MTLRenderPipelineState) {
+        if res.cells > 0 {
+            encoder.setRenderPipelineState(height)
+            encoder.setVertexBuffer(res.tiles, offset: 0, index: 1)
+            encoder.setVertexBuffer(res.region, offset: 0, index: 2)
+            encoder.setVertexTexture(res.heights, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0,
+                                   vertexCount: res.cells * 6,
+                                   instanceCount: res.tileCount)
+        }
+        if let walls = res.walls {
+            encoder.setRenderPipelineState(mesh)
+            encoder.setVertexBuffer(walls, offset: 0, index: 3)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0,
+                                   vertexCount: res.wallVertexCount)
+        }
+    }
+
+    func previewUniforms(_ scene: Scene, frame: DepthFrame,
+                         resources res: SceneResources) -> KVUniforms {
+        uniforms(scene, frame: frame, resources: res)
     }
 
     private func target(rows: Int, cols: Int) throws -> DepthTarget {
@@ -153,26 +244,9 @@ public final class MetalRenderer {
         }
 
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<KVUniforms>.stride, index: 0)
-
         // The heightfield: no vertex or index buffer, six vertices per cell,
         // one instance per tile.
-        if res.cells > 0 {
-            encoder.setRenderPipelineState(heightPipeline)
-            encoder.setVertexBuffer(res.tiles, offset: 0, index: 1)
-            encoder.setVertexBuffer(res.region, offset: 0, index: 2)
-            encoder.setVertexTexture(res.heights, index: 0)
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0,
-                                   vertexCount: res.cells * 6,
-                                   instanceCount: res.tileCount)
-        }
-
-        if let walls = res.walls {
-            encoder.setRenderPipelineState(meshPipeline)
-            encoder.setVertexBuffer(walls, offset: 0, index: 3)
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0,
-                                   vertexCount: res.wallVertexCount)
-        }
-
+        encodeGeometry(encoder, res: res, height: heightPipeline, mesh: meshPipeline)
         encoder.endEncoding()
         commands.commit()
         commands.waitUntilCompleted()
@@ -183,8 +257,8 @@ public final class MetalRenderer {
 
     // MARK: - uniforms
 
-    private func uniforms(_ scene: Scene, frame: DepthFrame,
-                          resources res: SceneResources) -> KVUniforms {
+    func uniforms(_ scene: Scene, frame: DepthFrame,
+                  resources res: SceneResources) -> KVUniforms {
         let ndc = frame.metalNDC
         let d = res.latticeDomain
         return KVUniforms(
@@ -215,8 +289,9 @@ public extension MetalRenderer {
     /// build after editing the header can leave the two sides disagreeing, which
     /// shows up as a corrupted uniform and a crash rather than as a compile
     /// error. Asking the GPU what it sees turns that into a test.
-    static func probeUniformLayout(device: MTLDevice, sending uniforms: KVUniforms)
-        throws -> (fields: [Float], sizeOnGPU: Int)
+    static func probeUniformLayout(device: MTLDevice, sending uniforms: KVUniforms,
+                                   and shading: KVShading)
+        throws -> (fields: [Float], uniformSize: Int, shadingSize: Int)
     {
         let library = try makeLibrary(device: device)
         guard let function = library.makeFunction(name: "kv_layout_probe") else {
@@ -232,9 +307,11 @@ public extension MetalRenderer {
             throw RendererError.allocation("the layout probe")
         }
         var u = uniforms
+        var sh = shading
         encoder.setComputePipelineState(pipeline)
         encoder.setBytes(&u, length: MemoryLayout<KVUniforms>.stride, index: 0)
         encoder.setBuffer(out, offset: 0, index: 1)
+        encoder.setBytes(&sh, length: MemoryLayout<KVShading>.stride, index: 2)
         encoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
         encoder.endEncoding()
@@ -244,6 +321,6 @@ public extension MetalRenderer {
 
         let p = out.contents().bindMemory(to: Float.self, capacity: n)
         let fields = Array(UnsafeBufferPointer(start: p, count: n))
-        return (Array(fields.dropLast()), Int(fields[n - 1]))
+        return (Array(fields.dropLast(2)), Int(fields[n - 2]), Int(fields[n - 1]))
     }
 }

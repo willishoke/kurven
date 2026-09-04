@@ -28,6 +28,18 @@ public enum Shaders {
 
     typedef struct { float4 linear; float2 offset; } KVTile;
     typedef struct { float3 position; } KVVertex;
+
+    typedef struct {
+        float4 color;
+        float  margin;
+        float  empty;
+        // float3, not packed_float3: C's simd_float3 is sixteen bytes with
+        // three used, and packing it here shifts everything after it. That
+        // mismatch compiled cleanly and rendered a black landscape.
+        float3 lightDirection;
+        float  ambient;
+        float2 depthRange;
+    } KVShading;
     """
 
     public static let source = """
@@ -174,6 +186,157 @@ public enum Shaders {
     }
 
     // ---------------------------------------------------------------------
+    // preview
+    // ---------------------------------------------------------------------
+    //
+    // Two passes over the same geometry the bake uses. The first is the depth
+    // pass, unchanged. The second draws into the visible target and decides
+    // visibility by sampling that depth texture at the fragment's own pixel --
+    // which is why there is one depth semantic in this program and not two, and
+    // why "the preview approximates the bake" is a statement about where the
+    // test is evaluated rather than about how the picture is made.
+
+    struct PreviewOut {
+        float4 position [[position]];
+        float  depth;
+        float3 world;
+    };
+
+    vertex PreviewOut kv_surface_vertex(uint vid [[vertex_id]],
+                                        uint iid [[instance_id]],
+                                        constant KVUniforms &u [[buffer(0)]],
+                                        constant KVTile *tiles [[buffer(1)]],
+                                        constant float2 *region [[buffer(2)]],
+                                        texture2d<float, access::read> heights [[texture(0)]])
+    {
+        uint cells_x = u.lattice.x - 1;
+        uint cell = vid / 6u;
+        uint corner = vid % 6u;
+        uint cx = cell % cells_x;
+        uint cy = cell / cells_x;
+        const uint2 corners[6] = { uint2(0,0), uint2(1,0), uint2(0,1),
+                                   uint2(1,0), uint2(1,1), uint2(0,1) };
+        uint2 c = corners[corner];
+        KVTile t = tiles[iid];
+
+        bool kept = true;
+        if (u.regionCount > 0) {
+            for (uint k = 0; k < 4u && kept; ++k) {
+                uint2 q = uint2(k & 1u, k >> 1u);
+                float2 d = u.domainLo + u.domainSize
+                    * float2(float(cx + q.x) / float(u.lattice.x - 1),
+                             float(cy + q.y) / float(u.lattice.y - 1));
+                float2 w = float2(t.linear.x * d.x + t.linear.y * d.y + t.offset.x,
+                                  t.linear.z * d.x + t.linear.w * d.y + t.offset.y);
+                kept = inside_region(w, region, u.regionCount);
+            }
+        }
+
+        uint ix = min((cx + c.x) * u.step, u.gridSize.x - 1u);
+        uint iy = min((cy + c.y) * u.step, u.gridSize.y - 1u);
+        float h = min(heights.read(uint2(ix, iy)).r, u.cap);
+        float2 d = u.domainLo + u.domainSize
+            * float2(float(cx + c.x) / float(u.lattice.x - 1),
+                     float(cy + c.y) / float(u.lattice.y - 1));
+        float3 world = float3(t.linear.x * d.x + t.linear.y * d.y + t.offset.x,
+                              t.linear.z * d.x + t.linear.w * d.y + t.offset.y, h);
+
+        PreviewOut out;
+        out.position = kept ? to_ndc(u, world) : float4(0.0, 0.0, 0.0, 0.0);
+        out.depth = view_depth(u, world);
+        out.world = world;
+        return out;
+    }
+
+    vertex PreviewOut kv_wall_vertex(uint vid [[vertex_id]],
+                                     constant KVUniforms &u [[buffer(0)]],
+                                     constant KVVertex *verts [[buffer(3)]])
+    {
+        float3 world = verts[vid].position;
+        PreviewOut out;
+        out.position = to_ndc(u, world);
+        out.depth = view_depth(u, world);
+        out.world = world;
+        return out;
+    }
+
+    // Paper. The plate's surface is not drawn -- it is white, and the page is
+    // white -- but it must still be *opaque*, or the ink behind it shows
+    // through the silhouette. So the plate mode paints it flat.
+    fragment float4 kv_paper_fragment(PreviewOut in [[stage_in]]) {
+        return float4(1.0, 1.0, 1.0, 1.0);
+    }
+
+    // A lit heightfield, for orientation rather than for the plate. The normal
+    // comes from the screen-space derivatives of the world position, so it needs
+    // no normal buffer and no second texture read.
+    //
+    // There is no depth attachment on this pass. It does not need one: the depth
+    // texture already holds the front-most view depth at every pixel, so a
+    // fragment is the visible surface exactly when its own depth is that one.
+    // Reusing the buffer is one depth semantic in the program instead of two.
+    fragment float4 kv_shaded_fragment(PreviewOut in [[stage_in]],
+                                       constant KVShading &s [[buffer(1)]],
+                                       texture2d<float, access::read> depth [[texture(1)]])
+    {
+        // Derivatives first: they must be evaluated before any discard.
+        float3 n = normalize(cross(dfdx(in.world), dfdy(in.world)));
+        float behind = depth.read(uint2(in.position.xy)).r;
+        if (in.depth < behind - 1e-4 * max(1.0, abs(behind))) { discard_fragment(); }
+        float lambert = abs(dot(n, normalize(s.lightDirection)));
+        float v = s.ambient + (1.0 - s.ambient) * lambert;
+        return float4(float3(v), 1.0);
+    }
+
+    // The depth attachment, drawn directly. This is the substitute for the GPU
+    // frame-capture viewer Command Line Tools does not ship, and it is most of
+    // what such a viewer actually gets used for.
+    vertex float4 kv_fullscreen_vertex(uint vid [[vertex_id]]) {
+        const float2 p[3] = { float2(-1.0, -3.0), float2(-1.0, 1.0), float2(3.0, 1.0) };
+        return float4(p[vid], 0.0, 1.0);
+    }
+
+    fragment float4 kv_depth_view_fragment(float4 position [[position]],
+                                           constant KVShading &s [[buffer(1)]],
+                                           texture2d<float, access::read> depth [[texture(1)]])
+    {
+        float z = depth.read(uint2(position.xy)).r;
+        if (!(z > s.empty)) { return float4(0.10, 0.11, 0.13, 1.0); }
+        float t = saturate((z - s.depthRange.x)
+                           / max(s.depthRange.y - s.depthRange.x, 1e-6));
+        return float4(float3(t), 1.0);
+    }
+
+    // Ink. Lines carry their own view depth and compare it against the surface
+    // the first pass left, at their own pixel: `z + margin > buffer`, the same
+    // predicate `clip_hidden_lines` applies per vertex.
+    struct LineOut {
+        float4 position [[position]];
+        float  depth;
+    };
+
+    vertex LineOut kv_line_vertex(uint vid [[vertex_id]],
+                                  constant KVUniforms &u [[buffer(0)]],
+                                  constant KVVertex *verts [[buffer(4)]])
+    {
+        float3 world = verts[vid].position;
+        LineOut out;
+        out.position = to_ndc(u, world);
+        out.depth = view_depth(u, world);
+        return out;
+    }
+
+    fragment float4 kv_line_fragment(LineOut in [[stage_in]],
+                                     constant KVShading &s [[buffer(1)]],
+                                     texture2d<float, access::read> depth [[texture(1)]])
+    {
+        uint2 p = uint2(in.position.xy);
+        float behind = depth.read(p).r;
+        if (in.depth + s.margin <= behind) { discard_fragment(); }
+        return s.color;
+    }
+
+    // ---------------------------------------------------------------------
     // layout probe
     // ---------------------------------------------------------------------
     //
@@ -191,6 +354,7 @@ public enum Shaders {
 
     kernel void kv_layout_probe(constant KVUniforms &u [[buffer(0)]],
                                 device float *out [[buffer(1)]],
+                                constant KVShading &sh [[buffer(2)]],
                                 uint tid [[thread_position_in_grid]])
     {
         if (tid != 0) { return; }
@@ -216,10 +380,26 @@ public enum Shaders {
         out[k++] = u.cap;
         out[k++] = float(u.regionCount);
         out[k++] = u.empty;
+        out[k++] = sh.color.x;
+        out[k++] = sh.color.y;
+        out[k++] = sh.color.z;
+        out[k++] = sh.color.w;
+        out[k++] = sh.margin;
+        out[k++] = sh.empty;
+        out[k++] = sh.lightDirection.x;
+        out[k++] = sh.lightDirection.y;
+        out[k++] = sh.lightDirection.z;
+        out[k++] = sh.ambient;
+        out[k++] = sh.depthRange.x;
+        out[k++] = sh.depthRange.y;
         out[k++] = float(sizeof(KVUniforms));
+        out[k++] = float(sizeof(KVShading));
     }
     """
 
-    /// How many floats `kv_layout_probe` writes.
-    public static let layoutProbeCount = 16 + 4 + 2 + 2 + 2 + 2 + 2 + 1 + 1 + 1 + 1 + 1
+    /// How many floats `kv_layout_probe` writes: every field of both structs,
+    /// then both sizes.
+    public static let uniformFieldCount = 16 + 4 + 2 + 2 + 2 + 2 + 2 + 1 + 1 + 1 + 1
+    public static let shadingFieldCount = 4 + 1 + 1 + 3 + 1 + 2
+    public static let layoutProbeCount = uniformFieldCount + shadingFieldCount + 2
 }

@@ -463,23 +463,38 @@ func shaderTests() {
             cap: 801,
             regionCount: 901,
             empty: -1001)
+        // KVShading too. Its `simd_float3` is sixteen bytes with three used;
+        // spelling it `packed_float3` in the shader is twelve, which shifts
+        // every field after it. That mismatch compiled cleanly, rendered a
+        // black landscape, and is the reason this struct is probed as well.
+        let shading = KVShading(
+            color: SIMD4(11, 12, 13, 14),
+            margin: 21,
+            empty: 22,
+            lightDirection: SIMD3(31, 32, 33),
+            ambient: 41,
+            depthRange: SIMD2(51, 52))
+
         var want: [Float] = []
         for c in 0..<4 { for r in 0..<4 { want.append(v[c][r]) } }
         want += [101, 102, 103, 104, 201, 202, 301, 302, 401, 402,
                  501, 502, 601, 602, 701, 801, 901, -1001]
+        want += [11, 12, 13, 14, 21, 22, 31, 32, 33, 41, 51, 52]
 
-        let (got, sizeOnGPU) = try MetalRenderer.probeUniformLayout(device: device,
-                                                                    sending: sent)
+        let probe = try MetalRenderer.probeUniformLayout(device: device,
+                                                         sending: sent, and: shading)
         var mismatch: Int?
-        for i in want.indices where i < got.count && got[i] != want[i] {
+        for i in want.indices where i < probe.fields.count && probe.fields[i] != want[i] {
             mismatch = i; break
         }
-        Check.expect(got.count == want.count && mismatch == nil,
-                     "every field arrives with the value it was given",
-                     mismatch.map { "field \($0): sent \(want[$0]), saw \(got[$0])" } ?? "")
-        Check.expect(sizeOnGPU == MemoryLayout<KVUniforms>.size,
-                     "and the two agree on the struct's size",
-                     "GPU \(sizeOnGPU) bytes, CPU \(MemoryLayout<KVUniforms>.size)")
+        Check.expect(probe.fields.count == want.count && mismatch == nil,
+                     "every field of both structs arrives with the value it was given",
+                     mismatch.map { "field \($0): sent \(want[$0]), saw \(probe.fields[$0])" } ?? "")
+        Check.expect(probe.uniformSize == MemoryLayout<KVUniforms>.size
+                     && probe.shadingSize == MemoryLayout<KVShading>.size,
+                     "and the two agree on both sizes",
+                     "GPU \(probe.uniformSize)/\(probe.shadingSize), "
+                     + "CPU \(MemoryLayout<KVUniforms>.size)/\(MemoryLayout<KVShading>.size)")
     }
 }
 

@@ -60,4 +60,23 @@ typedef struct {
     simd_float3 position;
 } KVVertex;
 
+// What the preview's second pass needs on top of KVUniforms: how to decide
+// whether a line fragment is hidden, and what to paint.
+typedef struct {
+    simd_float4 color;
+    // Added to a line's view depth before it is compared with the surface --
+    // `outline.clip_hidden_lines`' margin, applied per fragment instead of per
+    // vertex. That difference is the whole gap between preview and bake.
+    float margin;
+    // The value the depth texture holds where nothing was drawn.
+    float empty;
+    // Key light direction in view space, and how much light reaches the parts
+    // it does not.
+    simd_float3 lightDirection;
+    float ambient;
+    // View-depth range for the `.depth` inspection mode: what to map to black
+    // and to white.
+    simd_float2 depthRange;
+} KVShading;
+
 #endif /* KurvenShaderTypes_h */

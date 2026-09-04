@@ -84,6 +84,13 @@ usage: kurven-cli <command> [options]
         60 fps -- asked without a window: the preview does exactly this work
         per frame, plus a line pass that costs a fraction of it.
 
+  preview <bundle> [--preset NAME] [--width N] [--height N] [--mode M]
+          [--orbit "AZ,EL"] [--zoom F] -o out.png
+        Render one preview frame offscreen and write it as a PNG. Modes:
+        plate (the default), shaded, depth. --orbit turns the preset camera by
+        that many degrees before drawing. This is how the preview is checked
+        against the plate without a window in the way.
+
   inspect <bundle>
         Print the manifest: domain, caps, occluder, layers, presets, provenance.
 
@@ -235,6 +242,79 @@ func bench(_ args: Args) throws {
           + (renderer.hasLinearReadback ? "" : "   (readback is NOT linear here)"))
 }
 
+func preview(_ args: Args) throws {
+    let (bundle, preset, base) = try loadScene(args)
+    let output = URL(fileURLWithPath: try args.string("output"))
+    let viewport = Viewport(width: try args.int("width", 1600),
+                            height: try args.int("height", 1000))
+
+    let mode: PreviewMode
+    switch args.flags["mode"] ?? "plate" {
+    case "plate": mode = .plate
+    case "shaded": mode = .shaded(Lighting())
+    case "depth": mode = .depth
+    case let other: throw CLIError("unknown --mode '\(other)'; try plate, shaded or depth")
+    }
+
+    var navigator = Navigator(orbit: Orbit(matching: preset.plate),
+                              framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
+    var scene = base
+    scene.camera = navigator.camera
+    guard let bounds = scene.quickBounds() else { throw CLIError("the scene is empty") }
+    navigator.framing = .fitting(bounds, in: viewport)
+
+    if let spec = args.flags["orbit"] {
+        let parts = spec.split(separator: ",").compactMap { Double($0) }
+        guard parts.count == 2 else { throw CLIError("--orbit wants \"azimuth,elevation\" in degrees") }
+        navigator.orbit.azimuth = Angle(degrees: navigator.orbit.azimuth.degrees + parts[0])
+        navigator.orbit.elevation = Angle(degrees: navigator.orbit.elevation.degrees + parts[1])
+        scene.camera = navigator.camera
+        if let b = scene.quickBounds() { navigator.framing = .fitting(b, in: viewport) }
+    }
+    if let zoom = try args.double("zoom") {
+        navigator = navigator.applying(
+            .zoom(factor: zoom, at: SIMD2(Double(viewport.width) / 2,
+                                          Double(viewport.height) / 2)),
+            in: viewport)
+    }
+
+    let renderer = try MetalRenderer()
+    let target = try renderer.makePreviewTarget(viewport)
+
+    let clock = ContinuousClock()
+    let elapsed = try clock.measure {
+        try renderer.renderPreview(base, navigator: navigator, viewport: viewport,
+                                   options: PreviewOptions(mode: mode), into: target)
+    }
+    try PNG.write(target, to: output)
+
+    // The view-space rectangle the picture covers, so another renderer can draw
+    // the same strokes into the same frame and the two can be compared as
+    // images. Without it "the preview looks like the plate" is an impression.
+    let f = navigator.framing.frame(viewport)
+    let meta = JSONValue.object([
+        // In screen order axis0 runs down the image (view y) and axis1 across
+        // it (view x), so this is (left, right) and (top, bottom).
+        "viewX": .array([.double(f.axis1.lo), .double(f.axis1.hi)]),
+        "viewY": .array([.double(f.axis0.lo), .double(f.axis0.hi)]),
+        "width": .int(viewport.width), "height": .int(viewport.height),
+        "azimuth": .double(navigator.orbit.azimuth.degrees),
+        "elevation": .double(navigator.orbit.elevation.degrees),
+        "margin": .double(base.margin),
+        "plate": preset.plate.json,
+    ])
+    try (meta.canonical + "\n").write(
+        to: output.deletingPathExtension().appendingPathExtension("frame.json"),
+        atomically: true, encoding: .utf8)
+
+    print("""
+        \(bundle.url.lastPathComponent) -> \(output.lastPathComponent)          [\(preset.name), \(args.flags["mode"] ?? "plate")]
+          \(viewport.width)x\(viewport.height)          azimuth \(String(format: "%.1f", navigator.orbit.azimuth.degrees))          elevation \(String(format: "%.1f", navigator.orbit.elevation.degrees))
+          took \(elapsed)
+          frame \(output.deletingPathExtension().lastPathComponent).frame.json
+        """)
+}
+
 func inspect(_ args: Args) throws {
     let (bundle, _, _) = try loadScene(args)
     let m = bundle.manifest
@@ -321,6 +401,7 @@ do {
     case "bake": try bake(args)
     case "depth": try depth(args)
     case "bench": try bench(args)
+    case "preview": try preview(args)
     case "inspect": try inspect(args)
     case "contract": try contract(args)
     default:
