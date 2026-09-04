@@ -22,9 +22,16 @@ let package = Package(
         .target(name: "KurvenCore"),
 
         // The uniform and vertex structs, defined once in C and shared by
-        // Swift (as a module) and MSL (textually prepended to the source), so
-        // CPU/GPU layout agreement is by construction rather than by matching
-        // two hand-written declarations.
+        // Swift (as a module) and MSL (prepended to the source), so CPU/GPU
+        // layout agreement is by construction rather than by matching two
+        // hand-written declarations.
+        //
+        // SwiftPM does not track a C header as a dependency of the Swift
+        // targets that import it, so an incremental build after editing this
+        // header can leave a Swift target compiled against the old layout. The
+        // symptom is a corrupted uniform and a segfault, not a compile error.
+        // After editing ShaderTypes.h, build clean. `kurven-test` asks the GPU
+        // what it actually sees, which catches it either way.
         .target(name: "KurvenShaderTypes"),
 
         // The one place with reference semantics: device, pipelines, textures.

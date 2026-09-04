@@ -172,5 +172,54 @@ public enum Shaders {
     fragment float kv_depth_fragment(DepthOut in [[stage_in]]) {
         return in.depth;
     }
+
+    // ---------------------------------------------------------------------
+    // layout probe
+    // ---------------------------------------------------------------------
+    //
+    // Reads every field of a KVUniforms the CPU filled with known values and
+    // writes back what it saw. If the two sides disagree about the layout --
+    // because the header changed and a stale build did not propagate it, or
+    // because this copy of the struct drifted from the header -- the values
+    // come back wrong and `kurven-test` says which field.
+    //
+    // The header is the single declaration, but nothing at build time enforces
+    // that MSL gets the same one: there is no `metal` compiler here and
+    // SwiftPM does not track a C header as a dependency of a Swift target. So
+    // the agreement is checked rather than assumed, which is the same trade the
+    // rest of this design makes.
+
+    kernel void kv_layout_probe(constant KVUniforms &u [[buffer(0)]],
+                                device float *out [[buffer(1)]],
+                                uint tid [[thread_position_in_grid]])
+    {
+        if (tid != 0) { return; }
+        uint k = 0;
+        for (uint c = 0; c < 4; ++c) {
+            for (uint r = 0; r < 4; ++r) { out[k++] = u.view[c][r]; }
+        }
+        out[k++] = u.ndcLinear[0][0];
+        out[k++] = u.ndcLinear[0][1];
+        out[k++] = u.ndcLinear[1][0];
+        out[k++] = u.ndcLinear[1][1];
+        out[k++] = u.ndcOffset.x;
+        out[k++] = u.ndcOffset.y;
+        out[k++] = u.domainLo.x;
+        out[k++] = u.domainLo.y;
+        out[k++] = u.domainSize.x;
+        out[k++] = u.domainSize.y;
+        out[k++] = float(u.lattice.x);
+        out[k++] = float(u.lattice.y);
+        out[k++] = float(u.gridSize.x);
+        out[k++] = float(u.gridSize.y);
+        out[k++] = float(u.step);
+        out[k++] = u.cap;
+        out[k++] = float(u.regionCount);
+        out[k++] = u.empty;
+        out[k++] = float(sizeof(KVUniforms));
+    }
     """
+
+    /// How many floats `kv_layout_probe` writes.
+    public static let layoutProbeCount = 16 + 4 + 2 + 2 + 2 + 2 + 2 + 1 + 1 + 1 + 1 + 1
 }

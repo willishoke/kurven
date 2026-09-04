@@ -202,3 +202,48 @@ public final class MetalRenderer {
             empty: Self.emptySentinel)
     }
 }
+
+// MARK: - layout agreement
+
+public extension MetalRenderer {
+    /// What the shader sees when the CPU hands it a `KVUniforms`.
+    ///
+    /// The header is the single declaration of the struct, but nothing at build
+    /// time enforces that the shader gets the same one: there is no `metal`
+    /// compiler under Command Line Tools, and SwiftPM does not treat a C header
+    /// as a dependency of the Swift targets that import it -- so an incremental
+    /// build after editing the header can leave the two sides disagreeing, which
+    /// shows up as a corrupted uniform and a crash rather than as a compile
+    /// error. Asking the GPU what it sees turns that into a test.
+    static func probeUniformLayout(device: MTLDevice, sending uniforms: KVUniforms)
+        throws -> (fields: [Float], sizeOnGPU: Int)
+    {
+        let library = try makeLibrary(device: device)
+        guard let function = library.makeFunction(name: "kv_layout_probe") else {
+            throw RendererError.missingFunction("kv_layout_probe")
+        }
+        let pipeline = try device.makeComputePipelineState(function: function)
+        let n = Shaders.layoutProbeCount
+        guard let queue = device.makeCommandQueue(),
+              let out = device.makeBuffer(length: n * MemoryLayout<Float>.stride,
+                                          options: .storageModeShared),
+              let commands = queue.makeCommandBuffer(),
+              let encoder = commands.makeComputeCommandEncoder() else {
+            throw RendererError.allocation("the layout probe")
+        }
+        var u = uniforms
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBytes(&u, length: MemoryLayout<KVUniforms>.stride, index: 0)
+        encoder.setBuffer(out, offset: 0, index: 1)
+        encoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+        encoder.endEncoding()
+        commands.commit()
+        commands.waitUntilCompleted()
+        if let error = commands.error { throw RendererError.pipeline("\(error)") }
+
+        let p = out.contents().bindMemory(to: Float.self, capacity: n)
+        let fields = Array(UnsafeBufferPointer(start: p, count: n))
+        return (Array(fields.dropLast()), Int(fields[n - 1]))
+    }
+}

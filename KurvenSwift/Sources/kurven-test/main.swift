@@ -435,6 +435,52 @@ func shaderTests() {
         _ = try MetalRenderer(device: device)
         Check.expect(true, "both depth pipelines build with a MAX blend on r32Float")
     }
+
+    // The claim `ShaderTypes.h` exists to make is that CPU and GPU agree on the
+    // uniform layout by construction. Nothing at build time enforces it here --
+    // there is no `metal` compiler, and SwiftPM does not track a C header as a
+    // dependency of the Swift targets that import it, so an incremental build
+    // after editing the header can leave the two sides disagreeing. That failure
+    // mode is a corrupted uniform and a segfault, not a compile error, which is
+    // exactly the kind that deserves a test.
+    Check.suite("metal: the shader sees the uniform struct the CPU sent") {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            Check.expect(false, "a Metal device exists"); return
+        }
+        // Distinct values everywhere, so a field that lands on its neighbour's
+        // bytes is visible rather than plausible.
+        var v = matrix_identity_float4x4
+        for c in 0..<4 { for r in 0..<4 { v[c][r] = Float(1 + c * 4 + r) } }
+        let sent = KVUniforms(
+            view: v,
+            ndcLinear: simd_float2x2(SIMD2(101, 102), SIMD2(103, 104)),
+            ndcOffset: SIMD2(201, 202),
+            domainLo: SIMD2(301, 302),
+            domainSize: SIMD2(401, 402),
+            lattice: SIMD2(501, 502),
+            gridSize: SIMD2(601, 602),
+            step: 701,
+            cap: 801,
+            regionCount: 901,
+            empty: -1001)
+        var want: [Float] = []
+        for c in 0..<4 { for r in 0..<4 { want.append(v[c][r]) } }
+        want += [101, 102, 103, 104, 201, 202, 301, 302, 401, 402,
+                 501, 502, 601, 602, 701, 801, 901, -1001]
+
+        let (got, sizeOnGPU) = try MetalRenderer.probeUniformLayout(device: device,
+                                                                    sending: sent)
+        var mismatch: Int?
+        for i in want.indices where i < got.count && got[i] != want[i] {
+            mismatch = i; break
+        }
+        Check.expect(got.count == want.count && mismatch == nil,
+                     "every field arrives with the value it was given",
+                     mismatch.map { "field \($0): sent \(want[$0]), saw \(got[$0])" } ?? "")
+        Check.expect(sizeOnGPU == MemoryLayout<KVUniforms>.size,
+                     "and the two agree on the struct's size",
+                     "GPU \(sizeOnGPU) bytes, CPU \(MemoryLayout<KVUniforms>.size)")
+    }
 }
 
 // MARK: - 7. navigation
@@ -660,6 +706,7 @@ func bakeTests() {
 // MARK: - entry
 
 import Metal
+import KurvenShaderTypes
 
 if let override = CommandLine.arguments.dropFirst().first {
     Fixtures.dir = URL(fileURLWithPath: override)
