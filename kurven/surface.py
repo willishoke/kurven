@@ -18,6 +18,26 @@ import numpy as np
 from kurven.zbuffer import surface_grid_mesh
 
 
+def _keep_runs(xyz, keep):
+    """The kept vertices of one path, as the runs they actually form.
+
+    Filtering a path's vertices and keeping the survivors as a single polyline
+    welds its far side to its near side wherever the path left the kept region
+    and returned -- a straight chord across the excluded ground. On the zeta
+    plate five of sixty-nine magnitude contours did that, the longest chord
+    spanning 7.4 of the domain's 14 units of real.
+    """
+    if keep is None:
+        return [xyz] if len(xyz) >= 2 else []
+    mask = np.asarray(keep(xyz), dtype=bool)
+    if not mask.any():
+        return []
+    edges = np.diff(np.concatenate([[0], mask.view(np.int8), [0]]))
+    starts = np.flatnonzero(edges == 1)
+    stops = np.flatnonzero(edges == -1)
+    return [xyz[a:b] for a, b in zip(starts, stops) if b - a >= 2]
+
+
 class Surface:
     def __init__(self, real, imag, values, *, z_limit=None, evaluator=None):
         self.real = np.asarray(real, dtype=float)
@@ -98,8 +118,10 @@ class Surface:
             "magnitude" z = self.mag_at(re, im)     — unclamped magnitude
 
         `keep`: optional `xyz -> bool mask` applied per path to drop vertices
-        (e.g. a cutout filter); a path left with < 2 vertices is skipped and its
-        index is not consumed.
+        (e.g. a cutout filter). A path that leaves the kept region and comes back
+        is **split** where it left, not closed across the gap; each surviving run
+        of two or more vertices becomes its own path. Runs shorter than that draw
+        nothing and consume no index.
 
         Returns `(xyz, indices, next_index)`. Thread `next_index` into the next
         call to keep indices globally unique across several contour families.
@@ -119,13 +141,10 @@ class Surface:
                 else:
                     raise ValueError(f"unknown height policy {height!r}")
                 xyz = np.column_stack([xy, z])
-                if keep is not None:
-                    xyz = xyz[keep(xyz)]
-                    if len(xyz) < 2:
-                        continue
-                chunks_xyz.append(xyz)
-                chunks_idx.append(np.full(len(xyz), path_idx, dtype=np.int64))
-                path_idx += 1
+                for piece in _keep_runs(xyz, keep):
+                    chunks_xyz.append(piece)
+                    chunks_idx.append(np.full(len(piece), path_idx, dtype=np.int64))
+                    path_idx += 1
         if not chunks_xyz:
             return np.zeros((0, 3)), np.zeros(0, dtype=np.int64), path_idx
         return np.concatenate(chunks_xyz), np.concatenate(chunks_idx), path_idx
