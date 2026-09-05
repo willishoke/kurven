@@ -41,6 +41,7 @@ from kurven.bundle import (
     Manifest,
     FullRegion,
     InsideRegion,
+    LayerFile,
     NoWalls,
     Occluder,
     Provenance,
@@ -82,7 +83,7 @@ def load_example(name):
     return module
 
 
-def manifest_of(scene, *, phase=True, chunk_count=1, wall_mesh=True):
+def manifest_of(scene, *, phase=True, chunk_count=1, wall_mesh=True, derived=False):
     """The `Manifest` describing `scene`, with the file names the bundle uses.
 
     Layer file names come from the layer names, so a bundle directory reads as
@@ -93,7 +94,9 @@ def manifest_of(scene, *, phase=True, chunk_count=1, wall_mesh=True):
     s = scene.surface
     ny, nx = len(s.imag), len(s.real)
     layers = tuple(
-        LayerSpec(l.name, l.role, f"layers/{l.name}.npy", f"layers/{l.name}.idx.npy",
+        LayerSpec(l.name, l.role,
+                  l.source if (derived and l.source is not None)
+                  else LayerFile(f"layers/{l.name}.npy", f"layers/{l.name}.idx.npy"),
                   l.width, l.height_policy, l.color, l.clipped)
         for l in scene.layers)
     if wall_mesh and scene.walls:
@@ -120,7 +123,33 @@ def manifest_of(scene, *, phase=True, chunk_count=1, wall_mesh=True):
     )
 
 
-def arrays_of(scene, *, wall_mesh=True):
+def quantize(array):
+    """To float32, without claiming values the float64 original did not have.
+
+    Rounding to float32 can round *outward*: `np.angle` returns arg in
+    (-pi, pi], but float32(pi) is larger than pi, so a phase grid stored naively
+    contains values above pi. A consumer contouring that grid at the level pi --
+    which is what `np.linspace(-pi, pi, 5)` asks for -- then finds crossings
+    where the plate found none, and draws three curves along the branch cut that
+    are not in the picture.
+
+    Clamping the quantized array into the original's range costs one pass and
+    removes a whole class of "the derived layer has ink the dumped one doesn't".
+    """
+    array = np.ascontiguousarray(array)
+    out = array.astype(np.float32)
+    lo, hi = float(np.nanmin(array)), float(np.nanmax(array))
+    # The nearest float32 that is still inside [lo, hi].
+    lo32 = np.float32(lo)
+    if float(lo32) < lo:
+        lo32 = np.nextafter(lo32, np.float32(np.inf))
+    hi32 = np.float32(hi)
+    if float(hi32) > hi:
+        hi32 = np.nextafter(hi32, np.float32(-np.inf))
+    return np.clip(out, lo32, hi32)
+
+
+def arrays_of(scene, manifest, *, wall_mesh=True):
     """`(height, phase, layers, walls)` in world order, ready for `write_bundle`.
 
     `height` is |f| **unclamped**: the cap is a separate, editable property of
@@ -128,11 +157,15 @@ def arrays_of(scene, *, wall_mesh=True):
     change the cap without resampling.
     """
     s = scene.surface
-    height = np.ascontiguousarray(s.mag.T, dtype=np.float32)
-    phase = np.ascontiguousarray(s.angle.T, dtype=np.float32)
+    height = quantize(s.mag.T)
+    phase = quantize(s.angle.T)
 
+    # Only the dumped layers; a described one is a statement, not an array.
+    dumped = {spec.name for spec in manifest.layers if spec.files is not None}
     layers = {}
     for l in scene.layers:
+        if l.name not in dumped:
+            continue
         verts, offsets = csr_from_indices(swap_to_world(l.xyz), l.indices)
         layers[l.name] = (verts, offsets)
 
@@ -143,11 +176,11 @@ def arrays_of(scene, *, wall_mesh=True):
     return height, phase, layers, walls
 
 
-def export(scene, path, *, chunk_count=1, phase=True, wall_mesh=True):
+def export(scene, path, *, chunk_count=1, phase=True, wall_mesh=True, derived=False):
     """Serialize a `Scene` to `path` and return the `Manifest` written."""
     manifest = manifest_of(scene, phase=phase, chunk_count=chunk_count,
-                           wall_mesh=wall_mesh)
-    height, ph, layers, walls = arrays_of(scene, wall_mesh=wall_mesh)
+                           wall_mesh=wall_mesh, derived=derived)
+    height, ph, layers, walls = arrays_of(scene, manifest, wall_mesh=wall_mesh)
     write_bundle(path, manifest=manifest, height=height,
                  phase=ph if phase else None, layers=layers, walls=walls)
     return manifest
@@ -165,8 +198,9 @@ def main(argv=None):
     ap.add_argument("--no-phase", action="store_true",
                     help="omit phase.npy (halves the bundle; blocks phase-colored modes)")
     ap.add_argument("--derived", action="store_true",
-                    help="describe the walls as a perimeter instead of dumping "
-                         "their mesh; the consumer rebuilds them from height.npy")
+                    help="describe rather than dump: the walls become a "
+                         "perimeter, and every layer that can be stated as "
+                         "levels of a field becomes that statement")
     ap.add_argument("--quiet", action="store_true")
     args, rest = ap.parse_known_args(argv)
 
@@ -182,14 +216,22 @@ def main(argv=None):
 
     out = Path(args.output or f"{args.example}.kurven")
     manifest = export(scene, out, chunk_count=args.chunk_count,
-                      phase=not args.no_phase, wall_mesh=not args.derived)
+                      phase=not args.no_phase, wall_mesh=not args.derived,
+                      derived=args.derived)
 
     if not args.quiet:
         total = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
         print(f"wrote {out} ({total / 1e6:.1f} MB)")
         for spec in manifest.layers:
-            n = len(np.load(out / spec.offsets)) - 1
-            print(f"  {spec.name:<12} {n:>7} paths  lw={spec.width}"
+            files = spec.files
+            if files is None:
+                what = f"{len(spec.source.levels)} levels of {spec.source.field}"
+                if spec.source.tiled:
+                    what += f" x{len(manifest.occluder.tiles)}"
+                detail = f"{what:>26} (derived)"
+            else:
+                detail = f"{len(np.load(out / files[1])) - 1:>7} paths          "
+            print(f"  {spec.name:<12} {detail}  lw={spec.width}"
                   f"{'' if spec.clipped else '  (unclipped)'}")
 
 

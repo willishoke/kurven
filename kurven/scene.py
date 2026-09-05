@@ -34,7 +34,8 @@ class InkLayer:
     `clip_hidden_lines` consumes. `height_policy` records how z was chosen so a
     consumer that re-lifts the layer itself (Phase 3, native contouring) can
     reproduce it. `clipped` is false for ink that lies *in* the occluding
-    geometry (a cut-face hatch), which a depth test would half erase.
+    geometry (a cut-face hatch), which a depth test would half erase. `source`
+    is a description a consumer can regenerate the layer from, when one exists.
     """
 
     name: str
@@ -45,6 +46,12 @@ class InkLayer:
     height_policy: str = "surface"
     color: str = "#000000"
     clipped: bool = True
+    #: How a consumer could regenerate this layer from the grids, when it can:
+    #: a `kurven.bundle.LayerContour`, or `None` when it cannot. `None` is the
+    #: honest answer for ink built by a rule written for one plate, and it is
+    #: what makes `kurven.export --derived` dump that layer while describing
+    #: the rest.
+    source: object = None
 
     def runs(self):
         """`(start, stop)` slices of each path — the same contiguous runs of

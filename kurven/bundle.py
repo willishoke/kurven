@@ -441,6 +441,138 @@ class Occluder:
 
 LAYER_ROLES = ("magnitude", "phase", "scaffold", "outline")
 HEIGHT_POLICIES = ("surface", "level", "magnitude")
+CONTOUR_FIELDS = ("magnitude", "phase")
+KEEP_AXES = ("real", "imag")
+
+
+class Keep:
+    """Which vertices of a derived contour survive.
+
+    A small, closed vocabulary rather than an expression language. Everything
+    the plates actually ask for is here -- stay inside the occluder's footprint,
+    stay under the cap, stay within a band of one axis -- and a consumer can
+    evaluate all of it without an interpreter. Anything a function needs beyond
+    this is a sign the layer should be dumped rather than described, which is
+    what `LayerFile` is for.
+    """
+
+    @staticmethod
+    def from_dict(d):
+        kind = _tag(d, "Keep")
+        if kind == "all":
+            return KeepAll()
+        if kind == "region":
+            return KeepRegion()
+        if kind == "belowCap":
+            return KeepBelowCap()
+        if kind == "band":
+            axis = str(_require(d, "axis", "Keep.band"))
+            if axis not in KEEP_AXES:
+                raise BundleError(f"Keep.band: unknown axis {axis!r}")
+            return KeepBand(axis, float(_require(d, "lo", "Keep.band")),
+                            float(_require(d, "hi", "Keep.band")))
+        if kind == "every":
+            return KeepEvery(tuple(Keep.from_dict(k)
+                                   for k in _require(d, "of", "Keep.every")))
+        raise BundleError(f"Keep: unknown kind {kind!r}")
+
+
+@dataclass(frozen=True)
+class KeepAll(Keep):
+    def to_dict(self):
+        return {"kind": "all"}
+
+
+@dataclass(frozen=True)
+class KeepRegion(Keep):
+    """Inside `occluder.region` -- the same polygon the heightfield is cut to,
+    referenced rather than repeated."""
+
+    def to_dict(self):
+        return {"kind": "region"}
+
+
+@dataclass(frozen=True)
+class KeepBelowCap(Keep):
+    def to_dict(self):
+        return {"kind": "belowCap"}
+
+
+@dataclass(frozen=True)
+class KeepBand(Keep):
+    axis: str
+    lo: float
+    hi: float
+
+    def to_dict(self):
+        return {"kind": "band", "axis": self.axis,
+                "lo": float(self.lo), "hi": float(self.hi)}
+
+
+@dataclass(frozen=True)
+class KeepEvery(Keep):
+    of: tuple
+
+    def to_dict(self):
+        return {"kind": "every", "of": [k.to_dict() for k in self.of]}
+
+
+class LayerSource:
+    """Where a layer's geometry comes from: a file, or a description.
+
+    A dumped layer is the answer; a described one is the question. Describing it
+    is what lets a consumer move the levels and get a new answer, and it is what
+    shrinks a bundle from megabytes of vertices to a list of numbers -- zeta's
+    contour layers are 3.4 MB dumped and four lines described.
+
+    Not every layer can be described. Elliptic's phase contours are trimmed by a
+    lattice-intersection test written for that plate and nothing else; layers
+    like that stay files, and the honest thing is for the schema to say so
+    rather than to grow an expression language to accommodate one example.
+    """
+
+    @staticmethod
+    def from_dict(d):
+        kind = _tag(d, "LayerSource")
+        if kind == "file":
+            return LayerFile(str(_require(d, "vertices", "LayerSource.file")),
+                             str(_require(d, "offsets", "LayerSource.file")))
+        if kind == "contour":
+            field = str(_require(d, "field", "LayerSource.contour"))
+            if field not in CONTOUR_FIELDS:
+                raise BundleError(f"LayerSource.contour: unknown field {field!r}")
+            return LayerContour(
+                field,
+                tuple(float(v) for v in _require(d, "levels", "LayerSource.contour")),
+                Keep.from_dict(_require(d, "keep", "LayerSource.contour")),
+                bool(d.get("tiled", False)))
+        raise BundleError(f"LayerSource: unknown kind {kind!r}")
+
+
+@dataclass(frozen=True)
+class LayerFile(LayerSource):
+    vertices: str
+    offsets: str
+
+    def to_dict(self):
+        return {"kind": "file", "vertices": self.vertices, "offsets": self.offsets}
+
+
+@dataclass(frozen=True)
+class LayerContour(LayerSource):
+    """Iso-lines of `field` at `levels`, lifted by the layer's height policy,
+    filtered by `keep`, and replicated once per occluder tile when `tiled`."""
+
+    field: str
+    levels: tuple
+    keep: Keep = field(default_factory=lambda: KeepAll())
+    tiled: bool = False
+
+    def to_dict(self):
+        return {"kind": "contour", "field": self.field,
+                "levels": [float(v) for v in self.levels],
+                "keep": self.keep.to_dict(),
+                "tiled": bool(self.tiled)}
 
 
 @dataclass(frozen=True)
@@ -458,8 +590,7 @@ class LayerSpec:
 
     name: str
     role: str
-    vertices: str
-    offsets: str
+    source: LayerSource
     width: float
     height_policy: str
     color: str = "#000000"
@@ -472,9 +603,15 @@ class LayerSpec:
             raise BundleError(
                 f"LayerSpec {self.name!r}: unknown height policy {self.height_policy!r}")
 
+    @property
+    def files(self):
+        """`(vertices, offsets)` when this layer is dumped, else `None`."""
+        return ((self.source.vertices, self.source.offsets)
+                if isinstance(self.source, LayerFile) else None)
+
     def to_dict(self):
-        return {"name": self.name, "role": self.role, "vertices": self.vertices,
-                "offsets": self.offsets, "width": float(self.width),
+        return {"name": self.name, "role": self.role, "source": self.source.to_dict(),
+                "width": float(self.width),
                 "heightPolicy": self.height_policy, "color": self.color,
                 "clipped": bool(self.clipped)}
 
@@ -482,8 +619,7 @@ class LayerSpec:
     def from_dict(cls, d):
         return cls(str(_require(d, "name", "LayerSpec")),
                    str(_require(d, "role", "LayerSpec")),
-                   str(_require(d, "vertices", "LayerSpec")),
-                   str(_require(d, "offsets", "LayerSpec")),
+                   LayerSource.from_dict(_require(d, "source", "LayerSpec")),
                    float(_require(d, "width", "LayerSpec")),
                    str(_require(d, "heightPolicy", "LayerSpec")),
                    str(d.get("color", "#000000")),
@@ -760,11 +896,17 @@ class Layer:
     """A decoded layer: CSR vertices in world coordinates, plus its spec."""
 
     spec: LayerSpec
-    vertices: np.ndarray
-    offsets: np.ndarray
+    vertices: np.ndarray | None
+    offsets: np.ndarray | None
+
+    @property
+    def derived(self):
+        return self.vertices is None
 
     @property
     def paths(self):
+        if self.vertices is None:
+            return []
         return [self.vertices[self.offsets[i]:self.offsets[i + 1]]
                 for i in range(len(self.offsets) - 1)]
 
@@ -807,11 +949,14 @@ def write_bundle(path, *, manifest, height, phase=None, layers, walls=None):
         np.save(path / manifest.phase.file, np.ascontiguousarray(phase, dtype=np.float32))
 
     for spec in manifest.layers:
+        files = spec.files
+        if files is None:
+            continue                    # described, not dumped
         if spec.name not in layers:
             raise BundleError(f"manifest declares layer {spec.name!r} but none was given")
         verts, offsets = layers[spec.name]
-        np.save(path / spec.vertices, np.ascontiguousarray(verts, dtype=np.float64))
-        np.save(path / spec.offsets, np.ascontiguousarray(offsets, dtype=np.int64))
+        np.save(path / files[0], np.ascontiguousarray(verts, dtype=np.float64))
+        np.save(path / files[1], np.ascontiguousarray(offsets, dtype=np.int64))
 
     w = manifest.occluder.walls
     if isinstance(w, WallMesh):
@@ -848,8 +993,15 @@ def read_bundle(path):
 
     layers = []
     for spec in manifest.layers:
-        verts = np.load(path / spec.vertices)
-        offsets = np.load(path / spec.offsets)
+        files = spec.files
+        if files is None:
+            # A described layer carries no arrays; deriving it is the reader's
+            # job, and this reader is the Python one, which already has the
+            # pipeline that made it.
+            layers.append(Layer(spec, None, None))
+            continue
+        verts = np.load(path / files[0])
+        offsets = np.load(path / files[1])
         if len(offsets) and offsets[-1] != len(verts):
             raise BundleError(
                 f"bundle: layer {spec.name!r} offsets end at {offsets[-1]}, "

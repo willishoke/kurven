@@ -24,7 +24,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.special as ss
 
-from kurven.bundle import Affine2, CameraPreset, PlateProjection, UniformCap
+from kurven.bundle import (Affine2, CameraPreset, KeepAll, LayerContour,
+                           PlateProjection, UniformCap)
 from kurven.contours import contour_levels
 from kurven.occluder import build_occluder
 from kurven.outline import clip_hidden_lines
@@ -104,11 +105,22 @@ def build_scene(a, *, verbose=True):
 
     # Layer order is draw order: both major families, then both minor, then the
     # scaffold, exactly as the pre-split `main` stacked them.
+    # Every contour family here is exactly "these levels of that field, lifted
+    # onto the surface" -- nothing is trimmed, tiled or snapped -- so all four
+    # can be described rather than dumped, and `--derived` writes no layers at
+    # all. The hatch cannot: it is geometry along a perimeter, not a level set.
+    def contours(field, levels):
+        return LayerContour(field, tuple(float(v) for v in levels), KeepAll())
+
     layers = (
-        InkLayer("mag_major", "magnitude", Mm, Mmi, 0.4),
-        InkLayer("ang_major", "phase", Am, Ami, 0.4),
-        InkLayer("mag_minor", "magnitude", mm, mmi, 0.15),
-        InkLayer("ang_minor", "phase", am, ami, 0.15),
+        InkLayer("mag_major", "magnitude", Mm, Mmi, 0.4,
+                 source=contours("magnitude", mag_major)),
+        InkLayer("ang_major", "phase", Am, Ami, 0.4,
+                 source=contours("phase", ang_major)),
+        InkLayer("mag_minor", "magnitude", mm, mmi, 0.15,
+                 source=contours("magnitude", mag_minor)),
+        InkLayer("ang_minor", "phase", am, ami, 0.15,
+                 source=contours("phase", ang_minor)),
         InkLayer.from_segments("wall_hatch", "scaffold", hatch, 0.25, clipped=False),
     )
 

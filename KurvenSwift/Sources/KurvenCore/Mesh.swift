@@ -46,7 +46,8 @@ public extension Mesh<WorldSpace> {
     /// definition, and the difference between the two is the grid's
     /// interpolation error, which is a thing to measure rather than assume.
     static func wallCurtain(from a: P2<WorldSpace>, to b: P2<WorldSpace>,
-                            samples: Int, surface: Surface, base: Double) -> Mesh<WorldSpace> {
+                            samples: Int, surface: Surface, base: Double,
+                            tiles: [Affine2] = [.identity]) -> Mesh<WorldSpace> {
         guard samples >= 2 else { return .empty }
         var top: [P3<WorldSpace>] = []
         var bottom: [P3<WorldSpace>] = []
@@ -54,7 +55,7 @@ public extension Mesh<WorldSpace> {
         for i in 0..<samples {
             let t = Double(i) / Double(samples - 1)
             let p = P2<DomainSpace>(a.x * (1 - t) + b.x * t, a.y * (1 - t) + b.y * t)
-            top.append(P3(p.x, p.y, surface.height(at: p)))
+            top.append(P3(p.x, p.y, surface.height(at: p, tiles: tiles)))
             bottom.append(P3(p.x, p.y, base))
         }
         let n = Int32(samples)
@@ -69,10 +70,10 @@ public extension Mesh<WorldSpace> {
 
     /// Every edge of a boundary as a curtain.
     static func walls(of perimeter: BoundaryPerimeter, surface: Surface,
-                      base: Double) -> Mesh<WorldSpace> {
+                      base: Double, tiles: [Affine2] = [.identity]) -> Mesh<WorldSpace> {
         concat(perimeter.edges.map {
             wallCurtain(from: $0.start, to: $0.end, samples: $0.density,
-                        surface: surface, base: base)
+                        surface: surface, base: base, tiles: tiles)
         })
     }
 }

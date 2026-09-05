@@ -35,7 +35,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from kurven.bench import PhaseTimer
-from kurven.bundle import Affine2, CameraPreset, PlateProjection, UniformCap
+from kurven.bundle import (Affine2, CameraPreset, KeepBand, KeepBelowCap,
+                           KeepEvery, KeepRegion, LayerContour,
+                           PlateProjection, UniformCap)
 from kurven.contours import contour_levels
 from kurven.occluder import build_occluder
 from kurven.outline import clip_hidden_lines
@@ -214,13 +216,25 @@ def build_scene(a, *, verbose=True, timer=None):
         print(f"      {len(ground_3d)} polygon lines, {len(hatch_3d)} vertical, "
               f"{len(caps_3d)} top")
 
+    # The three contour families are describable: their filters are the
+    # occluder's own footprint, the cap, and a band of imag -- which is the
+    # whole of the Keep vocabulary, and no accident, since it was chosen to
+    # cover what these plates ask for. The rim, ground, hatch and cap ink are
+    # geometry rather than level sets and stay dumped.
     layers = (
         InkLayer("mag", "magnitude", mag_xyz, _strata(mag_xyz, mag_idx), 0.4,
-                 height_policy="level"),
+                 height_policy="level",
+                 source=LayerContour("magnitude", tuple(float(v) for v in mag_levels),
+                                     KeepRegion())),
         InkLayer("ang", "phase", ang_xyz, _strata(ang_xyz, ang_idx), 0.4,
-                 height_policy="magnitude"),
+                 height_policy="magnitude",
+                 source=LayerContour("phase", tuple(float(v) for v in angle_levels),
+                                     KeepEvery((KeepBelowCap(), KeepRegion())))),
         InkLayer("peak", "magnitude", peak_xyz, _strata(peak_xyz, peak_idx), 0.4,
-                 height_policy="level"),
+                 height_policy="level",
+                 source=LayerContour("magnitude", tuple(float(v) for v in peak_levels),
+                                     KeepEvery((KeepRegion(),
+                                                KeepBand("imag", -5.0, 5.0))))),
         InkLayer.from_segments("rim", "scaffold", rim_3d, 0.4),
         InkLayer.from_segments("ground", "scaffold", ground_3d, 0.3, clipped=False),
         InkLayer.from_segments("wall_hatch", "scaffold", hatch_3d, 0.3, clipped=False),

@@ -31,7 +31,8 @@ import numpy as np
 import scipy.special as sp
 
 from kurven.bench import PhaseTimer
-from kurven.bundle import Affine2, CameraPreset, PlateProjection, UniformCap
+from kurven.bundle import (Affine2, CameraPreset, KeepAll, LayerContour,
+                           PlateProjection, UniformCap)
 from kurven.contours import contour_levels
 from kurven.occluder import build_occluder
 from kurven.outline import clip_hidden_lines
@@ -368,10 +369,24 @@ def build_scene(a, *, verbose=True, timer=None):
               f"{len(caps_3d)} top")
 
     # Layer order is draw order, matching the pre-split `main`.
+    # The magnitude families are levels of |cn| replicated by the same
+    # reflections the occluder tiles use, so they can be described. The phase
+    # ones cannot: `trim_angle` keeps only vertices on a z transition and away
+    # from the (even K, odd K') lattice intersections, a rule written for this
+    # plate and nothing else, and `ang_major` additionally carries the radial
+    # spines through each spire. Those stay dumped, which is the schema being
+    # honest rather than growing an expression language for one example.
     layers = (
-        InkLayer("mag_major", "magnitude", mag_major_data, mag_major_indices, 0.3),
+        InkLayer("mag_major", "magnitude", mag_major_data, mag_major_indices, 0.3,
+                 height_policy="level",
+                 source=LayerContour("magnitude",
+                                     tuple(float(v) for v in mag_major_levels),
+                                     KeepAll(), tiled=True)),
         InkLayer("ang_major", "phase", ang_major_data, ang_major_indices, 0.3),
-        InkLayer("mag_minor", "magnitude", mag_minor_data, mag_minor_indices, 0.1),
+        InkLayer("mag_minor", "magnitude", mag_minor_data, mag_minor_indices, 0.1,
+                 source=LayerContour("magnitude",
+                                     tuple(float(v) for v in mag_minor_levels),
+                                     KeepAll(), tiled=True)),
         InkLayer("ang_minor", "phase", ang_minor_data, ang_minor_indices, 0.1),
         InkLayer.from_segments("ground", "scaffold", ground_3d, 0.3, clipped=False),
         InkLayer.from_segments("wall_hatch", "scaffold", hatch_3d, 0.3, clipped=False),

@@ -166,6 +166,45 @@ def hausdorff(a_paths, b_paths):
     return float(d.max()), float(d.mean())
 
 
+def compare_derived(module, ex_args, work):
+    """The same scene exported both ways, baked twice.
+
+    A described layer is regenerated from the bundle's own float32 grids; a
+    dumped one is the plate's float64 answer. They are not meant to be
+    identical, and the interesting question is which parts of the difference
+    are the grid's resolution and which are something else.
+    """
+    scene = module.build_scene(ex_args, verbose=False)
+    dumped = work / "dumped.kurven"
+    derived = work / "derived.kurven"
+    export(scene, dumped, chunk_count=1)
+    export(scene, derived, chunk_count=1, wall_mesh=False, derived=True)
+
+    def size(p):
+        return sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) / 1e6
+
+    resolution = ex_args.buffer
+    a_meta, a = swift_bake(dumped, work / "a", resolution)
+    _, b = swift_bake(derived, work / "b", resolution)
+
+    print(f"  bundle     dumped {size(dumped):.1f} MB   derived {size(derived):.1f} MB "
+          f"({size(derived) / size(dumped):.0%})")
+    header = (f"  {'layer':<12} {'dumped':>8} {'derived':>8} "
+              f"{'dump ink':>10} {'der ink':>10} {'Δ':>7} {'max d':>9}")
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for name in a_meta["layers"]:
+        pa, pb = a.get(name, []), b.get(name, [])
+        ia, ib = ink_length(pa), ink_length(pb)
+        d_max, _ = hausdorff(pb, pa)
+        rel = (ib - ia) / ia if ia else 0.0
+        print(f"  {name:<12} {len(pa):>8} {len(pb):>8} {ia:>10.2f} {ib:>10.2f} "
+              f"{rel:>6.1%} {d_max:>9.5f}")
+    print()
+    print("  Layers with no `derived` count are dumped in both, and identical.")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("example", choices=["recip", "elliptic", "zeta"])
@@ -177,6 +216,10 @@ def main():
                     help="max relative difference in total ink length per layer")
     ap.add_argument("--depth-tolerance", type=float, default=0.02,
                     help="max fraction of shared depth pixels that may differ")
+    ap.add_argument("--derived", action="store_true",
+                    help="compare the derived bundle against the dumped one "
+                         "instead of against the Python plate: same scene "
+                         "exported both ways, baked twice")
     ap.add_argument("--cpu", action="store_true",
                     help="use Python's CPU barycentric rasterizer as the oracle "
                          "instead of moderngl. Slow, but it is the definition: "
@@ -197,6 +240,9 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(args.keep) if args.keep else Path(tmp)
         work.mkdir(parents=True, exist_ok=True)
+
+        if args.derived:
+            return compare_derived(module, ex_args, work)
 
         print(f"{args.example}: building the scene once, drawing it twice"
               f" ({'CPU' if args.cpu else 'moderngl'} oracle)")

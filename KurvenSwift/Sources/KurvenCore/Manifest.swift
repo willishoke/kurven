@@ -111,6 +111,17 @@ public struct Affine2: Sendable, Equatable {
         P3(a * p.x + b * p.y + tx, c * p.x + d * p.y + ty, p.z)
     }
 
+    /// The map back. `nil` for a degenerate tile, which a manifest should not
+    /// contain and which this refuses to guess at.
+    public var inverse: Affine2? {
+        let det = a * d - b * c
+        guard det != 0, det.isFinite else { return nil }
+        let (ia, ib) = (d / det, -b / det)
+        let (ic, id) = (-c / det, a / det)
+        return Affine2(a: ia, b: ib, tx: -(ia * tx + ib * ty),
+                       c: ic, d: id, ty: -(ic * tx + id * ty))
+    }
+
     /// As a `Transform`, for folding into a camera or handing to a shader.
     public var transform: Transform<WorldSpace, WorldSpace> {
         Transform(rows: (SIMD3(a, b, 0), SIMD3(c, d, 0), SIMD3(0, 0, 1)),
@@ -363,11 +374,115 @@ public enum HeightPolicy: String, Sendable, CaseIterable {
     case surface, level, magnitude
 }
 
+/// Which grid a derived layer contours.
+public enum ContourField: String, Sendable, CaseIterable {
+    case magnitude, phase
+}
+
+public enum KeepAxis: String, Sendable, CaseIterable {
+    case real, imag
+}
+
+/// Which vertices of a derived contour survive.
+///
+/// A small closed vocabulary, not an expression language. Everything the plates
+/// ask for is here -- stay inside the occluder's footprint, stay under the cap,
+/// stay within a band of one axis -- and it can be evaluated without an
+/// interpreter. Ink that needs more than this is ink that should be dumped, and
+/// `LayerSource.file` is how the schema says so.
+public indirect enum Keep: Sendable, Equatable {
+    case all
+    /// Inside `occluder.region`: the same polygon the heightfield is cut to,
+    /// referenced rather than repeated.
+    case region
+    case belowCap
+    case band(axis: KeepAxis, lo: Double, hi: Double)
+    case every([Keep])
+
+    init(json: JSONValue) throws {
+        let o = try json.object("Keep")
+        switch try o.string("kind", "Keep") {
+        case "all": self = .all
+        case "region": self = .region
+        case "belowCap": self = .belowCap
+        case "band":
+            let axisText = try o.string("axis", "Keep.band")
+            guard let axis = KeepAxis(rawValue: axisText) else {
+                throw ManifestError.unknownKind(axisText, of: "Keep.band axis",
+                                                known: KeepAxis.allCases.map(\.rawValue))
+            }
+            self = .band(axis: axis, lo: try o.double("lo", "Keep.band"),
+                         hi: try o.double("hi", "Keep.band"))
+        case "every":
+            self = .every(try o.array("of", "Keep.every").map(Keep.init(json:)))
+        case let other:
+            throw ManifestError.unknownKind(other, of: "Keep",
+                                            known: ["all", "region", "belowCap",
+                                                    "band", "every"])
+        }
+    }
+    var json: JSONValue {
+        switch self {
+        case .all: .object(["kind": .string("all")])
+        case .region: .object(["kind": .string("region")])
+        case .belowCap: .object(["kind": .string("belowCap")])
+        case .band(let axis, let lo, let hi):
+            .object(["kind": .string("band"), "axis": .string(axis.rawValue),
+                     "lo": .double(lo), "hi": .double(hi)])
+        case .every(let of):
+            .object(["kind": .string("every"), "of": .array(of.map(\.json))])
+        }
+    }
+}
+
+/// Where a layer's geometry comes from: a file, or a description.
+///
+/// A dumped layer is the answer; a described one is the question. Describing it
+/// is what lets a consumer move the levels and get a new answer, and it is what
+/// shrinks a bundle from megabytes of vertices to a list of numbers.
+public enum LayerSource: Sendable, Equatable {
+    case file(vertices: String, offsets: String)
+    /// Iso-lines of `field` at `levels`, lifted by the layer's height policy,
+    /// filtered by `keep`, and replicated once per occluder tile when `tiled`.
+    case contour(field: ContourField, levels: [Double], keep: Keep, tiled: Bool)
+
+    init(json: JSONValue) throws {
+        let o = try json.object("LayerSource")
+        switch try o.string("kind", "LayerSource") {
+        case "file":
+            self = .file(vertices: try o.string("vertices", "LayerSource.file"),
+                         offsets: try o.string("offsets", "LayerSource.file"))
+        case "contour":
+            let fieldText = try o.string("field", "LayerSource.contour")
+            guard let field = ContourField(rawValue: fieldText) else {
+                throw ManifestError.unknownKind(fieldText, of: "ContourField",
+                                                known: ContourField.allCases.map(\.rawValue))
+            }
+            self = .contour(field: field,
+                            levels: try o.doubles("levels", "LayerSource.contour"),
+                            keep: try Keep(json: o.value("keep", "LayerSource.contour")),
+                            tiled: try o.bool("tiled", "LayerSource.contour", default: false))
+        case let other:
+            throw ManifestError.unknownKind(other, of: "LayerSource",
+                                            known: ["file", "contour"])
+        }
+    }
+    var json: JSONValue {
+        switch self {
+        case .file(let v, let o):
+            .object(["kind": .string("file"), "vertices": .string(v), "offsets": .string(o)])
+        case .contour(let field, let levels, let keep, let tiled):
+            .object(["kind": .string("contour"), "field": .string(field.rawValue),
+                     "levels": .array(levels.map(JSONValue.double)),
+                     "keep": keep.json, "tiled": .bool(tiled)])
+        }
+    }
+}
+
 public struct LayerSpec: Sendable, Equatable {
     public var name: String
     public var role: LayerRole
-    public var vertices: String
-    public var offsets: String
+    public var source: LayerSource
     /// A matplotlib line width in points, carried into the SVG stroke width.
     public var width: Double
     public var heightPolicy: HeightPolicy
@@ -376,12 +491,18 @@ public struct LayerSpec: Sendable, Equatable {
     /// which a depth test would half erase.
     public var clipped: Bool
 
-    public init(name: String, role: LayerRole, vertices: String, offsets: String,
+    public init(name: String, role: LayerRole, source: LayerSource,
                 width: Double, heightPolicy: HeightPolicy,
                 color: String = "#000000", clipped: Bool = true) {
-        self.name = name; self.role = role; self.vertices = vertices
-        self.offsets = offsets; self.width = width; self.heightPolicy = heightPolicy
+        self.name = name; self.role = role; self.source = source
+        self.width = width; self.heightPolicy = heightPolicy
         self.color = color; self.clipped = clipped
+    }
+
+    /// `(vertices, offsets)` when this layer is dumped, else nil.
+    public var files: (vertices: String, offsets: String)? {
+        if case .file(let v, let o) = source { return (v, o) }
+        return nil
     }
 
     init(json: JSONValue) throws {
@@ -397,8 +518,7 @@ public struct LayerSpec: Sendable, Equatable {
                                             known: HeightPolicy.allCases.map(\.rawValue))
         }
         self.init(name: try o.string("name", "LayerSpec"), role: role,
-                  vertices: try o.string("vertices", "LayerSpec"),
-                  offsets: try o.string("offsets", "LayerSpec"),
+                  source: try LayerSource(json: o.value("source", "LayerSpec")),
                   width: try o.double("width", "LayerSpec"),
                   heightPolicy: policy,
                   color: (try? o.string("color", "LayerSpec")) ?? "#000000",
@@ -406,7 +526,7 @@ public struct LayerSpec: Sendable, Equatable {
     }
     var json: JSONValue {
         .object(["name": .string(name), "role": .string(role.rawValue),
-                 "vertices": .string(vertices), "offsets": .string(offsets),
+                 "source": source.json,
                  "width": .double(width), "heightPolicy": .string(heightPolicy.rawValue),
                  "color": .string(color), "clipped": .bool(clipped)])
     }

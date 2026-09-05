@@ -62,6 +62,9 @@ def check_bundle_reads():
         ok &= (b.phase is None) == (m.phase is None)
         ok &= len(b.layers) == len(m.layers)
         for layer in b.layers:
+            if layer.derived:
+                ok &= layer.vertices is None and layer.offsets is None
+                continue
             ok &= layer.offsets[-1] == len(layer.vertices)
             ok &= all(len(p) >= 2 for p in layer.paths)
         if isinstance(m.occluder.walls, WallMesh):
@@ -80,6 +83,17 @@ def check_schema_rejection():
         ("unknown caps", lambda d: d.update(caps={"kind": "logarithmic"})),
         ("unknown walls", lambda d: d["occluder"].update(walls={"kind": "spline"})),
         ("unknown region", lambda d: d["occluder"].update(region={"kind": "mask"})),
+        ("unknown layer source",
+         lambda d: d.__setitem__("layers", [{
+             "name": "x", "role": "magnitude", "width": 0.1,
+             "heightPolicy": "surface", "color": "#000000", "clipped": True,
+             "source": {"kind": "spline"}}])),
+        ("unknown keep",
+         lambda d: d.__setitem__("layers", [{
+             "name": "x", "role": "magnitude", "width": 0.1,
+             "heightPolicy": "surface", "color": "#000000", "clipped": True,
+             "source": {"kind": "contour", "field": "magnitude", "levels": [1.0],
+                        "tiled": False, "keep": {"kind": "wherever"}}}])),
         ("missing domain", lambda d: d.pop("domain")),
     ]:
         d = json.loads(json.dumps(good))

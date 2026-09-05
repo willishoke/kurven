@@ -51,6 +51,13 @@ from kurven.bundle import (  # noqa: E402
     GridRef,
     Interval,
     InsideRegion,
+    KeepAll,
+    KeepBand,
+    KeepBelowCap,
+    KeepEvery,
+    KeepRegion,
+    LayerContour,
+    LayerFile,
     LayerSpec,
     Manifest,
     NoCaps,
@@ -128,9 +135,10 @@ def contract_fixtures(out):
 
     # (1) uniform cap, explicit wall mesh, two tiles, both layer kinds.
     layers = (
-        LayerSpec("mag", "magnitude", "layers/mag.npy", "layers/mag.idx.npy",
-                  0.4, "level"),
-        LayerSpec("hatch", "scaffold", "layers/hatch.npy", "layers/hatch.idx.npy",
+        LayerSpec("mag", "magnitude",
+                  LayerFile("layers/mag.npy", "layers/mag.idx.npy"), 0.4, "level"),
+        LayerSpec("hatch", "scaffold",
+                  LayerFile("layers/hatch.npy", "layers/hatch.idx.npy"),
                   0.25, "surface", "#333333", False),
     )
     m = Manifest(
@@ -168,8 +176,19 @@ def contract_fixtures(out):
                       RealBand(-1.5, 4.0))),
         Occluder(1, (Affine2.identity(),), WallPerimeter(perim, 0.0),
                  InsideRegion(perim), 0.0),
-        (LayerSpec("ang", "phase", "layers/ang.npy", "layers/ang.idx.npy",
-                   0.15, "magnitude"),),
+        # A described layer alongside a dumped one, so the contract fixture
+        # covers both arms of LayerSource and the whole Keep vocabulary.
+        (LayerSpec("ang", "phase",
+                   LayerFile("layers/ang.npy", "layers/ang.idx.npy"),
+                   0.15, "magnitude"),
+         LayerSpec("mag_derived", "magnitude",
+                   LayerContour("magnitude", (0.5, 1.0, 1.5),
+                                KeepEvery((KeepRegion(), KeepBelowCap(),
+                                           KeepBand("imag", -1.0, 1.0)))),
+                   0.3, "level"),
+         LayerSpec("all_levels", "magnitude",
+                   LayerContour("phase", (0.25,), KeepAll(), tiled=True),
+                   0.2, "surface")),
         tuple(CameraPreset(n, p, 0.01, 1024) for n, p in PRESETS.items()),
         _provenance("tiny_bands"))
     write_bundle(out / "bands_perimeter.kurven", manifest=m, height=height,

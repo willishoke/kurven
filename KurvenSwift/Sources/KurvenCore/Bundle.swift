@@ -47,7 +47,8 @@ public struct KurvenBundle: Sendable {
         case .none: return .empty
         case .mesh: return wallMesh ?? .empty
         case .perimeter(let p, let base):
-            return Mesh.walls(of: p, surface: surface, base: base)
+            return Mesh.walls(of: p, surface: surface, base: base,
+                              tiles: manifest.occluder.tiles)
         }
     }
 
@@ -83,10 +84,23 @@ public struct KurvenBundle: Sendable {
         // params mention a cache as cached.
         let cached = manifest.provenance.params["cache"] != nil
 
+        let surface = Surface(height: height, phase: phase,
+                              caps: manifest.caps, cached: cached)
+
         var layers: [Layer] = []
         for spec in manifest.layers {
-            let v = try NPY.read(contentsOf: file(spec.vertices))
-            let o = try NPY.read(contentsOf: file(spec.offsets))
+            guard let files = spec.files else {
+                // Described, not dumped: contour the grids the bundle already
+                // carries. This is what a `--derived` bundle trades its layer
+                // files for, and what makes the levels editable.
+                layers.append(Layer(spec: spec, paths: surface.derive(
+                    spec.source, policy: spec.heightPolicy,
+                    region: manifest.occluder.region,
+                    tiles: manifest.occluder.tiles)))
+                continue
+            }
+            let v = try NPY.read(contentsOf: file(files.vertices))
+            let o = try NPY.read(contentsOf: file(files.offsets))
             let verts = try v.rows3().map { P3<WorldSpace>($0) }
             let offsets = try o.ints()
             guard offsets.last ?? 0 == verts.count else {
@@ -105,10 +119,7 @@ public struct KurvenBundle: Sendable {
                             triangles: try t.rows3i())
         }
 
-        return KurvenBundle(
-            url: url, manifest: manifest,
-            surface: Surface(height: height, phase: phase,
-                             caps: manifest.caps, cached: cached),
-            layers: layers, wallMesh: wallMesh)
+        return KurvenBundle(url: url, manifest: manifest, surface: surface,
+                            layers: layers, wallMesh: wallMesh)
     }
 }

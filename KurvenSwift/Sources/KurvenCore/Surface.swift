@@ -73,8 +73,129 @@ public struct Surface: Sendable {
         }
     }
 
+    /// The height of a *tiled* landscape at a world point.
+    ///
+    /// The grid covers one fundamental tile; the plate covers its images under
+    /// the occluder's affine maps. A point out on the plate is therefore not in
+    /// the grid, and asking the grid about it returns whatever is nearest the
+    /// edge -- which for elliptic, whose cutout runs across all nineteen tiles
+    /// and whose tile edge is a pole, is a spire-high wall standing along the
+    /// whole boundary.
+    ///
+    /// The point is mapped back through the tile it belongs to, chosen as the
+    /// *nearest* rather than the containing one. Containment is too strict to be
+    /// useful here: elliptic samples its tile on `[-K + eps, -eps]` to keep off
+    /// the poles, so the cutout perimeter -- drawn at the exact quarter-periods
+    /// -- lies a hair outside every tile image, and an exact test matches
+    /// nothing at all.
+    func height(at p: P2<DomainSpace>, tiles: [Affine2]) -> Double {
+        guard tiles.count > 1 else { return height(at: p) }
+        let d = domain
+        let (xlo, xhi) = (min(d.real.lo, d.real.hi), max(d.real.lo, d.real.hi))
+        let (ylo, yhi) = (min(d.imag.lo, d.imag.hi), max(d.imag.lo, d.imag.hi))
+
+        var best: P2<DomainSpace>?
+        var bestDistance = Double.infinity
+        for tile in tiles {
+            guard let back = tile.inverse else { continue }
+            let q = back(P3<WorldSpace>(p.x, p.y, 0))
+            // How far outside the domain box this tile puts the point; zero
+            // when it is inside.
+            let dx = max(xlo - q.x, 0) + max(q.x - xhi, 0)
+            let dy = max(ylo - q.y, 0) + max(q.y - yhi, 0)
+            let distance = dx + dy
+            if distance < bestDistance {
+                bestDistance = distance
+                best = P2<DomainSpace>(q.x, q.y)
+                if distance == 0 { break }
+            }
+        }
+        return height(at: best ?? p)
+    }
+
     /// Lift a domain point onto the (capped) surface.
     public func lift(_ p: P2<DomainSpace>) -> P3<WorldSpace> {
         P3(p.x, p.y, height(at: p))
+    }
+}
+
+// MARK: - deriving ink from the grids
+
+public extension Surface {
+    /// Lift a domain-space path onto the surface, by policy.
+    ///
+    /// `Surface.lift_contours`' three height policies, and the reason a bundle
+    /// records which one a layer used: a magnitude isocontour sits at exactly
+    /// its own level, a phase contour sits wherever the surface is, and an
+    /// unclamped lift is a third thing again. A consumer regenerating a layer
+    /// cannot guess which was meant.
+    func lift(_ path: some Sequence<P2<DomainSpace>>, policy: HeightPolicy,
+              level: Double) -> [P3<WorldSpace>] {
+        path.map { p in
+            switch policy {
+            case .surface: P3(p.x, p.y, height(at: p))
+            case .level: P3(p.x, p.y, level)
+            case .magnitude: P3(p.x, p.y, magnitude(at: p))
+            }
+        }
+    }
+
+    /// Whether a lifted vertex survives a `Keep`.
+    func admits(_ p: P3<WorldSpace>, _ keep: Keep, region: Region) -> Bool {
+        switch keep {
+        case .all: true
+        case .region: region.contains(p.xy)
+        case .belowCap: p.z <= caps.height(atX: p.x)
+        case .band(let axis, let lo, let hi):
+            switch axis {
+            case .real: p.x > lo && p.x < hi
+            case .imag: p.y > lo && p.y < hi
+            }
+        case .every(let all): all.allSatisfy { admits(p, $0, region: region) }
+        }
+    }
+
+    /// Every level of a described layer, contoured, lifted, filtered and tiled.
+    ///
+    /// A path that leaves the kept region and comes back is split where it left,
+    /// not closed across the gap. Filtering vertices and keeping the survivors
+    /// as one polyline welds the far side of a contour to the near side; on the
+    /// zeta plate that drew straight chords up to half the width of the domain
+    /// across ground the cutout had deliberately removed.
+    func derive(_ source: LayerSource, policy: HeightPolicy, region: Region,
+                tiles: [Affine2]) -> PolylineSet<WorldSpace> {
+        guard case .contour(let field, let levels, let keep, let tiled) = source else {
+            return .empty
+        }
+        let grid: Grid2D<Float>
+        switch field {
+        case .magnitude: grid = height
+        case .phase:
+            guard let phase else { return .empty }
+            grid = phase
+        }
+
+        var paths: [[P3<WorldSpace>]] = []
+        for level in levels {
+            for line in Contour.lines(of: grid, level: level) {
+                let lifted = lift(line, policy: policy, level: level)
+                var run: [P3<WorldSpace>] = []
+                for v in lifted {
+                    if admits(v, keep, region: region) {
+                        run.append(v)
+                    } else {
+                        if run.count >= 2 { paths.append(run) }
+                        run = []
+                    }
+                }
+                if run.count >= 2 { paths.append(run) }
+            }
+        }
+        guard tiled else { return PolylineSet(paths: paths) }
+        // Replicated by the same maps the occluder instances the heightfield
+        // with, so a tiled contour cannot drift from the tile it lies on.
+        return PolylineSet(paths: tiles.flatMap { tile in
+            paths.map { $0.map { tile($0) } }
+        })
     }
 }
