@@ -86,9 +86,11 @@ def build_scene(a, *, verbose=True):
     cc = a.chunk_count
     p = 0
     Mm, Mmi, p = surface.lift_contours(
-        contour_levels(mag, mag_major, rb, ib, chunk_count=cc), start=p)
+        contour_levels(mag, mag_major, rb, ib, chunk_count=cc), start=p,
+        height="level")
     mm, mmi, p = surface.lift_contours(
-        contour_levels(mag, mag_minor, rb, ib, chunk_count=cc), start=p)
+        contour_levels(mag, mag_minor, rb, ib, chunk_count=cc), start=p,
+        height="level")
     Am, Ami, p = surface.lift_contours(
         contour_levels(angle, ang_major, rb, ib, chunk_count=cc), start=p)
     am, ami, p = surface.lift_contours(
@@ -112,12 +114,19 @@ def build_scene(a, *, verbose=True):
     def contours(field, levels):
         return LayerContour(field, tuple(float(v) for v in levels), KeepAll())
 
+    # A magnitude isocontour sits at its own level, by definition, so that is
+    # where it is drawn. Lifting it onto the surface instead evaluates the
+    # analytic function at points chosen by interpolating a *sampled* one, which
+    # gives a curve that wobbles vertically about the level it is a contour of --
+    # 4.6 units of accumulated |dz| across this plate, and 2% of extra length
+    # once projected. Phase contours have no such level to sit at and take the
+    # surface.
     layers = (
-        InkLayer("mag_major", "magnitude", Mm, Mmi, 0.4,
+        InkLayer("mag_major", "magnitude", Mm, Mmi, 0.4, height_policy="level",
                  source=contours("magnitude", mag_major)),
         InkLayer("ang_major", "phase", Am, Ami, 0.4,
                  source=contours("phase", ang_major)),
-        InkLayer("mag_minor", "magnitude", mm, mmi, 0.15,
+        InkLayer("mag_minor", "magnitude", mm, mmi, 0.15, height_policy="level",
                  source=contours("magnitude", mag_minor)),
         InkLayer("ang_minor", "phase", am, ami, 0.15,
                  source=contours("phase", ang_minor)),

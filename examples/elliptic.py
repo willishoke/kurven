@@ -157,8 +157,15 @@ def build_scene(a, *, verbose=True, timer=None):
     # Surface.height_at), and tag with a global index. Matches cell 3's
     # `extractContours`.
     p = 0
-    mag_major_tile, mag_major_idx_tile, p = surface.lift_contours(mag_major_paths, start=p)
-    mag_minor_tile, mag_minor_idx_tile, p = surface.lift_contours(mag_minor_paths, start=p)
+    # A magnitude isocontour sits at its own level, by definition. Cell 3 said
+    # the same thing by snapping the lifted z to the nearest level afterwards;
+    # asking for the level in the first place is exact rather than nearest, and
+    # it makes the layer describable -- a bundle can say "these levels" and a
+    # consumer gets the same curve back.
+    mag_major_tile, mag_major_idx_tile, p = surface.lift_contours(
+        mag_major_paths, start=p, height="level")
+    mag_minor_tile, mag_minor_idx_tile, p = surface.lift_contours(
+        mag_minor_paths, start=p, height="level")
     ang_major_tile, ang_major_idx_tile, p = surface.lift_contours(ang_major_paths, start=p)
     ang_minor_tile, ang_minor_idx_tile, p = surface.lift_contours(ang_minor_paths, start=p)
 
@@ -192,11 +199,6 @@ def build_scene(a, *, verbose=True, timer=None):
     mag_minor_data, mag_minor_indices = tile_data(mag_minor_tile, mag_minor_idx_tile)
     ang_major_data, ang_major_indices = tile_data(ang_major_tile, ang_major_idx_tile)
     ang_minor_data, ang_minor_indices = tile_data(ang_minor_tile, ang_minor_idx_tile)
-
-    # Cell 3: snap magnitude major z to the nearest level
-    if len(mag_major_data):
-        diff = np.abs(mag_major_data[:, 2:3] - mag_major_levels.reshape(1, -1))
-        mag_major_data[:, 2] = mag_major_levels[np.argmin(diff, axis=1)]
 
     tick("angle_major_zeros")
     # Cell 3: extra angle major contours along K_prime*i (imag axis) and K*r
@@ -384,6 +386,7 @@ def build_scene(a, *, verbose=True, timer=None):
                                      KeepAll(), tiled=True)),
         InkLayer("ang_major", "phase", ang_major_data, ang_major_indices, 0.3),
         InkLayer("mag_minor", "magnitude", mag_minor_data, mag_minor_indices, 0.1,
+                 height_policy="level",
                  source=LayerContour("magnitude",
                                      tuple(float(v) for v in mag_minor_levels),
                                      KeepAll(), tiled=True)),
