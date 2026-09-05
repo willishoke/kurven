@@ -44,6 +44,30 @@ def _get_subpolylines(contour_set):
     return out
 
 
+def index_to_domain(xy, real_bounds, imag_bounds, n_real, n_imag):
+    """Map contourpy's grid-index coordinates into domain coordinates, in place.
+
+    `xy` is `(N, 2)` with col 0 an imag index and col 1 a real index, which is
+    what contourpy returns for an array indexed `[real][imag]`.
+
+    The spacing is `span / (n - 1)`, not `span / n`: a grid of `n` samples from
+    `np.linspace(lo, hi, n)` puts index 0 at `lo` and index `n - 1` at `hi`, so
+    there are `n - 1` intervals between them. Four call sites here divided by
+    `n`, which compressed every contour toward the low corner by one sample's
+    worth -- 0.06% of the domain at n = 1600, and enough to see on a small grid
+    (on a nine-sample ramp a contour that should sit at 5.0 came out at 4.22).
+    It also meant `Surface.lift_contours` sampled the height at coordinates the
+    contour did not actually pass through.
+    """
+    r_min, r_max = real_bounds
+    i_min, i_max = imag_bounds
+    xy[:, 0] *= (i_max - i_min) / max(n_imag - 1, 1)
+    xy[:, 0] += i_min
+    xy[:, 1] *= (r_max - r_min) / max(n_real - 1, 1)
+    xy[:, 1] += r_min
+    return xy
+
+
 def extract_contours(
     contour_set,
     height_func,
@@ -181,10 +205,7 @@ def _paths_to_real_coords(contour_set, real_bounds, imag_bounds, grid_res, dedup
     out = []
     for verts in kept:
         xy = verts.copy()
-        xy[:, 0] *= (i_max - i_min) / n_imag
-        xy[:, 0] += i_min
-        xy[:, 1] *= (r_max - r_min) / n_real
-        xy[:, 1] += r_min
+        index_to_domain(xy, real_bounds, imag_bounds, n_real, n_imag)
         out.append(xy)
     return out
 
@@ -252,10 +273,7 @@ def _segs_per_level_from_array(
                 continue
             seen.add(key)
             xy = seg.copy()
-            xy[:, 0] *= (i_max - i_min) / n_imag
-            xy[:, 0] += i_min
-            xy[:, 1] *= (r_max - r_min) / n_real
-            xy[:, 1] += r_min
+            index_to_domain(xy, real_bounds, imag_bounds, n_real, n_imag)
             kept.append(xy)
         if will_chunk and len(kept) >= 2:
             kept = _stitch_chunk_seams(kept)
@@ -299,10 +317,7 @@ def contour_levels(array, levels, real_bounds, imag_bounds, *, chunk_count=None)
             if len(seg) < 2:
                 continue
             xy = seg.copy()
-            xy[:, 0] *= (i_max - i_min) / n_imag
-            xy[:, 0] += i_min
-            xy[:, 1] *= (r_max - r_min) / n_real
-            xy[:, 1] += r_min
+            index_to_domain(xy, real_bounds, imag_bounds, n_real, n_imag)
             converted.append(xy)
         out.append((float(lvl), converted))
     return out
@@ -450,10 +465,7 @@ def _segs_per_level_to_real_coords(
                 continue
             seen.add(key)
             xy = seg.copy()
-            xy[:, 0] *= (i_max - i_min) / n_imag
-            xy[:, 0] += i_min
-            xy[:, 1] *= (r_max - r_min) / n_real
-            xy[:, 1] += r_min
+            index_to_domain(xy, real_bounds, imag_bounds, n_real, n_imag)
             kept.append(xy)
         out[level] = kept
     return out
