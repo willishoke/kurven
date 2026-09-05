@@ -176,8 +176,8 @@ public extension Surface {
         }
 
         var paths: [[P3<WorldSpace>]] = []
-        for level in levels {
-            for line in Contour.lines(of: grid, level: level) {
+        for (level, lines) in Contour.levels(of: grid, levels) {
+            for line in lines {
                 let lifted = lift(line, policy: policy, level: level)
                 var run: [P3<WorldSpace>] = []
                 for v in lifted {

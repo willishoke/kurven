@@ -42,3 +42,41 @@ public enum HiddenLine {
                     offsets: paths.offsets)
     }
 }
+
+public extension DepthImage {
+    /// The outline of the drawn region -- `outline.extract_outline`.
+    ///
+    /// Binarize coverage into a signed field and take its zero level set. The
+    /// Python version does this by handing the binarized buffer to matplotlib's
+    /// contouring and mapping the result back out of pixel space; with marching
+    /// squares in Core it is four lines, and it needs no plotting library to
+    /// find the edge of a picture.
+    ///
+    /// None of the three plates draws one -- they are bounded by their own wall
+    /// ink -- so the bake offers it rather than assuming it.
+    func silhouette() -> PolylineSet<PlateSpace> {
+        guard frame.rows >= 2, frame.cols >= 2 else { return .empty }
+        let coverage = (0..<(frame.rows * frame.cols)).map { i -> Float in
+            values[i] > empty ? 1 : -1
+        }
+        // A grid whose sample positions are the frame's own lattice, so a
+        // contour vertex comes out in view units without a second mapping.
+        let grid = Grid2D(
+            width: frame.cols, height: frame.rows,
+            domain: Domain(real: Interval(lo: frame.axis1.lo, hi: frame.axis1.hi),
+                           imag: Interval(lo: frame.axis0.lo, hi: frame.axis0.hi)),
+            values: coverage)
+
+        let paths = Contour.lines(of: grid, level: 0).map { line in
+            line.map { p -> P3<PlateSpace> in
+                // `p.x` is the column value and `p.y` the row value; which view
+                // component each is depends on the frame's raster order.
+                switch frame.order {
+                case .buffer: return P3(p.y, p.x, 0)
+                case .screen: return P3(p.x, p.y, 0)
+                }
+            }
+        }
+        return PolylineSet(paths: paths)
+    }
+}

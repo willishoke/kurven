@@ -32,6 +32,10 @@ final class Document {
     var hiddenLayers: Set<Int> = []
     var margin: Double = 0.02
 
+    /// Per-layer level-count overrides, for the layers a bundle *described*
+    /// rather than dumped. Absent means the bundle's own levels.
+    var levelCounts: [Int: Int] = [:]
+
     var bakeResolution: Int = 4000
     var bakeStatus: String?
     private(set) var baking = false
@@ -139,6 +143,67 @@ final class Document {
         scene.camera = navigator.camera
         scene.margin = margin
         self.scene = scene
+    }
+
+    /// The levels a described layer is currently drawn at.
+    ///
+    /// An override resamples the bundle's own level range uniformly. Which is a
+    /// blunt instrument -- recip's magnitude levels are not an arithmetic
+    /// sequence -- but it is the honest one for a slider: it says "more or
+    /// fewer contours over the same range" and nothing about which particular
+    /// values were interesting.
+    func levels(forLayer index: Int) -> [Double]? {
+        guard let bundle, index < bundle.manifest.layers.count,
+              let base = KurvenBundle.levels(of: bundle.manifest.layers[index]),
+              base.count >= 2 else { return nil }
+        guard let n = levelCounts[index], n != base.count else { return base }
+        let lo = base.min()!, hi = base.max()!
+        guard n >= 2 else { return [(lo + hi) / 2] }
+        return (0..<n).map { lo + (hi - lo) * Double($0) / Double(n - 1) }
+    }
+
+    func isDerived(layer index: Int) -> Bool {
+        guard let bundle, index < bundle.manifest.layers.count else { return false }
+        return KurvenBundle.levels(of: bundle.manifest.layers[index]) != nil
+    }
+
+    /// Re-derive the described layers at their current levels.
+    ///
+    /// `Scene.drawing` keeps the geometry's identity, so the renderer rebuilds
+    /// the line buffer and leaves the height texture uploaded -- which is the
+    /// difference between a slider that redraws in milliseconds and one that
+    /// re-uploads a hundred megabytes per frame.
+    func rebuildInk() {
+        guard let bundle, let scene else { return }
+        let layers = bundle.manifest.layers.enumerated().map { index, spec -> Layer in
+            guard let levels = levels(forLayer: index) else {
+                return (try? bundle.layer(spec.name)) ?? Layer(spec: spec, paths: .empty)
+            }
+            // Only the layer whose slider moved is re-derived. Dragging one
+            // changes one level set; re-contouring all four costs four times as
+            // much to produce three identical answers.
+            if let cached = derivedInk[index], cached.levels == levels {
+                return cached.layer
+            }
+            let layer = bundle.layer(spec, levels: levels)
+            derivedInk[index] = (levels, layer)
+            return layer
+        }
+        self.scene = scene.drawing(layers)
+    }
+
+    /// The last derivation of each described layer, keyed by the levels that
+    /// produced it.
+    private var derivedInk: [Int: (levels: [Double], layer: Layer)] = [:]
+
+    func setLevelCount(_ n: Int, forLayer index: Int) {
+        levelCounts[index] = max(n, 1)
+        rebuildInk()
+    }
+
+    func resetLevels(forLayer index: Int) {
+        levelCounts.removeValue(forKey: index)
+        rebuildInk()
     }
 
     func toggle(layer index: Int) {

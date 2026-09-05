@@ -145,7 +145,20 @@ A **`.kurven` bundle** is a `Scene`, serialized: a directory holding a typed
 python -m kurven.export recip    -o recip.kurven --res 1600
 python -m kurven.export elliptic -o elliptic.kurven --res 2000
 python -m kurven.export zeta     -o zeta.kurven
+python -m kurven.export recip    -o recip.kurven --derived   # describe, don't dump
 ```
+
+`--derived` writes descriptions instead of arrays wherever it can. The walls
+become a perimeter and a contour layer becomes the levels it is a contour of, so
+the consumer regenerates both from `height.npy` and `phase.npy`. recip's bundle
+then contains no contour vertices at all and elliptic's drops from 115 MB to
+63 MB. Not every layer can be described — elliptic's phase contours are trimmed
+by a rule written for that one plate, and those stay dumped, which the schema
+says rather than hides.
+
+Describing a layer is also what makes its level set editable: a bundle exported
+with `--derived` gets a levels slider per contour layer in the app, and one
+without does not.
 
 Bundle arrays are in world order — `x = real`, `y = imag`, `z = |f|` — which is
 *not* the `(imag, real, z)` column order the library carries internally. The
@@ -193,8 +206,8 @@ open -a build/Kurven.app recip.kurven    # or double-click the bundle
 Left-drag orbits, shift-drag pans, scroll zooms toward the cursor, double-click
 re-targets the turn onto the point you clicked, `f` fits, `1`/`2`/`3` switch
 between the plate, a shaded surface, and the raw depth buffer. The inspector
-carries the camera as numbers, the plate presets, per-layer visibility, the
-hidden-line margin, and a bake panel.
+carries the camera as numbers, the plate presets, per-layer visibility and
+levels, the hidden-line margin, and a bake panel.
 
 Navigation is a pure function: input handling produces `Gesture` values and
 `Navigator.applying` folds them, so orbit, pan, zoom and re-target are tested
@@ -215,15 +228,24 @@ barely moves between 1600² and 3200².
 
 ### Testing across the two lanes
 
+```bash
+scripts/check.sh            # everything, both lanes
+scripts/check.sh --quick    # skip the end-to-end comparisons
+```
+
+
 Correctness is anchored on the Python pipeline as oracle. `tests/make_fixtures.py`
 writes `tests/fixtures/`; both lanes read the same files.
 
+Or a piece at a time:
+
 ```bash
-python tests/make_fixtures.py         # regenerate the oracle
-python tests/check_bundle.py          # python lane: schema, CSR, camera, clip
-swift run --package-path KurvenSwift kurven-test    # swift lane, same fixtures
+python tests/make_fixtures.py          # regenerate the oracle
+python tests/check_bundle.py           # python lane: schema, CSR, camera, clip
+swift run --package-path KurvenSwift kurven-test     # swift lane, same fixtures
 python tests/compare_bake.py recip     # end to end: swift bake vs python plate
-python tests/compare_preview.py recip # and the preview, as pixels
+python tests/compare_bake.py recip --derived   # and derived vs dumped
+python tests/compare_preview.py recip  # and the preview, as pixels
 ```
 
 The cheapest test is the sharpest: a fixture manifest decoded by Swift and

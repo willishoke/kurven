@@ -123,3 +123,28 @@ public struct KurvenBundle: Sendable {
                             layers: layers, wallMesh: wallMesh)
     }
 }
+
+public extension KurvenBundle {
+    /// Re-derive one described layer at different levels.
+    ///
+    /// Only meaningful for `LayerSource.contour`: a dumped layer is an answer
+    /// with no question behind it, and this returns it unchanged. That
+    /// asymmetry is the point of describing layers at all -- a bundle exported
+    /// with `--derived` has editable level sets and one exported without does
+    /// not, and the type says which you have.
+    func layer(_ spec: LayerSpec, levels: [Double]) -> Layer {
+        guard case .contour(let field, _, let keep, let tiled) = spec.source else {
+            return (try? layer(spec.name)) ?? Layer(spec: spec, paths: .empty)
+        }
+        return Layer(spec: spec, paths: surface.derive(
+            .contour(field: field, levels: levels, keep: keep, tiled: tiled),
+            policy: spec.heightPolicy, region: manifest.occluder.region,
+            tiles: manifest.occluder.tiles))
+    }
+
+    /// The levels a described layer was exported with, or nil when it is dumped.
+    static func levels(of spec: LayerSpec) -> [Double]? {
+        if case .contour(_, let levels, _, _) = spec.source { return levels }
+        return nil
+    }
+}

@@ -18,9 +18,15 @@ public struct BakeOptions: Sendable {
     public var tiles: Int?
     /// Hidden-line margin; `nil` takes the scene's.
     public var margin: Double?
+    /// Trace the outline of the drawn region and add it as a final stroke
+    /// layer. Off by default: the plates are bounded by their own wall ink, and
+    /// an outline on top of that is a second edge.
+    public var silhouette: Double?
 
-    public init(resolution: Int, tiles: Int? = nil, margin: Double? = nil) {
+    public init(resolution: Int, tiles: Int? = nil, margin: Double? = nil,
+                silhouette: Double? = nil) {
         self.resolution = resolution; self.tiles = tiles; self.margin = margin
+        self.silhouette = silhouette
     }
 
     func tileCount(for resolution: Int) -> Int {
@@ -118,6 +124,9 @@ public extension MetalRenderer {
                 ? HiddenLine.clip(projected, against: depth, margin: margin)
                 : HiddenLine.pass(projected)
             layers.append((Style(layer.spec), clipped))
+        }
+        if let width = options.silhouette {
+            layers.append((Style(color: "#000000", width: width), depth.silhouette()))
         }
         return Bake(strokes: Strokes(layers: layers), depth: depth, tiles: n)
     }

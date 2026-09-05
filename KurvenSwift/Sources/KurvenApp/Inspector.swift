@@ -118,19 +118,48 @@ struct Inspector: View {
     @ViewBuilder
     private var layerList: some View {
         ForEach(Array(document.layers.enumerated()), id: \.offset) { index, layer in
-            Toggle(isOn: Binding(
-                get: { !document.hiddenLayers.contains(index) },
-                set: { _ in document.toggle(layer: index); onChange() })) {
-                HStack {
-                    Text(layer.spec.name)
-                    Spacer()
-                    Text("\(layer.paths.count)")
-                        .monospacedDigit().foregroundStyle(.secondary)
-                    Text(layer.spec.clipped ? "" : "unclipped")
-                        .font(.caption).foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle(isOn: Binding(
+                    get: { !document.hiddenLayers.contains(index) },
+                    set: { _ in document.toggle(layer: index); onChange() })) {
+                    HStack {
+                        Text(layer.spec.name)
+                        Spacer()
+                        Text("\(layer.paths.count)")
+                            .monospacedDigit().foregroundStyle(.secondary)
+                        Text(layer.spec.clipped ? "" : "unclipped")
+                            .font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+                // A described layer carries its question, so its level set can
+                // be moved. A dumped one carries only the answer, and there is
+                // nothing here to drag -- which is the difference between a
+                // bundle exported with --derived and one without, made visible.
+                if document.isDerived(layer: index),
+                   let levels = document.levels(forLayer: index) {
+                    levelSlider(index: index, levels: levels)
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func levelSlider(index: Int, levels: [Double]) -> some View {
+        let count = Binding(
+            get: { Double(levels.count) },
+            set: { document.setLevelCount(Int($0.rounded()), forLayer: index); onChange() })
+        HStack(spacing: 6) {
+            Text("levels").font(.caption).foregroundStyle(.secondary)
+            Slider(value: count, in: 1...80, step: 1)
+            Text("\(levels.count)")
+                .font(.caption).monospacedDigit().frame(width: 24, alignment: .trailing)
+            Button {
+                document.resetLevels(forLayer: index)
+                onChange()
+            } label: { Image(systemName: "arrow.uturn.backward") }
+                .buttonStyle(.borderless).controlSize(.small)
+        }
+        .padding(.leading, 20)
     }
 
     // MARK: - ink

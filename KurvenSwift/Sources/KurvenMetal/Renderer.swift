@@ -149,7 +149,7 @@ public final class MetalRenderer {
     /// different places, which is exactly the shape a single entry serves. Two
     /// bundles means two renderers.
     private var cachedResources: SceneResources?
-    private var cachedLines: (content: ContentID, geometry: LineGeometry)?
+    private var cachedLines: (ink: ContentID, geometry: LineGeometry)?
     private var target: DepthTarget?
     private var previewDepth: MTLTexture?
     /// The depth attachment the last preview frame wrote, for pixel queries.
@@ -162,12 +162,13 @@ public final class MetalRenderer {
         return r
     }
 
-    /// Line geometry, cached on the same key as everything else. Toggling a
-    /// layer must not rebuild it.
+    /// Line geometry, cached on the scene's *ink* identity rather than its
+    /// content, so moving a level set rebuilds the strokes and leaves the
+    /// heightfield texture alone.
     func lineGeometry(for scene: Scene) throws -> LineGeometry {
-        if let c = cachedLines, c.content == scene.content { return c.geometry }
+        if let c = cachedLines, c.ink == scene.ink { return c.geometry }
         let g = try LineGeometry(scene: scene, device: device)
-        cachedLines = (scene.content, g)
+        cachedLines = (scene.ink, g)
         return g
     }
 

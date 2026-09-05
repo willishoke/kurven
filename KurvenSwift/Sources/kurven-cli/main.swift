@@ -65,11 +65,13 @@ let usage = """
 usage: kurven-cli <command> [options]
 
   bake <bundle> [--preset NAME] [--resolution N] [--tiles N] [--margin M]
-       [--dump PREFIX] -o out.svg
+       [--silhouette W] [--dump PREFIX] -o out.svg
         Render a bundle's plate to SVG through the depth-tested hidden-line
         pipeline. Defaults to the bundle's first preset and that preset's own
         depth resolution and clip margin -- the settings the published plate
-        was made with. --dump also writes each layer's strokes as
+        was made with. --silhouette traces the outline of the drawn region off
+        the depth buffer and adds it as a stroke of that width. --dump also
+        writes each layer's strokes as
         PREFIX.<layer>.npy plus CSR offsets, which is what
         tests/compare_bake.py reads to check the result against the Python
         plate stroke for stroke.
@@ -85,10 +87,12 @@ usage: kurven-cli <command> [options]
         per frame, plus a line pass that costs a fraction of it.
 
   preview <bundle> [--preset NAME] [--width N] [--height N] [--mode M]
-          [--orbit "AZ,EL"] [--zoom F] -o out.png
+          [--orbit "AZ,EL"] [--zoom F] [--levels N] -o out.png
         Render one preview frame offscreen and write it as a PNG. Modes:
         plate (the default), shaded, depth. --orbit turns the preset camera by
-        that many degrees before drawing. This is how the preview is checked
+        that many degrees before drawing. --levels redraws every *described*
+        layer at N evenly spaced levels over its own range, which only a
+        bundle exported with --derived can do. This is how the preview is checked
         against the plate without a window in the way.
 
   inspect <bundle>
@@ -121,7 +125,8 @@ func bake(_ args: Args) throws {
     let options = BakeOptions(
         resolution: try args.int("resolution", preset.buffer),
         tiles: args.flags["tiles"].flatMap(Int.init),
-        margin: try args.double("margin") ?? preset.margin)
+        margin: try args.double("margin") ?? preset.margin,
+        silhouette: try args.double("silhouette"))
 
     if !bundle.manifest.provenance.isReproducible {
         FileHandle.standardError.write(Data("""
@@ -171,10 +176,14 @@ func bake(_ args: Args) throws {
           took       \(elapsed)
         """)
     for (index, entry) in result.strokes.layers.enumerated() {
-        let spec = scene.layers[index].spec
-        print("    \(pad(spec.name, 14)) \(pad(String(entry.paths.count), 7)) paths"
+        // The silhouette, when asked for, is one more stroke layer than the
+        // scene has ink layers -- it is traced from the depth buffer, not
+        // carried by the bundle.
+        let spec = index < scene.layers.count ? scene.layers[index].spec : nil
+        print("    \(pad(spec?.name ?? "silhouette", 14)) "
+              + "\(pad(String(entry.paths.count), 7)) paths"
               + "  lw \(entry.style.width)"
-              + (spec.clipped ? "" : "  unclipped"))
+              + (spec.map { $0.clipped ? "" : "  unclipped" } ?? "  from the depth buffer"))
     }
 }
 
@@ -249,6 +258,40 @@ func bench(_ args: Args) throws {
         return times
     }
 
+    // Dragging a level slider: re-derive the described layers, rebuild the line
+    // buffer, redraw. The whole point of keeping the ink's identity separate
+    // from the geometry's is that this does not touch the height texture.
+    if args.switches.contains("editing") {
+        // One slider, one layer: dragging a level control changes one level set
+        // and the others are reused, which is what the app does.
+        guard let edited = bundle.manifest.layers.enumerated().first(where: {
+            KurvenBundle.levels(of: $0.element) != nil
+        }) else { throw CLIError("this bundle has no described layers; export with --derived") }
+        var current = bundle.layers
+        let counts = (0..<frames).map { 4 + ($0 % 40) }
+        var editTimes: [Double] = []
+        for n in counts {
+            let d = try clock.measure {
+                current[edited.offset] = relaid(bundle, edited.element, levelCount: n)
+                let scene = base.drawing(current)
+                try renderer.renderPreview(scene, navigator: navigator,
+                                           viewport: viewport,
+                                           options: PreviewOptions(mode: mode),
+                                           into: target)
+            }
+            editTimes.append(Double(d.components.attoseconds) / 1e18
+                             + Double(d.components.seconds))
+        }
+        editTimes.sort()
+        let m = editTimes[editTimes.count / 2]
+        print("\(bundle.url.lastPathComponent)  editing '\(edited.element.name)', "
+              + "\(viewport.width)x\(viewport.height)")
+        print("  re-derive + redraw  median \(String(format: "%.2f ms", m * 1000))  "
+              + "p95 \(String(format: "%.2f ms", editTimes[min(editTimes.count - 1, Int(Double(editTimes.count) * 0.95))] * 1000))")
+        print("  that is             \(String(format: "%.0f", 1 / m)) fps while dragging a level slider")
+        return
+    }
+
     let depthTimes = try measure { i in
         _ = try renderer.renderDepth(base.looking(camera(i)), frame: frame)
     }
@@ -274,8 +317,31 @@ func bench(_ args: Args) throws {
           + (renderer.hasLinearReadback ? "" : "   (readback is NOT linear here)"))
 }
 
+/// Every layer, with the described ones re-derived at `count` evenly spaced
+/// levels over their own range. A dumped layer has no question behind it and
+/// comes back unchanged, which is the difference `--derived` makes, in one
+/// function.
+func relaid(_ bundle: KurvenBundle, levelCount count: Int) -> [Layer] {
+    bundle.manifest.layers.map { relaid(bundle, $0, levelCount: count) }
+}
+
+/// One layer, re-derived at `count` evenly spaced levels over its own range.
+func relaid(_ bundle: KurvenBundle, _ spec: LayerSpec, levelCount count: Int) -> Layer {
+    guard count >= 1, let levels = KurvenBundle.levels(of: spec),
+          levels.count >= 2, let lo = levels.min(), let hi = levels.max() else {
+        return (try? bundle.layer(spec.name)) ?? Layer(spec: spec, paths: .empty)
+    }
+    var redone: [Double] = []
+    if count == 1 {
+        redone = [(lo + hi) / 2]
+    } else {
+        for i in 0..<count { redone.append(lo + (hi - lo) * Double(i) / Double(count - 1)) }
+    }
+    return bundle.layer(spec, levels: redone)
+}
+
 func preview(_ args: Args) throws {
-    let (bundle, preset, base) = try loadScene(args)
+    let (bundle, preset, loaded) = try loadScene(args)
     let output = URL(fileURLWithPath: try args.string("output"))
     let viewport = Viewport(width: try args.int("width", 1600),
                             height: try args.int("height", 1000))
@@ -286,6 +352,16 @@ func preview(_ args: Args) throws {
     case "shaded": mode = .shaded(Lighting())
     case "depth": mode = .depth
     case let other: throw CLIError("unknown --mode '\(other)'; try plate, shaded or depth")
+    }
+
+    var base = loaded
+    if let n = args.flags["levels"].flatMap({ Int($0) }) {
+        base = base.drawing(relaid(bundle, levelCount: n))
+        if !bundle.manifest.layers.contains(where: { KurvenBundle.levels(of: $0) != nil }) {
+            FileHandle.standardError.write(Data(
+                ("note: no described layers here, so --levels changes nothing; "
+                 + "export the bundle with --derived\n").utf8))
+        }
     }
 
     var navigator = Navigator(orbit: Orbit(matching: preset.plate),

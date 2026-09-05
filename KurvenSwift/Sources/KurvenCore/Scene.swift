@@ -26,8 +26,14 @@ public struct ContentID: Hashable, Sendable {
 /// than documenting it. Producing different geometry means producing a new
 /// `Scene`, which mints a new `ContentID`.
 public struct Scene: Sendable {
-    /// Identifies everything below except the camera, the mode and the margin.
+    /// Identifies the *geometry*: the surface, the occluder, the tiles, the
+    /// region, the step. Everything the depth pass draws.
     public let content: ContentID
+    /// Identifies the *ink*. Separate from `content` because editing a level
+    /// set changes every stroke and none of the landscape, and rebuilding a
+    /// hundred-megabyte height texture to move a contour would make the slider
+    /// unusable on exactly the plates where it is most interesting.
+    public let ink: ContentID
     public let surface: Surface
     /// Wall curtains, in world coordinates.
     public let occluder: Mesh<WorldSpace>
@@ -48,6 +54,7 @@ public struct Scene: Sendable {
                 region: Region = .full, step: Int, layers: [Layer], camera: Camera,
                 mode: PreviewMode = .plate, margin: Double) {
         self.content = ContentID()
+        self.ink = ContentID()
         self.surface = surface; self.occluder = occluder; self.tiles = tiles
         self.region = region; self.step = step; self.layers = layers
         self.camera = camera; self.mode = mode; self.margin = margin
@@ -65,11 +72,30 @@ public struct Scene: Sendable {
                   margin: preset.margin)
     }
 
-    /// The same content, looked at from somewhere else. Keeps `content`, so the
-    /// renderer's resources survive the move -- which is the whole point of
-    /// separating them.
+    /// The same content, looked at from somewhere else. Keeps both identities,
+    /// so nothing at all is rebuilt -- which is the whole point of separating
+    /// the camera from the content.
     public func looking(_ camera: Camera) -> Scene {
         var out = self; out.camera = camera; return out
+    }
+
+    /// The same landscape, drawn with different ink. Keeps `content` and mints
+    /// a new `ink`, so the heightfield stays uploaded and only the line buffer
+    /// is rebuilt.
+    public func drawing(_ layers: [Layer]) -> Scene {
+        Scene(content: content, ink: ContentID(), surface: surface,
+              occluder: occluder, tiles: tiles, region: region, step: step,
+              layers: layers, camera: camera, mode: mode, margin: margin)
+    }
+
+    private init(content: ContentID, ink: ContentID, surface: Surface,
+                 occluder: Mesh<WorldSpace>, tiles: [Affine2], region: Region,
+                 step: Int, layers: [Layer], camera: Camera, mode: PreviewMode,
+                 margin: Double) {
+        self.content = content; self.ink = ink; self.surface = surface
+        self.occluder = occluder; self.tiles = tiles; self.region = region
+        self.step = step; self.layers = layers; self.camera = camera
+        self.mode = mode; self.margin = margin
     }
 
     /// Every layer's vertices in view space, in declaration (draw) order.
