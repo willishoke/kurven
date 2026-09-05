@@ -111,3 +111,12 @@ public struct Angle: Sendable, Equatable, Hashable {
     public init(degrees: Double) { self.radians = degrees * .pi / 180 }
     public var degrees: Double { radians * 180 / .pi }
 }
+
+public extension P3 {
+    /// A point displaced by a world-space vector. Spelled out rather than
+    /// operator-overloaded: a point plus a point is not a thing, and the
+    /// phantom space is there to keep that from being expressible.
+    init(target: P3<S>, plus delta: SIMD3<Double>) {
+        self.init(target.v + delta)
+    }
+}

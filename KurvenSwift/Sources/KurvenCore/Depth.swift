@@ -123,34 +123,44 @@ public struct DepthFrame: Sendable, Equatable {
     /// lattice its own `index_to_coord` describes. Matching the lattice instead
     /// is what makes the rendered depth image and the clipper's lookups the
     /// same numbers rather than nearly the same.
-    /// - Note: `scale.x`/`offset.x` map `axis1` (the second view component) to
-    ///   NDC x, and `scale.y`/`offset.y` map `axis0` to NDC y -- Python's
-    ///   `ZBuffer` indexes rows by the first view component, so that is the one
-    ///   that must run down the image. The y pair is negated because Metal puts
-    ///   NDC +1 at the *top* of the render target, i.e. at row 0, while the
-    ///   OpenGL path the Python side uses puts it at the bottom; negating keeps
-    ///   row `r` reading the coordinate `coordinate(row: r, col:)` names.
-    /// Returned as a 2x2 rather than two scales because which view component
-    /// drives which screen axis is a property of the frame, not of the shader.
-    /// Columns of the matrix multiply `(view.x, view.y)`.
-    public var metalNDC: (linear: simd_double2x2, offset: SIMD2<Double>) {
+    /// The view-to-clip matrix for this frame, under an orthographic camera.
+    ///
+    /// Places each pixel's *sample point* exactly on the lattice vertex
+    /// `coordinate(row:col:)` names. Metal samples pixel `i` at its centre,
+    /// `(2i + 1) / N - 1` in NDC; solving for the coordinate that lands there
+    /// gives the scale and offset below. The Python GPU path does not do this --
+    /// it maps the coordinate range straight onto [-1, 1], half a pixel off the
+    /// lattice its own `index_to_coord` describes -- so this is half a pixel
+    /// closer to the CPU oracle than Python's own GPU path is.
+    ///
+    /// The y row is negated because Metal puts NDC +1 at the *top* of the render
+    /// target, which is row 0, while the OpenGL path the Python side uses puts
+    /// it at the bottom. Which view component drives which screen axis is the
+    /// frame's business too, and folded in here: the bake rasterizes in
+    /// ZBuffer's order so it can be compared against Python, the preview in
+    /// screen order so it looks like the plate.
+    ///
+    /// A 4x4, so it can stand where a perspective matrix stands; its `w` row is
+    /// constant, because an orthographic map has no divide.
+    public var metalClip: simd_double4x4 {
         let sx = 2 * Double(cols - 1) / (Double(cols) * axis1.length)
         let sy = 2 * Double(rows - 1) / (Double(rows) * axis0.length)
         let ox = 1 / Double(cols) - 1 - sx * axis1.lo
         let oy = 1 / Double(rows) - 1 - sy * axis0.lo
-        // ndc.x from the column value, ndc.y from the row value, negated: Metal
-        // puts NDC +1 at the top of the target, which is row 0.
-        let (cx, cy) = (sx, -sy)
-        let m: simd_double2x2
+        let zero: Double = 0
+        let a: Double, b: Double, c: Double, d: Double
         switch order {
-        case .buffer:
-            // rows <- view.x, cols <- view.y
-            m = simd_double2x2(rows: [SIMD2(0, cx), SIMD2(cy, 0)])
-        case .screen:
-            // rows <- view.y, cols <- view.x
-            m = simd_double2x2(rows: [SIMD2(cx, 0), SIMD2(0, cy)])
+        case .buffer:                  // ndc.x from view.y, ndc.y from view.x
+            a = zero; b = sx; c = -sy; d = zero
+        case .screen:                  // ndc.x from view.x, ndc.y from view.y
+            a = sx; b = zero; c = zero; d = -sy
         }
-        return (m, SIMD2(ox, -oy))
+        // Columns, which is simd's own layout.
+        let col0 = SIMD4<Double>(a, c, zero, zero)
+        let col1 = SIMD4<Double>(b, d, zero, zero)
+        let col2 = SIMD4<Double>(zero, zero, zero, zero)
+        let col3 = SIMD4<Double>(ox, -oy, 0.5, 1)
+        return simd_double4x4(col0, col1, col2, col3)
     }
 }
 

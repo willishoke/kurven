@@ -20,14 +20,14 @@ typedef struct {
     // rotated z and the MAX depth blend.
     simd_float4x4 view;
 
-    // View -> Metal NDC, as `ndcLinear * view.xy + ndcOffset`. A matrix rather
-    // than two scales because which view component drives which screen axis is
-    // a property of the frame: the bake rasterizes in ZBuffer's order (rows
-    // index view x) so it can be compared against Python, the preview in screen
-    // order (view x across) so it looks like the plate. See
-    // DepthFrame.metalNDC.
-    simd_float2x2 ndcLinear;
-    simd_float2 ndcOffset;
+    // View -> Metal clip space, with the perspective divide left to the
+    // hardware. A full 4x4 rather than a 2x2 and an offset because an
+    // orthographic camera's map is affine and a perspective one's is not, and
+    // one matrix covers both. Which view component drives which screen axis is
+    // folded in here too: the bake rasterizes in ZBuffer's order (rows index
+    // view x) so it can be compared against Python, the preview in screen
+    // order (view x across) so it looks like the plate.
+    simd_float4x4 clip;
 
     // The heightfield's domain rectangle and its lattice size after decimation.
     simd_float2 domainLo;      // (real.lo, imag.lo)

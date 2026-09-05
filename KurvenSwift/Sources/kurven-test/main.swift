@@ -320,7 +320,7 @@ func coreTests() {
                                         axis1: Interval(lo: 10, hi: 14),
                                         rows: 6, cols: 5, order: .screen)),
         ] {
-            let (linear, offset) = frame.metalNDC
+            let clip = frame.metalClip
             var worst = 0.0
             var roundTrips = true
             for r in 0..<frame.rows {
@@ -329,9 +329,9 @@ func coreTests() {
                     if frame.index(of: p) != SIMD2(r, c) { roundTrips = false }
                     // Metal samples pixel (col, row) at NDC
                     // ((2c+1)/cols - 1, 1 - (2r+1)/rows): y from the top.
-                    let ndc = linear * SIMD2(p.x, p.y) + offset
-                    worst = max(worst, abs(ndc.x - (Double(2 * c + 1) / Double(frame.cols) - 1)))
-                    worst = max(worst, abs(ndc.y - (1 - Double(2 * r + 1) / Double(frame.rows))))
+                    let h = clip * SIMD4<Double>(p.x, p.y, 0, 1)
+                    worst = max(worst, abs(h.x / h.w - (Double(2 * c + 1) / Double(frame.cols) - 1)))
+                    worst = max(worst, abs(h.y / h.w - (1 - Double(2 * r + 1) / Double(frame.rows))))
                 }
             }
             Check.expect(roundTrips, "\(name): every lattice vertex indexes its own pixel")
@@ -452,10 +452,11 @@ func shaderTests() {
         // bytes is visible rather than plausible.
         var v = matrix_identity_float4x4
         for c in 0..<4 { for r in 0..<4 { v[c][r] = Float(1 + c * 4 + r) } }
+        var clipProbe = matrix_identity_float4x4
+        for c in 0..<4 { for r in 0..<4 { clipProbe[c][r] = Float(101 + c * 4 + r) } }
         let sent = KVUniforms(
             view: v,
-            ndcLinear: simd_float2x2(SIMD2(101, 102), SIMD2(103, 104)),
-            ndcOffset: SIMD2(201, 202),
+            clip: clipProbe,
             domainLo: SIMD2(301, 302),
             domainSize: SIMD2(401, 402),
             lattice: SIMD2(501, 502),
@@ -478,8 +479,8 @@ func shaderTests() {
 
         var want: [Float] = []
         for c in 0..<4 { for r in 0..<4 { want.append(v[c][r]) } }
-        want += [101, 102, 103, 104, 201, 202, 301, 302, 401, 402,
-                 501, 502, 601, 602, 701, 801, 901, -1001]
+        for c in 0..<4 { for r in 0..<4 { want.append(clipProbe[c][r]) } }
+        want += [301, 302, 401, 402, 501, 502, 601, 602, 701, 801, 901, -1001]
         want += [11, 12, 13, 14, 21, 22, 31, 32, 33, 41, 51, 52]
 
         let probe = try MetalRenderer.probeUniformLayout(device: device,
@@ -757,6 +758,59 @@ func navigationTests() {
                      "and stays put through a turn", "moved \(simd_reduce_max(abs(still - before))) px")
     }
 
+    Check.suite("navigation: perspective is a way of looking, not a plate style") {
+        let v = Viewport(width: 1200, height: 800)
+        let plate = plates[1].1
+        let bounds = AABB<ViewSpace>(lo: SIMD3(-4, -2, 0), hi: SIMD3(6, 3, 4))
+        let ortho = Navigator(orbit: Orbit(matching: plate),
+                              framing: Framing(center: P2(0, 0), unitsPerPixel: 0.01))
+        Check.expect(!ortho.orbit.isPerspective && !ortho.camera.isPerspective,
+                     "a preset camera is orthographic")
+
+        let persp = ortho.applying(.project(fieldOfView: Angle(degrees: 50), bounds), in: v)
+        Check.expect(persp.camera.isPerspective && persp.orbit.distance != nil,
+                     "and .project makes one that is not")
+
+        // The oblique shear is a property of an orthographic drawing. The ADT
+        // makes "shear under perspective" unrepresentable; this checks the
+        // camera actually takes that route rather than carrying it along.
+        if case .perspective = persp.camera.projection {
+            Check.expect(true, "with no oblique shear to carry")
+        } else {
+            Check.expect(false, "with no oblique shear to carry")
+        }
+
+        // What it is looking at ends up in the middle.
+        let centre = persp.camera.view(persp.orbit.target)
+        Check.expect(abs(centre.x) < 1e-9 && abs(centre.y) < 1e-9,
+                     "the target lands at the view origin",
+                     "(\(centre.x), \(centre.y))")
+        Check.expect(centre.z < 0, "with the landscape in front of the eye",
+                     "z = \(centre.z)")
+
+        // Nearer things are bigger. That is the entire visible difference, and
+        // it is what the orthographic camera cannot do.
+        let clip = Camera.perspectiveClip(fovY: persp.orbit.fieldOfView, aspect: v.aspect)
+        func widthOnScreen(atDepth z: Double) -> Double {
+            let h = clip * SIMD4<Double>(1, 0, z, 1)
+            return abs(h.x / h.w)
+        }
+        Check.expect(widthOnScreen(atDepth: -5) > widthOnScreen(atDepth: -50),
+                     "the same span is wider when it is nearer",
+                     "\(widthOnScreen(atDepth: -5)) vs \(widthOnScreen(atDepth: -50))")
+
+        // And going back to orthographic restores the framing.
+        let back = persp.applying(.project(fieldOfView: nil, bounds), in: v)
+        Check.expect(!back.camera.isPerspective, "and .project(nil) goes back")
+
+        // Zoom means coming closer, not shrinking a rectangle.
+        let closer = persp.applying(.zoom(factor: 2, at: SIMD2(600, 400)), in: v)
+        Check.expect(closer.orbit.distance! < persp.orbit.distance!
+                     && closer.framing == persp.framing,
+                     "zooming moves the eye and leaves the framing alone",
+                     "\(persp.orbit.distance!) -> \(closer.orbit.distance!)")
+    }
+
     Check.suite("navigation: fitting shows everything, with a margin") {
         let v = Viewport(width: 900, height: 600)
         let bounds = AABB<ViewSpace>(lo: SIMD3(-4, -2, 0), hi: SIMD3(6, 3, 1))
@@ -799,6 +853,35 @@ func bakeTests() {
     // side to the first on the other is drawn by neither -- so the passes are
     // stitched into one depth image and the clip runs once. The property that
     // buys is this one: however the pass was divided, the drawing is the same.
+    // The plates are orthographic and oblique; perspective is for navigating.
+    // A bake indexes its depth buffer by an affine map from view coordinates to
+    // pixels, which under perspective depends on depth -- and the fix would
+    // produce the one artifact this design has no Python oracle for. Refusing
+    // is the honest form of that, and it is refused rather than wrong.
+    Check.suite("bake: a perspective camera is refused, with the reason") {
+        guard let url = Fixtures.contractBundles.first(where: {
+            $0.lastPathComponent == "uniform_mesh.kurven"
+        }) else { Check.expect(false, "the fixture is present"); return }
+        let bundle = try KurvenBundle.read(at: url)
+        var scene = Scene(bundle: bundle, preset: try bundle.manifest.preset("recip"))
+        let renderer = try MetalRenderer()
+
+        _ = try renderer.bake(scene, options: BakeOptions(resolution: 64))
+        Check.expect(true, "an orthographic scene bakes")
+
+        var orbit = Orbit(matching: try bundle.manifest.preset("recip").plate)
+        orbit.distance = 10
+        scene.camera = orbit.camera
+        do {
+            _ = try renderer.bake(scene, options: BakeOptions(resolution: 64))
+            Check.expect(false, "a perspective scene does not")
+        } catch let error as BakeError {
+            Check.expect("\(error)".contains("orthographic"),
+                         "a perspective scene does not, and says why",
+                         "\(error)".split(separator: "\n").first.map(String.init) ?? "")
+        }
+    }
+
     Check.suite("bake: a tiled bake draws what a single-pass bake draws") {
         guard let url = Fixtures.contractBundles.first(where: {
             $0.lastPathComponent == "uniform_mesh.kurven"

@@ -103,12 +103,13 @@ usage: kurven-cli <command> [options]
         per frame, plus a line pass that costs a fraction of it.
 
   preview <bundle> [--preset NAME] [--width N] [--height N] [--mode M]
-          [--orbit "AZ,EL"] [--zoom F] [--levels N] -o out.png
+          [--orbit "AZ,EL"] [--zoom F] [--levels N] [--fov DEGREES] -o out.png
         Render one preview frame offscreen and write it as a PNG. Modes:
         plate (the default), shaded, depth. --orbit turns the preset camera by
         that many degrees before drawing. --levels redraws every *described*
         layer at N evenly spaced levels over its own range, which only a
-        bundle exported with --derived can do. This is how the preview is checked
+        bundle exported with --derived can do. --fov switches to a perspective
+        camera, which previews but does not bake. This is how the preview is checked
         against the plate without a window in the way.
 
   inspect <bundle>
@@ -405,6 +406,13 @@ func preview(_ args: Args) throws {
         navigator.orbit.elevation = Angle(degrees: navigator.orbit.elevation.degrees + parts[1])
         scene.camera = navigator.camera
         if let b = scene.quickBounds() { navigator.framing = .fitting(b, in: viewport) }
+    }
+    if let fov = try args.double("fov") {
+        if let bounds = scene.quickBounds() {
+            navigator = navigator.applying(
+                .project(fieldOfView: Angle(degrees: fov), bounds), in: viewport)
+            scene.camera = navigator.camera
+        }
     }
     if let zoom = try args.double("zoom") {
         navigator = navigator.applying(

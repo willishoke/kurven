@@ -156,6 +156,13 @@ final class Document {
 
     func retarget(to world: P3<WorldSpace>) { apply(.retarget(world)) }
 
+    func setPerspective(_ on: Bool) {
+        guard var scene, let navigator else { return }
+        scene.camera = navigator.camera
+        guard let bounds = scene.quickBounds() else { return }
+        apply(.project(fieldOfView: on ? Angle(degrees: 50) : nil, bounds))
+    }
+
     /// Re-derive the camera after a change that is not a gesture (the margin
     /// slider, a viewport resize).
     func refreshScene() {
@@ -324,8 +331,15 @@ final class Document {
     /// drawing on. The result is the same function `kurven-cli bake` calls, on
     /// the same value, so the two produce the same picture by construction
     /// rather than by keeping two paths in step.
+    var canBake: Bool { !(navigator?.orbit.isPerspective ?? false) }
+
     func bake(to url: URL) {
         guard let scene, !baking else { return }
+        guard canBake else {
+            bakeStatus = "switch off perspective to bake: the plates are "
+                + "orthographic, and a perspective bake has no oracle"
+            return
+        }
         let options = BakeOptions(resolution: bakeResolution, margin: margin)
         baking = true
         bakeStatus = "baking \(bakeResolution)²…"

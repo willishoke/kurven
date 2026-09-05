@@ -55,12 +55,20 @@ public struct Orbit: Sendable, Equatable {
     /// Tilt toward the viewer.
     public var elevation: Angle
     public var style: PlateStyle
+    /// How far back the eye sits, under perspective. `nil` is orthographic,
+    /// where there is no eye position -- only a direction and a rectangle.
+    public var distance: Double?
+    public var fieldOfView: Angle
 
     public init(target: P3<WorldSpace>, azimuth: Angle, elevation: Angle,
-                style: PlateStyle) {
+                style: PlateStyle, distance: Double? = nil,
+                fieldOfView: Angle = Angle(degrees: 45)) {
         self.target = target; self.azimuth = azimuth
         self.elevation = elevation; self.style = style
+        self.distance = distance; self.fieldOfView = fieldOfView
     }
+
+    public var isPerspective: Bool { distance != nil }
 
     /// The orbit that reproduces a plate preset. With the default target this
     /// gives back exactly `Camera.plate(plate)`.
@@ -76,13 +84,28 @@ public struct Orbit: Sendable, Equatable {
         let m = rotationX(elevation) * rotationZ(azimuth) * style.matrix
         // The target is subtracted in world space, before the plate transform,
         // so it lands on the view origin whatever the style does to the axes.
-        let t = m * (-target.v)
+        var t = m * (-target.v)
+        guard let distance else {
+            return Camera(
+                view: Transform(rows: (m.transpose.columns.0,
+                                       m.transpose.columns.1,
+                                       m.transpose.columns.2),
+                                translation: t),
+                projection: .orthographic(oblique: Oblique(shear: style.shear)))
+        }
+        // The eye sits at the view origin looking down -z, so the target is
+        // pushed to z = -distance. That is the same z convention the depth
+        // buffer uses -- larger is nearer -- so nothing downstream changes when
+        // the projection does.
+        t.z -= distance
         return Camera(
             view: Transform(rows: (m.transpose.columns.0,
                                    m.transpose.columns.1,
                                    m.transpose.columns.2),
                             translation: t),
-            projection: .orthographic(oblique: Oblique(shear: style.shear)))
+            // No oblique: the Jahnke-Emde shear is a property of an
+            // orthographic drawing, and the ADT will not let it be otherwise.
+            projection: .perspective(fovY: fieldOfView))
     }
 
     /// Elevation is clamped rather than wrapped: past vertical the landscape
@@ -196,6 +219,11 @@ public enum Gesture: Sendable, Equatable {
     case preset(PlateProjection, AABB<ViewSpace>)
     /// Show all of it.
     case fit(AABB<ViewSpace>)
+    /// Switch projection. `nil` is orthographic; a field of view is
+    /// perspective, which is a way of navigating rather than a plate style --
+    /// the plates are orthographic and oblique, and a perspective bake would be
+    /// the one artifact with no Python oracle to check it against.
+    case project(fieldOfView: Angle?, AABB<ViewSpace>)
 }
 
 /// The camera state a preview draws from: an orbit and a framing.
@@ -223,9 +251,29 @@ public struct Navigator: Sendable, Equatable {
                 degrees: min(max(tilt, -Orbit.elevationLimit.degrees),
                              Orbit.elevationLimit.degrees))
         case .pan(let d):
-            out.framing = framing.panned(byPixels: d)
+            if orbit.isPerspective {
+                // Move what is being looked at, not the paper: dragging under
+                // perspective means walking sideways, and the target is where
+                // the walk is centred.
+                let inverse = camera.view.inverse
+                let scale = (orbit.distance ?? 1) * 2
+                    * tan(orbit.fieldOfView.radians / 2) / Double(max(v.height, 1))
+                let origin = inverse(P3<ViewSpace>(0, 0, 0))
+                let moved = inverse(P3<ViewSpace>(-d.x * scale, d.y * scale, 0))
+                out.orbit.target = P3(target: orbit.target, plus: moved.v - origin.v)
+            } else {
+                out.framing = framing.panned(byPixels: d)
+            }
         case .zoom(let factor, let at):
-            out.framing = framing.zoomed(by: factor, about: at, in: v)
+            if let distance = orbit.distance {
+                // Under perspective there is no rectangle to shrink: coming
+                // closer *is* the zoom, and it changes the picture rather than
+                // scaling it, which is the whole reason to have this camera.
+                out.orbit.distance = max(distance / max(factor, .leastNormalMagnitude),
+                                         1e-4)
+            } else {
+                out.framing = framing.zoomed(by: factor, about: at, in: v)
+            }
         case .roll(let radians):
             out.orbit.azimuth = Angle(radians: orbit.azimuth.radians + radians)
         case .retarget(let p):
@@ -249,6 +297,24 @@ public struct Navigator: Sendable, Equatable {
             out.framing = .fitting(bounds, in: v)
         case .fit(let bounds):
             out.framing = .fitting(bounds, in: v)
+        case .project(let fieldOfView, let bounds):
+            guard let fieldOfView else {
+                out.orbit.distance = nil
+                out.framing = .fitting(bounds, in: v)
+                break
+            }
+            out.orbit.fieldOfView = fieldOfView
+            // Under perspective the picture is centred on the target, not on a
+            // rectangle -- so the target has to move to the middle of what is
+            // being looked at. The bounds are in view space; the rotation does
+            // not change here, so taking their centre back through the current
+            // camera gives the world point that will land at the view origin.
+            out.orbit.target = camera.view.inverse(P3<ViewSpace>(bounds.center))
+            // Stand back far enough that they subtend the field of view.
+            let size = bounds.size
+            let half = max(size.x / max(v.aspect, .leastNormalMagnitude), size.y) / 2
+            out.orbit.distance = max(half / tan(fieldOfView.radians / 2), 1e-3)
+                + max(size.z, 0)
         }
         return out
     }

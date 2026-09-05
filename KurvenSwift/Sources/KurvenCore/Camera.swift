@@ -85,3 +85,46 @@ public func rotationZ(_ a: Angle) -> simd_double3x3 {
     let c = cos(a.radians), s = sin(a.radians)
     return simd_double3x3(rows: [SIMD3(c, -s, 0), SIMD3(s, c, 0), SIMD3(0, 0, 1)])
 }
+
+
+// MARK: - perspective
+
+public extension Camera {
+    /// The view-to-clip matrix for a perspective camera.
+    ///
+    /// View z increases toward the viewer, so the eye is at the origin looking
+    /// down -z and a visible point has `z < 0`. The `w` row is therefore `-z`,
+    /// and the divide the hardware performs is by distance along the view axis.
+    /// That convention is the same one the depth buffer uses -- larger z is
+    /// nearer, which is what makes a MAX blend hidden-surface removal -- so
+    /// nothing downstream changes when the projection does.
+    ///
+    /// `near` exists only to keep geometry behind the eye from wrapping around;
+    /// nothing reads the clip-space depth, because depth travels in the colour
+    /// attachment.
+    static func perspectiveClip(fovY: Angle, aspect: Double,
+                                near: Double = 0.01) -> simd_double4x4 {
+        let f: Double = 1 / tan(fovY.radians / 2)
+        let zero: Double = 0
+        // Columns, not rows: see `DepthFrame.metalClip`.
+        let col0 = SIMD4<Double>(f / max(aspect, .leastNormalMagnitude), zero, zero, zero)
+        let col1 = SIMD4<Double>(zero, f, zero, zero)
+        let col2 = SIMD4<Double>(zero, zero, zero, -1)    // w = -z
+        let col3 = SIMD4<Double>(zero, zero, 0.5, zero)   // constant depth
+        return simd_double4x4(col0, col1, col2, col3)
+    }
+
+    /// True when this camera cannot be baked.
+    ///
+    /// A bake clips per vertex against a depth buffer it looks up by an affine
+    /// map from view coordinates to pixels; under perspective that map depends
+    /// on depth and the lookup is wrong. It could be fixed by projecting first
+    /// and indexing the projected point -- but there is no perspective
+    /// `Projection` on the Python side, so a perspective bake would be the one
+    /// artifact this design cannot check against its oracle. Refusing is the
+    /// honest form of that.
+    var isPerspective: Bool {
+        if case .perspective = projection { return true }
+        return false
+    }
+}

@@ -14,8 +14,7 @@ public enum Shaders {
     static let shaderTypes = """
     typedef struct {
         float4x4 view;
-        float2x2 ndcLinear;
-        float2 ndcOffset;
+        float4x4 clip;
         float2 domainLo;
         float2 domainSize;
         uint2  lattice;
@@ -77,11 +76,11 @@ public enum Shaders {
     }
 
     static float4 to_ndc(constant KVUniforms &u, float3 world) {
-        float3 v = (u.view * float4(world, 1.0)).xyz;
         // Depth is carried in the color attachment and MAX-blended, so the
-        // position's own z is only there to pass the clip test.
-        float2 ndc = u.ndcLinear * v.xy + u.ndcOffset;
-        return float4(ndc, 0.5, 1.0);
+        // position's own z is only there to pass the clip test; the clip
+        // matrix writes a constant into it. Under perspective the divide is the
+        // hardware's, which is the only reason a 4x4 is needed at all.
+        return u.clip * (u.view * float4(world, 1.0));
     }
 
     static float view_depth(constant KVUniforms &u, float3 world) {
@@ -362,12 +361,9 @@ public enum Shaders {
         for (uint c = 0; c < 4; ++c) {
             for (uint r = 0; r < 4; ++r) { out[k++] = u.view[c][r]; }
         }
-        out[k++] = u.ndcLinear[0][0];
-        out[k++] = u.ndcLinear[0][1];
-        out[k++] = u.ndcLinear[1][0];
-        out[k++] = u.ndcLinear[1][1];
-        out[k++] = u.ndcOffset.x;
-        out[k++] = u.ndcOffset.y;
+        for (uint c = 0; c < 4; ++c) {
+            for (uint r = 0; r < 4; ++r) { out[k++] = u.clip[c][r]; }
+        }
         out[k++] = u.domainLo.x;
         out[k++] = u.domainLo.y;
         out[k++] = u.domainSize.x;
@@ -399,7 +395,7 @@ public enum Shaders {
 
     /// How many floats `kv_layout_probe` writes: every field of both structs,
     /// then both sizes.
-    public static let uniformFieldCount = 16 + 4 + 2 + 2 + 2 + 2 + 2 + 1 + 1 + 1 + 1
+    public static let uniformFieldCount = 16 + 16 + 2 + 2 + 2 + 2 + 1 + 1 + 1 + 1
     public static let shadingFieldCount = 4 + 1 + 1 + 3 + 1 + 2
     public static let layoutProbeCount = uniformFieldCount + shadingFieldCount + 2
 }

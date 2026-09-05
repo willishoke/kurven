@@ -267,15 +267,32 @@ public final class MetalRenderer {
 
     // MARK: - uniforms
 
+    /// View to clip, in float.
+    ///
+    /// An orthographic camera's map comes from the frame -- it is the rectangle
+    /// being drawn. A perspective camera's comes from its own field of view and
+    /// the frame's aspect, because there is no rectangle: how much you see is
+    /// how far away you are.
+    func clipMatrix(_ scene: Scene, frame: DepthFrame) -> simd_float4x4 {
+        let m: simd_double4x4
+        switch scene.camera.projection {
+        case .orthographic:
+            m = frame.metalClip
+        case .perspective(let fovY):
+            m = Camera.perspectiveClip(fovY: fovY,
+                                       aspect: Double(frame.cols) / Double(frame.rows))
+        }
+        return simd_float4x4(SIMD4<Float>(m.columns.0), SIMD4<Float>(m.columns.1),
+                             SIMD4<Float>(m.columns.2), SIMD4<Float>(m.columns.3))
+    }
+
     func uniforms(_ scene: Scene, frame: DepthFrame,
                   resources res: SceneResources) -> KVUniforms {
-        let ndc = frame.metalNDC
+        let clip = clipMatrix(scene, frame: frame)
         let d = res.latticeDomain
         return KVUniforms(
             view: scene.camera.view.float4x4,
-            ndcLinear: simd_float2x2(SIMD2<Float>(ndc.linear.columns.0),
-                                     SIMD2<Float>(ndc.linear.columns.1)),
-            ndcOffset: SIMD2<Float>(Float(ndc.offset.x), Float(ndc.offset.y)),
+            clip: clip,
             domainLo: SIMD2<Float>(Float(d.real.lo), Float(d.imag.lo)),
             domainSize: SIMD2<Float>(Float(d.real.length), Float(d.imag.length)),
             lattice: SIMD2<UInt32>(UInt32(res.latticeWidth), UInt32(res.latticeHeight)),

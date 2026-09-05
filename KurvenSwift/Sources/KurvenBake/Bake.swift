@@ -37,10 +37,16 @@ public struct BakeOptions: Sendable {
 
 public enum BakeError: Error, CustomStringConvertible {
     case emptyScene
+    case perspective
 
     public var description: String {
         switch self {
         case .emptyScene: "bake: the scene projects to nothing (no geometry, no ink)"
+        case .perspective:
+            """
+            bake: this camera is perspective, and only orthographic cameras bake.
+            A bake clips per vertex against a depth buffer it indexes by an             affine map from view coordinates to pixels; under perspective that             map depends on depth. It could be fixed by projecting first -- but             there is no perspective Projection on the Python side, so the result             would be the one artifact with no oracle to check it against.             Perspective is for navigating; the plates are orthographic.
+            """
         }
     }
 }
@@ -80,6 +86,7 @@ public extension MetalRenderer {
     /// of a percent of pixels -- and changes no stroke at all, which is the
     /// property that matters and the one `kurven-test` asserts.
     func bake(_ scene: Scene, options: BakeOptions) throws -> Bake {
+        guard !scene.camera.isPerspective else { throw BakeError.perspective }
         guard let bounds = scene.viewBounds() else { throw BakeError.emptyScene }
         let frame = DepthFrame(covering: bounds, resolution: options.resolution)
         let n = options.tileCount(for: options.resolution)

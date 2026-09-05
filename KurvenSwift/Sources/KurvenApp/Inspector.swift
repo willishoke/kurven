@@ -39,6 +39,10 @@ struct Inspector: View {
     @ViewBuilder
     private func presets(_ presets: [CameraPreset]) -> some View {
         HStack {
+            projectionToggle
+            Spacer()
+        }
+        HStack {
             ForEach(presets, id: \.name) { preset in
                 Button(preset.name) {
                     document.use(preset: preset)
@@ -49,6 +53,23 @@ struct Inspector: View {
             Button("Fit") { document.fit(); onChange() }
                 .keyboardShortcut("f", modifiers: [])
         }
+    }
+
+    /// Perspective is a way of navigating, not a plate style: the bake refuses
+    /// it, and says so. Offering it next to the presets is the honest placement
+    /// -- it belongs with "where am I looking from", not with "what kind of
+    /// drawing is this".
+    @ViewBuilder
+    private var projectionToggle: some View {
+        Toggle("Perspective", isOn: Binding(
+            get: { document.navigator?.orbit.isPerspective ?? false },
+            set: { document.setPerspective($0); onChange() }))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .help("Navigate in perspective. Baking still requires an "
+                  + "orthographic camera — the plates are orthographic, and a "
+                  + "perspective bake would have no Python oracle to check it "
+                  + "against.")
     }
 
     @ViewBuilder
@@ -245,7 +266,7 @@ struct Inspector: View {
         }
         HStack {
             Button(document.baking ? "Baking…" : "Bake to SVG…") { runBake() }
-                .disabled(document.baking)
+                .disabled(document.baking || !document.canBake)
             Spacer()
         }
         if let status = document.bakeStatus {
