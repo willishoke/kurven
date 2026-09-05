@@ -380,10 +380,16 @@ func coreTests() {
         Check.expect(Caps.uniform(5).height(atX: -100) == 5, "a uniform cap ignores x")
         let bands = Caps.realBands([RealBand(below: -3.5, cap: 8),
                                     RealBand(below: -2.5, cap: 6),
-                                    RealBand(below: -1.5, cap: 4)])
+                                    RealBand(below: -1.5, cap: 4)], beyond: .infinity)
         Check.expect(bands.height(atX: -4) == 8 && bands.height(atX: -3) == 6
                      && bands.height(atX: -2) == 4 && bands.height(atX: 0) == .infinity,
                      "the first matching band wins, and past the last there is none")
+        // Gamma's calm region: past the spires there is still a cap.
+        let calm = Caps.realBands([RealBand(below: -3.5, cap: 2.5),
+                                   RealBand(below: 0.5, cap: 5.5)], beyond: 3.0)
+        Check.expect(calm.height(atX: -4) == 2.5 && calm.height(atX: 0) == 5.5
+                     && calm.height(atX: 2) == 3.0,
+                     "and `beyond` is the cap where no band matches")
     }
 
     Check.suite("core: CSR path identity cannot weld unrelated runs") {

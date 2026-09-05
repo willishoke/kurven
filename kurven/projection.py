@@ -19,8 +19,13 @@ class Projection:
         zeta:     Projection(shear=-0.18, x_angle=-79.5, flip_x=True,
                              y_scale=0.75, z_clamp=6.0)
 
-    (gamma keeps its inline transform: it never flips x and threads rx/rz through
-    its bespoke pole geometry, so it is not an instance of this shear convention.)
+        gamma:    Projection(shear=-0.5, x_angle=-55, flip_x=False)
+
+    gamma was documented here as *not* being an instance of this convention. It
+    is one exactly: it shears the other way (`+=` rather than `-=`, which is
+    shear -0.5) and does not flip x. Over five hundred random points the
+    inlined transform and this agree to zero, and the plate is pixel-identical
+    through either.
 
     Pass a Projection anywhere a `project(xyz)` callable is expected — it is
     callable via __call__.

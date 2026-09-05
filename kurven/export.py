@@ -58,12 +58,17 @@ from kurven.occluder import concat_meshes
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 
 #: Bundle name → example module file. An example qualifies when it exposes
-#: `parser()` and `build_scene(args)`; `gamma` does not yet (its camera is
-#: inlined in its geometry), so it is absent by design rather than by oversight.
+#: `parser()` and `build_scene(args)`.
+#:
+#: gamma exports the uniform-sampling form of itself: a bundle carries one
+#: grid, and the published plate probes for high-gradient zones and re-samples
+#: those finer. `examples/gamma.py: SCENE_CAVEATS` lists what else about that
+#: plate stays a Python-only bake.
 EXAMPLES = {
     "recip": "recip_factorial.py",
     "elliptic": "elliptic.py",
     "zeta": "zeta.py",
+    "gamma": "gamma.py",
 }
 
 

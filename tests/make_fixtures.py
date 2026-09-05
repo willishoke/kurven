@@ -173,7 +173,7 @@ def contract_fixtures(out):
         SCHEMA, AXES, domain,
         GridRef("height.npy", (ny, nx), "<f4"), None,
         RealBandCaps((RealBand(-3.5, 8.0), RealBand(-2.5, 6.0),
-                      RealBand(-1.5, 4.0))),
+                      RealBand(-1.5, 4.0)), 3.0),
         Occluder(1, (Affine2.identity(),), WallPerimeter(perim, 0.0),
                  InsideRegion(perim), 0.0),
         # A described layer alongside a dumped one, so the contract fixture

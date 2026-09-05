@@ -81,6 +81,7 @@ kurven/
 
 examples/
   gamma.py       — Γ(z): faithful reproduction of the Jahnke-Emde gamma plate
+                   (see SCENE_CAVEATS for what about it stays Python-only)
   elliptic.py    — cn(z, m): Jacobi elliptic function landscape
   zeta.py        — ζ(s): Riemann zeta function
   recip_factorial.py — 1/Γ(z): the reciprocal-factorial relief
@@ -145,6 +146,7 @@ A **`.kurven` bundle** is a `Scene`, serialized: a directory holding a typed
 python -m kurven.export recip    -o recip.kurven --res 1600
 python -m kurven.export elliptic -o elliptic.kurven --res 2000
 python -m kurven.export zeta     -o zeta.kurven
+python -m kurven.export gamma    -o gamma.kurven --no-adaptive --res 4000
 python -m kurven.export recip    -o recip.kurven --derived   # describe, don't dump
 ```
 

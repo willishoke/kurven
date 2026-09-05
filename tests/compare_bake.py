@@ -75,10 +75,12 @@ def python_plate(module, ex_args, gpu=True):
     p = scene.preset.plate
     project = Projection(shear=p.shear, x_angle=p.x_angle, z_angle=p.z_angle,
                          flip_x=p.flip_x, y_scale=p.y_scale)
-    drawn, zb = module.render_plate(scene, project, buffer=ex_args.buffer,
-                                    gpu=gpu, clip_margin=scene.preset.margin,
-                                    progress=False, verbose=False)
-    return scene, project, drawn, zb
+    # gamma also returns the silhouette it traces; every example returns the
+    # drawn layers first and the Z-buffer last.
+    result = module.render_plate(scene, project, buffer=ex_args.buffer,
+                                 gpu=gpu, clip_margin=scene.preset.margin,
+                                 progress=False, verbose=False)
+    return scene, project, result[0], result[-1]
 
 
 def swift_depth(bundle, path, resolution):
@@ -108,8 +110,15 @@ def compare_depth(zb, swift, meta):
                       f"axis1 [{lo[1]:.6f}, {hi[1]:.6f}] vs swift "
                       f"axis0 {meta['axis0']} axis1 {meta['axis1']}")
 
-    py_filled = np.isfinite(zb.buffer)
-    sw_filled = np.isfinite(swift)
+    # "Empty" is -inf on the Python side and a large negative sentinel on the
+    # Swift one -- Metal cannot clear a float attachment to infinity, and the
+    # renderer carries the sentinel through rather than spending a pass over
+    # every pixel to rewrite it. Both mean the same thing here.
+    def filled(buffer):
+        return np.isfinite(buffer) & (buffer > -1e29)
+
+    py_filled = filled(zb.buffer)
+    sw_filled = filled(swift)
     both = py_filled & sw_filled
     coverage = float((py_filled ^ sw_filled).sum()) / zb.buffer.size
     if not both.any():
@@ -207,7 +216,7 @@ def compare_derived(module, ex_args, work):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("example", choices=["recip", "elliptic", "zeta"])
+    ap.add_argument("example", choices=["recip", "elliptic", "zeta", "gamma"])
     ap.add_argument("--keep", type=str, default=None,
                     help="directory for the bundle and dumps (default: a temp dir)")
     ap.add_argument("--stroke-tolerance", type=float, default=0.02,

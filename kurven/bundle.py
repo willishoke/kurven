@@ -245,8 +245,9 @@ class Caps:
         if kind == "uniform":
             return UniformCap(float(_require(d, "z", "Caps.uniform")))
         if kind == "realBands":
-            return RealBandCaps(tuple(
-                RealBand.from_dict(b) for b in _require(d, "bands", "Caps.realBands")))
+            return RealBandCaps(
+                tuple(RealBand.from_dict(b) for b in _require(d, "bands", "Caps.realBands")),
+                float(d.get("beyond", float("inf"))))
         raise BundleError(f"Caps: unknown kind {kind!r}")
 
 
@@ -289,16 +290,28 @@ class RealBand:
 
 @dataclass(frozen=True)
 class RealBandCaps(Caps):
-    """Gamma's per-spire truncation: the cap height depends on Re(z)."""
+    """Gamma's per-spire truncation: the cap height depends on Re(z).
+
+    The four pole spires are each cut at a different height so that every cap
+    reads from above, and the calm region right of them is cut at one more.
+    `beyond` is that last one -- the cap where no band matches. It is a separate
+    field rather than a final band with a huge threshold because "everything
+    else" is what it means, and encoding that as `x < 1e9` would be a number
+    nobody could check.
+    """
 
     bands: tuple[RealBand, ...]
+    beyond: float = float("inf")
 
     def to_dict(self):
-        return {"kind": "realBands", "bands": [b.to_dict() for b in self.bands]}
+        d = {"kind": "realBands", "bands": [b.to_dict() for b in self.bands]}
+        if np.isfinite(self.beyond):
+            d["beyond"] = float(self.beyond)
+        return d
 
     def apply(self, mag, x):
         x = np.asarray(x, dtype=float)
-        cap = np.full(np.shape(x), np.inf)
+        cap = np.full(np.shape(x), self.beyond)
         assigned = np.zeros(np.shape(x), dtype=bool)
         for band in self.bands:
             hit = (~assigned) & (x < band.below)

@@ -197,15 +197,18 @@ public struct RealBand: Sendable, Equatable {
 public enum Caps: Sendable, Equatable {
     case none
     case uniform(Double)
-    case realBands([RealBand])
+    /// Gamma's per-spire truncation. `beyond` is the cap where no band matches
+    /// -- a separate field rather than a final band with a huge threshold,
+    /// because "everything else" is what it means.
+    case realBands([RealBand], beyond: Double)
 
     /// The cap at world x (= Re z); `.infinity` where there is none.
     public func height(atX x: Double) -> Double {
         switch self {
         case .none: .infinity
         case .uniform(let z): z
-        case .realBands(let bands):
-            bands.first(where: { x < $0.below })?.cap ?? .infinity
+        case .realBands(let bands, let beyond):
+            bands.first(where: { x < $0.below })?.cap ?? beyond
         }
     }
 
@@ -215,7 +218,8 @@ public enum Caps: Sendable, Equatable {
         case "none": self = .none
         case "uniform": self = .uniform(try o.double("z", "Caps.uniform"))
         case "realBands":
-            self = .realBands(try o.array("bands", "Caps.realBands").map(RealBand.init(json:)))
+            self = .realBands(try o.array("bands", "Caps.realBands").map(RealBand.init(json:)),
+                              beyond: o.optionalDouble("beyond") ?? .infinity)
         case let other:
             throw ManifestError.unknownKind(other, of: "Caps",
                                             known: ["none", "uniform", "realBands"])
@@ -225,8 +229,11 @@ public enum Caps: Sendable, Equatable {
         switch self {
         case .none: .object(["kind": .string("none")])
         case .uniform(let z): .object(["kind": .string("uniform"), "z": .double(z)])
-        case .realBands(let b):
-            .object(["kind": .string("realBands"), "bands": .array(b.map(\.json))])
+        case .realBands(let b, let beyond):
+            beyond.isFinite
+                ? .object(["kind": .string("realBands"), "bands": .array(b.map(\.json)),
+                           "beyond": .double(beyond)])
+                : .object(["kind": .string("realBands"), "bands": .array(b.map(\.json))])
         }
     }
 }

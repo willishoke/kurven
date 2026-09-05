@@ -64,6 +64,14 @@ if [ "$QUICK" = 0 ]; then
         step "preview vs plate: $example" \
             "$PYTHON" "$ROOT/tests/compare_preview.py" "$example"
     done
+    # gamma at its published settings is ten thousand squared and adaptive; a
+    # bundle carries one uniform grid, so this is the --no-adaptive form of it
+    # at a size that finishes. See examples/gamma.py: SCENE_CAVEATS.
+    GAMMA=(--res 700 --no-adaptive --surface-res 700 --buffer 3000)
+    step "bake vs plate: gamma" \
+        "$PYTHON" "$ROOT/tests/compare_bake.py" gamma "${GAMMA[@]}"
+    step "preview vs plate: gamma" \
+        "$PYTHON" "$ROOT/tests/compare_preview.py" gamma "${GAMMA[@]}"
 fi
 
 printf '\n'
