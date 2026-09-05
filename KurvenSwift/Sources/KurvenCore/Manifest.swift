@@ -593,6 +593,10 @@ public struct CameraPreset: Sendable, Equatable {
 
 public struct Provenance: Sendable, Equatable {
     public var function: String
+    /// The `kurven.export` example that produced this, when one did. `function`
+    /// names the mathematics; this names the recipe, and it is what lets a
+    /// consumer ask the service for the same landscape at another resolution.
+    public var example: String
     public var params: [String: JSONValue]
     /// The contourpy chunk count the bundle was written with. Anything but 1
     /// means the contours were stitched in thread-completion order and the
@@ -604,12 +608,14 @@ public struct Provenance: Sendable, Equatable {
     init(json: JSONValue) throws {
         let o = try json.object("Provenance")
         self.function = try o.string("function", "Provenance")
+        self.example = (try? o.string("example", "Provenance")) ?? ""
         self.params = try o.value("params", "Provenance").object("Provenance.params")
         self.cpuCount = try o.int("cpuCount", "Provenance")
         self.gitSha = try o.string("gitSha", "Provenance")
     }
     var json: JSONValue {
-        .object(["function": .string(function), "params": .object(params),
+        .object(["function": .string(function), "example": .string(example),
+                 "params": .object(params),
                  "cpuCount": .int(cpuCount), "gitSha": .string(gitSha)])
     }
 

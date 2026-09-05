@@ -3,6 +3,7 @@ import simd
 import KurvenCore
 import KurvenMetal
 import KurvenBake
+import KurvenService
 
 /// The Swift lane of the cross-language tests.
 ///
@@ -847,9 +848,94 @@ func bakeTests() {
     }
 }
 
+// MARK: - 9. the service
+
+func serviceTests() {
+    // The service is optional infrastructure: a bundle is a complete document
+    // without it, and a machine with no checkout has nothing to connect to. So
+    // a missing one is reported and skipped rather than failed -- the tests
+    // that matter are the ones about the file format, and they do not need it.
+    Check.suite("service: round trip through the protocol") {
+        let repo = Fixtures.dir.deletingLastPathComponent().deletingLastPathComponent()
+        guard let command = Service.Command.autodetect(near: repo) else {
+            print("  --    no kurven/serve.py near \(repo.path); skipped")
+            return
+        }
+        let service = try Service(command: command)
+        defer { service.stop() }
+
+        let description = try blocking { try await service.describe() }
+        Check.expect(description.protocolVersion == Service.protocolVersion,
+                     "the server speaks the protocol this client does",
+                     "\(description.protocolVersion)")
+        Check.expect(description.examples.contains { $0.name == "recip" },
+                     "it offers the examples",
+                     description.examples.map(\.name).joined(separator: ", "))
+
+        guard let recip = description.example("recip"), recip.available else {
+            Check.expect(false, "recip is available"); return
+        }
+        Check.expect(recip.arguments.contains { $0.name == "res" && $0.kind == .int },
+                     "and reports their options with types",
+                     "\(recip.arguments.count) options")
+
+        // A small bundle, described rather than dumped, built and read back.
+        // This is the whole loop: ask for a landscape, get a path, open it.
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kurven-service-\(UUID().uuidString).kurven")
+        defer { try? FileManager.default.removeItem(at: output) }
+        let result = try blocking {
+            try await service.export(example: "recip", to: output,
+                                     arguments: ["res": "120", "occluder_res": "60"],
+                                     derived: true)
+        }
+        Check.expect(result.manifest.provenance.example == "recip",
+                     "the bundle records which example made it")
+        Check.expect(result.manifest.layers.contains { $0.files == nil },
+                     "and --derived describes its contour layers")
+
+        let bundle = try KurvenBundle.read(at: result.url)
+        Check.expect(bundle.surface.height.width == 120,
+                     "the resampled grid is the size asked for",
+                     "\(bundle.surface.height.width)")
+        Check.expect(bundle.layers.contains { !$0.paths.isEmpty },
+                     "and its described layers derive to actual ink")
+
+        // Errors arrive typed, not as a string to parse.
+        do {
+            _ = try blocking {
+                try await service.export(example: "recip", to: output,
+                                         arguments: ["resolution": "120"])
+            }
+            Check.expect(false, "an unknown option is refused")
+        } catch let error as Service.Failure {
+            if case .remote(let kind, _) = error {
+                Check.expect(kind == "unknownArgument",
+                             "an unknown option is refused, by kind", kind)
+            } else {
+                Check.expect(false, "an unknown option is refused", "\(error)")
+            }
+        }
+    }
+}
+
+/// Run an async call from this synchronous program.
+func blocking<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
+    let semaphore = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var outcome: Result<T, Error>!
+    Task {
+        do { outcome = .success(try await body()) }
+        catch { outcome = .failure(error) }
+        semaphore.signal()
+    }
+    semaphore.wait()
+    return try outcome.get()
+}
+
 // MARK: - entry
 
 import Metal
+import Dispatch
 import KurvenShaderTypes
 
 if let override = CommandLine.arguments.dropFirst().first {
@@ -865,4 +951,5 @@ navigationTests()
 contourTests()
 shaderTests()
 bakeTests()
+serviceTests()
 exit(Check.summary())

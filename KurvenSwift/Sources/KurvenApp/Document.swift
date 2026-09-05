@@ -3,6 +3,7 @@ import Observation
 import KurvenCore
 import KurvenMetal
 import KurvenBake
+import KurvenService
 
 /// One open bundle, and everything the window knows about it.
 ///
@@ -39,6 +40,24 @@ final class Document {
     var bakeResolution: Int = 4000
     var bakeStatus: String?
     private(set) var baking = false
+
+    // MARK: - the service
+
+    /// The Python half, when one could be found. Absent is a normal state: a
+    /// bundle is a complete document without it, and everything but resampling
+    /// works on a machine that has no repository checked out.
+    private(set) var service: Service?
+    private(set) var serviceDescription: Description?
+    private(set) var serviceStatus: String?
+    /// Argument values for the resample form, as text; absent means "the
+    /// example's own default".
+    var arguments: [String: String] = [:]
+    private(set) var resampling = false
+
+    var example: ExampleSpec? {
+        guard let name = bundle?.manifest.provenance.example, !name.isEmpty else { return nil }
+        return serviceDescription?.example(name)
+    }
 
     var url: URL? {
         switch state {
@@ -105,6 +124,7 @@ final class Document {
         }
         self.scene = scene
         self.navigator = navigator
+        connectService()
     }
 
     // MARK: - navigation
@@ -209,6 +229,90 @@ final class Document {
     func toggle(layer index: Int) {
         if hiddenLayers.contains(index) { hiddenLayers.remove(index) }
         else { hiddenLayers.insert(index) }
+    }
+
+    func connectService() {
+        guard service == nil else { return }
+        guard let command = Service.Command.autodetect(near: url) else {
+            serviceStatus = "no kurven/serve.py found above this bundle; "
+                + "set KURVEN_REPO to resample"
+            return
+        }
+        do {
+            let service = try Service(command: command)
+            self.service = service
+            Task {
+                do {
+                    serviceDescription = try await service.describe()
+                    if let example, arguments.isEmpty {
+                        // Start from what the bundle was actually made with, so
+                        // the first resample is a change to one field rather
+                        // than a different landscape.
+                        for spec in example.arguments {
+                            let recorded = bundle?.manifest.provenance.params[camel(spec.name)]
+                            if let value = text(recorded) ?? spec.defaultText {
+                                arguments[spec.name] = value
+                            }
+                        }
+                    }
+                    serviceStatus = nil
+                } catch {
+                    serviceStatus = "\(error)"
+                }
+            }
+        } catch {
+            serviceStatus = "\(error)"
+        }
+    }
+
+    /// The manifest records provenance keys in camelCase (`rMin`); the service
+    /// speaks argparse's snake_case (`r_min`). One place converts.
+    private func camel(_ snake: String) -> String {
+        let parts = snake.split(separator: "_")
+        guard let first = parts.first else { return snake }
+        return ([String(first)] + parts.dropFirst().map(\.capitalized)).joined()
+    }
+
+    private func text(_ value: JSONValue?) -> String? {
+        switch value {
+        case .some(.string(let s)): s
+        case .some(.int(let i)): String(i)
+        case .some(.double(let d)): String(d)
+        case .some(.bool(let b)): b ? "true" : "false"
+        default: nil
+        }
+    }
+
+    /// Rebuild the landscape at the current arguments.
+    ///
+    /// The result is a new bundle written to the app's caches and opened in
+    /// place of this one. Going through a file rather than streaming arrays
+    /// back is the same choice the whole design makes: the answer is a value
+    /// with a path, and everything downstream already knows how to read one.
+    func resample() {
+        guard let service, let name = bundle?.manifest.provenance.example,
+              !name.isEmpty, !resampling else { return }
+        let derived = bundle?.manifest.layers.contains { $0.files == nil } ?? false
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name)-\(UInt32.random(in: 0...UInt32.max)).kurven")
+        let settings = arguments
+        resampling = true
+        serviceStatus = "resampling…"
+        Task {
+            do {
+                let result = try await service.export(example: name, to: output,
+                                                      arguments: settings,
+                                                      derived: derived)
+                // Cleared only once the new bundle is open: anyone waiting on
+                // `resampling` is waiting for a landscape, not for a file.
+                await load(result.url)
+                resampling = false
+                serviceStatus = "\(String(format: "%.1f", Double(result.bytes) / 1e6)) MB"
+            } catch {
+                resampling = false
+                serviceStatus = "\(error)"
+            }
+        }
     }
 
     // MARK: - baking

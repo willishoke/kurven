@@ -83,7 +83,8 @@ def load_example(name):
     return module
 
 
-def manifest_of(scene, *, phase=True, chunk_count=1, wall_mesh=True, derived=False):
+def manifest_of(scene, *, phase=True, chunk_count=1, wall_mesh=True, derived=False,
+                example=""):
     """The `Manifest` describing `scene`, with the file names the bundle uses.
 
     Layer file names come from the layer names, so a bundle directory reads as
@@ -119,7 +120,7 @@ def manifest_of(scene, *, phase=True, chunk_count=1, wall_mesh=True, derived=Fal
                           scene.wall_base),
         layers=layers,
         presets=(scene.preset,),
-        provenance=Provenance(scene.function, scene.params, chunk_count),
+        provenance=Provenance(scene.function, scene.params, chunk_count, example),
     )
 
 
@@ -176,10 +177,11 @@ def arrays_of(scene, manifest, *, wall_mesh=True):
     return height, phase, layers, walls
 
 
-def export(scene, path, *, chunk_count=1, phase=True, wall_mesh=True, derived=False):
+def export(scene, path, *, chunk_count=1, phase=True, wall_mesh=True, derived=False,
+           example=""):
     """Serialize a `Scene` to `path` and return the `Manifest` written."""
     manifest = manifest_of(scene, phase=phase, chunk_count=chunk_count,
-                           wall_mesh=wall_mesh, derived=derived)
+                           wall_mesh=wall_mesh, derived=derived, example=example)
     height, ph, layers, walls = arrays_of(scene, manifest, wall_mesh=wall_mesh)
     write_bundle(path, manifest=manifest, height=height,
                  phase=ph if phase else None, layers=layers, walls=walls)
@@ -217,7 +219,7 @@ def main(argv=None):
     out = Path(args.output or f"{args.example}.kurven")
     manifest = export(scene, out, chunk_count=args.chunk_count,
                       phase=not args.no_phase, wall_mesh=not args.derived,
-                      derived=args.derived)
+                      derived=args.derived, example=args.example)
 
     if not args.quiet:
         total = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())

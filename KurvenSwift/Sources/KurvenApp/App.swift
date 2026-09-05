@@ -47,10 +47,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // its Document, its Navigator, its preview options -- and exits. Without
         // it the only way to know the window draws the right thing is to look at
         // it, and a test that requires someone to look at it is not one.
+        if args.contains("--resample"), let path = bundlePath {
+            var settings: [String: String] = [:]
+            var index = args.startIndex
+            while index < args.endIndex {
+                if args[index] == "--resample", index + 1 < args.endIndex,
+                   let equals = args[index + 1].firstIndex(of: "=") {
+                    settings[String(args[index + 1][..<equals])] =
+                        String(args[index + 1][args[index + 1].index(after: equals)...])
+                }
+                index += 1
+            }
+            let shot = args.firstIndex(of: "--screenshot").flatMap {
+                $0 + 1 < args.endIndex ? URL(fileURLWithPath: args[$0 + 1]) : nil
+            }
+            Task { await resample(bundle: URL(fileURLWithPath: path),
+                                  settings: settings, screenshot: shot) }
+            return
+        }
         if let i = args.firstIndex(of: "--screenshot"), i + 1 < args.endIndex,
            let path = bundlePath {
             let output = URL(fileURLWithPath: args[i + 1])
-            Task { await screenshot(bundle: URL(fileURLWithPath: path), to: output) }
+            Task { await screenshot(bundle: URL(fileURLWithPath: path), to: output); exit(0) }
             return
         }
         // `--bake PATH` runs the window's own bake -- the same Document, the
@@ -67,6 +85,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if let path = bundlePath { document.open(URL(fileURLWithPath: path)) }
+    }
+
+    /// `--resample NAME=VALUE ... --screenshot PATH` drives the window's own
+    /// resample: the same Document, the same Service, the same reload. Without
+    /// it the only way to know the Rebuild button works is to press it.
+    private func resample(bundle: URL, settings: [String: String],
+                          screenshot: URL?) async {
+        await document.load(bundle)
+        document.connectService()
+        // The description arrives on its own task; wait for it or for the
+        // failure that explains why it will not.
+        for _ in 0..<200 where document.serviceDescription == nil
+            && document.serviceStatus == nil {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        guard document.example != nil else {
+            let why = document.serviceStatus
+                ?? (document.serviceDescription == nil
+                    ? "the service never answered"
+                    : "this bundle records no example to rebuild "
+                      + "(provenance.example is empty)")
+            FileHandle.standardError.write(Data("Kurven: cannot resample — \(why)\n".utf8))
+            exit(1)
+        }
+        for (key, value) in settings { document.arguments[key] = value }
+        let before = document.url
+        document.resample()
+        while document.resampling { try? await Task.sleep(for: .milliseconds(25)) }
+        guard document.url != before, document.scene != nil else {
+            var why = document.serviceStatus ?? "unknown"
+            if case .failed(_, let message) = document.state { why = message }
+            FileHandle.standardError.write(Data("Kurven: resample failed — \(why)\n".utf8))
+            exit(1)
+        }
+        print("Kurven: resampled -> \(document.url?.lastPathComponent ?? "?") "
+              + "(\(document.layers.count) layers)")
+        if let screenshot { await self.screenshot(bundle: document.url!, to: screenshot) }
+        exit(0)
     }
 
     private func headlessBake(bundle: URL, to output: URL, resolution: Int?) async {
@@ -98,7 +154,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("Kurven: \(bundle.lastPathComponent) -> \(output.lastPathComponent) "
                   + "(\(document.viewport.width)x\(document.viewport.height), "
                   + "\(document.layers.count) layers)")
-            exit(0)
         } catch {
             FileHandle.standardError.write(Data("Kurven: \(error)\n".utf8))
             exit(1)

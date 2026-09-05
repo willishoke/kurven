@@ -715,10 +715,14 @@ class Provenance:
     function: str
     params: dict
     cpu_count: int
+    #: The `kurven.export` example that produced this, when one did. It is what
+    #: lets a consumer ask the service for the *same* landscape at a different
+    #: resolution -- `function` names the mathematics, this names the recipe.
+    example: str = ""
     git_sha: str = field(default_factory=git_sha)
 
     def to_dict(self):
-        return {"function": self.function,
+        return {"function": self.function, "example": self.example,
                 "params": {k: self.params[k] for k in sorted(self.params)},
                 "cpuCount": int(self.cpu_count), "gitSha": self.git_sha}
 
@@ -727,6 +731,7 @@ class Provenance:
         return cls(str(_require(d, "function", "Provenance")),
                    dict(_require(d, "params", "Provenance")),
                    int(_require(d, "cpuCount", "Provenance")),
+                   str(d.get("example", "")),
                    str(_require(d, "gitSha", "Provenance")))
 
 

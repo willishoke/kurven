@@ -1,5 +1,6 @@
 import SwiftUI
 import KurvenCore
+import KurvenService
 
 /// The sidebar: what is drawn, from where, and how it bakes.
 ///
@@ -21,6 +22,7 @@ struct Inspector: View {
                 Section("Mode") { modePicker }
                 Section("Layers") { layerList }
                 Section("Ink") { marginField }
+                Section("Resample") { resamplePanel }
                 Section("Bake") { bakePanel }
                 Section("Bundle") { provenance(bundle) }
             } else {
@@ -178,6 +180,59 @@ struct Inspector: View {
                 Slider(value: live, in: 0...0.5)
             }
         }
+    }
+
+    // MARK: - resample
+
+    /// The only thing a frozen bundle cannot do for itself.
+    ///
+    /// The form is built from what the service says the example accepts, not
+    /// from a list written here, so an option added to a Python example appears
+    /// in this window without anyone editing Swift.
+    @ViewBuilder
+    private var resamplePanel: some View {
+        if let example = document.example {
+            ForEach(example.arguments) { spec in
+                argumentField(spec)
+            }
+            HStack {
+                Button(document.resampling ? "Resampling…" : "Rebuild") {
+                    document.resample()
+                }
+                .disabled(document.resampling)
+                Spacer()
+            }
+        } else if document.serviceDescription != nil {
+            Text("This bundle does not record which example made it, so there "
+                 + "is nothing to ask the service for.")
+                .font(.caption).foregroundStyle(.secondary)
+        } else {
+            Text("Looking for the Python service…")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        if let status = document.serviceStatus {
+            Text(status).font(.caption).foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
+    }
+
+    @ViewBuilder
+    private func argumentField(_ spec: ArgumentSpec) -> some View {
+        let value = Binding(
+            get: { document.arguments[spec.name] ?? spec.defaultText ?? "" },
+            set: { document.arguments[spec.name] = $0 })
+        LabeledContent(spec.name.replacingOccurrences(of: "_", with: " ")) {
+            switch spec.kind {
+            case .flag:
+                Toggle("", isOn: Binding(get: { value.wrappedValue == "true" },
+                                         set: { value.wrappedValue = $0 ? "true" : "false" }))
+                    .labelsHidden()
+            default:
+                TextField("", text: value)
+                    .labelsHidden().monospacedDigit().frame(width: 110)
+            }
+        }
+        .help(spec.help)
     }
 
     // MARK: - bake

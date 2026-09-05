@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "KurvenCore", targets: ["KurvenCore"]),
         .library(name: "KurvenMetal", targets: ["KurvenMetal"]),
         .library(name: "KurvenBake", targets: ["KurvenBake"]),
+        .library(name: "KurvenService", targets: ["KurvenService"]),
         .executable(name: "kurven-cli", targets: ["kurven-cli"]),
         .executable(name: "kurven-test", targets: ["kurven-test"]),
         .executable(name: "KurvenApp", targets: ["KurvenApp"]),
@@ -39,7 +40,13 @@ let package = Package(
         .target(name: "KurvenMetal", dependencies: ["KurvenCore", "KurvenShaderTypes"]),
 
         .target(name: "KurvenBake", dependencies: ["KurvenCore", "KurvenMetal"]),
-        .executableTarget(name: "kurven-cli", dependencies: ["KurvenBake"]),
+
+        // The Python half, over a pipe. Depends on Core and nothing else: a
+        // service produces bundles, and a bundle is a Core value. Kept out of
+        // Core itself because a subprocess is an OS boundary and Core is where
+        // there are none.
+        .target(name: "KurvenService", dependencies: ["KurvenCore"]),
+        .executableTarget(name: "kurven-cli", dependencies: ["KurvenBake", "KurvenService"]),
 
         // The test suite is an executable, not a `.testTarget`.
         //
@@ -52,12 +59,12 @@ let package = Package(
         // `swift run kurven-test`, exit code 0 or 1. This is also what the
         // Python side does (`tests/check_bundle.py`), for the same reason
         // (pytest is not installed either), so both lanes run the same way.
-        .executableTarget(name: "kurven-test", dependencies: ["KurvenBake"]),
+        .executableTarget(name: "kurven-test", dependencies: ["KurvenBake", "KurvenService"]),
 
         // The window. A bare SwiftPM executable has no bundle, so
         // scripts/bundle-app.sh assembles Kurven.app around this binary with a
         // hand-written Info.plist and an ad hoc signature -- all of which
         // Command Line Tools can do.
-        .executableTarget(name: "KurvenApp", dependencies: ["KurvenBake"]),
+        .executableTarget(name: "KurvenApp", dependencies: ["KurvenBake", "KurvenService"]),
     ]
 )

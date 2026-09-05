@@ -2,6 +2,7 @@ import Foundation
 import KurvenCore
 import KurvenMetal
 import KurvenBake
+import KurvenService
 
 /// `kurven-cli` -- the headless half of the frontend.
 ///
@@ -25,6 +26,8 @@ struct Args {
     var positional: [String] = []
     var flags: [String: String] = [:]
     var switches: Set<String> = []
+    /// Options that may be given more than once, keeping every value.
+    var repeated: [String: [String]] = [:]
 
     init(_ argv: [String]) {
         var i = 0
@@ -32,8 +35,10 @@ struct Args {
             let a = argv[i]
             if a.hasPrefix("--") {
                 let name = String(a.dropFirst(2))
-                if i + 1 < argv.count, !argv[i + 1].hasPrefix("--") {
-                    flags[name] = argv[i + 1]; i += 2
+                if i + 1 < argv.count, Args.isValue(argv[i + 1]) {
+                    flags[name] = argv[i + 1]
+                    repeated[name, default: []].append(argv[i + 1])
+                    i += 2
                 } else {
                     switches.insert(name); i += 1
                 }
@@ -43,6 +48,17 @@ struct Args {
                 positional.append(a); i += 1
             }
         }
+    }
+
+    /// Whether a token is a value rather than the next option.
+    ///
+    /// Anything beginning with `-` is an option, *except* a negative number:
+    /// `--margin -0.5` means a margin and `--derived -o out.svg` does not mean
+    /// a derived called "-o". Getting this wrong let a switch swallow the flag
+    /// after it, which showed up as "missing --output" three arguments later.
+    static func isValue(_ token: String) -> Bool {
+        if !token.hasPrefix("-") { return true }
+        return Double(token) != nil
     }
 
     func string(_ name: String) throws -> String {
@@ -97,6 +113,17 @@ usage: kurven-cli <command> [options]
 
   inspect <bundle>
         Print the manifest: domain, caps, occluder, layers, presets, provenance.
+
+  describe [--python PATH] [--repo PATH]
+        Ask the Python service what functions it can sample and what options
+        each takes. The service is found by walking up from the working
+        directory for kurven/serve.py; KURVEN_REPO and KURVEN_PYTHON override.
+
+  resample <example> [--set NAME=VALUE ...] [--derived] -o out.kurven
+        Ask the service to build a bundle. This is the whole of what Python is
+        still for: the frozen bundle cannot change its own domain or
+        resolution, and sampling special functions is the one thing Swift has
+        no library for.
 
   contract <dir>
         Decode every .kurven bundle in <dir>, re-encode its manifest, and
@@ -423,6 +450,96 @@ func preview(_ args: Args) throws {
         """)
 }
 
+func service(_ args: Args) throws -> Service {
+    let command: Service.Command
+    if let python = args.flags["python"] {
+        command = Service.Command(
+            executable: URL(fileURLWithPath: python),
+            arguments: ["-m", "kurven.serve"],
+            directory: args.flags["repo"].map { URL(fileURLWithPath: $0) })
+    } else {
+        let near = args.flags["repo"].map { URL(fileURLWithPath: $0) }
+            ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        guard let found = Service.Command.autodetect(near: near) else {
+            throw CLIError("""
+                could not find kurven/serve.py above \(near.path).                 Pass --repo, or set KURVEN_REPO.
+                """)
+        }
+        command = found
+    }
+    return try Service(command: command)
+}
+
+func describe(_ args: Args) throws {
+    let service = try service(args)
+    defer { service.stop() }
+    print("service: \(service.command.display)")
+    let description = try blocking { try await service.describe() }
+    print("  protocol \(description.protocolVersion)")
+    for example in description.examples {
+        guard example.available else {
+            print("  \(example.name): unavailable — \(example.reason ?? "?")")
+            continue
+        }
+        print("  \(example.name)")
+        for a in example.arguments {
+            let value = a.defaultText.map { " = \($0)" } ?? ""
+            print("    \(pad(a.name, 16)) \(pad(a.kind.rawValue, 7))\(value)")
+        }
+    }
+}
+
+func resample(_ args: Args) throws {
+    guard let example = args.positional.dropFirst().first else {
+        throw CLIError("which example? try 'describe'")
+    }
+    let output = URL(fileURLWithPath: try args.string("output"))
+    let settings: [String: String] = try (args.repeated["set"] ?? [])
+        .reduce(into: [:]) { out, setting in
+            guard let equals = setting.firstIndex(of: "=") else {
+                throw CLIError("--set wants NAME=VALUE, got '\(setting)'")
+            }
+            out[String(setting[setting.startIndex..<equals])] =
+                String(setting[setting.index(after: equals)...])
+        }
+
+    let service = try service(args)
+    defer { service.stop() }
+    let clock = ContinuousClock()
+    var result: ExportResult!
+    let elapsed = try clock.measure {
+        result = try blocking {
+            try await service.export(example: example, to: output,
+                                     arguments: settings,
+                                     derived: args.switches.contains("derived"))
+        }
+    }
+    print("""
+        \(example) -> \(result.url.lastPathComponent)          (\(String(format: "%.1f", Double(result.bytes) / 1e6)) MB in \(elapsed))
+          \(result.manifest.layers.count) layers,         \(result.manifest.occluder.tiles.count) tile(s),         caps \(result.manifest.caps)
+        """)
+    for spec in result.manifest.layers {
+        let what = spec.files == nil ? "derived" : "dumped "
+        print("    \(pad(spec.name, 14)) \(what)  lw \(spec.width)")
+    }
+}
+
+/// Run an async call from this synchronous program.
+///
+/// The CLI is one command and then it exits, so there is nothing for a
+/// concurrency runtime to overlap; a semaphore is the honest shape.
+func blocking<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
+    let semaphore = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var outcome: Result<T, Error>!
+    Task {
+        do { outcome = .success(try await body()) }
+        catch { outcome = .failure(error) }
+        semaphore.signal()
+    }
+    semaphore.wait()
+    return try outcome.get()
+}
+
 func inspect(_ args: Args) throws {
     let (bundle, _, _) = try loadScene(args)
     let m = bundle.manifest
@@ -510,6 +627,8 @@ do {
     case "depth": try depth(args)
     case "bench": try bench(args)
     case "preview": try preview(args)
+    case "describe": try describe(args)
+    case "resample": try resample(args)
     case "inspect": try inspect(args)
     case "contract": try contract(args)
     default:
