@@ -46,7 +46,7 @@ def concat_meshes(meshes):
     return np.vstack(vlist), np.vstack(tlist)
 
 
-def build_occluder(surface, step=1, *, walls=(), tile_transforms=None):
+def build_occluder(surface, step=1, *, walls=(), tile_transforms=None, keep=None):
     """Build a Z-buffer occluder mesh from a surface, optional tiling, and walls.
 
     surface:         a `Surface`; its clamped heightfield is meshed via
@@ -57,10 +57,13 @@ def build_occluder(surface, step=1, *, walls=(), tile_transforms=None):
                      untransformed base tile is always included.
     walls:           iterable of `(vertices, triangles)` wall-curtain meshes
                      (see `wall_curtain`).
+    keep:            optional `keep(im, re) -> bool` restricting the heightfield
+                     to a non-rectangular footprint (see `Surface.grid_mesh`).
+                     Applied to the base tile, so every tile inherits it.
 
     Returns `(vertices, triangles)`.
     """
-    base_v, base_t = surface.grid_mesh(step)
+    base_v, base_t = surface.grid_mesh(step, keep=keep)
     pieces = [(base_v, base_t)]
     if tile_transforms:
         pieces.extend((xform(base_v), base_t) for xform in tile_transforms)

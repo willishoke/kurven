@@ -38,12 +38,18 @@ class ZBuffer:
         return (index / (self.buffer_size - 1)) * self.image_size + self.lower
 
 
-def surface_grid_mesh(coords_x, coords_y, z_values):
+def surface_grid_mesh(coords_x, coords_y, z_values, keep=None):
     """Build a regular triangulation of a 2D sample grid lifted to 3D.
 
     `coords_x`: shape (nx,) — x-axis coordinates
     `coords_y`: shape (ny,) — y-axis coordinates
     `z_values`: shape (ny, nx) — `z_values[i, j]` is the height at `(coords_x[j], coords_y[i])`
+    `keep`: optional (ny, nx) bool mask of vertices inside the rendered region.
+            A cell contributes its two triangles only when all four of its
+            corners are kept, so a non-rectangular footprint (a staircase
+            cutout) is handled by omission — no bridging, no phantom triangles
+            spanning the notch. Vertices are not renumbered; the dropped ones
+            are simply unreferenced.
 
     Returns `(vertices, simplices)`:
       `vertices`: shape (ny*nx, 3) — vertex (i, j) at `(coords_x[j], coords_y[i], z_values[i, j])`
@@ -73,6 +79,16 @@ def surface_grid_mesh(coords_x, coords_y, z_values):
     v01 = i_idx * nx + (j_idx + 1)
     v10 = (i_idx + 1) * nx + j_idx
     v11 = (i_idx + 1) * nx + (j_idx + 1)
+
+    if keep is not None:
+        keep = np.asarray(keep, dtype=bool)
+        if keep.shape != z_values.shape:
+            raise ValueError(
+                f"keep shape {keep.shape} disagrees with z_values {z_values.shape}")
+        cell = (keep[:-1, :-1] & keep[:-1, 1:] & keep[1:, :-1] & keep[1:, 1:]).ravel()
+        i_idx, j_idx = i_idx[cell], j_idx[cell]
+        v00, v01 = v00[cell], v01[cell]
+        v10, v11 = v10[cell], v11[cell]
 
     n_cells = len(i_idx)
     simplices = np.empty((2 * n_cells, 3), dtype=np.int64)

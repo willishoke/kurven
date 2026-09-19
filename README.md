@@ -67,15 +67,39 @@ Both are saved as SVG polylines via matplotlib.
 kurven/
   sampling.py    — uniform + adaptive grid evaluation, gradient-zone discovery
   contours.py    — marching-squares extraction, seam stitching, path lifting
+  surface.py     — the sampled |f| landscape; contour lifting, heightfield mesh
+  perimeter.py   — a boundary outline: walls, ground ink and mask from one definition
+  occluder.py    — heightfield + wall curtains, tiled, as one mesh
+  scaffold.py    — the drawn structural line-work (the ink twin of occluder.py)
   projection.py  — isometric shear + rotation
   zbuffer.py     — Z-buffer class, CPU and GPU triangle rasterizers
   outline.py     — hidden-line clipping, silhouette extraction
+  scene.py       — Scene: the camera-independent half of a plate
+  bundle.py      — the .kurven bundle: typed manifest + npy arrays
+  export.py      — python -m kurven.export: a Scene, serialized
   pipeline.py    — thin convenience wrapper for the generic stages
 
 examples/
   gamma.py       — Γ(z): faithful reproduction of the Jahnke-Emde gamma plate
+                   (see SCENE_CAVEATS for what about it stays Python-only)
   elliptic.py    — cn(z, m): Jacobi elliptic function landscape
-  zeta.py        — ζ(s): Riemann zeta function (work in progress)
+  zeta.py        — ζ(s): Riemann zeta function
+  recip_factorial.py — 1/Γ(z): the reciprocal-factorial relief
+
+KurvenSwift/     — the Swift/Metal frontend (see below)
+  KurvenCore/    — pure values: spaces, camera, navigation, npy, clip, SVG
+  KurvenMetal/   — the depth pass, the preview, the resource cache
+  KurvenBake/    — scene -> strokes; tiling; PNG
+  kurven-cli/    — bake, preview, depth, bench, inspect, contract
+  kurven-test/   — the Swift lane of the tests (an executable, not swift test)
+  KurvenApp/     — the window
+scripts/
+  bundle-app.sh  — assembles Kurven.app (no Xcode required)
+tests/
+  make_fixtures.py  — writes tests/fixtures, the oracle both lanes are held to
+  check_bundle.py   — the Python lane of the contract tests
+  compare_bake.py   — end-to-end: the Swift bake against the Python plate
+  verify_refactor.py — pixel-identical before/after diffing for refactors
 ```
 
 ## Installation
@@ -100,6 +124,135 @@ python examples/elliptic.py --gpu
 # Both write <prefix>_hi_res.svg (and gamma also writes <prefix>_raw.svg)
 python examples/gamma.py --gpu --output-prefix out/my_gamma
 ```
+
+## The camera seam, and the Swift frontend
+
+The pipeline divides cleanly in two, and not where you would expect. The seam
+is not "library versus application" but **camera-independent** work (sample →
+contour → lift) versus **camera-dependent** work (project → depth-buffer → clip
+→ ink). The first half is the expensive one, needs scipy, and does not change
+when you move the camera; the second half is cheap and must run again for every
+new viewpoint.
+
+Each example is split at that seam: `build_scene()` returns a
+`kurven.scene.Scene` — everything a plate is before anyone decides how to look
+at it — and `render_plate(scene, projection)` draws it. `main()` is their
+composition, so the plates are unchanged.
+
+A **`.kurven` bundle** is a `Scene`, serialized: a directory holding a typed
+`manifest.json` and `.npy` arrays.
+
+```bash
+python -m kurven.export recip    -o recip.kurven --res 1600
+python -m kurven.export elliptic -o elliptic.kurven --res 2000
+python -m kurven.export zeta     -o zeta.kurven
+python -m kurven.export gamma    -o gamma.kurven --no-adaptive --res 4000
+python -m kurven.export recip    -o recip.kurven --derived   # describe, don't dump
+```
+
+`--derived` writes descriptions instead of arrays wherever it can. The walls
+become a perimeter and a contour layer becomes the levels it is a contour of, so
+the consumer regenerates both from `height.npy` and `phase.npy`. recip's bundle
+then contains no contour vertices at all and elliptic's drops from 115 MB to
+63 MB. Not every layer can be described — elliptic's phase contours are trimmed
+by a rule written for that one plate, and those stay dumped, which the schema
+says rather than hides.
+
+Describing a layer is also what makes its level set editable: a bundle exported
+with `--derived` gets a levels slider per contour layer in the app, and one
+without does not.
+
+Bundle arrays are in world order — `x = real`, `y = imag`, `z = |f|` — which is
+*not* the `(imag, real, z)` column order the library carries internally. The
+exchange happens in one function (`kurven.bundle.swap_to_world`) and the
+convention is written into the manifest, because forgetting it is the single
+most common bug in this codebase's history.
+
+`KurvenSwift/` reads bundles and does the camera-dependent half in Swift and
+Metal — realtime navigation means every camera-dependent stage runs per frame.
+It is a pure SwiftPM package with no third-party dependencies and no Xcode
+requirement: shaders compile at runtime from a string, and the test suite is an
+executable rather than a `.testTarget` (Command Line Tools ships
+`Testing.framework` without a `.swiftmodule`).
+
+```bash
+swift build -c release --package-path KurvenSwift
+KurvenSwift/.build/release/kurven-cli bake recip.kurven -o recip.svg
+KurvenSwift/.build/release/kurven-cli inspect recip.kurven
+KurvenSwift/.build/release/kurven-cli bench recip.kurven   # per-frame depth cost
+```
+
+Build release for anything larger than a smoke test: the readback and the clip
+are tight scalar loops, and unoptimized Swift bounds-checks every element of a
+several-hundred-megabyte buffer.
+
+GPU resources are keyed on `Scene.content`, which survives a camera change, so
+navigation costs one uniform upload plus the depth pass — 1.6 ms for recip and
+5.9 ms for zeta at 1024², against 33 ms of redundant heightfield upload per
+frame if they were rebuilt. `kurven-cli bench` measures it.
+
+A GPU depth test *is* hidden-line removal, so the realtime preview and the exact
+bake are the same computation at two resolutions. The preview draws the depth
+pass, then tests each line fragment against it; the bake reads the same depth
+back and clips line vertices against it with exactly the semantics of
+`outline.clip_hidden_lines`. The only difference is per-fragment versus
+per-vertex, which can disagree on runs shorter than a pixel and nowhere else.
+
+### The app
+
+```bash
+scripts/bundle-app.sh                    # assembles build/Kurven.app
+open -a build/Kurven.app recip.kurven    # or double-click the bundle
+```
+
+Left-drag orbits, shift-drag pans, scroll zooms toward the cursor, double-click
+re-targets the turn onto the point you clicked, `f` fits, `1`/`2`/`3` switch
+between the plate, a shaded surface, and the raw depth buffer. The inspector
+carries the camera as numbers, the plate presets, per-layer visibility and
+levels, the hidden-line margin, and a bake panel.
+
+Navigation is a pure function: input handling produces `Gesture` values and
+`Navigator.applying` folds them, so orbit, pan, zoom and re-target are tested
+without a window (`swift run kurven-test`). The app is scriptable for the same
+reason it is testable:
+
+```bash
+Kurven.app/Contents/MacOS/Kurven recip.kurven --screenshot out.png
+Kurven.app/Contents/MacOS/Kurven recip.kurven --bake out.svg --resolution 4000
+```
+
+The second is how "the app bakes what the CLI bakes" is checked — it is the
+same `Scene` value through the same function, and the two SVGs are byte-identical.
+
+Frame times, full preview at 3200² (`kurven-cli bench`): recip 2.2 ms, elliptic
+6.8 ms, zeta 12.1 ms. The cost is vertex-bound rather than fill-bound, so it
+barely moves between 1600² and 3200².
+
+### Testing across the two lanes
+
+```bash
+scripts/check.sh            # everything, both lanes
+scripts/check.sh --quick    # skip the end-to-end comparisons
+```
+
+
+Correctness is anchored on the Python pipeline as oracle. `tests/make_fixtures.py`
+writes `tests/fixtures/`; both lanes read the same files.
+
+Or a piece at a time:
+
+```bash
+python tests/make_fixtures.py          # regenerate the oracle
+python tests/check_bundle.py           # python lane: schema, CSR, camera, clip
+swift run --package-path KurvenSwift kurven-test     # swift lane, same fixtures
+python tests/compare_bake.py recip     # end to end: swift bake vs python plate
+python tests/compare_bake.py recip --derived   # and derived vs dumped
+python tests/compare_preview.py recip  # and the preview, as pixels
+```
+
+The cheapest test is the sharpest: a fixture manifest decoded by Swift and
+re-encoded must come back byte for byte. That is the only check that the two
+schema definitions agree, and it is why the Swift mirror needs no codegen.
 
 ## References
 

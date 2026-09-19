@@ -1,0 +1,91 @@
+{
+ "columns": [
+  "imag",
+  "real"
+ ],
+ "fields": {
+  "cliff": [
+   {
+    "level": 0.0,
+    "paths": 1,
+    "tag": "cliff_0p0"
+   },
+   {
+    "level": 0.5,
+    "paths": 1,
+    "tag": "cliff_0p5"
+   }
+  ],
+  "ripple": [
+   {
+    "level": -0.9,
+    "paths": 3,
+    "tag": "ripple_m0p9"
+   },
+   {
+    "level": -0.31,
+    "paths": 4,
+    "tag": "ripple_m0p31"
+   },
+   {
+    "level": 0.0,
+    "paths": 5,
+    "tag": "ripple_0p0"
+   },
+   {
+    "level": 0.17,
+    "paths": 4,
+    "tag": "ripple_0p17"
+   },
+   {
+    "level": 0.62,
+    "paths": 4,
+    "tag": "ripple_0p62"
+   },
+   {
+    "level": 1.05,
+    "paths": 3,
+    "tag": "ripple_1p05"
+   }
+  ],
+  "saddles": [
+   {
+    "level": -0.5,
+    "paths": 12,
+    "tag": "saddles_m0p5"
+   },
+   {
+    "level": -0.02,
+    "paths": 12,
+    "tag": "saddles_m0p02"
+   },
+   {
+    "level": 0.0,
+    "paths": 10,
+    "tag": "saddles_0p0"
+   },
+   {
+    "level": 0.02,
+    "paths": 12,
+    "tag": "saddles_0p02"
+   },
+   {
+    "level": 0.5,
+    "paths": 12,
+    "tag": "saddles_0p5"
+   }
+  ]
+ },
+ "grid": {
+  "imag": [
+   -2.0,
+   2.0
+  ],
+  "nx": 61,
+  "ny": 61,
+  "real": [
+   -3.0,
+   3.0
+  ]
+ }
+}
