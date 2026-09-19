@@ -53,10 +53,22 @@ public struct PreviewOptions: Sendable {
     public var visibleLayers: Set<Int>?
     /// Paper colour. The plate's surface is white because the page is.
     public var background: SIMD4<Float>
+    /// How many pixels' worth of the surface's own depth change the ink test
+    /// allows on top of the margin. Without it, ink on a surface that is steep
+    /// in view breaks into dashes that crawl as the camera moves. Zero is the
+    /// bake's predicate exactly; see `ink_visible` in the shader for the rest.
+    public var slopeScale: Float
+
+    /// A pixel's worth covers the half-pixel between where a line crosses a
+    /// pixel and the pixel's centre, with room for the surface to bend in
+    /// between. Measured with `kurven-cli flicker`, not guessed.
+    public static let defaultSlopeScale: Float = 1
 
     public init(mode: PreviewMode = .plate, visibleLayers: Set<Int>? = nil,
-                background: SIMD4<Float> = SIMD4(1, 1, 1, 1)) {
+                background: SIMD4<Float> = SIMD4(1, 1, 1, 1),
+                slopeScale: Float = PreviewOptions.defaultSlopeScale) {
         self.mode = mode; self.visibleLayers = visibleLayers; self.background = background
+        self.slopeScale = slopeScale
     }
 }
 
@@ -69,9 +81,14 @@ public extension MetalRenderer {
     /// visibility by reading that depth texture at each fragment's own pixel.
     ///
     /// The bake tests per vertex and this tests per fragment, so the two can
-    /// disagree on runs shorter than a pixel. That is the only difference
-    /// between them, it is bounded by construction, and it is the right way
-    /// round: the preview is for navigating and the bake is the artifact.
+    /// disagree on runs shorter than a pixel. The per-fragment test also allows
+    /// `slopeScale` pixels' worth of the surface's depth change on top of the
+    /// margin, because a fragment compares the line's depth where it crosses a
+    /// pixel with the surface's depth at the pixel's centre, and on a steep
+    /// surface those differ by more than the margin (see `ink_visible`). Those
+    /// two are the only differences between them. Both are bounded by a pixel,
+    /// and both are the right way round: the preview is for navigating and the
+    /// bake is the artifact.
     func renderPreview(_ scene: Scene, navigator: Navigator, viewport: Viewport,
                        options: PreviewOptions = PreviewOptions(),
                        into target: MTLTexture,
@@ -115,6 +132,7 @@ public extension MetalRenderer {
             color: SIMD4(0, 0, 0, 1),
             margin: Float(scene.margin),
             empty: Self.emptySentinel,
+            slopeScale: options.slopeScale,
             lightDirection: SIMD3(0.4, -0.6, 0.7),
             ambient: 0.25,
             depthRange: SIMD2(Float(box?.lo.z ?? 0), Float(box?.hi.z ?? 1)))

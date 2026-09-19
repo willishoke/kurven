@@ -66,10 +66,17 @@ typedef struct {
     simd_float4 color;
     // Added to a line's view depth before it is compared with the surface --
     // `outline.clip_hidden_lines`' margin, applied per fragment instead of per
-    // vertex. That difference is the whole gap between preview and bake.
+    // vertex. That, and `slopeScale` below, are the whole gap between preview
+    // and bake.
     float margin;
     // The value the depth texture holds where nothing was drawn.
     float empty;
+    // How many pixels' worth of the surface's own depth change to add to the
+    // margin, per fragment. Preview only, and not in the bake: the preview
+    // compares a line's depth where it crosses a pixel with the surface's depth
+    // at the pixel's centre, and on a surface that is steep in view those
+    // differ by more than any constant margin. Zero is the bake's predicate.
+    float slopeScale;
     // Key light direction in view space, and how much light reaches the parts
     // it does not.
     simd_float3 lightDirection;

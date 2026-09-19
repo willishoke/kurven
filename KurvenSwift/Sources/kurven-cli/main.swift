@@ -104,17 +104,20 @@ usage: kurven-cli <command> [options]
 
   preview <bundle> [--preset NAME] [--width N] [--height N] [--mode M]
           [--orbit "AZ,EL"] [--zoom F] [--levels N] [--fov DEGREES]
-          [--margin M] -o out.png
+          [--margin M] [--slope K] -o out.png
         Render one preview frame offscreen and write it as a PNG. Modes:
         plate (the default), shaded, depth. --orbit turns the preset camera by
         that many degrees before drawing. --levels redraws every *described*
         layer at N evenly spaced levels over its own range, which only a
         bundle exported with --derived can do. --fov switches to a perspective
-        camera, which previews but does not bake. This is how the preview is checked
-        against the plate without a window in the way.
+        camera, which previews but does not bake. --margin and --slope set the
+        ink test: the hidden-line margin, and how many pixels' worth of the
+        surface's depth change it also allows (0 is the bake's predicate). This
+        is how the preview is checked against the plate without a window in the
+        way.
 
   flicker <bundle> [preview's view options] [--frames N] [--step DEGREES]
-          [--margin M] [--dump DIR] [--max-flip F]
+          [--margin M] [--slope K] [--dump DIR] [--max-flip F]
         Turn the preview camera --step degrees a frame (default 0.02) for
         --frames frames (default 24), and report the ink that comes and goes:
         toggled (changed between frames, motion included) and flipped (a
@@ -438,6 +441,14 @@ func previewMode(_ args: Args) throws -> PreviewMode {
     }
 }
 
+/// `--slope K`: the ink test's slope allowance, so a run can be compared with
+/// the bake's predicate (`--slope 0`) at the same camera.
+func previewOptions(_ args: Args, mode: PreviewMode) throws -> PreviewOptions {
+    var options = PreviewOptions(mode: mode)
+    if let k = try args.double("slope") { options.slopeScale = Float(k) }
+    return options
+}
+
 func preview(_ args: Args) throws {
     let output = URL(fileURLWithPath: try args.string("output"))
     let viewport = Viewport(width: try args.int("width", 1600),
@@ -451,7 +462,8 @@ func preview(_ args: Args) throws {
     let clock = ContinuousClock()
     let elapsed = try clock.measure {
         try renderer.renderPreview(base, navigator: navigator, viewport: viewport,
-                                   options: PreviewOptions(mode: mode), into: target)
+                                   options: try previewOptions(args, mode: mode),
+                                   into: target)
     }
     try PNG.write(target, to: output)
 
@@ -512,6 +524,7 @@ func flicker(_ args: Args) throws {
     }
     var unclipped = base
     unclipped.margin = .infinity
+    let options = try previewOptions(args, mode: .plate)
 
     let renderer = try MetalRenderer()
     let target = try renderer.makePreviewTarget(viewport)
@@ -520,7 +533,7 @@ func flicker(_ args: Args) throws {
     // applies to both of its pictures.
     func ink(_ scene: Scene, _ navigator: Navigator) throws -> [Bool] {
         try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
-                                   options: PreviewOptions(mode: .plate), into: target)
+                                   options: options, into: target)
         let bgra = try PNG.bgra(target)
         return (0..<pixels).map { k in
             let b = Int(bgra[4 * k]), g = Int(bgra[4 * k + 1]), r = Int(bgra[4 * k + 2])
@@ -557,7 +570,7 @@ func flicker(_ args: Args) throws {
     let from = start.orbit.azimuth.degrees
     print("""
         \(bundle.url.lastPathComponent)  [\(preset.name)]  \(frames) frames \
-        \(step)° apart, margin \(base.margin)
+        \(step)° apart, margin \(base.margin), slope \(options.slopeScale)
           \(viewport.width)x\(viewport.height)  azimuth \(String(format: "%.2f", from)) \
         to \(String(format: "%.2f", from + Double(frames - 1) * step))  \
         elevation \(String(format: "%.1f", start.orbit.elevation.degrees))

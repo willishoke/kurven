@@ -32,6 +32,7 @@ public enum Shaders {
         float4 color;
         float  margin;
         float  empty;
+        float  slopeScale;
         // float3, not packed_float3: C's simd_float3 is sixteen bytes with
         // three used, and packing it here shifts everything after it. That
         // mismatch compiled cleanly and rendered a black landscape.
@@ -306,9 +307,63 @@ public enum Shaders {
         return float4(float3(t), 1.0);
     }
 
+    // How far the surface's depth moves across one pixel at `p`: per axis, the
+    // smaller of the two one-sided differences, and the larger of the two axes.
+    //
+    // The smaller, not the larger, so that a silhouette on one side -- a jump
+    // to a far surface, or to nothing -- is not mistaken for slope. Were it
+    // counted, ink hidden behind a ridge would show through at the ridge.
+    // Neighbours off the texture or holding `empty` do not count at all.
+    static float axis_slope(texture2d<float, access::read> depth, int2 p, int2 d,
+                            float here, float empty)
+    {
+        int2 size = int2(depth.get_width(), depth.get_height());
+        int2 a = p - d, b = p + d;
+        bool hasA = all(a >= 0) && all(a < size);
+        bool hasB = all(b >= 0) && all(b < size);
+        float za = hasA ? depth.read(uint2(a)).r : empty;
+        float zb = hasB ? depth.read(uint2(b)).r : empty;
+        hasA = hasA && za > empty;
+        hasB = hasB && zb > empty;
+        float da = abs(here - za), db = abs(zb - here);
+        if (hasA && hasB) { return min(da, db); }
+        if (hasA) { return da; }
+        if (hasB) { return db; }
+        return 0.0;
+    }
+
+    static float depth_slope(texture2d<float, access::read> depth, uint2 p,
+                             float here, float empty)
+    {
+        return max(axis_slope(depth, int2(p), int2(1, 0), here, empty),
+                   axis_slope(depth, int2(p), int2(0, 1), here, empty));
+    }
+
+    // Whether ink at view depth `z` is in front of the surface at pixel `p`.
+    //
+    // `z + margin > buffer` is `clip_hidden_lines`' predicate, which the bake
+    // applies per vertex. Here it is applied per fragment, and that moves the
+    // two things being compared apart: `z` is the line's depth where it crosses
+    // the pixel, up to half a pixel from the centre, and `buffer` is the
+    // surface's depth *at* the centre. On a surface that is steep in view, half
+    // a pixel is more depth than the margin, and visible ink is discarded in a
+    // pattern that moves whenever the camera does -- which is the flicker.
+    //
+    // So the preview adds `slopeScale` pixels' worth of the surface's own depth
+    // change to the margin: the depth bias shadow maps use, for the same
+    // reason. It is a preview-only relaxation. The bake does not do this, and
+    // with `slopeScale` zero this is the bake's predicate exactly.
+    static bool ink_visible(texture2d<float, access::read> depth, uint2 p, float z,
+                            constant KVShading &s)
+    {
+        float behind = depth.read(p).r;
+        if (!(behind > s.empty)) { return true; }
+        float slack = s.margin + s.slopeScale * depth_slope(depth, p, behind, s.empty);
+        return z + slack > behind;
+    }
+
     // Ink. Lines carry their own view depth and compare it against the surface
-    // the first pass left, at their own pixel: `z + margin > buffer`, the same
-    // predicate `clip_hidden_lines` applies per vertex.
+    // the first pass left, at their own pixel.
     struct LineOut {
         float4 position [[position]];
         float  depth;
@@ -329,9 +384,7 @@ public enum Shaders {
                                      constant KVShading &s [[buffer(1)]],
                                      texture2d<float, access::read> depth [[texture(1)]])
     {
-        uint2 p = uint2(in.position.xy);
-        float behind = depth.read(p).r;
-        if (in.depth + s.margin <= behind) { discard_fragment(); }
+        if (!ink_visible(depth, uint2(in.position.xy), in.depth, s)) { discard_fragment(); }
         return s.color;
     }
 
@@ -382,6 +435,7 @@ public enum Shaders {
         out[k++] = sh.color.w;
         out[k++] = sh.margin;
         out[k++] = sh.empty;
+        out[k++] = sh.slopeScale;
         out[k++] = sh.lightDirection.x;
         out[k++] = sh.lightDirection.y;
         out[k++] = sh.lightDirection.z;
@@ -396,6 +450,6 @@ public enum Shaders {
     /// How many floats `kv_layout_probe` writes: every field of both structs,
     /// then both sizes.
     public static let uniformFieldCount = 16 + 16 + 2 + 2 + 2 + 2 + 1 + 1 + 1 + 1
-    public static let shadingFieldCount = 4 + 1 + 1 + 3 + 1 + 2
+    public static let shadingFieldCount = 4 + 1 + 1 + 1 + 3 + 1 + 2
     public static let layoutProbeCount = uniformFieldCount + shadingFieldCount + 2
 }

@@ -479,6 +479,7 @@ func shaderTests() {
             color: SIMD4(11, 12, 13, 14),
             margin: 21,
             empty: 22,
+            slopeScale: 23,
             lightDirection: SIMD3(31, 32, 33),
             ambient: 41,
             depthRange: SIMD2(51, 52))
@@ -487,7 +488,7 @@ func shaderTests() {
         for c in 0..<4 { for r in 0..<4 { want.append(v[c][r]) } }
         for c in 0..<4 { for r in 0..<4 { want.append(clipProbe[c][r]) } }
         want += [301, 302, 401, 402, 501, 502, 601, 602, 701, 801, 901, -1001]
-        want += [11, 12, 13, 14, 21, 22, 31, 32, 33, 41, 51, 52]
+        want += [11, 12, 13, 14, 21, 22, 23, 31, 32, 33, 41, 51, 52]
 
         let probe = try MetalRenderer.probeUniformLayout(device: device,
                                                          sending: sent, and: shading)
@@ -937,6 +938,90 @@ func bakeTests() {
     }
 }
 
+// MARK: - the preview
+
+func previewTests() {
+    // A plane seen nearly edge-on: z = -x from forty degrees below the plate's
+    // horizon, so its view depth changes by about eleven units per unit of
+    // screen height. The triangulation of a plane is the plane, so the answer
+    // is known at every pixel -- ink drawn on it is visible, ink a little under
+    // it is hidden -- which is what a real landscape cannot offer.
+    //
+    // The preview compares a line's depth where it crosses a pixel with the
+    // surface's depth at the pixel's centre. Here half a pixel of that is
+    // several times the margin, so the bake's predicate alone discards much of
+    // the ink on the plane, and while orbiting what it discards crawls. With
+    // the slope allowance all of it must survive, and the allowance must still
+    // fall far short of hiding depth: the ink under the plane stays hidden.
+    Check.suite("preview: ink on a surface steep in view is kept, and ink under it is not") {
+        let n = 65
+        let domain = Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: -1, hi: 1))
+        var heights: [Float] = []
+        for _ in 0..<n {
+            for x in 0..<n { heights.append(Float(1 - 2 * Double(x) / Double(n - 1))) }
+        }
+        let surface = Surface(
+            height: Grid2D(width: n, height: n, domain: domain, values: heights),
+            phase: nil, caps: .none)
+        // Slightly slanted on screen, so each stroke crosses a few rows and is
+        // tested at every sub-pixel offset rather than at one.
+        func strokes(under depth: Double) -> Layer {
+            let paths = stride(from: -0.6, through: 0.45, by: 0.15).map { x0 -> [P3<WorldSpace>] in
+                [P3(x0, -0.9, -x0 - depth), P3(x0 + 0.1, 0.9, -(x0 + 0.1) - depth)]
+            }
+            return Layer(spec: LayerSpec(name: "ink", role: .magnitude,
+                                         source: .file(vertices: "", offsets: ""),
+                                         width: 0.4, heightPolicy: .surface),
+                         paths: PolylineSet(paths: paths))
+        }
+        let style = PlateStyle(shear: 0, flipX: false, yScale: nil)
+        let orbit = Orbit(target: P3(0, 0, 0), azimuth: Angle(degrees: 0),
+                          elevation: Angle(degrees: -40), style: style)
+        let viewport = Viewport(width: 512, height: 128)
+        func scene(_ layer: Layer, margin: Double) -> Scene {
+            Scene(surface: surface, occluder: Mesh(vertices: [], triangles: []),
+                  tiles: [.identity], step: 1, layers: [layer], camera: orbit.camera,
+                  margin: margin)
+        }
+        guard let bounds = scene(strokes(under: 0), margin: 0).quickBounds() else {
+            Check.expect(false, "the plane has bounds"); return
+        }
+        let navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
+
+        let renderer = try MetalRenderer()
+        let target = try renderer.makePreviewTarget(viewport)
+        func ink(_ layer: Layer, margin: Double, slope: Float) throws -> Int {
+            try renderer.renderPreview(scene(layer, margin: margin), navigator: navigator,
+                                       viewport: viewport,
+                                       options: PreviewOptions(slopeScale: slope),
+                                       into: target)
+            let bgra = try PNG.bgra(target)
+            return stride(from: 0, to: bgra.count, by: 4).reduce(0) { count, k in
+                let luma = 299 * Int(bgra[k + 2]) + 587 * Int(bgra[k + 1]) + 114 * Int(bgra[k])
+                return count + (luma < 128 * 1000 ? 1 : 0)
+            }
+        }
+
+        let margin = 0.005
+        let on = strokes(under: 0), under = strokes(under: 0.05)
+        let drawn = try ink(on, margin: .infinity, slope: 0)
+        let bake = try ink(on, margin: margin, slope: 0)
+        let kept = try ink(on, margin: margin, slope: PreviewOptions.defaultSlopeScale)
+        Check.expect(drawn > 1000 && Double(bake) < 0.9 * Double(drawn),
+                     "the plane is steep enough that the bake's predicate loses ink on it",
+                     "\(bake) of \(drawn) px")
+        Check.expect(Double(kept) >= 0.99 * Double(drawn),
+                     "with the slope allowance, the ink on it is kept",
+                     "\(kept) of \(drawn) px")
+
+        let behind = try ink(under, margin: .infinity, slope: 0)
+        let shown = try ink(under, margin: margin, slope: PreviewOptions.defaultSlopeScale)
+        Check.expect(behind > 1000 && Double(shown) <= 0.01 * Double(behind),
+                     "and ink just under it is still hidden",
+                     "\(shown) of \(behind) px show")
+    }
+}
+
 // MARK: - 9. the service
 
 func serviceTests() {
@@ -1039,6 +1124,7 @@ coreTests()
 navigationTests()
 contourTests()
 shaderTests()
+previewTests()
 bakeTests()
 serviceTests()
 exit(Check.summary())
