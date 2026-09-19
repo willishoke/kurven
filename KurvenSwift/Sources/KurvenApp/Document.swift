@@ -24,9 +24,29 @@ final class Document {
 
     private(set) var state: State = .empty
 
+    /// The landscape and its ink. Its camera and margin are whatever they were
+    /// when it was stored, and nothing reads them: `framedScene` supplies both.
     var scene: Scene?
     var navigator: Navigator?
     var viewport = Viewport(width: 1200, height: 800)
+
+    /// Frame timing, for the status bar. Not state of the document, but the
+    /// window's views already hold one of these and nothing else.
+    let frames = FrameClock()
+
+    /// The scene as the window shows it: the stored landscape, through the
+    /// navigator's camera, clipped at the current margin.
+    ///
+    /// Assembled on read so a drag writes one property rather than two. The
+    /// sidebar lists `scene`'s layers, so writing `scene` on every mouse event
+    /// re-evaluated the whole sidebar on every mouse event, to show the same
+    /// list of layers.
+    var framedScene: Scene? {
+        guard var scene, let navigator else { return nil }
+        scene.camera = navigator.camera
+        scene.margin = margin
+        return scene
+    }
 
     var mode: PreviewMode = .plate
     /// Layer indices that are drawn. Absent means all of them.
@@ -130,12 +150,8 @@ final class Document {
     // MARK: - navigation
 
     func apply(_ gesture: Gesture) {
-        guard var navigator, var scene else { return }
-        navigator = navigator.applying(gesture, in: viewport)
-        scene.camera = navigator.camera
-        scene.margin = margin
-        self.navigator = navigator
-        self.scene = scene
+        guard let navigator else { return }
+        self.navigator = navigator.applying(gesture, in: viewport)
     }
 
     func fit() {
@@ -161,15 +177,6 @@ final class Document {
         scene.camera = navigator.camera
         guard let bounds = scene.quickBounds() else { return }
         apply(.project(fieldOfView: on ? Angle(degrees: 50) : nil, bounds))
-    }
-
-    /// Re-derive the camera after a change that is not a gesture (the margin
-    /// slider, a viewport resize).
-    func refreshScene() {
-        guard var scene, let navigator else { return }
-        scene.camera = navigator.camera
-        scene.margin = margin
-        self.scene = scene
     }
 
     /// The levels a described layer is currently drawn at.
@@ -334,7 +341,7 @@ final class Document {
     var canBake: Bool { !(navigator?.orbit.isPerspective ?? false) }
 
     func bake(to url: URL) {
-        guard let scene, !baking else { return }
+        guard let scene = framedScene, !baking else { return }
         guard canBake else {
             bakeStatus = "switch off perspective to bake: the plates are "
                 + "orthographic, and a perspective bake has no oracle"

@@ -149,7 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func screenshot(bundle: URL, to output: URL) async {
         await document.load(bundle)
-        guard let scene = document.scene, let navigator = document.navigator else {
+        guard let scene = document.framedScene, let navigator = document.navigator else {
             FileHandle.standardError.write(Data("Kurven: could not open \(bundle.path)\n".utf8))
             exit(1)
         }
@@ -208,29 +208,7 @@ struct DocumentWindow: View {
         }
         .navigationTitle(document.title)
         .toolbar {
-            ToolbarItem(placement: .status) { status }
-        }
-    }
-
-    @ViewBuilder
-    private var status: some View {
-        switch document.state {
-        case .empty:
-            Text("No bundle open").foregroundStyle(.secondary)
-        case .loading(let url):
-            HStack {
-                ProgressView().controlSize(.small)
-                Text("Reading \(url.lastPathComponent)…")
-            }
-        case .ready:
-            if let n = document.navigator {
-                Text(String(format: "az %.1f°  el %.1f°", n.orbit.azimuth.degrees,
-                            n.orbit.elevation.degrees))
-                    .monospacedDigit().foregroundStyle(.secondary)
-            }
-        case .failed(_, let message):
-            Label(message, systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.red).lineLimit(1)
+            ToolbarItem(placement: .status) { StatusView(document: document) }
         }
     }
 
@@ -255,6 +233,40 @@ struct DocumentWindow: View {
             }
         case .ready:
             EmptyView()
+        }
+    }
+}
+
+/// The toolbar's status: what is open, where the camera is, and how long
+/// frames take.
+///
+/// Scoped apart from `DocumentWindow` because it reads `navigator`, which
+/// every drag writes, and the window's body holds the Metal view and the
+/// sidebar -- neither of which a new azimuth changes.
+struct StatusView: View {
+    let document: Document
+
+    var body: some View {
+        switch document.state {
+        case .empty:
+            Text("No bundle open").foregroundStyle(.secondary)
+        case .loading(let url):
+            HStack {
+                ProgressView().controlSize(.small)
+                Text("Reading \(url.lastPathComponent)…")
+            }
+        case .ready:
+            HStack(spacing: 14) {
+                if let n = document.navigator {
+                    Text(String(format: "az %.1f°  el %.1f°", n.orbit.azimuth.degrees,
+                                n.orbit.elevation.degrees))
+                }
+                if let frames = document.frames.summary { Text(frames) }
+            }
+            .monospacedDigit().foregroundStyle(.secondary)
+        case .failed(_, let message):
+            Label(message, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.red).lineLimit(1)
         }
     }
 }

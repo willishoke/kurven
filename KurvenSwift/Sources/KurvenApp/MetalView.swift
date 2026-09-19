@@ -26,10 +26,13 @@ struct MetalView: NSViewRepresentable {
         view.delegate = context.coordinator
         view.colorPixelFormat = .bgra8Unorm
         view.framebufferOnly = false
-        // Draw on demand. A landscape that is not moving does not need sixty
-        // frames a second of it, and a laptop notices.
+        // Draw on demand while nothing moves -- a landscape that is standing
+        // still does not need a hundred frames a second of it, and a laptop
+        // notices -- and on the display's own clock while something does. See
+        // `GestureView.wake`.
         view.enableSetNeedsDisplay = true
         view.isPaused = true
+        view.preferredFramesPerSecond = NSScreen.main?.maximumFramesPerSecond ?? 60
         view.autoResizeDrawable = true
         context.coordinator.view = view
         return view
@@ -50,27 +53,40 @@ struct MetalView: NSViewRepresentable {
         init(document: Document) { self.document = document }
 
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-            document.viewport = Viewport(width: Int(size.width), height: Int(size.height))
-            document.refreshScene()
+            setViewport(Viewport(width: Int(size.width), height: Int(size.height)))
+        }
+
+        /// Only on a change. `viewport` is observed, and this used to be written
+        /// unconditionally from `draw`, which invalidated the window's views once
+        /// per frame with the same value.
+        private func setViewport(_ viewport: Viewport) {
+            if document.viewport != viewport { document.viewport = viewport }
         }
 
         func draw(in view: MTKView) {
-            guard let scene = document.scene,
+            defer { (view as? GestureView)?.settleIfIdle() }
+            guard let scene = document.framedScene,
                   let navigator = document.navigator,
                   let drawable = view.currentDrawable else { return }
+            let started = CACurrentMediaTime()
             do {
                 let renderer = try self.renderer ?? MetalRenderer()
                 self.renderer = renderer
                 let viewport = Viewport(width: drawable.texture.width,
                                         height: drawable.texture.height)
-                document.viewport = viewport
+                setViewport(viewport)
                 guard let commands = renderer.commandQueue.makeCommandBuffer() else { return }
                 try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
                                            options: document.previewOptions,
                                            into: drawable.texture,
                                            commandBuffer: commands)
+                let frames = document.frames
+                commands.addCompletedHandler { done in
+                    frames.gpu(seconds: done.gpuEndTime - done.gpuStartTime)
+                }
                 commands.present(drawable)
                 commands.commit()
+                frames.frame(cpu: CACurrentMediaTime() - started)
                 lastError = nil
             } catch {
                 lastError = "\(error)"
@@ -94,6 +110,31 @@ struct MetalView: NSViewRepresentable {
 final class GestureView: MTKView {
     weak var coordinator: MetalView.Coordinator?
     private var lastDrag: CGPoint?
+    private var lastActivity: CFTimeInterval = 0
+
+    /// Draw on the display's clock until input stops.
+    ///
+    /// Setting `needsDisplay` per event instead ties frames to event delivery,
+    /// which is neither regular nor in step with the screen: two events can
+    /// land in one refresh and none in the next, and that unevenness is jitter
+    /// however fast each frame is. Unpaused, MTKView draws once per refresh
+    /// with whatever the latest state is.
+    func wake() {
+        lastActivity = CACurrentMediaTime()
+        if isPaused {
+            enableSetNeedsDisplay = false
+            isPaused = false
+        }
+    }
+
+    /// Back to on-demand once nothing has happened for a quarter second -- long
+    /// enough to ride out the gaps in a drag, short enough that an idle window
+    /// costs nothing.
+    func settleIfIdle() {
+        guard !isPaused, CACurrentMediaTime() - lastActivity > 0.25 else { return }
+        isPaused = true
+        enableSetNeedsDisplay = true
+    }
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -113,7 +154,7 @@ final class GestureView: MTKView {
     private func send(_ gesture: Nav) {
         MainActor.assumeIsolated {
             coordinator?.document.apply(gesture)
-            needsDisplay = true
+            wake()
         }
     }
 

@@ -16,14 +16,14 @@ struct Inspector: View {
         Form {
             if let bundle = document.bundle {
                 Section("Camera") {
-                    presets(bundle.manifest.presets)
-                    if document.navigator != nil { orbitFields }
+                    CameraSection(document: document, presets: bundle.manifest.presets,
+                                  onChange: onChange)
                 }
                 Section("Mode") { modePicker }
                 Section("Layers") { layerList }
                 Section("Ink") { marginField }
                 Section("Resample") { resamplePanel }
-                Section("Bake") { bakePanel }
+                Section("Bake") { BakeSection(document: document) }
                 Section("Bundle") { provenance(bundle) }
             } else {
                 Text("Open a .kurven bundle.")
@@ -32,94 +32,6 @@ struct Inspector: View {
         }
         .formStyle(.grouped)
         .frame(minWidth: 280)
-    }
-
-    // MARK: - camera
-
-    @ViewBuilder
-    private func presets(_ presets: [CameraPreset]) -> some View {
-        HStack {
-            projectionToggle
-            Spacer()
-        }
-        HStack {
-            ForEach(presets, id: \.name) { preset in
-                Button(preset.name) {
-                    document.use(preset: preset)
-                    onChange()
-                }
-            }
-            Spacer()
-            Button("Fit") { document.fit(); onChange() }
-                .keyboardShortcut("f", modifiers: [])
-        }
-    }
-
-    /// Perspective is a way of navigating, not a plate style: the bake refuses
-    /// it, and says so. Offering it next to the presets is the honest placement
-    /// -- it belongs with "where am I looking from", not with "what kind of
-    /// drawing is this".
-    @ViewBuilder
-    private var projectionToggle: some View {
-        Toggle("Perspective", isOn: Binding(
-            get: { document.navigator?.orbit.isPerspective ?? false },
-            set: { document.setPerspective($0); onChange() }))
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .help("Navigate in perspective. Baking still requires an "
-                  + "orthographic camera — the plates are orthographic, and a "
-                  + "perspective bake would have no Python oracle to check it "
-                  + "against.")
-    }
-
-    @ViewBuilder
-    private var orbitFields: some View {
-        // Degrees, because that is what the plate parameters are stated in and
-        // every conversion is a chance to lose a factor of pi.
-        degreeField("Azimuth", value: Binding(
-            get: { document.navigator?.orbit.azimuth.degrees ?? 0 },
-            set: { document.navigator?.orbit.azimuth = Angle(degrees: $0) }))
-        degreeField("Elevation", value: Binding(
-            get: { document.navigator?.orbit.elevation.degrees ?? 0 },
-            set: {
-                let limit = Orbit.elevationLimit.degrees
-                document.navigator?.orbit.elevation =
-                    Angle(degrees: min(max($0, -limit), limit))
-            }))
-        LabeledContent("Scale") {
-            Text(String(format: "%.5g units/px", document.navigator?.framing.unitsPerPixel ?? 0))
-                .monospacedDigit().foregroundStyle(.secondary)
-        }
-        LabeledContent("Target") {
-            Text(target(document.navigator?.orbit.target))
-                .monospacedDigit().foregroundStyle(.secondary)
-        }
-    }
-
-    private func target(_ p: P3<WorldSpace>?) -> String {
-        guard let p else { return "-" }
-        return String(format: "%.3g, %.3g, %.3g", p.x, p.y, p.z)
-    }
-
-    @ViewBuilder
-    private func degreeField(_ label: String, value: Binding<Double>) -> some View {
-        // One binding for both controls, so the field and the slider cannot
-        // disagree about what the camera is.
-        let live = Binding(get: { value.wrappedValue }, set: {
-            value.wrappedValue = $0
-            document.refreshScene()
-            onChange()
-        })
-        LabeledContent(label) {
-            HStack {
-                TextField("", value: live, format: .number.precision(.fractionLength(1)))
-                    .labelsHidden()
-                    .monospacedDigit()
-                    .frame(width: 70)
-                Text("°").foregroundStyle(.secondary)
-                Slider(value: live, in: -180...180)
-            }
-        }
     }
 
     // MARK: - mode
@@ -191,7 +103,6 @@ struct Inspector: View {
     private var marginField: some View {
         let live = Binding(get: { document.margin }, set: {
             document.margin = $0
-            document.refreshScene()
             onChange()
         })
         LabeledContent("Margin") {
@@ -256,10 +167,136 @@ struct Inspector: View {
         .help(spec.help)
     }
 
-    // MARK: - bake
+    // MARK: - provenance
 
     @ViewBuilder
-    private var bakePanel: some View {
+    private func provenance(_ bundle: KurvenBundle) -> some View {
+        let m = bundle.manifest
+        LabeledContent("Function", value: m.provenance.function)
+        LabeledContent("Grid", value: "\(m.height.shape.nx) × \(m.height.shape.ny)")
+        LabeledContent("Occluder", value: "step \(m.occluder.step), "
+                       + "\(m.occluder.tiles.count) tile\(m.occluder.tiles.count == 1 ? "" : "s")")
+        if !m.provenance.isReproducible {
+            // Contoured with more than one chunk means the seams were stitched
+            // in thread-completion order. Worth saying before anyone blames a
+            // difference on anything else.
+            Label("contoured with \(m.provenance.cpuCount) chunks — not reproducible",
+                  systemImage: "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(.orange)
+        }
+    }
+}
+
+/// The camera: presets, the projection, and the orbit as numbers.
+///
+/// Its own view, and so its own observation scope, because it is the part of
+/// the sidebar that reads `navigator` -- which every drag writes. Inline, that
+/// read made the whole sidebar (layers, sliders, the resample form) re-evaluate
+/// on every mouse event to redraw four numbers.
+struct CameraSection: View {
+    @Bindable var document: Document
+    let presets: [CameraPreset]
+    var onChange: () -> Void
+
+
+    var body: some View {
+        presetRow
+        if document.navigator != nil { orbitFields }
+    }
+
+    @ViewBuilder
+    private var presetRow: some View {
+        HStack {
+            projectionToggle
+            Spacer()
+        }
+        HStack {
+            ForEach(presets, id: \.name) { preset in
+                Button(preset.name) {
+                    document.use(preset: preset)
+                    onChange()
+                }
+            }
+            Spacer()
+            Button("Fit") { document.fit(); onChange() }
+                .keyboardShortcut("f", modifiers: [])
+        }
+    }
+
+    /// Perspective is a way of navigating, not a plate style: the bake refuses
+    /// it, and says so. Offering it next to the presets is the honest placement
+    /// -- it belongs with "where am I looking from", not with "what kind of
+    /// drawing is this".
+    @ViewBuilder
+    private var projectionToggle: some View {
+        Toggle("Perspective", isOn: Binding(
+            get: { document.navigator?.orbit.isPerspective ?? false },
+            set: { document.setPerspective($0); onChange() }))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .help("Navigate in perspective. Baking still requires an "
+                  + "orthographic camera — the plates are orthographic, and a "
+                  + "perspective bake would have no Python oracle to check it "
+                  + "against.")
+    }
+
+    @ViewBuilder
+    private var orbitFields: some View {
+        // Degrees, because that is what the plate parameters are stated in and
+        // every conversion is a chance to lose a factor of pi.
+        degreeField("Azimuth", value: Binding(
+            get: { document.navigator?.orbit.azimuth.degrees ?? 0 },
+            set: { document.navigator?.orbit.azimuth = Angle(degrees: $0) }))
+        degreeField("Elevation", value: Binding(
+            get: { document.navigator?.orbit.elevation.degrees ?? 0 },
+            set: {
+                let limit = Orbit.elevationLimit.degrees
+                document.navigator?.orbit.elevation =
+                    Angle(degrees: min(max($0, -limit), limit))
+            }))
+        LabeledContent("Scale") {
+            Text(String(format: "%.5g units/px", document.navigator?.framing.unitsPerPixel ?? 0))
+                .monospacedDigit().foregroundStyle(.secondary)
+        }
+        LabeledContent("Target") {
+            Text(target(document.navigator?.orbit.target))
+                .monospacedDigit().foregroundStyle(.secondary)
+        }
+    }
+
+    private func target(_ p: P3<WorldSpace>?) -> String {
+        guard let p else { return "-" }
+        return String(format: "%.3g, %.3g, %.3g", p.x, p.y, p.z)
+    }
+
+    @ViewBuilder
+    private func degreeField(_ label: String, value: Binding<Double>) -> some View {
+        // One binding for both controls, so the field and the slider cannot
+        // disagree about what the camera is.
+        let live = Binding(get: { value.wrappedValue }, set: {
+            value.wrappedValue = $0
+            onChange()
+        })
+        LabeledContent(label) {
+            HStack {
+                TextField("", value: live, format: .number.precision(.fractionLength(1)))
+                    .labelsHidden()
+                    .monospacedDigit()
+                    .frame(width: 70)
+                Text("°").foregroundStyle(.secondary)
+                Slider(value: live, in: -180...180)
+            }
+        }
+    }
+}
+
+/// Baking, which reads `navigator` too (a perspective camera cannot bake), so
+/// it is scoped apart for the same reason as `CameraSection`.
+struct BakeSection: View {
+    @Bindable var document: Document
+
+
+    var body: some View {
         LabeledContent("Resolution") {
             TextField("", value: $document.bakeResolution, format: .number)
                 .labelsHidden().monospacedDigit().frame(width: 90)
@@ -280,25 +317,6 @@ struct Inspector: View {
         panel.nameFieldStringValue = document.title + ".svg"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         document.bake(to: url)
-    }
-
-    // MARK: - provenance
-
-    @ViewBuilder
-    private func provenance(_ bundle: KurvenBundle) -> some View {
-        let m = bundle.manifest
-        LabeledContent("Function", value: m.provenance.function)
-        LabeledContent("Grid", value: "\(m.height.shape.nx) × \(m.height.shape.ny)")
-        LabeledContent("Occluder", value: "step \(m.occluder.step), "
-                       + "\(m.occluder.tiles.count) tile\(m.occluder.tiles.count == 1 ? "" : "s")")
-        if !m.provenance.isReproducible {
-            // Contoured with more than one chunk means the seams were stitched
-            // in thread-completion order. Worth saying before anyone blames a
-            // difference on anything else.
-            Label("contoured with \(m.provenance.cpuCount) chunks — not reproducible",
-                  systemImage: "exclamationmark.triangle")
-                .font(.caption).foregroundStyle(.orange)
-        }
     }
 }
 

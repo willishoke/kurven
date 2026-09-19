@@ -107,8 +107,10 @@ public extension MetalRenderer {
         // Pass 2: the picture.
         // The depth view needs a range to map to black and white. The cheap
         // box bound is right for it: it is a debug picture, and scanning six
-        // million samples to normalize one would cost more than the frame.
-        let box = scene.quickBounds()
+        // million samples to normalize one would cost more than the frame. Only
+        // the depth view: it is still twenty thousand samples through the
+        // camera, and the other modes were paying that every frame for nothing.
+        let box = options.mode == .depth ? scene.quickBounds() : nil
         var shading = KVShading(
             color: SIMD4(0, 0, 0, 1),
             margin: Float(scene.margin),
