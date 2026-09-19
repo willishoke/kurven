@@ -197,7 +197,8 @@ public enum Contour {
         guard levels.count > 1 else {
             return [(levels[0], lines(of: grid, level: levels[0], index: index))]
         }
-        let results = UnsafeMutablePointer<[[P2<DomainSpace>]]>.allocate(capacity: levels.count)
+        // Each iteration writes only its own slot, so sharing is safe.
+        nonisolated(unsafe) let results = UnsafeMutablePointer<[[P2<DomainSpace>]]>.allocate(capacity: levels.count)
         results.initialize(repeating: [], count: levels.count)
         defer { results.deinitialize(count: levels.count); results.deallocate() }
         DispatchQueue.concurrentPerform(iterations: levels.count) { i in

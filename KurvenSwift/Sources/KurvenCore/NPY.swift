@@ -205,8 +205,9 @@ public extension NPYArray {
             throw NPYError.shapeMismatch(expected: [-1, 3], found: shape)
         }
         let flat = try ints()
-        return (0..<shape[0]).map {
-            SIMD3(Int32(flat[3 * $0]), Int32(flat[3 * $0 + 1]), Int32(flat[3 * $0 + 2]))
+        return (0..<shape[0]).map { (i: Int) -> SIMD3<Int32> in
+            let x = Int32(flat[3 * i]), y = Int32(flat[3 * i + 1]), z = Int32(flat[3 * i + 2])
+            return SIMD3<Int32>(x, y, z)
         }
     }
 }

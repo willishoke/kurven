@@ -21,7 +21,7 @@ struct KurvenApplication: App {
     // the more important of the two here.
     var body: some SwiftUI.Scene {
         WindowGroup {
-            DocumentWindow(document: delegate.document)
+            DocumentWindow(document: delegate.document, open: delegate.openPanel)
                 .frame(minWidth: 900, minHeight: 600)
         }
         .commands {
@@ -37,7 +37,16 @@ struct KurvenApplication: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let document = Document()
 
+    // Run as a bare executable (`swift run KurvenApp`) there is no Info.plist,
+    // so AppKit starts the process as a background app: no Dock icon, no menu
+    // bar, and its window behind the terminal that launched it. Ask for a
+    // regular app and bring it forward; inside a bundle this changes nothing.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.activate(ignoringOtherApps: true)
         // A path on the command line opens it, so the app can be driven from a
         // shell the same way the CLI is.
         let args = CommandLine.arguments.dropFirst()
@@ -181,6 +190,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct DocumentWindow: View {
     @Bindable var document: Document
+    // Handed in rather than found through `NSApp.delegate`: under
+    // `@NSApplicationDelegateAdaptor` that is SwiftUI's delegate, not ours.
+    let open: () -> Void
     @State private var redraws = 0
 
     var body: some View {
@@ -230,7 +242,7 @@ struct DocumentWindow: View {
                 Text("kurven").font(.largeTitle)
                 Text("Open a .kurven bundle to navigate its landscape.")
                     .foregroundStyle(.secondary)
-                Button("Open…") { (NSApp.delegate as? AppDelegate)?.openPanel() }
+                Button("Open…", action: open)
             }
         case .loading:
             ProgressView()
