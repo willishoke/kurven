@@ -104,7 +104,7 @@ usage: kurven-cli <command> [options]
 
   preview <bundle> [--preset NAME] [--width N] [--height N] [--mode M]
           [--orbit "AZ,EL"] [--zoom F] [--levels N] [--fov DEGREES]
-          [--margin M] [--slope K] -o out.png
+          [--margin M] [--slope K] [--ink-width W] -o out.png
         Render one preview frame offscreen and write it as a PNG. Modes:
         plate (the default), shaded, depth. --orbit turns the preset camera by
         that many degrees before drawing. --levels redraws every *described*
@@ -112,12 +112,13 @@ usage: kurven-cli <command> [options]
         bundle exported with --derived can do. --fov switches to a perspective
         camera, which previews but does not bake. --margin and --slope set the
         ink test: the hidden-line margin, and how many pixels' worth of the
-        surface's depth change it also allows (0 is the bake's predicate). This
-        is how the preview is checked against the plate without a window in the
-        way.
+        surface's depth change it also allows (0 is the bake's predicate).
+        --ink-width is the widest layer's stroke in pixels (default 1.5); the
+        others are drawn in proportion to their plate widths. This is how the
+        preview is checked against the plate without a window in the way.
 
   flicker <bundle> [preview's view options] [--frames N] [--step DEGREES]
-          [--margin M] [--slope K] [--dump DIR] [--max-flip F]
+          [--margin M] [--slope K] [--ink-width W] [--dump DIR] [--max-flip F]
         Turn the preview camera --step degrees a frame (default 0.02) for
         --frames frames (default 24), and report the ink that comes and goes:
         toggled (changed between frames, motion included) and flipped (a
@@ -442,10 +443,12 @@ func previewMode(_ args: Args) throws -> PreviewMode {
 }
 
 /// `--slope K`: the ink test's slope allowance, so a run can be compared with
-/// the bake's predicate (`--slope 0`) at the same camera.
+/// the bake's predicate (`--slope 0`) at the same camera. `--ink-width W`: the
+/// widest stroke in pixels, which is what a Retina window doubles.
 func previewOptions(_ args: Args, mode: PreviewMode) throws -> PreviewOptions {
     var options = PreviewOptions(mode: mode)
     if let k = try args.double("slope") { options.slopeScale = Float(k) }
+    if let w = try args.double("ink-width") { options.inkWidth = Float(w) }
     return options
 }
 
@@ -529,15 +532,16 @@ func flicker(_ args: Args) throws {
     let renderer = try MetalRenderer()
     let target = try renderer.makePreviewTarget(viewport)
     let pixels = viewport.width * viewport.height
-    // Ink is anything darker than mid-grey, the test `compare_preview.py`
-    // applies to both of its pictures.
+    // Ink is any visible mark, the test `compare_preview.py` applies to both
+    // of its pictures: a stroke narrower than a pixel is drawn lighter, not
+    // narrower, so mid-grey would miss the plate's thinnest layers.
     func ink(_ scene: Scene, _ navigator: Navigator) throws -> [Bool] {
         try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
                                    options: options, into: target)
         let bgra = try PNG.bgra(target)
         return (0..<pixels).map { k in
             let b = Int(bgra[4 * k]), g = Int(bgra[4 * k + 1]), r = Int(bgra[4 * k + 2])
-            return 299 * r + 587 * g + 114 * b < 128 * 1000
+            return 299 * r + 587 * g + 114 * b < 224 * 1000
         }
     }
 

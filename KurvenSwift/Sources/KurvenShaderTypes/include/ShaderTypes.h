@@ -61,7 +61,7 @@ typedef struct {
 } KVVertex;
 
 // What the preview's second pass needs on top of KVUniforms: how to decide
-// whether a line fragment is hidden, and what to paint.
+// whether a line fragment is hidden, and what to paint and how wide.
 typedef struct {
     simd_float4 color;
     // Added to a line's view depth before it is compared with the surface --
@@ -81,9 +81,15 @@ typedef struct {
     // it does not.
     simd_float3 lightDirection;
     float ambient;
+    // The stroke's width in pixels. Ink is drawn as screen-space quads this
+    // wide, plus a pixel for the edge to fall off in.
+    float strokeWidth;
     // View-depth range for the `.depth` inspection mode: what to map to black
     // and to white.
     simd_float2 depthRange;
+    // The target's size in pixels, which is what a stroke's width is measured
+    // against when it is expanded to a quad.
+    simd_float2 viewport;
 } KVShading;
 
 #endif /* KurvenShaderTypes_h */

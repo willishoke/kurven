@@ -21,9 +21,10 @@ struct LineGeometry {
             let first = vertices.count
             for i in 0..<layer.paths.count {
                 let path = layer.paths[path: i]
-                // `.line` primitives, not a strip: a strip would join the end of
+                // Separate segments, not a strip: a strip would join the end of
                 // one path to the start of the next, which is precisely the
-                // welding the CSR representation exists to prevent.
+                // welding the CSR representation exists to prevent. Each pair is
+                // one instance of the stroke quad.
                 for (a, b) in zip(path, path.dropFirst()) {
                     vertices.append(KVVertex(position: SIMD3<Float>(a.v)))
                     vertices.append(KVVertex(position: SIMD3<Float>(b.v)))
@@ -59,16 +60,30 @@ public struct PreviewOptions: Sendable {
     /// bake's predicate exactly; see `ink_visible` in the shader for the rest.
     public var slopeScale: Float
 
+    /// The widest layer's stroke, in pixels. Every other layer is drawn in
+    /// proportion to its plate width, so the plate's hierarchy -- major lines
+    /// over minor ones -- survives at any zoom.
+    ///
+    /// Constant on screen rather than scaled with zoom: the plate's widths are
+    /// points on a sixteen-inch page, a fraction of a pixel on a window
+    /// showing all of it, and a stroke that thins as you pull back reads as
+    /// the picture fading rather than as the picture getting smaller. The app
+    /// multiplies this by the display's backing scale, so a stroke is as wide
+    /// on a Retina screen as on any other.
+    public var inkWidth: Float
+
     /// A pixel's worth covers the half-pixel between where a line crosses a
     /// pixel and the pixel's centre, with room for the surface to bend in
     /// between. Measured with `kurven-cli flicker`, not guessed.
     public static let defaultSlopeScale: Float = 1
+    public static let defaultInkWidth: Float = 1.5
 
     public init(mode: PreviewMode = .plate, visibleLayers: Set<Int>? = nil,
                 background: SIMD4<Float> = SIMD4(1, 1, 1, 1),
-                slopeScale: Float = PreviewOptions.defaultSlopeScale) {
+                slopeScale: Float = PreviewOptions.defaultSlopeScale,
+                inkWidth: Float = PreviewOptions.defaultInkWidth) {
         self.mode = mode; self.visibleLayers = visibleLayers; self.background = background
-        self.slopeScale = slopeScale
+        self.slopeScale = slopeScale; self.inkWidth = inkWidth
     }
 }
 
@@ -135,7 +150,9 @@ public extension MetalRenderer {
             slopeScale: options.slopeScale,
             lightDirection: SIMD3(0.4, -0.6, 0.7),
             ambient: 0.25,
-            depthRange: SIMD2(Float(box?.lo.z ?? 0), Float(box?.hi.z ?? 1)))
+            strokeWidth: options.inkWidth,
+            depthRange: SIMD2(Float(box?.lo.z ?? 0), Float(box?.hi.z ?? 1)),
+            viewport: SIMD2(Float(viewport.width), Float(viewport.height)))
         if case .shaded(let lighting) = options.mode {
             shading.lightDirection = lighting.direction
             shading.ambient = lighting.ambient
@@ -171,9 +188,12 @@ public extension MetalRenderer {
         }
 
         if options.mode != .depth, let buffer = lines.buffer {
-            e2.setRenderPipelineState(linePipeline)
+            e2.setRenderPipelineState(strokePipeline)
             e2.setVertexBuffer(buffer, offset: 0, index: 4)
             e2.setFragmentTexture(depth, index: 1)
+            // Every layer, visible or not, so hiding the widest one does not
+            // make the rest jump wider.
+            let widest = scene.layers.map(\.spec.width).max() ?? 0
             for (i, layer) in scene.layers.enumerated() {
                 if let visible = options.visibleLayers, !visible.contains(i) { continue }
                 let range = lines.ranges[i]
@@ -183,9 +203,17 @@ public extension MetalRenderer {
                 // hatches, and a depth test would erase about half of it.
                 shading.margin = layer.spec.clipped ? Float(scene.margin) : .infinity
                 shading.color = Self.color(layer.spec.color)
+                shading.strokeWidth = options.inkWidth
+                    * Float(widest > 0 ? layer.spec.width / widest : 1)
+                e2.setVertexBytes(&shading, length: MemoryLayout<KVShading>.stride, index: 1)
                 e2.setFragmentBytes(&shading, length: MemoryLayout<KVShading>.stride, index: 1)
-                e2.drawPrimitives(type: .line, vertexStart: range.first,
-                                  vertexCount: range.count)
+                // Four vertices a segment, one instance per segment, starting at
+                // this layer's first. Passed rather than left to `baseInstance`
+                // so what `instance_id` counts from is not a question.
+                var first = UInt32(range.first / 2)
+                e2.setVertexBytes(&first, length: MemoryLayout<UInt32>.stride, index: 5)
+                e2.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                                  instanceCount: range.count / 2)
             }
         }
         e2.endEncoding()

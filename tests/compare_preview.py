@@ -15,11 +15,20 @@ ink each has that the other does not, within a one-pixel tolerance.
 
     python tests/compare_preview.py recip
 
-A perfect score is not the goal and would be suspicious: the two rasterize
-lines differently (Metal's 1 px lines against matplotlib's stroked paths), so
-some disagreement at the edges of every stroke is expected. What would matter
-is ink in one picture that is nowhere near the other -- a whole contour visible
-in the preview that the plate hides, or the reverse.
+A perfect score is not the goal and would be suspicious: the two stroke their
+lines differently, so some disagreement at the edges of every stroke is
+expected. The preview draws each layer at a constant width on screen, in
+proportion to its plate width (1.5 px for the widest), where this draws every
+layer at 0.6 pt; both antialias. What would matter is ink in one picture that
+is nowhere near the other -- a whole contour visible in the preview that the
+plate hides, or the reverse.
+
+Ink is therefore any visible mark, not anything darker than mid-grey. Both
+renderers draw a stroke narrower than a pixel lighter rather than narrower, so
+the preview's thinnest layers never reach mid-grey: gamma's 0.1 scaffold,
+beside its 0.4 contours, comes out under 0.4 px. A mid-grey test would erase
+them from the preview while keeping them in the plate, and count the
+difference as geometry.
 """
 
 from __future__ import annotations
@@ -66,7 +75,8 @@ def plate_raster(drawn, meta, path):
     plt.close(fig)
 
 
-def ink(path, threshold=128):
+def ink(path, threshold=224):
+    """Every visible mark: coverage over about an eighth."""
     from PIL import Image
     a = np.asarray(Image.open(path).convert("L"))
     return a < threshold

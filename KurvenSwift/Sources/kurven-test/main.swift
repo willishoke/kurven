@@ -482,13 +482,15 @@ func shaderTests() {
             slopeScale: 23,
             lightDirection: SIMD3(31, 32, 33),
             ambient: 41,
-            depthRange: SIMD2(51, 52))
+            strokeWidth: 42,
+            depthRange: SIMD2(51, 52),
+            viewport: SIMD2(61, 62))
 
         var want: [Float] = []
         for c in 0..<4 { for r in 0..<4 { want.append(v[c][r]) } }
         for c in 0..<4 { for r in 0..<4 { want.append(clipProbe[c][r]) } }
         want += [301, 302, 401, 402, 501, 502, 601, 602, 701, 801, 901, -1001]
-        want += [11, 12, 13, 14, 21, 22, 23, 31, 32, 33, 41, 51, 52]
+        want += [11, 12, 13, 14, 21, 22, 23, 31, 32, 33, 41, 42, 51, 52, 61, 62]
 
         let probe = try MetalRenderer.probeUniformLayout(device: device,
                                                          sending: sent, and: shading)
@@ -998,7 +1000,8 @@ func previewTests() {
             let bgra = try PNG.bgra(target)
             return stride(from: 0, to: bgra.count, by: 4).reduce(0) { count, k in
                 let luma = 299 * Int(bgra[k + 2]) + 587 * Int(bgra[k + 1]) + 114 * Int(bgra[k])
-                return count + (luma < 128 * 1000 ? 1 : 0)
+                // Any visible mark, as `compare_preview.py` counts ink.
+                return count + (luma < 224 * 1000 ? 1 : 0)
             }
         }
 

@@ -52,7 +52,7 @@ public final class MetalRenderer {
     let paperWallPipeline: MTLRenderPipelineState
     let shadedSurfacePipeline: MTLRenderPipelineState
     let shadedWallPipeline: MTLRenderPipelineState
-    let linePipeline: MTLRenderPipelineState
+    let strokePipeline: MTLRenderPipelineState
     let depthViewPipeline: MTLRenderPipelineState
     /// The pixel format the preview draws into; the depth pass is always
     /// r32Float.
@@ -108,14 +108,21 @@ public final class MetalRenderer {
         // one depth semantic in the program rather than two, and it is the same
         // one `clip_hidden_lines` uses.
         func colorPipeline(_ vertex: String, _ fragment: String,
-                           primitive: MTLPrimitiveTopologyClass = .triangle) throws
-            -> MTLRenderPipelineState
+                           blended: Bool = false) throws -> MTLRenderPipelineState
         {
             let d = MTLRenderPipelineDescriptor()
             d.vertexFunction = try function(vertex)
             d.fragmentFunction = try function(fragment)
-            d.colorAttachments[0].pixelFormat = previewFormat
-            d.inputPrimitiveTopology = primitive
+            let a = d.colorAttachments[0]!
+            a.pixelFormat = previewFormat
+            if blended {
+                // Straight alpha: the stroke's coverage, over what is there.
+                a.isBlendingEnabled = true
+                a.sourceRGBBlendFactor = .sourceAlpha
+                a.destinationRGBBlendFactor = .oneMinusSourceAlpha
+                a.sourceAlphaBlendFactor = .one
+                a.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            }
             do { return try device.makeRenderPipelineState(descriptor: d) }
             catch { throw RendererError.pipeline("\(vertex)/\(fragment): \(error)") }
         }
@@ -124,8 +131,8 @@ public final class MetalRenderer {
         self.paperWallPipeline = try colorPipeline("kv_wall_vertex", "kv_paper_fragment")
         self.shadedSurfacePipeline = try colorPipeline("kv_surface_vertex", "kv_shaded_fragment")
         self.shadedWallPipeline = try colorPipeline("kv_wall_vertex", "kv_shaded_fragment")
-        self.linePipeline = try colorPipeline("kv_line_vertex", "kv_line_fragment",
-                                              primitive: .line)
+        self.strokePipeline = try colorPipeline("kv_stroke_vertex", "kv_stroke_fragment",
+                                                blended: true)
         self.depthViewPipeline = try colorPipeline("kv_fullscreen_vertex",
                                                    "kv_depth_view_fragment")
     }
