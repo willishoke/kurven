@@ -25,7 +25,10 @@ public enum PNG {
         }
     }
 
-    public static func write(_ texture: MTLTexture, to url: URL) throws {
+    /// A preview target's pixels, BGRA, rows from the top. What `write`
+    /// encodes, for a caller that wants to measure the picture rather than
+    /// keep it.
+    public static func bgra(_ texture: MTLTexture) throws -> [UInt8] {
         guard texture.pixelFormat == .bgra8Unorm else {
             throw Error.unsupportedFormat(texture.pixelFormat)
         }
@@ -35,6 +38,12 @@ public enum PNG {
             texture.getBytes(p.baseAddress!, bytesPerRow: w * 4,
                              from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
         }
+        return bytes
+    }
+
+    public static func write(_ texture: MTLTexture, to url: URL) throws {
+        let w = texture.width, h = texture.height
+        let bytes = try bgra(texture)
         let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue
                                 | CGBitmapInfo.byteOrder32Little.rawValue)
         guard let provider = CGDataProvider(data: Data(bytes) as CFData),

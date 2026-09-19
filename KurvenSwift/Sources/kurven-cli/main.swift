@@ -103,7 +103,8 @@ usage: kurven-cli <command> [options]
         per frame, plus a line pass that costs a fraction of it.
 
   preview <bundle> [--preset NAME] [--width N] [--height N] [--mode M]
-          [--orbit "AZ,EL"] [--zoom F] [--levels N] [--fov DEGREES] -o out.png
+          [--orbit "AZ,EL"] [--zoom F] [--levels N] [--fov DEGREES]
+          [--margin M] -o out.png
         Render one preview frame offscreen and write it as a PNG. Modes:
         plate (the default), shaded, depth. --orbit turns the preset camera by
         that many degrees before drawing. --levels redraws every *described*
@@ -111,6 +112,15 @@ usage: kurven-cli <command> [options]
         bundle exported with --derived can do. --fov switches to a perspective
         camera, which previews but does not bake. This is how the preview is checked
         against the plate without a window in the way.
+
+  flicker <bundle> [preview's view options] [--frames N] [--step DEGREES]
+          [--margin M] [--dump DIR] [--max-flip F]
+        Turn the preview camera --step degrees a frame (default 0.02) for
+        --frames frames (default 24), and report the ink that comes and goes:
+        toggled (changed between frames, motion included) and flipped (a
+        stroke that stayed put while the depth test changed its mind about
+        it). Flicker is a motion artifact; this is it as a number. --max-flip
+        fails the command when the flip rate is over F.
 
   inspect <bundle>
         Print the manifest: domain, caps, occluder, layers, presets, provenance.
@@ -368,20 +378,14 @@ func relaid(_ bundle: KurvenBundle, _ spec: LayerSpec, levelCount count: Int) ->
     return bundle.layer(spec, levels: redone)
 }
 
-func preview(_ args: Args) throws {
+/// The scene and camera a preview frame is drawn from: the preset's own view,
+/// turned by `--orbit`, put in perspective by `--fov`, zoomed by `--zoom`, and
+/// framed to fit the viewport. Shared by `preview` and `flicker`, so the two
+/// look at the same picture from the same arguments.
+func previewView(_ args: Args, viewport: Viewport) throws
+    -> (bundle: KurvenBundle, preset: CameraPreset, scene: Scene, navigator: Navigator)
+{
     let (bundle, preset, loaded) = try loadScene(args)
-    let output = URL(fileURLWithPath: try args.string("output"))
-    let viewport = Viewport(width: try args.int("width", 1600),
-                            height: try args.int("height", 1000))
-
-    let mode: PreviewMode
-    switch args.flags["mode"] ?? "plate" {
-    case "plate": mode = .plate
-    case "shaded": mode = .shaded(Lighting())
-    case "depth": mode = .depth
-    case let other: throw CLIError("unknown --mode '\(other)'; try plate, shaded or depth")
-    }
-
     var base = loaded
     if let n = args.flags["levels"].flatMap({ Int($0) }) {
         base = base.drawing(relaid(bundle, levelCount: n))
@@ -420,6 +424,26 @@ func preview(_ args: Args) throws {
                                           Double(viewport.height) / 2)),
             in: viewport)
     }
+    // The inspector's Margin slider, from the command line.
+    if let margin = try args.double("margin") { base.margin = margin }
+    return (bundle, preset, base, navigator)
+}
+
+func previewMode(_ args: Args) throws -> PreviewMode {
+    switch args.flags["mode"] ?? "plate" {
+    case "plate": .plate
+    case "shaded": .shaded(Lighting())
+    case "depth": .depth
+    case let other: throw CLIError("unknown --mode '\(other)'; try plate, shaded or depth")
+    }
+}
+
+func preview(_ args: Args) throws {
+    let output = URL(fileURLWithPath: try args.string("output"))
+    let viewport = Viewport(width: try args.int("width", 1600),
+                            height: try args.int("height", 1000))
+    let mode = try previewMode(args)
+    let (bundle, preset, base, navigator) = try previewView(args, viewport: viewport)
 
     let renderer = try MetalRenderer()
     let target = try renderer.makePreviewTarget(viewport)
@@ -456,6 +480,94 @@ func preview(_ args: Args) throws {
           took \(elapsed)
           frame \(output.deletingPathExtension().lastPathComponent).frame.json
         """)
+}
+
+/// Ink that comes and goes while the camera turns, as a number.
+///
+/// Flicker is a motion artifact, so no single frame shows it. This renders a
+/// short orbit -- the camera turning `--step` degrees a frame about its target,
+/// the framing held still -- and draws every frame twice: once as the preview
+/// does, and once with the depth test switched off. A pixel that has a stroke
+/// in both frames of a pair *without* the test, but ink in only one of them
+/// *with* it, is a pixel where nothing moved and the visibility test changed
+/// its mind. That is the flicker, and it is counted apart from the motion:
+///
+/// - *toggled*: ink in one frame and not the next. Honest motion contributes,
+///   so this only compares runs at the same step.
+/// - *flipped*: the test changing its mind under a stroke that stayed put.
+///   Some of it is honest too -- a stroke sliding behind a ridge flips at the
+///   ridge -- but that is a pixel or so per stroke, not a dash pattern.
+///
+/// Both are fractions of the mean ink per frame, so a picture with more ink is
+/// not counted as flickering more for it.
+func flicker(_ args: Args) throws {
+    let viewport = Viewport(width: try args.int("width", 1200),
+                            height: try args.int("height", 800))
+    let (bundle, preset, base, start) = try previewView(args, viewport: viewport)
+    let frames = max(try args.int("frames", 24), 2)
+    let step = try args.double("step") ?? 0.02
+    let dump = args.flags["dump"].map { URL(fileURLWithPath: $0) }
+    if let dump {
+        try FileManager.default.createDirectory(at: dump, withIntermediateDirectories: true)
+    }
+    var unclipped = base
+    unclipped.margin = .infinity
+
+    let renderer = try MetalRenderer()
+    let target = try renderer.makePreviewTarget(viewport)
+    let pixels = viewport.width * viewport.height
+    // Ink is anything darker than mid-grey, the test `compare_preview.py`
+    // applies to both of its pictures.
+    func ink(_ scene: Scene, _ navigator: Navigator) throws -> [Bool] {
+        try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
+                                   options: PreviewOptions(mode: .plate), into: target)
+        let bgra = try PNG.bgra(target)
+        return (0..<pixels).map { k in
+            let b = Int(bgra[4 * k]), g = Int(bgra[4 * k + 1]), r = Int(bgra[4 * k + 2])
+            return 299 * r + 587 * g + 114 * b < 128 * 1000
+        }
+    }
+
+    var kept: [Bool] = [], everything: [Bool] = []
+    var inkTotal = 0, toggled = 0, flipped = 0
+    for i in 0..<frames {
+        var navigator = start
+        navigator.orbit.azimuth = Angle(degrees: start.orbit.azimuth.degrees
+                                        + Double(i) * step)
+        let k = try ink(base, navigator)
+        if let dump {
+            try PNG.write(target, to: dump.appendingPathComponent(
+                String(format: "frame%03d.png", i)))
+        }
+        let e = try ink(unclipped, navigator)
+        if i > 0 {
+            for p in 0..<pixels where k[p] != kept[p] {
+                toggled += 1
+                if e[p] && everything[p] { flipped += 1 }
+            }
+        }
+        inkTotal += k.reduce(0) { $0 + ($1 ? 1 : 0) }
+        kept = k; everything = e
+    }
+    let perFrame = max(Double(inkTotal) / Double(frames), 1)
+    let toggledRate = Double(toggled) / Double(frames - 1) / perFrame
+    let flippedRate = Double(flipped) / Double(frames - 1) / perFrame
+
+    func percent(_ x: Double) -> String { String(format: "%.2f%%", x * 100) }
+    let from = start.orbit.azimuth.degrees
+    print("""
+        \(bundle.url.lastPathComponent)  [\(preset.name)]  \(frames) frames \
+        \(step)° apart, margin \(base.margin)
+          \(viewport.width)x\(viewport.height)  azimuth \(String(format: "%.2f", from)) \
+        to \(String(format: "%.2f", from + Double(frames - 1) * step))  \
+        elevation \(String(format: "%.1f", start.orbit.elevation.degrees))
+          ink      \(Int(perFrame.rounded())) px a frame
+          toggled  \(percent(toggledRate)) of it a frame   (motion included)
+          flipped  \(percent(flippedRate)) of it a frame   (the stroke stayed; the test changed its mind)
+        """)
+    if let limit = try args.double("max-flip"), flippedRate > limit {
+        throw CLIError("flipped \(percent(flippedRate)) a frame, over the \(percent(limit)) allowed")
+    }
 }
 
 func service(_ args: Args) throws -> Service {
@@ -635,6 +747,7 @@ do {
     case "depth": try depth(args)
     case "bench": try bench(args)
     case "preview": try preview(args)
+    case "flicker": try flicker(args)
     case "describe": try describe(args)
     case "resample": try resample(args)
     case "inspect": try inspect(args)
