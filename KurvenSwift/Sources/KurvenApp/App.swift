@@ -126,6 +126,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if let path = bundlePath { document.open(URL(fileURLWithPath: path)) }
+        fillScreen()
+    }
+
+    /// Open filling the screen.
+    ///
+    /// A landscape is worth the whole display: the sidebar is fixed at 320
+    /// points, so every point the window gains is a point of plate. Zoomed
+    /// rather than fullscreen -- this takes the screen minus the menu bar and
+    /// the Dock, and leaves the green button meaning what it usually means.
+    ///
+    /// Deferred by one turn of the run loop because SwiftUI has not created the
+    /// window yet when this delegate method runs, and polled a few times after
+    /// that because "not yet" is the normal answer on the first turn. Whatever
+    /// frame was restored from the last run is overwritten, which is the point.
+    private func fillScreen(attempt: Int = 0) {
+        DispatchQueue.main.async { [weak self] in
+            guard let window = NSApp.windows.first(where: { $0.isVisible }) else {
+                if attempt < 20 { self?.fillScreen(attempt: attempt + 1) }
+                return
+            }
+            guard let screen = window.screen ?? NSScreen.main else { return }
+            window.setFrame(screen.visibleFrame, display: true)
+        }
     }
 
     /// Wait for the catalog, make the landscape, and report it. The window is
@@ -366,26 +389,33 @@ struct StatusView: View {
     let document: Document
 
     var body: some View {
-        switch document.state {
-        case .empty:
-            Text("No bundle open").foregroundStyle(.secondary)
-        case .loading(let url):
-            HStack {
-                ProgressView().controlSize(.small)
-                Text("Reading \(url.lastPathComponent)…")
-            }
-        case .ready:
-            HStack(spacing: 14) {
-                if let n = document.navigator {
-                    Text(String(format: "az %.1f°  el %.1f°", n.orbit.azimuth.degrees,
-                                n.orbit.elevation.degrees))
+        // The toolbar draws its own capsule tight around whatever this
+        // returns, so the padding has to come from in here: without it the
+        // first glyph of "az" and the last of "13 ms" sit on the rounded edge.
+        Group {
+            switch document.state {
+            case .empty:
+                Text("No bundle open").foregroundStyle(.secondary)
+            case .loading(let url):
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading \(url.lastPathComponent)…")
                 }
-                if let frames = document.frames.summary { Text(frames) }
+            case .ready:
+                HStack(spacing: 14) {
+                    if let n = document.navigator {
+                        Text(String(format: "az %.1f°  el %.1f°", n.orbit.azimuth.degrees,
+                                    n.orbit.elevation.degrees))
+                    }
+                    if let frames = document.frames.summary { Text(frames) }
+                }
+                .monospacedDigit().foregroundStyle(.secondary)
+            case .failed(_, let message):
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red).lineLimit(1)
             }
-            .monospacedDigit().foregroundStyle(.secondary)
-        case .failed(_, let message):
-            Label(message, systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.red).lineLimit(1)
         }
+        .padding(.horizontal, 10)
+        .fixedSize()
     }
 }
