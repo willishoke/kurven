@@ -68,6 +68,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // its Document, its Navigator, its preview options -- and exits. Without
         // it the only way to know the window draws the right thing is to look at
         // it, and a test that requires someone to look at it is not one.
+        // `--landscape NAME|EXPRESSION [--screenshot PATH]` samples a landscape
+        // through the window's own Document and Service -- the same path the
+        // picker takes -- so "the function picker works" is checkable by
+        // comparing a PNG rather than by clicking.
+        if let i = args.firstIndex(of: "--landscape"), i + 1 < args.endIndex {
+            let what = args[i + 1]
+            let shot = args.firstIndex(of: "--screenshot").flatMap {
+                $0 + 1 < args.endIndex ? URL(fileURLWithPath: args[$0 + 1]) : nil
+            }
+            let save = args.firstIndex(of: "--save").flatMap {
+                $0 + 1 < args.endIndex ? URL(fileURLWithPath: args[$0 + 1]) : nil
+            }
+            let resolution = args.firstIndex(of: "--resolution")
+                .flatMap { $0 + 1 < args.endIndex ? Int(args[$0 + 1]) : nil }
+            let cap = args.firstIndex(of: "--cap")
+                .flatMap { $0 + 1 < args.endIndex ? Double(args[$0 + 1]) : nil }
+            Task { await headlessLandscape(what, resolution: resolution, cap: cap,
+                                           screenshot: shot, save: save) }
+            return
+        }
         if args.contains("--resample"), let path = bundlePath {
             var settings: [String: String] = [:]
             var index = args.startIndex
@@ -105,30 +125,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                       resolution: resolution) }
             return
         }
-        // `--landscape NAME|EXPRESSION [--screenshot PATH]` samples a landscape
-        // through the window's own Document and Service -- the same path the
-        // picker takes -- so "the function picker works" is checkable by
-        // comparing a PNG rather than by clicking.
-        if let i = args.firstIndex(of: "--landscape"), i + 1 < args.endIndex {
-            let what = args[i + 1]
-            let shot = args.firstIndex(of: "--screenshot").flatMap {
-                $0 + 1 < args.endIndex ? URL(fileURLWithPath: args[$0 + 1]) : nil
-            }
-            let save = args.firstIndex(of: "--save").flatMap {
-                $0 + 1 < args.endIndex ? URL(fileURLWithPath: args[$0 + 1]) : nil
-            }
-            let resolution = args.firstIndex(of: "--resolution")
-                .flatMap { $0 + 1 < args.endIndex ? Int(args[$0 + 1]) : nil }
-            Task { await headlessLandscape(what, resolution: resolution,
-                                           screenshot: shot, save: save) }
-            return
-        }
         if let path = bundlePath { document.open(URL(fileURLWithPath: path)) }
     }
 
     /// Wait for the catalog, make the landscape, and report it. The window is
     /// never shown; everything it would do is done through the same model.
-    private func headlessLandscape(_ what: String, resolution: Int?,
+    private func headlessLandscape(_ what: String, resolution: Int?, cap: Double?,
                                    screenshot: URL?, save: URL?) async {
         for _ in 0..<400 where document.catalog == nil && document.serviceStatus == nil {
             try? await Task.sleep(for: .milliseconds(25))
@@ -155,6 +157,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             document.landscapeEdited(draft: false)
         }
         while document.sampling { try? await Task.sleep(for: .milliseconds(25)) }
+        // Truncating is the other kind of edit: no request, no sampling, just
+        // the ink derived again from grids that are already here. Driving it
+        // from here is how that path is checked without a pair of hands.
+        if let cap { document.setCaps(.uniform(cap)) }
         guard document.scene != nil else {
             let why = document.landscapeStatus ?? "no reason given"
             FileHandle.standardError.write(

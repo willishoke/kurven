@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import sys
 import traceback
 from contextlib import redirect_stdout
@@ -299,8 +300,30 @@ def serve(stdin=None, stdout=None):
                 traceback.print_exc(file=sys.stderr)
                 reply = {"id": rid, "error": {"kind": type(e).__name__,
                                               "message": str(e)}}
-        stdout.write(json.dumps(reply, allow_nan=False) + "\n")
-        stdout.flush()
+        try:
+            stdout.write(json.dumps(reply, allow_nan=False) + "\n")
+            stdout.flush()
+        except BrokenPipeError:
+            # The client left while we were answering, which is not an error:
+            # a window that takes a screenshot and exits does exactly this, and
+            # a server that treats it as a crash prints a traceback over the
+            # output of whatever the client was actually doing.
+            return
+
+
+def _quiet_exit():
+    """Let the interpreter shut down after the client has gone.
+
+    Python flushes stdout on the way out, and if the read end is closed that
+    raises a second `BrokenPipeError` in the teardown, where nothing can catch
+    it -- so it prints "Exception ignored" and an exit code of 120. Pointing the
+    descriptor at /dev/null first is the documented way to have nothing to
+    flush (see the Python FAQ on BrokenPipeError).
+    """
+    try:
+        sys.stdout.flush()
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
 
 
 def main(argv=None):
@@ -313,6 +336,7 @@ def main(argv=None):
         serve(stdin=io.StringIO(args.once + "\n"))
         return
     serve()
+    _quiet_exit()
 
 
 if __name__ == "__main__":
