@@ -1,6 +1,7 @@
 import SwiftUI
 import KurvenCore
 import KurvenService
+import KurvenLandscape
 
 /// The controls for a landscape that is being chosen rather than opened.
 ///
@@ -23,23 +24,14 @@ struct LandscapeSection: View {
     private var landscape: LandscapeRequest? { document.landscape }
 
     var body: some View {
-        if let catalog = document.catalog {
-            presetPicker(catalog)
-            if let landscape {
-                expressionField(landscape)
-                domainControls(landscape, window: window(catalog, landscape))
-                resolutionControl(landscape)
-            }
-            status
-        } else if document.service == nil {
-            Text("No Python service, so no new landscapes: this needs "
-                 + "kurven/serve.py, which is found by walking up from the "
-                 + "bundle or named by KURVEN_REPO.")
-                .font(.caption).foregroundStyle(.secondary)
-        } else {
-            Text("Asking the service what it can sample…")
-                .font(.caption).foregroundStyle(.secondary)
+        let catalog = document.catalog
+        presetPicker(catalog)
+        if let landscape {
+            expressionField(landscape)
+            domainControls(landscape, window: window(catalog, landscape))
+            resolutionControl(landscape)
         }
+        status
     }
 
     // MARK: - what

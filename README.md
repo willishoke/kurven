@@ -83,7 +83,7 @@ and everything else is derived from them by rules stated once.
 python examples/function.py --function gamma --gpu
 python examples/function.py --expression "exp(1/z)" \
     --r-min -1 --r-max 1 --i-min -1 --i-max 1 --cap 4
-kurven-cli landscape --function zeta --res 800 -o zeta.kurven   # via the service
+kurven-cli landscape --function zeta --res 800 -o zeta.kurven   # natively, no Python
 ```
 
 ### The expression
@@ -109,10 +109,26 @@ critical line, and Euler–Maclaurin at the points where Borwein's own
 ζ take 0.1 s, so the zeta landscape no longer needs the precomputed cache the
 published plate loads.
 
+The Swift side has the same language and the same forty-three functions, with
+no library behind them (`KurvenSwift/Sources/KurvenMath`): complex arithmetic
+on numpy's branches, scipy's own algorithms where scipy has one (Hare's
+log-gamma, cephes' `ellpj`, the Lambert W iteration), `kurven.expr`'s where it
+does not (ζ), Weideman's Faddeeva function for the error functions, and for
+the Bessel and Airy families two engines — the power series and the Hankel
+expansions for J and Y, Temme's series and Steed's continued fraction for I
+and K — each used only where it is accurate. `tests/fixtures/expr` holds every
+function to scipy at every point of a grid that runs along the real axis at
+exactly `im = 0`, to 1e-12, or 1e-9 for Bessel and Airy, whose engines differ
+from AMOS. So a landscape is sampled in the app's own process
+(`KurvenLandscape`), and the Python service is a comparison path rather than a
+requirement: `kurven-test` builds the fixture landscapes natively and checks
+that the bundle is the one Python wrote, manifest and grids alike.
+
 The catalog (`kurven.landscape.CATALOG`) is fourteen presets over that language
 — each an expression plus the window and truncation that make it read as a
-landscape — and it is *data the server reports*, so a preset added in Python
-appears in the app without a line of Swift changing.
+landscape. The Swift side carries the same list (`Catalog.native`), and the
+fixture compares the two entry for entry, so a preset added on one side is a
+test failure on the other until it is added there too.
 
 ### Truncation, and the hatching that goes with it
 
@@ -139,8 +155,8 @@ Because those layers are *descriptions* rather than dumped strokes, changing
 your mind costs one of two very different things:
 
 - **the function, the window, the resolution** need f evaluated again. That is a
-  request to Python (`kurven.serve`'s `landscape` method) and a new bundle:
-  ~30 ms at 600², ~80 ms for ζ at 500².
+  new landscape (`NativeLandscape.build`, sampled across the cores) and a new
+  bundle: ~10 ms at 600², ~70 ms for ζ at 600².
 - **the cap, the contour levels, the hatch spacing** need nothing but the grids
   already in memory. `KurvenBundle.restyled` re-derives the ink, the wall
   curtains and the plateaus, and the picture follows within a frame.
@@ -182,11 +198,16 @@ examples/
   recip_factorial.py — 1/Γ(z): the reciprocal-factorial relief
 
 KurvenSwift/     — the Swift/Metal frontend (see below)
+  KurvenMath/    — complex arithmetic, the special functions, and the
+                   expression language, natively; depends on nothing
   KurvenCore/    — pure values: spaces, camera, navigation, npy, clip, SVG,
                    and Hatch.swift, which derives the four hatchings
+  KurvenLandscape/ — a landscape sampled here: the catalog, the derived
+                   styling, and the bundle, as kurven.landscape builds them
   KurvenMetal/   — the depth pass, the preview, the resource cache
   KurvenBake/    — scene -> strokes; tiling; PNG
-  KurvenService/ — the Python half over a pipe: examples, and landscapes
+  KurvenService/ — the Python half over a pipe: the published plates, and
+                   landscapes as a comparison path
   kurven-cli/    — bake, preview, depth, bench, inspect, contract, catalog,
                    landscape
   kurven-test/   — the Swift lane of the tests (an executable, not swift test)
@@ -197,7 +218,8 @@ tests/
   make_fixtures.py  — writes tests/fixtures, the oracle both lanes are held to
   check_bundle.py   — the Python lane of the contract tests
   check_expr.py     — the expression language: parsing, safety, and the
-                      numerics of zeta and the elliptics
+                      numerics of zeta and the elliptics (the Swift lane
+                      checks the native functions against tests/fixtures/expr)
   compare_bake.py   — end-to-end: the Swift bake against the Python plate
   verify_refactor.py — pixel-identical before/after diffing for refactors
 ```
@@ -236,9 +258,10 @@ python examples/function.py --function gamma \
 The pipeline divides cleanly in two, and not where you would expect. The seam
 is not "library versus application" but **camera-independent** work (sample →
 contour → lift) versus **camera-dependent** work (project → depth-buffer → clip
-→ ink). The first half is the expensive one, needs scipy, and does not change
-when you move the camera; the second half is cheap and must run again for every
-new viewpoint.
+→ ink). The first half is the expensive one and does not change when you move
+the camera; the second half is cheap and must run again for every new
+viewpoint. (For the published plates the first half is a Python program that
+needs scipy; for a landscape chosen in the app it is native, see above.)
 
 Each example is split at that seam: `build_scene()` returns a
 `kurven.scene.Scene` — everything a plate is before anyone decides how to look

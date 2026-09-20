@@ -554,13 +554,157 @@ def hatch_fixtures(out):
     return sum(c["paths"] for c in index["cases"])
 
 
+
+# --------------------------------------------------------------------------
+# the expression language and its functions
+# --------------------------------------------------------------------------
+
+
+def expr_fixtures(out):
+    """The expression language, its forty-three functions, and the landscapes
+    built over them, as the Python side answers them.
+
+    Three things are pinned, and they fail in different ways:
+
+      values     every function of the table on a grid that runs along the real
+                 axis at exactly im = 0 (the branch cuts), plus each special
+                 function on the window a landscape of it uses. The Swift side
+                 has its own implementation of every one of these -- scipy's
+                 algorithm where scipy has one, `kurven.expr`'s where it does
+                 not -- and this is where the two are compared, to a tolerance
+                 stated per function.
+      parsing    the canonical spelling of the ambiguous cases, and the
+                 character each malformed expression is refused at.
+      landscape  two specs, built by `kurven.landscape` with geometry left
+                 described, written as bundles. The native builder must produce
+                 the same manifest (but for the git sha) and the same grids.
+    """
+    import dataclasses
+
+    from kurven.expr import FUNCTIONS, LANGUAGE, ExpressionError, canonical, compile_expression, parse
+    from kurven.landscape import (CATALOG, DEFAULT_RESOLUTION, PLATE_BUFFER, Spec,
+                                  build_scene)
+    from kurven.export import export
+
+    def evaluate(text, real, imag):
+        r = np.linspace(real[0], real[1], real[2])
+        i = np.linspace(imag[0], imag[1], imag[2])
+        return compile_expression(text)(r[:, None] + 1j * i[None, :])
+
+    grid = {"real": [-3.5, 3.5, 15], "imag": [-2.5, 2.5, 13]}
+    cases = []
+
+    def case(name, text, tol, real=None, imag=None):
+        real = real or grid["real"]
+        imag = imag or grid["imag"]
+        values = evaluate(text, real, imag)
+        np.save(out / f"{name}.npy", np.ascontiguousarray(values.astype(np.complex128)))
+        cases.append({"name": name, "expression": text, "real": real, "imag": imag,
+                      "file": f"{name}.npy", "tol": tol})
+
+    # Every name in the table, at the spelling `tests/check_expr.py` uses.
+    loose = {"besselj", "bessely", "besseli", "besselk", "airyai", "airybi", "zeta"}
+    for name, f in sorted(FUNCTIONS.items()):
+        text = f"{name}(z)" if f.arity == 1 else f"{name}(0.5, z)"
+        if name in ("sn", "cn", "dn"):
+            text = f"{name}(z, 0.64)"
+        case(f"table_{name}", text, 1e-9 if name in loose else 1e-12)
+
+    # The special functions on the windows their landscapes use, and a little
+    # beyond: the regimes each implementation switches between are in here.
+    wide = [
+        ("gamma_wide", "gamma(z)", 1e-12, [-12, 12, 49], [-6, 6, 25]),
+        ("rgamma_wide", "rgamma(z)", 1e-12, [-12, 12, 49], [-6, 6, 25]),
+        ("loggamma_wide", "loggamma(z)", 1e-12, [-12, 12, 49], [-6, 6, 25]),
+        ("digamma_wide", "digamma(z)", 1e-12, [-12, 12, 49], [-6, 6, 25]),
+        ("zeta_wide", "zeta(z)", 1e-10, [-5, 8, 27], [-30, 30, 31]),
+        ("erf_wide", "erf(z)", 1e-12, [-8, 8, 33], [-8, 8, 33]),
+        ("erfc_wide", "erfc(z)", 1e-12, [-8, 8, 33], [-8, 8, 33]),
+        ("erfi_wide", "erfi(z)", 1e-12, [-8, 8, 33], [-8, 8, 33]),
+        ("wofz_wide", "wofz(z)", 1e-12, [-8, 8, 33], [-8, 8, 33]),
+        ("expi_wide", "expi(z)", 1e-10, [-25, 25, 51], [-25, 25, 51]),
+        ("lambertw_wide", "lambertw(z)", 1e-10, [-8, 8, 33], [-8, 8, 33]),
+        ("besselj0_wide", "besselj(0, z)", 1e-9, [-25, 25, 51], [-8, 8, 17]),
+        ("besselj10_wide", "besselj(10, z)", 1e-9, [-30, 30, 31], [-30, 30, 31]),
+        ("bessely2p7_wide", "bessely(2.7, z)", 1e-9, [-30, 30, 31], [-30, 30, 31]),
+        ("besseli1p5_wide", "besseli(1.5, z)", 1e-9, [-25, 25, 51], [-8, 8, 17]),
+        ("besselk5_wide", "besselk(5, z)", 1e-9, [-30, 30, 31], [-30, 30, 31]),
+        ("besselkm2p3_wide", "besselk(-2.3, z)", 1e-9, [-25, 25, 26], [-25, 25, 26]),
+        ("airyai_wide", "airyai(z)", 1e-9, [-12, 12, 49], [-12, 12, 49]),
+        ("airybi_wide", "airybi(z)", 1e-9, [-12, 12, 49], [-12, 12, 49]),
+        ("cn_wide", "cn(z, 0.9)", 1e-12, [-6, 6, 25], [-4, 4, 17]),
+        ("sn_wide", "sn(z, 0.2)", 1e-12, [-6, 6, 25], [-4, 4, 17]),
+        ("tan_wide", "tan(z)", 1e-12, [-12, 12, 49], [-4, 4, 17]),
+        ("sinh_wide", "sinh(z)", 1e-12, [-12, 12, 49], [-12, 12, 49]),
+    ]
+    for name, text, tol, real, imag in wide:
+        case(name, text, tol, real, imag)
+
+    # The readings two reasonable people disagree about, as Python reads them.
+    precedence = ["-z^2", "2^-z", "2z^2", "z^2^3", "(z^2)^3", "1/2z", "z(z+1)",
+                  "(z-1)(z+1)", "2 pi i", "2sin(z)", "1e-3z", "2e", "z - -z", "--z",
+                  "z!", "(z+1)!", "1/Γ(z)", "ζ(z) + ψ(z)", "ln(z) + arcsin(z)",
+                  "z!^2", "exp(1/z)", "(z-1)(z+1)/(z^2+1)", "-z^2+2z-1/(z^2+1)",
+                  "2**z", "abs(z)^2 + re(z)*im(z) - arg(conj(z))", "1e16z", "0.000125z",
+                  "sqrt(z) + log(z) + acos(z) + atanh(z) + acosh(z) + asinh(z) + atan(z)"]
+    for k, text in enumerate(precedence):
+        case(f"reading_{k}", text, 1e-12)
+
+    canonical_cases = ["1 / Γ(z)", "-z^2", "2z^2", "z(z+1)", "2**z", "(z-1)(z+1)", "ln(z)",
+                       "1/Γ(z)", "-z^2+2z-1/(z^2+1)", "cn(z, 0.64)", "z!^2", "2^-z",
+                       "exp(1/z)", "(z-1)(z+1)/(z^2+1)", "2 pi i", "1e-3z", "0.5e", "1e16z",
+                       "besselj(0.5, z)", "z^(1/3)", "-(-z)", "(-z)^2", "-z!", "z^-1",
+                       "1e-05 z", "123456789012345.6 z", "2.50z"]
+    canonical_spellings = {text: canonical(text) for text in canonical_cases}
+
+    errors = []
+    for text in ["", "sin(z", "(z+1", "z +", "foo(z)", "gamma(z, 2)", "z..2", "gamma",
+                 "z 2 @", ")", "gama(z)", "1/", "z^", "cn(z)", "2 PI",
+                 "__import__(\"os\")", "z; print(1)"]:
+        try:
+            parse(text)
+            errors.append({"text": text, "parses": True})
+        except ExpressionError as e:
+            errors.append({"text": text, "position": e.position, "length": e.length,
+                           "message": e.message})
+
+    # Two landscapes, built the way the service builds them: every layer a
+    # description, no walls dumped. One leaves the truncation to the rule, the
+    # other says where to cut and how densely to hatch.
+    landscapes = []
+    for stem, spec in [("landscape_gamma", Spec.of("gamma", resolution=90)),
+                       ("landscape_cubic", Spec.of("cubic", resolution=64, spacing=0.4)),
+                       ("landscape_typed",
+                        Spec(expression="sin(z)/z", resolution=48,
+                             domain=Spec.of("sin").domain))]:
+        scene = build_scene(spec, verbose=False, geometry=False, chunk_count=1)
+        scene = dataclasses.replace(scene, walls=())
+        manifest = export(scene, out / f"{stem}.kurven", chunk_count=1, phase=True,
+                          wall_mesh=False, derived=True, example="function")
+        landscapes.append({"bundle": f"{stem}.kurven", "spec": spec.to_dict(),
+                           "layers": len(manifest.layers)})
+
+    (out / "index.json").write_text(json.dumps({
+        "grid": grid,
+        "columns": "[real][imag]",
+        "cases": cases,
+        "canonical": canonical_spellings,
+        "errors": errors,
+        "language": LANGUAGE,
+        "catalog": [p.to_dict() for p in CATALOG],
+        "defaults": {"resolution": DEFAULT_RESOLUTION, "buffer": PLATE_BUFFER},
+        "landscapes": landscapes,
+    }, sort_keys=True, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    return len(cases)
+
+
 # --------------------------------------------------------------------------
 
 
 def main():
     if FIXTURES.exists():
         shutil.rmtree(FIXTURES)
-    for sub in ("contract", "npy", "camera", "clip", "contour", "hatch"):
+    for sub in ("contract", "npy", "camera", "clip", "contour", "hatch", "expr"):
         (FIXTURES / sub).mkdir(parents=True)
 
     contract_fixtures(FIXTURES / "contract")
@@ -569,11 +713,12 @@ def main():
     camera_fixtures(FIXTURES / "camera")
     n = clip_fixture(FIXTURES / "clip")
     strokes = hatch_fixtures(FIXTURES / "hatch")
+    expressions = expr_fixtures(FIXTURES / "expr")
 
     total = sum(f.stat().st_size for f in FIXTURES.rglob("*") if f.is_file())
     print(f"wrote {FIXTURES.relative_to(ROOT)} "
           f"({total / 1e3:.0f} kB, clip has {n} visible segments, "
-          f"hatch has {strokes} strokes)")
+          f"hatch has {strokes} strokes, expr has {expressions} cases)")
 
 
 if __name__ == "__main__":

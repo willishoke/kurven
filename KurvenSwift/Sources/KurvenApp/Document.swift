@@ -4,6 +4,7 @@ import KurvenCore
 import KurvenMetal
 import KurvenBake
 import KurvenService
+import KurvenLandscape
 
 /// One open bundle, and everything the window knows about it.
 ///
@@ -63,10 +64,9 @@ final class Document {
     // a file, so what a document holds is the request that produced it, the
     // request the controls have been edited to, and which of those is on screen.
 
-    /// The menu of functions, as the service reports it. Absent until it
-    /// answers, and absent forever on a machine with no checkout -- where
-    /// opening bundles still works and making them does not.
-    private(set) var catalog: Catalog?
+    /// The menu of functions. Native: the same list the Python side reports,
+    /// held to it by `kurven-test`, so a landscape needs no service at all.
+    let catalog = Catalog.native
     /// What the controls say. Nil when this document is a bundle someone made
     /// earlier rather than a landscape being chosen.
     var landscape: LandscapeRequest?
@@ -119,7 +119,7 @@ final class Document {
 
     var title: String {
         if let landscape, isLandscape {
-            return catalog?.preset(landscape.name)?.label ?? landscape.expression
+            return catalog.preset(landscape.name)?.label ?? landscape.expression
         }
         return url?.deletingPathExtension().lastPathComponent ?? "Kurven"
     }
@@ -312,7 +312,6 @@ final class Document {
             self.service = service
             Task {
                 do {
-                    catalog = try await service.catalog()
                     serviceDescription = try await service.describe()
                     if let example, arguments.isEmpty {
                         // Start from what the bundle was actually made with, so

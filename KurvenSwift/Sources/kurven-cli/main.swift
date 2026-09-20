@@ -3,6 +3,7 @@ import KurvenCore
 import KurvenMetal
 import KurvenBake
 import KurvenService
+import KurvenLandscape
 
 /// `kurven-cli` -- the headless half of the frontend.
 ///
@@ -139,21 +140,23 @@ usage: kurven-cli <command> [options]
         each takes. The service is found by walking up from the working
         directory for kurven/serve.py; KURVEN_REPO and KURVEN_PYTHON override.
 
-  catalog [--python PATH] [--repo PATH]
-        Print the functions the service can sample and the language they are
-        written in. This is the menu the app's function picker is built from.
+  catalog
+        Print the functions this program can sample and the language they are
+        written in. This is the menu the app's function picker is built from,
+        and kurven-test holds it to the Python side's.
 
   landscape [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI]
-            [--res N] [--cap Z] [--spacing S] -o out.kurven
-        Sample a function over a rectangle and write its bundle. Every layer
-        is a description, so the result's cap, levels and hatch spacing are
-        editable afterwards -- in the app, or by `bake --levels`.
+            [--res N] [--cap Z] [--spacing S] [--service] -o out.kurven
+        Sample a function over a rectangle and write its bundle -- natively,
+        with no Python in the loop, or by the service with --service, which
+        is the comparison path. Every layer is a description, so the result's
+        cap, levels and hatch spacing are editable afterwards -- in the app,
+        or by `bake --levels`.
 
   resample <example> [--set NAME=VALUE ...] [--derived] -o out.kurven
-        Ask the service to build a bundle. This is the whole of what Python is
-        still for: the frozen bundle cannot change its own domain or
-        resolution, and sampling special functions is the one thing Swift has
-        no library for.
+        Ask the service to rebuild one of the published plates. That is what
+        Python is still for: the four plates are Python programs, and a
+        frozen bundle of one cannot change its own domain or resolution.
 
   contract <dir>
         Decode every .kurven bundle in <dir>, re-encode its manifest, and
@@ -677,10 +680,7 @@ func resample(_ args: Args) throws {
 }
 
 func catalogCommand(_ args: Args) throws {
-    let service = try service(args)
-    defer { service.stop() }
-    let catalog = try blocking { try await service.catalog() }
-    print("service: \(service.command.display)")
+    let catalog = Catalog.native
     print("  \(catalog.presets.count) presets, default resolution \(catalog.defaultResolution)")
     for preset in catalog.presets {
         let d = preset.domain
@@ -708,9 +708,7 @@ func interval(_ text: String, _ what: String) throws -> Interval {
 
 func landscapeCommand(_ args: Args) throws {
     let output = URL(fileURLWithPath: try args.string("output"))
-    let service = try service(args)
-    defer { service.stop() }
-    let catalog = try blocking { try await service.catalog() }
+    let catalog = Catalog.native
 
     // The preset is the starting point and every flag is an override of it, so
     // `landscape --function gamma --res 1200` means what it looks like.
@@ -735,20 +733,33 @@ func landscapeCommand(_ args: Args) throws {
     if let s = args.flags["spacing"], let v = Double(s) { request.spacing = v }
 
     let clock = ContinuousClock()
-    let asked = request
-    var result: ExportResult!
-    let elapsed = try clock.measure {
-        result = try blocking { try await service.landscape(asked, to: output) }
+    var bundle: KurvenBundle!
+    let sampled = try clock.measure {
+        bundle = try args.switches.contains("service")
+            ? sampledByService(request, to: output, args)
+            : NativeLandscape.build(request)
     }
+    if !args.switches.contains("service") { try bundle.write(to: output) }
+    let m = bundle.manifest
     print("""
-        \(result.manifest.provenance.function) -> \(result.url.lastPathComponent) \
-        (\(String(format: "%.1f", Double(result.bytes) / 1e6)) MB in \(elapsed))
-          \(result.manifest.height.shape.nx)x\(result.manifest.height.shape.ny) samples, \
-        caps \(result.manifest.caps)
+        \(m.provenance.function) -> \(output.lastPathComponent) \
+        (\(args.switches.contains("service") ? "by the service" : "natively") in \(sampled))
+          \(m.height.shape.nx)x\(m.height.shape.ny) samples, caps \(m.caps)
         """)
-    for spec in result.manifest.layers {
+    for spec in m.layers {
         print("    \(pad(spec.name, 14)) \(sourceName(spec.source))")
     }
+}
+
+/// The same request answered by the Python service: the comparison path,
+/// kept so a native landscape can be checked against the one Python would
+/// have written for it.
+func sampledByService(_ request: LandscapeRequest, to output: URL, _ args: Args) throws
+    -> KurvenBundle {
+    let service = try service(args)
+    defer { service.stop() }
+    let result = try blocking { try await service.landscape(request, to: output) }
+    return try KurvenBundle.read(at: result.url)
 }
 
 func fmt(_ x: Double) -> String { String(format: "%g", x) }

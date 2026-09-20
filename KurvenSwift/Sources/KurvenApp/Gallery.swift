@@ -1,6 +1,6 @@
 import SwiftUI
 import KurvenCore
-import KurvenService
+import KurvenLandscape
 
 /// The catalog as pictures: pick a landscape by looking at it.
 ///
@@ -14,7 +14,6 @@ import KurvenService
 struct Gallery: View {
     let presets: [FunctionPreset]
     let thumbnails: Thumbnails
-    var service: Service?
     var choose: (FunctionPreset) -> Void
     var dismiss: (() -> Void)?
 
@@ -45,9 +44,9 @@ struct Gallery: View {
         }
         .frame(minWidth: 560, minHeight: 420)
         // Only when the picker is actually looked at: fourteen landscapes is a
-        // second or two of the service, and a window that opens a bundle never
-        // needs any of them.
-        .task { thumbnails.warm(presets, service: service) }
+        // second of sampling, and a window that opens a bundle never needs any
+        // of them.
+        .task { thumbnails.warm(presets) }
     }
 
     @ViewBuilder

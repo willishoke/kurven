@@ -1,6 +1,7 @@
 import SwiftUI
 import KurvenCore
 import KurvenService
+import KurvenLandscape
 
 /// The sidebar: what is drawn, from where, and how it bakes.
 ///

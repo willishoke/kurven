@@ -186,18 +186,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Wait for the catalog, make the landscape, and report it. The window is
-    /// never shown; everything it would do is done through the same model.
+    /// Make the landscape and report it. The window is never shown; everything
+    /// it would do is done through the same model.
     private func headlessLandscape(_ what: String, resolution: Int?, cap: Double?,
                                    screenshot: URL?, save: URL?) async {
-        for _ in 0..<400 where document.catalog == nil && document.serviceStatus == nil {
-            try? await Task.sleep(for: .milliseconds(25))
-        }
-        guard let catalog = document.catalog else {
-            let why = document.serviceStatus ?? "it never answered"
-            FileHandle.standardError.write(Data("Kurven: no service — \(why)\n".utf8))
-            exit(1)
-        }
+        let catalog = document.catalog
         if let preset = catalog.preset(what) {
             document.create(preset)
         } else {
@@ -236,18 +229,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Show the picker. Not "make a landscape at once": with fourteen
     /// functions in the catalog, the choice is the interesting part.
     private func warmThumbnails() async {
-        document.connectService()
-        for _ in 0..<400 where document.catalog == nil && document.serviceStatus == nil {
-            try? await Task.sleep(for: .milliseconds(25))
-        }
-        guard let catalog = document.catalog else {
-            let why = document.serviceStatus ?? "it never answered"
-            FileHandle.standardError.write(Data("Kurven: no service — \(why)\n".utf8))
-            exit(1)
-        }
+        let catalog = document.catalog
         let clock = ContinuousClock()
         let started = clock.now
-        thumbnails.warm(catalog.presets, service: document.service)
+        thumbnails.warm(catalog.presets)
         while thumbnails.images.count < catalog.presets.count {
             if catalog.presets.allSatisfy({ thumbnails.images[$0.name] != nil
                                             || thumbnails.isFailed($0) }) { break }
@@ -263,7 +248,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func newLandscape() {
-        document.connectService()
         document.browsing = true
     }
 
@@ -396,8 +380,7 @@ struct DocumentWindow: View {
         }
         .navigationTitle(document.title)
         .sheet(isPresented: $document.browsing) {
-            Gallery(presets: document.catalog?.presets ?? [], thumbnails: thumbnails,
-                    service: document.service,
+            Gallery(presets: document.catalog.presets, thumbnails: thumbnails,
                     choose: { document.create($0) },
                     dismiss: { document.browsing = false })
         }
@@ -410,35 +393,19 @@ struct DocumentWindow: View {
     private var overlay: some View {
         switch document.state {
         case .empty:
-            if let catalog = document.catalog {
-                VStack(spacing: 0) {
-                    Gallery(presets: catalog.presets, thumbnails: thumbnails,
-                            service: document.service,
-                            choose: { document.create($0) })
-                    Divider()
-                    HStack {
-                        Text("…or open a bundle someone already made.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Open…", action: open)
-                    }
-                    .padding(.horizontal, 20).padding(.vertical, 10)
-                }
-                .background(.background)
-            } else {
-                VStack(spacing: 8) {
-                    Text("kurven").font(.largeTitle)
-                    Text(document.service == nil
-                         ? "No Python service, so no new landscapes. Open a .kurven bundle."
-                         : "Asking the service what it can sample…")
-                        .foregroundStyle(.secondary)
+            VStack(spacing: 0) {
+                Gallery(presets: document.catalog.presets, thumbnails: thumbnails,
+                        choose: { document.create($0) })
+                Divider()
+                HStack {
+                    Text("…or open a bundle someone already made.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
                     Button("Open…", action: open)
-                    if let status = document.serviceStatus {
-                        Text(status).font(.caption).foregroundStyle(.secondary)
-                            .frame(maxWidth: 420)
-                    }
                 }
+                .padding(.horizontal, 20).padding(.vertical, 10)
             }
+            .background(.background)
         case .loading:
             ProgressView()
         case .failed(let url, let message):
