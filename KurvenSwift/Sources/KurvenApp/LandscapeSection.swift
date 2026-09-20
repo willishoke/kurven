@@ -16,7 +16,6 @@ import KurvenService
 /// worth reporting.
 struct LandscapeSection: View {
     @Bindable var document: Document
-    var onChange: () -> Void
 
     @State private var typed: String = ""
     @State private var editingExpression = false
@@ -53,7 +52,6 @@ struct LandscapeSection: View {
                 guard let preset = catalog.preset(name) else { return }
                 document.create(preset)
                 typed = preset.expression
-                onChange()
             })) {
             if document.landscape?.name.isEmpty ?? true {
                 Text(document.landscape.map { "\($0.expression) (typed)" } ?? "—")
@@ -87,7 +85,6 @@ struct LandscapeSection: View {
                     // from, and saying so is what keeps the picker honest.
                     document.landscape?.name = ""
                     document.landscapeEdited(draft: false)
-                    onChange()
                 }
         }
         .help("Press return to sample it. Anything kurven.expr parses: "
@@ -154,7 +151,6 @@ struct LandscapeSection: View {
         TextField("", value: Binding(get: { value.wrappedValue }, set: {
             value.wrappedValue = $0
             document.landscapeEdited(draft: false)
-            onChange()
         }), format: .number.precision(.fractionLength(1)))
             .labelsHidden().monospacedDigit().frame(width: 52)
     }
@@ -183,7 +179,6 @@ struct LandscapeSection: View {
     /// the hand stops.
     private func edited(_ isDragging: Bool) {
         document.landscapeEdited(draft: isDragging)
-        onChange()
     }
 
     @ViewBuilder
@@ -206,7 +201,6 @@ struct LandscapeSection: View {
 /// survive, all from grids that never leave memory.
 struct TruncationSection: View {
     @Bindable var document: Document
-    var onChange: () -> Void
 
     var body: some View {
         Picker("Truncate", selection: Binding(get: { Kind(document.caps) },
@@ -225,7 +219,6 @@ struct TruncationSection: View {
         case .uniform(let z):
             capSlider("Cap", value: Binding(get: { z }, set: {
                 document.setCaps(.uniform($0))
-                onChange()
             }))
         case .realBands(let bands, let beyond):
             bandRows(bands, beyond)
@@ -265,7 +258,6 @@ struct TruncationSection: View {
                         var next = bands
                         next[index].below = value
                         document.setCaps(.realBands(next, beyond: beyond))
-                        onChange()
                     }),
                     format: .number.precision(.fractionLength(1)))
                     .labelsHidden().monospacedDigit().frame(width: 52)
@@ -274,7 +266,6 @@ struct TruncationSection: View {
                     var next = bands
                     next[index].cap = $0
                     document.setCaps(.realBands(next, beyond: beyond))
-                    onChange()
                 }), in: 0.1...ceiling)
                 Text(String(format: "%.2f", band.cap))
                     .font(.caption).monospacedDigit().frame(width: 40, alignment: .trailing)
@@ -282,7 +273,6 @@ struct TruncationSection: View {
                     var next = bands
                     next.remove(at: index)
                     document.setCaps(.realBands(next, beyond: beyond))
-                    onChange()
                 } label: { Image(systemName: "minus.circle") }
                     .buttonStyle(.borderless).controlSize(.small)
             }
@@ -291,14 +281,12 @@ struct TruncationSection: View {
             get: { beyond.isFinite ? beyond : ceiling },
             set: {
                 document.setCaps(.realBands(bands, beyond: $0))
-                onChange()
             }))
         Button("Add a band") {
             let below = (bands.last?.below ?? -1) + 1
             document.setCaps(.realBands(bands + [RealBand(below: below,
                                                           cap: beyond.isFinite ? beyond : 5)],
                                         beyond: beyond))
-            onChange()
         }
         .controlSize(.small)
     }
@@ -317,7 +305,6 @@ struct TruncationSection: View {
             document.setCaps(.realBands([RealBand(below: middle, cap: current)],
                                         beyond: current))
         }
-        onChange()
     }
 
     enum Kind: Hashable {

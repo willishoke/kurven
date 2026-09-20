@@ -62,7 +62,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A path on the command line opens it, so the app can be driven from a
         // shell the same way the CLI is.
         let args = CommandLine.arguments.dropFirst()
-        let bundlePath = args.first { !$0.hasPrefix("-") && $0.hasSuffix(".kurven") }
+        // `--open PATH` as well as a bare path, and the difference is not
+        // cosmetic. AppKit reads a bare argument as "this process was launched
+        // to open that file", and SwiftUI's WindowGroup then declines to make
+        // its default window -- so `Kurven recip.kurven` shows nothing at all,
+        // while `Kurven --open recip.kurven` shows the landscape. A
+        // dash-prefixed argument is not read that way. The Finder and
+        // `open -a` are unaffected: they deliver the file through
+        // `application(_:open:)` rather than through argv.
+        let flagged = args.firstIndex(of: "--open").flatMap {
+            $0 + 1 < args.endIndex ? String(args[$0 + 1]) : nil
+        }
+        let bare = args.first { !$0.hasPrefix("-") && $0.hasSuffix(".kurven") }
+        let bundlePath = flagged ?? bare
 
         // `--screenshot PATH` renders one frame through the app's own state --
         // its Document, its Navigator, its preview options -- and exits. Without
@@ -126,6 +138,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if let path = bundlePath { document.open(URL(fileURLWithPath: path)) }
+        if flagged == nil, bare != nil {
+            FileHandle.standardError.write(Data("""
+                Kurven: macOS does not open a window for a process launched \
+                with a bare file argument. Use --open \(bare!), or open the \
+                bundle from the Finder.\n
+                """.utf8))
+        }
         fillScreen()
     }
 
@@ -141,9 +160,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// that because "not yet" is the normal answer on the first turn. Whatever
     /// frame was restored from the last run is overwritten, which is the point.
     private func fillScreen(attempt: Int = 0) {
-        DispatchQueue.main.async { [weak self] in
+        // Spaced in time, not merely deferred: twenty turns of the run loop go
+        // by in under a millisecond, which is before SwiftUI has made the
+        // window, so a chain of `async` retries is twenty ways of asking too
+        // early. Two seconds of 50 ms polls is a wait.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (attempt == 0 ? 0 : 0.05)) { [weak self] in
             guard let window = NSApp.windows.first(where: { $0.isVisible }) else {
-                if attempt < 20 { self?.fillScreen(attempt: attempt + 1) }
+                if attempt < 40 { self?.fillScreen(attempt: attempt + 1) }
                 return
             }
             guard let screen = window.screen ?? NSScreen.main else { return }
@@ -323,17 +346,15 @@ struct DocumentWindow: View {
     // Handed in rather than found through `NSApp.delegate`: under
     // `@NSApplicationDelegateAdaptor` that is SwiftUI's delegate, not ours.
     let open: () -> Void
-    @State private var redraws = 0
 
     var body: some View {
         HSplitView {
             ZStack {
                 MetalView(document: document)
-                    .id(redraws == Int.max ? 1 : 0)   // never re-created
                 overlay
             }
             .frame(minWidth: 480)
-            Inspector(document: document) { redraws &+= 1 }
+            Inspector(document: document)
                 .frame(width: 320)
         }
         .navigationTitle(document.title)

@@ -315,7 +315,17 @@ per-vertex, which can disagree on runs shorter than a pixel and nowhere else.
 ```bash
 scripts/bundle-app.sh                    # assembles build/Kurven.app
 open -a build/Kurven.app recip.kurven    # or double-click the bundle
+swift run -c release KurvenApp --open ../recip.kurven    # from a terminal
 ```
+
+`--open` is an alias for the bare path, and it matters in one place: launched
+from a *non-interactive* shell — a CI job, an agent's subprocess — a bare file
+argument makes AppKit treat the launch as "opened with a file", and SwiftUI's
+`WindowGroup` then declines to create its default window, so the app comes up
+with nothing on screen. A dash-prefixed argument is not read that way. From a
+terminal the bare path is fine, and the Finder and `open -a` were never
+affected, because they deliver the file through `application(_:open:)` rather
+than through the command line.
 
 Left-drag orbits, shift-drag pans, scroll zooms toward the cursor, double-click
 re-targets the turn onto the point you clicked, `f` fits, `1`/`2`/`3` switch
