@@ -33,21 +33,41 @@ public struct KurvenBundle: Sendable {
     /// Present when the manifest carries `Walls.mesh`; nil when the walls are
     /// derived from a perimeter instead.
     public let wallMesh: Mesh<WorldSpace>?
+    /// Present when the function behind the grids is available: every described
+    /// contour layer is derived through it, now and after every restyle, so a
+    /// cap slider re-derives refined ink rather than falling back to the grid's.
+    /// A bundle read from disk has none until a consumer that knows the function
+    /// attaches one (`refined(by:)`).
+    public let refine: ContourRefine?
 
     public init(url: URL, manifest: Manifest, surface: Surface, layers: [Layer],
-                wallMesh: Mesh<WorldSpace>?) {
+                wallMesh: Mesh<WorldSpace>?, refine: ContourRefine? = nil) {
         self.url = url; self.manifest = manifest; self.surface = surface
-        self.layers = layers; self.wallMesh = wallMesh
+        self.layers = layers; self.wallMesh = wallMesh; self.refine = refine
     }
 
     /// A bundle whose every layer is described: the ink is derived from the
     /// grids, as `read` derives it for a `--derived` bundle on disk.
-    public init(url: URL, manifest: Manifest, surface: Surface) {
+    public init(url: URL, manifest: Manifest, surface: Surface,
+                refine: ContourRefine? = nil) {
         self.init(url: url, manifest: manifest, surface: surface,
                   layers: manifest.layers.map {
-                      Layer(spec: $0, paths: surface.ink($0, occluder: manifest.occluder))
+                      Layer(spec: $0, paths: surface.ink($0, occluder: manifest.occluder,
+                                                         refine: refine))
                   },
-                  wallMesh: nil)
+                  wallMesh: nil, refine: refine)
+    }
+
+    /// The same bundle deriving its contour layers through `refine` -- or,
+    /// with nil, through the grids alone. Dumped layers are untouched.
+    public func refined(by refine: ContourRefine?) -> KurvenBundle {
+        let base = KurvenBundle(url: url, manifest: manifest, surface: surface, layers: [],
+                                wallMesh: wallMesh, refine: refine)
+        return KurvenBundle(url: url, manifest: manifest, surface: surface,
+                            layers: manifest.layers.map { spec in
+                                spec.files == nil ? base.redrawn(spec) : redrawn(spec)
+                            },
+                            wallMesh: wallMesh, refine: refine)
     }
 
     public func layer(_ name: String) throws -> Layer {
@@ -166,7 +186,8 @@ public extension KurvenBundle {
             let existing = layers.first { $0.spec.name == spec.name }
             return Layer(spec: spec, paths: existing?.paths ?? .empty)
         }
-        return Layer(spec: spec, paths: surface.ink(spec, occluder: manifest.occluder))
+        return Layer(spec: spec, paths: surface.ink(spec, occluder: manifest.occluder,
+                                                    refine: refine))
     }
 
     /// The same grids under a different manifest.
@@ -190,13 +211,13 @@ public extension KurvenBundle {
         let restyledSurface = Surface(height: surface.height, phase: surface.phase,
                                       caps: honest.caps, cached: surface.cached)
         let bundle = KurvenBundle(url: url, manifest: honest, surface: restyledSurface,
-                                  layers: [], wallMesh: wallMesh)
+                                  layers: [], wallMesh: wallMesh, refine: refine)
         return KurvenBundle(url: url, manifest: honest, surface: restyledSurface,
                             layers: honest.layers.map { spec in
                                 spec.files == nil ? bundle.redrawn(spec)
                                                   : redrawn(spec)
                             },
-                            wallMesh: wallMesh)
+                            wallMesh: wallMesh, refine: refine)
     }
 
     /// The levels a described layer was exported with, or nil when it is dumped.

@@ -174,7 +174,8 @@ func landscapeTests() {
             let clock = ContinuousClock()
             var ours: KurvenBundle!
             let elapsed = try clock.measure {
-                ours = try NativeLandscape.build(spec, gitSha: theirs.manifest.provenance.gitSha)
+                ours = try NativeLandscape.build(spec, gitSha: theirs.manifest.provenance.gitSha,
+                                                 refine: false)
             }
             let shape = theirs.manifest.height.shape
             let label = "\(name) (\(spec.expression), \(shape.nx)x\(shape.ny), \(elapsed))"
@@ -249,4 +250,54 @@ func firstDifference(_ a: String, _ b: String) -> String {
     while i < min(x.count, y.count), x[i] == y[i] { i += 1 }
     let from = max(0, i - 60), to = min(min(x.count, y.count), i + 60)
     return "at \(i): python …\(String(x[from..<min(x.count, to)]))… swift …\(String(y[from..<min(y.count, to)]))…"
+}
+
+// MARK: - 12. contour refinement
+
+/// Contours placed by f: the vertices land on the level set, the chords stay
+/// within tolerance of it, the phase wraps are gone, and a restyle keeps all
+/// of that.
+func refinementTests() {
+    Check.suite("refine: contours placed by the function") {
+        let request = LandscapeRequest(preset: Catalog.native.preset("gamma")!, resolution: 300)
+        let (bundle, reports) = try NativeLandscape.benchmarkRefinement(request)
+        for r in reports {
+            let what = "\(r.layer) (\(r.field.rawValue), \(r.levels) levels)"
+            switch r.field {
+            case .magnitude:
+                Check.expect(r.refinedVertex.max < 1e-6,
+                             "\(what): every vertex is on the level set",
+                             String(format: "max %.1e cells, was %.3f", r.refinedVertex.max, r.gridVertex.max))
+                Check.expect(r.refinedChord.p95 <= 0.02 + 1e-9 && r.refinedChord.max <= 0.03,
+                             "\(what): the chords stay within tolerance",
+                             String(format: "p95 %.4f max %.4f cells, was max %.3f",
+                                    r.refinedChord.p95, r.refinedChord.max, r.gridChord.max))
+            case .phase:
+                Check.expect(r.wrapVertices > 0, "\(what): the grid had vertices on the wrap",
+                             "\(r.wrapVertices) of \(r.gridVertices)")
+                // Within the float32 grid's own precision: an edge the grid
+                // saw a crossing on but f does not is snapped to its nearer
+                // end, which is where the level set passes within rounding.
+                Check.expect(r.refinedVertex.max < 1e-3,
+                             "\(what): and the refined vertices are all on the level set",
+                             String(format: "max %.1e cells, was %.1f", r.refinedVertex.max, r.gridVertex.max))
+            }
+            Check.expect(r.refineSeconds < 1.0, "\(what): in reasonable time",
+                         String(format: "%.1f ms for %d vertices", r.refineSeconds * 1e3, r.refinedVertices))
+        }
+        // A restyle re-derives through the refiner rather than losing it.
+        let refined = try NativeLandscape.build(request)
+        Check.expect(refined.refine != nil, "a native landscape carries its refiner")
+        var manifest = refined.manifest
+        manifest.caps = .uniform(3)
+        let restyled = refined.restyled(manifest)
+        Check.expect(restyled.refine != nil, "and a restyled one still does")
+        let plain = try NativeLandscape.build(request, refine: false)
+        let a = restyled.layers.first { $0.spec.name == "mag_major" }!.paths
+        let b = plain.restyled(manifest).layers.first { $0.spec.name == "mag_major" }!.paths
+        Check.expect(a.vertices.count != b.vertices.count || a.inkLength != b.inkLength,
+                     "so its ink after the restyle is the refined ink, not the grid's",
+                     "\(a.count) vs \(b.count) paths")
+        _ = bundle
+    }
 }

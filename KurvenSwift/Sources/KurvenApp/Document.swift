@@ -171,7 +171,16 @@ final class Document {
     /// outside this file, so "what is open" still changes in one place.
     func replace(bundle: KurvenBundle) { state = .ready(bundle) }
 
+    /// Whether a landscape's contours are placed by its function rather than
+    /// by its grid (`ContourRefiner`). A bundle read from disk records its
+    /// expression, so it can be refined the same way a freshly sampled one is.
+    var refineContours = true
+
     func adopt(_ bundle: KurvenBundle, keepingCamera: Bool = false) {
+        var bundle = bundle
+        if refineContours, bundle.refine == nil, let refiner = NativeLandscape.refiner(for: bundle) {
+            bundle = bundle.refined(by: refiner.refine)
+        }
         state = .ready(bundle)
         guard let preset = bundle.manifest.presets.first else {
             state = .failed(bundle.url, "the bundle declares no camera presets")

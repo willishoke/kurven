@@ -153,6 +153,11 @@ usage: kurven-cli <command> [options]
         cap, levels and hatch spacing are editable afterwards -- in the app,
         or by `bake --levels`.
 
+  refine [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI] [--res N]
+         [--tolerance CELLS] [--depth N]
+        Benchmark the contour refinement: each contour layer derived from the
+        grid, then placed by f, with both timed and both measured against f.
+
   resample <example> [--set NAME=VALUE ...] [--derived] -o out.kurven
         Ask the service to rebuild one of the published plates. That is what
         Python is still for: the four plates are Python programs, and a
@@ -751,6 +756,54 @@ func landscapeCommand(_ args: Args) throws {
     }
 }
 
+/// `refine`: the contour refinement, benchmarked. Every contour layer of the
+/// landscape is derived from the grid and then refined against f, and both
+/// are timed and measured against f -- the residual over the gradient, in
+/// cells, at every vertex and at every chord's midpoint.
+func refineCommand(_ args: Args) throws {
+    let catalog = Catalog.native
+    let name = args.flags["function"] ?? (args.positional.count > 1 ? "" : "gamma")
+    var request: LandscapeRequest
+    if let preset = catalog.preset(name) {
+        request = LandscapeRequest(preset: preset, resolution: catalog.defaultResolution)
+    } else if let expression = args.positional.dropFirst().first {
+        request = LandscapeRequest(expression: expression,
+                                   domain: Domain(real: Interval(lo: -4, hi: 4),
+                                                  imag: Interval(lo: -2.5, hi: 2.5)),
+                                   resolution: catalog.defaultResolution)
+    } else {
+        throw CLIError("no function given; try 'catalog', or pass an expression")
+    }
+    if let re = args.flags["re"] { request.domain.real = try interval(re, "re") }
+    if let im = args.flags["im"] { request.domain.imag = try interval(im, "im") }
+    if let res = args.flags["res"], let n = Int(res) { request.resolution = n }
+    if let cap = args.flags["cap"], let z = Double(cap) { request.caps = .uniform(z) }
+    let tolerance = args.flags["tolerance"].flatMap(Double.init) ?? 0.02
+    let depth = args.flags["depth"].flatMap(Int.init) ?? 5
+
+    let (bundle, reports) = try NativeLandscape.benchmarkRefinement(
+        request, tolerance: tolerance, maxDepth: depth)
+    let shape = bundle.manifest.height.shape
+    print("\(bundle.manifest.provenance.function)  \(shape.nx)x\(shape.ny) samples, "
+          + "tolerance \(fmt(tolerance)) cells, depth \(depth)")
+    print("  errors are distances from f's level set, in cells; "
+          + "vertex = at the vertices, chord = at the midpoints between them")
+    print("  " + pad("layer", 11) + pad("levels", 7) + pad("vertices", 17)
+          + pad("time ms", 16) + pad("vertex mean/p95/max", 30) + "chord mean/p95/max")
+    func three(_ t: (mean: Double, p95: Double, max: Double)) -> String {
+        String(format: "%.4f/%.4f/%.3f", t.mean, t.p95, t.max)
+    }
+    for r in reports {
+        print("  " + pad(r.layer, 11) + pad(String(r.levels), 7)
+              + pad("\(r.gridVertices) -> \(r.refinedVertices)"
+                    + (r.wrapVertices > 0 ? " (\(r.wrapVertices) on wraps)" : ""), 17)
+              + pad(String(format: "%.1f -> +%.1f", r.gridSeconds * 1e3, r.refineSeconds * 1e3), 16)
+              + pad(three(r.gridVertex) + " -> ", 30) + three(r.gridChord))
+        print("  " + pad("", 11) + pad("", 7) + pad("", 17) + pad("", 16)
+              + pad(three(r.refinedVertex), 30) + three(r.refinedChord))
+    }
+}
+
 /// The same request answered by the Python service: the comparison path,
 /// kept so a native landscape can be checked against the one Python would
 /// have written for it.
@@ -884,6 +937,7 @@ do {
     case "describe": try describe(args)
     case "catalog": try catalogCommand(args)
     case "landscape": try landscapeCommand(args)
+    case "refine": try refineCommand(args)
     case "resample": try resample(args)
     case "inspect": try inspect(args)
     case "contract": try contract(args)

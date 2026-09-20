@@ -155,6 +155,21 @@ extension Document {
 
     var caps: Caps { bundle?.manifest.caps ?? .none }
 
+    /// Switch the contour refinement on or off for the open landscape: the
+    /// same grids, the ink derived again, the camera where it was.
+    func setRefinement(_ on: Bool) {
+        refineContours = on
+        guard let bundle, let navigator, isLandscape else { return }
+        let refiner = on ? NativeLandscape.refiner(for: bundle)?.refine : nil
+        let redrawn = bundle.refined(by: refiner)
+        replace(bundle: redrawn)
+        derivedInk = [:]
+        guard let preset = redrawn.manifest.presets.first else { return }
+        var scene = Scene(bundle: redrawn, preset: preset)
+        scene.camera = navigator.camera
+        self.scene = scene
+    }
+
     /// Truncate the landscape differently.
     ///
     /// Everything follows: the heightfield the occluder meshes, the crest each

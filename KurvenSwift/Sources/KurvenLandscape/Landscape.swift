@@ -232,8 +232,14 @@ public enum NativeLandscape {
 
     /// The bundle for a request: `build_scene` with the geometry left described
     /// and `export --derived`, in memory.
-    public static func build(_ request: LandscapeRequest, gitSha: String = "native") throws
-        -> KurvenBundle {
+    ///
+    /// With `refine`, the contour layers are placed by the function rather
+    /// than by the grid (`ContourRefiner`), and the bundle carries the refiner
+    /// so every restyle keeps doing so. Off, the ink is exactly what the
+    /// Python side derives from the same grids, which is what the fixtures
+    /// compare.
+    public static func build(_ request: LandscapeRequest, gitSha: String = "native",
+                             refine: Bool = true) throws -> KurvenBundle {
         let compiled = try KurvenMath.Expression.compile(request.expression)
         let canonical = compiled.expression
         let samples = sample(compiled, domain: request.domain, resolution: request.resolution)
@@ -272,8 +278,10 @@ public enum NativeLandscape {
                            values: quantize(samples.phase))
         let surface = Surface(height: height, phase: phase, caps: caps, cached: false)
         let name = request.name.isEmpty ? "landscape" : request.name
+        let refiner = refine ? ContourRefiner(compiled, domain: domain,
+                                              width: shape.nReal, height: shape.nImag) : nil
         return KurvenBundle(url: URL(fileURLWithPath: "/native/\(name).kurven"),
-                            manifest: manifest, surface: surface)
+                            manifest: manifest, surface: surface, refine: refiner?.refine)
     }
 }
 

@@ -124,6 +124,39 @@ from AMOS. So a landscape is sampled in the app's own process
 requirement: `kurven-test` builds the fixture landscapes natively and checks
 that the bundle is the one Python wrote, manifest and grids alike.
 
+#### Contours placed by f
+
+Marching squares puts a vertex where *linear interpolation* between two
+samples crosses the level, which is off the true level set by about
+h²·|f″|/|f′|: nothing where f is nearly linear across a cell, and growing like
+1/r toward a pole or a zero, exactly where the plates are densest. The Python
+plates answered that for gamma with a second, finer grid in rectangles around
+the steep places (`kurven/sampling.py`), because there every extra sample was
+scipy time. With the function a native call, the frontend asks it instead
+(`ContourRefiner`): every vertex is moved to the exact crossing on its grid
+edge by a one-dimensional root find against f, and every chord between two
+vertices is checked at its midpoint and subdivided along the normal until it
+is within 0.02 cells of the level set. Density ends up proportional to
+curvature, continuously, with no seams to stitch. The grid still decides which
+contours exist; f decides where they run. The lift stays the grid's, so the
+ink stays on the drawn surface.
+
+The same pass found that marching squares on a wrapped phase grid emits a
+crossing for *every* level where arg f jumps from π to −π: a bundle of
+spurious segments along each wrap line, a third of the gamma plate's phase
+vertices, in the Python plates as much as here. A vertex whose two edge
+samples differ by more than π is on a wrap, not a level set, and the refiner
+drops it.
+
+`kurven-cli refine --function gamma` benchmarks it: for each contour layer,
+the grid's ink and the refined ink, timed, and both measured against f (the
+residual over the gradient, in cells). At 600 samples across, gamma's
+magnitude vertices go from a worst error of 0.58 cells to zero and its chords
+from 0.16 to 0.02, for a few milliseconds a layer; ζ, the most expensive
+function, costs about 70 ms for its forty minor levels. The app has it on by
+default (a toggle in the landscape controls); the fixture comparison with
+Python runs with it off, since that is a comparison of grids.
+
 The catalog (`kurven.landscape.CATALOG`) is fourteen presets over that language
 — each an expression plus the window and truncation that make it read as a
 landscape. The Swift side carries the same list (`Catalog.native`), and the

@@ -30,6 +30,10 @@ struct LandscapeSection: View {
             expressionField(landscape)
             domainControls(landscape, window: window(catalog, landscape))
             resolutionControl(landscape)
+            Toggle("Place contours by f, not by the grid",
+                   isOn: Binding(get: { document.refineContours },
+                                 set: { document.setRefinement($0) }))
+                .font(.caption)
         }
         status
     }
