@@ -26,8 +26,17 @@ struct KurvenApplication: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {
+                // A landscape is the new document here: the app no longer needs
+                // a bundle someone made earlier in order to show anything.
+                Button("New Landscape") { delegate.newLandscape() }
+                    .keyboardShortcut("n")
                 Button("Open…") { delegate.openPanel() }
                     .keyboardShortcut("o")
+            }
+            CommandGroup(after: .saveItem) {
+                Button("Save Bundle…") { delegate.savePanel() }
+                    .keyboardShortcut("s")
+                    .disabled(delegate.document.bundle == nil)
             }
         }
     }
@@ -47,6 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate(ignoringOtherApps: true)
+        // The service is what makes a landscape possible, and with no bundle
+        // open there is nothing else to trigger the search for it.
+        document.connectService()
         // A path on the command line opens it, so the app can be driven from a
         // shell the same way the CLI is.
         let args = CommandLine.arguments.dropFirst()
@@ -93,7 +105,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                       resolution: resolution) }
             return
         }
+        // `--landscape NAME|EXPRESSION [--screenshot PATH]` samples a landscape
+        // through the window's own Document and Service -- the same path the
+        // picker takes -- so "the function picker works" is checkable by
+        // comparing a PNG rather than by clicking.
+        if let i = args.firstIndex(of: "--landscape"), i + 1 < args.endIndex {
+            let what = args[i + 1]
+            let shot = args.firstIndex(of: "--screenshot").flatMap {
+                $0 + 1 < args.endIndex ? URL(fileURLWithPath: args[$0 + 1]) : nil
+            }
+            let save = args.firstIndex(of: "--save").flatMap {
+                $0 + 1 < args.endIndex ? URL(fileURLWithPath: args[$0 + 1]) : nil
+            }
+            let resolution = args.firstIndex(of: "--resolution")
+                .flatMap { $0 + 1 < args.endIndex ? Int(args[$0 + 1]) : nil }
+            Task { await headlessLandscape(what, resolution: resolution,
+                                           screenshot: shot, save: save) }
+            return
+        }
         if let path = bundlePath { document.open(URL(fileURLWithPath: path)) }
+    }
+
+    /// Wait for the catalog, make the landscape, and report it. The window is
+    /// never shown; everything it would do is done through the same model.
+    private func headlessLandscape(_ what: String, resolution: Int?,
+                                   screenshot: URL?, save: URL?) async {
+        for _ in 0..<400 where document.catalog == nil && document.serviceStatus == nil {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        guard let catalog = document.catalog else {
+            let why = document.serviceStatus ?? "it never answered"
+            FileHandle.standardError.write(Data("Kurven: no service — \(why)\n".utf8))
+            exit(1)
+        }
+        if let preset = catalog.preset(what) {
+            document.create(preset)
+        } else {
+            // Not a name in the catalog, so it is an expression: the field and
+            // the flag accept the same language.
+            document.create(catalog.presets[0])
+            while document.sampling { try? await Task.sleep(for: .milliseconds(25)) }
+            document.landscape?.expression = what
+            document.landscape?.name = ""
+            document.landscapeEdited(draft: false)
+        }
+        if let resolution {
+            while document.sampling { try? await Task.sleep(for: .milliseconds(25)) }
+            document.landscape?.resolution = resolution
+            document.landscapeEdited(draft: false)
+        }
+        while document.sampling { try? await Task.sleep(for: .milliseconds(25)) }
+        guard document.scene != nil else {
+            let why = document.landscapeStatus ?? "no reason given"
+            FileHandle.standardError.write(
+                Data("Kurven: could not sample \(what) — \(why)\n".utf8))
+            exit(1)
+        }
+        print("Kurven: \(document.title) — \(document.landscapeStatus ?? "")"
+              + ", \(document.layers.count) layers, "
+              + "\(document.layers.reduce(0) { $0 + $1.paths.count }) paths")
+        if let save { document.saveBundle(to: save) }
+        if let screenshot { renderScreenshot(to: screenshot, what: document.title) }
+        exit(0)
+    }
+
+    func newLandscape() {
+        document.connectService()
+        Task {
+            for _ in 0..<400 where document.catalog == nil && document.serviceStatus == nil {
+                try? await Task.sleep(for: .milliseconds(25))
+            }
+            if let first = document.catalog?.presets.first { document.create(first) }
+        }
+    }
+
+    func savePanel() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = (document.landscape?.name.isEmpty == false
+                                      ? document.landscape!.name : "landscape") + ".kurven"
+        panel.message = "Save this landscape as a .kurven bundle"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        document.saveBundle(to: url)
     }
 
     /// `--resample NAME=VALUE ... --screenshot PATH` drives the window's own
@@ -149,8 +241,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func screenshot(bundle: URL, to output: URL) async {
         await document.load(bundle)
+        renderScreenshot(to: output, what: bundle.lastPathComponent)
+    }
+
+    /// One frame of whatever the document currently holds.
+    ///
+    /// Separate from loading it, because a landscape has no file to re-open:
+    /// the bundle it was sampled into is scratch and is deleted the moment it
+    /// has been read. What is on screen is the value in memory.
+    private func renderScreenshot(to output: URL, what: String) {
         guard let scene = document.framedScene, let navigator = document.navigator else {
-            FileHandle.standardError.write(Data("Kurven: could not open \(bundle.path)\n".utf8))
+            FileHandle.standardError.write(Data("Kurven: nothing to draw\n".utf8))
             exit(1)
         }
         do {
@@ -160,7 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                        viewport: document.viewport,
                                        options: document.previewOptions, into: target)
             try PNG.write(target, to: output)
-            print("Kurven: \(bundle.lastPathComponent) -> \(output.lastPathComponent) "
+            print("Kurven: \(what) -> \(output.lastPathComponent) "
                   + "(\(document.viewport.width)x\(document.viewport.height), "
                   + "\(document.layers.count) layers)")
         } catch {
@@ -218,9 +319,21 @@ struct DocumentWindow: View {
         case .empty:
             VStack(spacing: 8) {
                 Text("kurven").font(.largeTitle)
-                Text("Open a .kurven bundle to navigate its landscape.")
+                Text("Pick a function in the sidebar, or open a .kurven bundle.")
                     .foregroundStyle(.secondary)
-                Button("Open…", action: open)
+                HStack {
+                    Button("New Landscape") {
+                        if let first = document.catalog?.presets.first {
+                            document.create(first)
+                        }
+                    }
+                    .disabled(document.catalog == nil)
+                    Button("Open…", action: open)
+                }
+                if document.catalog == nil, let status = document.serviceStatus {
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: 420)
+                }
             }
         case .loading:
             ProgressView()

@@ -18,6 +18,13 @@ side must answer identically, cheapest first:
     contour/   contourpy's iso-lines on three awkward grids -- nested loops,
                nothing but saddles, and a step function -- so the native
                marching squares can be held to them.
+    hatch/     the four hatching sources derived from one grid, one perimeter
+               and two kinds of cap, by `kurven.hatch` -- which is their
+               definition. The consumer derives the same strokes from the same
+               description, and this is where the two are compared. Heights
+               here come from the *grid*, not from f, because that is all the
+               consumer has; the plate's own hatching uses f, and the size of
+               that difference is `tests/compare_bake.py --derived`.
 
 Determinism: contouring runs single-chunk, the point sets come from a seeded
 generator, and the depth buffer is stored as float32 with the expected clip
@@ -43,6 +50,10 @@ sys.path.insert(0, str(ROOT))
 from kurven.contours import contour_levels  # noqa: E402
 from kurven.bundle import (  # noqa: E402
     AXES,
+    LayerCapHatch,
+    LayerCapOutline,
+    LayerWallHatch,
+    LayerWallOutline,
     Affine2,
     CameraPreset,
     Domain,
@@ -107,6 +118,27 @@ def _provenance(name, **params):
     return Provenance(name, params, 1, "fixture")
 
 
+#: The hatching fixture's landscape: a grid small enough to read and awkward
+#: enough to matter. One pole sits just inside the back edge, so a wall crest
+#: runs into the cap and the two truncations disagree about where it stops; the
+#: other is interior, so there is a plateau with a rim all the way round. Both
+#: are off the sample lattice, because a pole *on* a sample is an infinity in
+#: the grid and this fixture is about hatching, not about sanitizing.
+HATCH_DOMAIN = Domain(Interval(-2.0, 2.5), Interval(-1.0, 1.5))
+HATCH_SHAPE = (37, 23)          # (nx, ny): deliberately not square
+
+
+def _hatch_surface():
+    from kurven.expr import compile_expression
+
+    nx, ny = HATCH_SHAPE
+    real = np.linspace(HATCH_DOMAIN.real.lo, HATCH_DOMAIN.real.hi, nx)
+    imag = np.linspace(HATCH_DOMAIN.imag.lo, HATCH_DOMAIN.imag.hi, ny)
+    f = compile_expression("1/((z - 1.05 - 1.44i)(z + 0.7 - 0.3i))")
+    values = f(real[:, None] + 1j * imag[None, :])
+    return real, imag, np.abs(values).astype(np.float32).T      # (ny, nx)
+
+
 # --------------------------------------------------------------------------
 # contract
 # --------------------------------------------------------------------------
@@ -126,9 +158,9 @@ def _tiny_layer(n_paths, n_pts, seed):
 
 
 def contract_fixtures(out):
-    """Three tiny bundles that between them use every arm of `Caps` and
-    `Walls`, a phase grid and no phase grid, tiles and no tiles, a clipped and
-    an unclipped layer, a preset and no presets."""
+    """Four tiny bundles that between them use every arm of `Caps`, `Walls`,
+    `Region` and `LayerSource`, a phase grid and no phase grid, tiles and no
+    tiles, a clipped and an unclipped layer, a preset and no presets."""
     height, phase = _tiny_grid()
     ny, nx = height.shape
     domain = Domain(Interval(-1.0, 2.0), Interval(0.0, 1.0))
@@ -194,7 +226,36 @@ def contract_fixtures(out):
     write_bundle(out / "bands_perimeter.kurven", manifest=m, height=height,
                  layers={"ang": _tiny_layer(1, 4, 3)})
 
-    # (3) the empty case: no caps, no walls, no layers, no presets.
+    # (3) a landscape's own shape: every layer described, and the four
+    #     hatching kinds alongside a contour family. This is the bundle
+    #     `kurven.landscape` writes, shrunk to nothing, and it is what keeps
+    #     the hatching sources in the round-trip test.
+    m = Manifest(
+        SCHEMA, AXES, domain,
+        GridRef("height.npy", (ny, nx), "<f4"),
+        GridRef("phase.npy", (ny, nx), "<f4"),
+        UniformCap(1.75),
+        Occluder(1, (Affine2.identity(),), WallPerimeter(perim, 0.0),
+                 FullRegion(), 0.0),
+        (LayerSpec("mag_major", "magnitude",
+                   LayerContour("magnitude", (0.5, 1.0, 1.5), KeepBelowCap()),
+                   0.4, "level"),
+         LayerSpec("cap_outline", "scaffold", LayerCapOutline(), 0.4, "level"),
+         LayerSpec("cap_hatch", "scaffold", LayerCapHatch("real", 0.25), 0.2, "level"),
+         LayerSpec("cap_hatch_tiled", "scaffold",
+                   LayerCapHatch("imag", 0.4, tiled=True), 0.2, "level"),
+         LayerSpec("wall_outline", "scaffold",
+                   LayerWallOutline((0, 1, 2, 3), 0.1, 0.0), 0.3, "surface"),
+         LayerSpec("wall_hatch", "scaffold",
+                   LayerWallHatch((0, 2), 0.3, 0.1, True, 0.01, -0.02),
+                   0.25, "surface")),
+        (CameraPreset("plate", PRESETS["recip"], 0.02, 4000),),
+        _provenance("1/gamma(z)", expression="1/gamma(z)", resolution=4),
+    )
+    write_bundle(out / "landscape.kurven", manifest=m, height=height, phase=phase,
+                 layers={})
+
+    # (4) the empty case: no caps, no walls, no layers, no presets.
     m = Manifest(
         SCHEMA, AXES, domain,
         GridRef("height.npy", (ny, nx), "<f4"), None,
@@ -408,12 +469,98 @@ def clip_fixture(out, *, res=200, occluder_res=100, buffer=320, margin=0.02):
 
 
 # --------------------------------------------------------------------------
+# hatch
+# --------------------------------------------------------------------------
+
+
+def hatch_fixtures(out):
+    """Every hatching source, derived from one grid by `kurven.hatch`.
+
+    The grid is written as float32 and every height is read back out of it with
+    `grid_sampler` -- `Grid2D.sample` transcribed -- so this fixture is a
+    question the consumer can answer exactly rather than within a tolerance.
+    Each case names its caps and its source; the expected strokes are CSR, the
+    same shape a layer is.
+    """
+    from kurven import hatch
+
+    real, imag, height = _hatch_surface()
+    save(out / "height.npy", height)
+
+    perimeter = Perimeter((
+        Edge((HATCH_DOMAIN.real.lo, HATCH_DOMAIN.imag.lo),
+             (HATCH_DOMAIN.real.hi, HATCH_DOMAIN.imag.lo), 19),
+        Edge((HATCH_DOMAIN.real.hi, HATCH_DOMAIN.imag.lo),
+             (HATCH_DOMAIN.real.hi, HATCH_DOMAIN.imag.hi), 11),
+        Edge((HATCH_DOMAIN.real.hi, HATCH_DOMAIN.imag.hi),
+             (HATCH_DOMAIN.real.lo, HATCH_DOMAIN.imag.hi), 19),
+        Edge((HATCH_DOMAIN.real.lo, HATCH_DOMAIN.imag.hi),
+             (HATCH_DOMAIN.real.lo, HATCH_DOMAIN.imag.lo), 11),
+    ))
+    caps = {
+        "uniform": UniformCap(2.0),
+        # A staircase whose boundary falls between the two poles, so a cap
+        # stroke has to stop at the band edge and start again at another height.
+        "bands": RealBandCaps((RealBand(-1.0, 1.2), RealBand(0.4, 2.5)), 1.6),
+    }
+    sources = {
+        "wall_hatch": LayerWallHatch((0, 1, 2, 3), 0.35, 0.5, True, 0.0, 0.0),
+        "wall_hatch_untrimmed": LayerWallHatch((0, 2), 0.6, 0.25, False, 0.1, -0.05),
+        "wall_outline": LayerWallOutline((0, 1, 2, 3), 0.4, 0.0),
+        "cap_hatch_real": LayerCapHatch("real", 0.25),
+        "cap_hatch_imag": LayerCapHatch("imag", 0.3),
+        "cap_outline": LayerCapOutline(),
+    }
+
+    sampler = hatch.grid_sampler(height, HATCH_DOMAIN)
+    index = {"domain": HATCH_DOMAIN.to_dict(),
+             "shape": {"ny": int(height.shape[0]), "nx": int(height.shape[1])},
+             "perimeter": perimeter.to_dict(),
+             "caps": {k: v.to_dict() for k, v in caps.items()},
+             "cases": []}
+    for cap_name, cap in caps.items():
+        def capped(x, y, cap=cap):
+            return np.minimum(sampler(x, y), cap.at(x))
+
+        for source_name, source in sources.items():
+            paths = hatch.derive(source, perimeter=perimeter, region=None,
+                                 tiles=(Affine2.identity(),), height=capped,
+                                 magnitude=sampler, height_grid=height,
+                                 domain=HATCH_DOMAIN, caps=cap, chunk_count=1)
+            stem = f"{cap_name}_{source_name}"
+            verts = np.vstack(paths) if paths else np.zeros((0, 3))
+            offsets = np.concatenate([[0], np.cumsum([len(p) for p in paths])])
+            save(out / f"{stem}.npy", verts)
+            save(out / f"{stem}.idx.npy", offsets.astype(np.int64))
+            index["cases"].append({
+                "name": stem, "caps": cap_name, "source": source.to_dict(),
+                "vertices": f"{stem}.npy", "offsets": f"{stem}.idx.npy",
+                "paths": len(paths)})
+
+    # The two derived numbers the consumer computes for itself, because a cap
+    # it moves has to bring the contour levels with it. Pinned here so the two
+    # implementations of one rule cannot drift.
+    from kurven.landscape import magnitude_levels, nice
+
+    index["style"] = {
+        "nice": [{"x": x, "up": nice(x), "down": nice(x, down=True)}
+                 for x in (0.037, 0.12, 0.5, 1.0, 1.4, 2.3, 4.9, 6.0, 7.5, 23.0, 180.0)],
+        "levels": [{"ceiling": c,
+                    "major": list(magnitude_levels(c)[0]),
+                    "minor": list(magnitude_levels(c)[1])}
+                   for c in (1.0, 2.0, 4.0, 5.0, 6.0, 10.0, 12.5, 37.0)],
+    }
+    (out / "index.json").write_text(json.dumps(index, sort_keys=True, indent=1) + "\n")
+    return sum(c["paths"] for c in index["cases"])
+
+
+# --------------------------------------------------------------------------
 
 
 def main():
     if FIXTURES.exists():
         shutil.rmtree(FIXTURES)
-    for sub in ("contract", "npy", "camera", "clip", "contour"):
+    for sub in ("contract", "npy", "camera", "clip", "contour", "hatch"):
         (FIXTURES / sub).mkdir(parents=True)
 
     contract_fixtures(FIXTURES / "contract")
@@ -421,10 +568,12 @@ def main():
     npy_fixtures(FIXTURES / "npy")
     camera_fixtures(FIXTURES / "camera")
     n = clip_fixture(FIXTURES / "clip")
+    strokes = hatch_fixtures(FIXTURES / "hatch")
 
     total = sum(f.stat().st_size for f in FIXTURES.rglob("*") if f.is_file())
     print(f"wrote {FIXTURES.relative_to(ROOT)} "
-          f"({total / 1e3:.0f} kB, clip has {n} visible segments)")
+          f"({total / 1e3:.0f} kB, clip has {n} visible segments, "
+          f"hatch has {strokes} strokes)")
 
 
 if __name__ == "__main__":

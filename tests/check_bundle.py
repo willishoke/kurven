@@ -23,6 +23,8 @@ sys.path.insert(0, str(ROOT))
 from kurven.bundle import (  # noqa: E402
     Affine2,
     BundleError,
+    Domain,
+    InsideRegion,
     Manifest,
     WallMesh,
     WallPerimeter,
@@ -206,6 +208,102 @@ def check_clip_fixture():
           f"{len(segs)} segments")
 
 
+def check_hatch():
+    """What the hatching means, as properties rather than as numbers.
+
+    The fixtures pin *these* answers and the Swift lane reproduces them; this
+    says why those answers are the right shape, so a change that is wrong in the
+    same way on both sides is still caught.
+    """
+    from kurven.bundle import (LayerCapHatch, LayerCapOutline, LayerWallHatch,
+                               Perimeter as WorldPerimeter, RealBand,
+                               RealBandCaps, UniformCap)
+    from kurven import hatch
+
+    index = json.loads((FIXTURES / "hatch" / "index.json").read_text())
+    height = np.load(FIXTURES / "hatch" / "height.npy")
+    domain = Domain.from_dict(index["domain"])
+    perimeter = WorldPerimeter.from_dict(index["perimeter"])
+    sampler = hatch.grid_sampler(height, domain)
+
+    # An edge that is an exact multiple of the spacing is the case where
+    # Python's round-half-to-even and Swift's round-half-away-from-zero would
+    # disagree, which is why neither language's rounding is used.
+    check("stroke count is floor(L / spacing + 0.5) + 1",
+          [hatch._stroke_count(l, 0.5) for l in (1.0, 1.25, 1.75, 2.0, 0.1)]
+          == [3, 4, 5, 5, 2])
+
+    cap = UniformCap(2.0)
+    strokes = hatch.cap_hatch(LayerCapHatch("real", 0.25), domain, height.shape,
+                              cap, sampler)
+    ends = np.array([[p[0, 0], p[0, 1]] for p in strokes]
+                    + [[p[-1, 0], p[-1, 1]] for p in strokes])
+    excess = sampler(ends[:, 0], ends[:, 1]) - cap.z
+    # A stroke ends where |f| crosses the cap -- on the rim, not at the last
+    # sample inside it -- except where it runs into the edge of the domain.
+    interior = (ends[:, 0] > domain.real.lo + 1e-9) & (ends[:, 0] < domain.real.hi - 1e-9)
+    check("a cap stroke ends on the rim",
+          bool(np.all(np.abs(excess[interior]) < 1e-6)),
+          f"worst |excess| = {np.abs(excess[interior]).max():.2e}")
+    check("and lies at the cap for its whole length",
+          all(np.allclose(p[:, 2], cap.z) for p in strokes))
+    inside = np.concatenate([sampler(p[1:-1, 0], p[1:-1, 1]) for p in strokes
+                             if len(p) > 2])
+    check("and covers only what the cap truncated",
+          bool(np.all(inside >= cap.z - 1e-6)), f"{len(inside)} interior samples")
+
+    bands = RealBandCaps((RealBand(-1.0, 1.2), RealBand(0.4, 2.5)), 1.6)
+    banded = hatch.cap_hatch(LayerCapHatch("real", 0.25), domain, height.shape,
+                             bands, sampler)
+    heights = {round(float(p[0, 2]), 6) for p in banded}
+    check("under band caps every stroke lies at one band's cap",
+          heights <= {1.2, 2.5, 1.6}, f"heights {sorted(heights)}")
+    # Along its length, not at its ends: a stroke is allowed to *end* on a band
+    # boundary -- that is where the plateau it lies on stops and a step up to
+    # the next one begins -- and at that one x the cap is already the next
+    # band's. Midpoints ask the question the stroke actually answers.
+    def mid(p):
+        return (p[:-1, 0] + p[1:, 0]) / 2
+
+    check("and no stroke crosses a band boundary",
+          all(np.all(np.abs(bands.at(mid(p)) - p[0, 2]) < 1e-9)
+              for p in banded if len(p) > 1))
+
+    # The rim is the boundary of exactly the region the strokes cover, which is
+    # what makes the two layers one picture rather than two.
+    rim = hatch.cap_outline(LayerCapOutline(), height, domain, cap, chunk_count=1)
+    check("the rim lies where |f| meets the cap",
+          all(np.all(np.abs(sampler(p[:, 0], p[:, 1]) - cap.z) < 1e-5) for p in rim),
+          f"{len(rim)} loops")
+
+    wall = hatch.wall_hatch(LayerWallHatch((0, 1, 2, 3), 0.35, 0.5, True, 0.0, 0.0),
+                            perimeter, lambda x, y: np.minimum(sampler(x, y), cap.z))
+    on_edge = []
+    for stroke in wall:
+        x, y = stroke[0, 0], stroke[0, 1]
+        on_edge.append(any(
+            abs((e.end[0] - e.start[0]) * (y - e.start[1])
+                - (e.end[1] - e.start[1]) * (x - e.start[0])) < 1e-9
+            for e in perimeter.edges))
+    check("every wall stroke stands on the perimeter", all(on_edge),
+          f"{len(wall)} strokes")
+    check("and rises no higher than the cap",
+          all(stroke[:, 2].max() <= cap.z + 1e-9 for stroke in wall))
+    check("and is subdivided, because the bake clips per vertex",
+          all(len(stroke) >= 2 for stroke in wall)
+          and max(len(stroke) for stroke in wall) > 2)
+
+    # Filtering a path and keeping the survivors as one polyline would weld its
+    # far side to its near side across the hole. The strokes follow the same
+    # rule the contours do.
+    ring = WorldPerimeter.from_dict(index["perimeter"])
+    path = np.column_stack([np.linspace(-5, 5, 41), np.zeros(41), np.zeros(41)])
+    pieces = hatch.clip_to_region([path], InsideRegion(ring))
+    check("clipping to a region splits rather than welds",
+          len(pieces) == 1 and pieces[0][:, 0].min() > -5 and pieces[0][:, 0].max() < 5,
+          f"{len(pieces)} runs")
+
+
 def main():
     print("bundle contract (python lane)")
     check_manifest_roundtrip()
@@ -217,6 +315,7 @@ def main():
     check_perimeter()
     check_camera_fixtures()
     check_clip_fixture()
+    check_hatch()
     print()
     if _failures:
         print(f"{len(_failures)} FAILED: {', '.join(_failures)}")

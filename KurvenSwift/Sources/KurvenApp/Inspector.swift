@@ -14,12 +14,21 @@ struct Inspector: View {
 
     var body: some View {
         Form {
+            // The function comes first, and shows even with nothing open: a
+            // landscape is now something you can start, not only something you
+            // can be handed.
+            Section("Landscape") {
+                LandscapeSection(document: document, onChange: onChange)
+            }
             if let bundle = document.bundle {
                 Section("Camera") {
                     CameraSection(document: document, presets: bundle.manifest.presets,
                                   onChange: onChange)
                 }
                 Section("Mode") { modePicker }
+                Section("Truncation") {
+                    TruncationSection(document: document, onChange: onChange)
+                }
                 Section("Layers") { layerList }
                 Section("Ink") { marginField }
                 Section("Resample") { resamplePanel }
@@ -74,6 +83,15 @@ struct Inspector: View {
                    let levels = document.levels(forLayer: index) {
                     levelSlider(index: index, levels: levels)
                 }
+                // A hatching carries its spacing the way a contour family
+                // carries its levels, and for the same reason: it is a
+                // description, so the number in it is a control.
+                if let spacing = document.spacing(ofLayer: index) {
+                    spacingSlider(index: index, spacing: spacing)
+                }
+                if case .capHatch(let axis, _, _) = layer.spec.source {
+                    axisPicker(axis)
+                }
             }
         }
     }
@@ -94,6 +112,40 @@ struct Inspector: View {
             } label: { Image(systemName: "arrow.uturn.backward") }
                 .buttonStyle(.borderless).controlSize(.small)
         }
+        .padding(.leading, 20)
+    }
+
+    /// World units between hatch strokes. Restyling, not resampling: the
+    /// strokes are re-derived from grids that are already here, so this redraws
+    /// within a frame however large the landscape is.
+    @ViewBuilder
+    private func spacingSlider(index: Int, spacing: Double) -> some View {
+        let live = Binding(get: { spacing }, set: {
+            document.setSpacing($0, ofLayer: index)
+            onChange()
+        })
+        HStack(spacing: 6) {
+            Text("spacing").font(.caption).foregroundStyle(.secondary)
+            Slider(value: live, in: max(spacing / 20, 0.002)...max(spacing * 8, 0.05))
+            Text(String(format: "%.3g", spacing))
+                .font(.caption).monospacedDigit().frame(width: 34, alignment: .trailing)
+        }
+        .padding(.leading, 20)
+    }
+
+    /// Which way the strokes on the truncated tops run. The plates rule them
+    /// along the real axis; a landscape whose plateaus are long in the other
+    /// direction reads better ruled the other way.
+    @ViewBuilder
+    private func axisPicker(_ axis: KeepAxis) -> some View {
+        Picker("", selection: Binding(get: { axis }, set: {
+            document.setCapHatchAxis($0)
+            onChange()
+        })) {
+            Text("along Re").tag(KeepAxis.real)
+            Text("along Im").tag(KeepAxis.imag)
+        }
+        .pickerStyle(.segmented).labelsHidden().controlSize(.small)
         .padding(.leading, 20)
     }
 

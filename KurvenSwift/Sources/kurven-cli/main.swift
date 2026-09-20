@@ -120,6 +120,16 @@ usage: kurven-cli <command> [options]
         each takes. The service is found by walking up from the working
         directory for kurven/serve.py; KURVEN_REPO and KURVEN_PYTHON override.
 
+  catalog [--python PATH] [--repo PATH]
+        Print the functions the service can sample and the language they are
+        written in. This is the menu the app's function picker is built from.
+
+  landscape [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI]
+            [--res N] [--cap Z] [--spacing S] -o out.kurven
+        Sample a function over a rectangle and write its bundle. Every layer
+        is a description, so the result's cap, levels and hatch spacing are
+        editable afterwards -- in the app, or by `bake --levels`.
+
   resample <example> [--set NAME=VALUE ...] [--derived] -o out.kurven
         Ask the service to build a bundle. This is the whole of what Python is
         still for: the frozen bundle cannot change its own domain or
@@ -532,6 +542,96 @@ func resample(_ args: Args) throws {
     }
 }
 
+func catalogCommand(_ args: Args) throws {
+    let service = try service(args)
+    defer { service.stop() }
+    let catalog = try blocking { try await service.catalog() }
+    print("service: \(service.command.display)")
+    print("  \(catalog.presets.count) presets, default resolution \(catalog.defaultResolution)")
+    for preset in catalog.presets {
+        let d = preset.domain
+        print("""
+              \(pad(preset.name, 10)) \(pad(preset.expression, 22)) \
+            re [\(fmt(d.real.lo)), \(fmt(d.real.hi))]  \
+            im [\(fmt(d.imag.lo)), \(fmt(d.imag.hi))]  \
+            cap \(preset.cap.map(fmt) ?? "none")
+            """)
+    }
+    print("  language: \(catalog.functions.count) functions, "
+          + "constants \(catalog.constants.joined(separator: ", "))")
+    print("    " + catalog.functions.map(\.name).joined(separator: " "))
+}
+
+/// `LO,HI` as an interval; the one place a pair of numbers is spelled on the
+/// command line, so a landscape's window reads the way it is written down.
+func interval(_ text: String, _ what: String) throws -> Interval {
+    let parts = text.split(separator: ",").map { Double($0.trimmingCharacters(in: .whitespaces)) }
+    guard parts.count == 2, let lo = parts[0], let hi = parts[1], lo < hi else {
+        throw CLIError("--\(what) wants LO,HI with LO < HI, got '\(text)'")
+    }
+    return Interval(lo: lo, hi: hi)
+}
+
+func landscapeCommand(_ args: Args) throws {
+    let output = URL(fileURLWithPath: try args.string("output"))
+    let service = try service(args)
+    defer { service.stop() }
+    let catalog = try blocking { try await service.catalog() }
+
+    // The preset is the starting point and every flag is an override of it, so
+    // `landscape --function gamma --res 1200` means what it looks like.
+    let name = args.flags["function"] ?? (args.positional.count > 1 ? "" : "rgamma")
+    var request: LandscapeRequest
+    if let preset = catalog.preset(name) {
+        request = LandscapeRequest(preset: preset, resolution: catalog.defaultResolution)
+    } else if let expression = args.positional.dropFirst().first {
+        request = LandscapeRequest(expression: expression,
+                                   domain: Domain(real: Interval(lo: -4, hi: 4),
+                                                  imag: Interval(lo: -2.5, hi: 2.5)),
+                                   resolution: catalog.defaultResolution)
+    } else {
+        throw CLIError("no function \(name.isEmpty ? "" : "'\(name)' ")given; "
+                       + "try 'catalog', or pass an expression")
+    }
+    if let re = args.flags["re"] { request.domain.real = try interval(re, "re") }
+    if let im = args.flags["im"] { request.domain.imag = try interval(im, "im") }
+    if let res = args.flags["res"], let n = Int(res) { request.resolution = n }
+    if let cap = args.flags["cap"], let z = Double(cap) { request.caps = .uniform(z) }
+    if args.switches.contains("no-cap") { request.caps = Caps.none }
+    if let s = args.flags["spacing"], let v = Double(s) { request.spacing = v }
+
+    let clock = ContinuousClock()
+    let asked = request
+    var result: ExportResult!
+    let elapsed = try clock.measure {
+        result = try blocking { try await service.landscape(asked, to: output) }
+    }
+    print("""
+        \(result.manifest.provenance.function) -> \(result.url.lastPathComponent) \
+        (\(String(format: "%.1f", Double(result.bytes) / 1e6)) MB in \(elapsed))
+          \(result.manifest.height.shape.nx)x\(result.manifest.height.shape.ny) samples, \
+        caps \(result.manifest.caps)
+        """)
+    for spec in result.manifest.layers {
+        print("    \(pad(spec.name, 14)) \(sourceName(spec.source))")
+    }
+}
+
+func fmt(_ x: Double) -> String { String(format: "%g", x) }
+
+func sourceName(_ source: LayerSource) -> String {
+    switch source {
+    case .file: "dumped"
+    case .contour(let field, let levels, _, _): "\(levels.count) levels of \(field.rawValue)"
+    case .wallHatch(let edges, let spacing, _, _, _, _):
+        "wall hatch, \(edges.count) edges every \(fmt(spacing))"
+    case .wallOutline(let edges, _, _): "wall outline, \(edges.count) edges"
+    case .capHatch(let axis, let spacing, _):
+        "cap hatch along \(axis.rawValue) every \(fmt(spacing))"
+    case .capOutline: "cap outline"
+    }
+}
+
 /// Run an async call from this synchronous program.
 ///
 /// The CLI is one command and then it exits, so there is nothing for a
@@ -636,6 +736,8 @@ do {
     case "bench": try bench(args)
     case "preview": try preview(args)
     case "describe": try describe(args)
+    case "catalog": try catalogCommand(args)
+    case "landscape": try landscapeCommand(args)
     case "resample": try resample(args)
     case "inspect": try inspect(args)
     case "contract": try contract(args)

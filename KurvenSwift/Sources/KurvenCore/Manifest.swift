@@ -48,11 +48,11 @@ public struct Interval: Sendable, Equatable {
     public init(lo: Double, hi: Double) { self.lo = lo; self.hi = hi }
     public var length: Double { hi - lo }
 
-    init(json: JSONValue) throws {
+    public init(json: JSONValue) throws {
         let o = try json.object("Interval")
         self.init(lo: try o.double("lo", "Interval"), hi: try o.double("hi", "Interval"))
     }
-    var json: JSONValue { .object(["lo": .double(lo), "hi": .double(hi)]) }
+    public var json: JSONValue { .object(["lo": .double(lo), "hi": .double(hi)]) }
 }
 
 public struct Domain: Sendable, Equatable {
@@ -60,12 +60,12 @@ public struct Domain: Sendable, Equatable {
     public var imag: Interval
     public init(real: Interval, imag: Interval) { self.real = real; self.imag = imag }
 
-    init(json: JSONValue) throws {
+    public init(json: JSONValue) throws {
         let o = try json.object("Domain")
         self.init(real: try Interval(json: o.value("real", "Domain")),
                   imag: try Interval(json: o.value("imag", "Domain")))
     }
-    var json: JSONValue { .object(["real": real.json, "imag": imag.json]) }
+    public var json: JSONValue { .object(["real": real.json, "imag": imag.json]) }
 }
 
 public struct GridRef: Sendable, Equatable {
@@ -148,7 +148,7 @@ public struct PerimeterEdge: Sendable, Equatable {
         self.start = start; self.end = end; self.density = density
     }
 
-    init(json: JSONValue) throws {
+    public init(json: JSONValue) throws {
         let o = try json.object("Edge")
         let s = try o.doubles("start", "Edge"), e = try o.doubles("end", "Edge")
         guard s.count == 2, e.count == 2 else {
@@ -168,7 +168,7 @@ public struct BoundaryPerimeter: Sendable, Equatable {
     public var edges: [PerimeterEdge]
     public init(edges: [PerimeterEdge]) { self.edges = edges }
 
-    init(json: JSONValue) throws {
+    public init(json: JSONValue) throws {
         let o = try json.object("Perimeter")
         self.init(edges: try o.array("edges", "Perimeter").map(PerimeterEdge.init(json:)))
     }
@@ -212,7 +212,7 @@ public enum Caps: Sendable, Equatable {
         }
     }
 
-    init(json: JSONValue) throws {
+    public init(json: JSONValue) throws {
         let o = try json.object("Caps")
         switch try o.string("kind", "Caps") {
         case "none": self = .none
@@ -225,7 +225,7 @@ public enum Caps: Sendable, Equatable {
                                             known: ["none", "uniform", "realBands"])
         }
     }
-    var json: JSONValue {
+    public var json: JSONValue {
         switch self {
         case .none: .object(["kind": .string("none")])
         case .uniform(let z): .object(["kind": .string("uniform"), "z": .double(z)])
@@ -428,7 +428,7 @@ public indirect enum Keep: Sendable, Equatable {
                                                     "band", "every"])
         }
     }
-    var json: JSONValue {
+    public var json: JSONValue {
         switch self {
         case .all: .object(["kind": .string("all")])
         case .region: .object(["kind": .string("region")])
@@ -473,7 +473,7 @@ public enum LayerSource: Sendable, Equatable {
     /// The rim of every truncated top: the zero contour of |f| - cap(x).
     case capOutline(tiled: Bool)
 
-    init(json: JSONValue) throws {
+    public init(json: JSONValue) throws {
         let o = try json.object("LayerSource")
         switch try o.string("kind", "LayerSource") {
         case "file":
@@ -522,7 +522,7 @@ public enum LayerSource: Sendable, Equatable {
                                                     "capOutline"])
         }
     }
-    var json: JSONValue {
+    public var json: JSONValue {
         switch self {
         case .file(let v, let o):
             .object(["kind": .string("file"), "vertices": .string(v), "offsets": .string(o)])
@@ -582,7 +582,7 @@ public struct LayerSpec: Sendable, Equatable {
         return nil
     }
 
-    init(json: JSONValue) throws {
+    public init(json: JSONValue) throws {
         let o = try json.object("LayerSpec")
         let roleText = try o.string("role", "LayerSpec")
         guard let role = LayerRole(rawValue: roleText) else {
@@ -601,7 +601,7 @@ public struct LayerSpec: Sendable, Equatable {
                   color: (try? o.string("color", "LayerSpec")) ?? "#000000",
                   clipped: try o.bool("clipped", "LayerSpec", default: true))
     }
-    var json: JSONValue {
+    public var json: JSONValue {
         .object(["name": .string(name), "role": .string(role.rawValue),
                  "source": source.json,
                  "width": .double(width), "heightPolicy": .string(heightPolicy.rawValue),

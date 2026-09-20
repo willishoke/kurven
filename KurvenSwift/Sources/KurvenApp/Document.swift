@@ -57,6 +57,31 @@ final class Document {
     /// rather than dumped. Absent means the bundle's own levels.
     var levelCounts: [Int: Int] = [:]
 
+    // MARK: - the landscape, when the document is one
+    //
+    // The state `Landscape.swift` works on. A landscape is a choice rather than
+    // a file, so what a document holds is the request that produced it, the
+    // request the controls have been edited to, and which of those is on screen.
+
+    /// The menu of functions, as the service reports it. Absent until it
+    /// answers, and absent forever on a machine with no checkout -- where
+    /// opening bundles still works and making them does not.
+    private(set) var catalog: Catalog?
+    /// What the controls say. Nil when this document is a bundle someone made
+    /// earlier rather than a landscape being chosen.
+    var landscape: LandscapeRequest?
+    /// The request the open bundle actually came from.
+    var shown: LandscapeRequest?
+    /// The latest edit, waiting for the request in flight to finish, and
+    /// whether it should re-frame when it arrives.
+    var wanted: (request: LandscapeRequest, framing: Bool)?
+    var sampling = false
+    var landscapeStatus: String?
+    /// The resolution a landscape is sampled at while a control is being
+    /// dragged. Low enough that the picture keeps up with the hand; the full
+    /// resolution follows when the drag ends.
+    var draftResolution = 240
+
     var bakeResolution: Int = 4000
     var bakeStatus: String?
     private(set) var baking = false
@@ -88,7 +113,12 @@ final class Document {
         }
     }
 
-    var title: String { url?.deletingPathExtension().lastPathComponent ?? "Kurven" }
+    var title: String {
+        if let landscape, isLandscape {
+            return catalog?.preset(landscape.name)?.label ?? landscape.expression
+        }
+        return url?.deletingPathExtension().lastPathComponent ?? "Kurven"
+    }
 
     var bundle: KurvenBundle? {
         if case .ready(let b) = state { return b }
@@ -125,16 +155,36 @@ final class Document {
         }
     }
 
-    private func adopt(_ bundle: KurvenBundle) {
+    /// Take a freshly read bundle as the document.
+    ///
+    /// `keepingCamera` is for a resample: the landscape under the camera has
+    /// changed, the camera has not. Re-fitting on every change would mean a
+    /// window that jumps while a domain slider is dragged, which makes the
+    /// slider useless for the thing it is for -- watching one feature as the
+    /// window moves over it.
+    /// Swap in a bundle derived from the same grids -- a restyling, not a new
+    /// landscape (`Landscape.swift`). The only way `state` is written from
+    /// outside this file, so "what is open" still changes in one place.
+    func replace(bundle: KurvenBundle) { state = .ready(bundle) }
+
+    func adopt(_ bundle: KurvenBundle, keepingCamera: Bool = false) {
         state = .ready(bundle)
         guard let preset = bundle.manifest.presets.first else {
             state = .failed(bundle.url, "the bundle declares no camera presets")
             return
         }
         var scene = Scene(bundle: bundle, preset: preset)
+        derivedInk = [:]
+        if keepingCamera, let navigator {
+            scene.camera = navigator.camera
+            self.scene = scene
+            adoptLandscape(bundle)
+            return
+        }
         margin = preset.margin
         bakeResolution = preset.buffer
         hiddenLayers = []
+        levelCounts = [:]
 
         var navigator = Navigator(orbit: Orbit(matching: preset.plate),
                                   framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
@@ -144,6 +194,7 @@ final class Document {
         }
         self.scene = scene
         self.navigator = navigator
+        adoptLandscape(bundle)
         connectService()
     }
 
@@ -227,8 +278,8 @@ final class Document {
     }
 
     /// The last derivation of each described layer, keyed by the levels that
-    /// produced it.
-    private var derivedInk: [Int: (levels: [Double], layer: Layer)] = [:]
+    /// produced it. Cleared whenever the landscape underneath it changes.
+    var derivedInk: [Int: (levels: [Double], layer: Layer)] = [:]
 
     func setLevelCount(_ n: Int, forLayer index: Int) {
         levelCounts[index] = max(n, 1)
@@ -257,6 +308,7 @@ final class Document {
             self.service = service
             Task {
                 do {
+                    catalog = try await service.catalog()
                     serviceDescription = try await service.describe()
                     if let example, arguments.isEmpty {
                         // Start from what the bundle was actually made with, so
