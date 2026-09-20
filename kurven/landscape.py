@@ -132,15 +132,18 @@ CATALOG = (
            "A pole at every half-period along the real axis, and flat plateaus "
            "of |tan| -> 1 away from it."),
     Preset("sin", "sin z", "sin(z)",
-           _domain(-6.5, 6.5, -2.0, 2.0), _domain(-12.0, 12.0, -4.0, 4.0), 4.0,
+           _domain(-5.0, 5.0, -1.5, 1.5), _domain(-12.0, 12.0, -5.0, 5.0), 2.5,
            "Entire: zeros on the real axis, growing exponentially away from it."),
     Preset("exp_inv", "exp(1/z) — essential singularity", "exp(1/z)",
            _domain(-1.2, 1.2, -1.2, 1.2), _domain(-4.0, 4.0, -4.0, 4.0), 5.0,
            "Every value, infinitely often, in every neighbourhood of the "
            "origin. The landscape shows why."),
-    Preset("cubic", "z³ - 1", "z^3 - 1",
-           _domain(-1.8, 1.8, -1.8, 1.8), _domain(-5.0, 5.0, -5.0, 5.0), None,
-           "Three zeros at the cube roots of unity; no poles, so no truncation."),
+    Preset("cubic", "1/(z³ - 1)", "1/(z^3 - 1)",
+           _domain(-2.0, 2.0, -2.0, 2.0), _domain(-6.0, 6.0, -6.0, 6.0), 5.0,
+           "Three simple poles at the cube roots of unity, evenly spaced on "
+           "the unit circle. The polynomial itself is not a landscape at any "
+           "setting -- |z³| runs to 16 in the corners of a window this small, "
+           "so it reads as a tower or, capped, as a table."),
     Preset("moebius", "(z² - 1)/(z² + 1)", "(z^2 - 1)/(z^2 + 1)",
            _domain(-2.5, 2.5, -2.0, 2.0), _domain(-6.0, 6.0, -6.0, 6.0), 4.0,
            "Zeros at ±1, poles at ±i: two spires and two pits."),
@@ -156,7 +159,7 @@ CATALOG = (
            _domain(-3.0, 3.0, -2.5, 2.5), _domain(-8.0, 8.0, -8.0, 8.0), 5.0,
            "Entire, but it grows like exp(z²) off the real axis."),
     Preset("besselj", "J₀(z)", "besselj(0, z)",
-           _domain(-10.0, 10.0, -3.0, 3.0), _domain(-25.0, 25.0, -8.0, 8.0), 4.0,
+           _domain(-11.0, 11.0, -3.0, 3.0), _domain(-25.0, 25.0, -8.0, 8.0), 3.0,
            "Oscillating and decaying along the real axis, growing off it."),
     Preset("digamma", "ψ(z) — digamma", "digamma(z)",
            _domain(-4.5, 4.5, 0.0, 2.5), _domain(-10.0, 10.0, -6.0, 6.0), 5.0,

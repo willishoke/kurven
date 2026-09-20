@@ -21,14 +21,15 @@ struct KurvenApplication: App {
     // the more important of the two here.
     var body: some SwiftUI.Scene {
         WindowGroup {
-            DocumentWindow(document: delegate.document, open: delegate.openPanel)
+            DocumentWindow(document: delegate.document, thumbnails: delegate.thumbnails,
+                           open: delegate.openPanel)
                 .frame(minWidth: 900, minHeight: 600)
         }
         .commands {
             CommandGroup(replacing: .newItem) {
                 // A landscape is the new document here: the app no longer needs
                 // a bundle someone made earlier in order to show anything.
-                Button("New Landscape") { delegate.newLandscape() }
+                Button("New Landscape…") { delegate.newLandscape() }
                     .keyboardShortcut("n")
                 Button("Open…") { delegate.openPanel() }
                     .keyboardShortcut("o")
@@ -45,6 +46,9 @@ struct KurvenApplication: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let document = Document()
+    /// One picture per catalog entry, drawn once and kept. App-level like the
+    /// document, because the picker outlives whatever is open.
+    let thumbnails = Thumbnails()
 
     // Run as a bare executable (`swift run KurvenApp`) there is no Info.plist,
     // so AppKit starts the process as a background app: no Dock icon, no menu
@@ -98,6 +102,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .flatMap { $0 + 1 < args.endIndex ? Double(args[$0 + 1]) : nil }
             Task { await headlessLandscape(what, resolution: resolution, cap: cap,
                                            screenshot: shot, save: save) }
+            return
+        }
+        // `--thumbnails` draws every catalog entry into the picker's cache and
+        // exits, so a first look at the gallery is instant and so that "the
+        // picker draws what the app draws" is a set of files to look at rather
+        // than a claim.
+        if args.contains("--thumbnails") {
+            Task { await warmThumbnails() }
             return
         }
         if args.contains("--resample"), let path = bundlePath {
@@ -221,14 +233,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         exit(0)
     }
 
+    /// Show the picker. Not "make a landscape at once": with fourteen
+    /// functions in the catalog, the choice is the interesting part.
+    private func warmThumbnails() async {
+        document.connectService()
+        for _ in 0..<400 where document.catalog == nil && document.serviceStatus == nil {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        guard let catalog = document.catalog else {
+            let why = document.serviceStatus ?? "it never answered"
+            FileHandle.standardError.write(Data("Kurven: no service — \(why)\n".utf8))
+            exit(1)
+        }
+        let clock = ContinuousClock()
+        let started = clock.now
+        thumbnails.warm(catalog.presets, service: document.service)
+        while thumbnails.images.count < catalog.presets.count {
+            if catalog.presets.allSatisfy({ thumbnails.images[$0.name] != nil
+                                            || thumbnails.isFailed($0) }) { break }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        for preset in catalog.presets {
+            let mark = thumbnails.images[preset.name] != nil ? "drew" : "FAILED"
+            print("  \(mark)  \(preset.name)")
+        }
+        print("Kurven: \(thumbnails.images.count) of \(catalog.presets.count) "
+              + "thumbnails in \(clock.now - started)")
+        exit(0)
+    }
+
     func newLandscape() {
         document.connectService()
-        Task {
-            for _ in 0..<400 where document.catalog == nil && document.serviceStatus == nil {
-                try? await Task.sleep(for: .milliseconds(25))
-            }
-            if let first = document.catalog?.presets.first { document.create(first) }
-        }
+        document.browsing = true
     }
 
     func savePanel() {
@@ -343,6 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct DocumentWindow: View {
     @Bindable var document: Document
+    let thumbnails: Thumbnails
     // Handed in rather than found through `NSApp.delegate`: under
     // `@NSApplicationDelegateAdaptor` that is SwiftUI's delegate, not ours.
     let open: () -> Void
@@ -358,6 +395,12 @@ struct DocumentWindow: View {
                 .frame(width: 320)
         }
         .navigationTitle(document.title)
+        .sheet(isPresented: $document.browsing) {
+            Gallery(presets: document.catalog?.presets ?? [], thumbnails: thumbnails,
+                    service: document.service,
+                    choose: { document.create($0) },
+                    dismiss: { document.browsing = false })
+        }
         .toolbar {
             ToolbarItem(placement: .status) { StatusView(document: document) }
         }
@@ -367,22 +410,33 @@ struct DocumentWindow: View {
     private var overlay: some View {
         switch document.state {
         case .empty:
-            VStack(spacing: 8) {
-                Text("kurven").font(.largeTitle)
-                Text("Pick a function in the sidebar, or open a .kurven bundle.")
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Button("New Landscape") {
-                        if let first = document.catalog?.presets.first {
-                            document.create(first)
-                        }
+            if let catalog = document.catalog {
+                VStack(spacing: 0) {
+                    Gallery(presets: catalog.presets, thumbnails: thumbnails,
+                            service: document.service,
+                            choose: { document.create($0) })
+                    Divider()
+                    HStack {
+                        Text("…or open a bundle someone already made.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Open…", action: open)
                     }
-                    .disabled(document.catalog == nil)
-                    Button("Open…", action: open)
+                    .padding(.horizontal, 20).padding(.vertical, 10)
                 }
-                if document.catalog == nil, let status = document.serviceStatus {
-                    Text(status).font(.caption).foregroundStyle(.secondary)
-                        .frame(maxWidth: 420)
+                .background(.background)
+            } else {
+                VStack(spacing: 8) {
+                    Text("kurven").font(.largeTitle)
+                    Text(document.service == nil
+                         ? "No Python service, so no new landscapes. Open a .kurven bundle."
+                         : "Asking the service what it can sample…")
+                        .foregroundStyle(.secondary)
+                    Button("Open…", action: open)
+                    if let status = document.serviceStatus {
+                        Text(status).font(.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: 420)
+                    }
                 }
             }
         case .loading:

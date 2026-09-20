@@ -77,6 +77,10 @@ final class Document {
     var wanted: (request: LandscapeRequest, framing: Bool)?
     var sampling = false
     var landscapeStatus: String?
+    /// True while the picker is up. On the document because the menu command
+    /// and the window are on opposite sides of SwiftUI's scene boundary, and
+    /// this is the one thing they both know about.
+    var browsing = false
     /// The resolution a landscape is sampled at while a control is being
     /// dragged. Low enough that the picture keeps up with the hand; the full
     /// resolution follows when the drag ends.

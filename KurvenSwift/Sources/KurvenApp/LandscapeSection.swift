@@ -64,6 +64,13 @@ struct LandscapeSection: View {
         if let preset = catalog.preset(document.landscape?.name ?? ""), !preset.notes.isEmpty {
             Text(preset.notes).font(.caption).foregroundStyle(.secondary)
         }
+        HStack {
+            // The dropdown is faster for someone who knows the name; the
+            // gallery answers the question a name cannot.
+            Button("Browse…") { document.browsing = true }
+                .controlSize(.small)
+            Spacer()
+        }
     }
 
     /// The whole point of the expression language being a real parser: this

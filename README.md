@@ -333,9 +333,20 @@ between the plate, a shaded surface, and the raw depth buffer. The inspector
 carries the camera as numbers, the plate presets, per-layer visibility and
 levels, the hidden-line margin, and a bake panel.
 
-⌘N starts a landscape rather than opening one: the sidebar's top section is the
-function (a catalog dropdown, and a field that takes any expression the language
-parses), the window as two thumbs per axis, the resolution, and the truncation
+⌘N starts a landscape rather than opening one, and what it opens is a picker:
+the catalog as pictures, each cell the landscape it names, drawn small by the
+same renderer that will draw it full size. A name cannot answer what ψ looks
+like against ζ, which is the reason these plates were drawn in 1909 rather than
+tabulated. They cost about 30 ms each — 220 samples, hatching coarsened to
+about twenty strokes an edge, since the spacing that is right for a
+four-thousand-pixel bake is solid black at 200 points across — and they are
+cached under `~/Library/Caches/world.kurven`, keyed by everything that would
+change them. `Kurven --thumbnails` draws them all (0.4 s for fourteen) so the
+first look is instant. With nothing open, that picker *is* the window.
+
+The sidebar's top section is the function (a catalog dropdown, `Browse…` for
+the same gallery, and a field that takes any expression the language parses),
+the window as two thumbs per axis, the resolution, and the truncation
 — a height, or a staircase of bands in Re with a row per band. A layer that is
 *described* carries its own control underneath it: a level count for a contour
 family, a spacing for a hatching. Dragging a window slider samples at a draft
@@ -353,6 +364,7 @@ Kurven.app/Contents/MacOS/Kurven recip.kurven --screenshot out.png
 Kurven.app/Contents/MacOS/Kurven recip.kurven --bake out.svg --resolution 4000
 Kurven.app/Contents/MacOS/Kurven --landscape zeta --resolution 800 \
     --cap 4 --save zeta.kurven --screenshot zeta.png
+Kurven.app/Contents/MacOS/Kurven --thumbnails      # fill the picker's cache
 ```
 
 The third drives the function picker the way a pair of hands would — sample a
