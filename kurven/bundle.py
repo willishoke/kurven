@@ -237,6 +237,10 @@ class Caps:
     conflates the two; the exporter moves it here.
     """
 
+    def at(self, x):
+        """The cap itself at each x -- infinite where nothing truncates."""
+        return self.apply(np.full(np.shape(x), np.inf), x)
+
     @staticmethod
     def from_dict(d):
         kind = _tag(d, "Caps")
@@ -559,6 +563,28 @@ class LayerSource:
                 tuple(float(v) for v in _require(d, "levels", "LayerSource.contour")),
                 Keep.from_dict(_require(d, "keep", "LayerSource.contour")),
                 bool(d.get("tiled", False)))
+        if kind == "wallHatch":
+            return LayerWallHatch(
+                tuple(int(e) for e in _require(d, "edges", "LayerSource.wallHatch")),
+                float(_require(d, "spacing", "LayerSource.wallHatch")),
+                float(_require(d, "pitch", "LayerSource.wallHatch")),
+                bool(d.get("trim", True)),
+                float(d.get("base", 0.0)),
+                float(d.get("topOffset", 0.0)))
+        if kind == "wallOutline":
+            return LayerWallOutline(
+                tuple(int(e) for e in _require(d, "edges", "LayerSource.wallOutline")),
+                float(_require(d, "pitch", "LayerSource.wallOutline")),
+                float(d.get("base", 0.0)))
+        if kind == "capHatch":
+            axis = str(_require(d, "axis", "LayerSource.capHatch"))
+            if axis not in KEEP_AXES:
+                raise BundleError(f"LayerSource.capHatch: unknown axis {axis!r}")
+            return LayerCapHatch(axis,
+                                 float(_require(d, "spacing", "LayerSource.capHatch")),
+                                 bool(d.get("tiled", False)))
+        if kind == "capOutline":
+            return LayerCapOutline(bool(d.get("tiled", False)))
         raise BundleError(f"LayerSource: unknown kind {kind!r}")
 
 
@@ -586,6 +612,101 @@ class LayerContour(LayerSource):
                 "levels": [float(v) for v in self.levels],
                 "keep": self.keep.to_dict(),
                 "tiled": bool(self.tiled)}
+
+
+# The four hatching sources. Each is the shading a plate draws on one kind of
+# face -- a cut face (`wall*`) or a truncated top (`cap*`) -- stated as the rule
+# that draws it, so the ink follows the landscape when the cap moves, the domain
+# moves, or the spacing does. `kurven.hatch` is the reference implementation of
+# every one of them; the Swift reader is held to it by `tests/fixtures/hatch`.
+#
+# All four draw *clipped* ink, which a 2-point stroke cannot be: the bake clips
+# per vertex, so a straight stroke whose middle is hidden and whose ends are not
+# would be drawn whole. That is why the wall kinds carry a `pitch` -- the vertex
+# spacing along a vertical stroke -- and the cap kinds put a vertex on every grid
+# column they cross.
+
+
+@dataclass(frozen=True)
+class LayerWallHatch(LayerSource):
+    """Vertical strokes up the cut faces, from `base` to the capped surface
+    (plus `top_offset`).
+
+    `edges` index the perimeter the walls are derived from
+    (`Walls.perimeter`); a bundle whose walls are not described has no
+    perimeter, and a wall hatch in it draws nothing. Each edge of length L is
+    sampled at `n = max(2, floor(L / spacing + 0.5) + 1)` evenly spaced points
+    including both corners -- the same parameterization the wall curtain uses --
+    and `trim` drops the two corners, so adjacent edges do not double a stroke
+    where they meet. A stroke is subdivided every `pitch` world units of height.
+    """
+
+    edges: tuple
+    spacing: float
+    pitch: float
+    trim: bool = True
+    base: float = 0.0
+    top_offset: float = 0.0
+
+    def to_dict(self):
+        return {"kind": "wallHatch", "edges": [int(e) for e in self.edges],
+                "spacing": float(self.spacing), "pitch": float(self.pitch),
+                "trim": bool(self.trim), "base": float(self.base),
+                "topOffset": float(self.top_offset)}
+
+
+@dataclass(frozen=True)
+class LayerWallOutline(LayerSource):
+    """The edges of the cut faces: each listed edge's crest (the surface along
+    it, at the edge's own sample density) and foot (the same samples at
+    `base`), then one vertical post at each distinct corner of those edges."""
+
+    edges: tuple
+    pitch: float
+    base: float = 0.0
+
+    def to_dict(self):
+        return {"kind": "wallOutline", "edges": [int(e) for e in self.edges],
+                "pitch": float(self.pitch), "base": float(self.base)}
+
+
+@dataclass(frozen=True)
+class LayerCapHatch(LayerSource):
+    """Parallel strokes across the truncated tops, at the cap.
+
+    The strokes run parallel to `axis` and lie on the lines where the *other*
+    coordinate is a whole multiple of `spacing` -- anchored to the plane rather
+    than to the domain, so dragging the domain slides the landscape under a
+    fixed ruling instead of re-ruling it. Along a line, a stroke covers exactly
+    the stretch where |f| is at or above the cap: the excess |f| - cap is sampled
+    at every grid column the line crosses and its sign changes are solved
+    linearly, which puts each stroke's ends on the same rim `LayerCapOutline`
+    draws. Band caps are constant between their breakpoints, and a line is
+    solved piece by piece between them.
+    """
+
+    axis: str
+    spacing: float
+    tiled: bool = False
+
+    def to_dict(self):
+        return {"kind": "capHatch", "axis": self.axis,
+                "spacing": float(self.spacing), "tiled": bool(self.tiled)}
+
+
+@dataclass(frozen=True)
+class LayerCapOutline(LayerSource):
+    """The rim of every truncated top: the zero contour of |f| - cap(x),
+    lifted to the cap.
+
+    Under a uniform cap this is the magnitude contour at the cap's level. Under
+    band caps it is not a contour of |f| at all -- it steps between bands --
+    which is why it is its own source rather than a level list."""
+
+    tiled: bool = False
+
+    def to_dict(self):
+        return {"kind": "capOutline", "tiled": bool(self.tiled)}
 
 
 @dataclass(frozen=True)

@@ -218,7 +218,7 @@ public extension NPY {
     /// Write a C-order array. Only what the CLI needs to dump a depth image for
     /// comparison against the Python oracle -- the bundle itself is written by
     /// the Python side.
-    static func write(_ values: [Float], shape: [Int], to url: URL) throws {
+    public static func write(_ values: [Float], shape: [Int], to url: URL) throws {
         precondition(shape.reduce(1, *) == values.count, "shape does not match count")
         var out = Data()
         let shapeText = shape.count == 1

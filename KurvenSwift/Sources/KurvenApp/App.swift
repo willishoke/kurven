@@ -21,13 +21,23 @@ struct KurvenApplication: App {
     // the more important of the two here.
     var body: some SwiftUI.Scene {
         WindowGroup {
-            DocumentWindow(document: delegate.document, open: delegate.openPanel)
+            DocumentWindow(document: delegate.document, thumbnails: delegate.thumbnails,
+                           open: delegate.openPanel)
                 .frame(minWidth: 900, minHeight: 600)
         }
         .commands {
             CommandGroup(replacing: .newItem) {
+                // A landscape is the new document here: the app no longer needs
+                // a bundle someone made earlier in order to show anything.
+                Button("New Landscape…") { delegate.newLandscape() }
+                    .keyboardShortcut("n")
                 Button("Open…") { delegate.openPanel() }
                     .keyboardShortcut("o")
+            }
+            CommandGroup(after: .saveItem) {
+                Button("Save Bundle…") { delegate.savePanel() }
+                    .keyboardShortcut("s")
+                    .disabled(delegate.document.bundle == nil)
             }
         }
     }
@@ -36,6 +46,9 @@ struct KurvenApplication: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let document = Document()
+    /// One picture per catalog entry, drawn once and kept. App-level like the
+    /// document, because the picker outlives whatever is open.
+    let thumbnails = Thumbnails()
 
     // Run as a bare executable (`swift run KurvenApp`) there is no Info.plist,
     // so AppKit starts the process as a background app: no Dock icon, no menu
@@ -47,15 +60,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate(ignoringOtherApps: true)
+        // The service is what makes a landscape possible, and with no bundle
+        // open there is nothing else to trigger the search for it.
+        document.connectService()
         // A path on the command line opens it, so the app can be driven from a
         // shell the same way the CLI is.
         let args = CommandLine.arguments.dropFirst()
-        let bundlePath = args.first { !$0.hasPrefix("-") && $0.hasSuffix(".kurven") }
+        // `--open PATH` as well as a bare path, and the difference is not
+        // cosmetic. AppKit reads a bare argument as "this process was launched
+        // to open that file", and SwiftUI's WindowGroup then declines to make
+        // its default window -- so `Kurven recip.kurven` shows nothing at all,
+        // while `Kurven --open recip.kurven` shows the landscape. A
+        // dash-prefixed argument is not read that way. The Finder and
+        // `open -a` are unaffected: they deliver the file through
+        // `application(_:open:)` rather than through argv.
+        let flagged = args.firstIndex(of: "--open").flatMap {
+            $0 + 1 < args.endIndex ? String(args[$0 + 1]) : nil
+        }
+        let bare = args.first { !$0.hasPrefix("-") && $0.hasSuffix(".kurven") }
+        let bundlePath = flagged ?? bare
 
         // `--screenshot PATH` renders one frame through the app's own state --
         // its Document, its Navigator, its preview options -- and exits. Without
         // it the only way to know the window draws the right thing is to look at
         // it, and a test that requires someone to look at it is not one.
+        // `--landscape NAME|EXPRESSION [--screenshot PATH]` samples a landscape
+        // through the window's own Document and Service -- the same path the
+        // picker takes -- so "the function picker works" is checkable by
+        // comparing a PNG rather than by clicking.
+        if let i = args.firstIndex(of: "--landscape"), i + 1 < args.endIndex {
+            let what = args[i + 1]
+            let shot = args.firstIndex(of: "--screenshot").flatMap {
+                $0 + 1 < args.endIndex ? URL(fileURLWithPath: args[$0 + 1]) : nil
+            }
+            let save = args.firstIndex(of: "--save").flatMap {
+                $0 + 1 < args.endIndex ? URL(fileURLWithPath: args[$0 + 1]) : nil
+            }
+            let resolution = args.firstIndex(of: "--resolution")
+                .flatMap { $0 + 1 < args.endIndex ? Int(args[$0 + 1]) : nil }
+            let cap = args.firstIndex(of: "--cap")
+                .flatMap { $0 + 1 < args.endIndex ? Double(args[$0 + 1]) : nil }
+            Task { await headlessLandscape(what, resolution: resolution, cap: cap,
+                                           screenshot: shot, save: save) }
+            return
+        }
+        // `--thumbnails` draws every catalog entry into the picker's cache and
+        // exits, so a first look at the gallery is instant and so that "the
+        // picker draws what the app draws" is a set of files to look at rather
+        // than a claim.
+        if args.contains("--thumbnails") {
+            Task { await warmThumbnails() }
+            return
+        }
         if args.contains("--resample"), let path = bundlePath {
             var settings: [String: String] = [:]
             var index = args.startIndex
@@ -94,6 +150,130 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if let path = bundlePath { document.open(URL(fileURLWithPath: path)) }
+        if flagged == nil, bare != nil {
+            FileHandle.standardError.write(Data("""
+                Kurven: macOS does not open a window for a process launched \
+                with a bare file argument. Use --open \(bare!), or open the \
+                bundle from the Finder.\n
+                """.utf8))
+        }
+        fillScreen()
+    }
+
+    /// Open filling the screen.
+    ///
+    /// A landscape is worth the whole display: the sidebar is fixed at 320
+    /// points, so every point the window gains is a point of plate. Zoomed
+    /// rather than fullscreen -- this takes the screen minus the menu bar and
+    /// the Dock, and leaves the green button meaning what it usually means.
+    ///
+    /// Deferred by one turn of the run loop because SwiftUI has not created the
+    /// window yet when this delegate method runs, and polled a few times after
+    /// that because "not yet" is the normal answer on the first turn. Whatever
+    /// frame was restored from the last run is overwritten, which is the point.
+    private func fillScreen(attempt: Int = 0) {
+        // Spaced in time, not merely deferred: twenty turns of the run loop go
+        // by in under a millisecond, which is before SwiftUI has made the
+        // window, so a chain of `async` retries is twenty ways of asking too
+        // early. Two seconds of 50 ms polls is a wait.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (attempt == 0 ? 0 : 0.05)) { [weak self] in
+            guard let window = NSApp.windows.first(where: { $0.isVisible }) else {
+                if attempt < 40 { self?.fillScreen(attempt: attempt + 1) }
+                return
+            }
+            guard let screen = window.screen ?? NSScreen.main else { return }
+            window.setFrame(screen.visibleFrame, display: true)
+        }
+    }
+
+    /// Wait for the catalog, make the landscape, and report it. The window is
+    /// never shown; everything it would do is done through the same model.
+    private func headlessLandscape(_ what: String, resolution: Int?, cap: Double?,
+                                   screenshot: URL?, save: URL?) async {
+        for _ in 0..<400 where document.catalog == nil && document.serviceStatus == nil {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        guard let catalog = document.catalog else {
+            let why = document.serviceStatus ?? "it never answered"
+            FileHandle.standardError.write(Data("Kurven: no service — \(why)\n".utf8))
+            exit(1)
+        }
+        if let preset = catalog.preset(what) {
+            document.create(preset)
+        } else {
+            // Not a name in the catalog, so it is an expression: the field and
+            // the flag accept the same language.
+            document.create(catalog.presets[0])
+            while document.sampling { try? await Task.sleep(for: .milliseconds(25)) }
+            document.landscape?.expression = what
+            document.landscape?.name = ""
+            document.landscapeEdited(draft: false)
+        }
+        if let resolution {
+            while document.sampling { try? await Task.sleep(for: .milliseconds(25)) }
+            document.landscape?.resolution = resolution
+            document.landscapeEdited(draft: false)
+        }
+        while document.sampling { try? await Task.sleep(for: .milliseconds(25)) }
+        // Truncating is the other kind of edit: no request, no sampling, just
+        // the ink derived again from grids that are already here. Driving it
+        // from here is how that path is checked without a pair of hands.
+        if let cap { document.setCaps(.uniform(cap)) }
+        guard document.scene != nil else {
+            let why = document.landscapeStatus ?? "no reason given"
+            FileHandle.standardError.write(
+                Data("Kurven: could not sample \(what) — \(why)\n".utf8))
+            exit(1)
+        }
+        print("Kurven: \(document.title) — \(document.landscapeStatus ?? "")"
+              + ", \(document.layers.count) layers, "
+              + "\(document.layers.reduce(0) { $0 + $1.paths.count }) paths")
+        if let save { document.saveBundle(to: save) }
+        if let screenshot { renderScreenshot(to: screenshot, what: document.title) }
+        exit(0)
+    }
+
+    /// Show the picker. Not "make a landscape at once": with fourteen
+    /// functions in the catalog, the choice is the interesting part.
+    private func warmThumbnails() async {
+        document.connectService()
+        for _ in 0..<400 where document.catalog == nil && document.serviceStatus == nil {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        guard let catalog = document.catalog else {
+            let why = document.serviceStatus ?? "it never answered"
+            FileHandle.standardError.write(Data("Kurven: no service — \(why)\n".utf8))
+            exit(1)
+        }
+        let clock = ContinuousClock()
+        let started = clock.now
+        thumbnails.warm(catalog.presets, service: document.service)
+        while thumbnails.images.count < catalog.presets.count {
+            if catalog.presets.allSatisfy({ thumbnails.images[$0.name] != nil
+                                            || thumbnails.isFailed($0) }) { break }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        for preset in catalog.presets {
+            let mark = thumbnails.images[preset.name] != nil ? "drew" : "FAILED"
+            print("  \(mark)  \(preset.name)")
+        }
+        print("Kurven: \(thumbnails.images.count) of \(catalog.presets.count) "
+              + "thumbnails in \(clock.now - started)")
+        exit(0)
+    }
+
+    func newLandscape() {
+        document.connectService()
+        document.browsing = true
+    }
+
+    func savePanel() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = (document.landscape?.name.isEmpty == false
+                                      ? document.landscape!.name : "landscape") + ".kurven"
+        panel.message = "Save this landscape as a .kurven bundle"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        document.saveBundle(to: url)
     }
 
     /// `--resample NAME=VALUE ... --screenshot PATH` drives the window's own
@@ -149,8 +329,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func screenshot(bundle: URL, to output: URL) async {
         await document.load(bundle)
+        renderScreenshot(to: output, what: bundle.lastPathComponent)
+    }
+
+    /// One frame of whatever the document currently holds.
+    ///
+    /// Separate from loading it, because a landscape has no file to re-open:
+    /// the bundle it was sampled into is scratch and is deleted the moment it
+    /// has been read. What is on screen is the value in memory.
+    private func renderScreenshot(to output: URL, what: String) {
         guard let scene = document.framedScene, let navigator = document.navigator else {
-            FileHandle.standardError.write(Data("Kurven: could not open \(bundle.path)\n".utf8))
+            FileHandle.standardError.write(Data("Kurven: nothing to draw\n".utf8))
             exit(1)
         }
         do {
@@ -160,7 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                        viewport: document.viewport,
                                        options: document.previewOptions, into: target)
             try PNG.write(target, to: output)
-            print("Kurven: \(bundle.lastPathComponent) -> \(output.lastPathComponent) "
+            print("Kurven: \(what) -> \(output.lastPathComponent) "
                   + "(\(document.viewport.width)x\(document.viewport.height), "
                   + "\(document.layers.count) layers)")
         } catch {
@@ -190,23 +379,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct DocumentWindow: View {
     @Bindable var document: Document
+    let thumbnails: Thumbnails
     // Handed in rather than found through `NSApp.delegate`: under
     // `@NSApplicationDelegateAdaptor` that is SwiftUI's delegate, not ours.
     let open: () -> Void
-    @State private var redraws = 0
 
     var body: some View {
         HSplitView {
             ZStack {
                 MetalView(document: document)
-                    .id(redraws == Int.max ? 1 : 0)   // never re-created
                 overlay
             }
             .frame(minWidth: 480)
-            Inspector(document: document) { redraws &+= 1 }
+            Inspector(document: document)
                 .frame(width: 320)
         }
         .navigationTitle(document.title)
+        .sheet(isPresented: $document.browsing) {
+            Gallery(presets: document.catalog?.presets ?? [], thumbnails: thumbnails,
+                    service: document.service,
+                    choose: { document.create($0) },
+                    dismiss: { document.browsing = false })
+        }
         .toolbar {
             ToolbarItem(placement: .status) { StatusView(document: document) }
         }
@@ -216,11 +410,34 @@ struct DocumentWindow: View {
     private var overlay: some View {
         switch document.state {
         case .empty:
-            VStack(spacing: 8) {
-                Text("kurven").font(.largeTitle)
-                Text("Open a .kurven bundle to navigate its landscape.")
-                    .foregroundStyle(.secondary)
-                Button("Open…", action: open)
+            if let catalog = document.catalog {
+                VStack(spacing: 0) {
+                    Gallery(presets: catalog.presets, thumbnails: thumbnails,
+                            service: document.service,
+                            choose: { document.create($0) })
+                    Divider()
+                    HStack {
+                        Text("…or open a bundle someone already made.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Open…", action: open)
+                    }
+                    .padding(.horizontal, 20).padding(.vertical, 10)
+                }
+                .background(.background)
+            } else {
+                VStack(spacing: 8) {
+                    Text("kurven").font(.largeTitle)
+                    Text(document.service == nil
+                         ? "No Python service, so no new landscapes. Open a .kurven bundle."
+                         : "Asking the service what it can sample…")
+                        .foregroundStyle(.secondary)
+                    Button("Open…", action: open)
+                    if let status = document.serviceStatus {
+                        Text(status).font(.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: 420)
+                    }
+                }
             }
         case .loading:
             ProgressView()
@@ -247,26 +464,33 @@ struct StatusView: View {
     let document: Document
 
     var body: some View {
-        switch document.state {
-        case .empty:
-            Text("No bundle open").foregroundStyle(.secondary)
-        case .loading(let url):
-            HStack {
-                ProgressView().controlSize(.small)
-                Text("Reading \(url.lastPathComponent)…")
-            }
-        case .ready:
-            HStack(spacing: 14) {
-                if let n = document.navigator {
-                    Text(String(format: "az %.1f°  el %.1f°", n.orbit.azimuth.degrees,
-                                n.orbit.elevation.degrees))
+        // The toolbar draws its own capsule tight around whatever this
+        // returns, so the padding has to come from in here: without it the
+        // first glyph of "az" and the last of "13 ms" sit on the rounded edge.
+        Group {
+            switch document.state {
+            case .empty:
+                Text("No bundle open").foregroundStyle(.secondary)
+            case .loading(let url):
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading \(url.lastPathComponent)…")
                 }
-                if let frames = document.frames.summary { Text(frames) }
+            case .ready:
+                HStack(spacing: 14) {
+                    if let n = document.navigator {
+                        Text(String(format: "az %.1f°  el %.1f°", n.orbit.azimuth.degrees,
+                                    n.orbit.elevation.degrees))
+                    }
+                    if let frames = document.frames.summary { Text(frames) }
+                }
+                .monospacedDigit().foregroundStyle(.secondary)
+            case .failed(_, let message):
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red).lineLimit(1)
             }
-            .monospacedDigit().foregroundStyle(.secondary)
-        case .failed(_, let message):
-            Label(message, systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.red).lineLimit(1)
         }
+        .padding(.horizontal, 10)
+        .fixedSize()
     }
 }

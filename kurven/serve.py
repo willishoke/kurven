@@ -10,7 +10,15 @@ bundle someone handed it on disk.
     {"id": 1, "method": "describe"}
     {"id": 1, "result": {"examples": [...]}}
 
-    {"id": 2, "method": "export", "params": {"example": "recip",
+    {"id": 2, "method": "catalog"}
+    {"id": 2, "result": {"presets": [...], "language": {...}}}
+
+    {"id": 3, "method": "landscape", "params": {"expression": "1/gamma(z)",
+                                                "domain": {...}, "resolution": 600,
+                                                "output": "/tmp/l.kurven"}}
+    {"id": 3, "result": {"path": "...", "bytes": 260000, "manifest": {...}}}
+
+    {"id": 4, "method": "export", "params": {"example": "recip",
                                              "output": "/tmp/r.kurven",
                                              "arguments": {"res": 800}}}
     {"id": 2, "result": {"path": "...", "bytes": 5100000, "manifest": {...}}}
@@ -18,6 +26,13 @@ bundle someone handed it on disk.
 One request per line, one reply per line, replies tagged with the request's id.
 Requests are served in order on one thread: sampling is CPU-bound and the client
 that wants two landscapes at once can run two servers.
+
+`catalog` and `landscape` are the other half: not "run this published plate"
+but "sample this function over this rectangle". A landscape's bundle describes
+every one of its layers rather than dumping any, so the client can move the cap,
+the levels and the hatch spacing itself and only comes back here when the
+function or the window changes -- which is the one thing that needs f evaluated
+again. `validate` is the same parser without the sampling, for a text field.
 
 `describe` reports each example's own argparse options -- name, type, default,
 help -- so a client can build a form for a function it has never heard of, and
@@ -31,6 +46,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import sys
 import traceback
 from contextlib import redirect_stdout
@@ -163,7 +179,90 @@ def method_export(params):
             "manifest": manifest.to_dict()}
 
 
-METHODS = {"describe": method_describe, "export": method_export}
+def method_catalog(_params):
+    """The menu, and the language behind it.
+
+    `presets` is a list of good starting points; `language` is everything the
+    expression field will accept -- each function's name, arity and aliases --
+    so a client can offer them and reject a typo before paying for a round trip.
+    Neither is written down in the client, because a function added here should
+    appear there without anyone editing Swift.
+    """
+    from kurven.expr import LANGUAGE
+    from kurven.landscape import (CATALOG, DEFAULT_RESOLUTION, PLATE_BUFFER,
+                                  PLATE_MARGIN)
+
+    return {"protocol": PROTOCOL,
+            "presets": [p.to_dict() for p in CATALOG],
+            "language": LANGUAGE,
+            "defaults": {"resolution": DEFAULT_RESOLUTION,
+                         "buffer": PLATE_BUFFER, "margin": PLATE_MARGIN}}
+
+
+def method_validate(params):
+    """Parse an expression and say what it means, without sampling anything.
+
+    A parse is microseconds and a landscape is a second, so a field being typed
+    into should not be asking for landscapes. The answer is the canonical
+    spelling, which is also how a client learns that `1/Γ(z)` and `1 / gamma(z)`
+    are the same landscape.
+    """
+    from kurven.expr import ExpressionError, canonical
+
+    try:
+        return {"expression": canonical(params.get("expression", ""))}
+    except ExpressionError as e:
+        raise RPCError("badExpression", str(e))
+
+
+def method_landscape(params):
+    """Sample a function over a rectangle and write the bundle for it.
+
+    The request is a `kurven.landscape.Spec` -- an expression, a window, a
+    resolution, and the styling the client has edited, if it has -- and the
+    answer is a bundle every layer of which is a description. Nothing is
+    contoured here: the consumer derives the ink from the grids, and that is
+    what makes the cap, the levels and the hatch spacing editable without asking
+    this process for anything.
+    """
+    import dataclasses
+
+    from kurven.bundle import BundleError
+    from kurven.expr import ExpressionError
+    from kurven.landscape import Spec, build_scene
+
+    output = params.get("output")
+    if not output:
+        raise RPCError("badRequest", "landscape needs an 'output' path")
+    try:
+        spec = Spec.from_dict(params)
+    except (BundleError, KeyError, TypeError, ValueError) as e:
+        raise RPCError("badRequest", str(e))
+
+    chunks = int(params.get("chunkCount", 1))
+    noise = io.StringIO()
+    try:
+        with redirect_stdout(noise):
+            scene = build_scene(spec, verbose=True, geometry=False,
+                                chunk_count=chunks)
+            scene = dataclasses.replace(scene, walls=())
+            manifest = export(scene, output, chunk_count=chunks,
+                              phase=not params.get("noPhase", False),
+                              wall_mesh=False, derived=True, example="function")
+    except ExpressionError as e:
+        raise RPCError("badExpression", str(e))
+    sys.stderr.write(noise.getvalue())
+    sys.stderr.flush()
+
+    path = Path(output)
+    total = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+    return {"path": str(path.resolve()), "bytes": total,
+            "manifest": manifest.to_dict()}
+
+
+METHODS = {"describe": method_describe, "export": method_export,
+           "catalog": method_catalog, "validate": method_validate,
+           "landscape": method_landscape}
 
 
 # --------------------------------------------------------------------------
@@ -201,8 +300,30 @@ def serve(stdin=None, stdout=None):
                 traceback.print_exc(file=sys.stderr)
                 reply = {"id": rid, "error": {"kind": type(e).__name__,
                                               "message": str(e)}}
-        stdout.write(json.dumps(reply, allow_nan=False) + "\n")
-        stdout.flush()
+        try:
+            stdout.write(json.dumps(reply, allow_nan=False) + "\n")
+            stdout.flush()
+        except BrokenPipeError:
+            # The client left while we were answering, which is not an error:
+            # a window that takes a screenshot and exits does exactly this, and
+            # a server that treats it as a crash prints a traceback over the
+            # output of whatever the client was actually doing.
+            return
+
+
+def _quiet_exit():
+    """Let the interpreter shut down after the client has gone.
+
+    Python flushes stdout on the way out, and if the read end is closed that
+    raises a second `BrokenPipeError` in the teardown, where nothing can catch
+    it -- so it prints "Exception ignored" and an exit code of 120. Pointing the
+    descriptor at /dev/null first is the documented way to have nothing to
+    flush (see the Python FAQ on BrokenPipeError).
+    """
+    try:
+        sys.stdout.flush()
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
 
 
 def main(argv=None):
@@ -215,6 +336,7 @@ def main(argv=None):
         serve(stdin=io.StringIO(args.once + "\n"))
         return
     serve()
+    _quiet_exit()
 
 
 if __name__ == "__main__":

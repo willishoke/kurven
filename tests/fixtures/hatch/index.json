@@ -1,0 +1,731 @@
+{
+ "caps": {
+  "bands": {
+   "bands": [
+    {
+     "below": -1.0,
+     "cap": 1.2
+    },
+    {
+     "below": 0.4,
+     "cap": 2.5
+    }
+   ],
+   "beyond": 1.6,
+   "kind": "realBands"
+  },
+  "uniform": {
+   "kind": "uniform",
+   "z": 2.0
+  }
+ },
+ "cases": [
+  {
+   "caps": "uniform",
+   "name": "uniform_wall_hatch",
+   "offsets": "uniform_wall_hatch.idx.npy",
+   "paths": 36,
+   "source": {
+    "base": 0.0,
+    "edges": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "kind": "wallHatch",
+    "pitch": 0.5,
+    "spacing": 0.35,
+    "topOffset": 0.0,
+    "trim": true
+   },
+   "vertices": "uniform_wall_hatch.npy"
+  },
+  {
+   "caps": "uniform",
+   "name": "uniform_wall_hatch_untrimmed",
+   "offsets": "uniform_wall_hatch_untrimmed.idx.npy",
+   "paths": 15,
+   "source": {
+    "base": 0.1,
+    "edges": [
+     0,
+     2
+    ],
+    "kind": "wallHatch",
+    "pitch": 0.25,
+    "spacing": 0.6,
+    "topOffset": -0.05,
+    "trim": false
+   },
+   "vertices": "uniform_wall_hatch_untrimmed.npy"
+  },
+  {
+   "caps": "uniform",
+   "name": "uniform_wall_outline",
+   "offsets": "uniform_wall_outline.idx.npy",
+   "paths": 12,
+   "source": {
+    "base": 0.0,
+    "edges": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "kind": "wallOutline",
+    "pitch": 0.4
+   },
+   "vertices": "uniform_wall_outline.npy"
+  },
+  {
+   "caps": "uniform",
+   "name": "uniform_cap_hatch_real",
+   "offsets": "uniform_cap_hatch_real.idx.npy",
+   "paths": 3,
+   "source": {
+    "axis": "real",
+    "kind": "capHatch",
+    "spacing": 0.25,
+    "tiled": false
+   },
+   "vertices": "uniform_cap_hatch_real.npy"
+  },
+  {
+   "caps": "uniform",
+   "name": "uniform_cap_hatch_imag",
+   "offsets": "uniform_cap_hatch_imag.idx.npy",
+   "paths": 4,
+   "source": {
+    "axis": "imag",
+    "kind": "capHatch",
+    "spacing": 0.3,
+    "tiled": false
+   },
+   "vertices": "uniform_cap_hatch_imag.npy"
+  },
+  {
+   "caps": "uniform",
+   "name": "uniform_cap_outline",
+   "offsets": "uniform_cap_outline.idx.npy",
+   "paths": 2,
+   "source": {
+    "kind": "capOutline",
+    "tiled": false
+   },
+   "vertices": "uniform_cap_outline.npy"
+  },
+  {
+   "caps": "bands",
+   "name": "bands_wall_hatch",
+   "offsets": "bands_wall_hatch.idx.npy",
+   "paths": 36,
+   "source": {
+    "base": 0.0,
+    "edges": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "kind": "wallHatch",
+    "pitch": 0.5,
+    "spacing": 0.35,
+    "topOffset": 0.0,
+    "trim": true
+   },
+   "vertices": "bands_wall_hatch.npy"
+  },
+  {
+   "caps": "bands",
+   "name": "bands_wall_hatch_untrimmed",
+   "offsets": "bands_wall_hatch_untrimmed.idx.npy",
+   "paths": 15,
+   "source": {
+    "base": 0.1,
+    "edges": [
+     0,
+     2
+    ],
+    "kind": "wallHatch",
+    "pitch": 0.25,
+    "spacing": 0.6,
+    "topOffset": -0.05,
+    "trim": false
+   },
+   "vertices": "bands_wall_hatch_untrimmed.npy"
+  },
+  {
+   "caps": "bands",
+   "name": "bands_wall_outline",
+   "offsets": "bands_wall_outline.idx.npy",
+   "paths": 12,
+   "source": {
+    "base": 0.0,
+    "edges": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "kind": "wallOutline",
+    "pitch": 0.4
+   },
+   "vertices": "bands_wall_outline.npy"
+  },
+  {
+   "caps": "bands",
+   "name": "bands_cap_hatch_real",
+   "offsets": "bands_cap_hatch_real.idx.npy",
+   "paths": 5,
+   "source": {
+    "axis": "real",
+    "kind": "capHatch",
+    "spacing": 0.25,
+    "tiled": false
+   },
+   "vertices": "bands_cap_hatch_real.npy"
+  },
+  {
+   "caps": "bands",
+   "name": "bands_cap_hatch_imag",
+   "offsets": "bands_cap_hatch_imag.idx.npy",
+   "paths": 3,
+   "source": {
+    "axis": "imag",
+    "kind": "capHatch",
+    "spacing": 0.3,
+    "tiled": false
+   },
+   "vertices": "bands_cap_hatch_imag.npy"
+  },
+  {
+   "caps": "bands",
+   "name": "bands_cap_outline",
+   "offsets": "bands_cap_outline.idx.npy",
+   "paths": 2,
+   "source": {
+    "kind": "capOutline",
+    "tiled": false
+   },
+   "vertices": "bands_cap_outline.npy"
+  }
+ ],
+ "domain": {
+  "imag": {
+   "hi": 1.5,
+   "lo": -1.0
+  },
+  "real": {
+   "hi": 2.5,
+   "lo": -2.0
+  }
+ },
+ "perimeter": {
+  "edges": [
+   {
+    "density": 19,
+    "end": [
+     2.5,
+     -1.0
+    ],
+    "start": [
+     -2.0,
+     -1.0
+    ]
+   },
+   {
+    "density": 11,
+    "end": [
+     2.5,
+     1.5
+    ],
+    "start": [
+     2.5,
+     -1.0
+    ]
+   },
+   {
+    "density": 19,
+    "end": [
+     -2.0,
+     1.5
+    ],
+    "start": [
+     2.5,
+     1.5
+    ]
+   },
+   {
+    "density": 11,
+    "end": [
+     -2.0,
+     -1.0
+    ],
+    "start": [
+     -2.0,
+     1.5
+    ]
+   }
+  ]
+ },
+ "shape": {
+  "nx": 37,
+  "ny": 23
+ },
+ "style": {
+  "levels": [
+   {
+    "ceiling": 1.0,
+    "major": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.5,
+     0.6,
+     0.7,
+     0.8,
+     0.9,
+     1.0
+    ],
+    "minor": [
+     0.02,
+     0.04,
+     0.06,
+     0.08,
+     0.12,
+     0.14,
+     0.16,
+     0.18,
+     0.22,
+     0.24,
+     0.26,
+     0.28,
+     0.32,
+     0.34,
+     0.36,
+     0.38,
+     0.42,
+     0.44,
+     0.46,
+     0.48,
+     0.52,
+     0.54,
+     0.56,
+     0.58,
+     0.62,
+     0.64,
+     0.66,
+     0.68,
+     0.72,
+     0.74,
+     0.76,
+     0.78,
+     0.82,
+     0.84,
+     0.86,
+     0.88,
+     0.92,
+     0.94,
+     0.96,
+     0.98
+    ]
+   },
+   {
+    "ceiling": 2.0,
+    "major": [
+     0.2,
+     0.4,
+     0.6,
+     0.8,
+     1.0,
+     1.2,
+     1.4,
+     1.6,
+     1.8,
+     2.0
+    ],
+    "minor": [
+     0.04,
+     0.08,
+     0.12,
+     0.16,
+     0.24,
+     0.28,
+     0.32,
+     0.36,
+     0.44,
+     0.48,
+     0.52,
+     0.56,
+     0.64,
+     0.68,
+     0.72,
+     0.76,
+     0.84,
+     0.88,
+     0.92,
+     0.96,
+     1.04,
+     1.08,
+     1.12,
+     1.16,
+     1.24,
+     1.28,
+     1.32,
+     1.36,
+     1.44,
+     1.48,
+     1.52,
+     1.56,
+     1.64,
+     1.68,
+     1.72,
+     1.76,
+     1.84,
+     1.88,
+     1.92,
+     1.96
+    ]
+   },
+   {
+    "ceiling": 4.0,
+    "major": [
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     2.5,
+     3.0,
+     3.5,
+     4.0
+    ],
+    "minor": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.6,
+     0.7,
+     0.8,
+     0.9,
+     1.1,
+     1.2,
+     1.3,
+     1.4,
+     1.6,
+     1.7,
+     1.8,
+     1.9,
+     2.1,
+     2.2,
+     2.3,
+     2.4,
+     2.6,
+     2.7,
+     2.8,
+     2.9,
+     3.1,
+     3.2,
+     3.3,
+     3.4,
+     3.6,
+     3.7,
+     3.8,
+     3.9
+    ]
+   },
+   {
+    "ceiling": 5.0,
+    "major": [
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     2.5,
+     3.0,
+     3.5,
+     4.0,
+     4.5,
+     5.0
+    ],
+    "minor": [
+     0.1,
+     0.2,
+     0.3,
+     0.4,
+     0.6,
+     0.7,
+     0.8,
+     0.9,
+     1.1,
+     1.2,
+     1.3,
+     1.4,
+     1.6,
+     1.7,
+     1.8,
+     1.9,
+     2.1,
+     2.2,
+     2.3,
+     2.4,
+     2.6,
+     2.7,
+     2.8,
+     2.9,
+     3.1,
+     3.2,
+     3.3,
+     3.4,
+     3.6,
+     3.7,
+     3.8,
+     3.9,
+     4.1,
+     4.2,
+     4.3,
+     4.4,
+     4.6,
+     4.7,
+     4.8,
+     4.9
+    ]
+   },
+   {
+    "ceiling": 6.0,
+    "major": [
+     1.0,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "minor": [
+     0.2,
+     0.4,
+     0.6,
+     0.8,
+     1.2,
+     1.4,
+     1.6,
+     1.8,
+     2.2,
+     2.4,
+     2.6,
+     2.8,
+     3.2,
+     3.4,
+     3.6,
+     3.8,
+     4.2,
+     4.4,
+     4.6,
+     4.8,
+     5.2,
+     5.4,
+     5.6,
+     5.8
+    ]
+   },
+   {
+    "ceiling": 10.0,
+    "major": [
+     1.0,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0,
+     7.0,
+     8.0,
+     9.0,
+     10.0
+    ],
+    "minor": [
+     0.2,
+     0.4,
+     0.6,
+     0.8,
+     1.2,
+     1.4,
+     1.6,
+     1.8,
+     2.2,
+     2.4,
+     2.6,
+     2.8,
+     3.2,
+     3.4,
+     3.6,
+     3.8,
+     4.2,
+     4.4,
+     4.6,
+     4.8,
+     5.2,
+     5.4,
+     5.6,
+     5.8,
+     6.2,
+     6.4,
+     6.6,
+     6.8,
+     7.2,
+     7.4,
+     7.6,
+     7.8,
+     8.2,
+     8.4,
+     8.6,
+     8.8,
+     9.2,
+     9.4,
+     9.6,
+     9.8
+    ]
+   },
+   {
+    "ceiling": 12.5,
+    "major": [
+     2.0,
+     4.0,
+     6.0,
+     8.0,
+     10.0,
+     12.0
+    ],
+    "minor": [
+     0.4,
+     0.8,
+     1.2,
+     1.6,
+     2.4,
+     2.8,
+     3.2,
+     3.6,
+     4.4,
+     4.8,
+     5.2,
+     5.6,
+     6.4,
+     6.8,
+     7.2,
+     7.6,
+     8.4,
+     8.8,
+     9.2,
+     9.6,
+     10.4,
+     10.8,
+     11.2,
+     11.6,
+     12.4
+    ]
+   },
+   {
+    "ceiling": 37.0,
+    "major": [
+     5.0,
+     10.0,
+     15.0,
+     20.0,
+     25.0,
+     30.0,
+     35.0
+    ],
+    "minor": [
+     1.0,
+     2.0,
+     3.0,
+     4.0,
+     6.0,
+     7.0,
+     8.0,
+     9.0,
+     11.0,
+     12.0,
+     13.0,
+     14.0,
+     16.0,
+     17.0,
+     18.0,
+     19.0,
+     21.0,
+     22.0,
+     23.0,
+     24.0,
+     26.0,
+     27.0,
+     28.0,
+     29.0,
+     31.0,
+     32.0,
+     33.0,
+     34.0,
+     36.0,
+     37.0
+    ]
+   }
+  ],
+  "nice": [
+   {
+    "down": 0.025,
+    "up": 0.05,
+    "x": 0.037
+   },
+   {
+    "down": 0.1,
+    "up": 0.2,
+    "x": 0.12
+   },
+   {
+    "down": 0.5,
+    "up": 0.5,
+    "x": 0.5
+   },
+   {
+    "down": 1.0,
+    "up": 1.0,
+    "x": 1.0
+   },
+   {
+    "down": 1.0,
+    "up": 2.0,
+    "x": 1.4
+   },
+   {
+    "down": 2.0,
+    "up": 2.5,
+    "x": 2.3
+   },
+   {
+    "down": 2.5,
+    "up": 5.0,
+    "x": 4.9
+   },
+   {
+    "down": 5.0,
+    "up": 10.0,
+    "x": 6.0
+   },
+   {
+    "down": 5.0,
+    "up": 10.0,
+    "x": 7.5
+   },
+   {
+    "down": 20.0,
+    "up": 25.0,
+    "x": 23.0
+   },
+   {
+    "down": 100.0,
+    "up": 200.0,
+    "x": 180.0
+   }
+  ]
+ }
+}

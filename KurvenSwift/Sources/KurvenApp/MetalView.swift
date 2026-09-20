@@ -50,7 +50,43 @@ struct MetalView: NSViewRepresentable {
         private var renderer: MetalRenderer?
         private(set) var lastError: String?
 
-        init(document: Document) { self.document = document }
+        init(document: Document) {
+            self.document = document
+            super.init()
+            trackModel()
+        }
+
+        /// Redraw when the model changes, whatever changed it.
+        ///
+        /// This used to be the sidebar's job: every control called an
+        /// `onChange` closure that bumped a counter the window's body read, on
+        /// the theory that re-evaluating the body would reach `updateNSView`.
+        /// It did not -- this view's only stored property is the document, the
+        /// same reference every time, so SwiftUI had nothing to diff and
+        /// nothing to update -- and even where it had worked the arrangement
+        /// was wrong twice over. A control that forgets the call does not
+        /// redraw, which is what happened to the preview-mode picker while the
+        /// keyboard shortcuts for the same three modes worked, because they set
+        /// `needsDisplay` themselves. And a change with no control behind it --
+        /// a resample arriving, a bundle finishing loading -- has nothing to
+        /// forget to call.
+        ///
+        /// `Document` is `@Observable`, so the statement can be the true one:
+        /// draw again when something the drawing depends on has changed.
+        /// Tracking fires once, so it re-arms itself.
+        private func trackModel() {
+            withObservationTracking {
+                _ = document.framedScene        // the scene, camera and margin
+                _ = document.previewOptions     // the mode and what is hidden
+            } onChange: { [weak self] in
+                // `onChange` runs *before* the new value lands, and can run off
+                // the main actor; next turn, on the main actor, it has landed.
+                Task { @MainActor in
+                    self?.view?.needsDisplay = true
+                    self?.trackModel()
+                }
+            }
+        }
 
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
             setViewport(Viewport(width: Int(size.width), height: Int(size.height)))

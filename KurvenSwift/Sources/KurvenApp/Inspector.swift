@@ -10,16 +10,24 @@ import KurvenService
 /// second copy of the camera to keep in step with the first.
 struct Inspector: View {
     @Bindable var document: Document
-    var onChange: () -> Void
 
     var body: some View {
         Form {
+            // The function comes first, and shows even with nothing open: a
+            // landscape is now something you can start, not only something you
+            // can be handed.
+            Section("Landscape") {
+                LandscapeSection(document: document)
+            }
             if let bundle = document.bundle {
                 Section("Camera") {
                     CameraSection(document: document, presets: bundle.manifest.presets,
-                                  onChange: onChange)
+)
                 }
                 Section("Mode") { modePicker }
+                Section("Truncation") {
+                    TruncationSection(document: document)
+                }
                 Section("Layers") { layerList }
                 Section("Ink") { marginField }
                 Section("Resample") { resamplePanel }
@@ -40,7 +48,7 @@ struct Inspector: View {
     private var modePicker: some View {
         Picker("Preview", selection: Binding(
             get: { ModeChoice(document.mode) },
-            set: { document.mode = $0.mode; onChange() })) {
+            set: { document.mode = $0.mode })) {
             Text("Plate").tag(ModeChoice.plate)
             Text("Shaded").tag(ModeChoice.shaded)
             Text("Depth").tag(ModeChoice.depth)
@@ -56,7 +64,7 @@ struct Inspector: View {
             VStack(alignment: .leading, spacing: 2) {
                 Toggle(isOn: Binding(
                     get: { !document.hiddenLayers.contains(index) },
-                    set: { _ in document.toggle(layer: index); onChange() })) {
+                    set: { _ in document.toggle(layer: index) })) {
                     HStack {
                         Text(layer.spec.name)
                         Spacer()
@@ -74,6 +82,15 @@ struct Inspector: View {
                    let levels = document.levels(forLayer: index) {
                     levelSlider(index: index, levels: levels)
                 }
+                // A hatching carries its spacing the way a contour family
+                // carries its levels, and for the same reason: it is a
+                // description, so the number in it is a control.
+                if let spacing = document.spacing(ofLayer: index) {
+                    spacingSlider(index: index, spacing: spacing)
+                }
+                if case .capHatch(let axis, _, _) = layer.spec.source {
+                    axisPicker(axis)
+                }
             }
         }
     }
@@ -82,7 +99,7 @@ struct Inspector: View {
     private func levelSlider(index: Int, levels: [Double]) -> some View {
         let count = Binding(
             get: { Double(levels.count) },
-            set: { document.setLevelCount(Int($0.rounded()), forLayer: index); onChange() })
+            set: { document.setLevelCount(Int($0.rounded()), forLayer: index) })
         HStack(spacing: 6) {
             Text("levels").font(.caption).foregroundStyle(.secondary)
             Slider(value: count, in: 1...80, step: 1)
@@ -90,10 +107,41 @@ struct Inspector: View {
                 .font(.caption).monospacedDigit().frame(width: 24, alignment: .trailing)
             Button {
                 document.resetLevels(forLayer: index)
-                onChange()
             } label: { Image(systemName: "arrow.uturn.backward") }
                 .buttonStyle(.borderless).controlSize(.small)
         }
+        .padding(.leading, 20)
+    }
+
+    /// World units between hatch strokes. Restyling, not resampling: the
+    /// strokes are re-derived from grids that are already here, so this redraws
+    /// within a frame however large the landscape is.
+    @ViewBuilder
+    private func spacingSlider(index: Int, spacing: Double) -> some View {
+        let live = Binding(get: { spacing }, set: {
+            document.setSpacing($0, ofLayer: index)
+        })
+        HStack(spacing: 6) {
+            Text("spacing").font(.caption).foregroundStyle(.secondary)
+            Slider(value: live, in: max(spacing / 20, 0.002)...max(spacing * 8, 0.05))
+            Text(String(format: "%.3g", spacing))
+                .font(.caption).monospacedDigit().frame(width: 34, alignment: .trailing)
+        }
+        .padding(.leading, 20)
+    }
+
+    /// Which way the strokes on the truncated tops run. The plates rule them
+    /// along the real axis; a landscape whose plateaus are long in the other
+    /// direction reads better ruled the other way.
+    @ViewBuilder
+    private func axisPicker(_ axis: KeepAxis) -> some View {
+        Picker("", selection: Binding(get: { axis }, set: {
+            document.setCapHatchAxis($0)
+        })) {
+            Text("along Re").tag(KeepAxis.real)
+            Text("along Im").tag(KeepAxis.imag)
+        }
+        .pickerStyle(.segmented).labelsHidden().controlSize(.small)
         .padding(.leading, 20)
     }
 
@@ -103,7 +151,6 @@ struct Inspector: View {
     private var marginField: some View {
         let live = Binding(get: { document.margin }, set: {
             document.margin = $0
-            onChange()
         })
         LabeledContent("Margin") {
             HStack {
@@ -196,7 +243,6 @@ struct Inspector: View {
 struct CameraSection: View {
     @Bindable var document: Document
     let presets: [CameraPreset]
-    var onChange: () -> Void
 
 
     var body: some View {
@@ -214,11 +260,10 @@ struct CameraSection: View {
             ForEach(presets, id: \.name) { preset in
                 Button(preset.name) {
                     document.use(preset: preset)
-                    onChange()
                 }
             }
             Spacer()
-            Button("Fit") { document.fit(); onChange() }
+            Button("Fit") { document.fit() }
                 .keyboardShortcut("f", modifiers: [])
         }
     }
@@ -231,7 +276,7 @@ struct CameraSection: View {
     private var projectionToggle: some View {
         Toggle("Perspective", isOn: Binding(
             get: { document.navigator?.orbit.isPerspective ?? false },
-            set: { document.setPerspective($0); onChange() }))
+            set: { document.setPerspective($0) }))
             .toggleStyle(.switch)
             .controlSize(.small)
             .help("Navigate in perspective. Baking still requires an "
@@ -275,7 +320,6 @@ struct CameraSection: View {
         // disagree about what the camera is.
         let live = Binding(get: { value.wrappedValue }, set: {
             value.wrappedValue = $0
-            onChange()
         })
         LabeledContent(label) {
             HStack {

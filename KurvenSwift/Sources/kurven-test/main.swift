@@ -47,7 +47,7 @@ enum Fixtures {
 func contractTests() {
     Check.suite("contract: the schema is one definition and one mirror") {
         let bundles = Fixtures.contractBundles
-        Check.expect(bundles.count == 3, "three fixture bundles are present",
+        Check.expect(bundles.count == 4, "four fixture bundles are present",
                      "found \(bundles.count)")
         for b in bundles {
             let text = try String(contentsOf: b.appendingPathComponent("manifest.json"),
@@ -638,6 +638,199 @@ func contourTests() {
     }
 }
 
+// MARK: - the hatching
+
+/// The four hatching sources, against `kurven.hatch`, which defines them.
+///
+/// Every height in the fixture was read out of the grid the fixture ships, by
+/// the transcription of `Grid2D.sample` that `kurven.hatch.grid_sampler` is. So
+/// this is not a tolerance test of two approximations: it is the same
+/// arithmetic on the same float32 samples, and the answers are expected to
+/// agree to the last few bits.
+func hatchTests() {
+    let index: [String: JSONValue]
+    let grid: Grid2D<Float>
+    let perimeter: BoundaryPerimeter
+    do {
+        index = try Fixtures.json("hatch/index.json")
+        let domain = try Domain(json: index.value("domain", "hatch"))
+        let shape = try index.value("shape", "hatch").object("hatch.shape")
+        let values = try NPY.read(contentsOf: Fixtures.url("hatch/height.npy")).floats()
+        grid = Grid2D(width: try shape.int("nx", "hatch.shape"),
+                      height: try shape.int("ny", "hatch.shape"),
+                      domain: domain, values: values)
+        perimeter = try BoundaryPerimeter(json: index.value("perimeter", "hatch"))
+    } catch {
+        Check.suite("hatch: the fixture loads") {
+            Check.expect(false, "hatch fixture loads", "\(error)")
+        }
+        return
+    }
+
+    Check.suite("hatch: every source reproduces kurven.hatch stroke for stroke") {
+        let caps = try index.value("caps", "hatch").object("hatch.caps")
+        for case .object(let c) in try index.array("cases", "hatch") {
+            let name = try c.string("name", "hatch.case")
+            let source = try LayerSource(json: c.value("source", "hatch.case"))
+            let surface = Surface(
+                height: grid, phase: nil,
+                caps: try Caps(json: caps.value(try c.string("caps", "hatch.case"),
+                                                "hatch.caps")))
+            let context = Surface.HatchContext(perimeter: perimeter)
+            guard let derived = surface.hatch(source, in: context) else {
+                Check.expect(false, "\(name) is a hatching", "\(source)")
+                continue
+            }
+            let verts = try NPY.read(contentsOf:
+                Fixtures.url("hatch/" + c.string("vertices", "hatch.case"))).rows3()
+            let offsets = try NPY.read(contentsOf:
+                Fixtures.url("hatch/" + c.string("offsets", "hatch.case"))).ints()
+            let expected = PolylineSet<WorldSpace>(vertices: verts.map { P3($0) },
+                                                   offsets: offsets)
+            guard derived.count == expected.count else {
+                Check.expect(false, "\(name): \(expected.count) strokes",
+                             "derived \(derived.count)")
+                continue
+            }
+            // A stroke is a stroke, vertex for vertex -- both sides walked the
+            // same samples in the same order. A *rim* is a marching-squares
+            // contour, and a closed loop has no first vertex: contourpy and
+            // this walk can start the same curve at different points on it. So
+            // the rim is compared the way `contourTests` compares a contour, as
+            // the set of segments it draws.
+            if case .capOutline = source {
+                let a = segmentMidpoints(derived), b = segmentMidpoints(expected)
+                let (unmatched, worst) = strayed(a, b)
+                Check.expect(a.count == b.count && unmatched == 0,
+                             "\(name): \(derived.count) loops, segment for segment",
+                             unmatched == 0 ? "exact"
+                                : "\(unmatched) of \(a.count + b.count) segments "
+                                  + "unmatched, worst \(worst)")
+                continue
+            }
+            var worst = 0.0
+            var shapeOK = true
+            for i in 0..<derived.count {
+                let a = derived[path: i], b = expected[path: i]
+                guard a.count == b.count else { shapeOK = false; break }
+                for (p, q) in zip(a, b) {
+                    worst = max(worst, simd_reduce_max(simd_abs(p.v - q.v)))
+                }
+            }
+            Check.expect(shapeOK && worst < 1e-9,
+                         "\(name): \(derived.count) strokes, vertex for vertex",
+                         shapeOK ? "max |Δ| = \(worst)" : "a stroke has a different length")
+        }
+    }
+
+    // The rule for choosing contour levels under a cap lives on both sides:
+    // Python picks them when it builds a landscape, and the app picks them
+    // again whenever the cap slider moves, because a level list is absolute and
+    // a raised cap would otherwise leave the top of the plate blank. Two
+    // implementations of one rule, pinned to each other here.
+    Check.suite("landscape: the derived numbers agree with kurven.landscape") {
+        let style = try index.value("style", "hatch").object("hatch.style")
+        var niceOK = true
+        for case .object(let n) in try style.array("nice", "style") {
+            let x = try n.double("x", "style.nice")
+            let up = try n.double("up", "style.nice")
+            let down = try n.double("down", "style.nice")
+            niceOK = niceOK && LandscapeStyle.nice(x) == up
+                && LandscapeStyle.nice(x, down: true) == down
+        }
+        Check.expect(niceOK, "nice() rounds the way Python's does")
+
+        var levelsOK = true
+        var detail = ""
+        for case .object(let l) in try style.array("levels", "style") {
+            let ceiling = try l.double("ceiling", "style.levels")
+            let (major, minor) = LandscapeStyle.magnitudeLevels(upTo: ceiling)
+            let wantMajor = try l.doubles("major", "style.levels")
+            let wantMinor = try l.doubles("minor", "style.levels")
+            let same = major.count == wantMajor.count && minor.count == wantMinor.count
+                && zip(major, wantMajor).allSatisfy { abs($0 - $1) < 1e-9 }
+                && zip(minor, wantMinor).allSatisfy { abs($0 - $1) < 1e-9 }
+            if !same, detail.isEmpty {
+                detail = "at ceiling \(ceiling): \(major.count)/\(minor.count) "
+                    + "vs \(wantMajor.count)/\(wantMinor.count)"
+            }
+            levelsOK = levelsOK && same
+        }
+        Check.expect(levelsOK, "magnitudeLevels() chooses the levels Python chose", detail)
+    }
+}
+
+/// Each segment's midpoint, which is where two walks of the same curve agree
+/// even when they disagree about which vertex is first.
+func segmentMidpoints(_ paths: PolylineSet<WorldSpace>) -> [SIMD3<Double>] {
+    var out: [SIMD3<Double>] = []
+    for i in 0..<paths.count {
+        let path = paths[path: i]
+        for (a, b) in zip(path, path.dropFirst()) { out.append((a.v + b.v) / 2) }
+    }
+    return out
+}
+
+/// How many midpoints of one set have no counterpart in the other. Sorting and
+/// zipping would be cheaper and wrong, for the reason `separation` gives.
+func strayed(_ a: [SIMD3<Double>], _ b: [SIMD3<Double>]) -> (unmatched: Int, worst: Double) {
+    func directed(_ from: [SIMD3<Double>], _ to: [SIMD3<Double>]) -> (Int, Double) {
+        var count = 0, worst = 0.0
+        for p in from {
+            var best = Double.infinity
+            for q in to { best = min(best, simd_length_squared(p - q)) }
+            let d = best.squareRoot()
+            if d > 1e-9 { count += 1; worst = max(worst, d) }
+        }
+        return (count, worst)
+    }
+    let (ca, wa) = directed(a, b)
+    let (cb, wb) = directed(b, a)
+    return (ca + cb, max(wa, wb))
+}
+
+/// Restyling: the edit path a cap slider takes.
+func restyleTests() {
+    Check.suite("restyle: a new cap re-derives the ink and keeps the landscape") {
+        let url = Fixtures.url("contract/landscape.kurven")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            Check.expect(false, "the landscape fixture bundle is present"); return
+        }
+        let bundle = try KurvenBundle.read(at: url)
+        var manifest = bundle.manifest
+        manifest.caps = .uniform(0.9)
+        let restyled = bundle.restyled(manifest)
+
+        Check.expect(restyled.surface.height.values == bundle.surface.height.values,
+                     "the samples are untouched -- this is a restyling, not a resampling")
+        Check.expect(restyled.surface.caps == .uniform(0.9),
+                     "the cap is the new one")
+        // Lowering the cap lowers every wall crest, so the wall hatch is
+        // strictly shorter; the rim moves outward, so the cap layers change too.
+        func height(_ b: KurvenBundle, _ name: String) -> Double {
+            ((try? b.layer(name))?.paths.vertices.map(\.z).max()) ?? 0
+        }
+        Check.expect(height(restyled, "wall_hatch") <= 0.9 + 1e-9,
+                     "the wall hatch stops at the new cap",
+                     "\(height(restyled, "wall_hatch"))")
+        Check.expect(height(bundle, "wall_hatch") > 0.9,
+                     "and reached higher before it",
+                     "\(height(bundle, "wall_hatch"))")
+        Check.expect(restyled.walls().vertices.map(\.z).max() ?? 0 <= 0.9 + 1e-9,
+                     "and so do the walls it hatches")
+
+        // A dumped layer cannot be re-derived, so restyling must leave it be
+        // rather than quietly emptying it.
+        let dumped = try KurvenBundle.read(at: Fixtures.url("contract/uniform_mesh.kurven"))
+        var other = dumped.manifest
+        other.caps = .uniform(1.0)
+        let keptA = try dumped.layer("mag").paths.count
+        let keptB = try dumped.restyled(other).layer("mag").paths.count
+        Check.expect(keptA == keptB && keptA > 0,
+                     "a dumped layer survives a restyling unchanged", "\(keptA) paths")
+    }
+}
+
 // MARK: - 7. navigation
 
 func navigationTests() {
@@ -1078,6 +1271,71 @@ func serviceTests() {
         Check.expect(bundle.layers.contains { !$0.paths.isEmpty },
                      "and its described layers derive to actual ink")
 
+        // The other half of the protocol: not "run this published plate" but
+        // "sample this function". A landscape is the one thing a frozen bundle
+        // cannot be, and the one thing the file format alone cannot test.
+        let catalog = try blocking { try await service.catalog() }
+        Check.expect(catalog.presets.count >= 10 && catalog.functions.count >= 20,
+                     "the catalog offers presets and the language behind them",
+                     "\(catalog.presets.count) presets, \(catalog.functions.count) functions")
+        Check.expect(catalog.presets.allSatisfy {
+                         $0.domain.real.length > 0 && $0.window.real.length
+                             >= $0.domain.real.length
+                     },
+                     "every preset's window has room around its domain")
+
+        Check.expect((try? blocking { try await service.validate("1/Γ(z)") }) == "1/gamma(z)",
+                     "an expression validates to its canonical spelling")
+        do {
+            _ = try blocking { try await service.validate("gamma(z") }
+            Check.expect(false, "an unclosed call is refused")
+        } catch let error as Service.Failure {
+            if case .remote(let kind, let message) = error {
+                Check.expect(kind == "badExpression",
+                             "an unclosed call is refused, by kind", message)
+            } else {
+                Check.expect(false, "an unclosed call is refused", "\(error)")
+            }
+        }
+
+        let landscapeOutput = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kurven-landscape-\(UUID().uuidString).kurven")
+        defer { try? FileManager.default.removeItem(at: landscapeOutput) }
+        guard let preset = catalog.preset("gamma") else {
+            Check.expect(false, "the catalog has gamma"); return
+        }
+        var request = LandscapeRequest(preset: preset, resolution: 200)
+        request.caps = .realBands([RealBand(below: -2.5, cap: 3), RealBand(below: 0.5, cap: 4)],
+                                  beyond: 5)
+        let wanted = request
+        let sampled = try blocking { try await service.landscape(wanted, to: landscapeOutput) }
+        let landscape = try KurvenBundle.read(at: sampled.url)
+        Check.expect(landscape.manifest.caps == wanted.caps,
+                     "the landscape is truncated the way it was asked to be")
+        Check.expect(landscape.manifest.layers.allSatisfy { $0.files == nil },
+                     "every layer of a landscape is a description",
+                     "\(landscape.manifest.layers.count) layers")
+        let kinds = landscape.manifest.layers.map(\.source)
+        Check.expect(kinds.contains { if case .capHatch = $0 { true } else { false } }
+                     && kinds.contains { if case .wallHatch = $0 { true } else { false } }
+                     && kinds.contains { if case .capOutline = $0 { true } else { false } }
+                     && kinds.contains { if case .wallOutline = $0 { true } else { false } },
+                     "including the hatching of its sides and its tops")
+        Check.expect(landscape.layers.allSatisfy { !$0.paths.isEmpty },
+                     "and every one of them derives to actual ink",
+                     landscape.layers.map { "\($0.spec.name) \($0.paths.count)" }
+                         .joined(separator: " "))
+        // The levels Python chose for this cap are the ones this side would
+        // choose for it: the rule the cap slider re-applies is the same rule.
+        if let major = landscape.manifest.layers.first(where: { $0.name == "mag_major" }),
+           case .contour(_, let levels, _, _) = major.source {
+            let mine = LandscapeStyle.levels(under: wanted.caps!).major
+            Check.expect(levels.count == mine.count
+                         && zip(levels, mine).allSatisfy { abs($0 - $1) < 1e-9 },
+                         "and its contour levels are the ones this side derives",
+                         "\(levels.count) levels up to \(levels.last ?? 0)")
+        }
+
         // Errors arrive typed, not as a string to parse.
         do {
             _ = try blocking {
@@ -1126,6 +1384,8 @@ clipTests()
 coreTests()
 navigationTests()
 contourTests()
+hatchTests()
+restyleTests()
 shaderTests()
 previewTests()
 bakeTests()

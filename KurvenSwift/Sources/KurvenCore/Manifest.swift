@@ -48,11 +48,11 @@ public struct Interval: Sendable, Equatable {
     public init(lo: Double, hi: Double) { self.lo = lo; self.hi = hi }
     public var length: Double { hi - lo }
 
-    init(json: JSONValue) throws {
+    public init(json: JSONValue) throws {
         let o = try json.object("Interval")
         self.init(lo: try o.double("lo", "Interval"), hi: try o.double("hi", "Interval"))
     }
-    var json: JSONValue { .object(["lo": .double(lo), "hi": .double(hi)]) }
+    public var json: JSONValue { .object(["lo": .double(lo), "hi": .double(hi)]) }
 }
 
 public struct Domain: Sendable, Equatable {
@@ -60,12 +60,12 @@ public struct Domain: Sendable, Equatable {
     public var imag: Interval
     public init(real: Interval, imag: Interval) { self.real = real; self.imag = imag }
 
-    init(json: JSONValue) throws {
+    public init(json: JSONValue) throws {
         let o = try json.object("Domain")
         self.init(real: try Interval(json: o.value("real", "Domain")),
                   imag: try Interval(json: o.value("imag", "Domain")))
     }
-    var json: JSONValue { .object(["real": real.json, "imag": imag.json]) }
+    public var json: JSONValue { .object(["real": real.json, "imag": imag.json]) }
 }
 
 public struct GridRef: Sendable, Equatable {
@@ -148,7 +148,7 @@ public struct PerimeterEdge: Sendable, Equatable {
         self.start = start; self.end = end; self.density = density
     }
 
-    init(json: JSONValue) throws {
+    public init(json: JSONValue) throws {
         let o = try json.object("Edge")
         let s = try o.doubles("start", "Edge"), e = try o.doubles("end", "Edge")
         guard s.count == 2, e.count == 2 else {
@@ -168,7 +168,7 @@ public struct BoundaryPerimeter: Sendable, Equatable {
     public var edges: [PerimeterEdge]
     public init(edges: [PerimeterEdge]) { self.edges = edges }
 
-    init(json: JSONValue) throws {
+    public init(json: JSONValue) throws {
         let o = try json.object("Perimeter")
         self.init(edges: try o.array("edges", "Perimeter").map(PerimeterEdge.init(json:)))
     }
@@ -212,7 +212,7 @@ public enum Caps: Sendable, Equatable {
         }
     }
 
-    init(json: JSONValue) throws {
+    public init(json: JSONValue) throws {
         let o = try json.object("Caps")
         switch try o.string("kind", "Caps") {
         case "none": self = .none
@@ -225,7 +225,7 @@ public enum Caps: Sendable, Equatable {
                                             known: ["none", "uniform", "realBands"])
         }
     }
-    var json: JSONValue {
+    public var json: JSONValue {
         switch self {
         case .none: .object(["kind": .string("none")])
         case .uniform(let z): .object(["kind": .string("uniform"), "z": .double(z)])
@@ -428,7 +428,7 @@ public indirect enum Keep: Sendable, Equatable {
                                                     "band", "every"])
         }
     }
-    var json: JSONValue {
+    public var json: JSONValue {
         switch self {
         case .all: .object(["kind": .string("all")])
         case .region: .object(["kind": .string("region")])
@@ -453,7 +453,27 @@ public enum LayerSource: Sendable, Equatable {
     /// filtered by `keep`, and replicated once per occluder tile when `tiled`.
     case contour(field: ContourField, levels: [Double], keep: Keep, tiled: Bool)
 
-    init(json: JSONValue) throws {
+    // The four hatchings: the ink that shades a cut face and a truncated top.
+    // `kurven.hatch` is the definition of every one of them and
+    // `tests/fixtures/hatch` is where this implementation is held to it. They
+    // are descriptions rather than dumped strokes for the same reason the
+    // contours are: a landscape whose cap the user is dragging has to re-hatch
+    // itself, and a plateau that moves is a different set of strokes.
+
+    /// Vertical strokes up the listed perimeter edges, every `spacing` along
+    /// each edge, from `base` to the capped surface plus `topOffset`, with a
+    /// vertex every `pitch` of height.
+    case wallHatch(edges: [Int], spacing: Double, pitch: Double, trim: Bool,
+                   base: Double, topOffset: Double)
+    /// Each listed edge's crest and foot, and a post at each distinct corner.
+    case wallOutline(edges: [Int], pitch: Double, base: Double)
+    /// Strokes across the truncated tops, parallel to `axis`, on the lines
+    /// where the other coordinate is a whole multiple of `spacing`.
+    case capHatch(axis: KeepAxis, spacing: Double, tiled: Bool)
+    /// The rim of every truncated top: the zero contour of |f| - cap(x).
+    case capOutline(tiled: Bool)
+
+    public init(json: JSONValue) throws {
         let o = try json.object("LayerSource")
         switch try o.string("kind", "LayerSource") {
         case "file":
@@ -469,12 +489,40 @@ public enum LayerSource: Sendable, Equatable {
                             levels: try o.doubles("levels", "LayerSource.contour"),
                             keep: try Keep(json: o.value("keep", "LayerSource.contour")),
                             tiled: try o.bool("tiled", "LayerSource.contour", default: false))
+        case "wallHatch":
+            self = .wallHatch(
+                edges: try o.ints("edges", "LayerSource.wallHatch"),
+                spacing: try o.double("spacing", "LayerSource.wallHatch"),
+                pitch: try o.double("pitch", "LayerSource.wallHatch"),
+                trim: try o.bool("trim", "LayerSource.wallHatch", default: true),
+                base: (try? o.double("base", "LayerSource.wallHatch")) ?? 0,
+                topOffset: (try? o.double("topOffset", "LayerSource.wallHatch")) ?? 0)
+        case "wallOutline":
+            self = .wallOutline(
+                edges: try o.ints("edges", "LayerSource.wallOutline"),
+                pitch: try o.double("pitch", "LayerSource.wallOutline"),
+                base: (try? o.double("base", "LayerSource.wallOutline")) ?? 0)
+        case "capHatch":
+            let axisText = try o.string("axis", "LayerSource.capHatch")
+            guard let axis = KeepAxis(rawValue: axisText) else {
+                throw ManifestError.unknownKind(axisText, of: "KeepAxis",
+                                                known: KeepAxis.allCases.map(\.rawValue))
+            }
+            self = .capHatch(axis: axis,
+                             spacing: try o.double("spacing", "LayerSource.capHatch"),
+                             tiled: try o.bool("tiled", "LayerSource.capHatch",
+                                               default: false))
+        case "capOutline":
+            self = .capOutline(tiled: try o.bool("tiled", "LayerSource.capOutline",
+                                                 default: false))
         case let other:
             throw ManifestError.unknownKind(other, of: "LayerSource",
-                                            known: ["file", "contour"])
+                                            known: ["file", "contour", "wallHatch",
+                                                    "wallOutline", "capHatch",
+                                                    "capOutline"])
         }
     }
-    var json: JSONValue {
+    public var json: JSONValue {
         switch self {
         case .file(let v, let o):
             .object(["kind": .string("file"), "vertices": .string(v), "offsets": .string(o)])
@@ -482,7 +530,29 @@ public enum LayerSource: Sendable, Equatable {
             .object(["kind": .string("contour"), "field": .string(field.rawValue),
                      "levels": .array(levels.map(JSONValue.double)),
                      "keep": keep.json, "tiled": .bool(tiled)])
+        case .wallHatch(let edges, let spacing, let pitch, let trim, let base, let top):
+            .object(["kind": .string("wallHatch"),
+                     "edges": .array(edges.map { .int($0) }),
+                     "spacing": .double(spacing), "pitch": .double(pitch),
+                     "trim": .bool(trim), "base": .double(base),
+                     "topOffset": .double(top)])
+        case .wallOutline(let edges, let pitch, let base):
+            .object(["kind": .string("wallOutline"),
+                     "edges": .array(edges.map { .int($0) }),
+                     "pitch": .double(pitch), "base": .double(base)])
+        case .capHatch(let axis, let spacing, let tiled):
+            .object(["kind": .string("capHatch"), "axis": .string(axis.rawValue),
+                     "spacing": .double(spacing), "tiled": .bool(tiled)])
+        case .capOutline(let tiled):
+            .object(["kind": .string("capOutline"), "tiled": .bool(tiled)])
         }
+    }
+
+    /// True when the geometry is a rule rather than a file -- the layers whose
+    /// parameters a consumer can edit and re-derive.
+    public var isDerived: Bool {
+        if case .file = self { return false }
+        return true
     }
 }
 
@@ -512,7 +582,7 @@ public struct LayerSpec: Sendable, Equatable {
         return nil
     }
 
-    init(json: JSONValue) throws {
+    public init(json: JSONValue) throws {
         let o = try json.object("LayerSpec")
         let roleText = try o.string("role", "LayerSpec")
         guard let role = LayerRole(rawValue: roleText) else {
@@ -531,7 +601,7 @@ public struct LayerSpec: Sendable, Equatable {
                   color: (try? o.string("color", "LayerSpec")) ?? "#000000",
                   clipped: try o.bool("clipped", "LayerSpec", default: true))
     }
-    var json: JSONValue {
+    public var json: JSONValue {
         .object(["name": .string(name), "role": .string(role.rawValue),
                  "source": source.json,
                  "width": .double(width), "heightPolicy": .string(heightPolicy.rawValue),

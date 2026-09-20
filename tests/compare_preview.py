@@ -93,7 +93,7 @@ def dilate(mask):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("example", choices=["recip", "elliptic", "zeta", "gamma"])
+    ap.add_argument("example", choices=["recip", "elliptic", "zeta", "gamma", "function"])
     ap.add_argument("--width", type=int, default=1400)
     ap.add_argument("--height", type=int, default=900)
     ap.add_argument("--keep", type=str, default=None)
