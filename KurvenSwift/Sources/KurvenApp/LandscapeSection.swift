@@ -18,7 +18,6 @@ struct LandscapeSection: View {
     @Bindable var document: Document
     var onChange: () -> Void
 
-    @State private var dragging = false
     @State private var typed: String = ""
     @State private var editingExpression = false
 
@@ -183,7 +182,6 @@ struct LandscapeSection: View {
     /// when it ends -- so the picture keeps up with the hand, and is right when
     /// the hand stops.
     private func edited(_ isDragging: Bool) {
-        dragging = isDragging
         document.landscapeEdited(draft: isDragging)
         onChange()
     }
@@ -225,7 +223,10 @@ struct TruncationSection: View {
                  + "function with a pole wants a cap; one without does not.")
                 .font(.caption).foregroundStyle(.secondary)
         case .uniform(let z):
-            capSlider("Cap", value: z) { document.setCaps(.uniform($0)); onChange() }
+            capSlider("Cap", value: Binding(get: { z }, set: {
+                document.setCaps(.uniform($0))
+                onChange()
+            }))
         case .realBands(let bands, let beyond):
             bandRows(bands, beyond)
         }
@@ -239,9 +240,7 @@ struct TruncationSection: View {
     }
 
     @ViewBuilder
-    private func capSlider(_ label: String, value: Double,
-                           set: @escaping (Double) -> Void) -> some View {
-        let live = Binding(get: { value }, set: set)
+    private func capSlider(_ label: String, value live: Binding<Double>) -> some View {
         LabeledContent(label) {
             HStack(spacing: 6) {
                 TextField("", value: live, format: .number.precision(.fractionLength(2)))
@@ -288,10 +287,12 @@ struct TruncationSection: View {
                     .buttonStyle(.borderless).controlSize(.small)
             }
         }
-        capSlider("Beyond", value: beyond.isFinite ? beyond : ceiling) {
-            document.setCaps(.realBands(bands, beyond: $0))
-            onChange()
-        }
+        capSlider("Beyond", value: Binding(
+            get: { beyond.isFinite ? beyond : ceiling },
+            set: {
+                document.setCaps(.realBands(bands, beyond: $0))
+                onChange()
+            }))
         Button("Add a band") {
             let below = (bands.last?.below ?? -1) + 1
             document.setCaps(.realBands(bands + [RealBand(below: below,

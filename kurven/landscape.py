@@ -31,17 +31,17 @@ catalog is a set of good starting points for it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 
 import numpy as np
 
-from kurven.bundle import (AXES, Affine2, CameraPreset, Caps, Domain, Interval,
+from kurven.bundle import (Affine2, CameraPreset, Caps, Domain, Interval,
                            KeepAll, KeepBand, KeepBelowCap, KeepEvery,
                            KeepRegion, LayerCapHatch, LayerCapOutline,
                            LayerContour, LayerSpec, LayerWallHatch,
-                           LayerWallOutline, NoCaps, PlateProjection, RealBand,
+                           LayerWallOutline, NoCaps, PlateProjection,
                            RealBandCaps, UniformCap, swap_from_world)
-from kurven.expr import ExpressionError, canonical, compile_expression
+from kurven.expr import canonical, compile_expression
 from kurven.perimeter import Edge as LibEdge, Perimeter as LibPerimeter
 from kurven.scene import InkLayer, Scene
 from kurven.surface import Surface

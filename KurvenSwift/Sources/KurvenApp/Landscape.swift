@@ -247,6 +247,15 @@ extension Document {
     /// is why this is short.
     func saveBundle(to url: URL) {
         guard let bundle else { return }
+        guard bundle.manifest.layers.allSatisfy({ $0.files == nil }) else {
+            // Every layer of a landscape is a description, and this writes the
+            // manifest and the grids alone. A bundle carrying dumped ink would
+            // need its layer files written too, and a manifest naming files
+            // that are not there is worse than refusing.
+            landscapeStatus = "this bundle has dumped layers; saving it here "
+                + "would name files it cannot write"
+            return
+        }
         do {
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
             let height = bundle.surface.height
@@ -264,11 +273,6 @@ extension Document {
                 manifest.phase = GridRef(file: "phase.npy",
                                          shape: (ny: phase.height, nx: phase.width),
                                          dtype: .float32)
-            }
-            guard manifest.layers.allSatisfy({ $0.files == nil }) else {
-                bakeStatus = "this bundle has dumped layers; saving it would "
-                    + "write a manifest that names files this cannot produce"
-                return
             }
             try manifest.canonicalJSON.write(to: url.appendingPathComponent("manifest.json"),
                                              atomically: true, encoding: .utf8)
