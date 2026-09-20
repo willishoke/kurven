@@ -35,6 +35,7 @@ import numpy as np
 
 from kurven.bundle import (
     Domain,
+    LayerContour,
     GridRef,
     Interval,
     LayerSpec,
@@ -60,11 +61,17 @@ EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 #: Bundle name → example module file. An example qualifies when it exposes
 #: `parser()` and `build_scene(args)`.
 #:
+#: `function` is the general one: not a published plate but whatever landscape
+#: its arguments describe (`kurven.landscape`). It is what the frontend's
+#: function picker asks for, and what holds the derived hatching to the
+#: analytic hatching in `tests/compare_bake.py`.
+#:
 #: gamma exports the uniform-sampling form of itself: a bundle carries one
 #: grid, and the published plate probes for high-gradient zones and re-samples
 #: those finer. `examples/gamma.py: SCENE_CAVEATS` lists what else about that
 #: plate stays a Python-only bake.
 EXAMPLES = {
+    "function": "function.py",
     "recip": "recip_factorial.py",
     "elliptic": "elliptic.py",
     "zeta": "zeta.py",
@@ -232,9 +239,13 @@ def main(argv=None):
         for spec in manifest.layers:
             files = spec.files
             if files is None:
-                what = f"{len(spec.source.levels)} levels of {spec.source.field}"
-                if spec.source.tiled:
-                    what += f" x{len(manifest.occluder.tiles)}"
+                source = spec.source
+                if isinstance(source, LayerContour):
+                    what = f"{len(source.levels)} levels of {source.field}"
+                    if source.tiled:
+                        what += f" x{len(manifest.occluder.tiles)}"
+                else:
+                    what = source.to_dict()["kind"]
                 detail = f"{what:>26} (derived)"
             else:
                 detail = f"{len(np.load(out / files[1])) - 1:>7} paths          "

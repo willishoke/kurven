@@ -39,7 +39,8 @@ def _keep_runs(xyz, keep):
 
 
 class Surface:
-    def __init__(self, real, imag, values, *, z_limit=None, evaluator=None):
+    def __init__(self, real, imag, values, *, z_limit=None, caps=None,
+                 evaluator=None):
         self.real = np.asarray(real, dtype=float)
         self.imag = np.asarray(imag, dtype=float)
         self.values = np.asarray(values)
@@ -50,10 +51,18 @@ class Surface:
         self.mag = np.abs(self.values)
         self.angle = np.angle(self.values)
         self.z_limit = z_limit
+        # `z_limit` is one number; `caps` is the sum type the bundle carries.
+        # A cap that varies with Re -- gamma's four spires, each cut at its own
+        # height -- cannot be said as one number, and a landscape whose
+        # truncation the user is editing needs the general form. Both spellings
+        # are accepted and one is consulted, so the heightfield, the wall crests
+        # and the cap hatching are all truncated the same way rather than each
+        # by whoever remembered.
+        self.caps = caps
         self._evaluator = evaluator
 
     @classmethod
-    def from_function(cls, f, real, imag, *, z_limit=None):
+    def from_function(cls, f, real, imag, *, z_limit=None, caps=None):
         """Sample f on the real x imag grid, retaining f for exact point eval.
 
         `f` takes a complex array and returns a complex array.
@@ -61,7 +70,7 @@ class Surface:
         real = np.asarray(real, dtype=float)
         imag = np.asarray(imag, dtype=float)
         grid = real[:, None] + 1j * imag[None, :]
-        return cls(real, imag, f(grid), z_limit=z_limit, evaluator=f)
+        return cls(real, imag, f(grid), z_limit=z_limit, caps=caps, evaluator=f)
 
     @classmethod
     def from_cache(cls, values, real_bounds, imag_bounds, *, z_limit=None):
@@ -75,7 +84,9 @@ class Surface:
 
     @property
     def clamped(self):
-        """Magnitude clamped at `z_limit` — the surface the occluder meshes."""
+        """Magnitude truncated by the cap — the surface the occluder meshes."""
+        if self.caps is not None:
+            return self.caps.apply(self.mag, self.real[:, None])
         if self.z_limit is None:
             return self.mag
         return np.minimum(self.z_limit, self.mag)
@@ -98,8 +109,10 @@ class Surface:
         return self.mag[r_idx, i_idx]
 
     def height_at(self, re, im):
-        """`mag_at` clamped at `z_limit` — the height a wall/occluder rises to."""
+        """`mag_at` truncated by the cap — the height a wall/occluder rises to."""
         h = self.mag_at(re, im)
+        if self.caps is not None:
+            return self.caps.apply(h, np.asarray(re, dtype=float))
         return h if self.z_limit is None else np.minimum(self.z_limit, h)
 
     def lift_contours(self, level_paths, *, start=0, height="surface", keep=None):

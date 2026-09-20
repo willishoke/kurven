@@ -90,13 +90,12 @@ public struct KurvenBundle: Sendable {
         var layers: [Layer] = []
         for spec in manifest.layers {
             guard let files = spec.files else {
-                // Described, not dumped: contour the grids the bundle already
-                // carries. This is what a `--derived` bundle trades its layer
-                // files for, and what makes the levels editable.
-                layers.append(Layer(spec: spec, paths: surface.derive(
-                    spec.source, policy: spec.heightPolicy,
-                    region: manifest.occluder.region,
-                    tiles: manifest.occluder.tiles)))
+                // Described, not dumped: derive the ink from the grids the
+                // bundle already carries. This is what a `--derived` bundle
+                // trades its layer files for, and what makes the levels, the
+                // hatch spacing and the cap editable.
+                layers.append(Layer(spec: spec,
+                                    paths: surface.ink(spec, occluder: manifest.occluder)))
                 continue
             }
             let v = try NPY.read(contentsOf: file(files.vertices))
@@ -134,12 +133,54 @@ public extension KurvenBundle {
     /// not, and the type says which you have.
     func layer(_ spec: LayerSpec, levels: [Double]) -> Layer {
         guard case .contour(let field, _, let keep, let tiled) = spec.source else {
-            return (try? layer(spec.name)) ?? Layer(spec: spec, paths: .empty)
+            return redrawn(spec)
         }
-        return Layer(spec: spec, paths: surface.derive(
-            .contour(field: field, levels: levels, keep: keep, tiled: tiled),
-            policy: spec.heightPolicy, region: manifest.occluder.region,
-            tiles: manifest.occluder.tiles))
+        var edited = spec
+        edited.source = .contour(field: field, levels: levels, keep: keep, tiled: tiled)
+        return redrawn(edited)
+    }
+
+    /// One layer, drawn from whatever its spec now says.
+    ///
+    /// A described layer is derived again; a dumped one keeps the ink it was
+    /// read with, because the bundle carries no question that could produce it
+    /// a second time.
+    func redrawn(_ spec: LayerSpec) -> Layer {
+        guard spec.files == nil else {
+            let existing = layers.first { $0.spec.name == spec.name }
+            return Layer(spec: spec, paths: existing?.paths ?? .empty)
+        }
+        return Layer(spec: spec, paths: surface.ink(spec, occluder: manifest.occluder))
+    }
+
+    /// The same grids under a different manifest.
+    ///
+    /// The landscape does not change -- the samples are the samples -- but the
+    /// cap, the levels, the hatch spacing and the walls all can, and all of them
+    /// are derived from the manifest. This is the edit path for every one of
+    /// them, and the reason a cap slider costs milliseconds instead of a round
+    /// trip to Python: only the *ink* and the wall curtains are rebuilt, from
+    /// grids that never left memory.
+    ///
+    /// It is a restyling, not a resampling: passing a manifest whose grids,
+    /// domain or shape differ from this bundle's would describe a landscape
+    /// these arrays are not, so those fields are taken from this bundle and the
+    /// rest from the argument.
+    func restyled(_ manifest: Manifest) -> KurvenBundle {
+        var honest = manifest
+        honest.domain = self.manifest.domain
+        honest.height = self.manifest.height
+        honest.phase = self.manifest.phase
+        let restyledSurface = Surface(height: surface.height, phase: surface.phase,
+                                      caps: honest.caps, cached: surface.cached)
+        let bundle = KurvenBundle(url: url, manifest: honest, surface: restyledSurface,
+                                  layers: [], wallMesh: wallMesh)
+        return KurvenBundle(url: url, manifest: honest, surface: restyledSurface,
+                            layers: honest.layers.map { spec in
+                                spec.files == nil ? bundle.redrawn(spec)
+                                                  : redrawn(spec)
+                            },
+                            wallMesh: wallMesh)
     }
 
     /// The levels a described layer was exported with, or nil when it is dumped.

@@ -216,7 +216,7 @@ def compare_derived(module, ex_args, work):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("example", choices=["recip", "elliptic", "zeta", "gamma"])
+    ap.add_argument("example", choices=["recip", "elliptic", "zeta", "gamma", "function"])
     ap.add_argument("--keep", type=str, default=None,
                     help="directory for the bundle and dumps (default: a temp dir)")
     ap.add_argument("--stroke-tolerance", type=float, default=0.02,
