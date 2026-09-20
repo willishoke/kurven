@@ -173,8 +173,8 @@ extension Document {
             // used to choose them in the first place, applied again to the new
             // ceiling -- by name, because in a landscape's bundle those two
             // names are what the two magnitude families are called.
-            guard isLandscape, let ceiling = LandscapeStyle.ceiling(of: caps) else { return }
-            let levels = LandscapeStyle.magnitudeLevels(upTo: ceiling)
+            guard isLandscape, LandscapeStyle.ceiling(of: caps) != nil else { return }
+            let levels = LandscapeStyle.levels(under: caps)
             for i in manifest.layers.indices {
                 guard case .contour(let field, _, let keep, let tiled)
                         = manifest.layers[i].source else { continue }

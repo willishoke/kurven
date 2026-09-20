@@ -1241,8 +1241,7 @@ func serviceTests() {
         // choose for it: the rule the cap slider re-applies is the same rule.
         if let major = landscape.manifest.layers.first(where: { $0.name == "mag_major" }),
            case .contour(_, let levels, _, _) = major.source {
-            let mine = LandscapeStyle.magnitudeLevels(
-                upTo: LandscapeStyle.ceiling(of: wanted.caps!) ?? 0).major
+            let mine = LandscapeStyle.levels(under: wanted.caps!).major
             Check.expect(levels.count == mine.count
                          && zip(levels, mine).allSatisfy { abs($0 - $1) < 1e-9 },
                          "and its contour levels are the ones this side derives",

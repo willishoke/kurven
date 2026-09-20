@@ -203,6 +203,21 @@ public enum LandscapeStyle {
         return (major, minor)
     }
 
+    /// The levels a landscape is actually given under these caps: the rule
+    /// above, less any level sitting exactly on the cap.
+    ///
+    /// That contour *is* the rim of the plateau, and the rim has its own layer
+    /// drawn at its own weight, so keeping both draws one line twice.
+    /// `kurven.landscape.default_layers` drops it for the same reason, and the
+    /// service round trip in `kurven-test` compares the two.
+    public static func levels(under caps: Caps)
+        -> (major: [Double], minor: [Double]) {
+        guard let ceiling = ceiling(of: caps) else { return ([], []) }
+        let all = magnitudeLevels(upTo: ceiling)
+        return (all.major.filter { $0 < ceiling - 1e-9 },
+                all.minor.filter { $0 < ceiling - 1e-9 })
+    }
+
     /// The highest |f| worth a contour: the cap, when there is one.
     public static func ceiling(of caps: Caps) -> Double? {
         switch caps {

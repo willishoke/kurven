@@ -429,6 +429,11 @@ def default_layers(domain, shape, caps, ceiling, *, spacing=None, phase=True):
     dx, dy = cell_size(domain, shape)
     pitch = max(dx, dy)
     major, minor = magnitude_levels(ceiling)
+    if not isinstance(caps, NoCaps):
+        # A contour at exactly the cap *is* the rim, and the rim has its own
+        # layer, drawn at its own weight. Keeping both draws one line twice.
+        major = tuple(v for v in major if v < ceiling - 1e-9)
+        minor = tuple(v for v in minor if v < ceiling - 1e-9)
     edges = (0, 1, 2, 3)
 
     layers = [
@@ -438,16 +443,16 @@ def default_layers(domain, shape, caps, ceiling, *, spacing=None, phase=True):
     if phase:
         layers.append(
             LayerSpec("ang_major", "phase",
-                      LayerContour("phase", PHASE_MAJOR, KeepAll()),
-                      0.4, "surface"))
+                      LayerContour("phase", PHASE_MAJOR, KeepBelowCap()),
+                      0.4, "magnitude"))
     layers.append(
         LayerSpec("mag_minor", "magnitude",
                   LayerContour("magnitude", minor, KeepBelowCap()), 0.15, "level"))
     if phase:
         layers.append(
             LayerSpec("ang_minor", "phase",
-                      LayerContour("phase", PHASE_MINOR, KeepAll()),
-                      0.15, "surface"))
+                      LayerContour("phase", PHASE_MINOR, KeepBelowCap()),
+                      0.15, "magnitude"))
     layers += [
         LayerSpec("cap_outline", "scaffold", LayerCapOutline(), 0.4, "level"),
         LayerSpec("cap_hatch", "scaffold", LayerCapHatch("real", spacing),

@@ -58,7 +58,12 @@ struct Args {
     /// after it, which showed up as "missing --output" three arguments later.
     static func isValue(_ token: String) -> Bool {
         if !token.hasPrefix("-") { return true }
-        return Double(token) != nil
+        // A negative *interval* too, since `--re -6,8` is how a landscape's
+        // window is written and its left end is usually negative. Without this
+        // the token falls through to a positional, and `landscape --re -6,8`
+        // sampled rgamma over the wrong window while reporting a parse error
+        // about the comma in an expression nobody typed.
+        return token.split(separator: ",").allSatisfy { Double($0) != nil }
     }
 
     func string(_ name: String) throws -> String {

@@ -39,6 +39,10 @@ final class Thumbnails {
     /// about antialiasing without touching the renderer.
     static let size = Viewport(width: 440, height: 300)
     static let samples = 220
+    /// Bumped when the *styling* a landscape is given by default changes --
+    /// which levels, what is drawn on a truncated top -- since that changes the
+    /// picture without changing anything else the key is made of.
+    static let style = 2
 
     /// Draw whatever is missing, one at a time, in catalog order.
     ///
@@ -124,6 +128,7 @@ final class Thumbnails {
         let window = "\(d.real.lo),\(d.real.hi),\(d.imag.lo),\(d.imag.hi)"
         let shape = "\(size.width)x\(size.height)@\(samples)"
         let key = preset.expression + "|" + window + "|" + cap + "|" + shape
+            + "|style\(style)"
         var hash: UInt64 = 0xcbf29ce484222325
         for byte in key.utf8 {
             hash = (hash ^ UInt64(byte)) &* 0x100000001b3
