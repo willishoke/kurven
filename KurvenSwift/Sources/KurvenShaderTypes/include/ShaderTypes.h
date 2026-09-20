@@ -61,22 +61,35 @@ typedef struct {
 } KVVertex;
 
 // What the preview's second pass needs on top of KVUniforms: how to decide
-// whether a line fragment is hidden, and what to paint.
+// whether a line fragment is hidden, and what to paint and how wide.
 typedef struct {
     simd_float4 color;
     // Added to a line's view depth before it is compared with the surface --
     // `outline.clip_hidden_lines`' margin, applied per fragment instead of per
-    // vertex. That difference is the whole gap between preview and bake.
+    // vertex. That, and `slopeScale` below, are the whole gap between preview
+    // and bake.
     float margin;
     // The value the depth texture holds where nothing was drawn.
     float empty;
+    // How many pixels' worth of the surface's own depth change to add to the
+    // margin, per fragment. Preview only, and not in the bake: the preview
+    // compares a line's depth where it crosses a pixel with the surface's depth
+    // at the pixel's centre, and on a surface that is steep in view those
+    // differ by more than any constant margin. Zero is the bake's predicate.
+    float slopeScale;
     // Key light direction in view space, and how much light reaches the parts
     // it does not.
     simd_float3 lightDirection;
     float ambient;
+    // The stroke's width in pixels. Ink is drawn as screen-space quads this
+    // wide, plus a pixel for the edge to fall off in.
+    float strokeWidth;
     // View-depth range for the `.depth` inspection mode: what to map to black
     // and to white.
     simd_float2 depthRange;
+    // The target's size in pixels, which is what a stroke's width is measured
+    // against when it is expanded to a quad.
+    simd_float2 viewport;
 } KVShading;
 
 #endif /* KurvenShaderTypes_h */

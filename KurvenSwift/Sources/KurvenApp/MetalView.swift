@@ -76,8 +76,11 @@ struct MetalView: NSViewRepresentable {
                                         height: drawable.texture.height)
                 setViewport(viewport)
                 guard let commands = renderer.commandQueue.makeCommandBuffer() else { return }
+                // Stroke widths are pixels; the window is measured in points.
+                var options = document.previewOptions
+                options.inkWidth *= Float(view.drawableSize.width / max(view.bounds.width, 1))
                 try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
-                                           options: document.previewOptions,
+                                           options: options,
                                            into: drawable.texture,
                                            commandBuffer: commands)
                 let frames = document.frames
