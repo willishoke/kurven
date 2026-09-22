@@ -83,7 +83,8 @@ public struct ContourRefiner: Sendable {
         let cut = field == .phase
         var out = [[[P2<DomainSpace>]]](repeating: [], count: paths.count)
         out.withUnsafeMutableBufferPointer { buffer in
-            let base = buffer.baseAddress!
+            // Each iteration writes only its own slot, so sharing is safe.
+            nonisolated(unsafe) let base = buffer.baseAddress!
             DispatchQueue.concurrentPerform(iterations: paths.count) { i in
                 base[i] = refine(paths[i], level: level, g: g, cut: cut)
             }
@@ -142,8 +143,34 @@ public struct ContourRefiner: Sendable {
             guard j >= 0, j + 1 < height else { return p }
             a = P2(p.x, grid.imag.lo + Double(j) * dy)
             b = P2(p.x, grid.imag.lo + Double(j + 1) * dy)
+        } else if onColumn && onRow {
+            // On a node. Marching squares puts a vertex there when the sample
+            // equals the level, which is right, and also when the far sample
+            // is the cap: exp(1/z) beside its essential singularity has a
+            // node at 1e-109 next to one at 1e12, and the interpolated
+            // crossing is 1e-12 of the way along the edge, which rounds onto
+            // the node where f is flat and nowhere near the level. The edge is
+            // not recorded, but if exactly one of the node's four edges
+            // brackets the level, that is the one.
+            let i = Int(fx.rounded()), j = Int(fy.rounded())
+            let gp = g(Complex(p.x, p.y)) - level
+            guard gp.isFinite, !(cut && abs(gp) > .pi / 2) else { return p }
+            let (gx, gy) = gradient(g, at: p)
+            let slope = (gx * gx + gy * gy).squareRoot()
+            guard slope > 0, slope.isFinite, abs(gp) / slope > 1e-2 * tolerance * cell else { return p }
+            var bracketing: [P2<DomainSpace>] = []
+            for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let ni = i + di, nj = j + dj
+                guard ni >= 0, ni < width, nj >= 0, nj < height else { continue }
+                let n = P2<DomainSpace>(grid.real.lo + Double(ni) * dx, grid.imag.lo + Double(nj) * dy)
+                let gn = g(Complex(n.x, n.y)) - level
+                guard gn.isFinite, !(cut && abs(gn - gp) > .pi) else { continue }
+                if gn.sign != gp.sign { bracketing.append(n) }
+            }
+            guard bracketing.count == 1 else { return p }
+            a = p; b = bracketing[0]
         } else {
-            return p       // on a node, or nowhere a marching-squares vertex can be
+            return p       // nowhere a marching-squares vertex can be
         }
         var ga = g(Complex(a.x, a.y)) - level
         var gb = g(Complex(b.x, b.y)) - level
@@ -157,9 +184,14 @@ public struct ContourRefiner: Sendable {
         guard ga.sign != gb.sign else { return abs(ga) <= abs(gb) ? a : b }
         // Illinois regula falsi on t in [0, 1] along the edge, which cannot
         // fail to converge on a bracketed root; sixty iterations is far more
-        // than it ever takes.
+        // than it ever takes -- except against a bracket like exp(1/z)'s
+        // beside its essential singularity, 1e-109 at one end and the 1e12
+        // cap at the other, where every secant step lands beside the small
+        // end and sixty halvings of 1e12 still do not reach the crossing.
+        // Two steps in a row on the same side and the next is a bisection,
+        // which halves the bracket whatever the values are.
         var ta = 0.0, tb = 1.0
-        var side = 0
+        var side = 0, stuck = 0
         var t = (p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)
         t /= max((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y), .leastNormalMagnitude)
         t = min(max(t, 0), 1)
@@ -171,16 +203,20 @@ public struct ContourRefiner: Sendable {
             if abs(gq) <= 1e-13 * max(abs(level), 1) { return q }
             if gq.sign == ga.sign {
                 ta = t; ga = gq
-                if side == -1 { gb /= 2 }
+                if side == -1 { gb /= 2; stuck += 1 } else { stuck = 0 }
                 side = -1
             } else {
                 tb = t; gb = gq
-                if side == 1 { ga /= 2 }
+                if side == 1 { ga /= 2; stuck += 1 } else { stuck = 0 }
                 side = 1
             }
             if tb - ta < 1e-12 { return q }
-            t = tb - gb * (tb - ta) / (gb - ga)
-            if !(t > ta && t < tb) { t = (ta + tb) / 2 }
+            if stuck >= 2 {
+                t = (ta + tb) / 2; stuck = 0
+            } else {
+                t = tb - gb * (tb - ta) / (gb - ga)
+                if !(t > ta && t < tb) { t = (ta + tb) / 2 }
+            }
         }
         return q
     }
@@ -213,35 +249,39 @@ public struct ContourRefiner: Sendable {
         var t1 = -r / gn
         var found: P2<DomainSpace>?
         var best: (q: P2<DomainSpace>, r: Double)?
+        // Accept only a converged point: an unconverged one would be a vertex
+        // off the level set, which is what this is here to remove. Converged
+        // means within a hundredth of the tolerance by the estimate the
+        // measurement uses, residual over the gradient at the point itself.
+        // A residual at rounding is not enough on its own: where the level
+        // set crosses itself at a critical point (|cn| = 1 at 0, |sin| = 1 at
+        // π/2, 1/(z³ - 1) = 1 at 0 with f'' = 0 too) the residual along the
+        // normal has a multiple root, so it is tiny well before the point is
+        // close, and the secant converges only linearly, so it may never
+        // reach rounding at all. The gradient is the part that shrinks
+        // toward a saddle, and the estimate knows it.
+        func converged(_ q: P2<DomainSpace>, _ r: Double) -> Bool {
+            let (gx, gy) = gradient(g, at: q)
+            let s = (gx * gx + gy * gy).squareRoot()
+            return s > 0 && s.isFinite && abs(r) / s <= 1e-2 * tolerance * cell
+        }
         for _ in 0..<24 {
             if abs(t1) > chord { break }
             let q = P2<DomainSpace>(mid.x + t1 * nx, mid.y + t1 * ny)
             let r1 = g(Complex(q.x, q.y)) - level
             guard r1.isFinite, !(cut && abs(r1) > .pi / 2) else { break }
             if best == nil || abs(r1) < abs(best!.r) { best = (q, r1) }
-            // Accept only a converged point: an unconverged one would be a
-            // vertex off the level set, which is what this is here to remove.
-            if abs(r1) <= 1e-13 * max(abs(level), 1)
-                || (abs(t1 - t0) < 1e-10 * cell && abs(r1) < abs(r)) {
-                found = q; break
+            let stalled = abs(t1 - t0) < 1e-10 * cell
+            if abs(r1) <= 1e-13 * max(abs(level), 1) || stalled {
+                if converged(q, r1) { found = q }
+                if found != nil || stalled { break }
             }
             let denominator = r1 - r0
             guard denominator != 0 else { break }
             let t2 = t1 - r1 * (t1 - t0) / denominator
             t0 = t1; r0 = r1; t1 = t2
         }
-        // Where the level set crosses itself at a critical point (|cn| = 1 at
-        // z = 0, |sin| = 1 at π/2) the residual along the normal has a double
-        // root: the secant converges only linearly and never reaches rounding.
-        // The chord across the saddle would be left a quarter cell off, so the
-        // nearest iterate is accepted if it is within a hundredth of the
-        // tolerance by the estimate the measurement uses -- the gradient at
-        // the point itself, which is what shrinks toward a saddle.
-        if found == nil, let best {
-            let (bx, by) = gradient(g, at: best.q)
-            let s = (bx * bx + by * by).squareRoot()
-            if s > 0, s.isFinite, abs(best.r) / s <= 1e-2 * tolerance * cell { found = best.q }
-        }
+        if found == nil, let best, converged(best.q, best.r) { found = best.q }
         guard let point = found else { return }
         subdivide(a, point, level: level, g: g, cut: cut, depth: depth + 1, into: &out)
         out.append(point)
@@ -260,7 +300,10 @@ public struct ContourRefiner: Sendable {
 
     /// The distance of each vertex from the level set, in cells: the residual
     /// over the gradient, first order. What the refinement is trying to make
-    /// small, measured against f rather than against a finer grid.
+    /// small, measured against f rather than against a finer grid. Capped at
+    /// a cell: the estimate is first order, and where f is flat (a grid
+    /// vertex left on a node beside exp(1/z)'s essential singularity, where
+    /// |f| is 1e-109) it runs to 1e106 and says only "far".
     public func positionErrors(_ path: [P2<DomainSpace>], field: ContourField,
                                level: Double) -> [Double] {
         let g = self.field(field)
@@ -270,7 +313,7 @@ public struct ContourRefiner: Sendable {
             let slope = (gx * gx + gy * gy).squareRoot()
             guard r.isFinite, slope > 0, slope.isFinite else { return .nan }
             if field == .phase && abs(r) > .pi / 2 { return .nan }
-            return abs(r) / slope / cell
+            return min(abs(r) / slope / cell, 1)
         }
     }
 

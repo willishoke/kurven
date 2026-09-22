@@ -194,7 +194,9 @@ public enum NativeLandscape {
         var phase = [Double](repeating: 0, count: count)
         magnitude.withUnsafeMutableBufferPointer { mag in
             phase.withUnsafeMutableBufferPointer { ph in
-                let magBase = mag.baseAddress!, phBase = ph.baseAddress!
+                // Each row writes only its own range, so sharing is safe.
+                nonisolated(unsafe) let magBase = mag.baseAddress!
+                nonisolated(unsafe) let phBase = ph.baseAddress!
                 DispatchQueue.concurrentPerform(iterations: shape.nImag) { y in
                     let row = y * shape.nReal
                     for x in 0..<shape.nReal {
