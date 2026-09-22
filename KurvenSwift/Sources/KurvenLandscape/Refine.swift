@@ -198,11 +198,7 @@ public struct ContourRefiner: Sendable {
         if cut && abs(r) > .pi / 2 { return }
         let chord = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
         guard chord > 1e-9 * cell else { return }
-        // The gradient at the midpoint, by central differences at a step that
-        // is small against the cell and large against rounding.
-        let step = 1e-4 * cell
-        let gx = (g(Complex(mid.x + step, mid.y)) - g(Complex(mid.x - step, mid.y))) / (2 * step)
-        let gy = (g(Complex(mid.x, mid.y + step)) - g(Complex(mid.x, mid.y - step))) / (2 * step)
+        let (gx, gy) = gradient(g, at: mid)
         let slope = (gx * gx + gy * gy).squareRoot()
         guard slope > 0, slope.isFinite else { return }
         let error = abs(r) / slope
@@ -216,11 +212,13 @@ public struct ContourRefiner: Sendable {
         var t0 = 0.0, r0 = r
         var t1 = -r / gn
         var found: P2<DomainSpace>?
-        for _ in 0..<12 {
+        var best: (q: P2<DomainSpace>, r: Double)?
+        for _ in 0..<24 {
             if abs(t1) > chord { break }
             let q = P2<DomainSpace>(mid.x + t1 * nx, mid.y + t1 * ny)
             let r1 = g(Complex(q.x, q.y)) - level
             guard r1.isFinite, !(cut && abs(r1) > .pi / 2) else { break }
+            if best == nil || abs(r1) < abs(best!.r) { best = (q, r1) }
             // Accept only a converged point: an unconverged one would be a
             // vertex off the level set, which is what this is here to remove.
             if abs(r1) <= 1e-13 * max(abs(level), 1)
@@ -232,10 +230,30 @@ public struct ContourRefiner: Sendable {
             let t2 = t1 - r1 * (t1 - t0) / denominator
             t0 = t1; r0 = r1; t1 = t2
         }
+        // Where the level set crosses itself at a critical point (|cn| = 1 at
+        // z = 0, |sin| = 1 at π/2) the residual along the normal has a double
+        // root: the secant converges only linearly and never reaches rounding.
+        // The chord across the saddle would be left a quarter cell off, so the
+        // nearest iterate is accepted if it is within a hundredth of the
+        // tolerance by the estimate the measurement uses -- the gradient at
+        // the point itself, which is what shrinks toward a saddle.
+        if found == nil, let best {
+            let (bx, by) = gradient(g, at: best.q)
+            let s = (bx * bx + by * by).squareRoot()
+            if s > 0, s.isFinite, abs(best.r) / s <= 1e-2 * tolerance * cell { found = best.q }
+        }
         guard let point = found else { return }
         subdivide(a, point, level: level, g: g, cut: cut, depth: depth + 1, into: &out)
         out.append(point)
         subdivide(point, b, level: level, g: g, cut: cut, depth: depth + 1, into: &out)
+    }
+
+    /// The gradient of g at p, by central differences at a step that is small
+    /// against the cell and large against rounding.
+    func gradient(_ g: @Sendable (Complex) -> Double, at p: P2<DomainSpace>) -> (Double, Double) {
+        let step = 1e-4 * cell
+        return ((g(Complex(p.x + step, p.y)) - g(Complex(p.x - step, p.y))) / (2 * step),
+                (g(Complex(p.x, p.y + step)) - g(Complex(p.x, p.y - step))) / (2 * step))
     }
 
     // MARK: measuring
@@ -246,11 +264,9 @@ public struct ContourRefiner: Sendable {
     public func positionErrors(_ path: [P2<DomainSpace>], field: ContourField,
                                level: Double) -> [Double] {
         let g = self.field(field)
-        let step = 1e-4 * cell
         return path.map { p in
             let r = g(Complex(p.x, p.y)) - level
-            let gx = (g(Complex(p.x + step, p.y)) - g(Complex(p.x - step, p.y))) / (2 * step)
-            let gy = (g(Complex(p.x, p.y + step)) - g(Complex(p.x, p.y - step))) / (2 * step)
+            let (gx, gy) = gradient(g, at: p)
             let slope = (gx * gx + gy * gy).squareRoot()
             guard r.isFinite, slope > 0, slope.isFinite else { return .nan }
             if field == .phase && abs(r) > .pi / 2 { return .nan }

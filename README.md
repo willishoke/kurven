@@ -137,9 +137,13 @@ scipy time. With the function a native call, the frontend asks it instead
 edge by a one-dimensional root find against f, and every chord between two
 vertices is checked at its midpoint and subdivided along the normal until it
 is within 0.02 cells of the level set. Density ends up proportional to
-curvature, continuously, with no seams to stitch. The grid still decides which
-contours exist; f decides where they run. The lift stays the grid's, so the
-ink stays on the drawn surface.
+curvature, continuously, with no seams to stitch. Where a level passes through
+a critical point of f (|cn| = 1 at 0, |sin| = 1 at π/2) the level set crosses
+itself, marching squares draws two arcs a cell apart, and the solve along the
+normal meets a double root; the refiner accepts its nearest iterate there and
+draws the crossing. The grid still decides which contours exist; f decides
+where they run. The lift stays the grid's, so the ink stays on the drawn
+surface.
 
 The same pass found that marching squares on a wrapped phase grid emits a
 crossing for *every* level where arg f jumps from π to −π: a bundle of
