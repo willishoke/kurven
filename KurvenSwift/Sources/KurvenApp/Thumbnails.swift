@@ -4,7 +4,7 @@ import Observation
 import KurvenCore
 import KurvenMetal
 import KurvenBake
-import KurvenService
+import KurvenLandscape
 
 /// A picture of each function in the catalog, drawn by the app that draws the
 /// real thing.
@@ -46,11 +46,10 @@ final class Thumbnails {
 
     /// Draw whatever is missing, one at a time, in catalog order.
     ///
-    /// One at a time because the service is one process with one queue: asking
-    /// for fourteen landscapes at once would not make them arrive sooner, and
-    /// it would put a person's own click behind all of them.
-    func warm(_ presets: [FunctionPreset], service: Service?) {
-        guard !running, let service else { return }
+    /// One at a time so that a person's own click is never behind fourteen
+    /// thumbnails' worth of sampling.
+    func warm(_ presets: [FunctionPreset]) {
+        guard !running else { return }
         running = true
         Task {
             for preset in presets where images[preset.name] == nil
@@ -61,7 +60,7 @@ final class Thumbnails {
                 }
                 drawing = preset.name
                 do {
-                    images[preset.name] = try await draw(preset, service: service)
+                    images[preset.name] = try await draw(preset)
                 } catch {
                     // A function that will not sample is not worth a retry loop
                     // on every appearance of the picker; the cell says so.
@@ -75,21 +74,16 @@ final class Thumbnails {
 
     func isFailed(_ preset: FunctionPreset) -> Bool { failed.contains(preset.name) }
 
-    private func draw(_ preset: FunctionPreset, service: Service) async throws -> NSImage? {
+    private func draw(_ preset: FunctionPreset) async throws -> NSImage? {
         var request = LandscapeRequest(preset: preset, resolution: Thumbnails.samples)
         // About twenty strokes along the longest edge. The default is right for
         // a bake and a black rectangle here.
         request.spacing = max(abs(preset.domain.real.length),
                               abs(preset.domain.imag.length)) / 22
-        let scratch = FileManager.default.temporaryDirectory
-            .appendingPathComponent("kurven-thumb-\(UUID().uuidString).kurven")
-        defer { try? FileManager.default.removeItem(at: scratch) }
-        _ = try await service.landscape(request, to: scratch)
-
         let destination = Thumbnails.cache(for: preset)
         let viewport = Thumbnails.size
         try await Task.detached(priority: .utility) {
-            let bundle = try KurvenBundle.read(at: scratch)
+            let bundle = try NativeLandscape.build(request)
             guard let plate = bundle.manifest.presets.first else { return }
             var scene = Scene(bundle: bundle, preset: plate)
             var navigator = Navigator(orbit: Orbit(matching: plate.plate),

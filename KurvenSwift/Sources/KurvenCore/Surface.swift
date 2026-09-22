@@ -121,6 +121,13 @@ public struct Surface: Sendable {
 
 // MARK: - deriving ink from the grids
 
+/// Moves the paths of one level of one field onto the function's own level
+/// set, given the field, the level and the marching-squares paths in domain
+/// space. Core has the grids and not the function, so a consumer that has the
+/// function supplies this (`KurvenLandscape`'s `ContourRefiner`).
+public typealias ContourRefine = @Sendable (ContourField, Double, [[P2<DomainSpace>]])
+    -> [[P2<DomainSpace>]]
+
 public extension Surface {
     /// Lift a domain-space path onto the surface, by policy.
     ///
@@ -163,7 +170,7 @@ public extension Surface {
     /// zeta plate that drew straight chords up to half the width of the domain
     /// across ground the cutout had deliberately removed.
     func derive(_ source: LayerSource, policy: HeightPolicy, region: Region,
-                tiles: [Affine2]) -> PolylineSet<WorldSpace> {
+                tiles: [Affine2], refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
         guard case .contour(let field, let levels, let keep, let tiled) = source else {
             return .empty
         }
@@ -177,7 +184,12 @@ public extension Surface {
 
         var paths: [[P3<WorldSpace>]] = []
         for (level, lines) in Contour.levels(of: grid, levels) {
-            for line in lines {
+            // A refiner has the function the grid was sampled from and moves
+            // the vertices onto its true level set, in domain space, before
+            // the lift: the grid decides which contours exist, f decides
+            // exactly where they run.
+            let refined = refine.map { r in r(field, level, lines) } ?? lines
+            for line in refined {
                 let lifted = lift(line, policy: policy, level: level)
                 var run: [P3<WorldSpace>] = []
                 for v in lifted {

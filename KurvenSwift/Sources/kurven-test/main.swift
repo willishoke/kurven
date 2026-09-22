@@ -4,6 +4,7 @@ import KurvenCore
 import KurvenMetal
 import KurvenBake
 import KurvenService
+import KurvenLandscape
 
 /// The Swift lane of the cross-language tests.
 ///
@@ -1390,4 +1391,7 @@ shaderTests()
 previewTests()
 bakeTests()
 serviceTests()
+expressionTests()
+landscapeTests()
+refinementTests()
 exit(Check.summary())

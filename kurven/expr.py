@@ -563,6 +563,9 @@ def _zeta(s):
         r = flat[left]
         out[left] = (2.0 ** r * np.pi ** (r - 1) * np.sin(np.pi * r / 2)
                      * ss.gamma(1 - r) * _zeta_halfplane(1 - r))
+    # At s = 0 the functional equation is sin(0) times zeta(1): 0 times inf,
+    # which is not -1/2. The origin is a sample of the zeta plate's own grid.
+    out[flat == 0] = -0.5
     return out.reshape(np.shape(s))
 
 

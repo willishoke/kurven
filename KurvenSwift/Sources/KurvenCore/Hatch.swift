@@ -50,12 +50,13 @@ public extension Surface {
     /// The one place that knows which kinds of description exist, so a reader,
     /// a re-derivation after an edit and a bake all produce the same strokes
     /// for the same spec.
-    func ink(_ spec: LayerSpec, occluder: Occluder) -> PolylineSet<WorldSpace> {
+    func ink(_ spec: LayerSpec, occluder: Occluder,
+             refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
         if let hatched = hatch(spec.source, in: HatchContext(occluder)) {
             return hatched
         }
         return derive(spec.source, policy: spec.heightPolicy,
-                      region: occluder.region, tiles: occluder.tiles)
+                      region: occluder.region, tiles: occluder.tiles, refine: refine)
     }
 
     /// Any of the four hatching sources, as world-space polylines. `nil` for a

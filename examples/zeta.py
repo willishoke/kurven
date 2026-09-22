@@ -29,6 +29,8 @@ Run:
 """
 
 import argparse
+import os
+from pathlib import Path
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -52,11 +54,43 @@ from kurven.zbuffer import (
 )
 
 
+#: The notebook's precomputed ζ grid, where it exists; otherwise a sampled
+#: one lives here. See `load_cache`.
 DEFAULT_CACHE = "/Users/willishoke/journal/2401/zeta_5000.npy"
+LOCAL_CACHE = Path.home() / ".cache" / "kurven" / "zeta_5000.npy"
+#: `(n_real, n_imag)` of the notebook's grid: 5000 along the long axis and
+#: cells as near square as that allows.
+CACHE_SHAPE = (1167, 5000)
 
 R_MIN, R_MAX = -6.0, 8.0
 I_MIN, I_MAX = -30.0, 30.0
 Z_LIMIT = 6.0
+
+
+def load_cache(path=None):
+    """The ζ grid, `(n_real, n_imag)` complex over the plate's rectangle.
+
+    An explicit path must exist. Otherwise the first of `$KURVEN_ZETA_CACHE`,
+    the notebook's file and the local cache that does; and failing all three,
+    the grid is sampled with `kurven.expr`'s ζ -- three seconds -- and saved
+    as the local cache. The plate was born from a notebook's file on one
+    machine, and the cutover check that draws it against the Swift renderer
+    should not need that machine.
+    """
+    if path is not None:
+        return np.load(path), str(path)
+    candidates = [os.environ.get("KURVEN_ZETA_CACHE"), DEFAULT_CACHE, LOCAL_CACHE]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return np.load(candidate), str(candidate)
+    from kurven.expr import compile_expression
+    zeta = compile_expression("zeta(z)")
+    real = np.linspace(R_MIN, R_MAX, CACHE_SHAPE[0])
+    imag = np.linspace(I_MIN, I_MAX, CACHE_SHAPE[1])
+    comp = zeta(real[:, None] + 1j * imag[None, :])
+    LOCAL_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    np.save(LOCAL_CACHE, comp)
+    return comp, str(LOCAL_CACHE)
 
 #: The staircase cutout, closed, in `(imag, real)`. Edges 0-7 are the drawn
 #: ground outline; 8 and 9 close the loop along the far and right boundaries of
@@ -90,7 +124,9 @@ def _edge_lengths(perim):
 
 def parser():
     p = argparse.ArgumentParser()
-    p.add_argument("--cache", type=str, default=DEFAULT_CACHE)
+    p.add_argument("--cache", type=str, default=None,
+                   help="a precomputed ζ grid; by default the notebook's file "
+                        "or a local cache, sampled if absent (see load_cache)")
     p.add_argument("--buffer", type=int, default=8000)
     p.add_argument("--output-prefix", type=str, default="zeta")
     p.add_argument("--no-progress", action="store_true")
@@ -112,7 +148,7 @@ def build_scene(a, *, verbose=True, timer=None):
     tick = timer.tick if timer is not None else (lambda _: None)
 
     tick("load cache")
-    comp = np.load(a.cache)
+    comp, a.cache = load_cache(a.cache)
     surface = Surface.from_cache(comp, (R_MIN, R_MAX), (I_MIN, I_MAX),
                                  z_limit=Z_LIMIT)
     mag, angle = surface.mag, surface.angle

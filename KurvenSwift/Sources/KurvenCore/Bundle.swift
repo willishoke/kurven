@@ -33,6 +33,42 @@ public struct KurvenBundle: Sendable {
     /// Present when the manifest carries `Walls.mesh`; nil when the walls are
     /// derived from a perimeter instead.
     public let wallMesh: Mesh<WorldSpace>?
+    /// Present when the function behind the grids is available: every described
+    /// contour layer is derived through it, now and after every restyle, so a
+    /// cap slider re-derives refined ink rather than falling back to the grid's.
+    /// A bundle read from disk has none until a consumer that knows the function
+    /// attaches one (`refined(by:)`).
+    public let refine: ContourRefine?
+
+    public init(url: URL, manifest: Manifest, surface: Surface, layers: [Layer],
+                wallMesh: Mesh<WorldSpace>?, refine: ContourRefine? = nil) {
+        self.url = url; self.manifest = manifest; self.surface = surface
+        self.layers = layers; self.wallMesh = wallMesh; self.refine = refine
+    }
+
+    /// A bundle whose every layer is described: the ink is derived from the
+    /// grids, as `read` derives it for a `--derived` bundle on disk.
+    public init(url: URL, manifest: Manifest, surface: Surface,
+                refine: ContourRefine? = nil) {
+        self.init(url: url, manifest: manifest, surface: surface,
+                  layers: manifest.layers.map {
+                      Layer(spec: $0, paths: surface.ink($0, occluder: manifest.occluder,
+                                                         refine: refine))
+                  },
+                  wallMesh: nil, refine: refine)
+    }
+
+    /// The same bundle deriving its contour layers through `refine` -- or,
+    /// with nil, through the grids alone. Dumped layers are untouched.
+    public func refined(by refine: ContourRefine?) -> KurvenBundle {
+        let base = KurvenBundle(url: url, manifest: manifest, surface: surface, layers: [],
+                                wallMesh: wallMesh, refine: refine)
+        return KurvenBundle(url: url, manifest: manifest, surface: surface,
+                            layers: manifest.layers.map { spec in
+                                spec.files == nil ? base.redrawn(spec) : redrawn(spec)
+                            },
+                            wallMesh: wallMesh, refine: refine)
+    }
 
     public func layer(_ name: String) throws -> Layer {
         guard let l = layers.first(where: { $0.spec.name == name }) else {
@@ -150,7 +186,8 @@ public extension KurvenBundle {
             let existing = layers.first { $0.spec.name == spec.name }
             return Layer(spec: spec, paths: existing?.paths ?? .empty)
         }
-        return Layer(spec: spec, paths: surface.ink(spec, occluder: manifest.occluder))
+        return Layer(spec: spec, paths: surface.ink(spec, occluder: manifest.occluder,
+                                                    refine: refine))
     }
 
     /// The same grids under a different manifest.
@@ -174,18 +211,51 @@ public extension KurvenBundle {
         let restyledSurface = Surface(height: surface.height, phase: surface.phase,
                                       caps: honest.caps, cached: surface.cached)
         let bundle = KurvenBundle(url: url, manifest: honest, surface: restyledSurface,
-                                  layers: [], wallMesh: wallMesh)
+                                  layers: [], wallMesh: wallMesh, refine: refine)
         return KurvenBundle(url: url, manifest: honest, surface: restyledSurface,
                             layers: honest.layers.map { spec in
                                 spec.files == nil ? bundle.redrawn(spec)
                                                   : redrawn(spec)
                             },
-                            wallMesh: wallMesh)
+                            wallMesh: wallMesh, refine: refine)
     }
 
     /// The levels a described layer was exported with, or nil when it is dumped.
     static func levels(of spec: LayerSpec) -> [Double]? {
         if case .contour(_, let levels, _, _) = spec.source { return levels }
         return nil
+    }
+}
+
+public extension KurvenBundle {
+    /// Write a described bundle: the manifest and the two grids.
+    ///
+    /// Every layer of a landscape is a description, so this is the whole of
+    /// it. A bundle carrying dumped ink would need its layer files written too,
+    /// and a manifest naming files that are not there is worse than refusing.
+    func write(to url: URL) throws {
+        guard manifest.layers.allSatisfy({ $0.files == nil }) else {
+            throw BundleError.missingFile("layers/*.npy (this bundle has dumped layers)",
+                                          in: url.lastPathComponent)
+        }
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        let height = surface.height
+        try NPY.write(height.values, shape: [height.height, height.width],
+                      to: url.appendingPathComponent("height.npy"))
+        if let phase = surface.phase {
+            try NPY.write(phase.values, shape: [phase.height, phase.width],
+                          to: url.appendingPathComponent("phase.npy"))
+        }
+        var written = manifest
+        written.height = GridRef(file: "height.npy",
+                                 shape: (ny: height.height, nx: height.width), dtype: .float32)
+        if let phase = surface.phase {
+            written.phase = GridRef(file: "phase.npy",
+                                    shape: (ny: phase.height, nx: phase.width), dtype: .float32)
+        }
+        // The manifest goes last, so a bundle whose manifest exists is a
+        // bundle whose arrays are complete.
+        try written.canonicalJSON.write(to: url.appendingPathComponent("manifest.json"),
+                                        atomically: true, encoding: .utf8)
     }
 }

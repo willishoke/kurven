@@ -682,6 +682,12 @@ public struct Provenance: Sendable, Equatable {
     public var cpuCount: Int
     public var gitSha: String
 
+    public init(function: String, example: String, params: [String: JSONValue],
+                cpuCount: Int, gitSha: String) {
+        self.function = function; self.example = example; self.params = params
+        self.cpuCount = cpuCount; self.gitSha = gitSha
+    }
+
     init(json: JSONValue) throws {
         let o = try json.object("Provenance")
         self.function = try o.string("function", "Provenance")
@@ -712,6 +718,15 @@ public struct Manifest: Sendable, Equatable {
     public var layers: [LayerSpec]
     public var presets: [CameraPreset]
     public var provenance: Provenance
+
+    public init(domain: Domain, height: GridRef, phase: GridRef?, caps: Caps,
+                occluder: Occluder, layers: [LayerSpec], presets: [CameraPreset],
+                provenance: Provenance) {
+        self.schema = kurvenSchema; self.axes = kurvenAxes
+        self.domain = domain; self.height = height; self.phase = phase; self.caps = caps
+        self.occluder = occluder; self.layers = layers; self.presets = presets
+        self.provenance = provenance
+    }
 
     public init(json: JSONValue) throws {
         let o = try json.object("Manifest")

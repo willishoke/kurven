@@ -11,7 +11,9 @@ let package = Package(
     name: "KurvenSwift",
     platforms: [.macOS(.v15)],
     products: [
+        .library(name: "KurvenMath", targets: ["KurvenMath"]),
         .library(name: "KurvenCore", targets: ["KurvenCore"]),
+        .library(name: "KurvenLandscape", targets: ["KurvenLandscape"]),
         .library(name: "KurvenMetal", targets: ["KurvenMetal"]),
         .library(name: "KurvenBake", targets: ["KurvenBake"]),
         .library(name: "KurvenService", targets: ["KurvenService"]),
@@ -20,8 +22,18 @@ let package = Package(
         .executable(name: "KurvenApp", targets: ["KurvenApp"]),
     ],
     targets: [
+        // Pure functions: complex arithmetic, the special functions the
+        // expression language offers, and the language itself. Depends on
+        // nothing, not even Core -- a number is not a bundle.
+        .target(name: "KurvenMath"),
+
         // Pure values. No Metal, no AppKit; its tests run without a GPU.
         .target(name: "KurvenCore"),
+
+        // A landscape sampled here rather than asked of Python: the rules of
+        // `kurven.landscape` over the evaluator in Math, producing the same
+        // bundle value a `.kurven` directory decodes to.
+        .target(name: "KurvenLandscape", dependencies: ["KurvenCore", "KurvenMath"]),
 
         // The uniform and vertex structs, defined once in C and shared by
         // Swift (as a module) and MSL (prepended to the source), so CPU/GPU
@@ -45,8 +57,9 @@ let package = Package(
         // service produces bundles, and a bundle is a Core value. Kept out of
         // Core itself because a subprocess is an OS boundary and Core is where
         // there are none.
-        .target(name: "KurvenService", dependencies: ["KurvenCore"]),
-        .executableTarget(name: "kurven-cli", dependencies: ["KurvenBake", "KurvenService"]),
+        .target(name: "KurvenService", dependencies: ["KurvenCore", "KurvenLandscape"]),
+        .executableTarget(name: "kurven-cli",
+                          dependencies: ["KurvenBake", "KurvenService", "KurvenLandscape"]),
 
         // The test suite is an executable, not a `.testTarget`.
         //
@@ -59,12 +72,14 @@ let package = Package(
         // `swift run kurven-test`, exit code 0 or 1. This is also what the
         // Python side does (`tests/check_bundle.py`), for the same reason
         // (pytest is not installed either), so both lanes run the same way.
-        .executableTarget(name: "kurven-test", dependencies: ["KurvenBake", "KurvenService"]),
+        .executableTarget(name: "kurven-test",
+                          dependencies: ["KurvenBake", "KurvenService", "KurvenLandscape"]),
 
         // The window. A bare SwiftPM executable has no bundle, so
         // scripts/bundle-app.sh assembles Kurven.app around this binary with a
         // hand-written Info.plist and an ad hoc signature -- all of which
         // Command Line Tools can do.
-        .executableTarget(name: "KurvenApp", dependencies: ["KurvenBake", "KurvenService"]),
+        .executableTarget(name: "KurvenApp",
+                          dependencies: ["KurvenBake", "KurvenService", "KurvenLandscape"]),
     ]
 )

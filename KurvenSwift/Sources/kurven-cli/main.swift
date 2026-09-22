@@ -3,6 +3,7 @@ import KurvenCore
 import KurvenMetal
 import KurvenBake
 import KurvenService
+import KurvenLandscape
 
 /// `kurven-cli` -- the headless half of the frontend.
 ///
@@ -139,21 +140,28 @@ usage: kurven-cli <command> [options]
         each takes. The service is found by walking up from the working
         directory for kurven/serve.py; KURVEN_REPO and KURVEN_PYTHON override.
 
-  catalog [--python PATH] [--repo PATH]
-        Print the functions the service can sample and the language they are
-        written in. This is the menu the app's function picker is built from.
+  catalog
+        Print the functions this program can sample and the language they are
+        written in. This is the menu the app's function picker is built from,
+        and kurven-test holds it to the Python side's.
 
   landscape [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI]
-            [--res N] [--cap Z] [--spacing S] -o out.kurven
-        Sample a function over a rectangle and write its bundle. Every layer
-        is a description, so the result's cap, levels and hatch spacing are
-        editable afterwards -- in the app, or by `bake --levels`.
+            [--res N] [--cap Z] [--spacing S] [--service] -o out.kurven
+        Sample a function over a rectangle and write its bundle -- natively,
+        with no Python in the loop, or by the service with --service, which
+        is the comparison path. Every layer is a description, so the result's
+        cap, levels and hatch spacing are editable afterwards -- in the app,
+        or by `bake --levels`.
+
+  refine [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI] [--res N]
+         [--tolerance CELLS] [--depth N]
+        Benchmark the contour refinement: each contour layer derived from the
+        grid, then placed by f, with both timed and both measured against f.
 
   resample <example> [--set NAME=VALUE ...] [--derived] -o out.kurven
-        Ask the service to build a bundle. This is the whole of what Python is
-        still for: the frozen bundle cannot change its own domain or
-        resolution, and sampling special functions is the one thing Swift has
-        no library for.
+        Ask the service to rebuild one of the published plates. That is what
+        Python is still for: the four plates are Python programs, and a
+        frozen bundle of one cannot change its own domain or resolution.
 
   contract <dir>
         Decode every .kurven bundle in <dir>, re-encode its manifest, and
@@ -677,10 +685,7 @@ func resample(_ args: Args) throws {
 }
 
 func catalogCommand(_ args: Args) throws {
-    let service = try service(args)
-    defer { service.stop() }
-    let catalog = try blocking { try await service.catalog() }
-    print("service: \(service.command.display)")
+    let catalog = Catalog.native
     print("  \(catalog.presets.count) presets, default resolution \(catalog.defaultResolution)")
     for preset in catalog.presets {
         let d = preset.domain
@@ -708,9 +713,7 @@ func interval(_ text: String, _ what: String) throws -> Interval {
 
 func landscapeCommand(_ args: Args) throws {
     let output = URL(fileURLWithPath: try args.string("output"))
-    let service = try service(args)
-    defer { service.stop() }
-    let catalog = try blocking { try await service.catalog() }
+    let catalog = Catalog.native
 
     // The preset is the starting point and every flag is an override of it, so
     // `landscape --function gamma --res 1200` means what it looks like.
@@ -735,20 +738,81 @@ func landscapeCommand(_ args: Args) throws {
     if let s = args.flags["spacing"], let v = Double(s) { request.spacing = v }
 
     let clock = ContinuousClock()
-    let asked = request
-    var result: ExportResult!
-    let elapsed = try clock.measure {
-        result = try blocking { try await service.landscape(asked, to: output) }
+    var bundle: KurvenBundle!
+    let sampled = try clock.measure {
+        bundle = try args.switches.contains("service")
+            ? sampledByService(request, to: output, args)
+            : NativeLandscape.build(request)
     }
+    if !args.switches.contains("service") { try bundle.write(to: output) }
+    let m = bundle.manifest
     print("""
-        \(result.manifest.provenance.function) -> \(result.url.lastPathComponent) \
-        (\(String(format: "%.1f", Double(result.bytes) / 1e6)) MB in \(elapsed))
-          \(result.manifest.height.shape.nx)x\(result.manifest.height.shape.ny) samples, \
-        caps \(result.manifest.caps)
+        \(m.provenance.function) -> \(output.lastPathComponent) \
+        (\(args.switches.contains("service") ? "by the service" : "natively") in \(sampled))
+          \(m.height.shape.nx)x\(m.height.shape.ny) samples, caps \(m.caps)
         """)
-    for spec in result.manifest.layers {
+    for spec in m.layers {
         print("    \(pad(spec.name, 14)) \(sourceName(spec.source))")
     }
+}
+
+/// `refine`: the contour refinement, benchmarked. Every contour layer of the
+/// landscape is derived from the grid and then refined against f, and both
+/// are timed and measured against f -- the residual over the gradient, in
+/// cells, at every vertex and at every chord's midpoint.
+func refineCommand(_ args: Args) throws {
+    let catalog = Catalog.native
+    let name = args.flags["function"] ?? (args.positional.count > 1 ? "" : "gamma")
+    var request: LandscapeRequest
+    if let preset = catalog.preset(name) {
+        request = LandscapeRequest(preset: preset, resolution: catalog.defaultResolution)
+    } else if let expression = args.positional.dropFirst().first {
+        request = LandscapeRequest(expression: expression,
+                                   domain: Domain(real: Interval(lo: -4, hi: 4),
+                                                  imag: Interval(lo: -2.5, hi: 2.5)),
+                                   resolution: catalog.defaultResolution)
+    } else {
+        throw CLIError("no function given; try 'catalog', or pass an expression")
+    }
+    if let re = args.flags["re"] { request.domain.real = try interval(re, "re") }
+    if let im = args.flags["im"] { request.domain.imag = try interval(im, "im") }
+    if let res = args.flags["res"], let n = Int(res) { request.resolution = n }
+    if let cap = args.flags["cap"], let z = Double(cap) { request.caps = .uniform(z) }
+    let tolerance = args.flags["tolerance"].flatMap(Double.init) ?? 0.02
+    let depth = args.flags["depth"].flatMap(Int.init) ?? 5
+
+    let (bundle, reports) = try NativeLandscape.benchmarkRefinement(
+        request, tolerance: tolerance, maxDepth: depth)
+    let shape = bundle.manifest.height.shape
+    print("\(bundle.manifest.provenance.function)  \(shape.nx)x\(shape.ny) samples, "
+          + "tolerance \(fmt(tolerance)) cells, depth \(depth)")
+    print("  errors are distances from f's level set, in cells; "
+          + "vertex = at the vertices, chord = at the midpoints between them")
+    print("  " + pad("layer", 11) + pad("levels", 7) + pad("vertices", 17)
+          + pad("time ms", 16) + pad("vertex mean/p95/max", 30) + "chord mean/p95/max")
+    func three(_ t: (mean: Double, p95: Double, max: Double)) -> String {
+        String(format: "%.4f/%.4f/%.3f", t.mean, t.p95, t.max)
+    }
+    for r in reports {
+        print("  " + pad(r.layer, 11) + pad(String(r.levels), 7)
+              + pad("\(r.gridVertices) -> \(r.refinedVertices)"
+                    + (r.wrapVertices > 0 ? " (\(r.wrapVertices) on wraps)" : ""), 17)
+              + pad(String(format: "%.1f -> +%.1f", r.gridSeconds * 1e3, r.refineSeconds * 1e3), 16)
+              + pad(three(r.gridVertex) + " -> ", 30) + three(r.gridChord))
+        print("  " + pad("", 11) + pad("", 7) + pad("", 17) + pad("", 16)
+              + pad(three(r.refinedVertex), 30) + three(r.refinedChord))
+    }
+}
+
+/// The same request answered by the Python service: the comparison path,
+/// kept so a native landscape can be checked against the one Python would
+/// have written for it.
+func sampledByService(_ request: LandscapeRequest, to output: URL, _ args: Args) throws
+    -> KurvenBundle {
+    let service = try service(args)
+    defer { service.stop() }
+    let result = try blocking { try await service.landscape(request, to: output) }
+    return try KurvenBundle.read(at: result.url)
 }
 
 func fmt(_ x: Double) -> String { String(format: "%g", x) }
@@ -873,6 +937,7 @@ do {
     case "describe": try describe(args)
     case "catalog": try catalogCommand(args)
     case "landscape": try landscapeCommand(args)
+    case "refine": try refineCommand(args)
     case "resample": try resample(args)
     case "inspect": try inspect(args)
     case "contract": try contract(args)

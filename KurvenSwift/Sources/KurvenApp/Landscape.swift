@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import KurvenCore
 import KurvenService
+import KurvenLandscape
 
 /// The half of a document that is a *choice* rather than a file.
 ///
@@ -10,7 +11,8 @@ import KurvenService
 /// what that costs is the whole design:
 ///
 ///   - **the function, the window, the resolution** need f evaluated again, so
-///     they are a request to Python (`Service.landscape`) and a new bundle.
+///     they are a new landscape (`NativeLandscape.build`) and a new bundle --
+///     sampled in this process, since the evaluator is native.
 ///   - **the cap, the contour levels, the hatch spacing** need nothing but the
 ///     grids that are already here, because every layer of a landscape's bundle
 ///     is a description rather than dumped ink. They are `restyle`, which
@@ -28,7 +30,6 @@ extension Document {
 
     /// Start a landscape from a catalog preset, replacing whatever is open.
     func create(_ preset: FunctionPreset) {
-        guard let catalog else { return }
         var request = LandscapeRequest(preset: preset,
                                        resolution: catalog.defaultResolution)
         request.spacing = nil          // let the rules derive it for this window
@@ -67,7 +68,7 @@ extension Document {
     }
 
     private func pump() {
-        guard !sampling, let (request, framing) = wanted, let service else { return }
+        guard !sampling, let (request, framing) = wanted else { return }
         if let shown, shown.samples(as: request), !framing {
             // The samples on screen are already the ones asked for; only the
             // styling moved, and that is not this path's business.
@@ -77,20 +78,15 @@ extension Document {
         wanted = nil
         sampling = true
         landscapeStatus = "sampling…"
-        let output = FileManager.default.temporaryDirectory
-            .appendingPathComponent("kurven-landscape-\(UInt32.random(in: 0...UInt32.max)).kurven")
         Task {
             let clock = ContinuousClock()
             let started = clock.now
             do {
-                let result = try await service.landscape(request, to: output)
+                // Sampled here, in this process: the evaluator is native, and
+                // the bundle is a value rather than a directory to read back.
                 let bundle = try await Task.detached(priority: .userInitiated) {
-                    try KurvenBundle.read(at: result.url)
+                    try NativeLandscape.build(request)
                 }.value
-                // The bundle is a value and it has been read; the directory it
-                // came from is scratch. Leaving a hundred of them behind is what
-                // a slider would do over a minute of dragging.
-                try? FileManager.default.removeItem(at: result.url)
                 adopt(bundle, keepingCamera: !framing && scene != nil)
                 shown = request
                 landscapeStatus = "\(request.resolution)² in \(clock.now - started)"
@@ -158,6 +154,21 @@ extension Document {
     }
 
     var caps: Caps { bundle?.manifest.caps ?? .none }
+
+    /// Switch the contour refinement on or off for the open landscape: the
+    /// same grids, the ink derived again, the camera where it was.
+    func setRefinement(_ on: Bool) {
+        refineContours = on
+        guard let bundle, let navigator, isLandscape else { return }
+        let refiner = on ? NativeLandscape.refiner(for: bundle)?.refine : nil
+        let redrawn = bundle.refined(by: refiner)
+        replace(bundle: redrawn)
+        derivedInk = [:]
+        guard let preset = redrawn.manifest.presets.first else { return }
+        var scene = Scene(bundle: redrawn, preset: preset)
+        scene.camera = navigator.camera
+        self.scene = scene
+    }
 
     /// Truncate the landscape differently.
     ///
@@ -247,35 +258,8 @@ extension Document {
     /// is why this is short.
     func saveBundle(to url: URL) {
         guard let bundle else { return }
-        guard bundle.manifest.layers.allSatisfy({ $0.files == nil }) else {
-            // Every layer of a landscape is a description, and this writes the
-            // manifest and the grids alone. A bundle carrying dumped ink would
-            // need its layer files written too, and a manifest naming files
-            // that are not there is worse than refusing.
-            landscapeStatus = "this bundle has dumped layers; saving it here "
-                + "would name files it cannot write"
-            return
-        }
         do {
-            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-            let height = bundle.surface.height
-            try NPY.write(height.values, shape: [height.height, height.width],
-                          to: url.appendingPathComponent("height.npy"))
-            if let phase = bundle.surface.phase {
-                try NPY.write(phase.values, shape: [phase.height, phase.width],
-                              to: url.appendingPathComponent("phase.npy"))
-            }
-            var manifest = bundle.manifest
-            manifest.height = GridRef(file: "height.npy",
-                                      shape: (ny: height.height, nx: height.width),
-                                      dtype: .float32)
-            if let phase = bundle.surface.phase {
-                manifest.phase = GridRef(file: "phase.npy",
-                                         shape: (ny: phase.height, nx: phase.width),
-                                         dtype: .float32)
-            }
-            try manifest.canonicalJSON.write(to: url.appendingPathComponent("manifest.json"),
-                                             atomically: true, encoding: .utf8)
+            try bundle.write(to: url)
             landscapeStatus = "saved \(url.lastPathComponent)"
         } catch {
             landscapeStatus = "could not save: \(error)"

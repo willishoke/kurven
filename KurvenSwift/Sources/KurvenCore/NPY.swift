@@ -183,6 +183,15 @@ public extension NPYArray {
         }
     }
 
+    /// A complex128 array as interleaved `(re, im)` doubles. Core has no
+    /// complex type of its own; the caller pairs them up.
+    func complexPairs() throws -> [Double] {
+        guard dtype == .complex128 else {
+            throw NPYError.unsupportedDType(dtype.rawValue, expected: [NPYDType.complex128.rawValue])
+        }
+        return data.withUnsafeBytes { Array($0.bindMemory(to: Double.self)) }
+    }
+
     func ints() throws -> [Int] {
         guard dtype == .int64 else {
             throw NPYError.unsupportedDType(dtype.rawValue, expected: [NPYDType.int64.rawValue])

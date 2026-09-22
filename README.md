@@ -83,7 +83,7 @@ and everything else is derived from them by rules stated once.
 python examples/function.py --function gamma --gpu
 python examples/function.py --expression "exp(1/z)" \
     --r-min -1 --r-max 1 --i-min -1 --i-max 1 --cap 4
-kurven-cli landscape --function zeta --res 800 -o zeta.kurven   # via the service
+kurven-cli landscape --function zeta --res 800 -o zeta.kurven   # natively, no Python
 ```
 
 ### The expression
@@ -106,13 +106,66 @@ here: **ζ(s)** (Borwein's alternating series, the functional equation below the
 critical line, and Euler–Maclaurin at the points where Borwein's own
 `1 − 2^(1−s)` factor vanishes — σ = 1, t ≈ 9.06, 18.13, …, which are inside the
 ζ plate's own window), and the **Jacobi elliptics** sn, cn, dn. 200k samples of
-ζ take 0.1 s, so the zeta landscape no longer needs the precomputed cache the
-published plate loads.
+ζ take 0.1 s, so the zeta landscape needs no precomputed cache, and the
+published plate samples its own when the notebook's file is absent.
+
+The Swift side has the same language and the same forty-three functions, with
+no library behind them (`KurvenSwift/Sources/KurvenMath`): complex arithmetic
+on numpy's branches, scipy's own algorithms where scipy has one (Hare's
+log-gamma, cephes' `ellpj`, the Lambert W iteration), `kurven.expr`'s where it
+does not (ζ), Weideman's Faddeeva function for the error functions, and for
+the Bessel and Airy families two engines — the power series and the Hankel
+expansions for J and Y, Temme's series and Steed's continued fraction for I
+and K — each used only where it is accurate. `tests/fixtures/expr` holds every
+function to scipy at every point of a grid that runs along the real axis at
+exactly `im = 0`, to 1e-12, or 1e-9 for Bessel and Airy, whose engines differ
+from AMOS. So a landscape is sampled in the app's own process
+(`KurvenLandscape`), and the Python service is a comparison path rather than a
+requirement: `kurven-test` builds the fixture landscapes natively and checks
+that the bundle is the one Python wrote, manifest and grids alike.
+
+#### Contours placed by f
+
+Marching squares puts a vertex where *linear interpolation* between two
+samples crosses the level, which is off the true level set by about
+h²·|f″|/|f′|: nothing where f is nearly linear across a cell, and growing like
+1/r toward a pole or a zero, exactly where the plates are densest. The Python
+plates answered that for gamma with a second, finer grid in rectangles around
+the steep places (`kurven/sampling.py`), because there every extra sample was
+scipy time. With the function a native call, the frontend asks it instead
+(`ContourRefiner`): every vertex is moved to the exact crossing on its grid
+edge by a one-dimensional root find against f, and every chord between two
+vertices is checked at its midpoint and subdivided along the normal until it
+is within 0.02 cells of the level set. Density ends up proportional to
+curvature, continuously, with no seams to stitch. Where a level passes through
+a critical point of f (|cn| = 1 at 0, |sin| = 1 at π/2) the level set crosses
+itself, marching squares draws two arcs a cell apart, and the solve along the
+normal meets a double root; the refiner accepts its nearest iterate there and
+draws the crossing. The grid still decides which contours exist; f decides
+where they run. The lift stays the grid's, so the ink stays on the drawn
+surface.
+
+The same pass found that marching squares on a wrapped phase grid emits a
+crossing for *every* level where arg f jumps from π to −π: a bundle of
+spurious segments along each wrap line, a third of the gamma plate's phase
+vertices, in the Python plates as much as here. A vertex whose two edge
+samples differ by more than π is on a wrap, not a level set, and the refiner
+drops it.
+
+`kurven-cli refine --function gamma` benchmarks it: for each contour layer,
+the grid's ink and the refined ink, timed, and both measured against f (the
+residual over the gradient, in cells). At 600 samples across, gamma's
+magnitude vertices go from a worst error of 0.58 cells to zero and its chords
+from 0.16 to 0.02, for a few milliseconds a layer; ζ, the most expensive
+function, costs about 70 ms for its forty minor levels. The app has it on by
+default (a toggle in the landscape controls); the fixture comparison with
+Python runs with it off, since that is a comparison of grids.
 
 The catalog (`kurven.landscape.CATALOG`) is fourteen presets over that language
 — each an expression plus the window and truncation that make it read as a
-landscape — and it is *data the server reports*, so a preset added in Python
-appears in the app without a line of Swift changing.
+landscape. The Swift side carries the same list (`Catalog.native`), and the
+fixture compares the two entry for entry, so a preset added on one side is a
+test failure on the other until it is added there too.
 
 ### Truncation, and the hatching that goes with it
 
@@ -139,8 +192,8 @@ Because those layers are *descriptions* rather than dumped strokes, changing
 your mind costs one of two very different things:
 
 - **the function, the window, the resolution** need f evaluated again. That is a
-  request to Python (`kurven.serve`'s `landscape` method) and a new bundle:
-  ~30 ms at 600², ~80 ms for ζ at 500².
+  new landscape (`NativeLandscape.build`, sampled across the cores) and a new
+  bundle: ~10 ms at 600², ~70 ms for ζ at 600².
 - **the cap, the contour levels, the hatch spacing** need nothing but the grids
   already in memory. `KurvenBundle.restyled` re-derives the ink, the wall
   curtains and the plateaus, and the picture follows within a frame.
@@ -182,11 +235,16 @@ examples/
   recip_factorial.py — 1/Γ(z): the reciprocal-factorial relief
 
 KurvenSwift/     — the Swift/Metal frontend (see below)
+  KurvenMath/    — complex arithmetic, the special functions, and the
+                   expression language, natively; depends on nothing
   KurvenCore/    — pure values: spaces, camera, navigation, npy, clip, SVG,
                    and Hatch.swift, which derives the four hatchings
+  KurvenLandscape/ — a landscape sampled here: the catalog, the derived
+                   styling, and the bundle, as kurven.landscape builds them
   KurvenMetal/   — the depth pass, the preview, the resource cache
   KurvenBake/    — scene -> strokes; tiling; PNG
-  KurvenService/ — the Python half over a pipe: examples, and landscapes
+  KurvenService/ — the Python half over a pipe: the published plates, and
+                   landscapes as a comparison path
   kurven-cli/    — bake, preview, depth, bench, inspect, contract, catalog,
                    landscape
   kurven-test/   — the Swift lane of the tests (an executable, not swift test)
@@ -197,7 +255,8 @@ tests/
   make_fixtures.py  — writes tests/fixtures, the oracle both lanes are held to
   check_bundle.py   — the Python lane of the contract tests
   check_expr.py     — the expression language: parsing, safety, and the
-                      numerics of zeta and the elliptics
+                      numerics of zeta and the elliptics (the Swift lane
+                      checks the native functions against tests/fixtures/expr)
   compare_bake.py   — end-to-end: the Swift bake against the Python plate
   verify_refactor.py — pixel-identical before/after diffing for refactors
 ```
@@ -236,9 +295,10 @@ python examples/function.py --function gamma \
 The pipeline divides cleanly in two, and not where you would expect. The seam
 is not "library versus application" but **camera-independent** work (sample →
 contour → lift) versus **camera-dependent** work (project → depth-buffer → clip
-→ ink). The first half is the expensive one, needs scipy, and does not change
-when you move the camera; the second half is cheap and must run again for every
-new viewpoint.
+→ ink). The first half is the expensive one and does not change when you move
+the camera; the second half is cheap and must run again for every new
+viewpoint. (For the published plates the first half is a Python program that
+needs scipy; for a landscape chosen in the app it is native, see above.)
 
 Each example is split at that seam: `build_scene()` returns a
 `kurven.scene.Scene` — everything a plate is before anyone decides how to look
@@ -420,12 +480,13 @@ what is *meant* to differ: the wall crests, because Python evaluates f where the
 consumer interpolates the grid (0.5% of the ink), and the contours on
 near-vertical pole flanks, where a hair of depth decides visibility.
 
-Two caveats worth knowing before blaming a change for them:
+Two things worth knowing before blaming a change for them:
 
-- **zeta's two end-to-end steps need a file this repository does not ship.**
-  `examples/zeta.py` loads a precomputed ζ grid from a path in the author's
-  notes; without it, `bake/preview vs plate: zeta` fail with `FileNotFoundError`.
-  (A ζ *landscape* needs nothing: `kurven.expr` samples it directly.)
+- **zeta's plate samples its own grid.** `examples/zeta.py` was born from a
+  precomputed ζ grid in the author's notes; where that file is absent it looks
+  for `$KURVEN_ZETA_CACHE`, then `~/.cache/kurven/zeta_5000.npy`, and failing
+  both samples the grid with `kurven.expr`'s ζ (three seconds) and saves it
+  there. The first `bake vs plate: zeta` on a machine is slower by that much.
 - a generated landscape full of pole spires is the worst case for comparing two
   rasterizers, which is why its end-to-end step uses `--cpu`. Against moderngl,
   21% of depth pixels differ on gamma's spires while every contour stays within
