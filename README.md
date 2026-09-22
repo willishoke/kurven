@@ -106,8 +106,8 @@ here: **ζ(s)** (Borwein's alternating series, the functional equation below the
 critical line, and Euler–Maclaurin at the points where Borwein's own
 `1 − 2^(1−s)` factor vanishes — σ = 1, t ≈ 9.06, 18.13, …, which are inside the
 ζ plate's own window), and the **Jacobi elliptics** sn, cn, dn. 200k samples of
-ζ take 0.1 s, so the zeta landscape no longer needs the precomputed cache the
-published plate loads.
+ζ take 0.1 s, so the zeta landscape needs no precomputed cache, and the
+published plate samples its own when the notebook's file is absent.
 
 The Swift side has the same language and the same forty-three functions, with
 no library behind them (`KurvenSwift/Sources/KurvenMath`): complex arithmetic
@@ -480,12 +480,13 @@ what is *meant* to differ: the wall crests, because Python evaluates f where the
 consumer interpolates the grid (0.5% of the ink), and the contours on
 near-vertical pole flanks, where a hair of depth decides visibility.
 
-Two caveats worth knowing before blaming a change for them:
+Two things worth knowing before blaming a change for them:
 
-- **zeta's two end-to-end steps need a file this repository does not ship.**
-  `examples/zeta.py` loads a precomputed ζ grid from a path in the author's
-  notes; without it, `bake/preview vs plate: zeta` fail with `FileNotFoundError`.
-  (A ζ *landscape* needs nothing: `kurven.expr` samples it directly.)
+- **zeta's plate samples its own grid.** `examples/zeta.py` was born from a
+  precomputed ζ grid in the author's notes; where that file is absent it looks
+  for `$KURVEN_ZETA_CACHE`, then `~/.cache/kurven/zeta_5000.npy`, and failing
+  both samples the grid with `kurven.expr`'s ζ (three seconds) and saves it
+  there. The first `bake vs plate: zeta` on a machine is slower by that much.
 - a generated landscape full of pole spires is the worst case for comparing two
   rasterizers, which is why its end-to-end step uses `--cpu`. Against moderngl,
   21% of depth pixels differ on gamma's spires while every contour stays within
