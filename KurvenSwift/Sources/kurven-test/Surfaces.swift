@@ -48,6 +48,54 @@ func torusSees(_ p: SIMD3<Double>, major R: Double, minor r: Double,
     return true
 }
 
+/// The real roots of a polynomial in `[a, b]`, coefficients highest first.
+///
+/// The critical points -- the roots of the derivative, found the same way --
+/// split the interval into pieces on which the polynomial is monotone, and a
+/// monotone piece holds a root exactly when its ends differ in sign; bisection
+/// finds it. No tolerance decides whether a root exists, only where it is.
+func realRoots(_ c: [Double], in a: Double, _ b: Double) -> [Double] {
+    let n = c.count - 1
+    func p(_ x: Double) -> Double { c.reduce(0) { $0 * x + $1 } }
+    guard n >= 1 else { return [] }
+    if n == 1 {
+        let x = -c[1] / c[0]
+        return x >= a && x <= b ? [x] : []
+    }
+    let derivative = (0..<n).map { c[$0] * Double(n - $0) }
+    let cuts = [a] + realRoots(derivative, in: a, b) + [b]
+    var roots: [Double] = []
+    for (lo, hi) in zip(cuts, cuts.dropFirst()) {
+        var l = lo, h = hi
+        let pl = p(l), ph = p(h)
+        if pl == 0 { roots.append(l); continue }
+        guard (pl > 0) != (ph > 0) || ph == 0 else { continue }
+        for _ in 0..<200 where h - l > 0 {
+            let m = 0.5 * (l + h)
+            if (p(m) > 0) == (pl > 0) { l = m } else { h = m }
+        }
+        roots.append(0.5 * (l + h))
+    }
+    return roots
+}
+
+/// Whether a point *off* the torus, just outside it, is seen from `eye`: the
+/// full quartic along the sight line, which has no root at the point itself.
+/// This is the question a point on a fold needs asked, since there the sight
+/// line is tangent and the cubic of `torusSees` has a double root at zero.
+func torusSeesFromOutside(_ p: SIMD3<Double>, major R: Double, minor r: Double,
+                          eye e: SIMD3<Double>) -> Bool {
+    let B = 2 * simd_dot(p, e)
+    let C = simd_length_squared(p) + R * R - r * r
+    let a2 = e.x * e.x + e.y * e.y
+    let b2 = 2 * (p.x * e.x + p.y * e.y)
+    let c2 = p.x * p.x + p.y * p.y
+    let quartic = [1, 2 * B, B * B + 2 * C - 4 * R * R * a2,
+                   2 * B * C - 4 * R * R * b2, C * C - 4 * R * R * c2]
+    precondition(quartic[4] > 0, "the point is not outside the torus")
+    return realRoots(quartic, in: 0, 2.5 * (R + r) + simd_length(p)).isEmpty
+}
+
 /// Elevation and azimuth as the plate cameras have them, with an optional
 /// oblique shear in front, so the view is affine but not orthonormal.
 func testCamera(elevation: Double, azimuth: Double,
@@ -440,3 +488,59 @@ func surfaceBakeTests() {
                             100 * depthError, 100 * error))
     }
 }
+
+func foldTests() {
+    Check.suite("surfaces: fold lines lie on the folds, and are seen where the ray-cast sees them") {
+        let renderer = try MetalRenderer()
+        for (R, r) in [(2.0, 1.0), (1.25, 1.0)] {
+            let torus = ParametricSurface.torus(major: R, minor: r, samples: (512, 256))
+            for (name, xAngle, shear) in [("elevation 50°", -50.0, 0.0),
+                                          ("sheared", -30.0, 0.5)] {
+                let camera = Camera.plate(PlateProjection(shear: shear, xAngle: xAngle, zAngle: 25,
+                                                          flipX: false, yScale: nil))
+                let sight = camera.view.sightLine
+                let folds = torus.foldLines(sight: sight)
+                var worst = 0.0
+                for c in folds.coords! {
+                    let n = torus.map(c).normal
+                    worst = max(worst, abs(simd_dot(n, sight)) / simd_length(n))
+                }
+                let label = "R/r = \(R / r), \(name)"
+                Check.expect(folds.count > 0 && worst < 1e-9,
+                             "\(label): every vertex is edge-on", "max |cos| \(worst)")
+
+                let spec = LayerSpec(name: "folds", role: .outline, source: .foldLines,
+                                     width: 0.6, heightPolicy: .surface)
+                let scene = Scene(surface: torus, layers: [Layer(spec: spec, paths: .empty)],
+                                  camera: camera, margin: 0)
+                let baked = try renderer.bake(scene, options: BakeOptions(resolution: 2400))
+                // On a fold the sight line is tangent to the torus, so the
+                // ray-cast is asked a hair outside it, where it has an answer.
+                let eye = -sight
+                var truth = 0.0
+                let coords = folds.coords!
+                for path in 0..<folds.count {
+                    for i in folds.offsets[path]..<(folds.offsets[path + 1] - 1) {
+                        let mid = torus.map(P2(0.5 * (coords[i].v + coords[i + 1].v)))
+                        let out = simd_normalize(mid.normal) * (torus.outward ?? 1)
+                        guard torusSeesFromOutside(mid.position + 1e-7 * (R + r) * out,
+                                                   major: R, minor: r, eye: eye) else { continue }
+                        let a = camera.view(folds.vertices[i]), b = camera.view(folds.vertices[i + 1])
+                        truth += simd_length(SIMD2(b.x - a.x, b.y - a.y))
+                    }
+                }
+                // What the front-most test cannot see is a fold running on
+                // behind its own sheet past a cusp: there the sheet in front
+                // is the fold's own neighbourhood for the first couple of
+                // pixels. So the bound is a few pixels per cusp, not zero.
+                let px = baked.depth.frame.unitsPerPixel.max()
+                let excess = baked.strokes.inkLength - truth
+                Check.expect(abs(excess) < 16 * px,
+                             "\(label): the visible fold length is the ray-cast's, to a few pixels",
+                             String(format: "%.4f vs %.4f, %+.1f px", baked.strokes.inkLength,
+                                    truth, excess / px))
+            }
+        }
+    }
+}
+

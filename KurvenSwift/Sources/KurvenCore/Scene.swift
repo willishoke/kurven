@@ -149,8 +149,16 @@ public struct Scene: Sendable {
     }
 
     /// Every layer's vertices in view space, in declaration (draw) order.
+    ///
+    /// Ink that depends on the camera -- the fold lines of a parametric
+    /// surface -- is derived here, for this camera, rather than carried.
     public func projectedLayers() -> [(Layer, PolylineSet<ViewSpace>)] {
-        layers.map { ($0, $0.paths.mapped(camera.view)) }
+        layers.map { layer in
+            if case .foldLines = layer.spec.source, let s = parametric {
+                return (layer, s.foldLines(sight: camera.view.sightLine).mapped(camera.view))
+            }
+            return (layer, layer.paths.mapped(camera.view))
+        }
     }
 
     /// The view-space extent the depth buffer covers: every heightfield sample,

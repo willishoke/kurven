@@ -168,6 +168,64 @@ public extension ParametricSurface {
         return PolylineSet(paths: paths, coords: coords)
     }
 
+    /// The fold lines for sight lines along `sight`: where the surface turns
+    /// edge-on, `n · sight = 0`, which is where its outline and every inner
+    /// silhouette lie.
+    ///
+    /// Traced by marching squares on that product over the parameter
+    /// rectangle -- sampled one step past a periodic axis's end, so a fold
+    /// crosses the seam instead of stopping at it -- and every vertex then
+    /// moved onto the exact fold by bisection along the product's gradient.
+    /// The grid decides which folds exist; the map decides where they run.
+    /// They depend on the camera, so they are derived for one, never stored.
+    func foldLines(sight: SIMD3<Double>, grid: (u: Int, v: Int)? = nil) -> PolylineSet<WorldSpace> {
+        let nu = grid?.u ?? u.cells, nv = grid?.v ?? v.cells
+        func edgeOn(_ c: P2<ParamSpace>) -> Double {
+            let n = map(c).normal
+            let len = simd_length(n)
+            return len > 0 ? simd_dot(n, sight) / len : 0
+        }
+        let du = u.range.length / Double(nu), dv = v.range.length / Double(nv)
+        var values: [Float] = []
+        values.reserveCapacity((nu + 1) * (nv + 1))
+        for j in 0...nv {
+            for i in 0...nu {
+                values.append(Float(edgeOn(P2(u.range.lo + Double(i) * du,
+                                              v.range.lo + Double(j) * dv))))
+            }
+        }
+        let field = Grid2D(width: nu + 1, height: nv + 1,
+                           domain: Domain(real: u.range, imag: v.range), values: values)
+
+        // Onto the fold: bracket a sign change along the gradient within a
+        // cell either way, then bisect it to the last bit.
+        let h = 0.25 * min(du, dv)
+        func refine(_ c: P2<ParamSpace>) -> P2<ParamSpace> {
+            let g = SIMD2(edgeOn(P2(c.x + h, c.y)) - edgeOn(P2(c.x - h, c.y)),
+                          edgeOn(P2(c.x, c.y + h)) - edgeOn(P2(c.x, c.y - h)))
+            let len = simd_length(g)
+            guard len > 0 else { return c }
+            let d = g / len * max(du, dv)
+            var a = c.v - d, b = c.v + d
+            var fa = edgeOn(P2(a))
+            guard (fa > 0) != (edgeOn(P2(b)) > 0) else { return c }
+            for _ in 0..<60 {
+                let m = 0.5 * (a + b)
+                let fm = edgeOn(P2(m))
+                if (fm > 0) == (fa > 0) { a = m; fa = fm } else { b = m }
+            }
+            return P2(0.5 * (a + b))
+        }
+
+        var paths: [[P3<WorldSpace>]] = [], coords: [[P2<ParamSpace>]] = []
+        for line in Contour.lines(of: field, level: 0) {
+            let c = line.map { refine(P2<ParamSpace>($0.x, $0.y)) }
+            coords.append(c)
+            paths.append(c.map { P3(map($0).position) })
+        }
+        return PolylineSet(paths: paths, coords: coords)
+    }
+
     /// The torus of revolution about the z axis: `u` around the axis, `v`
     /// around the tube.
     ///

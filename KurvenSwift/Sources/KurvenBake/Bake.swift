@@ -156,7 +156,9 @@ public extension MetalRenderer {
             } else if let visibility, projected.coords != nil {
                 // Ink that knows where on the surface it lies is judged by
                 // that, with no margin in it.
-                clipped = HiddenLine.clip(projected, on: visibility)
+                let onFolds: Bool
+                if case .foldLines = layer.spec.source { onFolds = true } else { onFolds = false }
+                clipped = HiddenLine.clip(projected, on: visibility, onFolds: onFolds)
             } else {
                 clipped = HiddenLine.clip(projected, against: depth, margin: margin)
             }

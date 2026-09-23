@@ -477,6 +477,9 @@ public enum LayerSource: Sendable, Equatable {
     /// carries its surface coordinate, so the ink is judged by where on the
     /// surface it lies.
     case parameterLines(u: Int, v: Int)
+    /// The fold lines of a parametric surface -- its outline and inner
+    /// silhouettes -- which depend on the camera and are derived for it.
+    case foldLines
 
     public init(json: JSONValue) throws {
         let o = try json.object("LayerSource")
@@ -520,6 +523,8 @@ public enum LayerSource: Sendable, Equatable {
         case "capOutline":
             self = .capOutline(tiled: try o.bool("tiled", "LayerSource.capOutline",
                                                  default: false))
+        case "foldLines":
+            self = .foldLines
         case "parameterLines":
             self = .parameterLines(u: try o.int("u", "LayerSource.parameterLines"),
                                    v: try o.int("v", "LayerSource.parameterLines"))
@@ -527,7 +532,8 @@ public enum LayerSource: Sendable, Equatable {
             throw ManifestError.unknownKind(other, of: "LayerSource",
                                             known: ["file", "contour", "wallHatch",
                                                     "wallOutline", "capHatch",
-                                                    "capOutline", "parameterLines"])
+                                                    "capOutline", "parameterLines",
+                                                    "foldLines"])
         }
     }
     public var json: JSONValue {
@@ -555,6 +561,8 @@ public enum LayerSource: Sendable, Equatable {
             .object(["kind": .string("capOutline"), "tiled": .bool(tiled)])
         case .parameterLines(let u, let v):
             .object(["kind": .string("parameterLines"), "u": .int(u), "v": .int(v)])
+        case .foldLines:
+            .object(["kind": .string("foldLines")])
         }
     }
 

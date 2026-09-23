@@ -139,12 +139,18 @@ public extension HiddenLine {
     /// that crosses a fold gains a vertex exactly on the fold, which belongs
     /// to the run on its visible side. That vertex is judged by the front-most
     /// test alone, since on the fold the facing is zero by construction.
-    static func clip(_ paths: PolylineSet<ViewSpace>,
-                     on visibility: SurfaceVisibility) -> PolylineSet<PlateSpace> {
+    ///
+    /// Ink that lies on the folds themselves -- `ParametricSurface.foldLines`
+    /// -- is edge-on everywhere by construction, so its facing is noise about
+    /// zero and must not be asked: pass `onFolds` and it is judged by the
+    /// front-most test alone.
+    static func clip(_ paths: PolylineSet<ViewSpace>, on visibility: SurfaceVisibility,
+                     onFolds: Bool = false) -> PolylineSet<PlateSpace> {
         guard let coords = paths.coords else {
             preconditionFailure("clipping on a surface needs the ink's surface coordinates")
         }
-        let facing = coords.map { visibility.facing($0) }
+        let facing = onFolds ? [Double?](repeating: nil, count: coords.count)
+                             : coords.map { visibility.facing($0) }
         var out: [[P3<PlateSpace>]] = []
         var run: [P3<PlateSpace>] = []
         func take(_ v: P3<ViewSpace>, _ visible: Bool) {

@@ -101,12 +101,14 @@ usage: kurven-cli <command> [options]
   surface torus [--lines U,V] [--samples N]
           [--major R] [--minor r]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N]
-          [--tiles N] [--width W] -o out.svg
+          [--tiles N] [--width W] [--folds W] -o out.svg
         Bake a surface to SVG, hidden lines decided by where on the surface
         each vertex lies rather than by depth. torus draws its parameter
         lines.
         The camera is a plate camera: --x-angle tilts, --z-angle turns, --shear
-        is the oblique foreshortening the published plates use.
+        is the oblique foreshortening the published plates use. The fold
+        lines -- outline and inner silhouettes -- are drawn at --folds (twice
+        --width by default; 0 leaves them out).
 
   depth <bundle> [--preset NAME] [--resolution N] -o depth.npy
         Dump the depth buffer as float32 .npy, for comparison against the
@@ -268,7 +270,7 @@ func surfaceCommand(_ args: Args) throws {
     let r = try args.double("minor") ?? 1
     let width = try args.double("width") ?? 0.3
     let surface: ParametricSurface
-    let layers: [Layer]
+    var layers: [Layer]
     switch shape {
     case "torus":
         let samples = try args.int("samples", 1024)
@@ -289,6 +291,13 @@ func surfaceCommand(_ args: Args) throws {
         xAngle: try args.double("x-angle") ?? -55,
         zAngle: try args.double("z-angle") ?? 30,
         flipX: false, yScale: nil))
+    // The outline and inner silhouettes, derived for the camera; --folds 0
+    // leaves them out.
+    let foldWidth = try args.double("folds") ?? 2 * width
+    let folds = Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldLines,
+                                      width: foldWidth, heightPolicy: .surface),
+                      paths: .empty)
+    if foldWidth > 0 { layers.append(folds) }
     let scene = Scene(surface: surface, layers: layers, camera: camera, margin: 0)
     let output = URL(fileURLWithPath: try args.string("output"))
 
@@ -888,6 +897,7 @@ func sourceName(_ source: LayerSource) -> String {
         "cap hatch along \(axis.rawValue) every \(fmt(spacing))"
     case .capOutline: "cap outline"
     case .parameterLines(let u, let v): "\(u) + \(v) parameter lines"
+    case .foldLines: "fold lines"
     }
 }
 
