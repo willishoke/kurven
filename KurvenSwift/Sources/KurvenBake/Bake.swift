@@ -55,6 +55,9 @@ public struct Bake: Sendable {
     public let strokes: Strokes
     /// The whole plate's depth, stitched from however many passes it took.
     public let depth: DepthImage
+    /// The whole plate's front-most surface coordinates, for a parametric
+    /// scene; nil for a heightfield.
+    public let surface: SurfaceImage?
     /// How many passes that was, per axis.
     public let tiles: Int
 }
@@ -93,48 +96,108 @@ public extension MetalRenderer {
         let margin = options.margin ?? scene.margin
 
         let depth: DepthImage
-        if n == 1 {
-            // One pass is the whole plate. Copying it into a second buffer of
-            // the same size to call it "stitched" was 390 ms of a 1.6 s bake at
-            // 16000 square, to produce a bit-identical array.
-            depth = try renderDepth(scene, frame: frame)
-        } else {
-            var values: [Float] = []
-            var empty: Float = -.infinity
-            for ti in 0..<n {
-                for tj in 0..<n {
-                    let sub = frame.tile(ti, tj, of: n)
+        let image: SurfaceImage?
+        switch scene.geometry {
+        case .heightfield:
+            image = nil
+            if n == 1 {
+                // One pass is the whole plate. Copying it into a second buffer
+                // of the same size to call it "stitched" was 390 ms of a 1.6 s
+                // bake at 16000 square, to produce a bit-identical array.
+                depth = try renderDepth(scene, frame: frame)
+            } else {
+                var empty: Float = -.infinity
+                let values = try stitch(frame, n) { sub in
                     let tile = try renderDepth(scene, frame: sub)
-                    if values.isEmpty {
-                        empty = tile.empty
-                        values = [Float](repeating: empty, count: frame.rows * frame.cols)
-                    }
-                    let row0 = frame.rows * ti / n
-                    let col0 = frame.cols * tj / n
-                    let rowBytes = sub.cols * MemoryLayout<Float>.stride
-                    values.withUnsafeMutableBufferPointer { dst in
-                        tile.values.withUnsafeBufferPointer { src in
-                            for r in 0..<sub.rows {
-                                memcpy(dst.baseAddress! + (row0 + r) * frame.cols + col0,
-                                       src.baseAddress! + r * sub.cols, rowBytes)
-                            }
-                        }
-                    }
+                    empty = tile.empty
+                    return tile.values
                 }
+                depth = DepthImage(frame: frame, values: values, empty: empty)
             }
-            depth = DepthImage(frame: frame, values: values, empty: empty)
+        case .parametric:
+            // Depth and coordinates are stitched by the same code over the
+            // same sub-frames, so a coordinate sits on the pixel its depth does
+            // however the plate was split.
+            let whole: SurfaceImage
+            if n == 1 {
+                whole = try renderSurface(scene, frame: frame)
+            } else {
+                var empty: Float = -.infinity
+                // `stitch` visits the tiles in one fixed order, so the second
+                // call takes the coordinates back in the order the first
+                // rendered them.
+                var coordTiles: [[SIMD2<Float>]] = []
+                let values = try stitch(frame, n) { sub in
+                    let tile = try renderSurface(scene, frame: sub)
+                    empty = tile.depth.empty
+                    coordTiles.append(tile.coords)
+                    return tile.depth.values
+                }
+                var next = 0
+                let coords = try stitch(frame, n) { _ in
+                    defer { next += 1 }
+                    return coordTiles[next]
+                }
+                whole = SurfaceImage(depth: DepthImage(frame: frame, values: values, empty: empty),
+                                     coords: coords)
+            }
+            depth = whole.depth
+            image = whole
         }
 
+        let visibility = scene.parametric.flatMap { s in
+            image.map { SurfaceVisibility(surface: s, image: $0, view: scene.camera.view) }
+        }
         var layers: [(style: Style, paths: PolylineSet<PlateSpace>)] = []
         for (layer, projected) in scene.projectedLayers() {
-            let clipped = layer.spec.clipped
-                ? HiddenLine.clip(projected, against: depth, margin: margin)
-                : HiddenLine.pass(projected)
+            let clipped: PolylineSet<PlateSpace>
+            if !layer.spec.clipped {
+                clipped = HiddenLine.pass(projected)
+            } else if let visibility, projected.coords != nil {
+                // Ink that knows where on the surface it lies is judged by
+                // that, with no margin in it.
+                clipped = HiddenLine.clip(projected, on: visibility)
+            } else {
+                clipped = HiddenLine.clip(projected, against: depth, margin: margin)
+            }
             layers.append((Style(layer.spec), clipped))
         }
         if let width = options.silhouette {
             layers.append((Style(color: "#000000", width: width), depth.silhouette()))
         }
-        return Bake(strokes: Strokes(layers: layers), depth: depth, tiles: n)
+        return Bake(strokes: Strokes(layers: layers), depth: depth, surface: image, tiles: n)
+    }
+
+    /// Render the plate as `n x n` sub-frames and copy each into its place in
+    /// one row-major array.
+    ///
+    /// Tiles meet on pixel boundaries -- `DepthFrame.tile` splits the lattice,
+    /// not the coordinate range -- so a pixel lands in the same place however
+    /// the plate was divided.
+    private func stitch<T>(_ frame: DepthFrame, _ n: Int,
+                           _ render: (DepthFrame) throws -> [T]) throws -> [T] {
+        var out: [T]?
+        for ti in 0..<n {
+            for tj in 0..<n {
+                let sub = frame.tile(ti, tj, of: n)
+                let tile = try render(sub)
+                if out == nil {
+                    out = [T](repeating: tile[0], count: frame.rows * frame.cols)
+                }
+                let row0 = frame.rows * ti / n
+                let col0 = frame.cols * tj / n
+                let rowBytes = sub.cols * MemoryLayout<T>.stride
+                out!.withUnsafeMutableBytes { dst in
+                    tile.withUnsafeBytes { src in
+                        for r in 0..<sub.rows {
+                            memcpy(dst.baseAddress! + ((row0 + r) * frame.cols + col0)
+                                       * MemoryLayout<T>.stride,
+                                   src.baseAddress! + r * rowBytes, rowBytes)
+                        }
+                    }
+                }
+            }
+        }
+        return out ?? []
     }
 }

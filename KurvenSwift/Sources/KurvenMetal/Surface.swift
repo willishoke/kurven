@@ -72,6 +72,16 @@ public extension MetalRenderer {
         return try renderSurface(res, view: view, frame: frame)
     }
 
+    /// A parametric scene's surface image, from its camera. Orthographic only.
+    func renderSurface(_ scene: Scene, frame: DepthFrame) throws -> SurfaceImage {
+        guard frame.cols <= metalTextureLimit, frame.rows <= metalTextureLimit else {
+            throw RendererError.textureTooLarge(max(frame.rows, frame.cols),
+                                                limit: metalTextureLimit)
+        }
+        return try renderSurface(try surfaceResources(for: scene), view: scene.camera.view,
+                                 frame: frame)
+    }
+
     internal func renderSurface(_ res: SurfaceResources, view: Transform<WorldSpace, ViewSpace>,
                                 frame: DepthFrame) throws -> SurfaceImage {
         let sentinel = Self.emptySentinel

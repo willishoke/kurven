@@ -137,6 +137,37 @@ public struct ParametricSurface: Sendable {
 }
 
 public extension ParametricSurface {
+    /// Lines of constant `u` -- `u` of them, evenly spaced -- and of constant
+    /// `v`, each drawn through `resolution` steps of the other coordinate
+    /// with its surface coordinate beside every vertex.
+    ///
+    /// On a periodic axis the lines sit at `lo + k * length / count` and a
+    /// line running along it closes, its last vertex one period past its
+    /// first so the coordinates stay continuous; on a bounded axis they
+    /// include both ends.
+    func parameterLines(counts lines: (u: Int, v: Int),
+                        resolution: Int) -> PolylineSet<WorldSpace> {
+        var paths: [[P3<WorldSpace>]] = [], coords: [[P2<ParamSpace>]] = []
+        func place(_ axis: ParamAxis, _ k: Int, of count: Int) -> Double {
+            axis.range.lo + axis.range.length * Double(k)
+                / Double(axis.periodic ? count : max(count - 1, 1))
+        }
+        func run(_ axis: ParamAxis) -> [Double] {
+            (0...resolution).map { axis.range.lo + axis.range.length * Double($0) / Double(resolution) }
+        }
+        for k in 0..<lines.u {
+            let fixed = place(u, k, of: lines.u)
+            let c = run(v).map { P2<ParamSpace>(fixed, $0) }
+            coords.append(c); paths.append(c.map { P3(map($0).position) })
+        }
+        for k in 0..<lines.v {
+            let fixed = place(v, k, of: lines.v)
+            let c = run(u).map { P2<ParamSpace>($0, fixed) }
+            coords.append(c); paths.append(c.map { P3(map($0).position) })
+        }
+        return PolylineSet(paths: paths, coords: coords)
+    }
+
     /// The torus of revolution about the z axis: `u` around the axis, `v`
     /// around the tube.
     ///

@@ -98,6 +98,16 @@ usage: kurven-cli <command> [options]
         tests/compare_bake.py reads to check the result against the Python
         plate stroke for stroke.
 
+  surface torus [--lines U,V] [--samples N]
+          [--major R] [--minor r]
+          [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N]
+          [--tiles N] [--width W] -o out.svg
+        Bake a surface to SVG, hidden lines decided by where on the surface
+        each vertex lies rather than by depth. torus draws its parameter
+        lines.
+        The camera is a plate camera: --x-angle tilts, --z-angle turns, --shear
+        is the oblique foreshortening the published plates use.
+
   depth <bundle> [--preset NAME] [--resolution N] -o depth.npy
         Dump the depth buffer as float32 .npy, for comparison against the
         Python Z-buffer. This is what stands in for a GPU frame capture.
@@ -250,6 +260,56 @@ func bake(_ args: Args) throws {
               + "  lw \(entry.style.width)"
               + (spec.map { $0.clipped ? "" : "  unclipped" } ?? "  from the depth buffer"))
     }
+}
+
+func surfaceCommand(_ args: Args) throws {
+    let shape = args.positional.dropFirst().first ?? "torus"
+    let R = try args.double("major") ?? 2
+    let r = try args.double("minor") ?? 1
+    let width = try args.double("width") ?? 0.3
+    let surface: ParametricSurface
+    let layers: [Layer]
+    switch shape {
+    case "torus":
+        let samples = try args.int("samples", 1024)
+        surface = ParametricSurface.torus(major: R, minor: r,
+                                          samples: (samples, max(samples / 2, 8)))
+        let counts = (args.flags["lines"] ?? "36,18").split(separator: ",").compactMap { Int($0) }
+        guard counts.count == 2 else { throw CLIError("--lines wants U,V, as in 36,18") }
+        let ink = surface.parameterLines(counts: (counts[0], counts[1]), resolution: 4 * samples)
+        layers = [Layer(spec: LayerSpec(name: "lines", role: .scaffold,
+                                        source: .parameterLines(u: counts[0], v: counts[1]),
+                                        width: width, heightPolicy: .surface),
+                        paths: ink)]
+    default:
+        throw CLIError("unknown surface '\(shape)'; the catalog has: torus")
+    }
+    let camera = Camera.plate(PlateProjection(
+        shear: try args.double("shear") ?? 0,
+        xAngle: try args.double("x-angle") ?? -55,
+        zAngle: try args.double("z-angle") ?? 30,
+        flipX: false, yScale: nil))
+    let scene = Scene(surface: surface, layers: layers, camera: camera, margin: 0)
+    let output = URL(fileURLWithPath: try args.string("output"))
+
+    let options = BakeOptions(resolution: try args.int("resolution", 3000),
+                              tiles: args.flags["tiles"].flatMap(Int.init))
+
+    let renderer = try MetalRenderer()
+    let clock = ContinuousClock()
+    var result: Bake!
+    let elapsed = try clock.measure { result = try renderer.bake(scene, options: options) }
+    try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
+    print("""
+        \(shape) R=\(fmt(R)) r=\(fmt(r)) -> \(output.lastPathComponent)
+          lattice    \(surface.u.samples)x\(surface.v.samples)\
+        \(surface.outward == nil ? ", bounds no solid, back faces kept" : ", closed")
+          depth      \(result.depth.frame.rows)x\(result.depth.frame.cols) \
+        in \(result.tiles * result.tiles) pass\(result.tiles == 1 ? "" : "es")
+          strokes    \(result.strokes.pathCount) paths, \
+        ink \(String(format: "%.1f", result.strokes.inkLength))
+          took       \(elapsed)
+        """)
 }
 
 func depth(_ args: Args) throws {
@@ -827,6 +887,7 @@ func sourceName(_ source: LayerSource) -> String {
     case .capHatch(let axis, let spacing, _):
         "cap hatch along \(axis.rawValue) every \(fmt(spacing))"
     case .capOutline: "cap outline"
+    case .parameterLines(let u, let v): "\(u) + \(v) parameter lines"
     }
 }
 
@@ -931,6 +992,7 @@ do {
     switch args.positional.first {
     case "bake": try bake(args)
     case "depth": try depth(args)
+    case "surface": try surfaceCommand(args)
     case "bench": try bench(args)
     case "preview": try preview(args)
     case "flicker": try flicker(args)

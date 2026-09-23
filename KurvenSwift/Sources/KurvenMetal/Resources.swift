@@ -38,25 +38,25 @@ final class SceneResources {
 
     var cells: Int { max(latticeWidth - 1, 0) * max(latticeHeight - 1, 0) }
 
-    init(scene: Scene, device: MTLDevice) throws {
+    init(scene: Scene, heightfield h: Heightfield, device: MTLDevice) throws {
         content = scene.content
 
         let grid: Grid2D<Float>
-        switch scene.surface.caps {
-        case .none, .uniform: grid = scene.surface.height; capBaked = false
-        case .realBands: grid = scene.surface.clamped(); capBaked = true
+        switch h.surface.caps {
+        case .none, .uniform: grid = h.surface.height; capBaked = false
+        case .realBands: grid = h.surface.clamped(); capBaked = true
         }
         gridWidth = grid.width
         gridHeight = grid.height
 
-        let extent = grid.decimatedExtent(by: scene.step)
+        let extent = grid.decimatedExtent(by: h.step)
         latticeWidth = extent.width
         latticeHeight = extent.height
         latticeDomain = extent.domain
 
         heights = try SceneResources.upload(grid, device: device)
 
-        let tileValues = scene.tiles.map {
+        let tileValues = h.tiles.map {
             KVTile(linear: SIMD4<Float>(Float($0.a), Float($0.b), Float($0.c), Float($0.d)),
                    offset: SIMD2<Float>(Float($0.tx), Float($0.ty)))
         }
@@ -64,7 +64,7 @@ final class SceneResources {
         tileCount = tileValues.count
 
         let corners: [SIMD2<Float>]
-        if case .inside(let p) = scene.region {
+        if case .inside(let p) = h.region {
             corners = p.edges.map { SIMD2(Float($0.start.x), Float($0.start.y)) }
         } else {
             corners = []
@@ -77,9 +77,9 @@ final class SceneResources {
 
         // Walls are expanded to a flat vertex list once. They are a few thousand
         // triangles, so an index buffer would save little and cost a binding.
-        let wallVertices = scene.occluder.triangles.flatMap { t in
+        let wallVertices = h.occluder.triangles.flatMap { t in
             t.indices.map { i in
-                KVVertex(position: SIMD3<Float>(scene.occluder.vertices[Int(t[i])].v))
+                KVVertex(position: SIMD3<Float>(h.occluder.vertices[Int(t[i])].v))
             }
         }
         wallVertexCount = wallVertices.count

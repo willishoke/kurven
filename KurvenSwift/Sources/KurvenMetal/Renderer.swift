@@ -10,6 +10,7 @@ public enum RendererError: Error, CustomStringConvertible {
     case pipeline(String)
     case allocation(String)
     case textureTooLarge(Int, limit: Int)
+    case unsupported(String)
 
     public var description: String {
         switch self {
@@ -19,6 +20,7 @@ public enum RendererError: Error, CustomStringConvertible {
         case .pipeline(let m): "metal: pipeline state failed (\(m))"
         case .allocation(let w): "metal: could not allocate \(w)"
         case .textureTooLarge(let n, let l): "metal: \(n) exceeds the \(l) texture limit"
+        case .unsupported(let what): "metal: \(what) is not supported"
         }
     }
 }
@@ -194,8 +196,25 @@ public final class MetalRenderer {
 
     func resources(for scene: Scene) throws -> SceneResources {
         if let r = cachedResources, r.content == scene.content { return r }
-        let r = try SceneResources(scene: scene, device: device)
+        guard let h = scene.heightfield else {
+            throw RendererError.unsupported("drawing a parametric surface as a heightfield")
+        }
+        let r = try SceneResources(scene: scene, heightfield: h, device: device)
         cachedResources = r
+        return r
+    }
+
+    /// A parametric scene's position texture, memoized on content as the
+    /// heightfield's is: a tiled bake draws it once per tile.
+    private var cachedSurface: (content: ContentID, resources: SurfaceResources)?
+
+    func surfaceResources(for scene: Scene) throws -> SurfaceResources {
+        if let c = cachedSurface, c.content == scene.content { return c.resources }
+        guard let s = scene.parametric else {
+            throw RendererError.unsupported("drawing a heightfield as a parametric surface")
+        }
+        let r = try SurfaceResources(s, device: device)
+        cachedSurface = (scene.content, r)
         return r
     }
 
@@ -274,6 +293,9 @@ public final class MetalRenderer {
                                                 limit: metalTextureLimit)
         }
 
+        if scene.parametric != nil {
+            return try renderSurface(scene, frame: frame).depth
+        }
         let res = try resources(for: scene)
         let out = try target(rows: frame.rows, cols: frame.cols)
         var uniforms = self.uniforms(scene, frame: frame, resources: res)
@@ -334,8 +356,9 @@ public final class MetalRenderer {
             domainSize: SIMD2<Float>(Float(d.real.length), Float(d.imag.length)),
             lattice: SIMD2<UInt32>(UInt32(res.latticeWidth), UInt32(res.latticeHeight)),
             gridSize: SIMD2<UInt32>(UInt32(res.gridWidth), UInt32(res.gridHeight)),
-            step: UInt32(scene.step),
-            cap: res.capBaked ? .infinity : Float(scene.surface.caps.height(atX: 0)),
+            step: UInt32(scene.heightfield?.step ?? 1),
+            cap: res.capBaked ? .infinity
+                : Float(scene.heightfield?.surface.caps.height(atX: 0) ?? .infinity),
             regionCount: UInt32(res.regionCount),
             empty: Self.emptySentinel)
     }

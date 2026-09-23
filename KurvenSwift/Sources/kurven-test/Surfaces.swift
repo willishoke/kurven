@@ -2,6 +2,7 @@ import Foundation
 import simd
 import KurvenCore
 import KurvenMetal
+import KurvenBake
 import Metal
 
 // MARK: - parametric surfaces and visibility by surface coordinate
@@ -369,5 +370,73 @@ func surfaceGPUTests() {
                              + " (depth test: \(depthWrong))")
             }
         }
+    }
+}
+
+/// The visible length of ink on the torus `(R, r)`, by the exact ray-cast:
+/// every segment divided `k` ways, each piece kept when its midpoint is seen.
+func rayCastInkLength(_ ink: PolylineSet<WorldSpace>, on surface: ParametricSurface,
+                      major R: Double, minor r: Double,
+                      view: Transform<WorldSpace, ViewSpace>, k: Int = 8) -> Double {
+    let eye = -view.sightLine
+    let coords = ink.coords!
+    var total = 0.0
+    for path in 0..<ink.count {
+        for i in ink.offsets[path]..<(ink.offsets[path + 1] - 1) {
+            let a = coords[i].v, b = coords[i + 1].v
+            for j in 0..<k {
+                let at = { (t: Double) in surface.map(P2(a + (b - a) * t)).position }
+                let t0 = Double(j) / Double(k), t1 = Double(j + 1) / Double(k)
+                guard torusSees(at(0.5 * (t0 + t1)), major: R, minor: r, eye: eye) else { continue }
+                let p = view(P3(at(t0))), q = view(P3(at(t1)))
+                total += simd_length(SIMD2(q.x - p.x, q.y - p.y))
+            }
+        }
+    }
+    return total
+}
+
+func surfaceBakeTests() {
+    Check.suite("bake: a parametric scene bakes its ink by where it lies on the surface") {
+        let renderer = try MetalRenderer()
+        let torus = ParametricSurface.torus(major: 2, minor: 1, samples: (512, 256))
+        let ink = torus.parameterLines(counts: (24, 12), resolution: 2048)
+        let spec = LayerSpec(name: "lines", role: .scaffold, source: .parameterLines(u: 24, v: 12),
+                             width: 0.3, heightPolicy: .surface)
+        // A plate camera, shear and all, as a real plate would have it.
+        let camera = Camera.plate(PlateProjection(shear: 0.5, xAngle: -50, zAngle: 25,
+                                                  flipX: false, yScale: nil))
+        let scene = Scene(surface: torus, layers: [Layer(spec: spec, paths: ink)],
+                          camera: camera, margin: 0.03)
+        let whole = try renderer.bake(scene, options: BakeOptions(resolution: 2400, tiles: 1))
+        let truth = rayCastInkLength(ink, on: torus, major: 2, minor: 1, view: camera.view)
+        let error = abs(whole.strokes.inkLength - truth) / truth
+        Check.expect(whole.surface != nil && error < 0.002,
+                     "the baked plate carries the ray-cast's visible length",
+                     String(format: "%.4f vs %.4f, %.3f%% off", whole.strokes.inkLength, truth,
+                            100 * error))
+
+        // Tiling splits the render and never the clip, and depth and
+        // coordinates are stitched by the same code over the same sub-frames.
+        let split = try renderer.bake(scene, options: BakeOptions(resolution: 2400, tiles: 3))
+        let same = zip(whole.strokes.layers, split.strokes.layers).allSatisfy {
+            $0.paths == $1.paths
+        }
+        let moved = zip(whole.surface!.coords, split.surface!.coords).filter { a, b in
+            !(a.x.isNaN && b.x.isNaN) && (a.x.isNaN != b.x.isNaN || simd_length(a - b) > 1e-3)
+        }.count
+        Check.expect(same, "a tiled bake draws what a single-pass bake draws",
+                     "\(moved) of \(whole.surface!.coords.count) pixel coordinates differ")
+
+        // The same lines without coordinates are judged by depth, at the
+        // scene's margin -- still a drawing, and a measurably worse one.
+        let bare = Layer(spec: spec, paths: PolylineSet(vertices: ink.vertices, offsets: ink.offsets))
+        let byDepth = try renderer.bake(scene.drawing([bare]),
+                                        options: BakeOptions(resolution: 2400, tiles: 1))
+        let depthError = abs(byDepth.strokes.inkLength - truth) / truth
+        Check.expect(byDepth.strokes.pathCount > 0 && depthError > error,
+                     "ink without coordinates falls back to the depth test",
+                     String(format: "%.3f%% off by depth, %.3f%% by coordinate",
+                            100 * depthError, 100 * error))
     }
 }
