@@ -14,13 +14,24 @@ public struct PolylineSet<S>: Sendable, Equatable {
     public let vertices: [P3<S>]
     /// `count + 1` offsets; path `i` is `vertices[offsets[i]..<offsets[i + 1]]`.
     public let offsets: [Int]
+    /// Where on a surface each vertex lies, parallel to `vertices`, for ink
+    /// drawn *on* a parametric surface. `nil` for ink that only has a position.
+    ///
+    /// A position says where the ink is; a surface coordinate says which piece
+    /// of the surface it belongs to, and that is the question hidden-line
+    /// removal actually asks. Two sheets a hair apart in depth are far apart
+    /// in coordinates. Kept unwrapped along periodic axes, so a path that
+    /// crosses a seam does not jump a whole period between two vertices.
+    public let coords: [P2<ParamSpace>]?
 
-    public init(vertices: [P3<S>], offsets: [Int]) {
+    public init(vertices: [P3<S>], offsets: [Int], coords: [P2<ParamSpace>]? = nil) {
         precondition(offsets.first == 0 || vertices.isEmpty,
                      "CSR offsets must start at 0")
         precondition(offsets.last ?? 0 == vertices.count,
                      "CSR offsets end at \(offsets.last ?? 0), \(vertices.count) vertices")
-        self.vertices = vertices; self.offsets = offsets
+        precondition(coords == nil || coords!.count == vertices.count,
+                     "\(coords?.count ?? 0) surface coordinates for \(vertices.count) vertices")
+        self.vertices = vertices; self.offsets = offsets; self.coords = coords
     }
 
     public init(paths: [[P3<S>]]) {
@@ -30,7 +41,22 @@ public struct PolylineSet<S>: Sendable, Equatable {
             verts.append(contentsOf: p)
             offs.append(verts.count)
         }
-        self.vertices = verts; self.offsets = offs
+        self.vertices = verts; self.offsets = offs; self.coords = nil
+    }
+
+    /// Paths with a surface coordinate for every vertex.
+    public init(paths: [[P3<S>]], coords: [[P2<ParamSpace>]]) {
+        precondition(paths.count == coords.count, "one coordinate path per path")
+        var verts: [P3<S>] = []
+        var cs: [P2<ParamSpace>] = []
+        var offs: [Int] = [0]
+        for (p, c) in zip(paths, coords) where p.count >= 2 {
+            precondition(p.count == c.count, "one coordinate per vertex")
+            verts.append(contentsOf: p)
+            cs.append(contentsOf: c)
+            offs.append(verts.count)
+        }
+        self.vertices = verts; self.offsets = offs; self.coords = cs
     }
 
     public static var empty: PolylineSet<S> { PolylineSet(vertices: [], offsets: [0]) }
@@ -46,7 +72,12 @@ public struct PolylineSet<S>: Sendable, Equatable {
 
     /// Map every vertex through a transform, keeping the path structure.
     public func mapped<T>(_ f: Transform<S, T>) -> PolylineSet<T> {
-        PolylineSet<T>(vertices: vertices.map { f($0) }, offsets: offsets)
+        PolylineSet<T>(vertices: vertices.map { f($0) }, offsets: offsets, coords: coords)
+    }
+
+    /// The surface coordinates of path `i`, when the set has them.
+    public func coords(path i: Int) -> ArraySlice<P2<ParamSpace>>? {
+        coords.map { $0[offsets[i]..<offsets[i + 1]] }
     }
 
     public var bounds: AABB<S>? { AABB(vertices) }
