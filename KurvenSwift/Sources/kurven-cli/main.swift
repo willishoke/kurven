@@ -105,6 +105,7 @@ usage: kurven-cli <command> [options]
           [--major R] [--minor r]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N]
           [--tiles N] [--width W] [--folds W] -o out.svg
+          [--mode M] [--width-px N] [--height-px N] -o out.png
         Bake a surface to SVG, hidden lines decided by where on the surface
         each vertex lies rather than by depth. torus draws its parameter
         lines. sn and periodic draw a doubly periodic function's |f| and
@@ -113,7 +114,8 @@ usage: kurven-cli <command> [options]
         The camera is a plate camera: --x-angle tilts, --z-angle turns, --shear
         is the oblique foreshortening the published plates use. The fold
         lines -- outline and inner silhouettes -- are drawn at --folds (twice
-        --width by default; 0 leaves them out).
+        --width by default; 0 leaves them out). An output ending in .png
+        renders one frame of the realtime preview instead of baking.
 
   depth <bundle> [--preset NAME] [--resolution N] -o depth.npy
         Dump the depth buffer as float32 .npy, for comparison against the
@@ -325,6 +327,28 @@ func surfaceCommand(_ args: Args) throws {
     let scene = Scene(surface: surface, layers: layers, camera: camera, margin: 0)
     let output = URL(fileURLWithPath: try args.string("output"))
 
+    if args.switches.contains("preview") || output.pathExtension.lowercased() == "png" {
+        // The realtime preview, one frame, offscreen: what the app would show.
+        let viewport = Viewport(width: try args.int("width-px", 1600),
+                                height: try args.int("height-px", 1200))
+        let orbit = Orbit(matching: PlateProjection(
+            shear: try args.double("shear") ?? 0, xAngle: try args.double("x-angle") ?? -55,
+            zAngle: try args.double("z-angle") ?? 30, flipX: false, yScale: nil))
+        guard let bounds = scene.quickBounds() else { throw CLIError("the surface is empty") }
+        let navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
+        let renderer = try MetalRenderer()
+        let target = try renderer.makePreviewTarget(viewport)
+        let clock = ContinuousClock()
+        let elapsed = try clock.measure {
+            try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
+                                       options: try previewOptions(args, mode: try previewMode(args)),
+                                       into: target)
+        }
+        try PNG.write(target, to: output)
+        print("\(shape) -> \(output.lastPathComponent)  preview \(viewport.width)x\(viewport.height)"
+              + "  took \(elapsed)")
+        return
+    }
     let options = BakeOptions(resolution: try args.int("resolution", 3000),
                               tiles: args.flags["tiles"].flatMap(Int.init))
 

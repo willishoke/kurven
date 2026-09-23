@@ -615,3 +615,96 @@ func periodicTorusTests() {
                             100 * error))
     }
 }
+
+func surfacePreviewTests() {
+    // The preview asks the bake's two questions per fragment rather than per
+    // vertex, so the two may differ within a pixel of wherever visibility
+    // changes and nowhere else. Held to that: the baked strokes, rasterized
+    // into the preview's own pixels, against the preview's ink.
+    Check.suite("preview: a parametric surface draws what its bake draws") {
+        let renderer = try MetalRenderer()
+        let torus = ParametricSurface.torus(major: 2, minor: 1, samples: (512, 256))
+        let lines = Layer(spec: LayerSpec(name: "lines", role: .scaffold,
+                                          source: .parameterLines(u: 24, v: 12),
+                                          width: 0.3, heightPolicy: .surface),
+                          paths: torus.parameterLines(counts: (24, 12), resolution: 2048))
+        let folds = Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldLines,
+                                          width: 0.3, heightPolicy: .surface),
+                          paths: .empty)
+        let style = PlateStyle(shear: 0.5, flipX: false, yScale: nil)
+        let orbit = Orbit(target: P3(0, 0, 0), azimuth: Angle(degrees: 25),
+                          elevation: Angle(degrees: -50), style: style)
+        let viewport = Viewport(width: 900, height: 700)
+        let scene = Scene(surface: torus, layers: [lines, folds], camera: orbit.camera, margin: 0)
+        guard let bounds = scene.quickBounds() else {
+            Check.expect(false, "the torus has bounds"); return
+        }
+        let navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
+        let target = try renderer.makePreviewTarget(viewport)
+        try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
+                                   options: PreviewOptions(slopeScale: 0), into: target)
+        // Any visible mark, as `compare_preview.py` counts ink.
+        func inkMask(_ bgra: [UInt8]) -> [Bool] {
+            (0..<(bgra.count / 4)).map { k -> Bool in
+                let r = 299 * Int(bgra[4 * k + 2]), g = 587 * Int(bgra[4 * k + 1])
+                let b = 114 * Int(bgra[4 * k])
+                return r + g + b < 224_000
+            }
+        }
+        let preview = inkMask(try PNG.bgra(target))
+
+        let baked = try renderer.bake(scene.looking(navigator.camera),
+                                      options: BakeOptions(resolution: 3000))
+        let frame = navigator.framing.frame(viewport)
+        var bake = [Bool](repeating: false, count: preview.count)
+        for layer in baked.strokes.layers {
+            for path in layer.paths.paths {
+                for (a, b) in zip(path, path.dropFirst()) {
+                    let steps = max(Int(simd_length(b.v - a.v) / frame.unitsPerPixel.max() * 4), 1)
+                    for j in 0...steps {
+                        let t = Double(j) / Double(steps)
+                        let i = frame.index(of: P2<ViewSpace>(a.x + (b.x - a.x) * t,
+                                                              a.y + (b.y - a.y) * t))
+                        guard i.x >= 0, i.x < viewport.height, i.y >= 0, i.y < viewport.width
+                        else { continue }
+                        bake[i.x * viewport.width + i.y] = true
+                    }
+                }
+            }
+        }
+        func near(_ mask: [Bool], _ k: Int, _ r: Int) -> Bool {
+            let row = k / viewport.width, col = k % viewport.width
+            for dr in -r...r { for dc in -r...r {
+                let rr = row + dr, cc = col + dc
+                if rr >= 0, rr < viewport.height, cc >= 0, cc < viewport.width,
+                   mask[rr * viewport.width + cc] { return true }
+            } }
+            return false
+        }
+        let baked1 = bake.indices.filter { bake[$0] }
+        let shown = baked1.filter { near(preview, $0, 1) }.count
+        let inked = preview.indices.filter { preview[$0] }
+        let backed = inked.filter { near(bake, $0, 2) }.count
+        let recall = Double(shown) / Double(max(baked1.count, 1))
+        let precision = Double(backed) / Double(max(inked.count, 1))
+        Check.expect(baked1.count > 5000 && recall > 0.99,
+                     "the ink the bake keeps, the preview draws",
+                     String(format: "%.2f%% of %d baked pixels", 100 * recall, baked1.count))
+        Check.expect(precision > 0.99, "and the ink the preview draws, the bake keeps",
+                     String(format: "%.2f%% of %d preview pixels", 100 * precision, inked.count))
+
+        // The control: the same lines drawn without a visibility test. If the
+        // measure could not tell this from the real thing it would prove
+        // nothing.
+        var open = lines.spec; open.clipped = false
+        try renderer.renderPreview(scene.drawing([Layer(spec: open, paths: lines.paths), folds]),
+                                   navigator: navigator, viewport: viewport,
+                                   options: PreviewOptions(slopeScale: 0), into: target)
+        let unclipped = inkMask(try PNG.bgra(target))
+        let all = unclipped.indices.filter { unclipped[$0] }
+        let stray = Double(all.filter { !near(bake, $0, 2) }.count) / Double(max(all.count, 1))
+        Check.expect(stray > 0.2, "while the same lines drawn unclipped visibly are not",
+                     String(format: "%.1f%% of %d pixels have no baked stroke near", 100 * stray,
+                            all.count))
+    }
+}

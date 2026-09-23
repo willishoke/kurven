@@ -490,6 +490,10 @@ func shaderTests() {
         let surface = KVSurface(samples: SIMD2(71, 72), cells: SIMD2(73, 74),
                                 lo: SIMD2(75, 76), spacing: SIMD2(77, 78),
                                 depthRange: SIMD2(79, 80))
+        let inkVertex = KVInkVertex(position: SIMD3(81, 82, 83), normal: SIMD3(84, 85, 86),
+                                    coord: SIMD2(87, 88))
+        let inkCamera = KVInk(sight: SIMD3(89, 90, 91), eye: SIMD3(92, 93, 94),
+                              perspective: 95, onFolds: 96)
 
         var want: [Float] = []
         for c in 0..<4 { for r in 0..<4 { want.append(v[c][r]) } }
@@ -497,24 +501,24 @@ func shaderTests() {
         want += [301, 302, 401, 402, 501, 502, 601, 602, 701, 801, 901, -1001]
         want += [11, 12, 13, 14, 21, 22, 23, 31, 32, 33, 41, 42, 51, 52, 61, 62]
         want += [71, 72, 73, 74, 75, 76, 77, 78, 79, 80]
+        want += Array(81...96).map(Float.init)
 
         let probe = try MetalRenderer.probeUniformLayout(device: device,
                                                          sending: sent, and: shading,
-                                                         and: surface)
+                                                         and: surface,
+                                                         and: (inkVertex, inkCamera))
         var mismatch: Int?
         for i in want.indices where i < probe.fields.count && probe.fields[i] != want[i] {
             mismatch = i; break
         }
         Check.expect(probe.fields.count == want.count && mismatch == nil,
-                     "every field of all three structs arrives with the value it was given",
+                     "every field of all five structs arrives with the value it was given",
                      mismatch.map { "field \($0): sent \(want[$0]), saw \(probe.fields[$0])" } ?? "")
-        Check.expect(probe.uniformSize == MemoryLayout<KVUniforms>.size
-                     && probe.shadingSize == MemoryLayout<KVShading>.size
-                     && probe.surfaceSize == MemoryLayout<KVSurface>.size,
-                     "and the two agree on all three sizes",
-                     "GPU \(probe.uniformSize)/\(probe.shadingSize)/\(probe.surfaceSize), "
-                     + "CPU \(MemoryLayout<KVUniforms>.size)/\(MemoryLayout<KVShading>.size)"
-                     + "/\(MemoryLayout<KVSurface>.size)")
+        let cpu = [MemoryLayout<KVUniforms>.size, MemoryLayout<KVShading>.size,
+                   MemoryLayout<KVSurface>.size, MemoryLayout<KVInkVertex>.size,
+                   MemoryLayout<KVInk>.size]
+        Check.expect(probe.sizes == cpu, "and the two agree on all five sizes",
+                     "GPU \(probe.sizes), CPU \(cpu)")
     }
 }
 
@@ -1406,6 +1410,7 @@ refinementTests()
 surfaceTests()
 surfaceGPUTests()
 surfaceBakeTests()
-foldTests()
 periodicTorusTests()
+surfacePreviewTests()
+foldTests()
 exit(Check.summary())

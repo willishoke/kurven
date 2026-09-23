@@ -112,4 +112,26 @@ typedef struct {
     simd_float2 depthRange;
 } KVSurface;
 
+// A vertex of ink drawn on a parametric surface: where it is, which way the
+// surface faces there, and where on the surface it lies.
+typedef struct {
+    simd_float3 position;
+    // The *outward* normal, not normalized: the parametrization's normal times
+    // the surface's orientation. Zero for a surface that bounds no solid, and
+    // for ink on the folds themselves, where facing is not asked.
+    simd_float3 normal;
+    simd_float2 coord;
+} KVInkVertex;
+
+// What the ink test needs of the camera to ask which way a surface faces.
+typedef struct {
+    // World direction sight lines travel, for an orthographic camera.
+    simd_float3 sight;
+    // World position of the eye, for a perspective one.
+    simd_float3 eye;
+    uint32_t perspective;
+    // Nonzero for fold ink: judged by the front-most test alone.
+    uint32_t onFolds;
+} KVInk;
+
 #endif /* KurvenShaderTypes_h */
