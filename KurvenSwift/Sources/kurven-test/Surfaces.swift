@@ -1,6 +1,8 @@
 import Foundation
 import simd
 import KurvenCore
+import KurvenMetal
+import Metal
 
 // MARK: - parametric surfaces and visibility by surface coordinate
 //
@@ -59,6 +61,54 @@ func testCamera(elevation: Double, azimuth: Double,
 func viewBounds(_ s: ParametricSurface,
                 _ view: Transform<WorldSpace, ViewSpace>) -> AABB<ViewSpace> {
     AABB(s.positions.map { view($0) })!
+}
+
+/// Hold a visibility test to the exact ray-cast at 20000 seeded points of the
+/// torus `(R, r)`.
+///
+/// A disagreement is excused only within two pixels of a place where the
+/// truth itself changes -- a fold, or the edge of something in front -- found
+/// by asking the ray-cast at the eight neighbours two pixels away in each
+/// parameter direction. The depth test at a 1% margin is scored on the same
+/// points, for comparison.
+func compareWithRayCast(_ vis: SurfaceVisibility, major R: Double, minor r: Double,
+                        view: Transform<WorldSpace, ViewSpace>)
+    -> (wrong: Int, unexplained: Int, depthWrong: Int, example: String)
+{
+    let surface = vis.surface, image = vis.image, frame = image.frame
+    let eye = -vis.sight
+    let px = frame.unitsPerPixel.max()
+    let rng = SplitMix(seed: 0x5EED)
+    var wrong = 0, unexplained = 0, depthWrong = 0
+    var example = ""
+    for _ in 0..<20_000 {
+        let c = P2<ParamSpace>(rng.next(0, 2 * .pi), rng.next(0, 2 * .pi))
+        let jet = surface.map(c)
+        let q = view(P3(jet.position))
+        let truth = torusSees(jet.position, major: R, minor: r, eye: eye)
+        if (q.z + 0.01 * (R + r) > image.depth.depth(under: q.xy)) != truth { depthWrong += 1 }
+        guard vis.isVisible(q, at: c) != truth else { continue }
+        wrong += 1
+        let speed = { (d: SIMD3<Double>) -> Double in
+            let a = view(P3(jet.position)), b = view(P3(jet.position + d))
+            return simd_length(SIMD2(b.x - a.x, b.y - a.y))
+        }
+        let hu = min(2 * px / max(speed(jet.du), 1e-12), 0.3)
+        let hv = min(2 * px / max(speed(jet.dv), 1e-12), 0.3)
+        var near = false
+        for (su, sv) in [(1.0, 0.0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+            let p = surface.map(P2(c.x + su * hu, c.y + sv * hv)).position
+            if torusSees(p, major: R, minor: r, eye: eye) != truth { near = true; break }
+        }
+        if !near {
+            unexplained += 1
+            if example.isEmpty {
+                example = String(format: "e.g. (%.4f, %.4f) truth %@", c.x, c.y,
+                                 truth ? "seen" : "hidden")
+            }
+        }
+    }
+    return (wrong, unexplained, depthWrong, example)
 }
 
 func surfaceTests() {
@@ -151,48 +201,9 @@ func surfaceTests() {
                 let frame = DepthFrame(covering: viewBounds(surface, view), resolution: 800)
                 let image = SurfaceImage.rasterize(surface, view: view, frame: frame)
                 let vis = SurfaceVisibility(surface: surface, image: image, view: view)
-                let eye = -vis.sight
-                let px = frame.unitsPerPixel.max()
-                let rng = SplitMix(seed: 0x5EED)
+                let (wrong, unexplained, depthWrong, example) =
+                    compareWithRayCast(vis, major: R, minor: r, view: view)
                 let n = 20_000
-                var wrong = 0, unexplained = 0, depthWrong = 0
-                var example = ""
-                for _ in 0..<n {
-                    let c = P2<ParamSpace>(rng.next(0, 2 * .pi),
-                                           rng.next(0, 2 * .pi))
-                    let jet = surface.map(c)
-                    let q = view(P3(jet.position))
-                    let truth = torusSees(jet.position, major: R, minor: r, eye: eye)
-                    // The depth test, at a margin of 1% of the torus's size,
-                    // for comparison only.
-                    if (q.z + 0.01 * (R + r) > image.depth.depth(under: q.xy)) != truth {
-                        depthWrong += 1
-                    }
-                    guard vis.isVisible(q, at: c) != truth else { continue }
-                    wrong += 1
-                    // A disagreement is excused only within two pixels of a
-                    // place where the truth itself changes: a fold, or the
-                    // edge of something in front.
-                    let speed = { (d: SIMD3<Double>) -> Double in
-                        let a = view(P3(jet.position)), b = view(P3(jet.position + d))
-                        return simd_length(SIMD2(b.x - a.x, b.y - a.y))
-                    }
-                    let hu = min(2 * px / max(speed(jet.du), 1e-12), 0.3)
-                    let hv = min(2 * px / max(speed(jet.dv), 1e-12), 0.3)
-                    var near = false
-                    for (su, sv) in [(1.0, 0.0), (-1, 0), (0, 1), (0, -1),
-                                     (1, 1), (1, -1), (-1, 1), (-1, -1)] {
-                        let p = surface.map(P2(c.x + su * hu, c.y + sv * hv)).position
-                        if torusSees(p, major: R, minor: r, eye: eye) != truth { near = true; break }
-                    }
-                    if !near {
-                        unexplained += 1
-                        if example.isEmpty {
-                            example = String(format: "e.g. (%.4f, %.4f) truth %@", c.x, c.y,
-                                             truth ? "seen" : "hidden")
-                        }
-                    }
-                }
                 let label = "R/r = \(R / r), \(name)"
                 Check.expect(unexplained == 0,
                              "\(label): every disagreement is within two pixels of a visibility edge",
@@ -275,6 +286,88 @@ func surfaceTests() {
             Check.expect(error < 0.002, "\(name): visible ink length matches the ray-cast",
                          String(format: "%.4f vs %.4f, %.3f%% off", clipped.inkLength, truth,
                                 100 * error))
+        }
+    }
+}
+
+func surfaceGPUTests() {
+    // The GPU pass is held to the CPU rasterizer as the depth pass is held to
+    // the Python Z-buffer: the same triangles, sampled at the same lattice
+    // points, and differing only where a rule of rasterization is allowed to
+    // -- a sample exactly on an edge, which the CPU claims for both triangles
+    // and Metal for one.
+    Check.suite("metal: the GPU coordinate pass is the CPU rasterizer's") {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            Check.expect(false, "a Metal device exists"); return
+        }
+        let renderer = try MetalRenderer(device: device)
+        for (R, r) in [(2.0, 1.0), (1.25, 1.0)] {
+            let surface = ParametricSurface.torus(major: R, minor: r, samples: (384, 192))
+            for (name, view) in [("elevation 60°", testCamera(elevation: -60, azimuth: 30)),
+                                 ("sheared", testCamera(elevation: -35, azimuth: -20, shear: 0.5))] {
+                let label = "R/r = \(R / r), \(name)"
+                let frame = DepthFrame(covering: viewBounds(surface, view), resolution: 800)
+                let gpu = try renderer.renderSurface(surface, view: view, frame: frame)
+                let cpu = SurfaceImage.rasterize(surface, view: view, frame: frame)
+
+                // Coverage and depth: any disagreement sits on an edge -- of
+                // the drawing, or of a sheet in front of another -- so some
+                // neighbouring pixel of the CPU image is empty or far away.
+                let span = (viewBounds(surface, view).size.z)
+                var covered = 0, strays = 0, onEdge = 0, worstDepth = 0.0
+                for row in 0..<frame.rows {
+                    for col in 0..<frame.cols {
+                        let a = gpu.depth.isCovered(row: row, col: col)
+                        let b = cpu.depth.isCovered(row: row, col: col)
+                        if a || b { covered += 1 }
+                        let differs = a != b
+                            || (a && abs(gpu.depth[row, col] - cpu.depth[row, col]) > 1e-4 * span)
+                        if a && b && !differs {
+                            worstDepth = max(worstDepth, abs(gpu.depth[row, col] - cpu.depth[row, col]))
+                        }
+                        guard differs else { continue }
+                        strays += 1
+                        var edge = false
+                        for dr in -1...1 { for dc in -1...1 {
+                            let rr = row + dr, cc = col + dc
+                            guard rr >= 0, rr < frame.rows, cc >= 0, cc < frame.cols else {
+                                edge = true; continue
+                            }
+                            if !cpu.depth.isCovered(row: rr, col: cc)
+                                || abs(cpu.depth[rr, cc] - cpu.depth[row, col]) > 0.05 * span {
+                                edge = true
+                            }
+                        } }
+                        if edge { onEdge += 1 }
+                    }
+                }
+                Check.expect(strays == onEdge && strays * 200 < covered,
+                             "\(label): coverage and depth differ only on edges",
+                             "\(strays) of \(covered) pixels differ, \(strays - onEdge) off an edge;"
+                             + " elsewhere depth within \(worstDepth)")
+
+                // The coordinate at every pixel names a point of the surface
+                // at that pixel's depth: it is the front-most point, which is
+                // the whole of its job.
+                var worst = 0.0
+                for row in 0..<frame.rows {
+                    for col in 0..<frame.cols {
+                        guard let c = gpu.coordinate(row: row, col: col) else { continue }
+                        let p = view(P3(surface.map(c).position))
+                        worst = max(worst, abs(p.z - gpu.depth[row, col]))
+                    }
+                }
+                Check.expect(worst < 2e-3, "\(label): each coordinate is the front-most point",
+                             "worst depth mismatch \(worst)")
+
+                let vis = SurfaceVisibility(surface: surface, image: gpu, view: view)
+                let (wrong, unexplained, depthWrong, example) =
+                    compareWithRayCast(vis, major: R, minor: r, view: view)
+                Check.expect(unexplained == 0,
+                             "\(label): and visibility read from it agrees with the ray-cast",
+                             "\(wrong) of 20000 disagree, \(unexplained) unexplained \(example)"
+                             + " (depth test: \(depthWrong))")
+            }
         }
     }
 }

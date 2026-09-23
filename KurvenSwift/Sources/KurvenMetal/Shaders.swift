@@ -42,6 +42,14 @@ public enum Shaders {
         float2 depthRange;
         float2 viewport;
     } KVShading;
+
+    typedef struct {
+        uint2  samples;
+        uint2  cells;
+        float2 lo;
+        float2 spacing;
+        float2 depthRange;
+    } KVSurface;
     """
 
     public static let source = """
@@ -185,6 +193,54 @@ public enum Shaders {
 
     fragment float kv_depth_fragment(DepthOut in [[stage_in]]) {
         return in.depth;
+    }
+
+    // ---------------------------------------------------------------------
+    // a parametric surface: an implicit mesh over a position texture
+    // ---------------------------------------------------------------------
+    //
+    // The heightfield's scheme with the texel holding the whole point rather
+    // than its height: the vertex id names a cell and a corner, the position
+    // comes from a texel read, and a periodic axis wraps its index so the last
+    // cell closes onto the first. One vertex function serves both passes, so
+    // the depth pass and the coordinate pass rasterize the same triangles --
+    // and the same ones, corner for corner, as `SurfaceImage.rasterize`.
+
+    struct SurfaceOut {
+        float4 position [[position]];
+        float  depth;
+        float2 coord;
+    };
+
+    vertex SurfaceOut kv_param_vertex(uint vid [[vertex_id]],
+                                      constant KVUniforms &u [[buffer(0)]],
+                                      constant KVSurface &s [[buffer(6)]],
+                                      texture2d<float, access::read> positions [[texture(0)]])
+    {
+        uint cell = vid / 6u;
+        uint corner = vid % 6u;
+        const uint2 corners[6] = { uint2(0,0), uint2(1,0), uint2(0,1),
+                                   uint2(1,0), uint2(1,1), uint2(0,1) };
+        uint2 index = uint2(cell % s.cells.x, cell / s.cells.x) + corners[corner];
+        float3 world = positions.read(index % s.samples).xyz;
+
+        SurfaceOut out;
+        out.position = to_ndc(u, world);
+        out.depth = view_depth(u, world);
+        out.coord = s.lo + s.spacing * float2(index);
+        // Only the coordinate pass has a depth attachment; the depth pass
+        // ignores this. Nearest is 0, so LESS keeps what MAX keeps.
+        float span = max(s.depthRange.y - s.depthRange.x, 1e-30);
+        out.position.z = saturate((s.depthRange.y - out.depth) / span) * out.position.w;
+        return out;
+    }
+
+    fragment float kv_param_depth_fragment(SurfaceOut in [[stage_in]]) {
+        return in.depth;
+    }
+
+    fragment float2 kv_coord_fragment(SurfaceOut in [[stage_in]]) {
+        return in.coord;
     }
 
     // ---------------------------------------------------------------------
@@ -510,6 +566,7 @@ public enum Shaders {
     kernel void kv_layout_probe(constant KVUniforms &u [[buffer(0)]],
                                 device float *out [[buffer(1)]],
                                 constant KVShading &sh [[buffer(2)]],
+                                constant KVSurface &sf [[buffer(3)]],
                                 uint tid [[thread_position_in_grid]])
     {
         if (tid != 0) { return; }
@@ -548,8 +605,19 @@ public enum Shaders {
         out[k++] = sh.depthRange.y;
         out[k++] = sh.viewport.x;
         out[k++] = sh.viewport.y;
+        out[k++] = float(sf.samples.x);
+        out[k++] = float(sf.samples.y);
+        out[k++] = float(sf.cells.x);
+        out[k++] = float(sf.cells.y);
+        out[k++] = sf.lo.x;
+        out[k++] = sf.lo.y;
+        out[k++] = sf.spacing.x;
+        out[k++] = sf.spacing.y;
+        out[k++] = sf.depthRange.x;
+        out[k++] = sf.depthRange.y;
         out[k++] = float(sizeof(KVUniforms));
         out[k++] = float(sizeof(KVShading));
+        out[k++] = float(sizeof(KVSurface));
     }
     """
 
@@ -557,5 +625,7 @@ public enum Shaders {
     /// then both sizes.
     public static let uniformFieldCount = 16 + 16 + 2 + 2 + 2 + 2 + 1 + 1 + 1 + 1
     public static let shadingFieldCount = 4 + 1 + 1 + 1 + 3 + 1 + 1 + 2 + 2
-    public static let layoutProbeCount = uniformFieldCount + shadingFieldCount + 2
+    public static let surfaceFieldCount = 2 + 2 + 2 + 2 + 2
+    public static let layoutProbeCount = uniformFieldCount + shadingFieldCount
+        + surfaceFieldCount + 3
 }

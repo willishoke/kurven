@@ -47,6 +47,12 @@ public final class MetalRenderer {
     public var commandQueue: MTLCommandQueue { queue }
     let heightPipeline: MTLRenderPipelineState
     let meshPipeline: MTLRenderPipelineState
+    // A parametric surface: its depth pass, MAX-blended like the heightfield's,
+    // and its coordinate pass, which keeps the front-most fragment's surface
+    // coordinate behind a real depth test.
+    let paramDepthPipeline: MTLRenderPipelineState
+    let coordPipeline: MTLRenderPipelineState
+    let coordDepthState: MTLDepthStencilState
     // The preview's second pass. Same geometry, different fragment work.
     let paperSurfacePipeline: MTLRenderPipelineState
     let paperWallPipeline: MTLRenderPipelineState
@@ -81,12 +87,11 @@ public final class MetalRenderer {
             }
             return f
         }
-        let fragment = try function("kv_depth_fragment")
-
-        func pipeline(vertex: String) throws -> MTLRenderPipelineState {
+        func pipeline(vertex: String,
+                      fragment: String = "kv_depth_fragment") throws -> MTLRenderPipelineState {
             let d = MTLRenderPipelineDescriptor()
             d.vertexFunction = try function(vertex)
-            d.fragmentFunction = fragment
+            d.fragmentFunction = try function(fragment)
             let a = d.colorAttachments[0]!
             a.pixelFormat = .r32Float
             a.isBlendingEnabled = true
@@ -101,6 +106,31 @@ public final class MetalRenderer {
         }
         self.heightPipeline = try pipeline(vertex: "kv_height_vertex")
         self.meshPipeline = try pipeline(vertex: "kv_mesh_vertex")
+        self.paramDepthPipeline = try pipeline(vertex: "kv_param_vertex",
+                                               fragment: "kv_param_depth_fragment")
+
+        // The coordinate pass cannot MAX-blend: a blend keeps the greatest of
+        // each channel separately, and a coordinate is not ordered by depth.
+        // So it has a depth attachment of its own and keeps the fragment that
+        // wins a LESS test on normalized view depth -- deterministic, since
+        // Metal writes a pixel's fragments in primitive order -- and depends
+        // on nothing about how the depth pass interpolated.
+        do {
+            let d = MTLRenderPipelineDescriptor()
+            d.vertexFunction = try function("kv_param_vertex")
+            d.fragmentFunction = try function("kv_coord_fragment")
+            d.colorAttachments[0].pixelFormat = .rg32Float
+            d.depthAttachmentPixelFormat = .depth32Float
+            self.coordPipeline = try device.makeRenderPipelineState(descriptor: d)
+        } catch let e as RendererError { throw e }
+        catch { throw RendererError.pipeline("kv_param_vertex/kv_coord_fragment: \(error)") }
+        let depthState = MTLDepthStencilDescriptor()
+        depthState.depthCompareFunction = .less
+        depthState.isDepthWriteEnabled = true
+        guard let state = device.makeDepthStencilState(descriptor: depthState) else {
+            throw RendererError.allocation("the coordinate pass's depth state")
+        }
+        self.coordDepthState = state
 
         // The colour pass has no depth attachment. It does not need one: pass 1
         // already holds the front-most view depth at every pixel, and both the
@@ -324,8 +354,8 @@ public extension MetalRenderer {
     /// shows up as a corrupted uniform and a crash rather than as a compile
     /// error. Asking the GPU what it sees turns that into a test.
     static func probeUniformLayout(device: MTLDevice, sending uniforms: KVUniforms,
-                                   and shading: KVShading)
-        throws -> (fields: [Float], uniformSize: Int, shadingSize: Int)
+                                   and shading: KVShading, and surface: KVSurface)
+        throws -> (fields: [Float], uniformSize: Int, shadingSize: Int, surfaceSize: Int)
     {
         let library = try makeLibrary(device: device)
         guard let function = library.makeFunction(name: "kv_layout_probe") else {
@@ -342,10 +372,12 @@ public extension MetalRenderer {
         }
         var u = uniforms
         var sh = shading
+        var sf = surface
         encoder.setComputePipelineState(pipeline)
         encoder.setBytes(&u, length: MemoryLayout<KVUniforms>.stride, index: 0)
         encoder.setBuffer(out, offset: 0, index: 1)
         encoder.setBytes(&sh, length: MemoryLayout<KVShading>.stride, index: 2)
+        encoder.setBytes(&sf, length: MemoryLayout<KVSurface>.stride, index: 3)
         encoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
         encoder.endEncoding()
@@ -355,6 +387,7 @@ public extension MetalRenderer {
 
         let p = out.contents().bindMemory(to: Float.self, capacity: n)
         let fields = Array(UnsafeBufferPointer(start: p, count: n))
-        return (Array(fields.dropLast(2)), Int(fields[n - 2]), Int(fields[n - 1]))
+        return (Array(fields.dropLast(3)), Int(fields[n - 3]), Int(fields[n - 2]),
+                Int(fields[n - 1]))
     }
 }

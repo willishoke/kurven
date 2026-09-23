@@ -124,24 +124,29 @@ final class SceneResources {
 ///
 /// Not every device allows a linear texture as a render target, so this falls
 /// back to an ordinary one and says which it got.
+///
+/// The depth pass's target is `r32Float`; the coordinate pass's is `rg32Float`,
+/// read back the same way as pairs.
 final class DepthTarget {
     let texture: MTLTexture
     let rows: Int
     let cols: Int
+    let bytesPerPixel: Int
     /// Non-nil when the texture is linear and its memory is directly readable.
     let linear: (buffer: MTLBuffer, bytesPerRow: Int)?
 
     var isLinear: Bool { linear != nil }
 
-    init(rows: Int, cols: Int, device: MTLDevice) throws {
-        self.rows = rows; self.cols = cols
+    init(rows: Int, cols: Int, device: MTLDevice,
+         format: MTLPixelFormat = .r32Float, bytesPerPixel: Int = 4) throws {
+        self.rows = rows; self.cols = cols; self.bytesPerPixel = bytesPerPixel
         let d = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r32Float, width: cols, height: rows, mipmapped: false)
+            pixelFormat: format, width: cols, height: rows, mipmapped: false)
         d.usage = [.renderTarget, .shaderRead]
         d.storageMode = .shared
 
-        let rowBytes = cols * MemoryLayout<Float>.stride
-        let align = max(device.minimumLinearTextureAlignment(for: .r32Float), 1)
+        let rowBytes = cols * bytesPerPixel
+        let align = max(device.minimumLinearTextureAlignment(for: format), 1)
         let stride = ((rowBytes + align - 1) / align) * align
         if let buffer = device.makeBuffer(length: stride * rows, options: .storageModeShared),
            let t = buffer.makeTexture(descriptor: d, offset: 0, bytesPerRow: stride) {
@@ -150,10 +155,36 @@ final class DepthTarget {
             return
         }
         guard let t = device.makeTexture(descriptor: d) else {
-            throw RendererError.allocation("a \(cols)x\(rows) depth target")
+            throw RendererError.allocation("a \(cols)x\(rows) \(format) target")
         }
         texture = t
         linear = nil
+    }
+
+    /// Every pixel, row major, as `T` -- which must be the pixel format's own
+    /// size.
+    func pixels<T>(_: T.Type) -> [T] {
+        precondition(MemoryLayout<T>.stride == bytesPerPixel,
+                     "reading \(bytesPerPixel)-byte pixels as \(T.self)")
+        let count = rows * cols
+        let rowBytes = cols * bytesPerPixel
+        return [T](unsafeUninitializedCapacity: count) { out, initialized in
+            let dst = UnsafeMutableRawPointer(out.baseAddress!)
+            if let (buffer, stride) = linear {
+                let base = buffer.contents()
+                if stride == rowBytes {
+                    memcpy(dst, base, count * bytesPerPixel)
+                } else {
+                    for r in 0..<rows {
+                        memcpy(dst + r * rowBytes, base + r * stride, rowBytes)
+                    }
+                }
+            } else {
+                texture.getBytes(dst, bytesPerRow: rowBytes,
+                                 from: MTLRegionMake2D(0, 0, cols, rows), mipmapLevel: 0)
+            }
+            initialized = count
+        }
     }
 
     /// The rendered pixels, as a value.
@@ -163,24 +194,6 @@ final class DepthTarget {
     /// identically, and rewriting means a scalar pass over every pixel -- 400 ms
     /// of a 1.6 s bake, to change nothing anyone reads.
     func read(frame: DepthFrame, empty: Float) -> DepthImage {
-        let count = rows * cols
-        let rowBytes = cols * MemoryLayout<Float>.stride
-        let values = [Float](unsafeUninitializedCapacity: count) { out, initialized in
-            if let (buffer, stride) = linear {
-                let base = buffer.contents()
-                if stride == rowBytes {
-                    memcpy(out.baseAddress!, base, count * MemoryLayout<Float>.stride)
-                } else {
-                    for r in 0..<rows {
-                        memcpy(out.baseAddress! + r * cols, base + r * stride, rowBytes)
-                    }
-                }
-            } else {
-                texture.getBytes(out.baseAddress!, bytesPerRow: rowBytes,
-                                 from: MTLRegionMake2D(0, 0, cols, rows), mipmapLevel: 0)
-            }
-            initialized = count
-        }
-        return DepthImage(frame: frame, values: values, empty: empty)
+        DepthImage(frame: frame, values: pixels(Float.self), empty: empty)
     }
 }

@@ -92,4 +92,24 @@ typedef struct {
     simd_float2 viewport;
 } KVShading;
 
+// A parametric surface's lattice: how a vertex id becomes a texel of the
+// position texture and a surface coordinate.
+typedef struct {
+    // Texels along (u, v).
+    simd_uint2 samples;
+    // Cells along (u, v): `samples` on a periodic axis, whose last cell closes
+    // back onto texel 0, and `samples - 1` on a bounded one.
+    simd_uint2 cells;
+    // The coordinate of lattice index 0, and the coordinate per index. Index
+    // `samples` on a periodic axis is one period past index 0, so a cell that
+    // closes the seam interpolates across it rather than back through the
+    // whole range.
+    simd_float2 lo;
+    simd_float2 spacing;
+    // The view-z range the coordinate pass's depth attachment spans: the
+    // nearest (y) maps to 0 and the farthest (x) to 1, so a LESS test keeps
+    // the front-most fragment, as the MAX blend does.
+    simd_float2 depthRange;
+} KVSurface;
+
 #endif /* KurvenShaderTypes_h */
