@@ -80,6 +80,7 @@ let package = Package(
         // hand-written Info.plist and an ad hoc signature -- all of which
         // Command Line Tools can do.
         .executableTarget(name: "KurvenApp",
-                          dependencies: ["KurvenBake", "KurvenService", "KurvenLandscape"]),
+                          dependencies: ["KurvenBake", "KurvenService", "KurvenLandscape",
+                                         "KurvenMath"]),
     ]
 )
