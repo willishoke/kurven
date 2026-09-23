@@ -233,13 +233,24 @@ public extension ParametricSurface {
     /// `major > minor`; the horn and spindle tori pass through themselves.
     static func torus(major R: Double, minor r: Double,
                       samples: (u: Int, v: Int)) -> ParametricSurface {
-        ParametricSurface(u: .angle(samples: samples.u), v: .angle(samples: samples.v),
-                          encloses: R > r) { c in
-            let (cu, su, cv, sv) = (cos(c.x), sin(c.x), cos(c.y), sin(c.y))
-            let ring = R + r * cv
-            return SurfaceJet(position: SIMD3(ring * cu, ring * su, r * sv),
-                              du: SIMD3(-ring * su, ring * cu, 0),
-                              dv: SIMD3(-r * sv * cu, -r * sv * su, r * cv))
+        torus(major: R, minor: r, u: .angle(samples: samples.u), v: .angle(samples: samples.v))
+    }
+
+    /// The same torus over any two periodic axes: each axis's range is one
+    /// turn, so a rectangle of periods -- a doubly periodic function's
+    /// fundamental domain -- glues into it edge to edge.
+    static func torus(major R: Double, minor r: Double,
+                      u: ParamAxis, v: ParamAxis) -> ParametricSurface {
+        precondition(u.periodic && v.periodic, "a torus is periodic both ways")
+        let (su0, sv0) = (u.range.lo, v.range.lo)
+        let (ku, kv) = (2 * Double.pi / u.range.length, 2 * Double.pi / v.range.length)
+        return ParametricSurface(u: u, v: v, encloses: R > r) { c in
+            let a = ku * (c.x - su0), b = kv * (c.y - sv0)
+            let (ca, sa, cb, sb) = (cos(a), sin(a), cos(b), sin(b))
+            let ring = R + r * cb
+            return SurfaceJet(position: SIMD3(ring * ca, ring * sa, r * sb),
+                              du: ku * SIMD3(-ring * sa, ring * ca, 0),
+                              dv: kv * SIMD3(-r * sb * ca, -r * sb * sa, r * cb))
         }
     }
 }

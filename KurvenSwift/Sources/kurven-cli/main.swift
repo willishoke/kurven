@@ -4,6 +4,7 @@ import KurvenMetal
 import KurvenBake
 import KurvenService
 import KurvenLandscape
+import KurvenMath
 
 /// `kurven-cli` -- the headless half of the frontend.
 ///
@@ -99,12 +100,16 @@ usage: kurven-cli <command> [options]
         plate stroke for stroke.
 
   surface torus [--lines U,V] [--samples N]
+  surface sn [--modulus M] [--grid N]
+  surface periodic --expression E --periods P1,P2 [--grid N]
           [--major R] [--minor r]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N]
           [--tiles N] [--width W] [--folds W] -o out.svg
         Bake a surface to SVG, hidden lines decided by where on the surface
         each vertex lies rather than by depth. torus draws its parameter
-        lines.
+        lines. sn and periodic draw a doubly periodic function's |f| and
+        arg f contours on the torus its period rectangle glues into: sn(z, M)
+        on [0, 4K) x [0, 2K'), or any expression over [0, P1) x [0, P2).
         The camera is a plate camera: --x-angle tilts, --z-angle turns, --shear
         is the oblique foreshortening the published plates use. The fold
         lines -- outline and inner silhouettes -- are drawn at --folds (twice
@@ -283,8 +288,27 @@ func surfaceCommand(_ args: Args) throws {
                                         source: .parameterLines(u: counts[0], v: counts[1]),
                                         width: width, heightPolicy: .surface),
                         paths: ink)]
+    case "sn", "periodic":
+        let plate: PeriodicTorus.Plate
+        if shape == "sn" {
+            plate = try PeriodicTorus.jacobiSN(modulus: try args.double("modulus") ?? 0.64,
+                                               major: R, minor: r,
+                                               resolution: try args.int("grid", 600))
+        } else {
+            let periods = (args.flags["periods"] ?? "").split(separator: ",").compactMap { Double($0) }
+            guard periods.count == 2 else {
+                throw CLIError("--periods wants the real and imaginary periods, as in 6.4,4.1")
+            }
+            plate = try PeriodicTorus.plate(try args.string("expression"),
+                                            periods: (periods[0], periods[1]),
+                                            major: R, minor: r,
+                                            resolution: try args.int("grid", 600))
+        }
+        surface = plate.surface
+        // Their own folds come with them; --folds below restyles or drops them.
+        layers = plate.layers.filter { if case .foldLines = $0.spec.source { false } else { true } }
     default:
-        throw CLIError("unknown surface '\(shape)'; the catalog has: torus")
+        throw CLIError("unknown surface '\(shape)'; the catalog has: torus, sn, periodic")
     }
     let camera = Camera.plate(PlateProjection(
         shear: try args.double("shear") ?? 0,

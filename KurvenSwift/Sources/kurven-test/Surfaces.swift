@@ -3,6 +3,8 @@ import simd
 import KurvenCore
 import KurvenMetal
 import KurvenBake
+import KurvenLandscape
+import KurvenMath
 import Metal
 
 // MARK: - parametric surfaces and visibility by surface coordinate
@@ -544,3 +546,72 @@ func foldTests() {
     }
 }
 
+
+func periodicTorusTests() {
+    Check.suite("math: the quarter periods are the complete elliptic integral") {
+        Check.expect(abs(Jacobi.quarterPeriod(0) - .pi / 2) < 1e-15, "K(0) = π/2")
+        // K(1/2) = Γ(1/4)² / (4√π), to the last digit.
+        Check.expect(abs(Jacobi.quarterPeriod(0.5) - 1.854_074_677_301_371_9) < 4e-16,
+                     "K(1/2) = Γ(1/4)² / 4√π", "\(Jacobi.quarterPeriod(0.5))")
+        let m = 0.64
+        let K = Jacobi.quarterPeriod(m), Kp = Jacobi.quarterPeriod(1 - m)
+        Check.expect(abs(Jacobi.real(K, m).sn - 1) < 1e-14, "sn(K) = 1")
+        let rng = SplitMix(seed: 11)
+        var worst = 0.0
+        for _ in 0..<200 {
+            let z = Complex(rng.next(-3, 3), rng.next(-1, 1))
+            let s = Jacobi.complex(z, m).sn
+            for shifted in [Complex(z.re + 4 * K, z.im), Complex(z.re, z.im + 2 * Kp)] {
+                let t = Jacobi.complex(shifted, m).sn
+                worst = max(worst, (t - s).magnitude / max(1, s.magnitude))
+            }
+        }
+        Check.expect(worst < 1e-11, "sn has periods 4K and 2iK'", "worst \(worst)")
+    }
+
+    Check.suite("surfaces: a doubly periodic function drawn on its torus") {
+        let m = 0.64
+        let plate = try PeriodicTorus.jacobiSN(modulus: m)
+        var worst = 0.0, off = 0.0, vertices = 0, singular = 0
+        for layer in plate.layers {
+            guard case .contour(let field, let levels, _, _) = layer.spec.source else { continue }
+            let coords = layer.paths.coords!
+            for (k, c) in coords.enumerated() {
+                vertices += 1
+                let f = Jacobi.complex(Complex(c.x, c.y), m).sn
+                // Every phase contour ends at a zero or a pole, where arg f
+                // has no value; its last vertex there is on every level.
+                if field == .phase, f.magnitude < 1e-4 || f.magnitude > 1e4 {
+                    singular += 1; continue
+                }
+                let value = field == .magnitude ? f.magnitude : f.argument
+                let level = levels.min { abs($0 - value) < abs($1 - value) }!
+                let scale = field == .magnitude ? max(level, 1) : 1
+                worst = max(worst, abs(value - level) / scale)
+                off = max(off, simd_length(layer.paths.vertices[k].v
+                                           - plate.surface.map(c).position))
+            }
+        }
+        Check.expect(vertices > 10_000 && worst < 1e-6,
+                     "every contour vertex is on its level of sn",
+                     "\(vertices) vertices, worst \(worst);"
+                     + " \(singular) phase ends at a zero or pole not asked")
+        Check.expect(off < 1e-12, "and sits on the torus where its coordinate says", "\(off)")
+
+        let renderer = try MetalRenderer()
+        let camera = Camera.plate(PlateProjection(shear: 0.5, xAngle: -50, zAngle: 25,
+                                                  flipX: false, yScale: nil))
+        let contours = plate.layers.filter { if case .contour = $0.spec.source { true } else { false } }
+        let baked = try renderer.bake(Scene(surface: plate.surface, layers: contours,
+                                            camera: camera, margin: 0),
+                                      options: BakeOptions(resolution: 2400))
+        let truth = contours.reduce(0.0) {
+            $0 + rayCastInkLength($1.paths, on: plate.surface, major: 2, minor: 1,
+                                  view: camera.view, k: 4)
+        }
+        let error = abs(baked.strokes.inkLength - truth) / truth
+        Check.expect(error < 0.003, "and it is seen where the ray-cast sees it",
+                     String(format: "%.4f vs %.4f, %.3f%% off", baked.strokes.inkLength, truth,
+                            100 * error))
+    }
+}

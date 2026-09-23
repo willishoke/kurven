@@ -10,6 +10,23 @@ import Foundation
 public enum Jacobi {
     public struct Real: Sendable { public var sn, cn, dn, ph: Double }
 
+    /// The complete elliptic integral of the first kind, K(m): the quarter
+    /// period of sn and cn along the real axis. `quarterPeriod(1 - m)` is K',
+    /// the one along the imaginary axis.
+    ///
+    /// π / (2 AGM(1, √(1 − m))). The mean converges quadratically, so the loop
+    /// runs until the two terms agree to the last bit -- five or six rounds
+    /// for any m short of 1, where K diverges.
+    public static func quarterPeriod(_ m: Double) -> Double {
+        guard m >= 0, m < 1 else { return m == 1 ? .infinity : .nan }
+        var a = 1.0, b = (1 - m).squareRoot()
+        for _ in 0..<64 where a != b {
+            (a, b) = (0.5 * (a + b), (a * b).squareRoot())
+            if abs(a - b) <= a.ulp { break }
+        }
+        return .pi / (2 * a)
+    }
+
     /// `ellpj(u, m)` for 0 <= m <= 1.
     public static func real(_ u: Double, _ m: Double) -> Real {
         if m < 0 || m > 1 || m.isNaN {
