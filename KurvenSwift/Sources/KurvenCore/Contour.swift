@@ -93,6 +93,11 @@ public enum Contour {
         var from: [EdgeID: EdgeID] = [:]
         var points: [EdgeID: P2<DomainSpace>] = [:]
         var hasPredecessor = Set<EdgeID>()
+        // Segment starts in the order the scan meets them. Walking the
+        // dictionary's keys instead starts each path wherever Swift's
+        // per-process hash seed puts it, and the same grid then comes back
+        // as the same lines in a different order on every run.
+        var order: [EdgeID] = []
 
         let w = grid.width, h = grid.height
         for by in 0..<index.blocksDown {
@@ -136,6 +141,7 @@ public enum Contour {
                 func link(_ a: EdgeID, _ b: EdgeID) {
                     _ = crossing(a); _ = crossing(b)
                     from[a] = b
+                    order.append(a)
                     hasPredecessor.insert(b)
                 }
 
@@ -179,7 +185,7 @@ public enum Contour {
                 }
             }
         }
-        return walk(from: from, points: points, hasPredecessor: hasPredecessor)
+        return walk(from: from, order: order, points: points, hasPredecessor: hasPredecessor)
     }
 
     /// Iso-lines at several levels, in level order -- the shape
@@ -219,8 +225,10 @@ public enum Contour {
     }
 
     /// Chain the segments into polylines: open runs first, from their starts,
-    /// then whatever is left, which is closed loops.
-    private static func walk(from: [EdgeID: EdgeID], points: [EdgeID: P2<DomainSpace>],
+    /// then whatever is left, which is closed loops -- each in scan order, so
+    /// the answer is the same on every run.
+    private static func walk(from: [EdgeID: EdgeID], order: [EdgeID],
+                             points: [EdgeID: P2<DomainSpace>],
                              hasPredecessor: Set<EdgeID>) -> [[P2<DomainSpace>]] {
         var out: [[P2<DomainSpace>]] = []
         var visited = Set<EdgeID>()
@@ -240,11 +248,11 @@ public enum Contour {
         }
 
         // Open chains: a start is an edge nothing leads into.
-        for id in from.keys where !hasPredecessor.contains(id) {
+        for id in order where !hasPredecessor.contains(id) {
             trace(id, closing: false)
         }
         // What remains is cycles.
-        for id in from.keys where !visited.contains(id) {
+        for id in order where !visited.contains(id) {
             trace(id, closing: true)
         }
         return out
