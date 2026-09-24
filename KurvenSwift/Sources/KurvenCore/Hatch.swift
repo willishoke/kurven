@@ -66,7 +66,7 @@ public extension Surface {
         -> PolylineSet<WorldSpace>? {
         var paths: [[P3<WorldSpace>]]
         switch source {
-        case .file, .contour, .parameterLines, .foldLines:
+        case .file, .contour, .parameterLines, .foldLines, .trajectory:
             return nil
         case .wallHatch(let edges, let spacing, let pitch, let trim, let base, let top):
             guard let perimeter = context.perimeter else { return .empty }

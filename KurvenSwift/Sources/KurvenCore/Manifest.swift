@@ -480,6 +480,9 @@ public enum LayerSource: Sendable, Equatable {
     /// The fold lines of a parametric surface -- its outline and inner
     /// silhouettes -- which depend on the camera and are derived for it.
     case foldLines
+    /// A trajectory of a flow, integrated and carried as ink with its
+    /// coordinates on the invariant surface it winds round.
+    case trajectory
 
     public init(json: JSONValue) throws {
         let o = try json.object("LayerSource")
@@ -525,6 +528,8 @@ public enum LayerSource: Sendable, Equatable {
                                                  default: false))
         case "foldLines":
             self = .foldLines
+        case "trajectory":
+            self = .trajectory
         case "parameterLines":
             self = .parameterLines(u: try o.int("u", "LayerSource.parameterLines"),
                                    v: try o.int("v", "LayerSource.parameterLines"))
@@ -533,7 +538,7 @@ public enum LayerSource: Sendable, Equatable {
                                             known: ["file", "contour", "wallHatch",
                                                     "wallOutline", "capHatch",
                                                     "capOutline", "parameterLines",
-                                                    "foldLines"])
+                                                    "foldLines", "trajectory"])
         }
     }
     public var json: JSONValue {
@@ -563,6 +568,8 @@ public enum LayerSource: Sendable, Equatable {
             .object(["kind": .string("parameterLines"), "u": .int(u), "v": .int(v)])
         case .foldLines:
             .object(["kind": .string("foldLines")])
+        case .trajectory:
+            .object(["kind": .string("trajectory")])
         }
     }
 

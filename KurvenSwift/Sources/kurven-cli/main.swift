@@ -5,6 +5,7 @@ import KurvenBake
 import KurvenService
 import KurvenLandscape
 import KurvenMath
+import KurvenDynamics
 
 /// `kurven-cli` -- the headless half of the frontend.
 ///
@@ -102,6 +103,8 @@ usage: kurven-cli <command> [options]
   surface torus [--lines U,V] [--samples N]
   surface sn [--modulus M] [--grid N]
   surface periodic --expression E --periods P1,P2 [--grid N]
+  surface forced [--system jerk] [--duration T] [--every DT] [--ink W]
+          [--harmonics M] [--fit T] [--radial I] [--axial J] [--lines U,V]
           [--major R] [--minor r]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N]
           [--tiles N] [--width W] [--folds W] -o out.svg
@@ -111,6 +114,10 @@ usage: kurven-cli <command> [options]
         lines. sn and periodic draw a doubly periodic function's |f| and
         arg f contours on the torus its period rectangle glues into: sn(z, M)
         on [0, 4K) x [0, 2K'), or any expression over [0, P1) x [0, P2).
+        forced finds a forced system's invariant torus in the spectrum of a
+        long run, fits it as a Fourier series in the forcing phase and the
+        system's own, and draws --duration of the trajectory on it, the
+        forcing phase as the angle of revolution.
         The camera is a plate camera: --x-angle tilts, --z-angle turns, --shear
         is the oblique foreshortening the published plates use. The fold
         lines -- outline and inner silhouettes -- are drawn at --folds (twice
@@ -309,8 +316,50 @@ func surfaceCommand(_ args: Args) throws {
         surface = plate.surface
         // Their own folds come with them; --folds below restyles or drops them.
         layers = plate.layers.filter { if case .foldLines = $0.spec.source { false } else { true } }
+    case "forced":
+        // A forced system's invariant torus, found in the spectrum of one
+        // long run and fitted; drawn by revolution, with the trajectory on it.
+        let name = args.flags["system"] ?? "jerk"
+        guard let system = ForcedSystem.catalog[name] else {
+            throw CLIError("unknown system '\(name)'; the catalog has: "
+                           + ForcedSystem.catalog.keys.sorted().joined(separator: ", "))
+        }
+        let clock = ContinuousClock()
+        var torus: InvariantTorus!
+        let found = try clock.measure {
+            torus = try InvariantTorus.find(system, duration: try args.double("fit") ?? 8000,
+                                            harmonics: try args.int("harmonics", 24))
+        }
+        let e = Revolution.fitting(torus, radial: try args.int("radial", 0),
+                                   axial: try args.int("axial", 1))
+        let lattice = try args.int("samples", 1024)
+        let placed = torus.surface(e, lattice: (lattice, lattice / 2))
+        surface = placed.surface
+        let ink = try torus.trajectory(e, duration: try args.double("duration") ?? 2300,
+                                       every: try args.double("every") ?? 0.01)
+        layers = [Layer(spec: LayerSpec(name: "trajectory", role: .scaffold, source: .trajectory,
+                                        width: try args.double("ink") ?? 0.08,
+                                        heightPolicy: .surface),
+                        paths: ink)]
+        if let text = args.flags["lines"] {
+            let counts = text.split(separator: ",").compactMap { Int($0) }
+            guard counts.count == 2 else { throw CLIError("--lines wants U,V, as in 36,18") }
+            layers.append(Layer(spec: LayerSpec(name: "lines", role: .scaffold,
+                                                source: .parameterLines(u: counts[0], v: counts[1]),
+                                                width: width, heightPolicy: .surface),
+                                paths: surface.parameterLines(counts: (counts[0], counts[1]),
+                                                              resolution: 2 * lattice)))
+        }
+        print(String(format: """
+            \(system.name): forced at ω = %.6f, own frequency Ω = %.10f  (found in %@)
+              fit       %d harmonics, misses its trajectory by %.2e (%.1e of its size)
+              drawn     by revolution, %@
+            """, torus.forcing, torus.internalFrequency, "\(found)", torus.fit.harmonics,
+            torus.residual, torus.residual / torus.extent,
+            placed.embedded ? "embedded: back faces are hidden"
+                            : "NOT embedded -- a slice crosses itself; back faces are kept"))
     default:
-        throw CLIError("unknown surface '\(shape)'; the catalog has: torus, sn, periodic")
+        throw CLIError("unknown surface '\(shape)'; the catalog has: torus, sn, periodic, forced")
     }
     let camera = Camera.plate(PlateProjection(
         shear: try args.double("shear") ?? 0,
@@ -358,7 +407,7 @@ func surfaceCommand(_ args: Args) throws {
     let elapsed = try clock.measure { result = try renderer.bake(scene, options: options) }
     try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
     print("""
-        \(shape) R=\(fmt(R)) r=\(fmt(r)) -> \(output.lastPathComponent)
+        \(shape)\(shape == "forced" ? "" : " R=\(fmt(R)) r=\(fmt(r))") -> \(output.lastPathComponent)
           lattice    \(surface.u.samples)x\(surface.v.samples)\
         \(surface.outward == nil ? ", bounds no solid, back faces kept" : ", closed")
           depth      \(result.depth.frame.rows)x\(result.depth.frame.cols) \
@@ -946,6 +995,7 @@ func sourceName(_ source: LayerSource) -> String {
     case .capOutline: "cap outline"
     case .parameterLines(let u, let v): "\(u) + \(v) parameter lines"
     case .foldLines: "fold lines"
+    case .trajectory: "a trajectory"
     }
 }
 

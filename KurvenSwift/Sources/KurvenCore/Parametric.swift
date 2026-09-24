@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import simd
 
 /// One direction of a parameter rectangle.
@@ -119,6 +120,37 @@ public struct ParametricSurface: Sendable {
         }
     }
 
+    /// A surface whose lattice is already computed -- because evaluating the
+    /// map at every lattice point is the expensive part and the caller did it
+    /// once already, in parallel or for its own checks. The map still answers
+    /// every question asked at an arbitrary point.
+    ///
+    /// The orientation comes from the lattice's own central-difference
+    /// normals rather than the map's: only its sign is used, and a lattice
+    /// fine enough to draw is fine enough for the sign of its volume.
+    public init(u: ParamAxis, v: ParamAxis, encloses: Bool, positions: [P3<WorldSpace>],
+                map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet) {
+        precondition(positions.count == u.samples * v.samples,
+                     "\(positions.count) positions for a \(u.samples)x\(v.samples) lattice")
+        self.u = u; self.v = v; self.map = map; self.positions = positions
+        guard encloses else { outward = nil; return }
+        func at(_ i: Int, _ j: Int) -> SIMD3<Double> {
+            let ii = u.periodic ? u.sample(i) : min(max(i, 0), u.samples - 1)
+            let jj = v.periodic ? v.sample(j) : min(max(j, 0), v.samples - 1)
+            return positions[jj * u.samples + ii].v
+        }
+        var volume = 0.0
+        for j in 0..<v.samples {
+            for i in 0..<u.samples {
+                let du = at(i + 1, j) - at(i - 1, j), dv = at(i, j + 1) - at(i, j - 1)
+                volume += simd_dot(at(i, j), simd_cross(du, dv))
+            }
+        }
+        precondition(volume.isFinite && abs(volume) > 0,
+                     "a surface declared to enclose a solid has no volume")
+        outward = volume > 0 ? 1 : -1
+    }
+
     public func position(_ i: Int, _ j: Int) -> P3<WorldSpace> {
         positions[v.sample(j) * u.samples + u.sample(i)]
     }
@@ -186,12 +218,17 @@ public extension ParametricSurface {
             return len > 0 ? simd_dot(n, sight) / len : 0
         }
         let du = u.range.length / Double(nu), dv = v.range.length / Double(nv)
-        var values: [Float] = []
-        values.reserveCapacity((nu + 1) * (nv + 1))
-        for j in 0...nv {
-            for i in 0...nu {
-                values.append(Float(edgeOn(P2(u.range.lo + Double(i) * du,
-                                              v.range.lo + Double(j) * dv))))
+        // Row by row in parallel: each writes only its own row. The map is
+        // the expensive part, and this is asked again whenever the camera
+        // moves.
+        var values = [Float](repeating: 0, count: (nu + 1) * (nv + 1))
+        values.withUnsafeMutableBufferPointer { out in
+            nonisolated(unsafe) let base = out.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: nv + 1) { j in
+                for i in 0...nu {
+                    base[j * (nu + 1) + i] = Float(edgeOn(P2(u.range.lo + Double(i) * du,
+                                                             v.range.lo + Double(j) * dv)))
+                }
             }
         }
         let field = Grid2D(width: nu + 1, height: nv + 1,
