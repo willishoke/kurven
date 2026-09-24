@@ -57,6 +57,11 @@ public struct SurfaceRequest: Sendable, Equatable {
     /// The projection a surface plate opens at.
     public static let projection = PlateProjection(shear: 0, xAngle: -55, zAngle: 30,
                                                    flipX: false, yScale: nil)
+
+    /// The same, as a camera preset: no margin and the CLI's bake resolution,
+    /// so the window and `kurven-cli surface` bake the same picture.
+    public static let preset = CameraPreset(name: "plate", plate: projection, margin: 0,
+                                            buffer: 3000)
 }
 
 /// A surface plate, built: the surface, its ink, and what is worth keeping
@@ -149,4 +154,37 @@ public struct SurfacePlate: Sendable {
         return SurfacePlate(request: request, surface: surface, layers: layers, torus: torus,
                             revolution: revolution, embedded: embedded)
     }
+}
+
+/// A surface the gallery offers: a name to ask for it by, a label to show,
+/// and the request it opens as.
+public struct SurfacePreset: Sendable, Equatable, Identifiable {
+    public let name: String
+    public let label: String
+    public let request: SurfaceRequest
+    public var id: String { name }
+
+    public init(name: String, label: String, request: SurfaceRequest) {
+        self.name = name; self.label = label
+        var request = request
+        request.name = name
+        self.request = request
+    }
+}
+
+public extension SurfacePreset {
+    /// Named as `kurven-cli surface` names them, and built with its defaults,
+    /// so a preset and the CLI's plate of the same name are the same plate.
+    static let catalog: [SurfacePreset] = [
+        SurfacePreset(name: "torus", label: "Torus",
+                      request: SurfaceRequest(.torus(major: 2, minor: 1), lines: SIMD2(36, 18))),
+        SurfacePreset(name: "sn", label: "sn(z, 0.64) on its torus",
+                      request: SurfaceRequest(.sn(modulus: 0.64, major: 2, minor: 1, grid: 600))),
+        SurfacePreset(name: "forced", label: "Forced jerk oscillator",
+                      request: SurfaceRequest(.forced(system: "jerk", fit: 8000, harmonics: 24,
+                                                      radial: 0, axial: 1, radius: 2.5,
+                                                      duration: 2300, every: 0.01))),
+    ]
+
+    static func named(_ name: String) -> SurfacePreset? { catalog.first { $0.name == name } }
 }

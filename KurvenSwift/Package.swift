@@ -92,6 +92,6 @@ let package = Package(
         // Command Line Tools can do.
         .executableTarget(name: "KurvenApp",
                           dependencies: ["KurvenBake", "KurvenService", "KurvenLandscape",
-                                         "KurvenMath"]),
+                                         "KurvenMath", "KurvenDynamics"]),
     ]
 )

@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 import KurvenCore
 import KurvenMetal
 import KurvenBake
+import KurvenDynamics
 
 /// The window.
 ///
@@ -102,6 +103,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .flatMap { $0 + 1 < args.endIndex ? Double(args[$0 + 1]) : nil }
             Task { await headlessLandscape(what, resolution: resolution, cap: cap,
                                            screenshot: shot, save: save) }
+            return
+        }
+        // `--surface NAME [--screenshot PATH] [--bake PATH]` opens a surface
+        // from the catalog through the window's own Document -- the gallery's
+        // path -- so the window can be held to `kurven-cli surface NAME`:
+        // the same preview frame, pixel for pixel, and the same bake. With
+        // neither output it stays open, on that surface.
+        if let i = args.firstIndex(of: "--surface"), i + 1 < args.endIndex {
+            let name = args[i + 1]
+            func path(_ flag: String) -> URL? {
+                args.firstIndex(of: flag).flatMap {
+                    $0 + 1 < args.endIndex ? URL(fileURLWithPath: args[$0 + 1]) : nil
+                }
+            }
+            let resolution = args.firstIndex(of: "--resolution")
+                .flatMap { $0 + 1 < args.endIndex ? Int(args[$0 + 1]) : nil }
+            Task { await headlessSurface(name, screenshot: path("--screenshot"),
+                                         bake: path("--bake"), resolution: resolution) }
             return
         }
         // `--thumbnails` draws every catalog entry into the picker's cache and
@@ -223,6 +242,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               + "\(document.layers.reduce(0) { $0 + $1.paths.count }) paths")
         if let save { document.saveBundle(to: save) }
         if let screenshot { renderScreenshot(to: screenshot, what: document.title) }
+        exit(0)
+    }
+
+    /// Open a surface and report it, then draw or bake it and exit -- or, with
+    /// nothing to write, show it.
+    private func headlessSurface(_ name: String, screenshot: URL?, bake: URL?,
+                                 resolution: Int?) async {
+        guard let preset = SurfacePreset.named(name) else {
+            FileHandle.standardError.write(Data(("Kurven: no surface '\(name)'; the catalog has: "
+                + SurfacePreset.catalog.map(\.name).joined(separator: ", ") + "\n").utf8))
+            exit(1)
+        }
+        document.create(surface: preset)
+        while document.building { try? await Task.sleep(for: .milliseconds(25)) }
+        guard document.plate != nil else {
+            FileHandle.standardError.write(Data(
+                "Kurven: could not build \(name) — \(document.surfaceStatus ?? "no reason given")\n".utf8))
+            exit(1)
+        }
+        print("Kurven: \(document.title) — \(document.surfaceStatus ?? ""), "
+              + "\(document.layers.count) layers, "
+              + "\(document.layers.reduce(0) { $0 + $1.paths.count }) paths")
+        guard screenshot != nil || bake != nil else { fillScreen(); return }
+        if let screenshot { renderScreenshot(to: screenshot, what: document.title) }
+        if let bake {
+            if let resolution { document.bakeResolution = resolution }
+            document.bake(to: bake)
+            while document.baking { try? await Task.sleep(for: .milliseconds(20)) }
+            print("Kurven: \(document.bakeStatus ?? "bake produced no status")")
+            if document.bakeStatus?.hasPrefix("bake failed") == true { exit(1) }
+        }
         exit(0)
     }
 
@@ -392,6 +442,15 @@ struct DocumentWindow: View {
     @ViewBuilder
     private var overlay: some View {
         switch document.state {
+        case .empty where document.building:
+            // A first surface takes a moment -- the forced torus is fitted
+            // from a long run -- and the gallery staying up would read as the
+            // click having missed.
+            VStack(spacing: 8) {
+                ProgressView()
+                Text(document.surfaceStatus ?? "building…")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         case .empty:
             VStack(spacing: 0) {
                 Gallery(presets: document.catalog.presets, thumbnails: thumbnails,
@@ -415,7 +474,7 @@ struct DocumentWindow: View {
                 Text(message).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: 420)
             }
-        case .ready:
+        case .ready, .surface:
             EmptyView()
         }
     }
@@ -443,8 +502,14 @@ struct StatusView: View {
                     ProgressView().controlSize(.small)
                     Text("Reading \(url.lastPathComponent)…")
                 }
-            case .ready:
+            case .ready, .surface:
                 HStack(spacing: 14) {
+                    if document.building {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text(document.surfaceStatus ?? "building…")
+                        }
+                    }
                     if let n = document.navigator {
                         Text(String(format: "az %.1f°  el %.1f°", n.orbit.azimuth.degrees,
                                     n.orbit.elevation.degrees))

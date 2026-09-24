@@ -34,6 +34,8 @@ extension Document {
                                        resolution: catalog.defaultResolution)
         request.spacing = nil          // let the rules derive it for this window
         landscape = request
+        generation += 1
+        surfaceWanted = nil
         // A different function is a different landscape, not an edit of this
         // one: its styling is the new function's defaults, so nothing of the
         // old plate's cap or levels is carried across.
@@ -78,6 +80,7 @@ extension Document {
         wanted = nil
         sampling = true
         landscapeStatus = "sampling…"
+        let asked = generation
         Task {
             let clock = ContinuousClock()
             let started = clock.now
@@ -87,8 +90,11 @@ extension Document {
                 let bundle = try await Task.detached(priority: .userInitiated) {
                     try NativeLandscape.build(request)
                 }.value
-                adopt(bundle, keepingCamera: !framing && scene != nil)
-                shown = request
+                // A surface chosen meanwhile is the document now.
+                if generation == asked {
+                    adopt(bundle, keepingCamera: !framing && scene != nil)
+                    shown = request
+                }
                 landscapeStatus = "\(request.resolution)² in \(clock.now - started)"
             } catch {
                 landscapeStatus = "\(error)"
