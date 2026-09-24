@@ -189,13 +189,20 @@ public extension ParametricSurface {
         }
         for k in 0..<lines.u {
             let fixed = place(u, k, of: lines.u)
-            let c = run(v).map { P2<ParamSpace>(fixed, $0) }
-            coords.append(c); paths.append(c.map { P3(map($0).position) })
+            coords.append(run(v).map { P2<ParamSpace>(fixed, $0) })
         }
         for k in 0..<lines.v {
             let fixed = place(v, k, of: lines.v)
-            let c = run(u).map { P2<ParamSpace>($0, fixed) }
-            coords.append(c); paths.append(c.map { P3(map($0).position) })
+            coords.append(run(u).map { P2<ParamSpace>($0, fixed) })
+        }
+        // A line at a time, in parallel: the map may be expensive, as a
+        // fitted torus's Fourier series is.
+        paths = [[P3<WorldSpace>]](repeating: [], count: coords.count)
+        paths.withUnsafeMutableBufferPointer { out in
+            nonisolated(unsafe) let base = out.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: coords.count) { k in
+                base[k] = coords[k].map { P3(map($0).position) }
+            }
         }
         return PolylineSet(paths: paths, coords: coords)
     }

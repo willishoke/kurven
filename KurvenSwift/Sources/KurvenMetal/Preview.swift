@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import Metal
 import KurvenCore
 import KurvenShaderTypes
@@ -304,14 +305,27 @@ struct SurfaceInkGeometry {
         for (paths, folds) in zip(layers, onFolds) {
             let first = vertices.count
             if let paths, let coords = paths.coords {
+                // Facing is not asked of fold ink, nor of a surface with no
+                // outside; a zero normal says so to the shader. Otherwise the
+                // map's own normal, once per vertex and in parallel: a forced
+                // torus's map is a Fourier series of 1,225 terms, and its
+                // trajectory has a quarter of a million vertices.
+                var normals = [SIMD3<Float>](repeating: .zero, count: coords.count)
+                if !folds, let outward = surface.outward {
+                    let chunk = 4096, n = coords.count
+                    normals.withUnsafeMutableBufferPointer { out in
+                        nonisolated(unsafe) let base = out.baseAddress!
+                        DispatchQueue.concurrentPerform(iterations: (n + chunk - 1) / chunk) { b in
+                            for k in (b * chunk)..<min((b + 1) * chunk, n) {
+                                base[k] = SIMD3<Float>(surface.map(coords[k]).normal * outward)
+                            }
+                        }
+                    }
+                }
                 func vertex(_ k: Int) -> KVInkVertex {
                     let c = coords[k]
-                    // Facing is not asked of fold ink, nor of a surface with
-                    // no outside; a zero normal says so to the shader.
-                    let n = folds ? SIMD3<Double>.zero
-                        : surface.outward.map { surface.map(c).normal * $0 } ?? .zero
                     return KVInkVertex(position: SIMD3<Float>(paths.vertices[k].v),
-                                       normal: SIMD3<Float>(n),
+                                       normal: normals[k],
                                        coord: SIMD2<Float>(Float(c.x), Float(c.y)))
                 }
                 for i in 0..<paths.count {
