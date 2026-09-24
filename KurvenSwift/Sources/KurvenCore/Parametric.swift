@@ -263,6 +263,87 @@ public extension ParametricSurface {
         return PolylineSet(paths: paths, coords: coords)
     }
 
+    /// The lattice's unit normals, by central differences on the lattice --
+    /// one-sided at a bounded axis's ends -- `u` fastest, as `positions`.
+    ///
+    /// They do not depend on the camera, so they are computed once per
+    /// surface and handed to `latticeFoldLines` for every camera after.
+    /// Where the lattice is degenerate the normal is zero.
+    func latticeNormals() -> [SIMD3<Float>] {
+        let nu = u.samples, nv = v.samples
+        func at(_ i: Int, _ j: Int) -> SIMD3<Double> {
+            let ii = u.periodic ? u.sample(i) : min(max(i, 0), nu - 1)
+            let jj = v.periodic ? v.sample(j) : min(max(j, 0), nv - 1)
+            return positions[jj * nu + ii].v
+        }
+        var normals = [SIMD3<Float>](repeating: .zero, count: nu * nv)
+        normals.withUnsafeMutableBufferPointer { out in
+            nonisolated(unsafe) let base = out.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: nv) { j in
+                for i in 0..<nu {
+                    let n = simd_cross(at(i + 1, j) - at(i - 1, j), at(i, j + 1) - at(i, j - 1))
+                    let len = simd_length(n)
+                    base[j * nu + i] = len > 0 ? SIMD3<Float>(n / len) : .zero
+                }
+            }
+        }
+        return normals
+    }
+
+    /// The fold lines as the lattice sees them: `foldLines` without asking
+    /// the map anything.
+    ///
+    /// Marching squares on `n · sight` at the lattice points, from normals
+    /// computed once (`latticeNormals`), and each vertex placed by bilinear
+    /// interpolation of the lattice -- no refinement onto the exact fold. So
+    /// a fold is as accurate as the lattice is fine, which at a drawing
+    /// lattice is well under a pixel, and costs a dot product per lattice
+    /// point: fast enough to follow the camera. The preview draws these; the
+    /// bake keeps `foldLines`, whose vertices are exact.
+    func latticeFoldLines(normals: [SIMD3<Float>],
+                          sight: SIMD3<Double>) -> PolylineSet<WorldSpace> {
+        precondition(normals.count == positions.count,
+                     "\(normals.count) normals for \(positions.count) lattice points")
+        // One column and row past a periodic axis's end, as `foldLines`
+        // samples: the seam's cells close on the first samples.
+        let nu = u.cells, nv = v.cells, stride = u.samples
+        let s = SIMD3<Float>(sight)
+        var values = [Float](repeating: 0, count: (nu + 1) * (nv + 1))
+        values.withUnsafeMutableBufferPointer { out in
+            nonisolated(unsafe) let base = out.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: nv + 1) { j in
+                let row = v.sample(j) * stride
+                for i in 0...nu {
+                    base[j * (nu + 1) + i] = simd_dot(normals[row + u.sample(i)], s)
+                }
+            }
+        }
+        let field = Grid2D(width: nu + 1, height: nv + 1,
+                           domain: Domain(real: u.range, imag: v.range), values: values)
+
+        // The lattice's bilinear patch at a coordinate: its cell, and where
+        // in the cell.
+        func place(_ c: P2<ParamSpace>) -> P3<WorldSpace> {
+            func split(_ x: Double, _ axis: ParamAxis) -> (Int, Double) {
+                let f = (x - axis.range.lo) / axis.spacing
+                let k = min(max(Int(f.rounded(.down)), 0), axis.cells - 1)
+                return (k, f - Double(k))
+            }
+            let (i, a) = split(c.x, u), (j, b) = split(c.y, v)
+            let p00 = position(i, j).v, p10 = position(i + 1, j).v
+            let p01 = position(i, j + 1).v, p11 = position(i + 1, j + 1).v
+            return P3((1 - b) * ((1 - a) * p00 + a * p10) + b * ((1 - a) * p01 + a * p11))
+        }
+
+        var paths: [[P3<WorldSpace>]] = [], coords: [[P2<ParamSpace>]] = []
+        for line in Contour.lines(of: field, level: 0) {
+            let c = line.map { P2<ParamSpace>($0.x, $0.y) }
+            coords.append(c)
+            paths.append(c.map(place))
+        }
+        return PolylineSet(paths: paths, coords: coords)
+    }
+
     /// The torus of revolution about the z axis: `u` around the axis, `v`
     /// around the tube.
     ///

@@ -222,11 +222,15 @@ public final class MetalRenderer {
     private var cachedSurfaceInk: (ink: ContentID, geometry: SurfaceInkGeometry)?
     private var cachedFolds: (content: ContentID, ink: ContentID, view: simd_double4x4,
                               geometry: SurfaceInkGeometry)?
+    /// The lattice's normals, which the preview's folds are read from: fixed
+    /// for a surface, so a camera move costs a dot product per lattice point.
+    private var cachedNormals: (content: ContentID, normals: [SIMD3<Float>])?
     private var cachedCoordinates: (texture: MTLTexture, depth: MTLTexture)?
 
     /// Ink with coordinates, for the surface stroke shader. The fold lines
-    /// are rebuilt when the camera does anything but stand still; everything
-    /// else when the ink changes.
+    /// are rebuilt when the camera does anything but stand still -- read off
+    /// the lattice, `latticeFoldLines`, not refined onto the exact fold as
+    /// the bake's are -- and everything else when the ink changes.
     func surfaceInk(for scene: Scene, surface: ParametricSurface) throws -> SurfaceInk {
         let onFolds = scene.layers.map { layer -> Bool in
             if case .foldLines = layer.spec.source { return true }
@@ -246,8 +250,18 @@ public final class MetalRenderer {
         if let c = cachedFolds, c.content == scene.content, c.ink == scene.ink, c.view == view {
             folds = c.geometry
         } else {
-            let derived = onFolds.contains(true)
-                ? surface.foldLines(sight: scene.camera.view.sightLine) : nil
+            var derived: PolylineSet<WorldSpace>?
+            if onFolds.contains(true) {
+                let normals: [SIMD3<Float>]
+                if let c = cachedNormals, c.content == scene.content {
+                    normals = c.normals
+                } else {
+                    normals = surface.latticeNormals()
+                    cachedNormals = (scene.content, normals)
+                }
+                derived = surface.latticeFoldLines(normals: normals,
+                                                   sight: scene.camera.view.sightLine)
+            }
             folds = try SurfaceInkGeometry(onFolds.map { $0 ? derived : nil },
                                            surface: surface, onFolds: onFolds, device: device)
             cachedFolds = (scene.content, scene.ink, view, folds)

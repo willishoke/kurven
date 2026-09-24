@@ -5,6 +5,7 @@ import KurvenMath
 import KurvenMetal
 import KurvenBake
 import KurvenDynamics
+import KurvenLandscape
 
 // MARK: - a forced oscillator's invariant torus, found, fitted and drawn
 //
@@ -89,5 +90,119 @@ func forcedTorusTests() {
                      "and it draws both the trajectory and the folds",
                      "\(baked.strokes.layers[0].paths.count) trajectory runs, "
                      + "\(baked.strokes.layers[1].paths.count) fold runs")
+    }
+
+    latticeFoldTests(found)
+}
+
+// MARK: - the preview's folds, read off the lattice
+//
+// The preview re-derives the folds whenever the camera moves, so they have to
+// cost a dot product per lattice point and not a map evaluation per lattice
+// point: the forced torus's map is a 1,225-term Fourier series. Held to two
+// things: they are where the exact folds are, to a pixel of the preview, and
+// an orbit frame of the forced torus is fast enough to follow the pointer.
+
+/// The worst distance from any vertex of either set to the other set's
+/// segments, in view units: the symmetric Hausdorff distance of the two as
+/// drawn, to the vertices' own spacing.
+func hausdorff(_ a: PolylineSet<ViewSpace>, _ b: PolylineSet<ViewSpace>) -> Double {
+    func segments(_ s: PolylineSet<ViewSpace>) -> [(SIMD2<Double>, SIMD2<Double>)] {
+        var out: [(SIMD2<Double>, SIMD2<Double>)] = []
+        for p in 0..<s.count {
+            for i in s.offsets[p]..<(s.offsets[p + 1] - 1) {
+                out.append((s.vertices[i].xy.v, s.vertices[i + 1].xy.v))
+            }
+        }
+        return out
+    }
+    func directed(_ from: PolylineSet<ViewSpace>, _ to: [(SIMD2<Double>, SIMD2<Double>)]) -> Double {
+        var worst = 0.0
+        for v in from.vertices {
+            let q = v.xy.v
+            var best = Double.infinity
+            for (p0, p1) in to {
+                let d = p1 - p0, l2 = simd_length_squared(d)
+                let t = l2 > 0 ? min(max(simd_dot(q - p0, d) / l2, 0), 1) : 0
+                best = min(best, simd_length_squared(q - (p0 + t * d)))
+            }
+            worst = max(worst, best)
+        }
+        return worst.squareRoot()
+    }
+    return max(directed(a, segments(b)), directed(b, segments(a)))
+}
+
+func latticeFoldTests(_ found: InvariantTorus) {
+    let viewport = Viewport(width: 1600, height: 1200)
+    let e = Revolution.fitting(found)
+    let forced = found.surface(e, lattice: (1024, 512)).surface
+    let sn: ParametricSurface
+    do { sn = try PeriodicTorus.jacobiSN(modulus: 0.64).surface } catch {
+        Check.expect(false, "the sn torus builds", "\(error)"); return
+    }
+
+    Check.suite("surfaces: the preview's lattice folds are the exact folds, to a pixel") {
+        for (name, surface) in [("forced", forced), ("sn", sn)] {
+            let normals = surface.latticeNormals()
+            for plate in [PlateProjection(shear: 0, xAngle: -55, zAngle: 30, flipX: false, yScale: nil),
+                          PlateProjection(shear: 0.5, xAngle: -30, zAngle: 110, flipX: false,
+                                          yScale: nil)] {
+                let camera = Camera.plate(plate)
+                let sight = camera.view.sightLine
+                let exact = surface.foldLines(sight: sight)
+                let lattice = surface.latticeFoldLines(normals: normals, sight: sight)
+                let scene = Scene(surface: surface, layers: [], camera: camera, margin: 0)
+                guard let bounds = scene.quickBounds() else {
+                    Check.expect(false, "\(name) has bounds"); continue
+                }
+                let px = Framing.fitting(bounds, in: viewport).unitsPerPixel
+                let d = hausdorff(exact.mapped(camera.view), lattice.mapped(camera.view)) / px
+                Check.expect(exact.count > 0 && lattice.count > 0 && d < 1,
+                             "\(name), x \(Int(plate.xAngle))° z \(Int(plate.zAngle))°: "
+                             + "within a pixel at \(viewport.width)x\(viewport.height)",
+                             String(format: "Hausdorff %.3f px; %d exact runs, %d lattice runs",
+                                    d, exact.count, lattice.count))
+            }
+        }
+    }
+
+    Check.suite("surfaces: an orbit frame of the forced torus, folds and all, keeps up") {
+        let renderer = try MetalRenderer()
+        let trajectory = Layer(spec: LayerSpec(name: "trajectory", role: .scaffold,
+                                               source: .trajectory, width: 0.08,
+                                               heightPolicy: .surface),
+                               paths: try found.trajectory(e, duration: 500, every: 0.02))
+        let folds = Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldLines,
+                                          width: 0.6, heightPolicy: .surface),
+                          paths: .empty)
+        let orbit = Orbit(matching: PlateProjection(shear: 0, xAngle: -55, zAngle: 30,
+                                                    flipX: false, yScale: nil))
+        let scene = Scene(surface: forced, layers: [trajectory, folds], camera: orbit.camera,
+                          margin: 0)
+        guard let bounds = scene.quickBounds() else {
+            Check.expect(false, "the forced torus has bounds"); return
+        }
+        var navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
+        let target = try renderer.makePreviewTarget(viewport)
+        let options = PreviewOptions(slopeScale: 0)
+        // The first frame lays out the ink and the normals; the orbit after
+        // it pays only for what the camera changes.
+        try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
+                                   options: options, into: target)
+        let clock = ContinuousClock()
+        var frames: [Double] = []
+        for _ in 0..<7 {
+            navigator = navigator.applying(.orbit(SIMD2(12, 3)), in: viewport)
+            let t = try clock.measure {
+                try renderer.renderPreview(scene.looking(navigator.camera), navigator: navigator,
+                                           viewport: viewport, options: options, into: target)
+            }
+            frames.append(Double(t.components.attoseconds) / 1e15 + Double(t.components.seconds) * 1e3)
+        }
+        let median = frames.sorted()[frames.count / 2]
+        Check.expect(median < 25, "a frame at a new camera takes under 25 ms",
+                     String(format: "median %.1f ms of %@", median,
+                            frames.map { String(format: "%.1f", $0) }.joined(separator: ", ")))
     }
 }
