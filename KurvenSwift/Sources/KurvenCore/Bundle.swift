@@ -77,6 +77,15 @@ public struct KurvenBundle: Sendable {
         return l
     }
 
+    /// Everything the depth pass draws besides the heightfield itself: the
+    /// walls, and the pieces of the truncated surface the heightfield's own
+    /// triangles cut off (`Mesh.capRim`).
+    public func occluder() -> Mesh<WorldSpace> {
+        let o = manifest.occluder
+        return Mesh.concat([walls(), Mesh.capRim(of: surface, step: o.step,
+                                                 region: o.region, tiles: o.tiles)])
+    }
+
     /// The occluding walls, whether dumped or described.
     public func walls() -> Mesh<WorldSpace> {
         switch manifest.occluder.walls {

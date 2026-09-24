@@ -17,7 +17,8 @@ public struct ContentID: Hashable, Sendable {
 /// instanced once per tile, cut to a region, with its wall curtains.
 public struct Heightfield: Sendable {
     public let surface: Surface
-    /// Wall curtains, in world coordinates.
+    /// Wall curtains, and the cap rims where the heightfield's own triangles
+    /// cut the corner (`Mesh.capRim`), in world coordinates.
     public let occluder: Mesh<WorldSpace>
     /// Heightfield instances; always at least the identity.
     public let tiles: [Affine2]
@@ -106,7 +107,7 @@ public struct Scene: Sendable {
     /// The scene a bundle describes under one of its presets.
     public init(bundle: KurvenBundle, preset: CameraPreset) {
         self.init(surface: bundle.surface,
-                  occluder: bundle.walls(),
+                  occluder: bundle.occluder(),
                   tiles: bundle.manifest.occluder.tiles,
                   region: bundle.manifest.occluder.region,
                   step: bundle.manifest.occluder.step,
