@@ -162,6 +162,21 @@ public extension Surface {
         }
     }
 
+    /// Where the segment from `a`, under the cap, to `b`, over it, reaches the
+    /// cap -- on the rim, at exactly the cap's height. Nil when it does not,
+    /// or when there is no cap.
+    ///
+    /// Solved on the lifted heights, linearly: that is the same interpolation
+    /// the rim is contoured by, so the crossing lands on the drawn rim to
+    /// within a cell's bend.
+    func capCrossing(from a: P3<WorldSpace>, to b: P3<WorldSpace>) -> P3<WorldSpace>? {
+        let ea = a.z - caps.height(atX: a.x), eb = b.z - caps.height(atX: b.x)
+        guard ea.isFinite, eb.isFinite, ea <= 0, eb > 0 else { return nil }
+        let t = ea / (ea - eb)
+        let x = a.x + (b.x - a.x) * t
+        return P3(x, a.y + (b.y - a.y) * t, caps.height(atX: x))
+    }
+
     /// Every level of a described layer, contoured, lifted, filtered and tiled.
     ///
     /// A path that leaves the kept region and comes back is split where it left,
@@ -169,6 +184,13 @@ public extension Surface {
     /// as one polyline welds the far side of a contour to the near side; on the
     /// zeta plate that drew straight chords up to half the width of the domain
     /// across ground the cutout had deliberately removed.
+    ///
+    /// Where a path leaves by going *over the cap*, the split is at the cap
+    /// itself: the run gains a vertex on the rim (`capCrossing`) rather than
+    /// ending at its last vertex under it, which on a pole's flank is up to
+    /// half a world unit short. Only with a refiner: without one the ink is
+    /// exactly what Python derives from the same grids, which ends at the
+    /// last sample, and the fixtures hold it to that.
     func derive(_ source: LayerSource, policy: HeightPolicy, region: Region,
                 tiles: [Affine2], refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
         guard case .contour(let field, let levels, let keep, let tiled) = source else {
@@ -181,6 +203,7 @@ public extension Surface {
             guard let phase else { return .empty }
             grid = phase
         }
+        let carry = refine != nil && keep.keepsBelowCap
 
         var paths: [[P3<WorldSpace>]] = []
         for (level, lines) in Contour.levels(of: grid, levels) {
@@ -192,13 +215,26 @@ public extension Surface {
             for line in refined {
                 let lifted = lift(line, policy: policy, level: level)
                 var run: [P3<WorldSpace>] = []
+                var previous: (vertex: P3<WorldSpace>, admitted: Bool)?
                 for v in lifted {
-                    if admits(v, keep, region: region) {
+                    let admitted = admits(v, keep, region: region)
+                    if admitted {
+                        if carry, let p = previous, !p.admitted,
+                           let rim = capCrossing(from: v, to: p.vertex),
+                           admits(rim, keep, region: region) {
+                            run.append(rim)
+                        }
                         run.append(v)
                     } else {
+                        if carry, let p = previous, p.admitted,
+                           let rim = capCrossing(from: p.vertex, to: v),
+                           admits(rim, keep, region: region) {
+                            run.append(rim)
+                        }
                         if run.count >= 2 { paths.append(run) }
                         run = []
                     }
+                    previous = (v, admitted)
                 }
                 if run.count >= 2 { paths.append(run) }
             }
