@@ -10,6 +10,7 @@ public enum RendererError: Error, CustomStringConvertible {
     case pipeline(String)
     case allocation(String)
     case textureTooLarge(Int, limit: Int)
+    case unsupported(String)
 
     public var description: String {
         switch self {
@@ -19,6 +20,7 @@ public enum RendererError: Error, CustomStringConvertible {
         case .pipeline(let m): "metal: pipeline state failed (\(m))"
         case .allocation(let w): "metal: could not allocate \(w)"
         case .textureTooLarge(let n, let l): "metal: \(n) exceeds the \(l) texture limit"
+        case .unsupported(let what): "metal: \(what) is not supported"
         }
     }
 }
@@ -47,12 +49,23 @@ public final class MetalRenderer {
     public var commandQueue: MTLCommandQueue { queue }
     let heightPipeline: MTLRenderPipelineState
     let meshPipeline: MTLRenderPipelineState
+    // A parametric surface: its depth pass, MAX-blended like the heightfield's,
+    // and its coordinate pass, which keeps the front-most fragment's surface
+    // coordinate behind a real depth test.
+    let paramDepthPipeline: MTLRenderPipelineState
+    let coordPipeline: MTLRenderPipelineState
+    let coordDepthState: MTLDepthStencilState
     // The preview's second pass. Same geometry, different fragment work.
     let paperSurfacePipeline: MTLRenderPipelineState
     let paperWallPipeline: MTLRenderPipelineState
     let shadedSurfacePipeline: MTLRenderPipelineState
     let shadedWallPipeline: MTLRenderPipelineState
     let strokePipeline: MTLRenderPipelineState
+    // A parametric surface in the preview: as paper, shaded, and the ink on
+    // it, which is judged by surface coordinate rather than by depth.
+    let paramPaperPipeline: MTLRenderPipelineState
+    let paramShadedPipeline: MTLRenderPipelineState
+    let surfaceStrokePipeline: MTLRenderPipelineState
     let depthViewPipeline: MTLRenderPipelineState
     /// The pixel format the preview draws into; the depth pass is always
     /// r32Float.
@@ -81,12 +94,11 @@ public final class MetalRenderer {
             }
             return f
         }
-        let fragment = try function("kv_depth_fragment")
-
-        func pipeline(vertex: String) throws -> MTLRenderPipelineState {
+        func pipeline(vertex: String,
+                      fragment: String = "kv_depth_fragment") throws -> MTLRenderPipelineState {
             let d = MTLRenderPipelineDescriptor()
             d.vertexFunction = try function(vertex)
-            d.fragmentFunction = fragment
+            d.fragmentFunction = try function(fragment)
             let a = d.colorAttachments[0]!
             a.pixelFormat = .r32Float
             a.isBlendingEnabled = true
@@ -101,6 +113,31 @@ public final class MetalRenderer {
         }
         self.heightPipeline = try pipeline(vertex: "kv_height_vertex")
         self.meshPipeline = try pipeline(vertex: "kv_mesh_vertex")
+        self.paramDepthPipeline = try pipeline(vertex: "kv_param_vertex",
+                                               fragment: "kv_param_depth_fragment")
+
+        // The coordinate pass cannot MAX-blend: a blend keeps the greatest of
+        // each channel separately, and a coordinate is not ordered by depth.
+        // So it has a depth attachment of its own and keeps the fragment that
+        // wins a LESS test on normalized view depth -- deterministic, since
+        // Metal writes a pixel's fragments in primitive order -- and depends
+        // on nothing about how the depth pass interpolated.
+        do {
+            let d = MTLRenderPipelineDescriptor()
+            d.vertexFunction = try function("kv_param_vertex")
+            d.fragmentFunction = try function("kv_coord_fragment")
+            d.colorAttachments[0].pixelFormat = .rg32Float
+            d.depthAttachmentPixelFormat = .depth32Float
+            self.coordPipeline = try device.makeRenderPipelineState(descriptor: d)
+        } catch let e as RendererError { throw e }
+        catch { throw RendererError.pipeline("kv_param_vertex/kv_coord_fragment: \(error)") }
+        let depthState = MTLDepthStencilDescriptor()
+        depthState.depthCompareFunction = .less
+        depthState.isDepthWriteEnabled = true
+        guard let state = device.makeDepthStencilState(descriptor: depthState) else {
+            throw RendererError.allocation("the coordinate pass's depth state")
+        }
+        self.coordDepthState = state
 
         // The colour pass has no depth attachment. It does not need one: pass 1
         // already holds the front-most view depth at every pixel, and both the
@@ -135,6 +172,12 @@ public final class MetalRenderer {
                                                 blended: true)
         self.depthViewPipeline = try colorPipeline("kv_fullscreen_vertex",
                                                    "kv_depth_view_fragment")
+        self.paramPaperPipeline = try colorPipeline("kv_param_surface_vertex", "kv_paper_fragment")
+        self.paramShadedPipeline = try colorPipeline("kv_param_surface_vertex",
+                                                     "kv_shaded_fragment")
+        self.surfaceStrokePipeline = try colorPipeline("kv_surface_stroke_vertex",
+                                                       "kv_surface_stroke_fragment",
+                                                       blended: true)
     }
 
     /// Compile `Shaders.source`. Exposed so a test can fail `swift test` on a
@@ -164,8 +207,97 @@ public final class MetalRenderer {
 
     func resources(for scene: Scene) throws -> SceneResources {
         if let r = cachedResources, r.content == scene.content { return r }
-        let r = try SceneResources(scene: scene, device: device)
+        guard let h = scene.heightfield else {
+            throw RendererError.unsupported("drawing a parametric surface as a heightfield")
+        }
+        let r = try SceneResources(scene: scene, heightfield: h, device: device)
         cachedResources = r
+        return r
+    }
+
+    /// A parametric scene's position texture, memoized on content as the
+    /// heightfield's is: a tiled bake draws it once per tile.
+    private var cachedSurface: (content: ContentID, resources: SurfaceResources)?
+
+    private var cachedSurfaceInk: (ink: ContentID, geometry: SurfaceInkGeometry)?
+    private var cachedFolds: (content: ContentID, ink: ContentID, view: simd_double4x4,
+                              geometry: SurfaceInkGeometry)?
+    /// The lattice's normals, which the preview's folds are read from: fixed
+    /// for a surface, so a camera move costs a dot product per lattice point.
+    private var cachedNormals: (content: ContentID, normals: [SIMD3<Float>])?
+    private var cachedCoordinates: (texture: MTLTexture, depth: MTLTexture)?
+
+    /// Ink with coordinates, for the surface stroke shader. The fold lines
+    /// are rebuilt when the camera does anything but stand still -- read off
+    /// the lattice, `latticeFoldLines`, not refined onto the exact fold as
+    /// the bake's are -- and everything else when the ink changes.
+    func surfaceInk(for scene: Scene, surface: ParametricSurface) throws -> SurfaceInk {
+        let onFolds = scene.layers.map { layer -> Bool in
+            if case .foldLines = layer.spec.source { return true }
+            return false
+        }
+        let statics: SurfaceInkGeometry
+        if let c = cachedSurfaceInk, c.ink == scene.ink {
+            statics = c.geometry
+        } else {
+            statics = try SurfaceInkGeometry(
+                zip(scene.layers, onFolds).map { $1 ? nil : $0.paths },
+                surface: surface, onFolds: onFolds, device: device)
+            cachedSurfaceInk = (scene.ink, statics)
+        }
+        let view = scene.camera.view.m
+        let folds: SurfaceInkGeometry
+        if let c = cachedFolds, c.content == scene.content, c.ink == scene.ink, c.view == view {
+            folds = c.geometry
+        } else {
+            var derived: PolylineSet<WorldSpace>?
+            if onFolds.contains(true) {
+                let normals: [SIMD3<Float>]
+                if let c = cachedNormals, c.content == scene.content {
+                    normals = c.normals
+                } else {
+                    normals = surface.latticeNormals()
+                    cachedNormals = (scene.content, normals)
+                }
+                derived = surface.latticeFoldLines(normals: normals,
+                                                   sight: scene.camera.view.sightLine)
+            }
+            folds = try SurfaceInkGeometry(onFolds.map { $0 ? derived : nil },
+                                           surface: surface, onFolds: onFolds, device: device)
+            cachedFolds = (scene.content, scene.ink, view, folds)
+        }
+        return SurfaceInk(statics: statics, folds: folds, onFolds: onFolds)
+    }
+
+    /// The preview's coordinate target and the depth attachment its pass
+    /// tests against, at the viewport's size.
+    func coordinateTextures(rows: Int, cols: Int) throws -> (MTLTexture, MTLTexture) {
+        if let c = cachedCoordinates, c.texture.width == cols, c.texture.height == rows {
+            return (c.texture, c.depth)
+        }
+        let d = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rg32Float, width: cols, height: rows, mipmapped: false)
+        d.usage = [.renderTarget, .shaderRead]
+        d.storageMode = .private
+        let z = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .depth32Float, width: cols, height: rows, mipmapped: false)
+        z.usage = .renderTarget
+        z.storageMode = .private
+        guard let t = device.makeTexture(descriptor: d),
+              let zt = device.makeTexture(descriptor: z) else {
+            throw RendererError.allocation("a \(cols)x\(rows) coordinate target")
+        }
+        cachedCoordinates = (t, zt)
+        return (t, zt)
+    }
+
+    func surfaceResources(for scene: Scene) throws -> SurfaceResources {
+        if let c = cachedSurface, c.content == scene.content { return c.resources }
+        guard let s = scene.parametric else {
+            throw RendererError.unsupported("drawing a heightfield as a parametric surface")
+        }
+        let r = try SurfaceResources(s, device: device)
+        cachedSurface = (scene.content, r)
         return r
     }
 
@@ -244,6 +376,9 @@ public final class MetalRenderer {
                                                 limit: metalTextureLimit)
         }
 
+        if scene.parametric != nil {
+            return try renderSurface(scene, frame: frame).depth
+        }
         let res = try resources(for: scene)
         let out = try target(rows: frame.rows, cols: frame.cols)
         var uniforms = self.uniforms(scene, frame: frame, resources: res)
@@ -304,8 +439,9 @@ public final class MetalRenderer {
             domainSize: SIMD2<Float>(Float(d.real.length), Float(d.imag.length)),
             lattice: SIMD2<UInt32>(UInt32(res.latticeWidth), UInt32(res.latticeHeight)),
             gridSize: SIMD2<UInt32>(UInt32(res.gridWidth), UInt32(res.gridHeight)),
-            step: UInt32(scene.step),
-            cap: res.capBaked ? .infinity : Float(scene.surface.caps.height(atX: 0)),
+            step: UInt32(scene.heightfield?.step ?? 1),
+            cap: res.capBaked ? .infinity
+                : Float(scene.heightfield?.surface.caps.height(atX: 0) ?? .infinity),
             regionCount: UInt32(res.regionCount),
             empty: Self.emptySentinel)
     }
@@ -324,8 +460,9 @@ public extension MetalRenderer {
     /// shows up as a corrupted uniform and a crash rather than as a compile
     /// error. Asking the GPU what it sees turns that into a test.
     static func probeUniformLayout(device: MTLDevice, sending uniforms: KVUniforms,
-                                   and shading: KVShading)
-        throws -> (fields: [Float], uniformSize: Int, shadingSize: Int)
+                                   and shading: KVShading, and surface: KVSurface,
+                                   and ink: (vertex: KVInkVertex, camera: KVInk))
+        throws -> (fields: [Float], sizes: [Int])
     {
         let library = try makeLibrary(device: device)
         guard let function = library.makeFunction(name: "kv_layout_probe") else {
@@ -342,10 +479,16 @@ public extension MetalRenderer {
         }
         var u = uniforms
         var sh = shading
+        var sf = surface
+        var iv = ink.vertex
+        var ik = ink.camera
         encoder.setComputePipelineState(pipeline)
         encoder.setBytes(&u, length: MemoryLayout<KVUniforms>.stride, index: 0)
         encoder.setBuffer(out, offset: 0, index: 1)
         encoder.setBytes(&sh, length: MemoryLayout<KVShading>.stride, index: 2)
+        encoder.setBytes(&sf, length: MemoryLayout<KVSurface>.stride, index: 3)
+        encoder.setBytes(&iv, length: MemoryLayout<KVInkVertex>.stride, index: 4)
+        encoder.setBytes(&ik, length: MemoryLayout<KVInk>.stride, index: 5)
         encoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
         encoder.endEncoding()
@@ -355,6 +498,6 @@ public extension MetalRenderer {
 
         let p = out.contents().bindMemory(to: Float.self, capacity: n)
         let fields = Array(UnsafeBufferPointer(start: p, count: n))
-        return (Array(fields.dropLast(2)), Int(fields[n - 2]), Int(fields[n - 1]))
+        return (Array(fields.dropLast(5)), fields.suffix(5).map { Int($0) })
     }
 }

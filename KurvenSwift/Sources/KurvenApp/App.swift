@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 import KurvenCore
 import KurvenMetal
 import KurvenBake
+import KurvenDynamics
 
 /// The window.
 ///
@@ -27,9 +28,9 @@ struct KurvenApplication: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {
-                // A landscape is the new document here: the app no longer needs
-                // a bundle someone made earlier in order to show anything.
-                Button("New Landscape…") { delegate.newLandscape() }
+                // A landscape or a surface is the new document here: the app no
+                // longer needs a bundle someone made earlier to show anything.
+                Button("New…") { delegate.browse() }
                     .keyboardShortcut("n")
                 Button("Open…") { delegate.openPanel() }
                     .keyboardShortcut("o")
@@ -102,6 +103,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .flatMap { $0 + 1 < args.endIndex ? Double(args[$0 + 1]) : nil }
             Task { await headlessLandscape(what, resolution: resolution, cap: cap,
                                            screenshot: shot, save: save) }
+            return
+        }
+        // `--surface NAME [--screenshot PATH] [--bake PATH]` opens a surface
+        // from the catalog through the window's own Document -- the gallery's
+        // path -- so the window can be held to `kurven-cli surface NAME`:
+        // the same preview frame, pixel for pixel, and the same bake. With
+        // neither output it stays open, on that surface. `--set FIELD=VALUE`,
+        // repeated, then edits it as the controls do -- one edit at a time,
+        // each built from the plate before it.
+        if let i = args.firstIndex(of: "--surface"), i + 1 < args.endIndex {
+            let name = args[i + 1]
+            func path(_ flag: String) -> URL? {
+                args.firstIndex(of: flag).flatMap {
+                    $0 + 1 < args.endIndex ? URL(fileURLWithPath: args[$0 + 1]) : nil
+                }
+            }
+            let resolution = args.firstIndex(of: "--resolution")
+                .flatMap { $0 + 1 < args.endIndex ? Int(args[$0 + 1]) : nil }
+            var edits: [(String, Double)] = []
+            for (k, flag) in zip(args.indices, args) where flag == "--set" && k + 1 < args.endIndex {
+                let pair = args[k + 1].split(separator: "=", maxSplits: 1)
+                if pair.count == 2, let v = Double(pair[1]) { edits.append((String(pair[0]), v)) }
+            }
+            Task { await headlessSurface(name, edits: edits, screenshot: path("--screenshot"),
+                                         bake: path("--bake"), resolution: resolution) }
             return
         }
         // `--thumbnails` draws every catalog entry into the picker's cache and
@@ -226,28 +252,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         exit(0)
     }
 
+    /// Open a surface and report it, then draw or bake it and exit -- or, with
+    /// nothing to write, show it.
+    private func headlessSurface(_ name: String, edits: [(String, Double)] = [],
+                                 screenshot: URL?, bake: URL?, resolution: Int?) async {
+        guard let preset = SurfacePreset.named(name) else {
+            FileHandle.standardError.write(Data(("Kurven: no surface '\(name)'; the catalog has: "
+                + SurfacePreset.catalog.map(\.name).joined(separator: ", ") + "\n").utf8))
+            exit(1)
+        }
+        document.create(surface: preset)
+        while document.building { try? await Task.sleep(for: .milliseconds(25)) }
+        for (name, value) in edits {
+            guard let field = SurfaceRequest.Field(rawValue: name),
+                  document.surface?[field] != nil else {
+                FileHandle.standardError.write(Data(("Kurven: \(preset.name) has no field '\(name)'; "
+                    + "it has: " + (document.surface?.fields.map(\.rawValue) ?? [])
+                        .joined(separator: ", ") + "\n").utf8))
+                exit(1)
+            }
+            document.surface?[field] = value
+            document.surfaceEdited(draft: false)
+            while document.building { try? await Task.sleep(for: .milliseconds(25)) }
+            print("Kurven: \(name) = \(value) — \(document.surfaceStatus ?? "")")
+        }
+        guard document.plate != nil else {
+            FileHandle.standardError.write(Data(
+                "Kurven: could not build \(name) — \(document.surfaceStatus ?? "no reason given")\n".utf8))
+            exit(1)
+        }
+        print("Kurven: \(document.title) — \(document.surfaceStatus ?? ""), "
+              + "\(document.layers.count) layers, "
+              + "\(document.layers.reduce(0) { $0 + $1.paths.count }) paths")
+        guard screenshot != nil || bake != nil else { fillScreen(); return }
+        if let screenshot { renderScreenshot(to: screenshot, what: document.title) }
+        if let bake {
+            if let resolution { document.bakeResolution = resolution }
+            document.bake(to: bake)
+            while document.baking { try? await Task.sleep(for: .milliseconds(20)) }
+            print("Kurven: \(document.bakeStatus ?? "bake produced no status")")
+            if document.bakeStatus?.hasPrefix("bake failed") == true { exit(1) }
+        }
+        exit(0)
+    }
+
     /// Show the picker. Not "make a landscape at once": with fourteen
     /// functions in the catalog, the choice is the interesting part.
     private func warmThumbnails() async {
-        let catalog = document.catalog
+        let entries = document.catalog.presets.map(GalleryEntry.function)
+            + SurfacePreset.catalog.map(GalleryEntry.surface)
         let clock = ContinuousClock()
         let started = clock.now
-        thumbnails.warm(catalog.presets)
-        while thumbnails.images.count < catalog.presets.count {
-            if catalog.presets.allSatisfy({ thumbnails.images[$0.name] != nil
-                                            || thumbnails.isFailed($0) }) { break }
+        thumbnails.warm(entries)
+        while !entries.allSatisfy({ thumbnails.images[$0.id] != nil
+                                    || thumbnails.isFailed($0) }) {
             try? await Task.sleep(for: .milliseconds(50))
         }
-        for preset in catalog.presets {
-            let mark = thumbnails.images[preset.name] != nil ? "drew" : "FAILED"
-            print("  \(mark)  \(preset.name)")
+        for entry in entries {
+            let mark = thumbnails.images[entry.id] != nil ? "drew" : "FAILED"
+            print("  \(mark)  \(entry.id)")
         }
-        print("Kurven: \(thumbnails.images.count) of \(catalog.presets.count) "
+        print("Kurven: \(thumbnails.images.count) of \(entries.count) "
               + "thumbnails in \(clock.now - started)")
         exit(0)
     }
 
-    func newLandscape() {
+    func browse() {
         document.browsing = true
     }
 
@@ -380,8 +450,8 @@ struct DocumentWindow: View {
         }
         .navigationTitle(document.title)
         .sheet(isPresented: $document.browsing) {
-            Gallery(presets: document.catalog.presets, thumbnails: thumbnails,
-                    choose: { document.create($0) },
+            Gallery(functions: document.catalog.presets, surfaces: SurfacePreset.catalog,
+                    thumbnails: thumbnails, choose: document.create(_:),
                     dismiss: { document.browsing = false })
         }
         .toolbar {
@@ -392,10 +462,19 @@ struct DocumentWindow: View {
     @ViewBuilder
     private var overlay: some View {
         switch document.state {
+        case .empty where document.building:
+            // A first surface takes a moment -- the forced torus is fitted
+            // from a long run -- and the gallery staying up would read as the
+            // click having missed.
+            VStack(spacing: 8) {
+                ProgressView()
+                Text(document.surfaceStatus ?? "building…")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         case .empty:
             VStack(spacing: 0) {
-                Gallery(presets: document.catalog.presets, thumbnails: thumbnails,
-                        choose: { document.create($0) })
+                Gallery(functions: document.catalog.presets, surfaces: SurfacePreset.catalog,
+                        thumbnails: thumbnails, choose: document.create(_:))
                 Divider()
                 HStack {
                     Text("…or open a bundle someone already made.")
@@ -415,7 +494,7 @@ struct DocumentWindow: View {
                 Text(message).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: 420)
             }
-        case .ready:
+        case .ready, .surface:
             EmptyView()
         }
     }
@@ -443,8 +522,14 @@ struct StatusView: View {
                     ProgressView().controlSize(.small)
                     Text("Reading \(url.lastPathComponent)…")
                 }
-            case .ready:
+            case .ready, .surface:
                 HStack(spacing: 14) {
+                    if document.building {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text(document.surfaceStatus ?? "building…")
+                        }
+                    }
                     if let n = document.navigator {
                         Text(String(format: "az %.1f°  el %.1f°", n.orbit.azimuth.degrees,
                                     n.orbit.elevation.degrees))

@@ -1,0 +1,401 @@
+import Foundation
+import Dispatch
+import simd
+
+/// One direction of a parameter rectangle.
+///
+/// A periodic axis closes on itself: `samples` points at `lo + i * length /
+/// samples`, and the last cell runs from the last sample back to the first. A
+/// bounded axis has `samples` points spanning `[lo, hi]` inclusive, as a
+/// `Grid2D` does. The difference is one cell, and getting it wrong leaves a
+/// torus with a slit down one side or a sphere with a doubled seam.
+public struct ParamAxis: Sendable, Equatable {
+    public var range: Interval
+    public var periodic: Bool
+    public var samples: Int
+
+    public init(_ range: Interval, periodic: Bool, samples: Int) {
+        precondition(samples >= 2, "an axis needs at least two samples")
+        self.range = range; self.periodic = periodic; self.samples = samples
+    }
+
+    /// A whole turn, `[0, 2π)`.
+    public static func angle(samples: Int) -> ParamAxis {
+        ParamAxis(Interval(lo: 0, hi: 2 * .pi), periodic: true, samples: samples)
+    }
+
+    public var cells: Int { periodic ? samples : samples - 1 }
+    public var spacing: Double { range.length / Double(cells) }
+    public var period: Double? { periodic ? range.length : nil }
+
+    /// The coordinate of lattice index `i`, *unwrapped*: on a periodic axis
+    /// `i == samples` is one period past `i == 0`, which is what lets a cell
+    /// that closes the seam interpolate across it rather than back through
+    /// the whole range.
+    public func coordinate(_ i: Int) -> Double { range.lo + Double(i) * spacing }
+
+    /// The stored sample an unwrapped lattice index refers to.
+    public func sample(_ i: Int) -> Int {
+        periodic ? ((i % samples) + samples) % samples : i
+    }
+
+    /// The signed difference `a - b` taken the short way round a periodic
+    /// axis; plain subtraction on a bounded one.
+    public func difference(_ a: Double, _ b: Double) -> Double {
+        guard let period else { return a - b }
+        let d = a - b
+        return d - period * (d / period).rounded()
+    }
+}
+
+/// A point of a surface with its two partial derivatives.
+public struct SurfaceJet: Sendable, Equatable {
+    public var position: SIMD3<Double>
+    public var du: SIMD3<Double>
+    public var dv: SIMD3<Double>
+
+    public init(position: SIMD3<Double>, du: SIMD3<Double>, dv: SIMD3<Double>) {
+        self.position = position; self.du = du; self.dv = dv
+    }
+
+    /// `du × dv`: the normal of the parametrization's own orientation, not
+    /// normalized.
+    public var normal: SIMD3<Double> { simd_cross(du, dv) }
+}
+
+/// A surface given as a map from a parameter rectangle into space.
+///
+/// The map is exact and carries its derivatives, because the questions asked
+/// of it -- which way does it face here, and exactly where along this segment
+/// does it turn edge-on -- are asked at the ink's own coordinates, and a normal
+/// read off the nearest lattice point flips sign between neighbours precisely
+/// where the answer matters, at a fold. The lattice is what gets rasterized;
+/// the map is what gets asked.
+///
+/// A heightfield is the case `(u, v) -> (u, v, h(u, v))` with neither axis
+/// periodic; a torus has both periodic.
+public struct ParametricSurface: Sendable {
+    public let u: ParamAxis
+    public let v: ParamAxis
+    public let map: @Sendable (P2<ParamSpace>) -> SurfaceJet
+    /// The lattice, `u` fastest: `positions[j * u.samples + i]`.
+    public let positions: [P3<WorldSpace>]
+    /// `+1` when `du × dv` points out of the solid the surface bounds, `-1`
+    /// when it points in; `nil` when the surface bounds no solid.
+    ///
+    /// Only a closed, embedded, orientable surface bounds a solid, and only
+    /// for such a surface is "faces away from the viewer" the same as
+    /// "hidden": a sight line that reaches the back of it must first have
+    /// entered the solid through the front. That is a fact the caller knows
+    /// about its geometry -- it cannot be read off samples -- so it is
+    /// declared, and the orientation is then computed rather than guessed.
+    public let outward: Double?
+
+    /// - Parameter encloses: the surface is closed, embedded and orientable.
+    ///   Declaring it for a surface that passes through itself, or has a
+    ///   boundary, culls ink that is in plain view.
+    public init(u: ParamAxis, v: ParamAxis, encloses: Bool,
+                map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet) {
+        self.u = u; self.v = v; self.map = map
+        var positions: [P3<WorldSpace>] = []
+        positions.reserveCapacity(u.samples * v.samples)
+        // Six times the enclosed volume, by the divergence theorem over the
+        // lattice: the sum of p · (du × dv) du dv. Only its sign is used, and
+        // the sign is robust at any resolution that resolves the surface.
+        var volume = 0.0
+        for j in 0..<v.samples {
+            for i in 0..<u.samples {
+                let jet = map(P2(u.coordinate(i), v.coordinate(j)))
+                positions.append(P3(jet.position))
+                volume += simd_dot(jet.position, jet.normal)
+            }
+        }
+        self.positions = positions
+        if encloses {
+            precondition(volume.isFinite && abs(volume) > 0,
+                         "a surface declared to enclose a solid has no volume")
+            outward = volume > 0 ? 1 : -1
+        } else {
+            outward = nil
+        }
+    }
+
+    /// A surface whose lattice is already computed -- because evaluating the
+    /// map at every lattice point is the expensive part and the caller did it
+    /// once already, in parallel or for its own checks. The map still answers
+    /// every question asked at an arbitrary point.
+    ///
+    /// The orientation comes from the lattice's own central-difference
+    /// normals rather than the map's: only its sign is used, and a lattice
+    /// fine enough to draw is fine enough for the sign of its volume.
+    public init(u: ParamAxis, v: ParamAxis, encloses: Bool, positions: [P3<WorldSpace>],
+                map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet) {
+        precondition(positions.count == u.samples * v.samples,
+                     "\(positions.count) positions for a \(u.samples)x\(v.samples) lattice")
+        self.u = u; self.v = v; self.map = map; self.positions = positions
+        guard encloses else { outward = nil; return }
+        func at(_ i: Int, _ j: Int) -> SIMD3<Double> {
+            let ii = u.periodic ? u.sample(i) : min(max(i, 0), u.samples - 1)
+            let jj = v.periodic ? v.sample(j) : min(max(j, 0), v.samples - 1)
+            return positions[jj * u.samples + ii].v
+        }
+        var volume = 0.0
+        for j in 0..<v.samples {
+            for i in 0..<u.samples {
+                let du = at(i + 1, j) - at(i - 1, j), dv = at(i, j + 1) - at(i, j - 1)
+                volume += simd_dot(at(i, j), simd_cross(du, dv))
+            }
+        }
+        precondition(volume.isFinite && abs(volume) > 0,
+                     "a surface declared to enclose a solid has no volume")
+        outward = volume > 0 ? 1 : -1
+    }
+
+    public func position(_ i: Int, _ j: Int) -> P3<WorldSpace> {
+        positions[v.sample(j) * u.samples + u.sample(i)]
+    }
+
+    /// How squarely the surface faces the viewer at `c`: the cosine between
+    /// the outward normal and the direction back toward the eye. Positive
+    /// facing, negative facing away, zero on a fold. `nil` for a surface that
+    /// has no outside, where the question has no answer.
+    public func facing(_ c: P2<ParamSpace>, sight: SIMD3<Double>) -> Double? {
+        guard let outward else { return nil }
+        let n = map(c).normal
+        let len = simd_length(n)
+        guard len > 0 else { return 0 }
+        return -outward * simd_dot(n, sight) / len
+    }
+}
+
+public extension ParametricSurface {
+    /// Lines of constant `u` -- `u` of them, evenly spaced -- and of constant
+    /// `v`, each drawn through `resolution` steps of the other coordinate
+    /// with its surface coordinate beside every vertex.
+    ///
+    /// On a periodic axis the lines sit at `lo + k * length / count` and a
+    /// line running along it closes, its last vertex one period past its
+    /// first so the coordinates stay continuous; on a bounded axis they
+    /// include both ends.
+    func parameterLines(counts lines: (u: Int, v: Int),
+                        resolution: Int) -> PolylineSet<WorldSpace> {
+        var paths: [[P3<WorldSpace>]] = [], coords: [[P2<ParamSpace>]] = []
+        func place(_ axis: ParamAxis, _ k: Int, of count: Int) -> Double {
+            axis.range.lo + axis.range.length * Double(k)
+                / Double(axis.periodic ? count : max(count - 1, 1))
+        }
+        func run(_ axis: ParamAxis) -> [Double] {
+            (0...resolution).map { axis.range.lo + axis.range.length * Double($0) / Double(resolution) }
+        }
+        for k in 0..<lines.u {
+            let fixed = place(u, k, of: lines.u)
+            coords.append(run(v).map { P2<ParamSpace>(fixed, $0) })
+        }
+        for k in 0..<lines.v {
+            let fixed = place(v, k, of: lines.v)
+            coords.append(run(u).map { P2<ParamSpace>($0, fixed) })
+        }
+        // A line at a time, in parallel: the map may be expensive, as a
+        // fitted torus's Fourier series is.
+        paths = [[P3<WorldSpace>]](repeating: [], count: coords.count)
+        paths.withUnsafeMutableBufferPointer { out in
+            nonisolated(unsafe) let base = out.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: coords.count) { k in
+                base[k] = coords[k].map { P3(map($0).position) }
+            }
+        }
+        return PolylineSet(paths: paths, coords: coords)
+    }
+
+    /// The fold lines for sight lines along `sight`: where the surface turns
+    /// edge-on, `n · sight = 0`, which is where its outline and every inner
+    /// silhouette lie.
+    ///
+    /// Traced by marching squares on that product over the parameter
+    /// rectangle -- sampled one step past a periodic axis's end, so a fold
+    /// crosses the seam instead of stopping at it -- and every vertex then
+    /// moved onto the exact fold by bisection along the product's gradient.
+    /// The grid decides which folds exist; the map decides where they run.
+    /// They depend on the camera, so they are derived for one, never stored.
+    func foldLines(sight: SIMD3<Double>, grid: (u: Int, v: Int)? = nil) -> PolylineSet<WorldSpace> {
+        let nu = grid?.u ?? u.cells, nv = grid?.v ?? v.cells
+        func edgeOn(_ c: P2<ParamSpace>) -> Double {
+            let n = map(c).normal
+            let len = simd_length(n)
+            return len > 0 ? simd_dot(n, sight) / len : 0
+        }
+        let du = u.range.length / Double(nu), dv = v.range.length / Double(nv)
+        // Row by row in parallel: each writes only its own row. The map is
+        // the expensive part, and this is asked again whenever the camera
+        // moves.
+        var values = [Float](repeating: 0, count: (nu + 1) * (nv + 1))
+        values.withUnsafeMutableBufferPointer { out in
+            nonisolated(unsafe) let base = out.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: nv + 1) { j in
+                for i in 0...nu {
+                    base[j * (nu + 1) + i] = Float(edgeOn(P2(u.range.lo + Double(i) * du,
+                                                             v.range.lo + Double(j) * dv)))
+                }
+            }
+        }
+        let field = Grid2D(width: nu + 1, height: nv + 1,
+                           domain: Domain(real: u.range, imag: v.range), values: values)
+
+        // Onto the fold: bracket a sign change along the gradient within a
+        // cell either way, then bisect it to the last bit.
+        let h = 0.25 * min(du, dv)
+        func refine(_ c: P2<ParamSpace>) -> P2<ParamSpace> {
+            let g = SIMD2(edgeOn(P2(c.x + h, c.y)) - edgeOn(P2(c.x - h, c.y)),
+                          edgeOn(P2(c.x, c.y + h)) - edgeOn(P2(c.x, c.y - h)))
+            let len = simd_length(g)
+            guard len > 0 else { return c }
+            let d = g / len * max(du, dv)
+            var a = c.v - d, b = c.v + d
+            var fa = edgeOn(P2(a))
+            guard (fa > 0) != (edgeOn(P2(b)) > 0) else { return c }
+            for _ in 0..<60 {
+                let m = 0.5 * (a + b)
+                let fm = edgeOn(P2(m))
+                if (fm > 0) == (fa > 0) { a = m; fa = fm } else { b = m }
+            }
+            return P2(0.5 * (a + b))
+        }
+
+        var paths: [[P3<WorldSpace>]] = [], coords: [[P2<ParamSpace>]] = []
+        for line in Contour.lines(of: field, level: 0) {
+            let c = line.map { refine(P2<ParamSpace>($0.x, $0.y)) }
+            coords.append(c)
+            paths.append(c.map { P3(map($0).position) })
+        }
+        return PolylineSet(paths: paths, coords: coords)
+    }
+
+    /// The lattice's unit normals, by central differences on the lattice --
+    /// one-sided at a bounded axis's ends -- `u` fastest, as `positions`.
+    ///
+    /// They do not depend on the camera, so they are computed once per
+    /// surface and handed to `latticeFoldLines` for every camera after.
+    /// Where the lattice is degenerate the normal is zero.
+    func latticeNormals() -> [SIMD3<Float>] {
+        let nu = u.samples, nv = v.samples
+        func at(_ i: Int, _ j: Int) -> SIMD3<Double> {
+            let ii = u.periodic ? u.sample(i) : min(max(i, 0), nu - 1)
+            let jj = v.periodic ? v.sample(j) : min(max(j, 0), nv - 1)
+            return positions[jj * nu + ii].v
+        }
+        var normals = [SIMD3<Float>](repeating: .zero, count: nu * nv)
+        normals.withUnsafeMutableBufferPointer { out in
+            nonisolated(unsafe) let base = out.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: nv) { j in
+                for i in 0..<nu {
+                    let n = simd_cross(at(i + 1, j) - at(i - 1, j), at(i, j + 1) - at(i, j - 1))
+                    let len = simd_length(n)
+                    base[j * nu + i] = len > 0 ? SIMD3<Float>(n / len) : .zero
+                }
+            }
+        }
+        return normals
+    }
+
+    /// The fold lines as the lattice sees them: `foldLines` without asking
+    /// the map anything.
+    ///
+    /// Marching squares on `n · sight` at the lattice points, from normals
+    /// computed once (`latticeNormals`), and each vertex placed by bilinear
+    /// interpolation of the lattice -- no refinement onto the exact fold. So
+    /// a fold is as accurate as the lattice is fine, which at a drawing
+    /// lattice is well under a pixel, and costs a dot product per lattice
+    /// point: fast enough to follow the camera. The preview draws these; the
+    /// bake keeps `foldLines`, whose vertices are exact.
+    func latticeFoldLines(normals: [SIMD3<Float>],
+                          sight: SIMD3<Double>) -> PolylineSet<WorldSpace> {
+        precondition(normals.count == positions.count,
+                     "\(normals.count) normals for \(positions.count) lattice points")
+        // One column and row past a periodic axis's end, as `foldLines`
+        // samples: the seam's cells close on the first samples.
+        let nu = u.cells, nv = v.cells, stride = u.samples
+        let s = SIMD3<Float>(sight)
+        var values = [Float](repeating: 0, count: (nu + 1) * (nv + 1))
+        values.withUnsafeMutableBufferPointer { out in
+            nonisolated(unsafe) let base = out.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: nv + 1) { j in
+                let row = v.sample(j) * stride
+                for i in 0...nu {
+                    base[j * (nu + 1) + i] = simd_dot(normals[row + u.sample(i)], s)
+                }
+            }
+        }
+        let field = Grid2D(width: nu + 1, height: nv + 1,
+                           domain: Domain(real: u.range, imag: v.range), values: values)
+
+        // The lattice's bilinear patch at a coordinate: its cell, and where
+        // in the cell.
+        func place(_ c: P2<ParamSpace>) -> P3<WorldSpace> {
+            func split(_ x: Double, _ axis: ParamAxis) -> (Int, Double) {
+                let f = (x - axis.range.lo) / axis.spacing
+                let k = min(max(Int(f.rounded(.down)), 0), axis.cells - 1)
+                return (k, f - Double(k))
+            }
+            let (i, a) = split(c.x, u), (j, b) = split(c.y, v)
+            let p00 = position(i, j).v, p10 = position(i + 1, j).v
+            let p01 = position(i, j + 1).v, p11 = position(i + 1, j + 1).v
+            return P3((1 - b) * ((1 - a) * p00 + a * p10) + b * ((1 - a) * p01 + a * p11))
+        }
+
+        var paths: [[P3<WorldSpace>]] = [], coords: [[P2<ParamSpace>]] = []
+        for line in Contour.lines(of: field, level: 0) {
+            let c = line.map { P2<ParamSpace>($0.x, $0.y) }
+            coords.append(c)
+            paths.append(c.map(place))
+        }
+        return PolylineSet(paths: paths, coords: coords)
+    }
+
+    /// The torus of revolution about the z axis: `u` around the axis, `v`
+    /// around the tube.
+    ///
+    /// It bounds a solid exactly when the tube does not reach the axis,
+    /// `major > minor`; the horn and spindle tori pass through themselves.
+    static func torus(major R: Double, minor r: Double,
+                      samples: (u: Int, v: Int)) -> ParametricSurface {
+        torus(major: R, minor: r, u: .angle(samples: samples.u), v: .angle(samples: samples.v))
+    }
+
+    /// The same torus over any two periodic axes: each axis's range is one
+    /// turn, so a rectangle of periods -- a doubly periodic function's
+    /// fundamental domain -- glues into it edge to edge.
+    static func torus(major R: Double, minor r: Double,
+                      u: ParamAxis, v: ParamAxis) -> ParametricSurface {
+        precondition(u.periodic && v.periodic, "a torus is periodic both ways")
+        let (su0, sv0) = (u.range.lo, v.range.lo)
+        let (ku, kv) = (2 * Double.pi / u.range.length, 2 * Double.pi / v.range.length)
+        return ParametricSurface(u: u, v: v, encloses: R > r) { c in
+            let a = ku * (c.x - su0), b = kv * (c.y - sv0)
+            let (ca, sa, cb, sb) = (cos(a), sin(a), cos(b), sin(b))
+            let ring = R + r * cb
+            return SurfaceJet(position: SIMD3(ring * ca, ring * sa, r * sb),
+                              du: ku * SIMD3(-ring * sa, ring * ca, 0),
+                              dv: kv * SIMD3(-r * sb * ca, -r * sb * sa, r * cb))
+        }
+    }
+}
+
+public extension Transform where A == WorldSpace, B == ViewSpace {
+    /// The direction a sight line travels through the world, unit length.
+    ///
+    /// Under an affine camera the eye looks along the one direction that
+    /// changes neither view x nor view y -- the kernel of the first two rows
+    /// -- signed so that travelling it takes view z down, away from the eye.
+    /// That is *not* the gradient of view z unless the camera is orthonormal,
+    /// and the plate cameras are not: they shear. Asking the gradient instead
+    /// tilts every fold by the shear.
+    var sightLine: SIMD3<Double> {
+        let c = m.columns
+        let row0 = SIMD3(c.0.x, c.1.x, c.2.x)
+        let row1 = SIMD3(c.0.y, c.1.y, c.2.y)
+        let row2 = SIMD3(c.0.z, c.1.z, c.2.z)
+        var d = simd_normalize(simd_cross(row0, row1))
+        if simd_dot(row2, d) > 0 { d = -d }
+        return d
+    }
+}

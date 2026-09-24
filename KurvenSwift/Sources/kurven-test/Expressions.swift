@@ -303,3 +303,91 @@ func refinementTests() {
         _ = bundle
     }
 }
+
+// MARK: - the numbers in an expression
+
+/// `KurvenMath.Expression.literals` and `replacing`: a slider moves a number without
+/// changing the shape of the expression around it.
+func literalTests() {
+    Check.suite("literals: every number in the source, with its place") {
+        let one = KurvenMath.Expression.literals(in: "sin(z)cn(z, 0.64)")
+        Check.expect(one == [KurvenMath.Expression.Literal(position: 12, length: 4, value: 0.64, text: "0.64")],
+                     "cn(z, 0.64) has one literal, the modulus", "\(one)")
+
+        let mixed = KurvenMath.Expression.literals(in: "-z^2 + 2^-0.5 z - 3")
+        Check.expect(mixed.map(\.text) == ["2", "2", "-0.5", "3"]
+                     && mixed.map(\.value) == [2, 2, -0.5, 3]
+                     && mixed.map(\.position) == [3, 7, 9, 18],
+                     "a minus after an operator is the literal's sign; after an operand it is subtraction",
+                     "\(mixed.map { "\($0.text)@\($0.position)" })")
+
+        let forms = KurvenMath.Expression.literals(in: "1e-3 z! + (-1)! + .5")
+        Check.expect(forms.map(\.text) == ["1e-3", "-1", ".5"]
+                     && forms.map(\.value) == [1e-3, -1, 0.5],
+                     "exponent forms, a sign after '(', and a bare point", "\(forms.map(\.text))")
+
+        Check.expect(KurvenMath.Expression.literals(in: "gamma(z)").isEmpty, "an expression with no numbers has none")
+        Check.expect(KurvenMath.Expression.literals(in: "2 $ z").isEmpty, "text the tokenizer refuses has none")
+    }
+
+    Check.suite("literals: rewriting one keeps the expression's shape") {
+        func moved(_ text: String, _ index: Int, _ value: Double) -> String {
+            KurvenMath.Expression.replacing(KurvenMath.Expression.literals(in: text)[index], with: value, in: text)
+        }
+        Check.expect(moved("sin(z)cn(z, 0.64)", 0, 0.71) == "sin(z)cn(z, 0.71)",
+                     "the modulus of cn moves in place")
+        Check.expect(moved("2^-0.5", 1, 0.25) == "2^0.25",
+                     "a signed literal crossing zero drops its sign")
+        Check.expect(moved("2^0.25", 1, -0.5) == "2^-0.5",
+                     "and an unsigned one after an operator gains one")
+        Check.expect(moved("2!", 0, -1) == "(-1)!" && moved("(-1)!", 0, 2) == "(2)!",
+                     "before a factorial a negative value is parenthesized")
+        Check.expect(moved("z-0.5", 0, -0.3) == "z-(-0.3)",
+                     "so subtraction of a negative reads as one")
+        let parsed = try KurvenMath.Expression.parse("(-1)!")
+        Check.expect(parsed == .factorial(.negate(.number(1))),
+                     "which is the reading a slider must not lose: (-1)!, not -(1!)")
+        let again = KurvenMath.Expression.literals(in: moved("z-0.5", 0, -0.3))
+        Check.expect(again.count == 1 && again[0].value == -0.3 && again[0].text == "-0.3",
+                     "and the literal is found again, sign and all, at the same index",
+                     "\(again)")
+        Check.expect(moved("2z + 3", 0, 2.5) == "2.5z + 3" && moved("2exp(z)", 0, 2.5) == "2.5exp(z)",
+                     "juxtaposition survives, including before a name that starts with e")
+        let f = try KurvenMath.Expression.compile(moved("z - 0.5", 0, -0.3))
+        Check.expect((f(Complex(1)) - Complex(1.3)).magnitude < 1e-15,
+                     "and the rewritten expression evaluates to what the number says")
+    }
+
+    Check.suite("literals: numbers are written the way the language writes them") {
+        Check.expect(KurvenMath.Expression.formatNumber(2) == "2" && KurvenMath.Expression.formatNumber(-3) == "-3",
+                     "integers without a point")
+        Check.expect(KurvenMath.Expression.formatNumber(0.1 + 0.2, significant: 6) == "0.3",
+                     "a slider's value rounded to what it means", KurvenMath.Expression.formatNumber(0.1 + 0.2, significant: 6))
+        Check.expect(KurvenMath.Expression.formatNumber(1e-5) == "1e-05" && KurvenMath.Expression.formatNumber(0.64) == "0.64",
+                     "and otherwise the shortest decimal that reads back")
+    }
+
+    Check.suite("literals: each number's role is what a control would call it") {
+        func roles(_ text: String) -> [String] {
+            KurvenMath.Expression.literals(in: text).map {
+                KurvenMath.Expression.role(of: $0, in: text).label
+            }
+        }
+        Check.expect(roles("sin(z)cn(z, 0.64)") == ["Modulus"], "the modulus of cn", "\(roles("sin(z)cn(z, 0.64)"))")
+        Check.expect(roles("besselj(2, z)") == ["Order"], "the order of a Bessel function")
+        Check.expect(roles("gamma(2)") == ["Argument"], "a number where z would go")
+        Check.expect(roles("z^3 - 1") == ["Exponent", "Constant"], "an exponent and a term",
+                     "\(roles("z^3 - 1"))")
+        Check.expect(roles("2z + 1/z + z/2") == ["Coefficient", "Coefficient", "Divisor"],
+                     "factors beside a name, over and under a slash", "\(roles("2z + 1/z + z/2"))")
+        Check.expect(roles("cn(2z, -0.5)^-2") == ["Coefficient", "Modulus", "Exponent"],
+                     "roles decide in order: a factor inside a call, a signed modulus, a signed exponent",
+                     "\(roles("cn(2z, -0.5)^-2"))")
+        Check.expect(roles("(z+1)(z-2)") == ["Constant", "Constant"],
+                     "terms inside groups are constants", "\(roles("(z+1)(z-2)"))")
+        Check.expect(KurvenMath.Language.function("cn")!.parameters == ["argument", "modulus"]
+                     && KurvenMath.Language.function("besselk")!.parameters == ["order", "argument"]
+                     && KurvenMath.Language.function("exp")!.parameters == ["argument"],
+                     "the function table names its parameters")
+    }
+}

@@ -377,6 +377,9 @@ public enum Language {
         public let arity: Int
         public let aliases: [String]
         public let help: String
+        /// What each argument is, as a control would name it: `argument` for
+        /// a point of the plane, `order` or `modulus` for a parameter.
+        public let parameters: [String]
         let apply: @Sendable ([Complex]) -> Complex
     }
 
@@ -394,12 +397,15 @@ public enum Language {
 
     static func f1(_ name: String, _ help: String, _ aliases: [String] = [],
                    _ body: @escaping @Sendable (Complex) -> Complex) -> Function {
-        Function(name: name, arity: 1, aliases: aliases, help: help) { body($0[0]) }
+        Function(name: name, arity: 1, aliases: aliases, help: help,
+                 parameters: ["argument"]) { body($0[0]) }
     }
 
     static func f2(_ name: String, _ help: String, _ aliases: [String] = [],
+                   parameters: [String],
                    _ body: @escaping @Sendable (Complex, Complex) -> Complex) -> Function {
-        Function(name: name, arity: 2, aliases: aliases, help: help) { body($0[0], $0[1]) }
+        Function(name: name, arity: 2, aliases: aliases, help: help,
+                 parameters: parameters) { body($0[0], $0[1]) }
     }
 
     public static let functions: [Function] = [
@@ -436,13 +442,13 @@ public enum Language {
         },
         f1("airyai", "Ai(z)", ["Ai"]) { Airy.ai($0) },
         f1("airybi", "Bi(z)", ["Bi"]) { Airy.bi($0) },
-        f2("besselj", "J_n(z), first argument the order", ["jv"]) { Bessel.j(parameter($0), $1) },
-        f2("bessely", "Y_n(z), first argument the order", ["yv"]) { Bessel.y(parameter($0), $1) },
-        f2("besseli", "I_n(z), first argument the order", ["iv"]) { Bessel.i(parameter($0), $1) },
-        f2("besselk", "K_n(z), first argument the order", ["kv"]) { Bessel.k(parameter($0), $1) },
-        f2("sn", "Jacobi sn(z, m), doubly periodic") { Jacobi.complex($0, parameter($1)).sn },
-        f2("cn", "Jacobi cn(z, m), doubly periodic") { Jacobi.complex($0, parameter($1)).cn },
-        f2("dn", "Jacobi dn(z, m), doubly periodic") { Jacobi.complex($0, parameter($1)).dn },
+        f2("besselj", "J_n(z), first argument the order", ["jv"], parameters: ["order", "argument"]) { Bessel.j(parameter($0), $1) },
+        f2("bessely", "Y_n(z), first argument the order", ["yv"], parameters: ["order", "argument"]) { Bessel.y(parameter($0), $1) },
+        f2("besseli", "I_n(z), first argument the order", ["iv"], parameters: ["order", "argument"]) { Bessel.i(parameter($0), $1) },
+        f2("besselk", "K_n(z), first argument the order", ["kv"], parameters: ["order", "argument"]) { Bessel.k(parameter($0), $1) },
+        f2("sn", "Jacobi sn(z, m), doubly periodic", parameters: ["argument", "modulus"]) { Jacobi.complex($0, parameter($1)).sn },
+        f2("cn", "Jacobi cn(z, m), doubly periodic", parameters: ["argument", "modulus"]) { Jacobi.complex($0, parameter($1)).cn },
+        f2("dn", "Jacobi dn(z, m), doubly periodic", parameters: ["argument", "modulus"]) { Jacobi.complex($0, parameter($1)).dn },
         f1("abs", "|z|, as a real value") { Complex($0.magnitude) },
         f1("re", "the real part") { Complex($0.re) },
         f1("im", "the imaginary part") { Complex($0.im) },

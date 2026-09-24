@@ -4,6 +4,8 @@ import KurvenMetal
 import KurvenBake
 import KurvenService
 import KurvenLandscape
+import KurvenMath
+import KurvenDynamics
 
 /// `kurven-cli` -- the headless half of the frontend.
 ///
@@ -97,6 +99,36 @@ usage: kurven-cli <command> [options]
         PREFIX.<layer>.npy plus CSR offsets, which is what
         tests/compare_bake.py reads to check the result against the Python
         plate stroke for stroke.
+
+  surface torus [--lines U,V] [--samples N]
+  surface sn [--modulus M] [--grid N]
+  surface periodic --expression E --periods P1,P2 [--grid N]
+  surface forced [--system jerk] [--duration T] [--every DT] [--ink W]
+          [--harmonics M] [--fit T] [--radial I] [--axial J] [--lines U,V]
+          [--major R] [--minor r]
+          [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N]
+          [--tiles N] [--width W] [--folds W] -o out.svg
+          [--mode M] [--width-px N] [--height-px N] -o out.png
+        Bake a surface to SVG, hidden lines decided by where on the surface
+        each vertex lies rather than by depth. torus draws its parameter
+        lines. sn and periodic draw a doubly periodic function's |f| and
+        arg f contours on the torus its period rectangle glues into: sn(z, M)
+        on [0, 4K) x [0, 2K'), or any expression over [0, P1) x [0, P2).
+        forced finds a forced system's invariant torus in the spectrum of a
+        long run, fits it as a Fourier series in the forcing phase and the
+        system's own, and draws --duration of the trajectory on it, the
+        forcing phase as the angle of revolution.
+        The camera is a plate camera: --x-angle tilts, --z-angle turns, --shear
+        is the oblique foreshortening the published plates use. The fold
+        lines -- outline and inner silhouettes -- are drawn at --folds (twice
+        --width by default; 0 leaves them out). An output ending in .png
+        renders one frame of the realtime preview instead of baking.
+
+  surface-costs [--repeat N]
+        Time what each of the window's surface controls costs: the plate
+        rebuilt from the one before it, and the first preview frame after,
+        as the window would pay for them -- at full resolution, and at the
+        draft lattice a drag uses. The numbers SurfaceSection's doc records.
 
   depth <bundle> [--preset NAME] [--resolution N] -o depth.npy
         Dump the depth buffer as float32 .npy, for comparison against the
@@ -250,6 +282,114 @@ func bake(_ args: Args) throws {
               + "  lw \(entry.style.width)"
               + (spec.map { $0.clipped ? "" : "  unclipped" } ?? "  from the depth buffer"))
     }
+}
+
+func surfaceCommand(_ args: Args) throws {
+    let shape = args.positional.dropFirst().first ?? "torus"
+    let R = try args.double("major") ?? 2
+    let r = try args.double("minor") ?? 1
+    let width = try args.double("width") ?? 0.3
+    func counts(_ text: String) throws -> SIMD2<Int> {
+        let n = text.split(separator: ",").compactMap { Int($0) }
+        guard n.count == 2 else { throw CLIError("--lines wants U,V, as in 36,18") }
+        return SIMD2(n[0], n[1])
+    }
+    // The flags, parsed into the request the window keeps; the plate is
+    // built from it by the same function either way.
+    var request: SurfaceRequest
+    switch shape {
+    case "torus":
+        request = SurfaceRequest(.torus(major: R, minor: r),
+                                 lines: try counts(args.flags["lines"] ?? "36,18"))
+    case "sn":
+        request = SurfaceRequest(.sn(modulus: try args.double("modulus") ?? 0.64, major: R, minor: r,
+                                     grid: try args.int("grid", 600)))
+    case "periodic":
+        let periods = (args.flags["periods"] ?? "").split(separator: ",").compactMap { Double($0) }
+        guard periods.count == 2 else {
+            throw CLIError("--periods wants the real and imaginary periods, as in 6.4,4.1")
+        }
+        request = SurfaceRequest(.periodic(expression: try args.string("expression"),
+                                           periods: SIMD2(periods[0], periods[1]),
+                                           major: R, minor: r, grid: try args.int("grid", 600)))
+    case "forced":
+        // A forced system's invariant torus, found in the spectrum of one
+        // long run and fitted; drawn by revolution, with the trajectory on it.
+        request = SurfaceRequest(.forced(system: args.flags["system"] ?? "jerk",
+                                         fit: try args.double("fit") ?? 8000,
+                                         harmonics: try args.int("harmonics", 24),
+                                         radial: try args.int("radial", 0),
+                                         axial: try args.int("axial", 1),
+                                         radius: try args.double("radius") ?? 2.5,
+                                         duration: try args.double("duration") ?? 2300,
+                                         every: try args.double("every") ?? 0.01),
+                                 lines: try args.flags["lines"].map(counts))
+    default:
+        throw CLIError("unknown surface '\(shape)'; the catalog has: torus, sn, periodic, forced")
+    }
+    request.lattice = try args.int("samples", 1024)
+    // The outline and inner silhouettes, derived for the camera; --folds 0
+    // leaves them out.
+    request.style = SurfaceRequest.Style(lines: width, trajectory: try args.double("ink") ?? 0.08,
+                                         folds: try args.double("folds") ?? 2 * width)
+    let clock = ContinuousClock()
+    var plate: SurfacePlate!
+    let built = try clock.measure { plate = try SurfacePlate.build(request) }
+    let surface = plate.surface
+    if let torus = plate.torus {
+        print(String(format: """
+            \(torus.system.name): forced at ω = %.6f, own frequency Ω = %.10f  (built in %@)
+              fit       %d harmonics, misses its trajectory by %.2e (%.1e of its size)
+              drawn     by revolution, %@
+            """, torus.forcing, torus.internalFrequency, "\(built)", torus.fit.harmonics,
+            torus.residual, torus.residual / torus.extent,
+            plate.embedded ? "embedded: back faces are hidden"
+                           : "NOT embedded -- a slice crosses itself; back faces are kept"))
+    }
+    var projection = SurfaceRequest.projection
+    projection.shear = try args.double("shear") ?? projection.shear
+    projection.xAngle = try args.double("x-angle") ?? projection.xAngle
+    projection.zAngle = try args.double("z-angle") ?? projection.zAngle
+    let camera = Camera.plate(projection)
+    let scene = plate.scene(camera: camera)
+    let output = URL(fileURLWithPath: try args.string("output"))
+
+    if args.switches.contains("preview") || output.pathExtension.lowercased() == "png" {
+        // The realtime preview, one frame, offscreen: what the app would show.
+        let viewport = Viewport(width: try args.int("width-px", 1600),
+                                height: try args.int("height-px", 1200))
+        let orbit = Orbit(matching: projection)
+        guard let bounds = scene.quickBounds() else { throw CLIError("the surface is empty") }
+        let navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
+        let renderer = try MetalRenderer()
+        let target = try renderer.makePreviewTarget(viewport)
+        let elapsed = try clock.measure {
+            try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
+                                       options: try previewOptions(args, mode: try previewMode(args)),
+                                       into: target)
+        }
+        try PNG.write(target, to: output)
+        print("\(shape) -> \(output.lastPathComponent)  preview \(viewport.width)x\(viewport.height)"
+              + "  took \(elapsed)")
+        return
+    }
+    let options = BakeOptions(resolution: try args.int("resolution", 3000),
+                              tiles: args.flags["tiles"].flatMap(Int.init))
+
+    let renderer = try MetalRenderer()
+    var result: Bake!
+    let elapsed = try clock.measure { result = try renderer.bake(scene, options: options) }
+    try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
+    print("""
+        \(shape)\(shape == "forced" ? "" : " R=\(fmt(R)) r=\(fmt(r))") -> \(output.lastPathComponent)
+          lattice    \(surface.u.samples)x\(surface.v.samples)\
+        \(surface.outward == nil ? ", bounds no solid, back faces kept" : ", closed")
+          depth      \(result.depth.frame.rows)x\(result.depth.frame.cols) \
+        in \(result.tiles * result.tiles) pass\(result.tiles == 1 ? "" : "es")
+          strokes    \(result.strokes.pathCount) paths, \
+        ink \(String(format: "%.1f", result.strokes.inkLength))
+          took       \(elapsed)
+        """)
 }
 
 func depth(_ args: Args) throws {
@@ -454,6 +594,126 @@ func previewView(_ args: Args, viewport: Viewport) throws
     // The inspector's Margin slider, from the command line.
     if let margin = try args.double("margin") { base.margin = margin }
     return (bundle, preset, base, navigator)
+}
+
+/// The surface controls' costs, as the window pays them: `SurfacePlate.build`
+/// from the plate before, then one preview frame of the result -- through
+/// `Scene.drawing` when the edit kept the surface, as the document does, so
+/// an ink edit re-uploads nothing.
+func surfaceCosts(_ args: Args) throws {
+    let repeats = try args.int("repeat", 3)
+    let renderer = try MetalRenderer()
+    let viewport = Viewport(width: 1600, height: 1200)
+    let target = try renderer.makePreviewTarget(viewport)
+    let orbit = Orbit(matching: SurfaceRequest.projection)
+    func seconds(_ d: Duration) -> Double {
+        Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
+    }
+    func ms(_ x: Double) -> String { x < 1 ? String(format: "%.1f ms", x * 1e3) : String(format: "%.2f s", x) }
+
+    func measure(_ label: String, _ base: SurfaceRequest, _ edit: (inout SurfaceRequest) -> Void,
+                 draft: Bool = false, from start: SurfacePlate? = nil) throws {
+        let before = try start ?? SurfacePlate.build(base)
+        let scene = before.scene(camera: orbit.camera)
+        guard let bounds = scene.quickBounds() else { throw CLIError("\(label): empty") }
+        let navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
+        let options = PreviewOptions(slopeScale: 0)
+        var request = before.request
+        edit(&request)
+        var builds: [Double] = [], frames: [Double] = []
+        var kept = false
+        for _ in 0..<repeats {
+            // The window as it stands before the edit: its textures, its
+            // ink and its normals already made.
+            try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
+                                       options: options, into: target)
+            let clock = ContinuousClock()
+            var after: SurfacePlate!
+            builds.append(seconds(try clock.measure {
+                after = try SurfacePlate.build(request, reusing: before, draft: draft)
+            }))
+            kept = after.content == before.content
+            let next = kept ? scene.drawing(after.layers) : after.scene(camera: orbit.camera)
+            frames.append(seconds(try clock.measure {
+                try renderer.renderPreview(next, navigator: navigator, viewport: viewport,
+                                           options: options, into: target)
+            }))
+        }
+        let b = builds.sorted()[builds.count / 2], f = frames.sorted()[frames.count / 2]
+        print("  \(label.padding(toLength: 40, withPad: " ", startingAt: 0))"
+              + "\(ms(b).padding(toLength: 10, withPad: " ", startingAt: 0))"
+              + "\(ms(f).padding(toLength: 10, withPad: " ", startingAt: 0))"
+              + "\(ms(b + f).padding(toLength: 10, withPad: " ", startingAt: 0))"
+              + (kept ? "ink only" : "new surface"))
+    }
+    /// A step of a drag: the plate a drag's first step built, from the full
+    /// one, edited again at the draft -- what each frame of a drag costs.
+    func drag(_ label: String, _ base: SurfaceRequest,
+              _ edit: @escaping (inout SurfaceRequest) -> Void) throws {
+        let full = try SurfacePlate.build(base)
+        let first = try SurfacePlate.build(base.drafted(), reusing: full, draft: true)
+        try measure(label + ", dragging", base.drafted(), { r in
+            var target = base; edit(&target); r = target.drafted()
+        }, draft: true, from: first)
+    }
+
+    let presets = Dictionary(uniqueKeysWithValues: SurfacePreset.catalog.map { ($0.name, $0.request) })
+    print("  \("control".padding(toLength: 40, withPad: " ", startingAt: 0))build     frame     total")
+
+    print("torus")
+    let torus = presets["torus"]!
+    try measure("radii", torus) { $0.shape = .torus(major: 2.3, minor: 0.9) }
+    try measure("line counts", torus) { $0.lines = SIMD2(48, 24) }
+    try measure("line width", torus) { $0.style.lines = 0.5 }
+
+    print("sn")
+    let sn = presets["sn"]!
+    try measure("radii", sn) { $0.shape = .sn(modulus: 0.64, major: 2.3, minor: 0.9, grid: 600) }
+    try measure("modulus", sn) { $0.shape = .sn(modulus: 0.7, major: 2, minor: 1, grid: 600) }
+    try measure("grid", sn) { $0.shape = .sn(modulus: 0.64, major: 2, minor: 1, grid: 400) }
+    try drag("radii", sn) { $0.shape = .sn(modulus: 0.64, major: 2.3, minor: 0.9, grid: 600) }
+    try drag("modulus", sn) { $0.shape = .sn(modulus: 0.7, major: 2, minor: 1, grid: 600) }
+    try drag("grid", sn) { $0.shape = .sn(modulus: 0.64, major: 2, minor: 1, grid: 400) }
+
+    print("forced")
+    let forced = presets["forced"]!
+    let base = try SurfacePlate.build(forced)
+    func forcedEdit(_ label: String, draft: Bool = false, lattice: Int? = nil,
+                    from start: SurfacePlate? = nil,
+                    _ change: @escaping (inout String, inout Double, inout Int, inout Int, inout Int,
+                                         inout Double, inout Double, inout Double) -> Void) throws {
+        try measure(label, forced, { r in
+            if let lattice { r.lattice = lattice }
+            guard case .forced(var s, var f, var h, var ra, var ax, var rad, var d, var e) = r.shape
+            else { return }
+            change(&s, &f, &h, &ra, &ax, &rad, &d, &e)
+            r.shape = .forced(system: s, fit: f, harmonics: h, radial: ra, axial: ax, radius: rad,
+                              duration: d, every: e)
+        }, draft: draft, from: start ?? base)
+    }
+    try forcedEdit("revolution radius") { _, _, _, _, _, rad, _, _ in rad = 3 }
+    try forcedEdit("axial component") { _, _, _, _, ax, _, _, _ in ax = 2 }
+    try forcedEdit("duration, shorter") { _, _, _, _, _, _, d, _ in d = 1500 }
+    try forcedEdit("duration, longer") { _, _, _, _, _, _, d, _ in d = 3000 }
+    try forcedEdit("sample spacing") { _, _, _, _, _, _, _, e in e = 0.02 }
+    try measure("parameter lines on", forced, { $0.lines = SIMD2(36, 18) }, from: base)
+    try forcedEdit("harmonics") { _, _, h, _, _, _, _, _ in h = 20 }
+    try forcedEdit("fit length") { _, f, _, _, _, _, _, _ in f = 6000 }
+    func forcedShape(_ r: inout SurfaceRequest, radius: Double? = nil, duration: Double? = nil) {
+        guard case .forced(let s, let f, let h, let ra, let ax, let rad, let d, let e) = r.shape
+        else { return }
+        r.shape = .forced(system: s, fit: f, harmonics: h, radial: ra, axial: ax,
+                          radius: radius ?? rad, duration: duration ?? d, every: e)
+    }
+    try drag("revolution radius", forced) { forcedShape(&$0, radius: 3) }
+    try drag("duration, shorter", forced) { forcedShape(&$0, duration: 1500) }
+    try drag("duration, longer", forced) { forcedShape(&$0, duration: 3000) }
+    // The release: the full request, from the last draft, with the full
+    // lattice's values and the full run still kept.
+    let dragged = try SurfacePlate.build(forced.drafted(), reusing: base, draft: true)
+    try measure("revolution radius, released", forced.drafted(), { r in
+        var target = forced; forcedShape(&target, radius: 3); r = target
+    }, from: dragged)
 }
 
 func previewMode(_ args: Args) throws -> PreviewMode {
@@ -827,6 +1087,9 @@ func sourceName(_ source: LayerSource) -> String {
     case .capHatch(let axis, let spacing, _):
         "cap hatch along \(axis.rawValue) every \(fmt(spacing))"
     case .capOutline: "cap outline"
+    case .parameterLines(let u, let v): "\(u) + \(v) parameter lines"
+    case .foldLines: "fold lines"
+    case .trajectory: "a trajectory"
     }
 }
 
@@ -931,6 +1194,8 @@ do {
     switch args.positional.first {
     case "bake": try bake(args)
     case "depth": try depth(args)
+    case "surface": try surfaceCommand(args)
+    case "surface-costs": try surfaceCosts(args)
     case "bench": try bench(args)
     case "preview": try preview(args)
     case "flicker": try flicker(args)

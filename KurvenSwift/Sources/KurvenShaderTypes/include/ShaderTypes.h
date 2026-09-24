@@ -92,4 +92,46 @@ typedef struct {
     simd_float2 viewport;
 } KVShading;
 
+// A parametric surface's lattice: how a vertex id becomes a texel of the
+// position texture and a surface coordinate.
+typedef struct {
+    // Texels along (u, v).
+    simd_uint2 samples;
+    // Cells along (u, v): `samples` on a periodic axis, whose last cell closes
+    // back onto texel 0, and `samples - 1` on a bounded one.
+    simd_uint2 cells;
+    // The coordinate of lattice index 0, and the coordinate per index. Index
+    // `samples` on a periodic axis is one period past index 0, so a cell that
+    // closes the seam interpolates across it rather than back through the
+    // whole range.
+    simd_float2 lo;
+    simd_float2 spacing;
+    // The view-z range the coordinate pass's depth attachment spans: the
+    // nearest (y) maps to 0 and the farthest (x) to 1, so a LESS test keeps
+    // the front-most fragment, as the MAX blend does.
+    simd_float2 depthRange;
+} KVSurface;
+
+// A vertex of ink drawn on a parametric surface: where it is, which way the
+// surface faces there, and where on the surface it lies.
+typedef struct {
+    simd_float3 position;
+    // The *outward* normal, not normalized: the parametrization's normal times
+    // the surface's orientation. Zero for a surface that bounds no solid, and
+    // for ink on the folds themselves, where facing is not asked.
+    simd_float3 normal;
+    simd_float2 coord;
+} KVInkVertex;
+
+// What the ink test needs of the camera to ask which way a surface faces.
+typedef struct {
+    // World direction sight lines travel, for an orthographic camera.
+    simd_float3 sight;
+    // World position of the eye, for a perspective one.
+    simd_float3 eye;
+    uint32_t perspective;
+    // Nonzero for fold ink: judged by the front-most test alone.
+    uint32_t onFolds;
+} KVInk;
+
 #endif /* KurvenShaderTypes_h */

@@ -13,6 +13,48 @@ public struct ContentID: Hashable, Sendable {
     public init() { raw = UUID() }
 }
 
+/// A heightfield over the complex plane, as the plates draw it: the surface,
+/// instanced once per tile, cut to a region, with its wall curtains.
+public struct Heightfield: Sendable {
+    public let surface: Surface
+    /// Wall curtains, in world coordinates.
+    public let occluder: Mesh<WorldSpace>
+    /// Heightfield instances; always at least the identity.
+    public let tiles: [Affine2]
+    /// The footprint each instance is clipped to.
+    public let region: Region
+    /// Subsampling step for the heightfield when it is rasterized.
+    public let step: Int
+
+    public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],
+                region: Region = .full, step: Int) {
+        self.surface = surface; self.occluder = occluder; self.tiles = tiles
+        self.region = region; self.step = step
+    }
+
+    /// Every vertex of the decimated, capped heightfield, once per tile.
+    ///
+    /// The lattice is `Surface.grid_mesh`'s `self.clamped[::step, ::step]`. Not
+    /// materialized: elliptic's is three million points, zeta's six, and the
+    /// caller only ever folds over them.
+    public func forEachSample(_ body: (P3<WorldSpace>) -> Void) {
+        for tile in tiles {
+            surface.forEachSample(step: step) { body(tile($0)) }
+        }
+    }
+}
+
+/// What the depth pass draws.
+///
+/// A sum rather than a surface with optional parts: a heightfield has tiles,
+/// a region, walls and a cap, and a parametric surface has none of them --
+/// what it has instead is a coordinate at every point, which is what its ink
+/// is judged by. Each renderer, bound and bake says what it does with each.
+public enum SceneGeometry: Sendable {
+    case heightfield(Heightfield)
+    case parametric(ParametricSurface)
+}
+
 /// An immutable snapshot of everything a frame needs.
 ///
 /// The renderer's signature is `renderDepth(scene:frame:)`: a frame is a
@@ -26,38 +68,39 @@ public struct ContentID: Hashable, Sendable {
 /// than documenting it. Producing different geometry means producing a new
 /// `Scene`, which mints a new `ContentID`.
 public struct Scene: Sendable {
-    /// Identifies the *geometry*: the surface, the occluder, the tiles, the
-    /// region, the step. Everything the depth pass draws.
+    /// Identifies the *geometry*: everything the depth pass draws.
     public let content: ContentID
     /// Identifies the *ink*. Separate from `content` because editing a level
     /// set changes every stroke and none of the landscape, and rebuilding a
     /// hundred-megabyte height texture to move a contour would make the slider
     /// unusable on exactly the plates where it is most interesting.
     public let ink: ContentID
-    public let surface: Surface
-    /// Wall curtains, in world coordinates.
-    public let occluder: Mesh<WorldSpace>
-    /// Heightfield instances; always at least the identity.
-    public let tiles: [Affine2]
-    /// The footprint each instance is clipped to.
-    public let region: Region
-    /// Subsampling step for the heightfield when it is rasterized.
-    public let step: Int
+    public let geometry: SceneGeometry
     public let layers: [Layer]
 
     public var camera: Camera
     public var mode: PreviewMode
-    /// Hidden-line margin, in world units of depth.
+    /// Hidden-line margin, in world units of depth, for ink judged by depth.
     public var margin: Double
 
+    /// A heightfield scene.
     public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],
                 region: Region = .full, step: Int, layers: [Layer], camera: Camera,
                 mode: PreviewMode = .plate, margin: Double) {
-        self.content = ContentID()
-        self.ink = ContentID()
-        self.surface = surface; self.occluder = occluder; self.tiles = tiles
-        self.region = region; self.step = step; self.layers = layers
-        self.camera = camera; self.mode = mode; self.margin = margin
+        self.init(content: ContentID(), ink: ContentID(),
+                  geometry: .heightfield(Heightfield(surface: surface, occluder: occluder,
+                                                     tiles: tiles, region: region, step: step)),
+                  layers: layers, camera: camera, mode: mode, margin: margin)
+    }
+
+    /// A parametric surface, with ink on it.
+    ///
+    /// Ink that carries surface coordinates is judged by them; ink that does
+    /// not falls back to depth, at `margin`.
+    public init(surface: ParametricSurface, layers: [Layer], camera: Camera,
+                mode: PreviewMode = .plate, margin: Double) {
+        self.init(content: ContentID(), ink: ContentID(), geometry: .parametric(surface),
+                  layers: layers, camera: camera, mode: mode, margin: margin)
     }
 
     /// The scene a bundle describes under one of its presets.
@@ -72,6 +115,18 @@ public struct Scene: Sendable {
                   margin: preset.margin)
     }
 
+    /// The heightfield, when that is what this scene draws.
+    public var heightfield: Heightfield? {
+        if case .heightfield(let h) = geometry { return h }
+        return nil
+    }
+
+    /// The parametric surface, when that is what this scene draws.
+    public var parametric: ParametricSurface? {
+        if case .parametric(let s) = geometry { return s }
+        return nil
+    }
+
     /// The same content, looked at from somewhere else. Keeps both identities,
     /// so nothing at all is rebuilt -- which is the whole point of separating
     /// the camera from the content.
@@ -83,24 +138,27 @@ public struct Scene: Sendable {
     /// a new `ink`, so the heightfield stays uploaded and only the line buffer
     /// is rebuilt.
     public func drawing(_ layers: [Layer]) -> Scene {
-        Scene(content: content, ink: ContentID(), surface: surface,
-              occluder: occluder, tiles: tiles, region: region, step: step,
+        Scene(content: content, ink: ContentID(), geometry: geometry,
               layers: layers, camera: camera, mode: mode, margin: margin)
     }
 
-    private init(content: ContentID, ink: ContentID, surface: Surface,
-                 occluder: Mesh<WorldSpace>, tiles: [Affine2], region: Region,
-                 step: Int, layers: [Layer], camera: Camera, mode: PreviewMode,
-                 margin: Double) {
-        self.content = content; self.ink = ink; self.surface = surface
-        self.occluder = occluder; self.tiles = tiles; self.region = region
-        self.step = step; self.layers = layers; self.camera = camera
-        self.mode = mode; self.margin = margin
+    private init(content: ContentID, ink: ContentID, geometry: SceneGeometry,
+                 layers: [Layer], camera: Camera, mode: PreviewMode, margin: Double) {
+        self.content = content; self.ink = ink; self.geometry = geometry
+        self.layers = layers; self.camera = camera; self.mode = mode; self.margin = margin
     }
 
     /// Every layer's vertices in view space, in declaration (draw) order.
+    ///
+    /// Ink that depends on the camera -- the fold lines of a parametric
+    /// surface -- is derived here, for this camera, rather than carried.
     public func projectedLayers() -> [(Layer, PolylineSet<ViewSpace>)] {
-        layers.map { ($0, $0.paths.mapped(camera.view)) }
+        layers.map { layer in
+            if case .foldLines = layer.spec.source, let s = parametric {
+                return (layer, s.foldLines(sight: camera.view.sightLine).mapped(camera.view))
+            }
+            return (layer, layer.paths.mapped(camera.view))
+        }
     }
 
     /// The view-space extent the depth buffer covers: every heightfield sample,
@@ -129,8 +187,13 @@ public struct Scene: Sendable {
         func add(_ p: P3<ViewSpace>) {
             lo = simd_min(lo, p.v); hi = simd_max(hi, p.v); any = true
         }
-        for p in occluder.vertices { add(camera.view(p)) }
-        forEachHeightfieldSample { add(camera.view($0)) }
+        switch geometry {
+        case .heightfield(let h):
+            for p in h.occluder.vertices { add(camera.view(p)) }
+            h.forEachSample { add(camera.view($0)) }
+        case .parametric(let s):
+            for p in s.positions { add(camera.view(p)) }
+        }
         for (layer, projected) in projectedLayers() where layer.spec.clipped {
             for v in projected.vertices { add(v) }
         }
@@ -157,26 +220,23 @@ public struct Scene: Sendable {
             lo = simd_min(lo, p.v); hi = simd_max(hi, p.v); any = true
         }
 
-        let g = surface.height
-        let perTile = max(budget / max(tiles.count, 1), 16)
-        let side = max(Int(Double(perTile).squareRoot()), 4)
-        let stride = max(step, max(g.width / side, g.height / side))
-        for tile in tiles {
-            surface.forEachSample(step: stride) { add(camera.view(tile($0))) }
+        switch geometry {
+        case .heightfield(let h):
+            let g = h.surface.height
+            let perTile = max(budget / max(h.tiles.count, 1), 16)
+            let side = max(Int(Double(perTile).squareRoot()), 4)
+            let stride = max(h.step, max(g.width / side, g.height / side))
+            for tile in h.tiles {
+                h.surface.forEachSample(step: stride) { add(camera.view(tile($0))) }
+            }
+            for v in h.occluder.vertices { add(camera.view(v)) }
+        case .parametric(let s):
+            let stride = max(s.positions.count / max(budget, 1), 1)
+            for i in Swift.stride(from: 0, to: s.positions.count, by: stride) {
+                add(camera.view(s.positions[i]))
+            }
         }
-        for v in occluder.vertices { add(camera.view(v)) }
         return any ? AABB(lo: lo, hi: hi) : nil
-    }
-
-    /// Every vertex of the decimated, capped heightfield, once per tile.
-    ///
-    /// The lattice is `Surface.grid_mesh`'s `self.clamped[::step, ::step]`. Not
-    /// materialized: elliptic's is three million points, zeta's six, and the
-    /// caller only ever folds over them.
-    public func forEachHeightfieldSample(_ body: (P3<WorldSpace>) -> Void) {
-        for tile in tiles {
-            surface.forEachSample(step: step) { body(tile($0)) }
-        }
     }
 }
 

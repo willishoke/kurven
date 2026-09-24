@@ -2,6 +2,7 @@ import SwiftUI
 import KurvenCore
 import KurvenService
 import KurvenLandscape
+import KurvenMath
 
 /// The controls for a landscape that is being chosen rather than opened.
 ///
@@ -20,6 +21,18 @@ struct LandscapeSection: View {
 
     @State private var typed: String = ""
     @State private var editingExpression = false
+    /// Each literal slider's reach, by the literal's index in the expression.
+    /// Pinned when a drag starts, so a slider does not move its own scale,
+    /// and forgotten when the expression is typed over.
+    @State private var reaches: [Int: ClosedRange<Double>] = [:]
+    /// The expression the reaches belong to: a change that did not come from
+    /// a slider is a new set of literals.
+    @State private var reachSource: String = ""
+    @State private var draggingLiteral: Int?
+    /// The expression as it was when the current drag began: one undo step
+    /// per drag, not one per pixel.
+    @State private var beforeDrag: String?
+    @Environment(\.undoManager) private var undoManager
 
     private var landscape: LandscapeRequest? { document.landscape }
 
@@ -28,6 +41,7 @@ struct LandscapeSection: View {
         presetPicker(catalog)
         if let landscape {
             expressionField(landscape)
+            literalSliders(landscape)
             domainControls(landscape, window: window(catalog, landscape))
             resolutionControl(landscape)
             Toggle("Place contours by f, not by the grid",
@@ -90,8 +104,156 @@ struct LandscapeSection: View {
                     document.landscapeEdited(draft: false)
                 }
         }
-        .help("Press return to sample it. Anything kurven.expr parses: "
+        .help("Press return to sample it. Anything the language parses: "
               + "gamma(z), 1/Γ(z), zeta(z), exp(1/z), z^3 - 1, sin(z)cn(z, 0.5)")
+    }
+
+    // MARK: - the numbers in it
+
+    /// One control per number written in the expression: the modulus of
+    /// `cn(z, 0.64)`, the order of `besselj(2, z)`, the exponent of `z^3`.
+    ///
+    /// Laid out as the Format inspector in Apple's own apps lays out a
+    /// numeric property: a label that names the property, a slider, and a
+    /// field with a stepper for the exact value. The slider rewrites the
+    /// literal's characters in the expression and resamples, so there is no
+    /// second place a parameter lives: the field reads `cn(z, 0.71)` because
+    /// that is what the landscape is now. A moved number is no longer the
+    /// preset it came from, as a typed one is not.
+    @ViewBuilder
+    private func literalSliders(_ landscape: LandscapeRequest) -> some View {
+        let expression = landscape.expression
+        let literals = KurvenMath.Expression.literals(in: expression)
+        let labels = Self.labels(for: literals, in: expression)
+        ForEach(Array(literals.enumerated()), id: \.offset) { index, literal in
+            literalRow(index, literal, label: labels[index], in: expression)
+        }
+        .onChange(of: expression) { _, now in
+            if now != reachSource { reaches = [:]; reachSource = now }
+        }
+    }
+
+    /// "Modulus", "Order", "Exponent" -- and "Exponent 2" when the expression
+    /// has two, so every row says which number it is.
+    static func labels(for literals: [KurvenMath.Expression.Literal], in expression: String)
+        -> [String]
+    {
+        let roles = literals.map { KurvenMath.Expression.role(of: $0, in: expression).label }
+        var seen: [String: Int] = [:]
+        for r in roles { seen[r, default: 0] += 1 }
+        var counter: [String: Int] = [:]
+        return roles.map { role in
+            guard seen[role, default: 0] > 1 else { return role }
+            counter[role, default: 0] += 1
+            return "\(role) \(counter[role]!)"
+        }
+    }
+
+    @ViewBuilder
+    private func literalRow(_ index: Int, _ literal: KurvenMath.Expression.Literal,
+                            label: String, in expression: String) -> some View {
+        let reach = reaches[index] ?? Self.derivedReach(literal.value)
+        let step = LandscapeStyle.nice((reach.upperBound - reach.lowerBound) / 100, down: true)
+        let value = Binding<Double>(
+            get: { literal.value },
+            set: { value in
+                guard value.isFinite else { return }
+                // A typed or stepped value can be anywhere; the slider follows it.
+                if !reach.contains(value) {
+                    reaches[index] = min(reach.lowerBound, value)...max(reach.upperBound, value)
+                }
+                move(index, literal, to: value, in: expression, draft: false, label: label)
+            })
+        LabeledContent(label) {
+            HStack(spacing: 8) {
+                Slider(value: Binding(
+                    get: { min(max(literal.value, reach.lowerBound), reach.upperBound) },
+                    set: { value in
+                        let quantized = (value / step).rounded() * step
+                        move(index, literal, to: quantized, in: expression,
+                             draft: draggingLiteral == index, label: label)
+                    }), in: reach, onEditingChanged: { dragging in
+                        if dragging {
+                            // Pin the reach: derived from the value, it would
+                            // otherwise stretch under the thumb as it moves.
+                            reaches[index] = reach
+                            draggingLiteral = index
+                            beforeDrag = expression
+                        } else {
+                            draggingLiteral = nil
+                            if let before = beforeDrag, let after = document.landscape?.expression,
+                               before != after {
+                                registerUndo(from: before, to: after, label)
+                            }
+                            beforeDrag = nil
+                            document.landscapeEdited(draft: false)
+                        }
+                    })
+                    .accessibilityLabel(label)
+                    .accessibilityValue(KurvenMath.Expression.formatNumber(literal.value,
+                                                                           significant: 6))
+                TextField("", value: value,
+                          format: .number.precision(.significantDigits(1...6)))
+                    .labelsHidden()
+                    .multilineTextAlignment(.trailing)
+                    .monospacedDigit()
+                    .frame(width: 64)
+                    .accessibilityLabel(label)
+                Stepper("", value: value, step: step)
+                    .labelsHidden()
+                    .accessibilityLabel(label)
+            }
+        }
+        .help("\(label) in \(expression): the number \(literal.text). "
+              + "Drag the slider, type a value, or step it; the expression and the "
+              + "landscape follow.")
+    }
+
+    /// Rewrite one literal and resample. The expression is the model: the
+    /// field, the provenance and the next set of literals all read from it.
+    private func move(_ index: Int, _ literal: KurvenMath.Expression.Literal, to value: Double,
+                      in expression: String, draft: Bool, label: String = "") {
+        let next = KurvenMath.Expression.replacing(literal, with: value, significant: 6,
+                                                   in: expression)
+        guard next != expression else { return }
+        // A drag registers its undo when it ends; a typed or stepped value is
+        // one edit, registered here.
+        if draggingLiteral != index { registerUndo(from: expression, to: next, label) }
+        apply(next, draft: draft)
+    }
+
+    private func apply(_ next: String, draft: Bool) {
+        reachSource = next
+        editingExpression = false
+        typed = next
+        document.landscape?.expression = next
+        document.landscape?.name = ""
+        document.landscapeEdited(draft: draft)
+    }
+
+    /// ⌘Z puts the number back, and ⌘⇧Z moves it again. The action name is
+    /// what the Edit menu shows: "Undo Modulus".
+    private func registerUndo(from before: String, to after: String, _ label: String) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: document) { document in
+            MainActor.assumeIsolated {
+                // Re-registered the other way round, so the same edit can be
+                // redone; SwiftUI has no handle on this view from here, so
+                // the document's request is what moves.
+                registerUndo(from: after, to: before, label)
+                document.landscape?.expression = before
+                document.landscape?.name = ""
+                document.landscapeEdited(draft: false)
+            }
+        }
+        undoManager.setActionName(label)
+    }
+
+    /// Room around a number, in the direction it already points: `0.64`
+    /// reaches `0...1.28`, `-2` reaches `-4...0`, and `0` a unit each way.
+    static func derivedReach(_ value: Double) -> ClosedRange<Double> {
+        guard value.isFinite, value != 0 else { return -1...1 }
+        return value < 0 ? (2 * value)...0 : 0...(2 * value)
     }
 
     // MARK: - where

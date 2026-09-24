@@ -161,6 +161,15 @@ function, costs about 70 ms for its forty minor levels. The app has it on by
 default (a toggle in the landscape controls); the fixture comparison with
 Python runs with it off, since that is a comparison of grids.
 
+Every number written in the expression is also a control. `cn(z, 0.64)` puts a
+row under the field labelled *Modulus*, `besselj(2, z)` one labelled *Order*,
+`z^3` one labelled *Exponent* — a slider, a value field and a stepper, laid
+out as an inspector lays out any numeric property, with undo. Moving one
+rewrites that literal in the expression and resamples, so the field reads
+`cn(z, 0.71)` because that is what the landscape now is. There is no second
+place a parameter lives: the expression is the whole state, after a drag as
+before it.
+
 The catalog (`kurven.landscape.CATALOG`) is fourteen presets over that language
 — each an expression plus the window and truncation that make it read as a
 landscape. The Swift side carries the same list (`Catalog.native`), and the

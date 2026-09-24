@@ -5,8 +5,9 @@ import KurvenMetal
 import KurvenBake
 import KurvenService
 import KurvenLandscape
+import KurvenDynamics
 
-/// One open bundle, and everything the window knows about it.
+/// One open bundle or surface plate, and everything the window knows about it.
 ///
 /// Every mutation is a whole new value assigned into a stored property, so the
 /// model holds no derived state that can go stale. In particular `scene` keeps
@@ -20,6 +21,9 @@ final class Document {
         case empty
         case loading(URL)
         case ready(KurvenBundle)
+        /// A parametric surface. Not a bundle, so every control that edits
+        /// or saves one stays away from it.
+        case surface(SurfacePlate)
         case failed(URL, String)
     }
 
@@ -86,6 +90,22 @@ final class Document {
     /// resolution follows when the drag ends.
     var draftResolution = 240
 
+    // MARK: - the surface, when the document is one
+    //
+    // The state `Surfaces.swift` works on, parallel to the landscape's: the
+    // request the controls say, the one on screen, and the latest edit
+    // waiting behind the build in flight.
+
+    var surface: SurfaceRequest?
+    var surfaceShown: SurfaceRequest?
+    var surfaceWanted: (request: SurfaceRequest, framing: Bool, draft: Bool)?
+    var building = false
+    var surfaceStatus: String?
+    /// Bumped whenever the document becomes a different thing -- a new
+    /// landscape or a new surface -- so a build still in flight for the old
+    /// one is dropped when it lands rather than replacing the new one.
+    var generation = 0
+
     var bakeResolution: Int = 4000
     var bakeStatus: String?
     private(set) var baking = false
@@ -113,11 +133,15 @@ final class Document {
         case .empty: nil
         case .loading(let u): u
         case .ready(let b): b.url
+        case .surface: nil
         case .failed(let u, _): u
         }
     }
 
     var title: String {
+        if case .surface(let plate) = state {
+            return SurfacePreset.named(plate.request.name)?.label ?? "Surface"
+        }
         if let landscape, isLandscape {
             return catalog.preset(landscape.name)?.label ?? landscape.expression
         }
@@ -128,6 +152,14 @@ final class Document {
         if case .ready(let b) = state { return b }
         return nil
     }
+
+    var plate: SurfacePlate? {
+        if case .surface(let p) = state { return p }
+        return nil
+    }
+
+    /// Whether anything is on screen: a bundle or a surface.
+    var isOpen: Bool { bundle != nil || plate != nil }
 
     var layers: [Layer] { scene?.layers ?? [] }
 
@@ -146,6 +178,7 @@ final class Document {
         state = .loading(url)
         scene = nil
         navigator = nil
+        generation += 1
         // Reading is megabytes of npy; it does not belong on the main actor
         // even though it is fast, because a stalled window during an open is
         // the difference between an app and a script with a window.
@@ -182,6 +215,8 @@ final class Document {
             bundle = bundle.refined(by: refiner.refine)
         }
         state = .ready(bundle)
+        surface = nil
+        surfaceShown = nil
         guard let preset = bundle.manifest.presets.first else {
             state = .failed(bundle.url, "the bundle declares no camera presets")
             return
@@ -209,6 +244,40 @@ final class Document {
         self.navigator = navigator
         adoptLandscape(bundle)
         connectService()
+    }
+
+    /// Take a built plate as the document. A new plate opens at the default
+    /// plate projection, fitted to the window; an edit keeps the camera.
+    func adopt(_ plate: SurfacePlate, keepingCamera: Bool = false) {
+        let before = self.plate
+        state = .surface(plate)
+        landscape = nil
+        shown = nil
+        derivedInk = [:]
+        if keepingCamera, let navigator, let scene {
+            // Hidden layers are hidden by name: an edit that adds the lines
+            // puts a layer before the folds, and a hidden fold stays hidden.
+            let hidden = Set(hiddenLayers.compactMap { scene.layers[safe: $0]?.spec.name })
+            hiddenLayers = Set(plate.layers.indices.filter { hidden.contains(plate.layers[$0].spec.name) })
+            // The same surface keeps its identity, so the renderer keeps its
+            // textures and its normals and lays out only the ink.
+            self.scene = before?.content == plate.content
+                ? scene.drawing(plate.layers) : plate.scene(camera: navigator.camera)
+            return
+        }
+        let preset = SurfaceRequest.preset
+        margin = preset.margin
+        bakeResolution = preset.buffer
+        hiddenLayers = []
+        levelCounts = [:]
+        var navigator = Navigator(orbit: Orbit(matching: preset.plate),
+                                  framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
+        let scene = plate.scene(camera: navigator.camera)
+        if let bounds = scene.quickBounds() {
+            navigator.framing = .fitting(bounds, in: viewport)
+        }
+        self.scene = scene
+        self.navigator = navigator
     }
 
     // MARK: - navigation

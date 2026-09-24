@@ -12,6 +12,7 @@ public enum DomainSpace: Sendable {}   // (real, imag) in the complex plane
 public enum WorldSpace: Sendable {}    // (x = real, y = imag, z = |f|)
 public enum ViewSpace: Sendable {}     // after the camera; z increases toward the viewer
 public enum PlateSpace: Sendable {}    // 2D output, SVG units
+public enum ParamSpace: Sendable {}    // (u, v) on a surface's parameter rectangle
 
 /// A point in `S`.
 public struct P2<S>: Sendable, Equatable, Hashable {

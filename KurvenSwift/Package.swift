@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "KurvenMath", targets: ["KurvenMath"]),
         .library(name: "KurvenCore", targets: ["KurvenCore"]),
         .library(name: "KurvenLandscape", targets: ["KurvenLandscape"]),
+        .library(name: "KurvenDynamics", targets: ["KurvenDynamics"]),
         .library(name: "KurvenMetal", targets: ["KurvenMetal"]),
         .library(name: "KurvenBake", targets: ["KurvenBake"]),
         .library(name: "KurvenService", targets: ["KurvenService"]),
@@ -34,6 +35,15 @@ let package = Package(
         // `kurven.landscape` over the evaluator in Math, producing the same
         // bundle value a `.kurven` directory decodes to.
         .target(name: "KurvenLandscape", dependencies: ["KurvenCore", "KurvenMath"]),
+
+        // Flows drawn as plates: a forced system integrated in Math, its
+        // invariant torus found and fitted there, and the torus and its
+        // trajectory set out here as a parametric surface with ink on it.
+        // Also where every surface plate is described and built -- the
+        // periodic ones through Landscape -- so the CLI and the window build
+        // a plate with one function.
+        .target(name: "KurvenDynamics",
+                dependencies: ["KurvenCore", "KurvenMath", "KurvenLandscape"]),
 
         // The uniform and vertex structs, defined once in C and shared by
         // Swift (as a module) and MSL (prepended to the source), so CPU/GPU
@@ -59,7 +69,8 @@ let package = Package(
         // there are none.
         .target(name: "KurvenService", dependencies: ["KurvenCore", "KurvenLandscape"]),
         .executableTarget(name: "kurven-cli",
-                          dependencies: ["KurvenBake", "KurvenService", "KurvenLandscape"]),
+                          dependencies: ["KurvenBake", "KurvenService", "KurvenLandscape",
+                                         "KurvenDynamics"]),
 
         // The test suite is an executable, not a `.testTarget`.
         //
@@ -73,13 +84,14 @@ let package = Package(
         // Python side does (`tests/check_bundle.py`), for the same reason
         // (pytest is not installed either), so both lanes run the same way.
         .executableTarget(name: "kurven-test",
-                          dependencies: ["KurvenBake", "KurvenService", "KurvenLandscape"]),
+                          dependencies: ["KurvenBake", "KurvenService", "KurvenLandscape", "KurvenDynamics"]),
 
         // The window. A bare SwiftPM executable has no bundle, so
         // scripts/bundle-app.sh assembles Kurven.app around this binary with a
         // hand-written Info.plist and an ad hoc signature -- all of which
         // Command Line Tools can do.
         .executableTarget(name: "KurvenApp",
-                          dependencies: ["KurvenBake", "KurvenService", "KurvenLandscape"]),
+                          dependencies: ["KurvenBake", "KurvenService", "KurvenLandscape",
+                                         "KurvenMath", "KurvenDynamics"]),
     ]
 )

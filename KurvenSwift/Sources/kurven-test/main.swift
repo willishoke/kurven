@@ -436,7 +436,8 @@ func shaderTests() {
             Check.expect(false, "a Metal device exists"); return
         }
         let library = try MetalRenderer.makeLibrary(device: device)
-        for name in ["kv_height_vertex", "kv_mesh_vertex", "kv_depth_fragment"] {
+        for name in ["kv_height_vertex", "kv_mesh_vertex", "kv_depth_fragment",
+                     "kv_param_vertex", "kv_param_depth_fragment", "kv_coord_fragment"] {
             Check.expect(library.makeFunction(name: name) != nil,
                          "the library exposes \(name)")
         }
@@ -486,27 +487,38 @@ func shaderTests() {
             strokeWidth: 42,
             depthRange: SIMD2(51, 52),
             viewport: SIMD2(61, 62))
+        let surface = KVSurface(samples: SIMD2(71, 72), cells: SIMD2(73, 74),
+                                lo: SIMD2(75, 76), spacing: SIMD2(77, 78),
+                                depthRange: SIMD2(79, 80))
+        let inkVertex = KVInkVertex(position: SIMD3(81, 82, 83), normal: SIMD3(84, 85, 86),
+                                    coord: SIMD2(87, 88))
+        let inkCamera = KVInk(sight: SIMD3(89, 90, 91), eye: SIMD3(92, 93, 94),
+                              perspective: 95, onFolds: 96)
 
         var want: [Float] = []
         for c in 0..<4 { for r in 0..<4 { want.append(v[c][r]) } }
         for c in 0..<4 { for r in 0..<4 { want.append(clipProbe[c][r]) } }
         want += [301, 302, 401, 402, 501, 502, 601, 602, 701, 801, 901, -1001]
         want += [11, 12, 13, 14, 21, 22, 23, 31, 32, 33, 41, 42, 51, 52, 61, 62]
+        want += [71, 72, 73, 74, 75, 76, 77, 78, 79, 80]
+        want += Array(81...96).map(Float.init)
 
         let probe = try MetalRenderer.probeUniformLayout(device: device,
-                                                         sending: sent, and: shading)
+                                                         sending: sent, and: shading,
+                                                         and: surface,
+                                                         and: (inkVertex, inkCamera))
         var mismatch: Int?
         for i in want.indices where i < probe.fields.count && probe.fields[i] != want[i] {
             mismatch = i; break
         }
         Check.expect(probe.fields.count == want.count && mismatch == nil,
-                     "every field of both structs arrives with the value it was given",
+                     "every field of all five structs arrives with the value it was given",
                      mismatch.map { "field \($0): sent \(want[$0]), saw \(probe.fields[$0])" } ?? "")
-        Check.expect(probe.uniformSize == MemoryLayout<KVUniforms>.size
-                     && probe.shadingSize == MemoryLayout<KVShading>.size,
-                     "and the two agree on both sizes",
-                     "GPU \(probe.uniformSize)/\(probe.shadingSize), "
-                     + "CPU \(MemoryLayout<KVUniforms>.size)/\(MemoryLayout<KVShading>.size)")
+        let cpu = [MemoryLayout<KVUniforms>.size, MemoryLayout<KVShading>.size,
+                   MemoryLayout<KVSurface>.size, MemoryLayout<KVInkVertex>.size,
+                   MemoryLayout<KVInk>.size]
+        Check.expect(probe.sizes == cpu, "and the two agree on all five sizes",
+                     "GPU \(probe.sizes), CPU \(cpu)")
     }
 }
 
@@ -1392,6 +1404,17 @@ previewTests()
 bakeTests()
 serviceTests()
 expressionTests()
+literalTests()
 landscapeTests()
 refinementTests()
+surfaceTests()
+surfaceGPUTests()
+surfaceBakeTests()
+periodicTorusTests()
+surfacePreviewTests()
+foldTests()
+odeTests()
+frequencyTests()
+forcedTorusTests()
+surfacePlateTests()
 exit(Check.summary())

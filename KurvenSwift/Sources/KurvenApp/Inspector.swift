@@ -2,6 +2,7 @@ import SwiftUI
 import KurvenCore
 import KurvenService
 import KurvenLandscape
+import KurvenDynamics
 
 /// The sidebar: what is drawn, from where, and how it bakes.
 ///
@@ -17,13 +18,29 @@ struct Inspector: View {
             // The function comes first, and shows even with nothing open: a
             // landscape is now something you can start, not only something you
             // can be handed.
-            Section("Landscape") {
-                LandscapeSection(document: document)
+            // A surface has its own section and a way back to the gallery;
+            // the function picker would only say "—" beside it.
+            if document.plate == nil && !document.building {
+                Section("Landscape") {
+                    LandscapeSection(document: document)
+                }
             }
-            if let bundle = document.bundle {
+            if document.plate != nil || document.building {
+                Section("Surface") { SurfaceSection(document: document) }
+            }
+            if document.plate != nil {
+                // A surface is not a bundle: no truncation, margin, resample
+                // or provenance. Its camera has the one plate projection it
+                // opened at, so "reset" still has somewhere to go.
                 Section("Camera") {
-                    CameraSection(document: document, presets: bundle.manifest.presets,
-)
+                    CameraSection(document: document, presets: [SurfaceRequest.preset])
+                }
+                Section("Mode") { modePicker }
+                Section("Layers") { layerList }
+                Section("Bake") { BakeSection(document: document) }
+            } else if let bundle = document.bundle {
+                Section("Camera") {
+                    CameraSection(document: document, presets: bundle.manifest.presets)
                 }
                 Section("Mode") { modePicker }
                 Section("Truncation") {
@@ -231,6 +248,21 @@ struct Inspector: View {
             Label("contoured with \(m.provenance.cpuCount) chunks — not reproducible",
                   systemImage: "exclamationmark.triangle")
                 .font(.caption).foregroundStyle(.orange)
+        }
+    }
+}
+
+/// What the surface on screen is, and how building it went. Its own view,
+/// so the status a build writes does not re-evaluate the whole sidebar.
+struct SurfaceStatus: View {
+    let document: Document
+
+    var body: some View {
+        if let text = document.surfaceStatus {
+            HStack(spacing: 6) {
+                if document.building { ProgressView().controlSize(.small) }
+                Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+            }
         }
     }
 }
