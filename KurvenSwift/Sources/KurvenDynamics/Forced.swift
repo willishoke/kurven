@@ -50,11 +50,14 @@ public extension ForcedSystem {
 public enum DynamicsError: Error, CustomStringConvertible {
     case noGenerator(String)
     case notATorus(residual: Double, extent: Double)
+    case unknownSystem(String, known: [String])
 
     public var description: String {
         switch self {
         case .noGenerator(let why):
             "dynamics: no second frequency in the spectrum (\(why))"
+        case .unknownSystem(let name, let known):
+            "dynamics: unknown system '\(name)'; the catalog has: \(known.joined(separator: ", "))"
         case .notATorus(let r, let e):
             String(format: "dynamics: the fitted torus misses the trajectory by %.3g, %.2g of its size; "
                    + "the orbit is not on a torus at this order -- chaotic, locked to a "

@@ -206,3 +206,43 @@ func latticeFoldTests(_ found: InvariantTorus) {
                             frames.map { String(format: "%.1f", $0) }.joined(separator: ", ")))
     }
 }
+
+// MARK: - a surface plate, described and built
+
+func surfacePlateTests() {
+    Check.suite("plates: a surface request builds its plate, and an edit keeps what it can") {
+        func forced(radius: Double) -> SurfaceRequest {
+            SurfaceRequest(.forced(system: "jerk", fit: 8000, harmonics: 24, radial: 0, axial: 1,
+                                   radius: radius, duration: 200, every: 0.02),
+                           lattice: 256)
+        }
+        let clock = ContinuousClock()
+        var first: SurfacePlate!, second: SurfacePlate!
+        let fitted = try clock.measure { first = try SurfacePlate.build(forced(radius: 2.5)) }
+        let kept = try clock.measure {
+            second = try SurfacePlate.build(forced(radius: 3), reusing: first)
+        }
+        Check.expect(first.torus != nil && first.embedded
+                     && first.layers.map(\.spec.name) == ["trajectory", "folds"],
+                     "a forced plate is its trajectory and its folds, on an embedded torus")
+        Check.expect(second.revolution?.radius == 3 && kept < fitted / 4,
+                     "moving the revolution re-places the torus without refitting it",
+                     "\(fitted) to fit, \(kept) to re-place")
+
+        let torus = try SurfacePlate.build(SurfaceRequest(.torus(major: 2, minor: 1),
+                                                          lattice: 128, lines: SIMD2(12, 6),
+                                                          style: .init(folds: 0)))
+        Check.expect(torus.layers.map(\.spec.name) == ["lines"] && torus.surface.outward != nil,
+                     "a fold width of zero leaves the folds out")
+        let spindle = try SurfacePlate.build(SurfaceRequest(.torus(major: 1, minor: 1.2),
+                                                            lattice: 128))
+        Check.expect(spindle.surface.outward == nil,
+                     "a torus with R ≤ r bounds nothing, so hides nothing")
+        Check.expectThrows("an unknown system is refused by name") {
+            _ = try SurfacePlate.build(SurfaceRequest(.forced(system: "lorenz", fit: 100,
+                                                              harmonics: 4, radial: 0, axial: 1,
+                                                              radius: 2.5, duration: 1,
+                                                              every: 0.1)))
+        }
+    }
+}

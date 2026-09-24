@@ -77,9 +77,9 @@ public enum PeriodicTorus {
 
     /// sn(z, m) on its fundamental rectangle, [0, 4K) × [0, 2K').
     public static func jacobiSN(modulus m: Double, major R: Double = 2, minor r: Double = 1,
-                                resolution: Int = 600) throws -> Plate {
+                                resolution: Int = 600, lattice: Int = 1024) throws -> Plate {
         let K = Jacobi.quarterPeriod(m), Kp = Jacobi.quarterPeriod(1 - m)
         return try plate("sn(z, \(m))", periods: (4 * K, 2 * Kp), major: R, minor: r,
-                         resolution: resolution)
+                         resolution: resolution, lattice: lattice)
     }
 }

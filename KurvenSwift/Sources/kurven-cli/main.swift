@@ -283,111 +283,80 @@ func surfaceCommand(_ args: Args) throws {
     let R = try args.double("major") ?? 2
     let r = try args.double("minor") ?? 1
     let width = try args.double("width") ?? 0.3
-    let surface: ParametricSurface
-    var layers: [Layer]
+    func counts(_ text: String) throws -> SIMD2<Int> {
+        let n = text.split(separator: ",").compactMap { Int($0) }
+        guard n.count == 2 else { throw CLIError("--lines wants U,V, as in 36,18") }
+        return SIMD2(n[0], n[1])
+    }
+    // The flags, parsed into the request the window keeps; the plate is
+    // built from it by the same function either way.
+    var request: SurfaceRequest
     switch shape {
     case "torus":
-        let samples = try args.int("samples", 1024)
-        surface = ParametricSurface.torus(major: R, minor: r,
-                                          samples: (samples, max(samples / 2, 8)))
-        let counts = (args.flags["lines"] ?? "36,18").split(separator: ",").compactMap { Int($0) }
-        guard counts.count == 2 else { throw CLIError("--lines wants U,V, as in 36,18") }
-        let ink = surface.parameterLines(counts: (counts[0], counts[1]), resolution: 4 * samples)
-        layers = [Layer(spec: LayerSpec(name: "lines", role: .scaffold,
-                                        source: .parameterLines(u: counts[0], v: counts[1]),
-                                        width: width, heightPolicy: .surface),
-                        paths: ink)]
-    case "sn", "periodic":
-        let plate: PeriodicTorus.Plate
-        if shape == "sn" {
-            plate = try PeriodicTorus.jacobiSN(modulus: try args.double("modulus") ?? 0.64,
-                                               major: R, minor: r,
-                                               resolution: try args.int("grid", 600))
-        } else {
-            let periods = (args.flags["periods"] ?? "").split(separator: ",").compactMap { Double($0) }
-            guard periods.count == 2 else {
-                throw CLIError("--periods wants the real and imaginary periods, as in 6.4,4.1")
-            }
-            plate = try PeriodicTorus.plate(try args.string("expression"),
-                                            periods: (periods[0], periods[1]),
-                                            major: R, minor: r,
-                                            resolution: try args.int("grid", 600))
+        request = SurfaceRequest(.torus(major: R, minor: r),
+                                 lines: try counts(args.flags["lines"] ?? "36,18"))
+    case "sn":
+        request = SurfaceRequest(.sn(modulus: try args.double("modulus") ?? 0.64, major: R, minor: r,
+                                     grid: try args.int("grid", 600)))
+    case "periodic":
+        let periods = (args.flags["periods"] ?? "").split(separator: ",").compactMap { Double($0) }
+        guard periods.count == 2 else {
+            throw CLIError("--periods wants the real and imaginary periods, as in 6.4,4.1")
         }
-        surface = plate.surface
-        // Their own folds come with them; --folds below restyles or drops them.
-        layers = plate.layers.filter { if case .foldLines = $0.spec.source { false } else { true } }
+        request = SurfaceRequest(.periodic(expression: try args.string("expression"),
+                                           periods: SIMD2(periods[0], periods[1]),
+                                           major: R, minor: r, grid: try args.int("grid", 600)))
     case "forced":
         // A forced system's invariant torus, found in the spectrum of one
         // long run and fitted; drawn by revolution, with the trajectory on it.
-        let name = args.flags["system"] ?? "jerk"
-        guard let system = ForcedSystem.catalog[name] else {
-            throw CLIError("unknown system '\(name)'; the catalog has: "
-                           + ForcedSystem.catalog.keys.sorted().joined(separator: ", "))
-        }
-        let clock = ContinuousClock()
-        var torus: InvariantTorus!
-        let found = try clock.measure {
-            torus = try InvariantTorus.find(system, duration: try args.double("fit") ?? 8000,
-                                            harmonics: try args.int("harmonics", 24))
-        }
-        let e = Revolution.fitting(torus, radial: try args.int("radial", 0),
-                                   axial: try args.int("axial", 1))
-        let lattice = try args.int("samples", 1024)
-        let placed = torus.surface(e, lattice: (lattice, lattice / 2))
-        surface = placed.surface
-        let ink = try torus.trajectory(e, duration: try args.double("duration") ?? 2300,
-                                       every: try args.double("every") ?? 0.01)
-        layers = [Layer(spec: LayerSpec(name: "trajectory", role: .scaffold, source: .trajectory,
-                                        width: try args.double("ink") ?? 0.08,
-                                        heightPolicy: .surface),
-                        paths: ink)]
-        if let text = args.flags["lines"] {
-            let counts = text.split(separator: ",").compactMap { Int($0) }
-            guard counts.count == 2 else { throw CLIError("--lines wants U,V, as in 36,18") }
-            layers.append(Layer(spec: LayerSpec(name: "lines", role: .scaffold,
-                                                source: .parameterLines(u: counts[0], v: counts[1]),
-                                                width: width, heightPolicy: .surface),
-                                paths: surface.parameterLines(counts: (counts[0], counts[1]),
-                                                              resolution: 2 * lattice)))
-        }
-        print(String(format: """
-            \(system.name): forced at ω = %.6f, own frequency Ω = %.10f  (found in %@)
-              fit       %d harmonics, misses its trajectory by %.2e (%.1e of its size)
-              drawn     by revolution, %@
-            """, torus.forcing, torus.internalFrequency, "\(found)", torus.fit.harmonics,
-            torus.residual, torus.residual / torus.extent,
-            placed.embedded ? "embedded: back faces are hidden"
-                            : "NOT embedded -- a slice crosses itself; back faces are kept"))
+        request = SurfaceRequest(.forced(system: args.flags["system"] ?? "jerk",
+                                         fit: try args.double("fit") ?? 8000,
+                                         harmonics: try args.int("harmonics", 24),
+                                         radial: try args.int("radial", 0),
+                                         axial: try args.int("axial", 1),
+                                         radius: try args.double("radius") ?? 2.5,
+                                         duration: try args.double("duration") ?? 2300,
+                                         every: try args.double("every") ?? 0.01),
+                                 lines: try args.flags["lines"].map(counts))
     default:
         throw CLIError("unknown surface '\(shape)'; the catalog has: torus, sn, periodic, forced")
     }
-    let camera = Camera.plate(PlateProjection(
-        shear: try args.double("shear") ?? 0,
-        xAngle: try args.double("x-angle") ?? -55,
-        zAngle: try args.double("z-angle") ?? 30,
-        flipX: false, yScale: nil))
+    request.lattice = try args.int("samples", 1024)
     // The outline and inner silhouettes, derived for the camera; --folds 0
     // leaves them out.
-    let foldWidth = try args.double("folds") ?? 2 * width
-    let folds = Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldLines,
-                                      width: foldWidth, heightPolicy: .surface),
-                      paths: .empty)
-    if foldWidth > 0 { layers.append(folds) }
-    let scene = Scene(surface: surface, layers: layers, camera: camera, margin: 0)
+    request.style = SurfaceRequest.Style(lines: width, trajectory: try args.double("ink") ?? 0.08,
+                                         folds: try args.double("folds") ?? 2 * width)
+    let clock = ContinuousClock()
+    var plate: SurfacePlate!
+    let built = try clock.measure { plate = try SurfacePlate.build(request) }
+    let surface = plate.surface
+    if let torus = plate.torus {
+        print(String(format: """
+            \(torus.system.name): forced at ω = %.6f, own frequency Ω = %.10f  (built in %@)
+              fit       %d harmonics, misses its trajectory by %.2e (%.1e of its size)
+              drawn     by revolution, %@
+            """, torus.forcing, torus.internalFrequency, "\(built)", torus.fit.harmonics,
+            torus.residual, torus.residual / torus.extent,
+            plate.embedded ? "embedded: back faces are hidden"
+                           : "NOT embedded -- a slice crosses itself; back faces are kept"))
+    }
+    var projection = SurfaceRequest.projection
+    projection.shear = try args.double("shear") ?? projection.shear
+    projection.xAngle = try args.double("x-angle") ?? projection.xAngle
+    projection.zAngle = try args.double("z-angle") ?? projection.zAngle
+    let camera = Camera.plate(projection)
+    let scene = plate.scene(camera: camera)
     let output = URL(fileURLWithPath: try args.string("output"))
 
     if args.switches.contains("preview") || output.pathExtension.lowercased() == "png" {
         // The realtime preview, one frame, offscreen: what the app would show.
         let viewport = Viewport(width: try args.int("width-px", 1600),
                                 height: try args.int("height-px", 1200))
-        let orbit = Orbit(matching: PlateProjection(
-            shear: try args.double("shear") ?? 0, xAngle: try args.double("x-angle") ?? -55,
-            zAngle: try args.double("z-angle") ?? 30, flipX: false, yScale: nil))
+        let orbit = Orbit(matching: projection)
         guard let bounds = scene.quickBounds() else { throw CLIError("the surface is empty") }
         let navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
         let renderer = try MetalRenderer()
         let target = try renderer.makePreviewTarget(viewport)
-        let clock = ContinuousClock()
         let elapsed = try clock.measure {
             try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
                                        options: try previewOptions(args, mode: try previewMode(args)),
@@ -402,7 +371,6 @@ func surfaceCommand(_ args: Args) throws {
                               tiles: args.flags["tiles"].flatMap(Int.init))
 
     let renderer = try MetalRenderer()
-    let clock = ContinuousClock()
     var result: Bake!
     let elapsed = try clock.measure { result = try renderer.bake(scene, options: options) }
     try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)

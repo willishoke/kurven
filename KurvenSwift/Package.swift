@@ -39,7 +39,11 @@ let package = Package(
         // Flows drawn as plates: a forced system integrated in Math, its
         // invariant torus found and fitted there, and the torus and its
         // trajectory set out here as a parametric surface with ink on it.
-        .target(name: "KurvenDynamics", dependencies: ["KurvenCore", "KurvenMath"]),
+        // Also where every surface plate is described and built -- the
+        // periodic ones through Landscape -- so the CLI and the window build
+        // a plate with one function.
+        .target(name: "KurvenDynamics",
+                dependencies: ["KurvenCore", "KurvenMath", "KurvenLandscape"]),
 
         // The uniform and vertex structs, defined once in C and shared by
         // Swift (as a module) and MSL (prepended to the source), so CPU/GPU
