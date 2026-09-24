@@ -1088,6 +1088,8 @@ func sourceName(_ source: LayerSource) -> String {
         "cap hatch along \(axis.rawValue) every \(fmt(spacing))"
     case .capOutline: "cap outline"
     case .parameterLines(let u, let v): "\(u) + \(v) parameter lines"
+    case .winding(let slope, let turns, let count):
+        "\(count) winding\(count == 1 ? "" : "s") at slope \(fmt(slope)), \(turns) turns"
     case .foldLines: "fold lines"
     case .trajectory: "a trajectory"
     }

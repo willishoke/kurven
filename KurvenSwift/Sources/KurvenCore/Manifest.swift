@@ -477,6 +477,12 @@ public enum LayerSource: Sendable, Equatable {
     /// carries its surface coordinate, so the ink is judged by where on the
     /// surface it lies.
     case parameterLines(u: Int, v: Int)
+    /// Windings of a parametric surface: `count` straight lines through its
+    /// parameter rectangle at `slope` turns of `v` per turn of `u`, each
+    /// drawn `turns` turns round -- or until it closes, when the slope is a
+    /// fraction. Each vertex carries its surface coordinate, as the
+    /// parameter lines' do.
+    case winding(slope: Double, turns: Int, count: Int)
     /// The fold lines of a parametric surface -- its outline and inner
     /// silhouettes -- which depend on the camera and are derived for it.
     case foldLines
@@ -533,12 +539,16 @@ public enum LayerSource: Sendable, Equatable {
         case "parameterLines":
             self = .parameterLines(u: try o.int("u", "LayerSource.parameterLines"),
                                    v: try o.int("v", "LayerSource.parameterLines"))
+        case "winding":
+            self = .winding(slope: try o.double("slope", "LayerSource.winding"),
+                            turns: try o.int("turns", "LayerSource.winding"),
+                            count: try o.int("count", "LayerSource.winding"))
         case let other:
             throw ManifestError.unknownKind(other, of: "LayerSource",
                                             known: ["file", "contour", "wallHatch",
                                                     "wallOutline", "capHatch",
                                                     "capOutline", "parameterLines",
-                                                    "foldLines", "trajectory"])
+                                                    "winding", "foldLines", "trajectory"])
         }
     }
     public var json: JSONValue {
@@ -566,6 +576,9 @@ public enum LayerSource: Sendable, Equatable {
             .object(["kind": .string("capOutline"), "tiled": .bool(tiled)])
         case .parameterLines(let u, let v):
             .object(["kind": .string("parameterLines"), "u": .int(u), "v": .int(v)])
+        case .winding(let slope, let turns, let count):
+            .object(["kind": .string("winding"), "slope": .double(slope), "turns": .int(turns),
+                     "count": .int(count)])
         case .foldLines:
             .object(["kind": .string("foldLines")])
         case .trajectory:

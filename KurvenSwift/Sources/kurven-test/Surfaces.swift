@@ -478,6 +478,23 @@ func surfaceBakeTests() {
         Check.expect(same, "a tiled bake draws what a single-pass bake draws",
                      "\(moved) of \(whole.surface!.coords.count) pixel coordinates differ")
 
+        // A winding is judged the same way, by the same coordinate image:
+        // ink the surface passes never saw, placed from the lattice rather
+        // than the map, still carries the ray-cast's visible length.
+        let winding = torus.winding(slope: 2.0 / 5, turns: 5, count: 3)
+        let wound = try renderer.bake(
+            scene.drawing([Layer(spec: LayerSpec(name: "winding", role: .scaffold,
+                                                 source: .winding(slope: 0.4, turns: 5, count: 3),
+                                                 width: 0.3, heightPolicy: .surface),
+                                 paths: winding)]),
+            options: BakeOptions(resolution: 2400, tiles: 1))
+        let windingTruth = rayCastInkLength(winding, on: torus, major: 2, minor: 1,
+                                            view: camera.view)
+        let windingError = abs(wound.strokes.inkLength - windingTruth) / windingTruth
+        Check.expect(windingError < 0.002, "a winding bakes to the ray-cast's visible length too",
+                     String(format: "%.4f vs %.4f, %.3f%% off", wound.strokes.inkLength,
+                            windingTruth, 100 * windingError))
+
         // The same lines without coordinates are judged by depth, at the
         // scene's margin -- still a drawing, and a measurably worse one.
         let bare = Layer(spec: spec, paths: PolylineSet(vertices: ink.vertices, offsets: ink.offsets))
@@ -706,5 +723,90 @@ func surfacePreviewTests() {
         Check.expect(stray > 0.2, "while the same lines drawn unclipped visibly are not",
                      String(format: "%.1f%% of %d pixels have no baked stroke near", 100 * stray,
                             all.count))
+    }
+}
+
+func windingTests() {
+    Check.suite("surfaces: a winding is a straight line on the flat torus, placed on the lattice") {
+        let torus = ParametricSurface.torus(major: 2, minor: 1, samples: (512, 256))
+        let turn = 2 * Double.pi
+
+        // The interpolator returns the lattice at its own points, and is
+        // within a lattice cell's sag of the map between them.
+        var exact = true, sag = 0.0
+        for j in stride(from: 0, to: 256, by: 17) {
+            for i in stride(from: 0, to: 512, by: 13) {
+                let c = P2<ParamSpace>(torus.u.coordinate(i), torus.v.coordinate(j))
+                exact = exact
+                    && simd_length(torus.interpolate(c).v - torus.position(i, j).v) < 1e-12
+                let mid = P2<ParamSpace>(c.x + 0.5 * torus.u.spacing + 7 * turn,
+                                         c.y + 0.5 * torus.v.spacing - 3 * turn)
+                sag = max(sag, simd_length(torus.interpolate(mid).v - torus.map(mid).position))
+            }
+        }
+        Check.expect(exact, "the lattice interpolates to itself at its own points")
+        Check.expect(sag < 1e-3 && sag > 0, "and to the map between them, whole periods away",
+                     String(format: "%.2e off", sag))
+
+        // A rational slope closes after its denominator's turns, and stops
+        // there: one closed (p, q) curve, straight in coordinates.
+        let closed = torus.winding(slope: 2.0 / 5, turns: 24)
+        let steps = 512
+        Check.expect(closed.count == 1 && closed.vertices.count == 5 * steps + 1,
+                     "slope 2/5 closes after five turns, a vertex per lattice cell",
+                     "\(closed.count) paths, \(closed.vertices.count) vertices")
+        let ends = simd_length(closed.vertices[0].v - closed.vertices[closed.vertices.count - 1].v)
+        Check.expect(ends < 1e-9, "and its last vertex is its first",
+                     String(format: "%.1e apart", ends))
+        let coords = closed.coords!
+        let straight = coords.allSatisfy { abs($0.y - 0.4 * $0.x) < 1e-9 }
+        let rises = coords[coords.count - 1].x - coords[0].x
+        Check.expect(straight && abs(rises - 5 * turn) < 1e-9,
+                     "its coordinates run straight, v = 2/5 u, over five turns of u")
+        let placed = zip(closed.vertices, coords)
+            .map { simd_length($0.v - torus.map($1).position) }.max()!
+        Check.expect(placed < 1e-3, "every vertex lies on the drawn surface at its coordinate",
+                     String(format: "%.2e from the map", placed))
+
+        // An irrational slope never closes: all the turns asked for, broken
+        // into paths of at most eight turns that share their seam vertex,
+        // coordinates continuous across it by whole periods.
+        let open = torus.winding(slope: 2.0.squareRoot() - 1, turns: 20)
+        let oc = open.coords!
+        var seams = true
+        for k in 1..<open.count {
+            let end = open.offsets[k] - 1, start = open.offsets[k]
+            let du = (oc[end].x - oc[start].x) / turn, dv = (oc[end].y - oc[start].y) / turn
+            seams = seams && open.vertices[end] == open.vertices[start]
+                && abs(du - du.rounded()) < 1e-9 && abs(dv - dv.rounded()) < 1e-9
+        }
+        let spans = (0..<open.count).map { k in
+            (oc[open.offsets[k + 1] - 1].x - oc[open.offsets[k]].x) / turn
+        }
+        let far = simd_length(open.vertices[0].v - open.vertices[open.vertices.count - 1].v)
+        Check.expect(open.count == 3 && spans.allSatisfy { $0 <= 8 + 1e-9 }
+                     && abs(spans.reduce(0, +) - 20) < 1e-9,
+                     "√2 − 1 runs its twenty turns in three paths of at most eight",
+                     "\(open.count) paths spanning \(spans.map { String(format: "%.2f", $0) })")
+        Check.expect(seams && far > 0.1, "which share their seam vertex and never close",
+                     String(format: "ends %.3f apart", far))
+
+        // Strands start evenly spaced along v; slope zero is the v-lines.
+        let strands = torus.winding(slope: 0, turns: 3, count: 4)
+        let sc = strands.coords!
+        let starts = (0..<strands.count).map { sc[strands.offsets[$0]].y }
+        Check.expect(strands.count == 4 && starts == [0, 0.25, 0.5, 0.75].map { $0 * turn }
+                     && sc.allSatisfy { $0.x <= turn + 1e-9 },
+                     "four strands of slope zero are four lines of constant v, one turn each")
+
+        // The steeper axis sets the vertex count: slope 4 walks the tube
+        // four times per turn and gets a vertex per v-cell of that.
+        let steep = torus.winding(slope: 4, turns: 1)
+        Check.expect(steep.vertices.count == 4 * 256 + 1,
+                     "slope four is sampled once per v-cell", "\(steep.vertices.count) vertices")
+
+        let source = LayerSource.winding(slope: 0.4, turns: 24, count: 3)
+        Check.expect((try? LayerSource(json: source.json)) == source,
+                     "a winding layer source round-trips through the manifest")
     }
 }
