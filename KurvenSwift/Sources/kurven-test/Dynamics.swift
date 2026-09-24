@@ -122,3 +122,87 @@ func odeTests() {
         Check.expect(worst < 1e-6, "tracks the zigzag through every corner", "max error \(worst)")
     }
 }
+
+// MARK: - frequency analysis and the Fourier torus
+
+func frequencyTests() {
+    Check.suite("frequency: the FFT is the DFT") {
+        let rng = SplitMix(seed: 3)
+        let n = 256
+        let xr = (0..<n).map { _ in rng.next(-1, 1) }, xi = (0..<n).map { _ in rng.next(-1, 1) }
+        var re = xr, im = xi
+        Frequency.fft(&re, &im)
+        var worst = 0.0
+        for k in 0..<n {
+            var sr = 0.0, si = 0.0
+            for j in 0..<n {
+                let a = -2 * Double.pi * Double(j * k % n) / Double(n)
+                sr += xr[j] * cos(a) - xi[j] * sin(a)
+                si += xr[j] * sin(a) + xi[j] * cos(a)
+            }
+            worst = max(worst, hypot(sr - re[k], si - im[k]))
+        }
+        Check.expect(worst < 1e-11, "every bin, to rounding", "max \(worst)")
+    }
+
+    Check.suite("frequency: lines and the generator of a torus's spectrum") {
+        // Lines at ω, Ω, ω + 2Ω and 2ω − Ω, with the strongest non-forcing
+        // line not the generator itself -- the case that makes "take the
+        // strongest line" wrong.
+        let omega = 0.94, Omega = 0.396_221_328_3
+        let dt = 0.05, n = 80_000
+        let x = (0..<n).map { k -> Double in
+            let t = 400 + Double(k) * dt
+            return cos(omega * t) + 0.3 * cos(Omega * t + 0.3)
+                + 0.8 * cos((omega + 2 * Omega) * t + 1) + 0.1 * cos((2 * omega - Omega) * t)
+        }
+        let lines = Frequency.lines(x, t0: 400, dt: dt, count: 4)
+        let truth = [omega, Omega, omega + 2 * Omega, 2 * omega - Omega]
+        let worst = truth.map { f in lines.map { abs($0.frequency - f) }.min() ?? .infinity }.max()!
+        Check.expect(lines.count == 4 && worst < 1e-9,
+                     "each line is found to its exact frequency", "worst \(worst)")
+        let g = Frequency.generator(lines, forcing: omega)
+        Check.expect(g != nil && abs(g!.frequency - Omega) < 1e-9 && g!.explained == 3,
+                     "and the generator is Ω though ω + 2Ω is the stronger line",
+                     g.map { "Ω = \($0.frequency), explains \($0.explained)" } ?? "none")
+    }
+
+    Check.suite("frequency: a torus that is a Fourier series is fitted exactly") {
+        // K(θ, φ) of degree three in each angle, sampled along the line
+        // (ω₁t, ω₂t): the fit at M = 4 has every true coefficient and should
+        // reproduce K everywhere on the torus, not only along the samples.
+        func K(_ a: Double, _ b: Double) -> SIMD3<Double> {
+            SIMD3(2 * cos(a) + 0.5 * cos(a + b) - 0.2 * sin(3 * b),
+                  2 * sin(a) + 0.3 * sin(2 * a - b) + 0.1,
+                  0.7 * sin(b) + 0.2 * cos(a - 3 * b))
+        }
+        let w1 = 0.94, w2 = 0.396_221_328_3, dt = 0.05
+        // What the averages cannot remove is a finite run's leakage between
+        // lines, and the Hann² window makes that fall steeply with length:
+        // measured at two lengths, it must.
+        func errors(_ n: Int) -> (value: Double, slope: Double) {
+            let samples = (0..<n).map { k -> SIMD3<Double> in
+                let t = Double(k) * dt
+                return K(w1 * t, w2 * t)
+            }
+            let fit = FourierTorus.fit(samples, t0: 0, dt: dt, frequencies: (w1, w2), harmonics: 4)
+            let rng = SplitMix(seed: 5)
+            var worst = 0.0, slope = 0.0
+            for _ in 0..<500 {
+                let a = rng.next(0, 2 * .pi), b = rng.next(0, 2 * .pi)
+                let j = fit.jet(a, b)
+                worst = max(worst, simd_length(j.value - K(a, b)))
+                let h = 1e-6
+                let da = (K(a + h, b) - K(a - h, b)) / (2 * h)
+                let db = (K(a, b + h) - K(a, b - h)) / (2 * h)
+                slope = max(slope, simd_length(j.dTheta - da), simd_length(j.dPhi - db))
+            }
+            return (worst, slope)
+        }
+        let short = errors(80_000), long = errors(160_000)
+        Check.expect(long.value < 1e-8 && short.value / long.value > 8,
+                     "everywhere on the torus, not only on the line, and better with length",
+                     "max \(short.value) at T = 4000, \(long.value) at T = 8000")
+        Check.expect(long.slope < 1e-7, "and so are its derivatives", "max \(long.slope)")
+    }
+}
