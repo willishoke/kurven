@@ -28,9 +28,9 @@ struct KurvenApplication: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {
-                // A landscape is the new document here: the app no longer needs
-                // a bundle someone made earlier in order to show anything.
-                Button("New Landscape…") { delegate.newLandscape() }
+                // A landscape or a surface is the new document here: the app no
+                // longer needs a bundle someone made earlier to show anything.
+                Button("New…") { delegate.browse() }
                     .keyboardShortcut("n")
                 Button("Open…") { delegate.openPanel() }
                     .keyboardShortcut("o")
@@ -279,25 +279,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Show the picker. Not "make a landscape at once": with fourteen
     /// functions in the catalog, the choice is the interesting part.
     private func warmThumbnails() async {
-        let catalog = document.catalog
+        let entries = document.catalog.presets.map(GalleryEntry.function)
+            + SurfacePreset.catalog.map(GalleryEntry.surface)
         let clock = ContinuousClock()
         let started = clock.now
-        thumbnails.warm(catalog.presets)
-        while thumbnails.images.count < catalog.presets.count {
-            if catalog.presets.allSatisfy({ thumbnails.images[$0.name] != nil
-                                            || thumbnails.isFailed($0) }) { break }
+        thumbnails.warm(entries)
+        while !entries.allSatisfy({ thumbnails.images[$0.id] != nil
+                                    || thumbnails.isFailed($0) }) {
             try? await Task.sleep(for: .milliseconds(50))
         }
-        for preset in catalog.presets {
-            let mark = thumbnails.images[preset.name] != nil ? "drew" : "FAILED"
-            print("  \(mark)  \(preset.name)")
+        for entry in entries {
+            let mark = thumbnails.images[entry.id] != nil ? "drew" : "FAILED"
+            print("  \(mark)  \(entry.id)")
         }
-        print("Kurven: \(thumbnails.images.count) of \(catalog.presets.count) "
+        print("Kurven: \(thumbnails.images.count) of \(entries.count) "
               + "thumbnails in \(clock.now - started)")
         exit(0)
     }
 
-    func newLandscape() {
+    func browse() {
         document.browsing = true
     }
 
@@ -430,8 +430,8 @@ struct DocumentWindow: View {
         }
         .navigationTitle(document.title)
         .sheet(isPresented: $document.browsing) {
-            Gallery(presets: document.catalog.presets, thumbnails: thumbnails,
-                    choose: { document.create($0) },
+            Gallery(functions: document.catalog.presets, surfaces: SurfacePreset.catalog,
+                    thumbnails: thumbnails, choose: document.create(_:),
                     dismiss: { document.browsing = false })
         }
         .toolbar {
@@ -453,8 +453,8 @@ struct DocumentWindow: View {
             }
         case .empty:
             VStack(spacing: 0) {
-                Gallery(presets: document.catalog.presets, thumbnails: thumbnails,
-                        choose: { document.create($0) })
+                Gallery(functions: document.catalog.presets, surfaces: SurfacePreset.catalog,
+                        thumbnails: thumbnails, choose: document.create(_:))
                 Divider()
                 HStack {
                     Text("…or open a bundle someone already made.")

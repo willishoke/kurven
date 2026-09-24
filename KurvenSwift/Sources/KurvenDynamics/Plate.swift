@@ -156,16 +156,19 @@ public struct SurfacePlate: Sendable {
     }
 }
 
-/// A surface the gallery offers: a name to ask for it by, a label to show,
-/// and the request it opens as.
+/// A surface the gallery offers: a name to ask for it by, a label, a formula
+/// and a note to show, and the request it opens as.
 public struct SurfacePreset: Sendable, Equatable, Identifiable {
     public let name: String
     public let label: String
+    public let formula: String
+    public let notes: String
     public let request: SurfaceRequest
     public var id: String { name }
 
-    public init(name: String, label: String, request: SurfaceRequest) {
-        self.name = name; self.label = label
+    public init(name: String, label: String, formula: String, notes: String,
+                request: SurfaceRequest) {
+        self.name = name; self.label = label; self.formula = formula; self.notes = notes
         var request = request
         request.name = name
         self.request = request
@@ -176,11 +179,17 @@ public extension SurfacePreset {
     /// Named as `kurven-cli surface` names them, and built with its defaults,
     /// so a preset and the CLI's plate of the same name are the same plate.
     static let catalog: [SurfacePreset] = [
-        SurfacePreset(name: "torus", label: "Torus",
+        SurfacePreset(name: "torus", label: "Torus", formula: "R = 2, r = 1",
+                      notes: "The torus of revolution, ruled by its two families of circles.",
                       request: SurfaceRequest(.torus(major: 2, minor: 1), lines: SIMD2(36, 18))),
-        SurfacePreset(name: "sn", label: "sn(z, 0.64) on its torus",
+        SurfacePreset(name: "sn", label: "sn on its torus", formula: "sn(z, 0.64)",
+                      notes: "Jacobi's sn is doubly periodic: its rectangle of periods, rolled "
+                          + "up both ways, is a torus, and its contours close on it.",
                       request: SurfaceRequest(.sn(modulus: 0.64, major: 2, minor: 1, grid: 600))),
-        SurfacePreset(name: "forced", label: "Forced jerk oscillator",
+        SurfacePreset(name: "forced", label: "Forced oscillator",
+                      formula: "x‴ = −αx′x″ − (ω₀² + 3βx²)x′ + A sin ωt",
+                      notes: "A forced jerk oscillator's invariant torus, found in the spectrum "
+                          + "of one long run and fitted, with the trajectory winding round it.",
                       request: SurfaceRequest(.forced(system: "jerk", fit: 8000, harmonics: 24,
                                                       radial: 0, axial: 1, radius: 2.5,
                                                       duration: 2300, every: 0.01))),

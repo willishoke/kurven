@@ -14,6 +14,14 @@ import KurvenDynamics
 /// controls that restyle, resample or save a bundle stay away from it.
 @MainActor
 extension Document {
+    /// Open what the gallery chose.
+    func create(_ entry: GalleryEntry) {
+        switch entry {
+        case .function(let preset): create(preset)
+        case .surface(let preset): create(surface: preset)
+        }
+    }
+
     /// Start a surface from the catalog, replacing whatever is open.
     func create(surface preset: SurfacePreset) {
         generation += 1
