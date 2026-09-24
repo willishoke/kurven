@@ -18,11 +18,15 @@ struct Inspector: View {
             // The function comes first, and shows even with nothing open: a
             // landscape is now something you can start, not only something you
             // can be handed.
-            Section("Landscape") {
-                LandscapeSection(document: document)
+            // A surface has its own section and a way back to the gallery;
+            // the function picker would only say "—" beside it.
+            if document.plate == nil && !document.building {
+                Section("Landscape") {
+                    LandscapeSection(document: document)
+                }
             }
             if document.plate != nil || document.building {
-                Section("Surface") { SurfaceStatus(document: document) }
+                Section("Surface") { SurfaceSection(document: document) }
             }
             if document.plate != nil {
                 // A surface is not a bundle: no truncation, margin, resample

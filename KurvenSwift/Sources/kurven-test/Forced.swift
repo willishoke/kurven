@@ -225,6 +225,9 @@ func surfacePlateTests() {
         Check.expect(first.torus != nil && first.embedded
                      && first.layers.map(\.spec.name) == ["trajectory", "folds"],
                      "a forced plate is its trajectory and its folds, on an embedded torus")
+        let tight = try SurfacePlate.build(forced(radius: 0.6), reusing: first)
+        Check.expect(!tight.embedded && tight.surface.outward == nil,
+                     "a ring too tight for its slices passes through its axis, and says so")
         Check.expect(second.revolution?.radius == 3 && kept < fitted / 4,
                      "moving the revolution re-places the torus without refitting it",
                      "\(fitted) to fit, \(kept) to re-place")
@@ -238,6 +241,96 @@ func surfacePlateTests() {
                                                             lattice: 128))
         Check.expect(spindle.surface.outward == nil,
                      "a torus with R ≤ r bounds nothing, so hides nothing")
+        // An edit, built from the plate before it, is exactly the plate built
+        // from nothing -- so the window's plate depends on its request alone
+        // -- and keeps the surface's identity exactly when the surface is
+        // unchanged.
+        func same(_ a: SurfacePlate, _ b: SurfacePlate) -> Bool {
+            a.surface.positions == b.surface.positions && a.embedded == b.embedded
+                && a.layers.map(\.spec) == b.layers.map(\.spec)
+                && a.layers.map(\.paths) == b.layers.map(\.paths)
+        }
+        func edit(_ label: String, _ from: SurfaceRequest, _ to: SurfaceRequest,
+                  keepsSurface: Bool) throws {
+            let before = try SurfacePlate.build(from)
+            let edited = try SurfacePlate.build(to, reusing: before)
+            let fresh = try SurfacePlate.build(to)
+            Check.expect(same(edited, fresh) && (edited.content == before.content) == keepsSurface,
+                         "\(label): the edit is the plate built afresh, and "
+                         + (keepsSurface ? "keeps the surface" : "has a new surface"))
+        }
+        func forcedRequest(radius: Double = 2.5, duration: Double = 200,
+                           lines: SIMD2<Int>? = nil) -> SurfaceRequest {
+            SurfaceRequest(.forced(system: "jerk", fit: 8000, harmonics: 24, radial: 0, axial: 1,
+                                   radius: radius, duration: duration, every: 0.02),
+                           lattice: 256, lines: lines)
+        }
+        func sn(m: Double = 0.64, R: Double = 2, r: Double = 1, grid: Int = 200) -> SurfaceRequest {
+            SurfaceRequest(.sn(modulus: m, major: R, minor: r, grid: grid), lattice: 256)
+        }
+        let ring = SurfaceRequest(.torus(major: 2, minor: 1), lattice: 128, lines: SIMD2(12, 6))
+        var thicker = ring; thicker.style.lines = 0.5
+        var more = ring; more.lines = SIMD2(24, 12)
+        try edit("torus, line width", ring, thicker, keepsSurface: true)
+        try edit("torus, line counts", ring, more, keepsSurface: true)
+        try edit("torus, radii", ring, SurfaceRequest(.torus(major: 3, minor: 0.5), lattice: 128,
+                                                      lines: SIMD2(12, 6)), keepsSurface: false)
+        try edit("sn, radii", sn(), sn(R: 2.5, r: 0.8), keepsSurface: false)
+        try edit("sn, grid", sn(), sn(grid: 150), keepsSurface: true)
+        try edit("sn, modulus", sn(), sn(m: 0.5), keepsSurface: false)
+        try edit("forced, duration", forcedRequest(), forcedRequest(duration: 120),
+                 keepsSurface: true)
+        try edit("forced, lines", forcedRequest(), forcedRequest(lines: SIMD2(12, 6)),
+                 keepsSurface: true)
+        try edit("forced, radius", forcedRequest(), forcedRequest(radius: 3), keepsSurface: false)
+
+        // A draft may read a shorter trajectory off a longer run; it is then
+        // the exact one to the integrator's tolerance, and the exact one
+        // follows when the drag ends.
+        let long = try SurfacePlate.build(forcedRequest(duration: 200))
+        let draft = try SurfacePlate.build(forcedRequest(duration: 120), reusing: long, draft: true)
+        let exact = try SurfacePlate.build(forcedRequest(duration: 120))
+        let a = draft.layers[0].paths.vertices, b = exact.layers[0].paths.vertices
+        let gap = zip(a, b).map { simd_length($0.v - $1.v) }.max() ?? .infinity
+        Check.expect(a.count == b.count && gap < 1e-6,
+                     "a draft's shorter trajectory is the exact one, to the tolerance",
+                     String(format: "worst %.1e over %d vertices", gap, a.count))
+        let settled = try SurfacePlate.build(forcedRequest(duration: 120), reusing: draft)
+        Check.expect(same(settled, exact), "and the build after the drag is exact")
+
+        // What an edit can leave stale is the renderer's: the surface's
+        // textures, its normals and the ink, all cached on identities the
+        // edit keeps or replaces. A preview drawn after each edit, by the
+        // renderer that drew the one before, is the preview a fresh renderer
+        // draws of the edited plate.
+        let warm = try MetalRenderer()
+        let viewport = Viewport(width: 480, height: 360)
+        let orbit = Orbit(matching: SurfaceRequest.projection)
+        var plate = try SurfacePlate.build(forcedRequest())
+        var scene = plate.scene(camera: orbit.camera)
+        let navigator = Navigator(orbit: orbit, framing: .fitting(scene.quickBounds()!, in: viewport))
+        func frame(_ renderer: MetalRenderer, _ scene: Scene) throws -> [UInt8] {
+            let target = try renderer.makePreviewTarget(viewport)
+            try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
+                                       options: PreviewOptions(slopeScale: 0), into: target)
+            return try PNG.bgra(target)
+        }
+        _ = try frame(warm, scene)
+        for (label, next) in [("the duration", forcedRequest(duration: 120)),
+                              ("the lines", forcedRequest(duration: 120, lines: SIMD2(12, 6))),
+                              ("the ring radius", forcedRequest(radius: 3, duration: 120,
+                                                                lines: SIMD2(12, 6)))] {
+            let edited = try SurfacePlate.build(next, reusing: plate)
+            // As the document adopts it.
+            scene = edited.content == plate.content ? scene.drawing(edited.layers)
+                                                    : edited.scene(camera: orbit.camera)
+            plate = edited
+            let after = try frame(warm, scene)
+            let fresh = try frame(try MetalRenderer(), edited.scene(camera: orbit.camera))
+            Check.expect(after == fresh, "after an edit of \(label), the window's renderer draws "
+                         + "what a fresh one draws")
+        }
+
         Check.expectThrows("an unknown system is refused by name") {
             _ = try SurfacePlate.build(SurfaceRequest(.forced(system: "lorenz", fit: 100,
                                                               harmonics: 4, radial: 0, axial: 1,

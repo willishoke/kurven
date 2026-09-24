@@ -19,6 +19,25 @@ public enum PeriodicTorus {
     public struct Plate: Sendable {
         public let surface: ParametricSurface
         public let layers: [Layer]
+
+        public init(surface: ParametricSurface, layers: [Layer]) {
+            self.surface = surface; self.layers = layers
+        }
+
+        /// The same function on a torus of other radii. The contours are the
+        /// function's, which the radii do not touch: only where each vertex
+        /// sits in space moves, read from its coordinate on the new torus.
+        public func placed(major R: Double, minor r: Double, lattice: Int) -> Plate {
+            let domain = Domain(real: surface.u.range, imag: surface.v.range)
+            let torus = PeriodicTorus.torus(over: domain, major: R, minor: r, lattice: lattice)
+            let layers = self.layers.map { layer -> Layer in
+                guard let coords = layer.paths.coords else { return layer }
+                return Layer(spec: layer.spec,
+                             paths: PolylineSet(vertices: coords.map { P3(torus.map($0).position) },
+                                                offsets: layer.paths.offsets, coords: coords))
+            }
+            return Plate(surface: torus, layers: layers)
+        }
     }
 
     /// Only rectangular period lattices: a real period along `real` and an
@@ -32,12 +51,7 @@ public enum PeriodicTorus {
         let compiled = try KurvenMath.Expression.compile(expression)
         let domain = Domain(real: Interval(lo: origin.re, hi: origin.re + periods.real),
                             imag: Interval(lo: origin.im, hi: origin.im + periods.imag))
-        let aspect = periods.imag / periods.real
-        let surface = ParametricSurface.torus(
-            major: R, minor: r,
-            u: ParamAxis(domain.real, periodic: true, samples: lattice),
-            v: ParamAxis(domain.imag, periodic: true,
-                         samples: max(Int(Double(lattice) * min(aspect, 1) * r / R), 32)))
+        let surface = torus(over: domain, major: R, minor: r, lattice: lattice)
 
         let samples = NativeLandscape.sample(compiled, domain: domain, resolution: resolution)
         let shape = samples.shape
@@ -73,6 +87,19 @@ public enum PeriodicTorus {
                                             width: 0.6, heightPolicy: .surface),
                             paths: .empty))
         return Plate(surface: surface, layers: layers)
+    }
+
+    /// The torus a rectangle of periods glues into, its lattice `lattice`
+    /// points around the real period and enough around the imaginary one to
+    /// keep the cells square on the tube.
+    static func torus(over domain: Domain, major R: Double, minor r: Double,
+                      lattice: Int) -> ParametricSurface {
+        let aspect = domain.imag.length / domain.real.length
+        return ParametricSurface.torus(
+            major: R, minor: r,
+            u: ParamAxis(domain.real, periodic: true, samples: lattice),
+            v: ParamAxis(domain.imag, periodic: true,
+                         samples: max(Int(Double(lattice) * min(aspect, 1) * r / R), 32)))
     }
 
     /// sn(z, m) on its fundamental rectangle, [0, 4K) × [0, 2K').

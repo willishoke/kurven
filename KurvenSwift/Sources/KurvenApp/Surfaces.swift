@@ -30,30 +30,38 @@ extension Document {
         send(surface: preset.request, framing: true)
     }
 
-    private func send(surface request: SurfaceRequest, framing: Bool) {
-        surfaceWanted = (request, framing)
+    /// The controls changed `surface`. `draft` is true while one is being
+    /// dragged: the plate is built from `SurfaceRequest.drafted()` until the
+    /// drag ends, and at full resolution after.
+    func surfaceEdited(draft: Bool) {
+        guard let request = surface else { return }
+        send(surface: draft ? request.drafted() : request, framing: false, draft: draft)
+    }
+
+    private func send(surface request: SurfaceRequest, framing: Bool, draft: Bool = false) {
+        surfaceWanted = (request, framing, draft)
         pumpSurface()
     }
 
     private func pumpSurface() {
-        guard !building, let (request, framing) = surfaceWanted else { return }
+        guard !building, let (request, framing, draft) = surfaceWanted else { return }
         surfaceWanted = nil
         if !framing, request == surfaceShown { return }
-        building = true
-        surfaceStatus = {
-            if case .forced = request.shape { return "fitting the torus…" }
-            return "building…"
-        }()
-        let asked = generation
-        // Whatever the plate on screen can lend the next one -- a forced
-        // system's fitted torus -- goes with the request.
+        // Whatever the plate on screen can lend the next one -- a fitted
+        // torus, its values on the lattice, the trajectory's run, the
+        // contours -- goes with the request.
         let previous = framing ? nil : plate
+        building = true
+        surfaceStatus = (previous?.refits(for: request) ?? true)
+            && { if case .forced = request.shape { true } else { false } }()
+            ? "fitting the torus…" : "building…"
+        let asked = generation
         Task {
             let clock = ContinuousClock()
             let started = clock.now
             do {
                 let built = try await Task.detached(priority: .userInitiated) {
-                    try SurfacePlate.build(request, reusing: previous)
+                    try SurfacePlate.build(request, reusing: previous, draft: draft)
                 }.value
                 // A landscape or another surface chosen meanwhile is the
                 // document now.
@@ -61,6 +69,7 @@ extension Document {
                     adopt(built, keepingCamera: !framing && scene != nil)
                     surfaceShown = request
                     surfaceStatus = status(of: built, took: clock.now - started)
+                        + (draft ? " (draft)" : "")
                 }
             } catch {
                 if generation == asked { surfaceStatus = "\(error)" }

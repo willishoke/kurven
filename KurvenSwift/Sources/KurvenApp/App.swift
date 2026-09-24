@@ -109,7 +109,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // from the catalog through the window's own Document -- the gallery's
         // path -- so the window can be held to `kurven-cli surface NAME`:
         // the same preview frame, pixel for pixel, and the same bake. With
-        // neither output it stays open, on that surface.
+        // neither output it stays open, on that surface. `--set FIELD=VALUE`,
+        // repeated, then edits it as the controls do -- one edit at a time,
+        // each built from the plate before it.
         if let i = args.firstIndex(of: "--surface"), i + 1 < args.endIndex {
             let name = args[i + 1]
             func path(_ flag: String) -> URL? {
@@ -119,7 +121,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let resolution = args.firstIndex(of: "--resolution")
                 .flatMap { $0 + 1 < args.endIndex ? Int(args[$0 + 1]) : nil }
-            Task { await headlessSurface(name, screenshot: path("--screenshot"),
+            var edits: [(String, Double)] = []
+            for (k, flag) in zip(args.indices, args) where flag == "--set" && k + 1 < args.endIndex {
+                let pair = args[k + 1].split(separator: "=", maxSplits: 1)
+                if pair.count == 2, let v = Double(pair[1]) { edits.append((String(pair[0]), v)) }
+            }
+            Task { await headlessSurface(name, edits: edits, screenshot: path("--screenshot"),
                                          bake: path("--bake"), resolution: resolution) }
             return
         }
@@ -247,8 +254,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Open a surface and report it, then draw or bake it and exit -- or, with
     /// nothing to write, show it.
-    private func headlessSurface(_ name: String, screenshot: URL?, bake: URL?,
-                                 resolution: Int?) async {
+    private func headlessSurface(_ name: String, edits: [(String, Double)] = [],
+                                 screenshot: URL?, bake: URL?, resolution: Int?) async {
         guard let preset = SurfacePreset.named(name) else {
             FileHandle.standardError.write(Data(("Kurven: no surface '\(name)'; the catalog has: "
                 + SurfacePreset.catalog.map(\.name).joined(separator: ", ") + "\n").utf8))
@@ -256,6 +263,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         document.create(surface: preset)
         while document.building { try? await Task.sleep(for: .milliseconds(25)) }
+        for (name, value) in edits {
+            guard let field = SurfaceRequest.Field(rawValue: name),
+                  document.surface?[field] != nil else {
+                FileHandle.standardError.write(Data(("Kurven: \(preset.name) has no field '\(name)'; "
+                    + "it has: " + (document.surface?.fields.map(\.rawValue) ?? [])
+                        .joined(separator: ", ") + "\n").utf8))
+                exit(1)
+            }
+            document.surface?[field] = value
+            document.surfaceEdited(draft: false)
+            while document.building { try? await Task.sleep(for: .milliseconds(25)) }
+            print("Kurven: \(name) = \(value) — \(document.surfaceStatus ?? "")")
+        }
         guard document.plate != nil else {
             FileHandle.standardError.write(Data(
                 "Kurven: could not build \(name) — \(document.surfaceStatus ?? "no reason given")\n".utf8))

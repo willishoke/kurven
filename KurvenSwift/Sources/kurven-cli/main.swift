@@ -124,6 +124,12 @@ usage: kurven-cli <command> [options]
         --width by default; 0 leaves them out). An output ending in .png
         renders one frame of the realtime preview instead of baking.
 
+  surface-costs [--repeat N]
+        Time what each of the window's surface controls costs: the plate
+        rebuilt from the one before it, and the first preview frame after,
+        as the window would pay for them -- at full resolution, and at the
+        draft lattice a drag uses. The numbers SurfaceSection's doc records.
+
   depth <bundle> [--preset NAME] [--resolution N] -o depth.npy
         Dump the depth buffer as float32 .npy, for comparison against the
         Python Z-buffer. This is what stands in for a GPU frame capture.
@@ -588,6 +594,126 @@ func previewView(_ args: Args, viewport: Viewport) throws
     // The inspector's Margin slider, from the command line.
     if let margin = try args.double("margin") { base.margin = margin }
     return (bundle, preset, base, navigator)
+}
+
+/// The surface controls' costs, as the window pays them: `SurfacePlate.build`
+/// from the plate before, then one preview frame of the result -- through
+/// `Scene.drawing` when the edit kept the surface, as the document does, so
+/// an ink edit re-uploads nothing.
+func surfaceCosts(_ args: Args) throws {
+    let repeats = try args.int("repeat", 3)
+    let renderer = try MetalRenderer()
+    let viewport = Viewport(width: 1600, height: 1200)
+    let target = try renderer.makePreviewTarget(viewport)
+    let orbit = Orbit(matching: SurfaceRequest.projection)
+    func seconds(_ d: Duration) -> Double {
+        Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
+    }
+    func ms(_ x: Double) -> String { x < 1 ? String(format: "%.1f ms", x * 1e3) : String(format: "%.2f s", x) }
+
+    func measure(_ label: String, _ base: SurfaceRequest, _ edit: (inout SurfaceRequest) -> Void,
+                 draft: Bool = false, from start: SurfacePlate? = nil) throws {
+        let before = try start ?? SurfacePlate.build(base)
+        let scene = before.scene(camera: orbit.camera)
+        guard let bounds = scene.quickBounds() else { throw CLIError("\(label): empty") }
+        let navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
+        let options = PreviewOptions(slopeScale: 0)
+        var request = before.request
+        edit(&request)
+        var builds: [Double] = [], frames: [Double] = []
+        var kept = false
+        for _ in 0..<repeats {
+            // The window as it stands before the edit: its textures, its
+            // ink and its normals already made.
+            try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
+                                       options: options, into: target)
+            let clock = ContinuousClock()
+            var after: SurfacePlate!
+            builds.append(seconds(try clock.measure {
+                after = try SurfacePlate.build(request, reusing: before, draft: draft)
+            }))
+            kept = after.content == before.content
+            let next = kept ? scene.drawing(after.layers) : after.scene(camera: orbit.camera)
+            frames.append(seconds(try clock.measure {
+                try renderer.renderPreview(next, navigator: navigator, viewport: viewport,
+                                           options: options, into: target)
+            }))
+        }
+        let b = builds.sorted()[builds.count / 2], f = frames.sorted()[frames.count / 2]
+        print("  \(label.padding(toLength: 40, withPad: " ", startingAt: 0))"
+              + "\(ms(b).padding(toLength: 10, withPad: " ", startingAt: 0))"
+              + "\(ms(f).padding(toLength: 10, withPad: " ", startingAt: 0))"
+              + "\(ms(b + f).padding(toLength: 10, withPad: " ", startingAt: 0))"
+              + (kept ? "ink only" : "new surface"))
+    }
+    /// A step of a drag: the plate a drag's first step built, from the full
+    /// one, edited again at the draft -- what each frame of a drag costs.
+    func drag(_ label: String, _ base: SurfaceRequest,
+              _ edit: @escaping (inout SurfaceRequest) -> Void) throws {
+        let full = try SurfacePlate.build(base)
+        let first = try SurfacePlate.build(base.drafted(), reusing: full, draft: true)
+        try measure(label + ", dragging", base.drafted(), { r in
+            var target = base; edit(&target); r = target.drafted()
+        }, draft: true, from: first)
+    }
+
+    let presets = Dictionary(uniqueKeysWithValues: SurfacePreset.catalog.map { ($0.name, $0.request) })
+    print("  \("control".padding(toLength: 40, withPad: " ", startingAt: 0))build     frame     total")
+
+    print("torus")
+    let torus = presets["torus"]!
+    try measure("radii", torus) { $0.shape = .torus(major: 2.3, minor: 0.9) }
+    try measure("line counts", torus) { $0.lines = SIMD2(48, 24) }
+    try measure("line width", torus) { $0.style.lines = 0.5 }
+
+    print("sn")
+    let sn = presets["sn"]!
+    try measure("radii", sn) { $0.shape = .sn(modulus: 0.64, major: 2.3, minor: 0.9, grid: 600) }
+    try measure("modulus", sn) { $0.shape = .sn(modulus: 0.7, major: 2, minor: 1, grid: 600) }
+    try measure("grid", sn) { $0.shape = .sn(modulus: 0.64, major: 2, minor: 1, grid: 400) }
+    try drag("radii", sn) { $0.shape = .sn(modulus: 0.64, major: 2.3, minor: 0.9, grid: 600) }
+    try drag("modulus", sn) { $0.shape = .sn(modulus: 0.7, major: 2, minor: 1, grid: 600) }
+    try drag("grid", sn) { $0.shape = .sn(modulus: 0.64, major: 2, minor: 1, grid: 400) }
+
+    print("forced")
+    let forced = presets["forced"]!
+    let base = try SurfacePlate.build(forced)
+    func forcedEdit(_ label: String, draft: Bool = false, lattice: Int? = nil,
+                    from start: SurfacePlate? = nil,
+                    _ change: @escaping (inout String, inout Double, inout Int, inout Int, inout Int,
+                                         inout Double, inout Double, inout Double) -> Void) throws {
+        try measure(label, forced, { r in
+            if let lattice { r.lattice = lattice }
+            guard case .forced(var s, var f, var h, var ra, var ax, var rad, var d, var e) = r.shape
+            else { return }
+            change(&s, &f, &h, &ra, &ax, &rad, &d, &e)
+            r.shape = .forced(system: s, fit: f, harmonics: h, radial: ra, axial: ax, radius: rad,
+                              duration: d, every: e)
+        }, draft: draft, from: start ?? base)
+    }
+    try forcedEdit("revolution radius") { _, _, _, _, _, rad, _, _ in rad = 3 }
+    try forcedEdit("axial component") { _, _, _, _, ax, _, _, _ in ax = 2 }
+    try forcedEdit("duration, shorter") { _, _, _, _, _, _, d, _ in d = 1500 }
+    try forcedEdit("duration, longer") { _, _, _, _, _, _, d, _ in d = 3000 }
+    try forcedEdit("sample spacing") { _, _, _, _, _, _, _, e in e = 0.02 }
+    try measure("parameter lines on", forced, { $0.lines = SIMD2(36, 18) }, from: base)
+    try forcedEdit("harmonics") { _, _, h, _, _, _, _, _ in h = 20 }
+    try forcedEdit("fit length") { _, f, _, _, _, _, _, _ in f = 6000 }
+    func forcedShape(_ r: inout SurfaceRequest, radius: Double? = nil, duration: Double? = nil) {
+        guard case .forced(let s, let f, let h, let ra, let ax, let rad, let d, let e) = r.shape
+        else { return }
+        r.shape = .forced(system: s, fit: f, harmonics: h, radial: ra, axial: ax,
+                          radius: radius ?? rad, duration: duration ?? d, every: e)
+    }
+    try drag("revolution radius", forced) { forcedShape(&$0, radius: 3) }
+    try drag("duration, shorter", forced) { forcedShape(&$0, duration: 1500) }
+    try drag("duration, longer", forced) { forcedShape(&$0, duration: 3000) }
+    // The release: the full request, from the last draft, with the full
+    // lattice's values and the full run still kept.
+    let dragged = try SurfacePlate.build(forced.drafted(), reusing: base, draft: true)
+    try measure("revolution radius, released", forced.drafted(), { r in
+        var target = forced; forcedShape(&target, radius: 3); r = target
+    }, from: dragged)
 }
 
 func previewMode(_ args: Args) throws -> PreviewMode {
@@ -1069,6 +1195,7 @@ do {
     case "bake": try bake(args)
     case "depth": try depth(args)
     case "surface": try surfaceCommand(args)
+    case "surface-costs": try surfaceCosts(args)
     case "bench": try bench(args)
     case "preview": try preview(args)
     case "flicker": try flicker(args)

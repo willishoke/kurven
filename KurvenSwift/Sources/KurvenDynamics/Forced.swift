@@ -189,15 +189,44 @@ public extension InvariantTorus {
     func surface(_ e: Revolution, lattice: (u: Int, v: Int) = (1024, 512))
         -> (surface: ParametricSurface, embedded: Bool)
     {
+        surface(e, lattice: lattice, values: values(lattice: lattice))
+    }
+
+    /// The fitted torus at every lattice point, in state space, before any
+    /// embedding: the expensive half of `surface`, a whole Fourier series per
+    /// point. Kept, it lets a new revolution be placed without evaluating the
+    /// series again.
+    func values(lattice: (u: Int, v: Int)) -> [SIMD3<Double>] {
+        let u = ParamAxis.angle(samples: lattice.u), v = ParamAxis.angle(samples: lattice.v)
+        let fit = self.fit
+        var values = [SIMD3<Double>](repeating: .zero, count: lattice.u * lattice.v)
+        values.withUnsafeMutableBufferPointer { out in
+            nonisolated(unsafe) let base = out.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: lattice.v) { j in
+                let phi = v.coordinate(j)
+                for i in 0..<lattice.u {
+                    base[j * lattice.u + i] = fit.value(u.coordinate(i), phi)
+                }
+            }
+        }
+        return values
+    }
+
+    /// The torus placed by `e` from its lattice `values` (`values(lattice:)`):
+    /// the cheap half of `surface`.
+    func surface(_ e: Revolution, lattice: (u: Int, v: Int), values: [SIMD3<Double>])
+        -> (surface: ParametricSurface, embedded: Bool)
+    {
+        precondition(values.count == lattice.u * lattice.v,
+                     "\(values.count) values for a \(lattice.u)x\(lattice.v) lattice")
         let u = ParamAxis.angle(samples: lattice.u), v = ParamAxis.angle(samples: lattice.v)
         let fit = self.fit
         var positions = [P3<WorldSpace>](repeating: P3(0, 0, 0), count: lattice.u * lattice.v)
         positions.withUnsafeMutableBufferPointer { out in
             nonisolated(unsafe) let base = out.baseAddress!
             DispatchQueue.concurrentPerform(iterations: lattice.v) { j in
-                let phi = v.coordinate(j)
                 for i in 0..<lattice.u {
-                    base[j * lattice.u + i] = P3(e.place(fit.value(u.coordinate(i), phi),
+                    base[j * lattice.u + i] = P3(e.place(values[j * lattice.u + i],
                                                          u.coordinate(i)))
                 }
             }
@@ -219,6 +248,13 @@ public extension InvariantTorus {
     /// same vertex, every eight turns of the forcing.
     func trajectory(_ e: Revolution, from start: Double? = nil, duration: Double,
                     every dt: Double = 0.01) throws -> PolylineSet<WorldSpace> {
+        trajectory(e, try run(from: start, duration: duration, every: dt))
+    }
+
+    /// The integrated states a trajectory is drawn from, in state space: the
+    /// expensive half of `trajectory`, and the half no embedding changes.
+    func run(from start: Double? = nil, duration: Double,
+             every dt: Double = 0.01) throws -> Run {
         let begin = start ?? t0
         var lead = system.start
         if begin > 0 {
@@ -228,6 +264,27 @@ public extension InvariantTorus {
         let count = Int((duration / dt).rounded()) + 1
         let states = try ODE.sample(system.field, from: begin, lead, every: dt, count: count,
                                     tolerance: system.tolerance).states
+        return Run(begin: begin, dt: dt, states: states)
+    }
+
+    /// A run of the system: its states at `begin + k dt`.
+    struct Run: Sendable {
+        public let begin: Double
+        public let dt: Double
+        public let states: [SIMD3<Double>]
+
+        /// The first `count` states: the same run, shorter. Exact but for the
+        /// last few samples, which a run that ends there reads off a step cut
+        /// short at its end -- close to the integrator's tolerance, and so
+        /// good for a draft.
+        public func prefix(_ count: Int) -> Run {
+            Run(begin: begin, dt: dt, states: Array(states.prefix(max(count, 2))))
+        }
+    }
+
+    /// A run placed by `e`: the cheap half of `trajectory`.
+    func trajectory(_ e: Revolution, _ run: Run) -> PolylineSet<WorldSpace> {
+        let begin = run.begin, dt = run.dt, states = run.states
         let turn = 2 * Double.pi, span = 8 * turn
         func phases(_ k: Int) -> (Double, Double) {
             let t = begin + Double(k) * dt
@@ -268,11 +325,17 @@ extension Revolution {
         ok.withUnsafeMutableBufferPointer { out in
             nonisolated(unsafe) let base = out.baseAddress!
             DispatchQueue.concurrentPerform(iterations: lattice.u) { i in
+                // The radius along the slice's own half-plane, signed: a
+                // point past the axis is at a negative radius, not at the
+                // same distance on the far side, which `hypot` would say and
+                // which would never fail the test below.
+                let theta = ParamAxis.angle(samples: lattice.u).coordinate(i)
+                let (c, s) = (cos(theta), sin(theta))
                 var slice: [SIMD2<Double>] = []
                 slice.reserveCapacity(lattice.v)
                 for j in 0..<lattice.v {
                     let p = positions[j * lattice.u + i]
-                    slice.append(SIMD2((p.x * p.x + p.y * p.y).squareRoot(), p.z))
+                    slice.append(SIMD2(p.x * c + p.y * s, p.z))
                 }
                 base[i] = slice.allSatisfy { $0.x > 0 } && isSimpleClosed(slice)
             }

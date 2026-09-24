@@ -98,7 +98,7 @@ final class Document {
 
     var surface: SurfaceRequest?
     var surfaceShown: SurfaceRequest?
-    var surfaceWanted: (request: SurfaceRequest, framing: Bool)?
+    var surfaceWanted: (request: SurfaceRequest, framing: Bool, draft: Bool)?
     var building = false
     var surfaceStatus: String?
     /// Bumped whenever the document becomes a different thing -- a new
@@ -249,12 +249,20 @@ final class Document {
     /// Take a built plate as the document. A new plate opens at the default
     /// plate projection, fitted to the window; an edit keeps the camera.
     func adopt(_ plate: SurfacePlate, keepingCamera: Bool = false) {
+        let before = self.plate
         state = .surface(plate)
         landscape = nil
         shown = nil
         derivedInk = [:]
-        if keepingCamera, let navigator {
-            scene = plate.scene(camera: navigator.camera)
+        if keepingCamera, let navigator, let scene {
+            // Hidden layers are hidden by name: an edit that adds the lines
+            // puts a layer before the folds, and a hidden fold stays hidden.
+            let hidden = Set(hiddenLayers.compactMap { scene.layers[safe: $0]?.spec.name })
+            hiddenLayers = Set(plate.layers.indices.filter { hidden.contains(plate.layers[$0].spec.name) })
+            // The same surface keeps its identity, so the renderer keeps its
+            // textures and its normals and lays out only the ink.
+            self.scene = before?.content == plate.content
+                ? scene.drawing(plate.layers) : plate.scene(camera: navigator.camera)
             return
         }
         let preset = SurfaceRequest.preset
