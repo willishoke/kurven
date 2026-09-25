@@ -60,6 +60,14 @@ typedef struct {
     simd_float3 position;
 } KVVertex;
 
+// A vertex of depth-tested ink: where it is and, for ink lying on a
+// heightfield, the surface's outward normal there, not normalized -- zero for
+// ink that is judged by depth alone.
+typedef struct {
+    simd_float3 position;
+    simd_float3 normal;
+} KVLineVertex;
+
 // What the preview's second pass needs on top of KVUniforms: how to decide
 // whether a line fragment is hidden, and what to paint and how wide.
 typedef struct {

@@ -16,19 +16,42 @@ struct LineGeometry {
     let ranges: [(first: Int, count: Int)]
 
     init(scene: Scene, device: MTLDevice) throws {
-        var vertices: [KVVertex] = []
+        var vertices: [KVLineVertex] = []
         var ranges: [(first: Int, count: Int)] = []
         for layer in scene.layers {
             let first = vertices.count
+            // Ink on a heightfield's surface carries the surface's outward
+            // normal, so the stroke shader can hide it where the surface
+            // faces away; a zero normal is ink judged by depth alone. Once
+            // per vertex, in parallel: zeta's contours have six hundred
+            // thousand, and each normal is four height reads.
+            var normals: [SIMD3<Float>]?
+            if let h = scene.heightfield, layer.spec.liesOnSurface {
+                let points = layer.paths.vertices
+                var out = [SIMD3<Float>](repeating: .zero, count: points.count)
+                let chunk = 4096, n = points.count
+                out.withUnsafeMutableBufferPointer { buffer in
+                    nonisolated(unsafe) let base = buffer.baseAddress!
+                    DispatchQueue.concurrentPerform(iterations: (n + chunk - 1) / chunk) { b in
+                        for k in (b * chunk)..<min((b + 1) * chunk, n) {
+                            base[k] = SIMD3<Float>(h.normal(at: P2(points[k].x, points[k].y)))
+                        }
+                    }
+                }
+                normals = out
+            }
             for i in 0..<layer.paths.count {
-                let path = layer.paths[path: i]
+                let lo = layer.paths.offsets[i], hi = layer.paths.offsets[i + 1]
                 // Separate segments, not a strip: a strip would join the end of
                 // one path to the start of the next, which is precisely the
                 // welding the CSR representation exists to prevent. Each pair is
                 // one instance of the stroke quad.
-                for (a, b) in zip(path, path.dropFirst()) {
-                    vertices.append(KVVertex(position: SIMD3<Float>(a.v)))
-                    vertices.append(KVVertex(position: SIMD3<Float>(b.v)))
+                for k in lo..<(hi - 1) {
+                    for end in [k, k + 1] {
+                        vertices.append(KVLineVertex(
+                            position: SIMD3<Float>(layer.paths.vertices[end].v),
+                            normal: normals?[end] ?? .zero))
+                    }
                 }
             }
             ranges.append((first, vertices.count - first))
@@ -197,6 +220,13 @@ public extension MetalRenderer {
             e2.setRenderPipelineState(strokePipeline)
             e2.setVertexBuffer(buffer, offset: 0, index: 4)
             e2.setFragmentTexture(depth, index: 1)
+            // Which way the ink's surface faces is asked of the camera: ink
+            // on the heightfield carries the normal, and the shader hides
+            // what faces away.
+            var camera = KVInk(sight: SIMD3<Float>(scene.camera.view.sightLine),
+                               eye: SIMD3<Float>(scene.camera.view.inverse(P3<ViewSpace>(0, 0, 0)).v),
+                               perspective: scene.camera.isPerspective ? 1 : 0, onFolds: 0)
+            e2.setVertexBytes(&camera, length: MemoryLayout<KVInk>.stride, index: 7)
             // Every layer, visible or not, so hiding the widest one does not
             // make the rest jump wider.
             let widest = scene.layers.map(\.spec.width).max() ?? 0
@@ -297,46 +327,74 @@ public extension MetalRenderer {
 struct SurfaceInkGeometry {
     let buffer: MTLBuffer?
     let ranges: [(first: Int, count: Int)]
+    /// Each layer's vertices as laid out, kept so a later layout can take a
+    /// layer whose ink did not change as it is -- the normals are the
+    /// expensive part, and an edit to one layer's ink leaves the others'.
+    let layers: [[KVInkVertex]]
 
     init(_ layers: [PolylineSet<WorldSpace>?], surface: ParametricSurface,
          onFolds: [Bool], device: MTLDevice) throws {
-        var vertices: [KVInkVertex] = []
-        var ranges: [(first: Int, count: Int)] = []
-        for (paths, folds) in zip(layers, onFolds) {
-            let first = vertices.count
-            if let paths, let coords = paths.coords {
-                // Facing is not asked of fold ink, nor of a surface with no
-                // outside; a zero normal says so to the shader. Otherwise the
-                // map's own normal, once per vertex and in parallel: a forced
-                // torus's map is a Fourier series of 1,225 terms, and its
-                // trajectory has a quarter of a million vertices.
-                var normals = [SIMD3<Float>](repeating: .zero, count: coords.count)
-                if !folds, let outward = surface.outward {
-                    let chunk = 4096, n = coords.count
-                    normals.withUnsafeMutableBufferPointer { out in
-                        nonisolated(unsafe) let base = out.baseAddress!
-                        DispatchQueue.concurrentPerform(iterations: (n + chunk - 1) / chunk) { b in
-                            for k in (b * chunk)..<min((b + 1) * chunk, n) {
-                                base[k] = SIMD3<Float>(surface.map(coords[k]).normal * outward)
-                            }
-                        }
-                    }
-                }
-                func vertex(_ k: Int) -> KVInkVertex {
-                    let c = coords[k]
-                    return KVInkVertex(position: SIMD3<Float>(paths.vertices[k].v),
-                                       normal: normals[k],
-                                       coord: SIMD2<Float>(Float(c.x), Float(c.y)))
-                }
-                for i in 0..<paths.count {
-                    let lo = paths.offsets[i], hi = paths.offsets[i + 1]
-                    for k in lo..<(hi - 1) {
-                        vertices.append(vertex(k))
-                        vertices.append(vertex(k + 1))
+        try self.init(layers: zip(layers, onFolds).map { paths, folds in
+            paths.map { Self.layout($0, surface: surface, onFolds: folds) } ?? []
+        }, device: device)
+    }
+
+    /// One layer's ink, laid out: a segment per vertex pair, each end with
+    /// its outward normal and its coordinate. Empty for ink without
+    /// coordinates, which `LineGeometry` draws.
+    ///
+    /// The normals are read off `lattice` -- the surface's lattice normals,
+    /// interpolated -- when given, and asked of the map otherwise. The
+    /// lattice's are within a pixel of the map's at a drawing lattice and
+    /// cost four reads where a forced torus's map costs a Fourier series of
+    /// 1,225 terms: the difference between a trajectory of three hundred
+    /// thousand vertices laid out in a hundred milliseconds and in ten.
+    static func layout(_ paths: PolylineSet<WorldSpace>, surface: ParametricSurface,
+                       onFolds folds: Bool, lattice: [SIMD3<Float>]? = nil) -> [KVInkVertex] {
+        guard let coords = paths.coords else { return [] }
+        // Facing is not asked of fold ink, nor of a surface with no
+        // outside; a zero normal says so to the shader. Otherwise a normal
+        // once per vertex, in parallel.
+        var normals = [SIMD3<Float>](repeating: .zero, count: coords.count)
+        if !folds, let outward = surface.outward {
+            let chunk = 4096, n = coords.count, sign = Float(outward)
+            normals.withUnsafeMutableBufferPointer { out in
+                nonisolated(unsafe) let base = out.baseAddress!
+                DispatchQueue.concurrentPerform(iterations: (n + chunk - 1) / chunk) { b in
+                    for k in (b * chunk)..<min((b + 1) * chunk, n) {
+                        base[k] = lattice.map { surface.interpolateNormal(coords[k], normals: $0) * sign }
+                            ?? SIMD3<Float>(surface.map(coords[k]).normal * outward)
                     }
                 }
             }
-            ranges.append((first, vertices.count - first))
+        }
+        func vertex(_ k: Int) -> KVInkVertex {
+            let c = coords[k]
+            return KVInkVertex(position: SIMD3<Float>(paths.vertices[k].v),
+                               normal: normals[k],
+                               coord: SIMD2<Float>(Float(c.x), Float(c.y)))
+        }
+        var vertices: [KVInkVertex] = []
+        vertices.reserveCapacity(2 * max(coords.count - paths.count, 0))
+        for i in 0..<paths.count {
+            let lo = paths.offsets[i], hi = paths.offsets[i + 1]
+            for k in lo..<(hi - 1) {
+                vertices.append(vertex(k))
+                vertices.append(vertex(k + 1))
+            }
+        }
+        return vertices
+    }
+
+    /// The layers' laid-out vertices, end to end in one buffer.
+    init(layers: [[KVInkVertex]], device: MTLDevice) throws {
+        self.layers = layers
+        var vertices: [KVInkVertex] = []
+        vertices.reserveCapacity(layers.reduce(0) { $0 + $1.count })
+        var ranges: [(first: Int, count: Int)] = []
+        for layer in layers {
+            ranges.append((vertices.count, layer.count))
+            vertices.append(contentsOf: layer)
         }
         self.ranges = ranges
         if vertices.isEmpty {

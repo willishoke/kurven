@@ -219,12 +219,27 @@ public final class MetalRenderer {
     /// heightfield's is: a tiled bake draws it once per tile.
     private var cachedSurface: (content: ContentID, resources: SurfaceResources)?
 
-    private var cachedSurfaceInk: (ink: ContentID, geometry: SurfaceInkGeometry)?
+    /// The static ink as last laid out, with the paths each layer was laid
+    /// out from: a new ink reuses every layer whose paths are the ones it
+    /// had -- the plate builder hands an unchanged layer's paths on as they
+    /// are, so the comparison is a storage identity, not a walk.
+    private var cachedSurfaceInk: (content: ContentID, ink: ContentID,
+                                   sources: [PolylineSet<WorldSpace>?],
+                                   geometry: SurfaceInkGeometry)?
     private var cachedFolds: (content: ContentID, ink: ContentID, view: simd_double4x4,
                               geometry: SurfaceInkGeometry)?
-    /// The lattice's normals, which the preview's folds are read from: fixed
-    /// for a surface, so a camera move costs a dot product per lattice point.
+    /// The lattice's normals, which the preview's folds are read from and
+    /// its ink's normals interpolated from: fixed for a surface, so a camera
+    /// move costs a dot product per lattice point and an ink edit four reads
+    /// per vertex.
     private var cachedNormals: (content: ContentID, normals: [SIMD3<Float>])?
+
+    private func latticeNormals(for scene: Scene, surface: ParametricSurface) -> [SIMD3<Float>] {
+        if let c = cachedNormals, c.content == scene.content { return c.normals }
+        let normals = surface.latticeNormals()
+        cachedNormals = (scene.content, normals)
+        return normals
+    }
     private var cachedCoordinates: (texture: MTLTexture, depth: MTLTexture)?
 
     /// Ink with coordinates, for the surface stroke shader. The fold lines
@@ -237,13 +252,25 @@ public final class MetalRenderer {
             return false
         }
         let statics: SurfaceInkGeometry
-        if let c = cachedSurfaceInk, c.ink == scene.ink {
+        if let c = cachedSurfaceInk, c.content == scene.content, c.ink == scene.ink {
             statics = c.geometry
         } else {
-            statics = try SurfaceInkGeometry(
-                zip(scene.layers, onFolds).map { $1 ? nil : $0.paths },
-                surface: surface, onFolds: onFolds, device: device)
-            cachedSurfaceInk = (scene.ink, statics)
+            // Layer by layer: the one the edit touched is laid out, and the
+            // rest -- a trajectory's quarter-million normals -- are taken
+            // from the last layout, when the surface is the same one.
+            let sources = zip(scene.layers, onFolds).map { $1 ? nil : $0.paths }
+            let previous = cachedSurfaceInk.flatMap { $0.content == scene.content ? $0 : nil }
+            let lattice = sources.contains { $0?.coords != nil } && surface.outward != nil
+                ? latticeNormals(for: scene, surface: surface) : nil
+            let layers = sources.enumerated().map { i, paths -> [KVInkVertex] in
+                if let previous, i < previous.sources.count, previous.sources[i] == paths {
+                    return previous.geometry.layers[i]
+                }
+                return paths.map { SurfaceInkGeometry.layout($0, surface: surface, onFolds: false,
+                                                             lattice: lattice) } ?? []
+            }
+            statics = try SurfaceInkGeometry(layers: layers, device: device)
+            cachedSurfaceInk = (scene.content, scene.ink, sources, statics)
         }
         let view = scene.camera.view.m
         let folds: SurfaceInkGeometry
@@ -252,14 +279,7 @@ public final class MetalRenderer {
         } else {
             var derived: PolylineSet<WorldSpace>?
             if onFolds.contains(true) {
-                let normals: [SIMD3<Float>]
-                if let c = cachedNormals, c.content == scene.content {
-                    normals = c.normals
-                } else {
-                    normals = surface.latticeNormals()
-                    cachedNormals = (scene.content, normals)
-                }
-                derived = surface.latticeFoldLines(normals: normals,
+                derived = surface.latticeFoldLines(normals: latticeNormals(for: scene, surface: surface),
                                                    sight: scene.camera.view.sightLine)
             }
             folds = try SurfaceInkGeometry(onFolds.map { $0 ? derived : nil },

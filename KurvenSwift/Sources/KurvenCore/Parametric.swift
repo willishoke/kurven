@@ -328,27 +328,135 @@ public extension ParametricSurface {
         let field = Grid2D(width: nu + 1, height: nv + 1,
                            domain: Domain(real: u.range, imag: v.range), values: values)
 
-        // The lattice's bilinear patch at a coordinate: its cell, and where
-        // in the cell.
-        func place(_ c: P2<ParamSpace>) -> P3<WorldSpace> {
-            func split(_ x: Double, _ axis: ParamAxis) -> (Int, Double) {
-                let f = (x - axis.range.lo) / axis.spacing
-                let k = min(max(Int(f.rounded(.down)), 0), axis.cells - 1)
-                return (k, f - Double(k))
-            }
-            let (i, a) = split(c.x, u), (j, b) = split(c.y, v)
-            let p00 = position(i, j).v, p10 = position(i + 1, j).v
-            let p01 = position(i, j + 1).v, p11 = position(i + 1, j + 1).v
-            return P3((1 - b) * ((1 - a) * p00 + a * p10) + b * ((1 - a) * p01 + a * p11))
-        }
-
         var paths: [[P3<WorldSpace>]] = [], coords: [[P2<ParamSpace>]] = []
         for line in Contour.lines(of: field, level: 0) {
             let c = line.map { P2<ParamSpace>($0.x, $0.y) }
             coords.append(c)
-            paths.append(c.map(place))
+            paths.append(c.map(interpolate))
         }
         return PolylineSet(paths: paths, coords: coords)
+    }
+
+    /// The lattice's bilinear patch at a coordinate: the surface as it is
+    /// drawn, rather than as the map has it.
+    ///
+    /// The lattice is what gets rasterized, so ink placed this way lies on
+    /// the drawn surface to the last bit, and it costs four lattice reads
+    /// where the map may cost a Fourier series. A coordinate any number of
+    /// periods past a periodic axis's range wraps; on a bounded axis it is
+    /// clamped to the end cell.
+    func interpolate(_ c: P2<ParamSpace>) -> P3<WorldSpace> {
+        let (i, j, a, b) = cell(c)
+        let p00 = position(i, j).v, p10 = position(i + 1, j).v
+        let p01 = position(i, j + 1).v, p11 = position(i + 1, j + 1).v
+        return P3((1 - b) * ((1 - a) * p00 + a * p10) + b * ((1 - a) * p01 + a * p11))
+    }
+
+    /// The lattice's normals (`latticeNormals`) at a coordinate, by the same
+    /// bilinear patch as `interpolate`, unit length; zero where the patch's
+    /// corners cancel.
+    ///
+    /// Within a lattice cell of the exact normal, and so, like a lattice
+    /// fold, within a pixel of where the facing changes at any drawing
+    /// lattice: enough for the preview, which asks a normal of every ink
+    /// vertex and asks it again whenever the ink moves. The bake keeps the
+    /// map's.
+    func interpolateNormal(_ c: P2<ParamSpace>, normals: [SIMD3<Float>]) -> SIMD3<Float> {
+        precondition(normals.count == positions.count,
+                     "\(normals.count) normals for \(positions.count) lattice points")
+        let (i, j, a, b) = cell(c)
+        func at(_ i: Int, _ j: Int) -> SIMD3<Float> {
+            normals[v.sample(j) * u.samples + u.sample(i)]
+        }
+        let (fa, fb) = (Float(a), Float(b))
+        let n = (1 - fb) * ((1 - fa) * at(i, j) + fa * at(i + 1, j))
+            + fb * ((1 - fa) * at(i, j + 1) + fa * at(i + 1, j + 1))
+        let len = simd_length(n)
+        return len > 0 ? n / len : .zero
+    }
+
+    /// The lattice cell a coordinate falls in, and where in it: the lower
+    /// corner's unwrapped indices and the fractions along each axis. A
+    /// periodic axis wraps any number of periods away; a bounded one clamps
+    /// to its end cell.
+    private func cell(_ c: P2<ParamSpace>) -> (i: Int, j: Int, a: Double, b: Double) {
+        func split(_ x: Double, _ axis: ParamAxis) -> (Int, Double) {
+            let f = (x - axis.range.lo) / axis.spacing
+            var k = Int(f.rounded(.down))
+            if !axis.periodic { k = min(max(k, 0), axis.cells - 1) }
+            return (k, f - Double(k))
+        }
+        let (i, a) = split(c.x, u), (j, b) = split(c.y, v)
+        return (i, j, a, b)
+    }
+
+    /// Windings: straight lines through the parameter rectangle, `slope`
+    /// turns of `v` per turn of `u`, glued into curves on the torus.
+    ///
+    /// A winding is what a torus's coordinates make of a straight line, and
+    /// the same line on every torus with these coordinates: it lives on the
+    /// flat torus, and the map -- any map -- is what puts it in space. The
+    /// parameter lines are its two ends, slope zero and slope infinite; the
+    /// trajectory of a forced system, in the coordinates of its fitted torus,
+    /// is the one with the system's own rotation number.
+    ///
+    /// `count` strands start at `start` -- the rectangle's origin unless
+    /// given -- and evenly spaced from it along `v`, and each runs `turns`
+    /// turns of `u` -- or, when `slope` is a fraction `p/q` with `q ≤
+    /// turns`, the `q` turns after which it closes, so a rational winding is
+    /// one closed (p, q) curve and an irrational one is a stretch of a curve
+    /// that never closes. A vertex per lattice cell along the steeper axis,
+    /// placed by `interpolate`, so the ink lies on the drawn surface; each
+    /// vertex carries its coordinate, continuous along a path and never more
+    /// than eight turns from zero, so the preview's float32 still resolves a
+    /// pixel's worth of it: a path is ended and the next begun from the same
+    /// vertex every eight turns.
+    func winding(slope: Double, turns: Int, count: Int = 1,
+                 start: P2<ParamSpace>? = nil) -> PolylineSet<WorldSpace> {
+        precondition(u.periodic && v.periodic, "a winding is a curve on a torus")
+        precondition(turns >= 1 && count >= 1 && slope.isFinite,
+                     "a winding wants a finite slope and at least one turn of one strand")
+        let drawn = Self.windingCloses(slope: slope, within: turns) ?? turns
+        let steps = max(u.cells, Int((abs(slope) * Double(v.cells)).rounded(.up)))
+        let du = u.range.length / Double(steps), dv = slope * v.range.length / Double(steps)
+        let span = 8 * u.range.length
+        let origin = start ?? P2(u.range.lo, v.range.lo)
+        var paths: [[P3<WorldSpace>]] = [], coords: [[P2<ParamSpace>]] = []
+        for strand in 0..<count {
+            let v0 = origin.y + v.range.length * Double(strand) / Double(count)
+            var path: [P3<WorldSpace>] = [], coord: [P2<ParamSpace>] = []
+            var offset = SIMD2(0.0, 0.0)
+            for m in 0...(drawn * steps) {
+                let c = P2<ParamSpace>(origin.x + Double(m) * du, v0 + Double(m) * dv)
+                if !path.isEmpty, c.x - origin.x - offset.x > span {
+                    // The seam of a path: the same vertex ends one and
+                    // begins the next, its coordinates brought back near
+                    // the rectangle's origin by whole periods.
+                    paths.append(path); coords.append(coord)
+                    let last = coord[coord.count - 1].v + offset
+                    offset = SIMD2(
+                        u.range.length * ((c.x - u.range.lo) / u.range.length).rounded(.down),
+                        v.range.length * ((c.y - v.range.lo) / v.range.length).rounded(.down))
+                    path = [path[path.count - 1]]
+                    coord = [P2(last - offset)]
+                }
+                path.append(interpolate(c))
+                coord.append(P2(c.v - offset))
+            }
+            paths.append(path); coords.append(coord)
+        }
+        return PolylineSet(paths: paths, coords: coords)
+    }
+
+    /// The turns after which a winding of `slope` closes -- the denominator
+    /// of a fraction, to within rounding -- when that is within `turns`;
+    /// nil for a winding that runs out its turns open.
+    static func windingCloses(slope: Double, within turns: Int) -> Int? {
+        guard turns >= 1 else { return nil }
+        return (1...turns).first { k in
+            let w = slope * Double(k)
+            return abs(w - w.rounded()) <= 1e-9 * max(1, abs(w))
+        }
     }
 
     /// The torus of revolution about the z axis: `u` around the axis, `v`

@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import KurvenCore
+import KurvenMath
 import KurvenDynamics
 
 /// The half of a document that is a parametric surface: a torus of
@@ -88,6 +89,12 @@ extension Document {
         if let torus = plate.torus {
             text += String(format: "; misses its trajectory by %.1e of its size",
                            torus.residual / torus.extent)
+            let rho = torus.rotationNumber
+            let nearly = ContinuedFraction.convergents(of: rho, maxDenominator: 600)
+                .dropFirst().map { "\($0.p)/\($0.q)" }.joined(separator: ", ")
+            text += String(format: "; the trajectory winds at Ω/ω = %.6f = %@, nearly %@",
+                           rho, ContinuedFraction.describe(ContinuedFraction.quotients(of: rho, count: 7),
+                                                           ellipsis: true), nearly)
         }
         if !plate.embedded {
             text += " — the revolution passes through itself, so back faces are kept"
