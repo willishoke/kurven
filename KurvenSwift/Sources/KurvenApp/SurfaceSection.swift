@@ -18,6 +18,7 @@ import KurvenDynamics
 ///
 ///     torus    radii                    13 ms      new surface
 ///              line counts              11 ms      ink only
+///              winding slope            11 ms      ink only
 ///     sn       radii                     6 ms      contours re-placed, not resampled
 ///              modulus                 100 ms      resampled; 38 ms while dragging
 ///              samples                  70 ms      resampled; ink only
@@ -27,11 +28,15 @@ import KurvenDynamics
 ///                                                  its ink needs no normals)
 ///              duration, sample spacing 60–110 ms  integrated again; 18 ms shortening
 ///                                                  while dragging, read off the run
-///              parameter lines         112 ms      the map at every line vertex
+///              parameter lines          64 ms      the map at every line vertex
+///              winding slope            31 ms      the map at every winding vertex;
+///                                                  the trajectory's layout is kept
 ///              harmonics, fit length   440 ms      fitted again
 ///
 /// So the forced torus's fit is the one control that is not interactive, and
-/// it gets a stepper and a field rather than a slider.
+/// it gets a stepper and a field rather than a slider. An ink edit lays out
+/// only the layer it touched: the preview keeps every other layer's vertices
+/// and normals from the frame before.
 struct SurfaceSection: View {
     @Bindable var document: Document
 
