@@ -406,6 +406,15 @@ public indirect enum Keep: Sendable, Equatable {
     case band(axis: KeepAxis, lo: Double, hi: Double)
     case every([Keep])
 
+    /// Whether staying under the cap is among the conditions.
+    public var keepsBelowCap: Bool {
+        switch self {
+        case .belowCap: true
+        case .every(let all): all.contains { $0.keepsBelowCap }
+        case .all, .region, .band: false
+        }
+    }
+
     init(json: JSONValue) throws {
         let o = try json.object("Keep")
         switch try o.string("kind", "Keep") {
