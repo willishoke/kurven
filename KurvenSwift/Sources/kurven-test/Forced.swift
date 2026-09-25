@@ -284,6 +284,36 @@ func surfacePlateTests() {
                  keepsSurface: true)
         try edit("forced, radius", forcedRequest(), forcedRequest(radius: 3), keepsSurface: false)
 
+        // A winding is ink alone, on any torus: turning it on, moving its
+        // slope and adding strands all keep the surface. Its slope moves
+        // under a slider, so this is the edit that must cost only its own
+        // vertices.
+        var wound = ring; wound.winding = SurfaceRequest.Winding(slope: 0.4, turns: 24, count: 1)
+        var steeper = wound; steeper.winding?.slope = 0.618
+        var braided = wound; braided.winding?.count = 3
+        try edit("torus, winding on", ring, wound, keepsSurface: true)
+        try edit("torus, winding slope", wound, steeper, keepsSurface: true)
+        try edit("torus, winding strands", wound, braided, keepsSurface: true)
+        var forcedWound = forcedRequest()
+        forcedWound.winding = SurfaceRequest.Winding(slope: 1.0 / 3, turns: 24, count: 2)
+        var forcedSteeper = forcedWound; forcedSteeper.winding?.slope = 0.5
+        try edit("forced, winding on", forcedRequest(), forcedWound, keepsSurface: true)
+        try edit("forced, winding slope", forcedWound, forcedSteeper, keepsSurface: true)
+        let woundPlate = try SurfacePlate.build(forcedWound)
+        Check.expect(woundPlate.layers.map(\.spec.name) == ["trajectory", "winding", "folds"],
+                     "a forced plate's winding is drawn between its trajectory and its folds")
+        // The winding's fields edit the winding and nothing else, and are
+        // absent until there is one.
+        var byField = forcedRequest()
+        byField[.slope] = 0.7
+        Check.expect(byField[.slope] == nil && byField == forcedRequest(),
+                     "without a winding, its fields are nil and setting them changes nothing")
+        byField = forcedWound
+        byField[.slope] = 0.7; byField[.turns] = 12; byField[.strands] = 4
+        Check.expect(byField.winding == SurfaceRequest.Winding(slope: 0.7, turns: 12, count: 4)
+                     && byField.shape == forcedWound.shape,
+                     "and with one, they are its slope, turns and strands")
+
         // A draft may read a shorter trajectory off a longer run; it is then
         // the exact one to the integrator's tolerance, and the exact one
         // follows when the drag ends.

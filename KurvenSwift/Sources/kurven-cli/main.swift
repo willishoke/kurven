@@ -105,7 +105,7 @@ usage: kurven-cli <command> [options]
   surface periodic --expression E --periods P1,P2 [--grid N]
   surface forced [--system jerk] [--duration T] [--every DT] [--ink W]
           [--harmonics M] [--fit T] [--radial I] [--axial J] [--lines U,V]
-          [--major R] [--minor r]
+          [--major R] [--minor r] [--winding SLOPE[,TURNS[,COUNT]]]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N]
           [--tiles N] [--width W] [--folds W] -o out.svg
           [--mode M] [--width-px N] [--height-px N] -o out.png
@@ -117,7 +117,11 @@ usage: kurven-cli <command> [options]
         forced finds a forced system's invariant torus in the spectrum of a
         long run, fits it as a Fourier series in the forcing phase and the
         system's own, and draws --duration of the trajectory on it, the
-        forcing phase as the angle of revolution.
+        forcing phase as the angle of revolution. Any of them draws a
+        --winding: COUNT straight lines through the parameter rectangle at
+        SLOPE turns of v per turn of u (2/5, or a decimal), TURNS turns
+        long, or closed when the slope is a fraction. On the forced torus
+        the trajectory is the winding at the system's own Ω/ω.
         The camera is a plate camera: --x-angle tilts, --z-angle turns, --shear
         is the oblique foreshortening the published plates use. The fold
         lines -- outline and inner silhouettes -- are drawn at --folds (twice
@@ -328,10 +332,26 @@ func surfaceCommand(_ args: Args) throws {
         throw CLIError("unknown surface '\(shape)'; the catalog has: torus, sn, periodic, forced")
     }
     request.lattice = try args.int("samples", 1024)
+    // A winding: `--winding 2/5`, `--winding 0.618,24` for that many turns,
+    // `--winding 1/3,3,4` for four strands of it.
+    if let text = args.flags["winding"] {
+        let parts = text.split(separator: ",").map(String.init)
+        func slope(_ s: String) -> Double? {
+            let f = s.split(separator: "/").compactMap { Double($0) }
+            return f.count == 2 && f[1] != 0 ? f[0] / f[1] : (f.count == 1 ? f[0] : nil)
+        }
+        guard (1...3).contains(parts.count), let slope = slope(parts[0]),
+              let turns = parts.count > 1 ? Int(parts[1]) : 24,
+              let count = parts.count > 2 ? Int(parts[2]) : 1, turns >= 1, count >= 1 else {
+            throw CLIError("--winding wants SLOPE[,TURNS[,COUNT]], as in 2/5 or 0.618,24,3")
+        }
+        request.winding = SurfaceRequest.Winding(slope: slope, turns: turns, count: count)
+    }
     // The outline and inner silhouettes, derived for the camera; --folds 0
     // leaves them out.
     request.style = SurfaceRequest.Style(lines: width, trajectory: try args.double("ink") ?? 0.08,
-                                         folds: try args.double("folds") ?? 2 * width)
+                                         folds: try args.double("folds") ?? 2 * width,
+                                         winding: width)
     let clock = ContinuousClock()
     var plate: SurfacePlate!
     let built = try clock.measure { plate = try SurfacePlate.build(request) }
@@ -665,6 +685,9 @@ func surfaceCosts(_ args: Args) throws {
     try measure("radii", torus) { $0.shape = .torus(major: 2.3, minor: 0.9) }
     try measure("line counts", torus) { $0.lines = SIMD2(48, 24) }
     try measure("line width", torus) { $0.style.lines = 0.5 }
+    var wound = torus; wound.winding = SurfaceRequest.Winding(slope: 0.4, turns: 24, count: 3)
+    try measure("winding on", torus) { $0.winding = wound.winding }
+    try measure("winding slope", wound) { $0.winding?.slope = 0.618 }
 
     print("sn")
     let sn = presets["sn"]!
@@ -697,6 +720,12 @@ func surfaceCosts(_ args: Args) throws {
     try forcedEdit("duration, longer") { _, _, _, _, _, _, d, _ in d = 3000 }
     try forcedEdit("sample spacing") { _, _, _, _, _, _, _, e in e = 0.02 }
     try measure("parameter lines on", forced, { $0.lines = SIMD2(36, 18) }, from: base)
+    try measure("winding on", forced, {
+        $0.winding = SurfaceRequest.Winding(slope: 0.4, turns: 24, count: 3)
+    }, from: base)
+    var forcedWound = forced
+    forcedWound.winding = SurfaceRequest.Winding(slope: 0.4, turns: 24, count: 3)
+    try measure("winding slope", forcedWound) { $0.winding?.slope = 0.618 }
     try forcedEdit("harmonics") { _, _, h, _, _, _, _, _ in h = 20 }
     try forcedEdit("fit length") { _, f, _, _, _, _, _, _ in f = 6000 }
     func forcedShape(_ r: inout SurfaceRequest, radius: Double? = nil, duration: Double? = nil) {

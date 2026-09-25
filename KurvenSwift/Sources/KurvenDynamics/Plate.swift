@@ -32,9 +32,29 @@ public struct SurfaceRequest: Sendable, Equatable {
         public var lines: Double
         public var trajectory: Double
         public var folds: Double
-        public init(lines: Double = 0.3, trajectory: Double = 0.08, folds: Double = 0.6) {
+        public var winding: Double
+        public init(lines: Double = 0.3, trajectory: Double = 0.08, folds: Double = 0.6,
+                    winding: Double = 0.3) {
             self.lines = lines; self.trajectory = trajectory; self.folds = folds
+            self.winding = winding
         }
+    }
+
+    /// A winding drawn on the torus: `count` straight lines through its
+    /// parameter rectangle at `slope` turns of `v` per turn of `u`, each
+    /// `turns` turns long -- or closed, when the slope is a fraction whose
+    /// denominator is within the turns. See `ParametricSurface.winding`.
+    public struct Winding: Sendable, Equatable {
+        public var slope: Double
+        public var turns: Int
+        public var count: Int
+        public init(slope: Double, turns: Int = 24, count: Int = 1) {
+            self.slope = slope; self.turns = turns; self.count = count
+        }
+
+        /// The turns after which a strand closes, when it does within
+        /// `turns`: the denominator of a rational slope.
+        public var closes: Int? { ParametricSurface.windingCloses(slope: slope, within: turns) }
     }
 
     public var shape: Shape
@@ -44,14 +64,17 @@ public struct SurfaceRequest: Sendable, Equatable {
     /// Lines of constant `u` and `v`, when drawn. A plain torus has nothing
     /// else to draw; a forced torus draws them only when asked.
     public var lines: SIMD2<Int>?
+    /// A winding, when drawn. Ink alone: the surface does not know it is
+    /// there, so its slope can move under a slider.
+    public var winding: Winding?
     public var style: Style
     /// The catalog entry this came from, for provenance and the title.
     public var name: String
 
     public init(_ shape: Shape, lattice: Int = 1024, lines: SIMD2<Int>? = nil,
-                style: Style = Style(), name: String = "") {
+                winding: Winding? = nil, style: Style = Style(), name: String = "") {
         self.shape = shape; self.lattice = lattice; self.lines = lines
-        self.style = style; self.name = name
+        self.winding = winding; self.style = style; self.name = name
     }
 
     /// The projection a surface plate opens at.
@@ -89,9 +112,13 @@ public extension SurfaceRequest {
     /// One number of a request, to edit by name: what a control moves.
     enum Field: String, CaseIterable, Sendable {
         case major, minor, modulus, grid, radius, duration, every, harmonics, fit, radial, axial
+        /// The winding's, present when one is drawn: its slope, its length
+        /// in turns, and how many strands.
+        case slope, turns, strands
     }
 
     /// The fields this request's shape has, in the order a panel lists them.
+    /// The winding's are listed by `windingFields` when there is one.
     var fields: [Field] {
         switch shape {
         case .torus: [.major, .minor]
@@ -101,11 +128,16 @@ public extension SurfaceRequest {
         }
     }
 
+    static let windingFields: [Field] = [.slope, .turns, .strands]
+
     /// A field's value, or nil where the shape has no such field; setting
     /// one the shape does not have changes nothing.
     subscript(field: Field) -> Double? {
         get {
             switch (shape, field) {
+            case (_, .slope): winding?.slope
+            case (_, .turns): winding.map { Double($0.turns) }
+            case (_, .strands): winding.map { Double($0.count) }
             case (.torus(let R, _), .major), (.sn(_, let R, _, _), .major),
                  (.periodic(_, _, let R, _, _), .major): R
             case (.torus(_, let r), .minor), (.sn(_, _, let r, _), .minor),
@@ -125,6 +157,12 @@ public extension SurfaceRequest {
         set {
             guard let x = newValue, x.isFinite else { return }
             let n = Int(x.rounded())
+            switch field {
+            case .slope: winding?.slope = x; return
+            case .turns: winding?.turns = max(n, 1); return
+            case .strands: winding?.count = max(n, 1); return
+            default: break
+            }
             switch shape {
             case .torus(var R, var r):
                 if field == .major { R = x } else if field == .minor { r = x } else { return }
@@ -170,8 +208,9 @@ public extension SurfaceRequest {
 /// What an edit costs is decided here, by comparing the new request with the
 /// plate it replaces, and only what the edit touches is made again:
 ///
-///   - **the ink alone** -- line counts, stroke widths, a forced trajectory's
-///     length and sampling, sn's sampling grid -- keeps the surface, and with
+///   - **the ink alone** -- line counts, a winding's slope, stroke widths, a
+///     forced trajectory's length and sampling, sn's sampling grid -- keeps
+///     the surface, and with
 ///     it `content`, so the window redraws the ink and keeps the surface's
 ///     textures;
 ///   - **the radii of a torus** re-place what is drawn on it: a periodic
@@ -275,6 +314,20 @@ public struct SurfacePlate: Sendable {
                                                                      resolution: resolution))
             }
         }
+        /// The winding, reused when neither the surface nor it moved. Placed
+        /// from the lattice, so a new slope costs its own vertices and
+        /// nothing of the surface's.
+        func winding(on surface: ParametricSurface) -> Layer? {
+            request.winding.map { w in
+                let old = kept.flatMap { k in
+                    k.request.winding == w ? k.layers.first { $0.spec.name == "winding" } : nil
+                }
+                return scaffold("winding", .winding(slope: w.slope, turns: w.turns, count: w.count),
+                                style.winding,
+                                old?.paths ?? surface.winding(slope: w.slope, turns: w.turns,
+                                                              count: w.count))
+            }
+        }
 
         let surface: ParametricSurface
         var layers: [Layer]
@@ -375,6 +428,7 @@ public struct SurfacePlate: Sendable {
                                old?.paths ?? torus.trajectory(e, run))]
             if let l = lines(on: surface, resolution: 2 * request.lattice) { layers.append(l) }
         }
+        if let w = winding(on: surface) { layers.append(w) }
         // The outline and inner silhouettes, derived per camera.
         if style.folds > 0 {
             layers.append(Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldLines,

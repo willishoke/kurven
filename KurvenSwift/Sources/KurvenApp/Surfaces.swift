@@ -88,6 +88,8 @@ extension Document {
         if let torus = plate.torus {
             text += String(format: "; misses its trajectory by %.1e of its size",
                            torus.residual / torus.extent)
+            text += String(format: "; the trajectory winds at Ω/ω = %.6f",
+                           torus.internalFrequency / torus.forcing)
         }
         if !plate.embedded {
             text += " — the revolution passes through itself, so back faces are kept"

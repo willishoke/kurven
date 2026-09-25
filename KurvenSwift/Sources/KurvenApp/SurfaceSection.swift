@@ -50,6 +50,7 @@ struct SurfaceSection: View {
                 row(field, request)
             }
             lines(request)
+            winding(request)
         }
         HStack {
             Button("Browse…") { document.browsing = true }.controlSize(.small)
@@ -111,7 +112,25 @@ struct SurfaceSection: View {
         case .radial, .axial:
             Control(label: field == .radial ? "Radius from" : "Height from", range: 0...2,
                     step: 1, digits: 0)
+        case .slope:
+            Control(label: "Slope", range: 0...2, step: 0.001,
+                    help: "Turns through the tube per turn round the ring. The slider rests "
+                        + "at fractions, where the winding closes, and on the forced torus at "
+                        + "the trajectory's own Ω/ω.")
+        case .turns:
+            Control(label: "Turns", range: 1...64, step: 1, digits: 0,
+                    help: "How many turns round the ring a strand runs, unless it closes first.")
+        case .strands:
+            Control(label: "Strands", range: 1...12, step: 1, digits: 0,
+                    help: "Parallel windings, evenly spaced through the tube.")
         }
+    }
+
+    /// Whether a drag of this control builds drafts. A winding is ink alone,
+    /// placed from the lattice, so its drag builds the full plate each step:
+    /// the surface is kept and only the winding's vertices are made again.
+    private func drafts(_ field: SurfaceRequest.Field) -> Bool {
+        !SurfaceRequest.windingFields.contains(field)
     }
 
     @ViewBuilder
@@ -124,13 +143,17 @@ struct SurfaceSection: View {
                 get: { current },
                 set: { set(field, to: min(max($0, c.range.lowerBound), c.range.upperBound),
                            draft: false, label: c.label) })
+            // The slope's slider rests at its detents: a value within a
+            // detent's reach lands on it exactly, so a fraction is a fraction
+            // and the winding closes.
+            let detents = field == .slope ? self.detents(request) : []
             LabeledContent(c.label) {
                 HStack(spacing: 8) {
                     if c.slides {
                         Slider(value: Binding(
                             get: { min(max(current, c.range.lowerBound), c.range.upperBound) },
-                            set: { set(field, to: ($0 / c.step).rounded() * c.step,
-                                       draft: dragging == field, label: c.label) }),
+                            set: { set(field, to: quantize($0, step: c.step, detents: detents),
+                                       draft: dragging == field && drafts(field), label: c.label) }),
                                in: c.range, onEditingChanged: { editing in
                                    dragged(field, editing, label: c.label)
                                })
@@ -214,6 +237,80 @@ struct SurfaceSection: View {
         TextField("", value: binding, format: .number)
             .labelsHidden().multilineTextAlignment(.trailing).monospacedDigit().frame(width: 40)
         Stepper("", value: binding, in: 1...200, step: 2).labelsHidden()
+    }
+
+    // MARK: - the winding
+
+    /// A winding: a straight line on the flat torus, drawn on this one. Its
+    /// slope is the control that moves in real time -- the surface never
+    /// sees the winding, so a new slope is its own vertices and nothing else.
+    @ViewBuilder
+    private func winding(_ request: SurfaceRequest) -> some View {
+        Toggle("Winding", isOn: Binding(
+            get: { request.winding != nil },
+            set: { on in
+                var next = request
+                // On, it starts at the trajectory's own winding when there is
+                // one to match, else at 2/5, which closes.
+                next.winding = on ? SurfaceRequest.Winding(slope: ownSlope ?? 0.4) : nil
+                commit(next, label: "Winding")
+            }))
+            .help("A straight line through the parameter rectangle, so many turns through "
+                  + "the tube per turn round the ring, drawn on the torus. A fraction closes; "
+                  + "anything else winds on. On the forced torus the trajectory is the winding "
+                  + "at the system's own Ω/ω.")
+        if let w = request.winding {
+            ForEach(SurfaceRequest.windingFields, id: \.self) { field in
+                row(field, request)
+            }
+            Text(describe(w)).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// How close to a detent a slider value lands on it: a pixel or two of
+    /// a sidebar slider over a range of two.
+    private static let detentReach = 0.015
+
+    /// A slider value to its step, or to the detent within reach of it.
+    private func quantize(_ x: Double, step: Double, detents: [Double]) -> Double {
+        let stepped = (x / step).rounded() * step
+        guard let d = detents.min(by: { abs($0 - x) < abs($1 - x) }),
+              abs(d - x) <= Self.detentReach else { return stepped }
+        return d
+    }
+
+    /// Where the slope slider rests: every fraction with a denominator up to
+    /// eight in its range, and the trajectory's own Ω/ω on a forced torus.
+    private func detents(_ request: SurfaceRequest) -> [Double] {
+        var out: [Double] = []
+        for q in 1...8 {
+            for p in 0...(2 * q) where q == 1 || p % q != 0 {
+                let x = Double(p) / Double(q)
+                if !out.contains(where: { abs($0 - x) < 1e-12 }) { out.append(x) }
+            }
+        }
+        if let own = ownSlope { out.append(own) }
+        return out
+    }
+
+    /// The trajectory's own winding, when the plate on screen is a fitted
+    /// torus: its internal frequency per forcing frequency.
+    private var ownSlope: Double? {
+        document.plate?.torus.map { $0.internalFrequency / $0.forcing }
+    }
+
+    private func describe(_ w: SurfaceRequest.Winding) -> String {
+        let strands = w.count == 1 ? "One strand" : "\(w.count) strands"
+        if let own = ownSlope, abs(w.slope - own) < 1e-12 {
+            return "\(strands) at the trajectory's own Ω/ω, "
+                + String(format: "%.6f: open, %d turns.", own, w.turns)
+        }
+        if let q = w.closes {
+            let p = Int((w.slope * Double(q)).rounded())
+            return "\(strands) at \(p)/\(q): "
+                + (q == 1 ? "closes after one turn." : "closes after \(q) turns.")
+        }
+        return "\(strands), open: \(w.turns) turns."
     }
 
     // MARK: - editing

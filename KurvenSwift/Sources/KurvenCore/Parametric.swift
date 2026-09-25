@@ -382,11 +382,7 @@ public extension ParametricSurface {
         precondition(u.periodic && v.periodic, "a winding is a curve on a torus")
         precondition(turns >= 1 && count >= 1 && slope.isFinite,
                      "a winding wants a finite slope and at least one turn of one strand")
-        let closing = (1...turns).first { k in
-            let w = slope * Double(k)
-            return abs(w - w.rounded()) <= 1e-9 * max(1, abs(w))
-        }
-        let drawn = closing ?? turns
+        let drawn = Self.windingCloses(slope: slope, within: turns) ?? turns
         let steps = max(u.cells, Int((abs(slope) * Double(v.cells)).rounded(.up)))
         let du = u.range.length / Double(steps), dv = slope * v.range.length / Double(steps)
         let span = 8 * u.range.length
@@ -415,6 +411,17 @@ public extension ParametricSurface {
             paths.append(path); coords.append(coord)
         }
         return PolylineSet(paths: paths, coords: coords)
+    }
+
+    /// The turns after which a winding of `slope` closes -- the denominator
+    /// of a fraction, to within rounding -- when that is within `turns`;
+    /// nil for a winding that runs out its turns open.
+    static func windingCloses(slope: Double, within turns: Int) -> Int? {
+        guard turns >= 1 else { return nil }
+        return (1...turns).first { k in
+            let w = slope * Double(k)
+            return abs(w - w.rounded()) <= 1e-9 * max(1, abs(w))
+        }
     }
 
     /// The torus of revolution about the z axis: `u` around the axis, `v`
