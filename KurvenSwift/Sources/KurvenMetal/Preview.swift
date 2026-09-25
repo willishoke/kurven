@@ -16,19 +16,42 @@ struct LineGeometry {
     let ranges: [(first: Int, count: Int)]
 
     init(scene: Scene, device: MTLDevice) throws {
-        var vertices: [KVVertex] = []
+        var vertices: [KVLineVertex] = []
         var ranges: [(first: Int, count: Int)] = []
         for layer in scene.layers {
             let first = vertices.count
+            // Ink on a heightfield's surface carries the surface's outward
+            // normal, so the stroke shader can hide it where the surface
+            // faces away; a zero normal is ink judged by depth alone. Once
+            // per vertex, in parallel: zeta's contours have six hundred
+            // thousand, and each normal is four height reads.
+            var normals: [SIMD3<Float>]?
+            if let h = scene.heightfield, layer.spec.liesOnSurface {
+                let points = layer.paths.vertices
+                var out = [SIMD3<Float>](repeating: .zero, count: points.count)
+                let chunk = 4096, n = points.count
+                out.withUnsafeMutableBufferPointer { buffer in
+                    nonisolated(unsafe) let base = buffer.baseAddress!
+                    DispatchQueue.concurrentPerform(iterations: (n + chunk - 1) / chunk) { b in
+                        for k in (b * chunk)..<min((b + 1) * chunk, n) {
+                            base[k] = SIMD3<Float>(h.normal(at: P2(points[k].x, points[k].y)))
+                        }
+                    }
+                }
+                normals = out
+            }
             for i in 0..<layer.paths.count {
-                let path = layer.paths[path: i]
+                let lo = layer.paths.offsets[i], hi = layer.paths.offsets[i + 1]
                 // Separate segments, not a strip: a strip would join the end of
                 // one path to the start of the next, which is precisely the
                 // welding the CSR representation exists to prevent. Each pair is
                 // one instance of the stroke quad.
-                for (a, b) in zip(path, path.dropFirst()) {
-                    vertices.append(KVVertex(position: SIMD3<Float>(a.v)))
-                    vertices.append(KVVertex(position: SIMD3<Float>(b.v)))
+                for k in lo..<(hi - 1) {
+                    for end in [k, k + 1] {
+                        vertices.append(KVLineVertex(
+                            position: SIMD3<Float>(layer.paths.vertices[end].v),
+                            normal: normals?[end] ?? .zero))
+                    }
                 }
             }
             ranges.append((first, vertices.count - first))
@@ -197,6 +220,13 @@ public extension MetalRenderer {
             e2.setRenderPipelineState(strokePipeline)
             e2.setVertexBuffer(buffer, offset: 0, index: 4)
             e2.setFragmentTexture(depth, index: 1)
+            // Which way the ink's surface faces is asked of the camera: ink
+            // on the heightfield carries the normal, and the shader hides
+            // what faces away.
+            var camera = KVInk(sight: SIMD3<Float>(scene.camera.view.sightLine),
+                               eye: SIMD3<Float>(scene.camera.view.inverse(P3<ViewSpace>(0, 0, 0)).v),
+                               perspective: scene.camera.isPerspective ? 1 : 0, onFolds: 0)
+            e2.setVertexBytes(&camera, length: MemoryLayout<KVInk>.stride, index: 7)
             // Every layer, visible or not, so hiding the widest one does not
             // make the rest jump wider.
             let widest = scene.layers.map(\.spec.width).max() ?? 0

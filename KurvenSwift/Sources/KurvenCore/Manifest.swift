@@ -615,6 +615,17 @@ public struct LayerSpec: Sendable, Equatable {
     /// which a depth test would half erase.
     public var clipped: Bool
 
+    /// Whether the ink lies on the heightfield's own surface: the contours of
+    /// |f| and arg f, lifted onto it -- by any height policy, since a
+    /// magnitude contour at its level and a phase line at |f| are on the
+    /// surface as surely as ink lifted by the grid. Such ink can be judged by
+    /// which way the surface faces under it, as well as by depth. The
+    /// scaffold -- rims, hatches, outlines -- sits on creases and walls,
+    /// where the surface's facing is not the ink's.
+    public var liesOnSurface: Bool {
+        clipped && (role == .magnitude || role == .phase)
+    }
+
     public init(name: String, role: LayerRole, source: LayerSource,
                 width: Double, heightPolicy: HeightPolicy,
                 color: String = "#000000", clipped: Bool = true) {

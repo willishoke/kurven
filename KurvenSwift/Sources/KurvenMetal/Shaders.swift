@@ -27,6 +27,7 @@ public enum Shaders {
 
     typedef struct { float4 linear; float2 offset; } KVTile;
     typedef struct { float3 position; } KVVertex;
+    typedef struct { float3 position; float3 normal; } KVLineVertex;
 
     typedef struct {
         float4 color;
@@ -480,6 +481,9 @@ public enum Shaders {
         // from it. Screen-space quantities, so not perspective-corrected.
         float2 center [[center_no_perspective]];
         float  across [[center_no_perspective]];
+        // How squarely the surface under the ink faces the eye, for ink on a
+        // heightfield: negative is hidden. Zero where it is not asked.
+        float  facing [[center_no_perspective]];
     };
 
     // Clip a segment to the part the hardware would keep, `z <= w`, before
@@ -528,6 +532,7 @@ public enum Shaders {
         out.depth = 0.0;
         out.center = float2(0.0);
         out.across = 0.0;
+        out.facing = 0.0;
         if (!clip_near(ca, cb, da, db)) {
             // Off-screen in w, as the heightfield culls its masked cells.
             out.position = float4(0.0, 0.0, 0.0, 0.0);
@@ -554,16 +559,27 @@ public enum Shaders {
         return out;
     }
 
+    static float ink_facing(float3 p, float3 n, constant KVInk &k);
+
+    // Ink on a heightfield carries the surface's normal, and is hidden where
+    // the surface faces away from the eye before the depth test is asked --
+    // the test the depth margin cannot make, where a steep flank turns away
+    // and its back lies within the margin of its front (see
+    // `HeightfieldVisibility`). A zero normal asks nothing.
     vertex StrokeOut kv_stroke_vertex(uint vid [[vertex_id]],
                                       uint iid [[instance_id]],
                                       constant KVUniforms &u [[buffer(0)]],
                                       constant KVShading &s [[buffer(1)]],
-                                      constant KVVertex *verts [[buffer(4)]],
-                                      constant uint &first [[buffer(5)]])
+                                      constant KVLineVertex *verts [[buffer(4)]],
+                                      constant uint &first [[buffer(5)]],
+                                      constant KVInk &k [[buffer(7)]])
     {
         uint segment = first + iid;
-        return stroke_corner(vid, verts[2u * segment].position,
-                             verts[2u * segment + 1u].position, u, s);
+        KVLineVertex a = verts[2u * segment], b = verts[2u * segment + 1u];
+        StrokeOut out = stroke_corner(vid, a.position, b.position, u, s);
+        KVLineVertex end = vid >= 2u ? b : a;
+        out.facing = ink_facing(end.position, end.normal, k);
+        return out;
     }
 
     fragment float4 kv_stroke_fragment(StrokeOut in [[stage_in]],
@@ -579,6 +595,7 @@ public enum Shaders {
         float half_width = 0.5 * s.strokeWidth;
         float coverage = min(d + half_width, 0.5) - max(d - half_width, -0.5);
         if (coverage <= 0.0) { discard_fragment(); }
+        if (in.facing < 0.0) { discard_fragment(); }
 
         float2 last = float2(depth.get_width() - 1u, depth.get_height() - 1u);
         uint2 p = uint2(clamp(in.center, float2(0.0), last));

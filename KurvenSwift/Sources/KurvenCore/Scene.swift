@@ -43,6 +43,32 @@ public struct Heightfield: Sendable {
             surface.forEachSample(step: step) { body(tile($0)) }
         }
     }
+
+    /// The outward normal of the capped surface over a world point:
+    /// `(-∂h/∂x, -∂h/∂y, 1)`, not normalized, by central differences a grid
+    /// spacing wide, the height read through whichever tile the point is in.
+    ///
+    /// The solid is what lies under the graph, so outward is up, and a
+    /// sight line that reaches a point of the surface facing away from the
+    /// eye has entered the solid already: such a point is hidden, whatever
+    /// the depth buffer says to within its margin. That is the test the
+    /// margin cannot make -- where a steep flank turns away, the back of it
+    /// lies within the margin of the front for a stretch that zoom
+    /// magnifies, and back-face ink shows there as ticks.
+    ///
+    /// Differences in world coordinates, so a tile's reflection is already
+    /// in them; on the cap the differences vanish and the normal is up.
+    public func normal(at p: P2<WorldSpace>) -> SIMD3<Double> {
+        let g = surface.height
+        let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1))
+        let dy = abs(g.domain.imag.length) / Double(max(g.height - 1, 1))
+        func h(_ x: Double, _ y: Double) -> Double {
+            surface.height(at: P2<DomainSpace>(x, y), tiles: tiles)
+        }
+        let hx = (h(p.x + dx, p.y) - h(p.x - dx, p.y)) / (2 * dx)
+        let hy = (h(p.x, p.y + dy) - h(p.x, p.y - dy)) / (2 * dy)
+        return SIMD3(-hx, -hy, 1)
+    }
 }
 
 /// What the depth pass draws.
