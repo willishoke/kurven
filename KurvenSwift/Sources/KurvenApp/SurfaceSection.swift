@@ -1,5 +1,6 @@
 import SwiftUI
 import KurvenCore
+import KurvenMath
 import KurvenDynamics
 
 /// The numbers a surface is made of, as controls.
@@ -99,14 +100,12 @@ struct SurfaceSection: View {
             Control(label: "Ring radius", range: 0.5...5, step: 0.05,
                     help: "The radius the torus is revolved at. Below about 1 a slice "
                         + "reaches the axis and the torus passes through itself.")
-        case .duration:
-            Control(label: "Duration", range: 100...8000, step: 50, digits: 0,
-                    help: "How long a run of the trajectory is drawn. Shortening it while you "
-                        + "drag reads the run already integrated.")
-        case .every:
-            Control(label: "Sample spacing", range: 0.002...0.05, step: 0.001, digits: 3,
-                    help: "Time between the trajectory's vertices. Four times coarser while "
-                        + "you drag any control.")
+        case .trajectoryTurns:
+            Control(label: "Turns", range: 1...600, step: 1, digits: 0,
+                    help: "Turns of the forcing the trajectory is drawn for. The trajectory is "
+                        + "the winding at Ω/ω, and the slider rests at the denominators of "
+                        + "Ω/ω's convergents, where it cuts the torus most evenly; between "
+                        + "them it bands.")
         case .harmonics:
             Control(label: "Harmonics", range: 4...40, step: 1, slides: false, digits: 0,
                     help: "The order of the Fourier fit. Too few and the fit misses the "
@@ -131,11 +130,12 @@ struct SurfaceSection: View {
         }
     }
 
-    /// Whether a drag of this control builds drafts. A winding is ink alone,
-    /// placed from the lattice, so its drag builds the full plate each step:
-    /// the surface is kept and only the winding's vertices are made again.
+    /// Whether a drag of this control builds drafts. A winding, and the
+    /// trajectory, are ink alone, placed from the lattice, so their drags
+    /// build the full plate each step: the surface is kept and only their
+    /// vertices are made again.
     private func drafts(_ field: SurfaceRequest.Field) -> Bool {
-        !SurfaceRequest.windingFields.contains(field)
+        !SurfaceRequest.inkFields.contains(field)
     }
 
     @ViewBuilder
@@ -148,16 +148,17 @@ struct SurfaceSection: View {
                 get: { current },
                 set: { set(field, to: min(max($0, c.range.lowerBound), c.range.upperBound),
                            draft: false, label: c.label) })
-            // The slope's slider rests at its detents: a value within a
-            // detent's reach lands on it exactly, so a fraction is a fraction
-            // and the winding closes.
-            let detents = field == .slope ? self.detents(request) : []
+            // A slider with detents rests at them: a value within a detent's
+            // reach lands on it exactly, so a fraction is a fraction and the
+            // winding closes, and a convergent's turns are those turns.
+            let detents = self.detents(field)
             LabeledContent(c.label) {
                 HStack(spacing: 8) {
                     if c.slides {
                         Slider(value: Binding(
                             get: { min(max(current, c.range.lowerBound), c.range.upperBound) },
-                            set: { set(field, to: quantize($0, step: c.step, detents: detents),
+                            set: { set(field, to: quantize($0, step: c.step, detents: detents,
+                                                           reach: Self.detentReach(field)),
                                        draft: dragging == field && drafts(field), label: c.label) }),
                                in: c.range, onEditingChanged: { editing in
                                    dragged(field, editing, label: c.label)
@@ -273,35 +274,55 @@ struct SurfaceSection: View {
     }
 
     /// How close to a detent a slider value lands on it: a pixel or two of
-    /// a sidebar slider over a range of two.
-    private static let detentReach = 0.015
+    /// a sidebar slider. The slope's range is two, the turns' six hundred.
+    private static func detentReach(_ field: SurfaceRequest.Field) -> Double {
+        field == .trajectoryTurns ? 4 : 0.015
+    }
 
     /// A slider value to its step, or to the detent within reach of it.
-    private func quantize(_ x: Double, step: Double, detents: [Double]) -> Double {
+    private func quantize(_ x: Double, step: Double, detents: [Double], reach: Double) -> Double {
         let stepped = (x / step).rounded() * step
         guard let d = detents.min(by: { abs($0 - x) < abs($1 - x) }),
-              abs(d - x) <= Self.detentReach else { return stepped }
+              abs(d - x) <= reach else { return stepped }
         return d
     }
 
-    /// Where the slope slider rests: every fraction with a denominator up to
-    /// eight in its range, and the trajectory's own Ω/ω on a forced torus.
-    private func detents(_ request: SurfaceRequest) -> [Double] {
-        var out: [Double] = []
-        for q in 1...8 {
-            for p in 0...(2 * q) where q == 1 || p % q != 0 {
-                let x = Double(p) / Double(q)
-                if !out.contains(where: { abs($0 - x) < 1e-12 }) { out.append(x) }
+    /// Where a slider rests.
+    ///
+    /// The slope's: on a forced torus, the rotation number Ω/ω and its
+    /// convergents -- the closed windings the trajectory is nearly, which
+    /// dragging to from Ω/ω shows the orbit locking to; on any other torus,
+    /// every fraction with a denominator up to eight. The trajectory's turns:
+    /// the convergents' denominators, where the trajectory cuts the torus
+    /// most evenly.
+    private func detents(_ field: SurfaceRequest.Field) -> [Double] {
+        switch field {
+        case .slope:
+            if let own = ownSlope {
+                return [own] + convergents.map(\.value)
             }
+            var out: [Double] = []
+            for q in 1...8 {
+                for p in 0...(2 * q) where q == 1 || p % q != 0 {
+                    let x = Double(p) / Double(q)
+                    if !out.contains(where: { abs($0 - x) < 1e-12 }) { out.append(x) }
+                }
+            }
+            return out
+        case .trajectoryTurns:
+            return convergents.map { Double($0.q) }.filter { $0 >= 2 }
+        default:
+            return []
         }
-        if let own = ownSlope { out.append(own) }
-        return out
     }
 
     /// The trajectory's own winding, when the plate on screen is a fitted
-    /// torus: its internal frequency per forcing frequency.
-    private var ownSlope: Double? {
-        document.plate?.torus.map { $0.internalFrequency / $0.forcing }
+    /// torus: its rotation number, Ω/ω.
+    private var ownSlope: Double? { document.plate?.torus?.rotationNumber }
+
+    /// The rotation number's convergents within the turns slider's range.
+    private var convergents: [ContinuedFraction.Convergent] {
+        ownSlope.map { ContinuedFraction.convergents(of: $0, maxDenominator: 600) } ?? []
     }
 
     private func describe(_ w: SurfaceRequest.Winding) -> String {
@@ -312,7 +333,8 @@ struct SurfaceSection: View {
         }
         if let q = w.closes {
             let p = Int((w.slope * Double(q)).rounded())
-            return "\(strands) at \(p)/\(q): "
+            let convergent = convergents.contains { $0.p == p && $0.q == q }
+            return "\(strands) at \(p)/\(q)" + (convergent ? ", a convergent of Ω/ω" : "") + ": "
                 + (q == 1 ? "closes after one turn." : "closes after \(q) turns.")
         }
         return "\(strands), open: \(w.turns) turns."

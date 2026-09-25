@@ -55,6 +55,40 @@ func forcedTorusTests() {
                      "the trajectory lies on the drawn torus, within the fit's own miss",
                      String(format: "worst %.2e, bound %.2e, over %d vertices in %d paths",
                             worst, bound, ink.vertices.count, ink.count))
+
+        // What the plates draw is not this ink but the winding at the
+        // rotation number from the samples' start, placed from the lattice.
+        // Held to the integrated trajectory: every integrated vertex's
+        // coordinate lies on that leaf -- at its wrapped θ, the leaf passes
+        // at φ = ρ(θ + 2πk) for the k turns it has made -- and the lattice at
+        // that coordinate is the integrated point, to the fit's miss plus a
+        // cell's sag.
+        let turn = 2 * Double.pi
+        let start = found.startPhase, rho = found.rotationNumber
+        var offLeaf = 0.0, offLattice = 0.0
+        for (k, c) in ink.coords!.enumerated() {
+            let nearest = (0...200).map { k -> Double in
+                let d = (c.y - rho * (c.x + turn * Double(k))) / turn
+                return abs(d - d.rounded())
+            }.min()!
+            offLeaf = max(offLeaf, nearest)
+            offLattice = max(offLattice, simd_length(ink.vertices[k].v - surface.interpolate(c).v))
+        }
+        let drawn = found.trajectory(on: surface, turns: 12)
+        let first = drawn.coords![0]
+        let onLeaf = abs((start.y - rho * start.x) / turn).truncatingRemainder(dividingBy: 1)
+        Check.expect(offLeaf < 1e-9 && first == start && min(onLeaf, 1 - onLeaf) < 1e-9,
+                     "the integrated trajectory lies on the leaf φ = ρθ the drawn one starts on",
+                     String(format: "%.1e of a turn off the leaf", offLeaf))
+        Check.expect(offLattice < bound + 2e-3,
+                     "and the lattice at its coordinates is the integrated point",
+                     String(format: "worst %.2e; the fit's miss %.2e", offLattice, bound))
+        Check.expect(abs(rho - 0.421_512_051) < 1e-8
+                     && ContinuedFraction.convergents(of: rho, maxDenominator: 400)
+                         .map { "\($0.p)/\($0.q)" }
+                         == ["0/1", "1/2", "2/5", "3/7", "8/19", "43/102", "51/121", "94/223", "145/344"],
+                     "the rotation number is nearly 8/19, 43/102, 145/344: where a drawing fills evenly",
+                     String(format: "Ω/ω = %.9f", rho))
     }
 
     Check.suite("dynamics: the plate bakes, and its front is the torus's outside") {
@@ -213,7 +247,7 @@ func surfacePlateTests() {
     Check.suite("plates: a surface request builds its plate, and an edit keeps what it can") {
         func forced(radius: Double) -> SurfaceRequest {
             SurfaceRequest(.forced(system: "jerk", fit: 8000, harmonics: 24, radial: 0, axial: 1,
-                                   radius: radius, duration: 200, every: 0.02),
+                                   radius: radius, turns: 30),
                            lattice: 256)
         }
         let clock = ContinuousClock()
@@ -259,10 +293,10 @@ func surfacePlateTests() {
                          "\(label): the edit is the plate built afresh, and "
                          + (keepsSurface ? "keeps the surface" : "has a new surface"))
         }
-        func forcedRequest(radius: Double = 2.5, duration: Double = 200,
+        func forcedRequest(radius: Double = 2.5, turns: Int = 30,
                            lines: SIMD2<Int>? = nil) -> SurfaceRequest {
             SurfaceRequest(.forced(system: "jerk", fit: 8000, harmonics: 24, radial: 0, axial: 1,
-                                   radius: radius, duration: duration, every: 0.02),
+                                   radius: radius, turns: turns),
                            lattice: 256, lines: lines)
         }
         func sn(m: Double = 0.64, R: Double = 2, r: Double = 1, grid: Int = 200) -> SurfaceRequest {
@@ -278,7 +312,7 @@ func surfacePlateTests() {
         try edit("sn, radii", sn(), sn(R: 2.5, r: 0.8), keepsSurface: false)
         try edit("sn, grid", sn(), sn(grid: 150), keepsSurface: true)
         try edit("sn, modulus", sn(), sn(m: 0.5), keepsSurface: false)
-        try edit("forced, duration", forcedRequest(), forcedRequest(duration: 120),
+        try edit("forced, turns", forcedRequest(), forcedRequest(turns: 19),
                  keepsSurface: true)
         try edit("forced, lines", forcedRequest(), forcedRequest(lines: SIMD2(12, 6)),
                  keepsSurface: true)
@@ -314,19 +348,19 @@ func surfacePlateTests() {
                      && byField.shape == forcedWound.shape,
                      "and with one, they are its slope, turns and strands")
 
-        // A draft may read a shorter trajectory off a longer run; it is then
-        // the exact one to the integrator's tolerance, and the exact one
-        // follows when the drag ends.
-        let long = try SurfacePlate.build(forcedRequest(duration: 200))
-        let draft = try SurfacePlate.build(forcedRequest(duration: 120), reusing: long, draft: true)
-        let exact = try SurfacePlate.build(forcedRequest(duration: 120))
-        let a = draft.layers[0].paths.vertices, b = exact.layers[0].paths.vertices
-        let gap = zip(a, b).map { simd_length($0.v - $1.v) }.max() ?? .infinity
-        Check.expect(a.count == b.count && gap < 1e-6,
-                     "a draft's shorter trajectory is the exact one, to the tolerance",
-                     String(format: "worst %.1e over %d vertices", gap, a.count))
-        let settled = try SurfacePlate.build(forcedRequest(duration: 120), reusing: draft)
-        Check.expect(same(settled, exact), "and the build after the drag is exact")
+        // The trajectory is a winding: its turns are its own, and the whole
+        // of it -- turns, coordinates, slope -- comes from the fit, with
+        // nothing integrated.
+        let thirty = try SurfacePlate.build(forcedRequest(turns: 30))
+        let trajectory = thirty.layers[0].paths
+        let spans = (0..<trajectory.count).map { k -> Double in
+            let c = trajectory.coords!
+            return (c[trajectory.offsets[k + 1] - 1].x - c[trajectory.offsets[k]].x) / (2 * .pi)
+        }
+        Check.expect(abs(spans.reduce(0, +) - 30) < 1e-9 && spans.count == 4
+                     && spans.allSatisfy { $0 <= 8 + 1e-9 },
+                     "thirty turns of trajectory are thirty turns of the winding, in four paths",
+                     String(format: "%.6f turns in %d paths", spans.reduce(0, +), spans.count))
 
         // What an edit can leave stale is the renderer's: the surface's
         // textures, its normals and the ink, all cached on identities the
@@ -346,9 +380,9 @@ func surfacePlateTests() {
             return try PNG.bgra(target)
         }
         _ = try frame(warm, scene)
-        for (label, next) in [("the duration", forcedRequest(duration: 120)),
-                              ("the lines", forcedRequest(duration: 120, lines: SIMD2(12, 6))),
-                              ("the ring radius", forcedRequest(radius: 3, duration: 120,
+        for (label, next) in [("the turns", forcedRequest(turns: 19)),
+                              ("the lines", forcedRequest(turns: 19, lines: SIMD2(12, 6))),
+                              ("the ring radius", forcedRequest(radius: 3, turns: 19,
                                                                 lines: SIMD2(12, 6)))] {
             let edited = try SurfacePlate.build(next, reusing: plate)
             // As the document adopts it.
@@ -364,8 +398,7 @@ func surfacePlateTests() {
         Check.expectThrows("an unknown system is refused by name") {
             _ = try SurfacePlate.build(SurfaceRequest(.forced(system: "lorenz", fit: 100,
                                                               harmonics: 4, radial: 0, axial: 1,
-                                                              radius: 2.5, duration: 1,
-                                                              every: 0.1)))
+                                                              radius: 2.5, turns: 1)))
         }
     }
 }

@@ -368,17 +368,19 @@ public extension ParametricSurface {
     /// trajectory of a forced system, in the coordinates of its fitted torus,
     /// is the one with the system's own rotation number.
     ///
-    /// `count` strands start evenly spaced along `v` at `u`'s origin, and
-    /// each runs `turns` turns of `u` -- or, when `slope` is a fraction `p/q`
-    /// with `q ≤ turns`, the `q` turns after which it closes, so a rational
-    /// winding is one closed (p, q) curve and an irrational one is a stretch
-    /// of a curve that never closes. A vertex per lattice cell along the
-    /// steeper axis, placed by `interpolate`, so the ink lies on the drawn
-    /// surface; each vertex carries its coordinate, continuous along a path
-    /// and never more than eight turns from zero, so the preview's float32
-    /// still resolves a pixel's worth of it: as a trajectory is, a path is
-    /// ended and the next begun from the same vertex every eight turns.
-    func winding(slope: Double, turns: Int, count: Int = 1) -> PolylineSet<WorldSpace> {
+    /// `count` strands start at `start` -- the rectangle's origin unless
+    /// given -- and evenly spaced from it along `v`, and each runs `turns`
+    /// turns of `u` -- or, when `slope` is a fraction `p/q` with `q ≤
+    /// turns`, the `q` turns after which it closes, so a rational winding is
+    /// one closed (p, q) curve and an irrational one is a stretch of a curve
+    /// that never closes. A vertex per lattice cell along the steeper axis,
+    /// placed by `interpolate`, so the ink lies on the drawn surface; each
+    /// vertex carries its coordinate, continuous along a path and never more
+    /// than eight turns from zero, so the preview's float32 still resolves a
+    /// pixel's worth of it: a path is ended and the next begun from the same
+    /// vertex every eight turns.
+    func winding(slope: Double, turns: Int, count: Int = 1,
+                 start: P2<ParamSpace>? = nil) -> PolylineSet<WorldSpace> {
         precondition(u.periodic && v.periodic, "a winding is a curve on a torus")
         precondition(turns >= 1 && count >= 1 && slope.isFinite,
                      "a winding wants a finite slope and at least one turn of one strand")
@@ -386,14 +388,15 @@ public extension ParametricSurface {
         let steps = max(u.cells, Int((abs(slope) * Double(v.cells)).rounded(.up)))
         let du = u.range.length / Double(steps), dv = slope * v.range.length / Double(steps)
         let span = 8 * u.range.length
+        let origin = start ?? P2(u.range.lo, v.range.lo)
         var paths: [[P3<WorldSpace>]] = [], coords: [[P2<ParamSpace>]] = []
         for strand in 0..<count {
-            let v0 = v.range.lo + v.range.length * Double(strand) / Double(count)
+            let v0 = origin.y + v.range.length * Double(strand) / Double(count)
             var path: [P3<WorldSpace>] = [], coord: [P2<ParamSpace>] = []
             var offset = SIMD2(0.0, 0.0)
             for m in 0...(drawn * steps) {
-                let c = P2<ParamSpace>(u.range.lo + Double(m) * du, v0 + Double(m) * dv)
-                if !path.isEmpty, c.x - u.range.lo - offset.x > span {
+                let c = P2<ParamSpace>(origin.x + Double(m) * du, v0 + Double(m) * dv)
+                if !path.isEmpty, c.x - origin.x - offset.x > span {
                     // The seam of a path: the same vertex ends one and
                     // begins the next, its coordinates brought back near
                     // the rectangle's origin by whole periods.

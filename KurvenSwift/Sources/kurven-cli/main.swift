@@ -103,7 +103,7 @@ usage: kurven-cli <command> [options]
   surface torus [--lines U,V] [--samples N]
   surface sn [--modulus M] [--grid N]
   surface periodic --expression E --periods P1,P2 [--grid N]
-  surface forced [--system jerk] [--duration T] [--every DT] [--ink W]
+  surface forced [--system jerk] [--turns N] [--ink W]
           [--harmonics M] [--fit T] [--radial I] [--axial J] [--lines U,V]
           [--major R] [--minor r] [--winding SLOPE[,TURNS[,COUNT]]]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N]
@@ -116,12 +116,13 @@ usage: kurven-cli <command> [options]
         on [0, 4K) x [0, 2K'), or any expression over [0, P1) x [0, P2).
         forced finds a forced system's invariant torus in the spectrum of a
         long run, fits it as a Fourier series in the forcing phase and the
-        system's own, and draws --duration of the trajectory on it, the
-        forcing phase as the angle of revolution. Any of them draws a
-        --winding: COUNT straight lines through the parameter rectangle at
-        SLOPE turns of v per turn of u (2/5, or a decimal), TURNS turns
-        long, or closed when the slope is a fraction. On the forced torus
-        the trajectory is the winding at the system's own Ω/ω.
+        system's own, and draws --turns turns of the trajectory on it, the
+        forcing phase as the angle of revolution: the trajectory is the
+        winding at the rotation number Ω/ω, and it cuts the torus most
+        evenly at the denominators of that number's convergents, which are
+        printed. Any surface draws a --winding: COUNT straight lines through
+        the parameter rectangle at SLOPE turns of v per turn of u (2/5, or a
+        decimal), TURNS turns long, or closed when the slope is a fraction.
         The camera is a plate camera: --x-angle tilts, --z-angle turns, --shear
         is the oblique foreshortening the published plates use. The fold
         lines -- outline and inner silhouettes -- are drawn at --folds (twice
@@ -325,8 +326,7 @@ func surfaceCommand(_ args: Args) throws {
                                          radial: try args.int("radial", 0),
                                          axial: try args.int("axial", 1),
                                          radius: try args.double("radius") ?? 2.5,
-                                         duration: try args.double("duration") ?? 2300,
-                                         every: try args.double("every") ?? 0.01),
+                                         turns: try args.int("turns", 344)),
                                  lines: try args.flags["lines"].map(counts))
     default:
         throw CLIError("unknown surface '\(shape)'; the catalog has: torus, sn, periodic, forced")
@@ -357,12 +357,19 @@ func surfaceCommand(_ args: Args) throws {
     let built = try clock.measure { plate = try SurfacePlate.build(request) }
     let surface = plate.surface
     if let torus = plate.torus {
+        let rho = torus.rotationNumber
+        let convergents = ContinuedFraction.convergents(of: rho, maxDenominator: 2000)
+            .dropFirst().map { "\($0.p)/\($0.q)" }.joined(separator: ", ")
         print(String(format: """
             \(torus.system.name): forced at ω = %.6f, own frequency Ω = %.10f  (built in %@)
               fit       %d harmonics, misses its trajectory by %.2e (%.1e of its size)
+              winds     at Ω/ω = %.9f = %@
+                        nearly %@: drawn for those turns, it cuts the torus evenly
               drawn     by revolution, %@
             """, torus.forcing, torus.internalFrequency, "\(built)", torus.fit.harmonics,
-            torus.residual, torus.residual / torus.extent,
+            torus.residual, torus.residual / torus.extent, rho,
+            ContinuedFraction.describe(ContinuedFraction.quotients(of: rho, count: 8), ellipsis: true),
+            convergents,
             plate.embedded ? "embedded: back faces are hidden"
                            : "NOT embedded -- a slice crosses itself; back faces are kept"))
     }
@@ -704,21 +711,20 @@ func surfaceCosts(_ args: Args) throws {
     func forcedEdit(_ label: String, draft: Bool = false, lattice: Int? = nil,
                     from start: SurfacePlate? = nil,
                     _ change: @escaping (inout String, inout Double, inout Int, inout Int, inout Int,
-                                         inout Double, inout Double, inout Double) -> Void) throws {
+                                         inout Double, inout Int) -> Void) throws {
         try measure(label, forced, { r in
             if let lattice { r.lattice = lattice }
-            guard case .forced(var s, var f, var h, var ra, var ax, var rad, var d, var e) = r.shape
+            guard case .forced(var s, var f, var h, var ra, var ax, var rad, var t) = r.shape
             else { return }
-            change(&s, &f, &h, &ra, &ax, &rad, &d, &e)
+            change(&s, &f, &h, &ra, &ax, &rad, &t)
             r.shape = .forced(system: s, fit: f, harmonics: h, radial: ra, axial: ax, radius: rad,
-                              duration: d, every: e)
+                              turns: t)
         }, draft: draft, from: start ?? base)
     }
-    try forcedEdit("revolution radius") { _, _, _, _, _, rad, _, _ in rad = 3 }
-    try forcedEdit("axial component") { _, _, _, _, ax, _, _, _ in ax = 2 }
-    try forcedEdit("duration, shorter") { _, _, _, _, _, _, d, _ in d = 1500 }
-    try forcedEdit("duration, longer") { _, _, _, _, _, _, d, _ in d = 3000 }
-    try forcedEdit("sample spacing") { _, _, _, _, _, _, _, e in e = 0.02 }
+    try forcedEdit("revolution radius") { _, _, _, _, _, rad, _ in rad = 3 }
+    try forcedEdit("axial component") { _, _, _, _, ax, _, _ in ax = 2 }
+    try forcedEdit("turns, fewer") { _, _, _, _, _, _, t in t = 223 }
+    try forcedEdit("turns, more") { _, _, _, _, _, _, t in t = 567 }
     try measure("parameter lines on", forced, { $0.lines = SIMD2(36, 18) }, from: base)
     try measure("winding on", forced, {
         $0.winding = SurfaceRequest.Winding(slope: 0.4, turns: 24, count: 3)
@@ -726,17 +732,15 @@ func surfaceCosts(_ args: Args) throws {
     var forcedWound = forced
     forcedWound.winding = SurfaceRequest.Winding(slope: 0.4, turns: 24, count: 3)
     try measure("winding slope", forcedWound) { $0.winding?.slope = 0.618 }
-    try forcedEdit("harmonics") { _, _, h, _, _, _, _, _ in h = 20 }
-    try forcedEdit("fit length") { _, f, _, _, _, _, _, _ in f = 6000 }
-    func forcedShape(_ r: inout SurfaceRequest, radius: Double? = nil, duration: Double? = nil) {
-        guard case .forced(let s, let f, let h, let ra, let ax, let rad, let d, let e) = r.shape
+    try forcedEdit("harmonics") { _, _, h, _, _, _, _ in h = 20 }
+    try forcedEdit("fit length") { _, f, _, _, _, _, _ in f = 6000 }
+    func forcedShape(_ r: inout SurfaceRequest, radius: Double? = nil) {
+        guard case .forced(let s, let f, let h, let ra, let ax, let rad, let t) = r.shape
         else { return }
         r.shape = .forced(system: s, fit: f, harmonics: h, radial: ra, axial: ax,
-                          radius: radius ?? rad, duration: duration ?? d, every: e)
+                          radius: radius ?? rad, turns: t)
     }
     try drag("revolution radius", forced) { forcedShape(&$0, radius: 3) }
-    try drag("duration, shorter", forced) { forcedShape(&$0, duration: 1500) }
-    try drag("duration, longer", forced) { forcedShape(&$0, duration: 3000) }
     // The release: the full request, from the last draft, with the full
     // lattice's values and the full run still kept.
     let dragged = try SurfacePlate.build(forced.drafted(), reusing: base, draft: true)

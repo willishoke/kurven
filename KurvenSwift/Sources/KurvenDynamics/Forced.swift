@@ -84,6 +84,30 @@ public struct InvariantTorus: Sendable {
     public var forcing: Double { fit.frequencies.0 }
     public var internalFrequency: Double { fit.frequencies.1 }
 
+    /// `Ω/ω`: turns of the system's own phase per turn of the forcing. In
+    /// the fitted torus's coordinates the flow is a rigid rotation, so the
+    /// trajectory is the straight line of this slope -- the winding at the
+    /// rotation number -- and the number's continued fraction says which
+    /// closed windings it is nearly, and after how many turns it cuts the
+    /// torus most evenly.
+    public var rotationNumber: Double { internalFrequency / forcing }
+
+    /// Where on the torus the fitted samples begin: the forcing phase at
+    /// `t0`, brought into its turn, and the system's phase on the line
+    /// through it.
+    ///
+    /// In the fitted coordinates the flow is `θ = ωt, φ = Ωt`: the straight
+    /// line `φ = ρθ` through the origin, unwrapped. Bringing `θ` into its
+    /// turn slides the point along that line by whole turns of `θ`, and
+    /// each slides `φ` by `2πρ` -- so the start is `(θ₀, ρθ₀)`, not the two
+    /// phases wrapped on their own, which would be a point of another leaf.
+    public var startPhase: P2<ParamSpace> {
+        let turn = 2 * Double.pi
+        func wrap(_ x: Double) -> Double { x - turn * (x / turn).rounded(.down) }
+        let theta = wrap(forcing * t0)
+        return P2(theta, wrap(rotationNumber * theta))
+    }
+
     /// Integrate past the transient, find the second frequency among the
     /// spectral lines of the first component, and fit. Fails -- rather than
     /// fitting something -- when the spectrum has no second generator, or
@@ -238,9 +262,23 @@ public extension InvariantTorus {
         return (surface, embedded)
     }
 
-    /// The trajectory itself as ink, from `start` for `duration`, every `dt`:
-    /// each vertex the integrated state placed at its own forcing phase, and
-    /// its surface coordinate `(ωt, Ωt)`.
+    /// The trajectory as ink: the winding of `surface` at the rotation
+    /// number, `turns` turns from the fitted samples' start.
+    ///
+    /// The fitted torus holds the trajectory to within `residual`, a
+    /// fraction of a pixel at any drawing resolution, so nothing is
+    /// integrated: the trajectory is the straight line `φ = Ωt, θ = ωt` in
+    /// the torus's own coordinates, placed from the lattice as any winding
+    /// is. The integrated one, `trajectory(_:from:duration:every:)`, is the
+    /// check that this is so.
+    func trajectory(on surface: ParametricSurface, turns: Int) -> PolylineSet<WorldSpace> {
+        surface.winding(slope: rotationNumber, turns: turns, start: startPhase)
+    }
+
+    /// The integrated trajectory as ink, from `start` for `duration`, every
+    /// `dt`: each vertex the integrated state placed at its own forcing
+    /// phase, and its surface coordinate `(ωt, Ωt)`. What the plates draw
+    /// is `trajectory(on:turns:)`; this is what it is held to.
     ///
     /// Coordinates are kept continuous along a path, so a segment never jumps
     /// a period, and small, so the preview's float32 can still resolve a

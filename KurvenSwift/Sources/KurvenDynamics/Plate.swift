@@ -22,9 +22,12 @@ public struct SurfaceRequest: Sendable, Equatable {
         /// A forced system's invariant torus, fitted from `fit` time units of
         /// one run at `harmonics`, drawn by revolution on a ring of `radius`
         /// with state components `radial` and `axial`; its trajectory drawn
-        /// on it for `duration`, sampled `every`.
+        /// on it for `turns` turns of the forcing -- as the winding at the
+        /// rotation number, which is what the trajectory is on the fitted
+        /// torus. The turns where it cuts the torus most evenly are the
+        /// denominators of the rotation number's convergents.
         case forced(system: String, fit: Double, harmonics: Int, radial: Int, axial: Int,
-                    radius: Double, duration: Double, every: Double)
+                    radius: Double, turns: Int)
     }
 
     /// Stroke widths. A fold width of zero leaves the folds out.
@@ -82,22 +85,18 @@ public struct SurfaceRequest: Sendable, Equatable {
                                                    flipX: false, yScale: nil)
 
     /// The request a drag builds while it lasts: a quarter of the lattice
-    /// around, a periodic function sampled at most 240 across, and a forced
-    /// trajectory sampled a quarter as often -- its quarter-million vertices
-    /// are what the first frame after an edit spends its time on. The full
-    /// request follows when the drag ends.
+    /// around, and a periodic function sampled at most 240 across. The full
+    /// request follows when the drag ends. A forced trajectory needs no
+    /// draft: it is a winding, a vertex per cell of whatever lattice.
     public func drafted() -> SurfaceRequest {
         var r = self
         r.lattice = min(lattice, 256)
         switch shape {
-        case .torus: break
+        case .torus, .forced: break
         case .sn(let m, let R, let rr, let grid):
             r.shape = .sn(modulus: m, major: R, minor: rr, grid: min(grid, 240))
         case .periodic(let e, let p, let R, let rr, let grid):
             r.shape = .periodic(expression: e, periods: p, major: R, minor: rr, grid: min(grid, 240))
-        case .forced(let s, let f, let h, let radial, let axial, let radius, let d, let every):
-            r.shape = .forced(system: s, fit: f, harmonics: h, radial: radial, axial: axial,
-                              radius: radius, duration: d, every: 4 * every)
         }
         return r
     }
@@ -111,7 +110,9 @@ public struct SurfaceRequest: Sendable, Equatable {
 public extension SurfaceRequest {
     /// One number of a request, to edit by name: what a control moves.
     enum Field: String, CaseIterable, Sendable {
-        case major, minor, modulus, grid, radius, duration, every, harmonics, fit, radial, axial
+        case major, minor, modulus, grid, radius, harmonics, fit, radial, axial
+        /// A forced trajectory's length, in turns of the forcing.
+        case trajectoryTurns
         /// The winding's, present when one is drawn: its slope, its length
         /// in turns, and how many strands.
         case slope, turns, strands
@@ -124,11 +125,15 @@ public extension SurfaceRequest {
         case .torus: [.major, .minor]
         case .sn: [.modulus, .major, .minor, .grid]
         case .periodic: [.major, .minor, .grid]
-        case .forced: [.radius, .radial, .axial, .duration, .every, .harmonics, .fit]
+        case .forced: [.radius, .radial, .axial, .trajectoryTurns, .harmonics, .fit]
         }
     }
 
     static let windingFields: [Field] = [.slope, .turns, .strands]
+
+    /// The fields that move ink alone -- placed from the lattice, nothing of
+    /// the surface remade -- and so want no draft while dragged.
+    static let inkFields: [Field] = windingFields + [.trajectoryTurns]
 
     /// A field's value, or nil where the shape has no such field; setting
     /// one the shape does not have changes nothing.
@@ -144,13 +149,12 @@ public extension SurfaceRequest {
                  (.periodic(_, _, _, let r, _), .minor): r
             case (.sn(let m, _, _, _), .modulus): m
             case (.sn(_, _, _, let g), .grid), (.periodic(_, _, _, _, let g), .grid): Double(g)
-            case (.forced(_, _, _, _, _, let x, _, _), .radius): x
-            case (.forced(_, _, _, _, _, _, let x, _), .duration): x
-            case (.forced(_, _, _, _, _, _, _, let x), .every): x
-            case (.forced(_, _, let x, _, _, _, _, _), .harmonics): Double(x)
-            case (.forced(_, let x, _, _, _, _, _, _), .fit): x
-            case (.forced(_, _, _, let x, _, _, _, _), .radial): Double(x)
-            case (.forced(_, _, _, _, let x, _, _, _), .axial): Double(x)
+            case (.forced(_, _, _, _, _, let x, _), .radius): x
+            case (.forced(_, _, _, _, _, _, let x), .trajectoryTurns): Double(x)
+            case (.forced(_, _, let x, _, _, _, _), .harmonics): Double(x)
+            case (.forced(_, let x, _, _, _, _, _), .fit): x
+            case (.forced(_, _, _, let x, _, _, _), .radial): Double(x)
+            case (.forced(_, _, _, _, let x, _, _), .axial): Double(x)
             default: nil
             }
         }
@@ -184,11 +188,10 @@ public extension SurfaceRequest {
                 default: return
                 }
                 shape = .periodic(expression: e, periods: p, major: R, minor: r, grid: g)
-            case .forced(let s, var f, var h, var ra, var ax, var rad, var d, var e):
+            case .forced(let s, var f, var h, var ra, var ax, var rad, var t):
                 switch field {
                 case .radius: rad = x
-                case .duration: d = x
-                case .every: e = x
+                case .trajectoryTurns: t = max(n, 1)
                 case .harmonics: h = n
                 case .fit: f = x
                 case .radial: ra = n
@@ -196,7 +199,7 @@ public extension SurfaceRequest {
                 default: return
                 }
                 shape = .forced(system: s, fit: f, harmonics: h, radial: ra, axial: ax,
-                                radius: rad, duration: d, every: e)
+                                radius: rad, turns: t)
             }
         }
     }
@@ -209,8 +212,8 @@ public extension SurfaceRequest {
 /// plate it replaces, and only what the edit touches is made again:
 ///
 ///   - **the ink alone** -- line counts, a winding's slope, stroke widths, a
-///     forced trajectory's length and sampling, sn's sampling grid -- keeps
-///     the surface, and with
+///     forced trajectory's turns, sn's sampling grid -- keeps the surface,
+///     and with
 ///     it `content`, so the window redraws the ink and keeps the surface's
 ///     textures;
 ///   - **the radii of a torus** re-place what is drawn on it: a periodic
@@ -223,8 +226,8 @@ public extension SurfaceRequest {
 ///
 /// Everything reused is exactly what building from nothing would produce, so
 /// a plate depends on its request alone -- the window's is the CLI's. The one
-/// exception is asked for by name: a `draft` may read a shorter trajectory
-/// off a longer run already integrated.
+/// `draft` names a request made while a control is dragged; nothing is
+/// approximated for it now, and it is kept for the drag to say so.
 public struct SurfacePlate: Sendable {
     public let request: SurfaceRequest
     public let surface: ParametricSurface
@@ -242,20 +245,18 @@ public struct SurfacePlate: Sendable {
     let forced: Forced?
 
     /// A fitted torus and what has been worked out from it, in state space:
-    /// its values on each lattice asked for, and each run of its trajectory.
+    /// its values on each lattice asked for.
     struct Forced: Sendable {
         let fit: FitKey
         let torus: InvariantTorus
         var values: [Int: [SIMD3<Double>]]
-        var runs: [RunKey: InvariantTorus.Run]
     }
     struct FitKey: Equatable, Sendable { let system: String; let fit: Double; let harmonics: Int }
-    struct RunKey: Hashable, Sendable { let duration: Double; let every: Double }
 
     /// Whether building `request` from this plate fits a torus again -- the
     /// one edit that takes a noticeable time.
     public func refits(for request: SurfaceRequest) -> Bool {
-        guard case .forced(let s, let f, let h, _, _, _, _, _) = request.shape else { return false }
+        guard case .forced(let s, let f, let h, _, _, _, _) = request.shape else { return false }
         return forced?.fit != FitKey(system: s, fit: f, harmonics: h)
     }
 
@@ -273,9 +274,9 @@ public struct SurfacePlate: Sendable {
         case .sn(let m, let R, let rr, _): g.shape = .sn(modulus: m, major: R, minor: rr, grid: 0)
         case .periodic(_, let periods, let R, let rr, _):
             g.shape = .periodic(expression: "", periods: periods, major: R, minor: rr, grid: 0)
-        case .forced(let s, let f, let h, let radial, let axial, let radius, _, _):
+        case .forced(let s, let f, let h, let radial, let axial, let radius, _):
             g.shape = .forced(system: s, fit: f, harmonics: h, radial: radial, axial: axial,
-                              radius: radius, duration: 0, every: 0)
+                              radius: radius, turns: 0)
         }
         return g
     }
@@ -292,7 +293,7 @@ public struct SurfacePlate: Sendable {
     }
 
     /// Build a plate. `previous`, when given, lends whatever of it the new
-    /// request has not changed. `draft` allows the one approximation above.
+    /// request has not changed. `draft` says the request is a drag's.
     public static func build(_ request: SurfaceRequest, reusing previous: SurfacePlate? = nil,
                              draft: Bool = false) throws -> SurfacePlate {
         let style = request.style
@@ -358,7 +359,7 @@ public struct SurfacePlate: Sendable {
             layers = plate.layers.filter { if case .contour = $0.spec.source { true } else { false } }
 
         case .forced(let name, let fit, let harmonics, let radial, let axial, let radius,
-                     let duration, let every):
+                     let turns):
             guard let system = ForcedSystem.catalog[name] else {
                 throw DynamicsError.unknownSystem(name, known: ForcedSystem.catalog.keys.sorted())
             }
@@ -369,7 +370,7 @@ public struct SurfacePlate: Sendable {
             } else {
                 state = Forced(fit: key, torus: try InvariantTorus.find(system, duration: fit,
                                                                         harmonics: harmonics),
-                               values: [:], runs: [:])
+                               values: [:])
             }
             let torus = state.torus
             let e = Revolution.fitting(torus, radial: radial, axial: axial, radius: radius)
@@ -390,42 +391,17 @@ public struct SurfacePlate: Sendable {
                 embedded = placed.embedded
             }
 
-            let runKey = RunKey(duration: duration, every: every)
-            let count = Int((duration / every).rounded()) + 1
-            let run: InvariantTorus.Run
-            var exact = true
-            if let r = state.runs[runKey] {
-                run = r
-            } else if draft, let longer = state.runs.first(where: {
-                $0.key.every == every && $0.value.states.count >= count })?.value {
-                run = longer.prefix(count)
-                exact = false
-            } else {
-                run = try torus.run(duration: duration, every: every)
-            }
-            // Kept: this run when it is exact, and the longest exact run at
-            // each spacing -- the one a shorter draft is read from, and the
-            // full-resolution one a drag's release returns to.
-            var runs: [RunKey: InvariantTorus.Run] = [:]
-            for (k, r) in state.runs where (runs.first { $0.key.every == k.every }?.value.states.count
-                                               ?? -1) < r.states.count {
-                runs = runs.filter { $0.key.every != k.every }
-                runs[k] = r
-            }
-            if exact { runs[runKey] = run }
-            state.runs = runs
             forced = state
 
-            // The trajectory on screen is this one when the revolution and
-            // the run are both unchanged -- and that run was exact.
+            // The trajectory is the winding at the rotation number, placed
+            // from the lattice: kept when the surface and its turns are.
             var sameInk = false
-            if kept != nil, case .forced(_, _, _, _, _, _, duration, every)? = previous?.request.shape,
-               previous?.forced?.runs[runKey] != nil {
+            if kept != nil, case .forced(_, _, _, _, _, _, turns)? = previous?.request.shape {
                 sameInk = true
             }
             let old = sameInk ? kept?.layers.first { $0.spec.name == "trajectory" } : nil
             layers = [scaffold("trajectory", .trajectory, style.trajectory,
-                               old?.paths ?? torus.trajectory(e, run))]
+                               old?.paths ?? torus.trajectory(on: surface, turns: turns))]
             if let l = lines(on: surface, resolution: 2 * request.lattice) { layers.append(l) }
         }
         if let w = winding(on: surface) { layers.append(w) }
@@ -475,9 +451,11 @@ public extension SurfacePreset {
                       formula: "x‴ = −αx′x″ − (ω₀² + 3βx²)x′ + A sin ωt",
                       notes: "A forced jerk oscillator's invariant torus, found in the spectrum "
                           + "of one long run and fitted, with the trajectory winding round it.",
+                      // 344 turns: a convergent denominator of the rotation
+                      // number, where the trajectory cuts the torus evenly.
                       request: SurfaceRequest(.forced(system: "jerk", fit: 8000, harmonics: 24,
                                                       radial: 0, axial: 1, radius: 2.5,
-                                                      duration: 2300, every: 0.01))),
+                                                      turns: 344))),
     ]
 
     static func named(_ name: String) -> SurfacePreset? { catalog.first { $0.name == name } }
