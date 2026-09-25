@@ -141,19 +141,22 @@ usage: kurven-cli <command> [options]
         per frame, plus a line pass that costs a fraction of it.
 
   preview <bundle> [--preset NAME] [--width N] [--height N] [--mode M]
-          [--orbit "AZ,EL"] [--zoom F] [--levels N] [--fov DEGREES]
-          [--margin M] [--slope K] [--ink-width W] -o out.png
+          [--orbit "AZ,EL"] [--center RE,IM,Z] [--zoom F] [--levels N] [--fov DEGREES]
+          [--margin M] [--slope K] [--ink-width W] [--refine] -o out.png
         Render one preview frame offscreen and write it as a PNG. Modes:
         plate (the default), shaded, depth. --orbit turns the preset camera by
-        that many degrees before drawing. --levels redraws every *described*
+        that many degrees before drawing; --center puts that world point at
+        the middle of the picture, and --zoom then zooms about it. --levels redraws every *described*
         layer at N evenly spaced levels over its own range, which only a
         bundle exported with --derived can do. --fov switches to a perspective
         camera, which previews but does not bake. --margin and --slope set the
         ink test: the hidden-line margin, and how many pixels' worth of the
         surface's depth change it also allows (0 is the bake's predicate).
         --ink-width is the widest layer's stroke in pixels (default 1.5); the
-        others are drawn in proportion to their plate widths. This is how the
-        preview is checked against the plate without a window in the way.
+        others are drawn in proportion to their plate widths. --refine places
+        the contours by the function, as the window does; bake, depth and
+        flicker take it too. This is how the preview is checked against the
+        plate without a window in the way.
 
   flicker <bundle> [preview's view options] [--frames N] [--step DEGREES]
           [--margin M] [--slope K] [--ink-width W] [--dump DIR] [--max-flip F]
@@ -204,7 +207,13 @@ func loadScene(_ args: Args) throws -> (KurvenBundle, CameraPreset, Scene) {
     guard let path = args.positional.dropFirst().first else {
         throw CLIError("which bundle?")
     }
-    let bundle = try KurvenBundle.read(at: URL(fileURLWithPath: path))
+    var bundle = try KurvenBundle.read(at: URL(fileURLWithPath: path))
+    // `--refine`: the contours placed by the function, as the window draws
+    // them (`Document.refineContours`). Off by default, so that a bake stays
+    // comparable with the Python plate it is checked against.
+    if args.switches.contains("refine"), let refiner = NativeLandscape.refiner(for: bundle) {
+        bundle = bundle.refined(by: refiner.refine)
+    }
     let preset: CameraPreset
     if let name = args.flags["preset"] {
         preset = try bundle.manifest.preset(name)
@@ -584,6 +593,12 @@ func previewView(_ args: Args, viewport: Viewport) throws
                 .project(fieldOfView: Angle(degrees: fov), bounds), in: viewport)
             scene.camera = navigator.camera
         }
+    }
+    if let spec = args.flags["center"] {
+        let parts = spec.split(separator: ",").compactMap { Double($0) }
+        guard parts.count == 3 else { throw CLIError("--center wants \"re,im,z\" in world units") }
+        let p = scene.camera.view(P3<WorldSpace>(parts[0], parts[1], parts[2]))
+        navigator.framing.center = P2(p.x, p.y)
     }
     if let zoom = try args.double("zoom") {
         navigator = navigator.applying(
