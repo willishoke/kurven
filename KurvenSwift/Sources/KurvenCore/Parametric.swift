@@ -346,6 +346,40 @@ public extension ParametricSurface {
     /// periods past a periodic axis's range wraps; on a bounded axis it is
     /// clamped to the end cell.
     func interpolate(_ c: P2<ParamSpace>) -> P3<WorldSpace> {
+        let (i, j, a, b) = cell(c)
+        let p00 = position(i, j).v, p10 = position(i + 1, j).v
+        let p01 = position(i, j + 1).v, p11 = position(i + 1, j + 1).v
+        return P3((1 - b) * ((1 - a) * p00 + a * p10) + b * ((1 - a) * p01 + a * p11))
+    }
+
+    /// The lattice's normals (`latticeNormals`) at a coordinate, by the same
+    /// bilinear patch as `interpolate`, unit length; zero where the patch's
+    /// corners cancel.
+    ///
+    /// Within a lattice cell of the exact normal, and so, like a lattice
+    /// fold, within a pixel of where the facing changes at any drawing
+    /// lattice: enough for the preview, which asks a normal of every ink
+    /// vertex and asks it again whenever the ink moves. The bake keeps the
+    /// map's.
+    func interpolateNormal(_ c: P2<ParamSpace>, normals: [SIMD3<Float>]) -> SIMD3<Float> {
+        precondition(normals.count == positions.count,
+                     "\(normals.count) normals for \(positions.count) lattice points")
+        let (i, j, a, b) = cell(c)
+        func at(_ i: Int, _ j: Int) -> SIMD3<Float> {
+            normals[v.sample(j) * u.samples + u.sample(i)]
+        }
+        let (fa, fb) = (Float(a), Float(b))
+        let n = (1 - fb) * ((1 - fa) * at(i, j) + fa * at(i + 1, j))
+            + fb * ((1 - fa) * at(i, j + 1) + fa * at(i + 1, j + 1))
+        let len = simd_length(n)
+        return len > 0 ? n / len : .zero
+    }
+
+    /// The lattice cell a coordinate falls in, and where in it: the lower
+    /// corner's unwrapped indices and the fractions along each axis. A
+    /// periodic axis wraps any number of periods away; a bounded one clamps
+    /// to its end cell.
+    private func cell(_ c: P2<ParamSpace>) -> (i: Int, j: Int, a: Double, b: Double) {
         func split(_ x: Double, _ axis: ParamAxis) -> (Int, Double) {
             let f = (x - axis.range.lo) / axis.spacing
             var k = Int(f.rounded(.down))
@@ -353,9 +387,7 @@ public extension ParametricSurface {
             return (k, f - Double(k))
         }
         let (i, a) = split(c.x, u), (j, b) = split(c.y, v)
-        let p00 = position(i, j).v, p10 = position(i + 1, j).v
-        let p01 = position(i, j + 1).v, p11 = position(i + 1, j + 1).v
-        return P3((1 - b) * ((1 - a) * p00 + a * p10) + b * ((1 - a) * p01 + a * p11))
+        return (i, j, a, b)
     }
 
     /// Windings: straight lines through the parameter rectangle, `slope`

@@ -748,6 +748,22 @@ func windingTests() {
         Check.expect(sag < 1e-3 && sag > 0, "and to the map between them, whole periods away",
                      String(format: "%.2e off", sag))
 
+        // Its normals interpolate to within a cell's turn of the map's:
+        // on this lattice the tube turns 360°/256 a cell, so under a degree.
+        let normals = torus.latticeNormals()
+        var tilt = 0.0
+        for j in stride(from: 0, to: 256, by: 5) {
+            for i in stride(from: 0, to: 512, by: 7) {
+                let c = P2<ParamSpace>(torus.u.coordinate(i) + 0.3 * torus.u.spacing - 2 * turn,
+                                       torus.v.coordinate(j) + 0.7 * torus.v.spacing + 5 * turn)
+                let n = SIMD3<Double>(torus.interpolateNormal(c, normals: normals))
+                let m = simd_normalize(torus.map(c).normal)
+                tilt = max(tilt, acos(min(1, simd_dot(n, m))) * 180 / .pi)
+            }
+        }
+        Check.expect(tilt < 1, "and its normals to within a degree of the map's, whole periods away",
+                     String(format: "worst tilt %.3f°", tilt))
+
         // A rational slope closes after its denominator's turns, and stops
         // there: one closed (p, q) curve, straight in coordinates.
         let closed = torus.winding(slope: 2.0 / 5, turns: 24)

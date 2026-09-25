@@ -23,21 +23,22 @@ import KurvenDynamics
 ///     sn       radii                     6 ms      contours re-placed, not resampled
 ///              modulus                 100 ms      resampled; 38 ms while dragging
 ///              samples                  70 ms      resampled; ink only
-///     forced   ring radius              78 ms      lattice re-placed from state space;
-///                                                  20 ms while dragging
-///              radius from, height from 26 ms      re-placed (this one not embedded, so
-///                                                  its ink needs no normals)
-///              duration, sample spacing 60–110 ms  integrated again; 18 ms shortening
-///                                                  while dragging, read off the run
-///              parameter lines          64 ms      the map at every line vertex
-///              winding slope            31 ms      the map at every winding vertex;
-///                                                  the trajectory's layout is kept
-///              harmonics, fit length   440 ms      fitted again
+///     forced   ring radius              39 ms      lattice re-placed from state space;
+///                                                  7 ms while dragging
+///              radius from, height from 32 ms      re-placed
+///              turns                 17–36 ms      the trajectory is a winding, placed
+///                                                  from the lattice; no draft needed
+///              parameter lines          38 ms      the map at every line vertex
+///              winding slope            15 ms      ink only; the trajectory's layout
+///                                                  is kept
+///              harmonics, fit length   390 ms      fitted again
 ///
 /// So the forced torus's fit is the one control that is not interactive, and
 /// it gets a stepper and a field rather than a slider. An ink edit lays out
-/// only the layer it touched: the preview keeps every other layer's vertices
-/// and normals from the frame before.
+/// only the layer it touched -- the preview keeps every other layer's
+/// vertices from the frame before -- and ink normals are read off the
+/// lattice, not asked of the map, so a new surface costs its lattice and
+/// little else.
 struct SurfaceSection: View {
     @Bindable var document: Document
 

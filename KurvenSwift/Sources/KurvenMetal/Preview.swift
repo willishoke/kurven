@@ -312,22 +312,28 @@ struct SurfaceInkGeometry {
     /// One layer's ink, laid out: a segment per vertex pair, each end with
     /// its outward normal and its coordinate. Empty for ink without
     /// coordinates, which `LineGeometry` draws.
+    ///
+    /// The normals are read off `lattice` -- the surface's lattice normals,
+    /// interpolated -- when given, and asked of the map otherwise. The
+    /// lattice's are within a pixel of the map's at a drawing lattice and
+    /// cost four reads where a forced torus's map costs a Fourier series of
+    /// 1,225 terms: the difference between a trajectory of three hundred
+    /// thousand vertices laid out in a hundred milliseconds and in ten.
     static func layout(_ paths: PolylineSet<WorldSpace>, surface: ParametricSurface,
-                       onFolds folds: Bool) -> [KVInkVertex] {
+                       onFolds folds: Bool, lattice: [SIMD3<Float>]? = nil) -> [KVInkVertex] {
         guard let coords = paths.coords else { return [] }
         // Facing is not asked of fold ink, nor of a surface with no
-        // outside; a zero normal says so to the shader. Otherwise the
-        // map's own normal, once per vertex and in parallel: a forced
-        // torus's map is a Fourier series of 1,225 terms, and its
-        // trajectory has a quarter of a million vertices.
+        // outside; a zero normal says so to the shader. Otherwise a normal
+        // once per vertex, in parallel.
         var normals = [SIMD3<Float>](repeating: .zero, count: coords.count)
         if !folds, let outward = surface.outward {
-            let chunk = 4096, n = coords.count
+            let chunk = 4096, n = coords.count, sign = Float(outward)
             normals.withUnsafeMutableBufferPointer { out in
                 nonisolated(unsafe) let base = out.baseAddress!
                 DispatchQueue.concurrentPerform(iterations: (n + chunk - 1) / chunk) { b in
                     for k in (b * chunk)..<min((b + 1) * chunk, n) {
-                        base[k] = SIMD3<Float>(surface.map(coords[k]).normal * outward)
+                        base[k] = lattice.map { surface.interpolateNormal(coords[k], normals: $0) * sign }
+                            ?? SIMD3<Float>(surface.map(coords[k]).normal * outward)
                     }
                 }
             }
