@@ -52,6 +52,8 @@ public struct ContourRefiner: Sendable {
     public let value: @Sendable (Complex) -> Complex
     public let magnitude: @Sendable (Complex) -> Double
     public let phase: @Sendable (Complex) -> Double
+    /// arg(-f): the phase turned a half turn, whose zero level is f's cut.
+    public let turnedPhase: @Sendable (Complex) -> Double
     public let grid: Domain
     public let width: Int
     public let height: Int
@@ -71,6 +73,10 @@ public struct ContourRefiner: Sendable {
         self.phase = { z in
             let v = compiled(z)
             return v.isFinite ? v.argument : 0
+        }
+        self.turnedPhase = { z in
+            let v = compiled(z)
+            return v.isFinite ? (-v).argument : 0
         }
         self.grid = domain; self.width = width; self.height = height
         self.tolerance = tolerance; self.maxDepth = maxDepth
@@ -103,6 +109,14 @@ public struct ContourRefiner: Sendable {
         f == .magnitude ? magnitude : phase
     }
 
+    /// The scalar field and level a contour is solved on. A phase level of
+    /// ±π is the cut, which `Surface.derive` contours as the zero level of
+    /// arg(-f) (`Contour.cut`), and is placed on that.
+    func field(_ f: ContourField, level: Double) -> (g: @Sendable (Complex) -> Double, level: Double) {
+        if f == .phase && Contour.isCut(level) { return (turnedPhase, 0) }
+        return (field(f), level)
+    }
+
     /// `Surface.derive`'s hook.
     public var refine: ContourRefine {
         { field, level, paths in self.refine(field: field, level: level, paths) }
@@ -110,7 +124,7 @@ public struct ContourRefiner: Sendable {
 
     public func refine(field: ContourField, level: Double,
                        _ paths: [[P2<DomainSpace>]]) -> [[P2<DomainSpace>]] {
-        let g = self.field(field)
+        let (g, level) = self.field(field, level: level)
         let cut = field == .phase
         var out = [[[P2<DomainSpace>]]](repeating: [], count: paths.count)
         out.withUnsafeMutableBufferPointer { buffer in
@@ -448,7 +462,7 @@ public struct ContourRefiner: Sendable {
     /// |f| is 1e-109) it runs to 1e106 and says only "far".
     public func positionErrors(_ path: [P2<DomainSpace>], field: ContourField,
                                level: Double) -> [Double] {
-        let g = self.field(field)
+        let (g, level) = self.field(field, level: level)
         return path.map { p in
             let r = residual(g(Complex(p.x, p.y)), level: level, cut: field == .phase)
             let (gx, gy) = gradient(g, at: p)
@@ -547,7 +561,13 @@ public extension NativeLandscape {
             case .phase: guard let p = bundle.surface.phase else { continue }; grid = p
             }
             var contoured: [(level: Double, paths: [[P2<DomainSpace>]])] = []
-            let gridTime = clock.measure { contoured = Contour.levels(of: grid, levels) }
+            let gridTime = clock.measure {
+                // As `Surface.derive` contours them under a refiner: the cut
+                // once, as the zero level of the turned phase.
+                let plain = field == .phase ? levels.filter { !Contour.isCut($0) } : levels
+                contoured = Contour.levels(of: grid, plain)
+                if plain.count < levels.count { contoured.append((.pi, Contour.cut(of: grid))) }
+            }
             var refined: [(level: Double, paths: [[P2<DomainSpace>]])] = []
             let refineTime = clock.measure {
                 refined = contoured.map { ($0.level, refiner.refine(field: field, level: $0.level, $0.paths)) }
@@ -567,8 +587,8 @@ public extension NativeLandscape {
             let before = errors(contoured), after = errors(refined)
             var wraps = 0
             if field == .phase {
-                let g = refiner.field(field)
                 for (level, paths) in contoured {
+                    let (g, level) = refiner.field(field, level: level)
                     for path in paths where path.count >= 2 {
                         for p in path where refiner.snap(p, level: level, g: g, cut: true) == nil {
                             wraps += 1

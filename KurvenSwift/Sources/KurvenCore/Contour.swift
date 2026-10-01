@@ -188,6 +188,24 @@ public enum Contour {
         return walk(from: from, order: order, points: points, hasPredecessor: hasPredecessor)
     }
 
+    /// Whether a phase level is the cut: ±π, where arg f jumps.
+    public static func isCut(_ level: Double) -> Bool {
+        abs(abs(level) - .pi) < 1e-9
+    }
+
+    /// The branch cut of a phase grid, as iso-lines: where arg f passes from
+    /// π to -π, which no level of the grid itself reaches, since a sample is
+    /// never over π. It is the zero level of arg(-f) -- the same grid turned
+    /// a half turn -- whose own cut lies where arg f is zero. Marching
+    /// squares emits a bundle of spurious crossings along that wrap, as along
+    /// every wrap; a refiner drops them, which is why this is contoured only
+    /// when one is in play.
+    public static func cut(of phase: Grid2D<Float>) -> [[P2<DomainSpace>]] {
+        let turned = Grid2D(width: phase.width, height: phase.height, domain: phase.domain,
+                            values: phase.values.map { $0 > 0 ? $0 - .pi : $0 + .pi })
+        return lines(of: turned, level: 0, index: Index(turned))
+    }
+
     /// Iso-lines at several levels, in level order -- the shape
     /// `contours.contour_levels` returns.
     ///

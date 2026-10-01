@@ -358,6 +358,64 @@ func refinementTests() {
                         .allSatisfy { $0.z >= 0 },
                      "the zero's own vertex lifts to the floor and nothing below it")
     }
+
+    Check.suite("refine: the branch cut is drawn once, as one line") {
+        // 1/Γ is real and negative on (-1, 0), (-3, -2) and (-5, -4) along the
+        // window's edge, and the cut curves leave the real axis from there
+        // into the upper half-plane. The grid has no contour at ±π; the wrap
+        // bundles the plain contours carry along the cut are spurious; the
+        // refined plate draws the cut itself, once.
+        let preset = Catalog.native.preset("rgamma")!
+        let request = LandscapeRequest(preset: preset, resolution: 240)
+        let bundle = try NativeLandscape.build(request)
+        let refiner = NativeLandscape.refiner(for: bundle)!
+        let cell = refiner.cell
+        func cutPaths(_ b: KurvenBundle) -> [[P3<WorldSpace>]] {
+            var out: [[P3<WorldSpace>]] = []
+            for layer in b.layers where layer.spec.role == .phase {
+                for i in 0..<layer.paths.count {
+                    let path = Array(layer.paths[path: i])
+                    // Every vertex on Im f = 0 with Re f < 0, but for the two
+                    // ends: a zero, where the phase is anyone's, or a rim
+                    // vertex, placed by interpolation within a cell's bend.
+                    let onCut = path.filter { v in
+                        let f = refiner.value(Complex(v.x, v.y))
+                        return f.re < 0 && abs(f.im) <= 1e-6 * f.magnitude
+                    }.count
+                    if path.count >= 3 && onCut >= path.count - 2 { out.append(path) }
+                }
+            }
+            return out
+        }
+        func apart(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>) -> Double {
+            ((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)).squareRoot()
+        }
+        func length(_ p: [P3<WorldSpace>]) -> Double {
+            zip(p, p.dropFirst()).reduce(0) { $0 + apart($1.0, $1.1) }
+        }
+        let cuts = cutPaths(bundle).filter { length($0) > 10 * cell }
+        Check.expect(!cuts.isEmpty, "the refined plate has the cut as ink",
+                     "\(cuts.count) paths, lengths \(cuts.map { String(format: "%.2f", length($0)) })")
+        // Once: no two cut paths run together.
+        var doubled = 0
+        for (i, a) in cuts.enumerated() {
+            for b in cuts[(i + 1)...] {
+                let near = a.filter { v in b.contains { apart($0, v) < 0.1 * cell } }.count
+                if near > a.count / 2 { doubled += 1 }
+            }
+        }
+        Check.expect(doubled == 0, "and no two of them run together", "\(doubled) pairs")
+        let zeros: [Double] = [0, -1, -2, -3, -4, -5]
+        let fromZero = cuts.filter { p in
+            [p[0], p[p.count - 1]].contains { e in
+                zeros.contains { abs(e.x - $0) <= 1e-9 * cell && abs(e.y) <= 1e-9 * cell }
+            }
+        }
+        Check.expect(!fromZero.isEmpty, "a cut leaves a zero, as the phase does", "\(fromZero.count) of \(cuts.count)")
+        let plain = try NativeLandscape.build(request, refine: false)
+        Check.expect(cutPaths(plain).filter { length($0) > 10 * cell }.isEmpty,
+                     "without a refiner the grid draws no cut, only its wrap bundles")
+    }
 }
 
 // MARK: - the numbers in an expression
