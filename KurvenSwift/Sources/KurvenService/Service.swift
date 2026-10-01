@@ -32,11 +32,16 @@ public final class Service: @unchecked Sendable {
 
         /// Find a repository near `url` and the interpreter that goes with it.
         ///
-        /// Walks up from a bundle's own location looking for `kurven/serve.py`,
-        /// then prefers the virtualenv beside it. A bundle is usually written
-        /// next to the tree that made it, and when it is not, the environment
-        /// says so: `KURVEN_REPO` and `KURVEN_PYTHON` override, in that order of
-        /// desperation.
+        /// Walks up from a bundle's own location looking for `kurven/serve.py`.
+        /// A bundle is usually written next to the tree that made it, and when
+        /// it is not, the environment says so: `KURVEN_REPO` and
+        /// `KURVEN_PYTHON` override, in that order of desperation.
+        ///
+        /// The interpreter is, in order: `KURVEN_PYTHON`; the virtualenv beside
+        /// the checkout, if someone has made one; `uv`, which makes that
+        /// virtualenv from the lockfile on first use and so needs no setup step
+        /// in a fresh clone or a git worktree; and the system Python, which has
+        /// no numpy and exists so that the failure names the interpreter.
         public static func autodetect(near url: URL?) -> Command? {
             let environment = ProcessInfo.processInfo.environment
             var roots: [URL] = []
@@ -52,14 +57,40 @@ public final class Service: @unchecked Sendable {
             for root in roots {
                 let serve = root.appendingPathComponent("kurven/serve.py")
                 guard FileManager.default.fileExists(atPath: serve.path) else { continue }
-                let python = environment["KURVEN_PYTHON"].map { URL(fileURLWithPath: $0) }
-                    ?? [root.appendingPathComponent(".venv/bin/python"),
-                        URL(fileURLWithPath: "/usr/bin/python3")]
-                        .first { FileManager.default.isExecutableFile(atPath: $0.path) }
-                guard let python else { continue }
-                return Command(executable: python,
-                               arguments: ["-m", "kurven.serve"],
-                               directory: root)
+                let serveModule = ["-m", "kurven.serve"]
+                if let python = environment["KURVEN_PYTHON"] {
+                    return Command(executable: URL(fileURLWithPath: python),
+                                   arguments: serveModule, directory: root)
+                }
+                let venv = root.appendingPathComponent(".venv/bin/python")
+                if FileManager.default.isExecutableFile(atPath: venv.path) {
+                    return Command(executable: venv, arguments: serveModule, directory: root)
+                }
+                if let uv = Self.uv(environment) {
+                    return Command(executable: uv,
+                                   arguments: ["run", "--project", root.path, "--frozen",
+                                               "python"] + serveModule,
+                                   directory: root)
+                }
+                return Command(executable: URL(fileURLWithPath: "/usr/bin/python3"),
+                               arguments: serveModule, directory: root)
+            }
+            return nil
+        }
+
+        /// Where `uv` is, if it is. `PATH` first; then the places its
+        /// installers put it, because an app launched from the Finder has a
+        /// `PATH` with none of them in it.
+        static func uv(_ environment: [String: String]) -> URL? {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let onPath = (environment["PATH"] ?? "").split(separator: ":").map(String.init)
+            let usual = ["/opt/homebrew/bin", "/usr/local/bin", "\(home)/.local/bin",
+                         "\(home)/.cargo/bin"]
+            for dir in onPath + usual {
+                let candidate = URL(fileURLWithPath: dir).appendingPathComponent("uv")
+                if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                    return candidate
+                }
             }
             return nil
         }

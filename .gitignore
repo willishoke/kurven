@@ -18,6 +18,7 @@ venv/
 
 *.kurven/
 !tests/fixtures/contract/*.kurven/
+!tests/fixtures/expr/*.kurven/
 
 KurvenSwift/.build/
 *.xcodeproj/

@@ -277,6 +277,12 @@ uv sync            # CPU only
 uv sync --extra gpu  # + moderngl for GPU rasterization
 ```
 
+Neither is a prerequisite for the checks or the app: `scripts/check.sh` and
+the app's service both find Python through uv when there is no virtualenv
+beside the checkout, and uv makes one from the lockfile on first use. A fresh
+clone or a git worktree needs no setup step. `KURVEN_PYTHON` names an
+interpreter explicitly when that is wanted.
+
 ## Running the examples
 
 ```bash
@@ -457,7 +463,24 @@ scripts/check.sh --quick    # skip the end-to-end comparisons
 
 
 Correctness is anchored on the Python pipeline as oracle. `tests/make_fixtures.py`
-writes `tests/fixtures/`; both lanes read the same files.
+writes `tests/fixtures/`; both lanes read the same files, and the files are in
+git, the three landscape bundles included, so the Swift lane needs nothing but
+a checkout.
+
+The same script is what CI runs (`.github/workflows/check.yml`): the quick
+form on every push and pull request, the full form nightly and on request,
+on an Apple Silicon runner so the Swift lane draws with Metal. Before either,
+CI regenerates the fixtures and compares them with what is committed, with
+the git SHA each manifest records as the one line allowed to differ: a
+generator that no longer reproduces the oracle is drift a green run would
+otherwise hide.
+
+A check that cannot run on a machine is *skipped* and listed in the summary
+rather than failed -- the service round trip with no checkout to start it
+from, a landscape bundle missing from an old fixture tree -- with one
+exception. A suite skipped for want of a Metal device fails the run, because
+the GPU suites are the ones that draw; `KURVEN_TEST_SKIP_GPU=1` says a
+machine is known to have none.
 
 Or a piece at a time:
 

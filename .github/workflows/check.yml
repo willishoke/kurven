@@ -1,0 +1,74 @@
+# Both lanes, on every change; the whole thing, every night.
+#
+# `scripts/check.sh` is the one definition of "the tests pass", here as on a
+# laptop: this file only decides when to run it and with which flag. The quick
+# form builds the package, runs the Swift lane, the Python lane, the expression
+# checks and the cross-language schema round trip. The full form adds the
+# end-to-end comparisons of the Swift bake and preview against the Python
+# plates, which sample and contour the real grids and take minutes, so they run
+# on a schedule and on request rather than on every push.
+#
+# Before either, the fixture generator is run and its output compared with what
+# is committed. The fixtures are the oracle both lanes read, and a generator
+# that no longer reproduces them is drift that a green run would otherwise
+# hide. The git SHA each manifest records is the one line allowed to differ.
+#
+# The runner is Apple Silicon: the Swift lane draws with Metal, and a run that
+# finds no device fails rather than skips (see kurven-test's Harness.swift),
+# which is the way to learn that an image has lost its GPU.
+
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Run the end-to-end comparisons too"
+        type: boolean
+        default: true
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      # v7 is the newest floating major tag the action publishes; the v8+
+      # releases exist only as full versions.
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Toolchains
+        run: |
+          swift --version
+          uv --version
+          uv run --frozen --extra gpu python --version
+
+      - name: The committed fixtures are what the generator writes
+        run: |
+          uv run --frozen --extra gpu python tests/make_fixtures.py
+          git add --intent-to-add tests/fixtures
+          git diff --exit-code --stat -I '"gitSha"' -- tests/fixtures
+
+      - name: Quick check
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        run: scripts/check.sh --quick
+
+      - name: Full check
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full)
+        run: scripts/check.sh
+
+      - name: Quick check, on request
+        if: github.event_name == 'workflow_dispatch' && !inputs.full
+        run: scripts/check.sh --quick

@@ -348,9 +348,7 @@ func surfaceGPUTests() {
     // -- a sample exactly on an edge, which the CPU claims for both triangles
     // and Metal for one.
     Check.suite("metal: the GPU coordinate pass is the CPU rasterizer's") {
-        guard let device = MTLCreateSystemDefaultDevice() else {
-            Check.expect(false, "a Metal device exists"); return
-        }
+        guard let device = Check.gpu() else { return }
         let renderer = try MetalRenderer(device: device)
         for (R, r) in [(2.0, 1.0), (1.25, 1.0)] {
             let surface = ParametricSurface.torus(major: R, minor: r, samples: (384, 192))
