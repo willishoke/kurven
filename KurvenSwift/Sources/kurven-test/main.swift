@@ -432,9 +432,7 @@ func shaderTests() {
     // The check the absent `metal` compiler would otherwise provide: a shader
     // error fails the test run rather than the first launch.
     Check.suite("metal: the shader source compiles on this device") {
-        guard let device = MTLCreateSystemDefaultDevice() else {
-            Check.expect(false, "a Metal device exists"); return
-        }
+        guard let device = Check.gpu() else { return }
         let library = try MetalRenderer.makeLibrary(device: device)
         for name in ["kv_height_vertex", "kv_mesh_vertex", "kv_depth_fragment",
                      "kv_param_vertex", "kv_param_depth_fragment", "kv_coord_fragment"] {
@@ -453,9 +451,7 @@ func shaderTests() {
     // mode is a corrupted uniform and a segfault, not a compile error, which is
     // exactly the kind that deserves a test.
     Check.suite("metal: the shader sees the uniform struct the CPU sent") {
-        guard let device = MTLCreateSystemDefaultDevice() else {
-            Check.expect(false, "a Metal device exists"); return
-        }
+        guard let device = Check.gpu() else { return }
         // Distinct values everywhere, so a field that lands on its neighbour's
         // bytes is visible rather than plausible.
         var v = matrix_identity_float4x4
@@ -1241,7 +1237,8 @@ func serviceTests() {
     Check.suite("service: round trip through the protocol") {
         let repo = Fixtures.dir.deletingLastPathComponent().deletingLastPathComponent()
         guard let command = Service.Command.autodetect(near: repo) else {
-            print("  --    no kurven/serve.py near \(repo.path); skipped")
+            Check.skip("service: round trip through the protocol",
+                       "no kurven/serve.py near \(repo.path)")
             return
         }
         let service = try Service(command: command)
