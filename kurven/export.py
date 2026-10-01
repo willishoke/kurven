@@ -63,8 +63,8 @@ EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 #:
 #: `function` is the general one: not a published plate but whatever landscape
 #: its arguments describe (`kurven.landscape`). It is what the frontend's
-#: function picker asks for, and what holds the derived hatching to the
-#: analytic hatching in `tests/compare_bake.py`.
+#: service builds when asked for a landscape, the comparison path beside the
+#: native one.
 #:
 #: gamma exports the uniform-sampling form of itself: a bundle carries one
 #: grid, and the published plate probes for high-gradient zones and re-samples
