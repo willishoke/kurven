@@ -312,6 +312,52 @@ func refinementTests() {
                      "\(a.count) vs \(b.count) paths")
         _ = bundle
     }
+
+    Check.suite("refine: phase contours end on the zeros of f") {
+        // 1/Γ vanishes at the non-positive integers, which the rgamma window
+        // holds from 0 down to -5 along its real edge. Every phase meets at
+        // each, so each is where a fan of phase contours should end -- and
+        // the grid's end at the last cell edge before it, up to a cell short.
+        let preset = Catalog.native.preset("rgamma")!
+        let bundle = try NativeLandscape.build(LandscapeRequest(preset: preset, resolution: 240))
+        let refiner = NativeLandscape.refiner(for: bundle)!
+        let cell = refiner.cell
+        let zeros: [Double] = [0, -1, -2, -3, -4, -5]
+        var onZero = [Int](repeating: 0, count: zeros.count)
+        var shortOfZero = [Int](repeating: 0, count: zeros.count)
+        var worst = 0.0
+        for layer in bundle.layers where layer.spec.role == .phase {
+            for i in 0..<layer.paths.count {
+                let path = layer.paths[path: i]
+                guard let first = path.first, let last = path.last else { continue }
+                for (k, z0) in zeros.enumerated() {
+                    let ends = [first, last].map {
+                        (($0.x - z0) * ($0.x - z0) + $0.y * $0.y).squareRoot()
+                    }
+                    if ends.contains(where: { $0 <= 1e-9 * cell }) {
+                        onZero[k] += 1
+                    } else if let near = ends.min(), near <= 2 * cell {
+                        // A path that comes this close and ends on neither end
+                        // is the grid's, stopped short.
+                        shortOfZero[k] += 1
+                        worst = max(worst, near / cell)
+                    }
+                }
+            }
+        }
+        // Twelve phase directions, 30 degrees apart; the window is the upper
+        // half-plane, so five rays leave each zero into it, and the two along
+        // the real axis lie on the window's edge.
+        Check.expect(onZero.allSatisfy { $0 >= 5 },
+                     "a fan of phase contours ends on each zero, to rounding",
+                     "runs ending on 0, -1, ..., -5: \(onZero)")
+        Check.expect(shortOfZero.allSatisfy { $0 == 0 },
+                     "and none stops within two cells of a zero without reaching it",
+                     String(format: "short: \(shortOfZero), the worst by %.2f cells", worst))
+        Check.expect(bundle.layers.first { $0.spec.name == "ang_major" }!.paths.vertices
+                        .allSatisfy { $0.z >= 0 },
+                     "the zero's own vertex lifts to the floor and nothing below it")
+    }
 }
 
 // MARK: - the numbers in an expression
