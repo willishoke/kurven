@@ -43,7 +43,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v10
+      # v7 is the newest floating major tag the action publishes; the v8+
+      # releases exist only as full versions.
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
