@@ -211,3 +211,100 @@ func foldLineTests() {
                      "\(drawn.count) strokes")
     }
 }
+
+// MARK: - ink in a cut face is judged by the wall it lies in
+//
+// The plate camera sees the right wall of rgamma nearly edge-on, and the
+// depth buffer erased most of its hatch, leaving spots. Judged by the wall
+// instead: every stroke on a wall that faces the eye is kept whole, every
+// stroke on a wall that faces away is dropped whole, a corner post stays
+// while either of its walls shows, and the bake draws exactly that.
+
+func wallInkTests() {
+    Check.suite("walls: the hatch and outline of a cut face are judged by the wall") {
+        let preset = Catalog.native.preset("rgamma")!
+        let bundle = try NativeLandscape.build(LandscapeRequest(preset: preset, resolution: 240))
+        let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
+        let h = scene.heightfield!
+        let sight = scene.camera.view.sightLine
+        let d = h.surface.domain
+        let box = (lo: SIMD2(min(d.real.lo, d.real.hi), min(d.imag.lo, d.imag.hi)),
+                   hi: SIMD2(max(d.real.lo, d.real.hi), max(d.imag.lo, d.imag.hi)))
+        // Which walls face the eye, by their outward normals: left, right,
+        // front, back.
+        let faces = [SIMD3<Double>(-1, 0, 0), SIMD3(1, 0, 0), SIMD3(0, -1, 0), SIMD3(0, 1, 0)]
+            .map { -simd_dot($0, sight) > 0 }
+        Check.expect(faces.contains(true) && faces.contains(false),
+                     "the plate camera sees some walls and not others",
+                     "left \(faces[0]) right \(faces[1]) front \(faces[2]) back \(faces[3])")
+        func wallsOf(_ p: P3<WorldSpace>) -> [Int] {
+            let slack = 1e-6
+            var on: [Int] = []
+            if abs(p.x - box.lo.x) <= slack { on.append(0) }
+            if abs(p.x - box.hi.x) <= slack { on.append(1) }
+            if abs(p.y - box.lo.y) <= slack { on.append(2) }
+            if abs(p.y - box.hi.y) <= slack { on.append(3) }
+            return on
+        }
+        func length(_ p: [P3<WorldSpace>]) -> Double {
+            zip(p, p.dropFirst()).reduce(0) { $0 + simd_length($1.1.v - $1.0.v) }
+        }
+        func length(_ s: PolylineSet<WorldSpace>) -> Double {
+            (0..<s.count).reduce(0.0) { $0 + length(Array(s[path: $1])) }
+        }
+        // The hatch lies in the face: whole strokes on facing walls, nothing
+        // on the others.
+        let hatch = scene.layers.first { $0.spec.name == "wall_hatch" }!
+        let keptHatch = h.visibleWallInk(hatch.paths, view: scene.camera.view, margin: scene.margin)
+        var wanted = 0.0
+        for i in 0..<hatch.paths.count {
+            let p = Array(hatch.paths[path: i])
+            if p.allSatisfy({ v in wallsOf(v).contains { faces[$0] } }) { wanted += length(p) }
+        }
+        Check.expect(abs(length(keptHatch) - wanted) < 1e-9 * max(wanted, 1),
+                     "wall_hatch: what is kept is every stroke on a wall that faces the eye",
+                     String(format: "%.3f of %.3f units, %d of %d paths", length(keptHatch),
+                            length(hatch.paths), keptHatch.count, hatch.paths.count))
+        Check.expect(keptHatch.vertices.allSatisfy { v in wallsOf(v).contains { faces[$0] } },
+                     "wall_hatch: and nothing on a wall that faces away")
+
+        // The outline: a crest is the surface's edge and shows over any wall
+        // where the surface does; a foot shows only on a facing wall.
+        let outline = scene.layers.first { $0.spec.name == "wall_outline" }!
+        let keptOutline = h.visibleWallInk(outline.paths, view: scene.camera.view, margin: scene.margin)
+        func isCrest(_ p: [P3<WorldSpace>]) -> Bool {
+            p.allSatisfy { abs($0.z - h.surface.height(at: P2<DomainSpace>($0.x, $0.y))) < 1e-9 * max(1, abs($0.z)) }
+                && !p.allSatisfy { $0.z == 0 }
+        }
+        var crestWanted = [Double](repeating: 0, count: 4), crestGot = [Double](repeating: 0, count: 4)
+        var footHidden = true
+        for i in 0..<outline.paths.count {
+            let p = Array(outline.paths[path: i])
+            guard let wall = wallsOf(p[0]).first(where: { w in p.allSatisfy { wallsOf($0).contains(w) } }) else { continue }
+            if isCrest(p) { crestWanted[wall] += length(p) }
+        }
+        for i in 0..<keptOutline.count {
+            let p = Array(keptOutline[path: i])
+            guard let wall = wallsOf(p[0]).first(where: { w in p.allSatisfy { wallsOf($0).contains(w) } }) else { continue }
+            if isCrest(p) {
+                crestGot[wall] += length(p)
+            } else if p.allSatisfy({ $0.z == 0 }), !faces[wall] {
+                footHidden = false
+            }
+        }
+        Check.expect(zip(crestGot, crestWanted).allSatisfy { $0 >= 0.95 * $1 },
+                     "wall_outline: every wall's crest is kept, the far edge included",
+                     "kept " + zip(crestGot, crestWanted).map { String(format: "%.1f/%.1f", $0, $1) }.joined(separator: " "))
+        Check.expect(footHidden, "wall_outline: and no foot of a wall that faces away")
+        // The bake draws the judged ink as it is: the hatch on the edge-on
+        // right wall is whole, not spotty.
+        let baked = try MetalRenderer().bake(scene, options: BakeOptions(resolution: 400))
+        let hatchIndex = scene.layers.firstIndex { $0.spec.name == "wall_hatch" }!
+        let drawn = baked.strokes.layers[hatchIndex].paths
+        let judged = h.visibleWallInk(scene.layers[hatchIndex].paths, view: scene.camera.view,
+                                      margin: scene.margin)
+        Check.expect(drawn.count == judged.count && drawn.vertices.count == judged.vertices.count,
+                     "the bake draws the wall hatch exactly as judged, stroke for stroke",
+                     "\(drawn.count) strokes drawn, \(judged.count) judged")
+    }
+}
