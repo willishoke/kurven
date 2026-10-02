@@ -89,7 +89,18 @@ public struct Surface: Sendable {
     /// -- lies a hair outside every tile image, and an exact test matches
     /// nothing at all.
     func height(at p: P2<DomainSpace>, tiles: [Affine2]) -> Double {
-        guard tiles.count > 1 else { return height(at: p) }
+        height(at: inTile(p, tiles: tiles))
+    }
+
+    /// |f| at a world point of a tiled landscape, uncapped: `height(at:tiles:)`
+    /// before the cap.
+    func magnitude(at p: P2<DomainSpace>, tiles: [Affine2]) -> Double {
+        magnitude(at: inTile(p, tiles: tiles))
+    }
+
+    /// The point of the fundamental tile a world point is the image of.
+    func inTile(_ p: P2<DomainSpace>, tiles: [Affine2]) -> P2<DomainSpace> {
+        guard tiles.count > 1 else { return p }
         let d = domain
         let (xlo, xhi) = (min(d.real.lo, d.real.hi), max(d.real.lo, d.real.hi))
         let (ylo, yhi) = (min(d.imag.lo, d.imag.hi), max(d.imag.lo, d.imag.hi))
@@ -110,7 +121,7 @@ public struct Surface: Sendable {
                 if distance == 0 { break }
             }
         }
-        return height(at: best ?? p)
+        return best ?? p
     }
 
     /// Lift a domain point onto the (capped) surface.

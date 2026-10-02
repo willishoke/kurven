@@ -190,10 +190,35 @@ extension Surface {
             var crest: [P3<WorldSpace>] = []
             var foot: [P3<WorldSpace>] = []
             crest.reserveCapacity(n); foot.reserveCapacity(n)
+            // The crest gains a vertex wherever it reaches the cap between
+            // two samples, solved on the uncapped heights linearly as the rim
+            // is contoured, so it meets the rim where the rim ends rather
+            // than a sample later. `kurven.hatch._cap_crossing`, operation
+            // for operation.
+            var previous: (p: P2<DomainSpace>, excess: Double)?
             for k in 0..<n {
                 let p = Surface.point(on: edge, at: Double(k) / Double(n - 1))
-                crest.append(P3(p.x, p.y, height(at: p, tiles: tiles)))
+                let u = magnitude(at: p, tiles: tiles)
+                let cap = caps.height(atX: p.x)
+                let excess = u - cap
+                if let a = previous, excess.isFinite, a.excess.isFinite {
+                    let here: (p: P2<DomainSpace>, excess: Double) = (p, excess)
+                    var under: (p: P2<DomainSpace>, excess: Double)?
+                    var over: (p: P2<DomainSpace>, excess: Double)?
+                    if a.excess <= 0 && excess > 0 { under = a; over = here }
+                    if excess <= 0 && a.excess > 0 { under = here; over = a }
+                    if let under, let over {
+                        let t = under.excess / (under.excess - over.excess)
+                        if t > 0, t < 1 {
+                            let x = under.p.x + (over.p.x - under.p.x) * t
+                            let y = under.p.y + (over.p.y - under.p.y) * t
+                            crest.append(P3(x, y, caps.height(atX: x)))
+                        }
+                    }
+                }
+                crest.append(P3(p.x, p.y, min(u, cap)))
                 foot.append(P3(p.x, p.y, base))
+                previous = (p, excess)
             }
             out.append(crest)
             out.append(foot)

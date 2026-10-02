@@ -296,6 +296,24 @@ func wallInkTests() {
                      "wall_outline: every wall's crest is kept, the far edge included",
                      "kept " + zip(crestGot, crestWanted).map { String(format: "%.1f/%.1f", $0, $1) }.joined(separator: " "))
         Check.expect(footHidden, "wall_outline: and no foot of a wall that faces away")
+
+        // Where the rim of a plateau ends at the front edge -- the notch of a
+        // pit -- the crest has a vertex on it, so the two meet.
+        let rim = scene.layers.first { $0.spec.name == "cap_outline" }!.paths
+        var rimEnds: [P3<WorldSpace>] = []
+        for i in 0..<rim.count {
+            let p = rim[path: i]
+            for end in [p.first!, p.last!] where abs(end.y - box.lo.y) <= 1e-9 { rimEnds.append(end) }
+        }
+        let crestVertices = outline.paths.vertices.filter { abs($0.y - box.lo.y) <= 1e-9 }
+        var missed = 0.0
+        for end in rimEnds {
+            let nearest = crestVertices.map { simd_length($0.v - end.v) }.min() ?? .infinity
+            missed = max(missed, nearest)
+        }
+        Check.expect(rimEnds.count >= 2 && missed < 1e-9,
+                     "the crest meets the rim where the rim ends, at every notch",
+                     String(format: "%d rim ends on the front edge, worst gap %.1e", rimEnds.count, missed))
         // The bake draws the judged ink as it is: the hatch on the edge-on
         // right wall is whole, not spotty.
         let baked = try MetalRenderer().bake(scene, options: BakeOptions(resolution: 400))
