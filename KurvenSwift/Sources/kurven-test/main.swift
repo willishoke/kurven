@@ -1202,7 +1202,8 @@ func previewTests() {
             let bgra = try PNG.bgra(target)
             return stride(from: 0, to: bgra.count, by: 4).reduce(0) { count, k in
                 let luma = 299 * Int(bgra[k + 2]) + 587 * Int(bgra[k + 1]) + 114 * Int(bgra[k])
-                // Any visible mark, as `compare_preview.py` counts ink.
+                // Any visible mark counts as ink: a stroke narrower than a
+                // pixel is drawn lighter, not narrower.
                 return count + (luma < 224 * 1000 ? 1 : 0)
             }
         }
@@ -1400,6 +1401,7 @@ capTests()
 shaderTests()
 previewTests()
 bakeTests()
+depthTests()
 serviceTests()
 expressionTests()
 literalTests()

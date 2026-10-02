@@ -45,7 +45,7 @@ public enum BakeError: Error, CustomStringConvertible {
         case .perspective:
             """
             bake: this camera is perspective, and only orthographic cameras bake.
-            A bake clips per vertex against a depth buffer it indexes by an             affine map from view coordinates to pixels; under perspective that             map depends on depth. It could be fixed by projecting first -- but             there is no perspective Projection on the Python side, so the result             would be the one artifact with no oracle to check it against.             Perspective is for navigating; the plates are orthographic.
+            A bake clips per vertex against a depth buffer it indexes by an             affine map from view coordinates to pixels; under perspective that             map depends on depth. It could be fixed by projecting first, and             nothing has asked for it: perspective is for navigating, and the             plates are orthographic.
             """
         }
     }

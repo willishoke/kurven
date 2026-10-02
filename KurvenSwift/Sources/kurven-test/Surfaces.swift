@@ -641,7 +641,8 @@ func surfacePreviewTests() {
         let target = try renderer.makePreviewTarget(viewport)
         try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
                                    options: PreviewOptions(slopeScale: 0), into: target)
-        // Any visible mark, as `compare_preview.py` counts ink.
+        // Any visible mark counts as ink: a stroke narrower than a pixel is
+        // drawn lighter, not narrower.
         func inkMask(_ bgra: [UInt8]) -> [Bool] {
             (0..<(bgra.count / 4)).map { k -> Bool in
                 let r = 299 * Int(bgra[4 * k + 2]), g = 587 * Int(bgra[4 * k + 1])

@@ -191,22 +191,35 @@ public extension Surface {
     /// half a world unit short. Only with a refiner: without one the ink is
     /// exactly what Python derives from the same grids, which ends at the
     /// last sample, and the fixtures hold it to that.
+    ///
+    /// A phase level of ±π is the cut, where arg f jumps, and the grid has no
+    /// contour at it. With a refiner it is drawn once, as one line of ink the
+    /// way the Jahnke-Emde plates draw it (`Contour.cut`), under the level π
+    /// so the refiner knows to place it on arg(-f) = 0.
     func derive(_ source: LayerSource, policy: HeightPolicy, region: Region,
                 tiles: [Affine2], refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
         guard case .contour(let field, let levels, let keep, let tiled) = source else {
             return .empty
         }
         let grid: Grid2D<Float>
+        var contoured: [(level: Double, paths: [[P2<DomainSpace>]])]
         switch field {
-        case .magnitude: grid = height
+        case .magnitude:
+            grid = height
+            contoured = Contour.levels(of: grid, levels)
         case .phase:
             guard let phase else { return .empty }
             grid = phase
+            let plain = levels.filter { !Contour.isCut($0) }
+            contoured = Contour.levels(of: grid, plain)
+            if refine != nil, plain.count < levels.count {
+                contoured.append((.pi, Contour.cut(of: grid)))
+            }
         }
         let carry = refine != nil && keep.keepsBelowCap
 
         var paths: [[P3<WorldSpace>]] = []
-        for (level, lines) in Contour.levels(of: grid, levels) {
+        for (level, lines) in contoured {
             // A refiner has the function the grid was sampled from and moves
             // the vertices onto its true level set, in domain space, before
             // the lift: the grid decides which contours exist, f decides

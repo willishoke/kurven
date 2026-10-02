@@ -236,7 +236,7 @@ kurven/
 
 examples/
   function.py    — any function's landscape: the plate that is not written in
-                   advance, and the oracle for the derived hatching
+                   advance, as the service builds it
   gamma.py       — Γ(z): faithful reproduction of the Jahnke-Emde gamma plate
                    (see SCENE_CAVEATS for what about it stays Python-only)
   elliptic.py    — cn(z, m): Jacobi elliptic function landscape
@@ -261,12 +261,11 @@ KurvenSwift/     — the Swift/Metal frontend (see below)
 scripts/
   bundle-app.sh  — assembles Kurven.app (no Xcode required)
 tests/
-  make_fixtures.py  — writes tests/fixtures, the oracle both lanes are held to
+  make_fixtures.py  — writes tests/fixtures, the contract both lanes read
   check_bundle.py   — the Python lane of the contract tests
   check_expr.py     — the expression language: parsing, safety, and the
                       numerics of zeta and the elliptics (the Swift lane
                       checks the native functions against tests/fixtures/expr)
-  compare_bake.py   — end-to-end: the Swift bake against the Python plate
   verify_refactor.py — pixel-identical before/after diffing for refactors
 ```
 
@@ -457,23 +456,30 @@ barely moves between 1600² and 3200².
 ### Testing across the two lanes
 
 ```bash
-scripts/check.sh            # everything, both lanes
-scripts/check.sh --quick    # skip the end-to-end comparisons
+scripts/check.sh            # everything, both lanes, in about a minute
 ```
 
+The Swift lane is the one that draws, and it is held to analytic references
+rather than to a second implementation: the depth pass to an exact ray cast
+of the heightfield, the refined contours to the function they were placed by,
+a surface's visibility to the ray cast through it. The Python pipeline was
+the oracle while the frontend was being cut over from it, and the end-to-end
+comparisons that drew every plate twice went with the cutover: they had come
+to pin the stage the frontend had moved past, the grid contours before the
+refiner, and every improvement to the plates was a port to Python or a
+loosened tolerance.
 
-Correctness is anchored on the Python pipeline as oracle. `tests/make_fixtures.py`
+What remains of the cross-language contract is in files. `tests/make_fixtures.py`
 writes `tests/fixtures/`; both lanes read the same files, and the files are in
 git, the three landscape bundles included, so the Swift lane needs nothing but
 a checkout.
 
-The same script is what CI runs (`.github/workflows/check.yml`): the quick
-form on every push and pull request, the full form nightly and on request,
-on an Apple Silicon runner so the Swift lane draws with Metal. Before either,
-CI regenerates the fixtures and compares them with what is committed, with
-the git SHA each manifest records as the one line allowed to differ: a
-generator that no longer reproduces the oracle is drift a green run would
-otherwise hide.
+The same script is what CI runs (`.github/workflows/check.yml`), on every
+push and pull request, on an Apple Silicon runner so the Swift lane draws
+with Metal. Before it, CI regenerates the fixtures and compares them with
+what is committed, with the git SHA each manifest records as the one line
+allowed to differ: a generator that no longer reproduces the fixtures is
+drift a green run would otherwise hide.
 
 A check that cannot run on a machine is *skipped* and listed in the summary
 rather than failed -- the service round trip with no checkout to start it
@@ -485,14 +491,10 @@ machine is known to have none.
 Or a piece at a time:
 
 ```bash
-python tests/make_fixtures.py          # regenerate the oracle
+python tests/make_fixtures.py          # regenerate the fixtures
 python tests/check_bundle.py           # python lane: schema, CSR, camera, clip
 python tests/check_expr.py             # the expression language and its numerics
 swift run --package-path KurvenSwift kurven-test     # swift lane, same fixtures
-python tests/compare_bake.py recip     # end to end: swift bake vs python plate
-python tests/compare_bake.py recip --derived   # and derived vs dumped
-python tests/compare_preview.py recip  # and the preview, as pixels
-python tests/compare_bake.py function --cpu    # a landscape nobody wrote a plate for
 ```
 
 The cheapest test is the sharpest: a fixture manifest decoded by Swift and
@@ -504,25 +506,13 @@ is every one of the four kinds derived by `kurven/hatch.py` from one grid, one
 perimeter and two kinds of cap; the Swift lane derives them again from the same
 description and compares vertex for vertex, and they are bit-identical (the
 rim, being a marching-squares loop with no first vertex, is compared as its set
-of segments). One level up, `compare_bake.py function --cpu` draws a generated
-landscape both ways: against Python's CPU rasterizer — the definition, where
-moderngl samples half a pixel off its own lattice — every layer agrees exactly,
-0.0% ink difference and a Hausdorff distance of zero. `--derived` then measures
-what is *meant* to differ: the wall crests, because Python evaluates f where the
-consumer interpolates the grid (0.5% of the ink), and the contours on
-near-vertical pole flanks, where a hair of depth decides visibility.
+of segments).
 
-Two things worth knowing before blaming a change for them:
-
-- **zeta's plate samples its own grid.** `examples/zeta.py` was born from a
-  precomputed ζ grid in the author's notes; where that file is absent it looks
-  for `$KURVEN_ZETA_CACHE`, then `~/.cache/kurven/zeta_5000.npy`, and failing
-  both samples the grid with `kurven.expr`'s ζ (three seconds) and saves it
-  there. The first `bake vs plate: zeta` on a machine is slower by that much.
-- a generated landscape full of pole spires is the worst case for comparing two
-  rasterizers, which is why its end-to-end step uses `--cpu`. Against moderngl,
-  21% of depth pixels differ on gamma's spires while every contour stays within
-  0.03 of the plate's diagonal — the curves agree, the tie-breaking does not.
+One thing worth knowing before blaming a change for it: **zeta's plate samples
+its own grid.** `examples/zeta.py` was born from a precomputed ζ grid in the
+author's notes; where that file is absent it looks for `$KURVEN_ZETA_CACHE`,
+then `~/.cache/kurven/zeta_5000.npy`, and failing both samples the grid with
+`kurven.expr`'s ζ (three seconds) and saves it there.
 
 ## References
 

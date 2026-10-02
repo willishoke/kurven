@@ -1,11 +1,16 @@
 #!/bin/bash
 # Run everything, in both lanes.
 #
-#   scripts/check.sh [--quick] [--clean]
+#   scripts/check.sh [--clean]
 #
-# --quick skips the end-to-end comparisons, which sample and contour the real
-# grids and take a couple of minutes. --clean rebuilds the Swift package from
-# scratch.
+# --clean rebuilds the Swift package from scratch.
+#
+# The Swift lane is the one that draws: it holds the depth pass to an exact
+# ray cast, the contours to the function they were placed by, and the
+# surfaces to their analytic visibility. The Python lane checks the Python
+# package against the same fixture files the Swift lane reads, which is what
+# keeps the bundle schema one definition. Nothing here draws a plate twice
+# and compares the two: that was the cutover's test, and the cutover is done.
 #
 # Why --clean exists, and why this script forces a relink by default: SwiftPM's
 # incremental build does not reliably rebuild or relink a target when a type's
@@ -31,13 +36,11 @@ elif command -v uv >/dev/null 2>&1; then
 else
     PYTHON=("$ROOT/.venv/bin/python")
 fi
-QUICK=0
 CLEAN=0
 for arg in "$@"; do
     case "$arg" in
-        --quick) QUICK=1 ;;
         --clean) CLEAN=1 ;;
-        *) echo "usage: $0 [--quick] [--clean]" >&2; exit 2 ;;
+        *) echo "usage: $0 [--clean]" >&2; exit 2 ;;
     esac
 done
 
@@ -69,37 +72,6 @@ step "python lane" "${PYTHON[@]}" "$ROOT/tests/check_bundle.py"
 step "expression language" "${PYTHON[@]}" "$ROOT/tests/check_expr.py"
 step "schema round trip, cross-language" \
     "$BIN/kurven-cli" contract "$ROOT/tests/fixtures/contract"
-
-if [ "$QUICK" = 0 ]; then
-    # A landscape nobody wrote a plate for: the function picker's own pipeline,
-    # end to end. The CPU rasterizer is the oracle here rather than moderngl --
-    # a generated landscape is full of near-vertical pole flanks, where half a
-    # pixel of lattice offset decides whole contours' visibility, and moderngl
-    # samples half a pixel off its own lattice (tests/compare_bake.py says so).
-    step "bake vs plate: function" \
-        "${PYTHON[@]}" "$ROOT/tests/compare_bake.py" function --cpu \
-        --res 350 --buffer 1000
-    # And the hatching derived from a description against the hatching computed
-    # from the analytic function: the contract kurven/hatch.py defines.
-    step "derived vs dumped: function" \
-        "${PYTHON[@]}" "$ROOT/tests/compare_bake.py" function --derived \
-        --res 350 --buffer 1000
-
-    for example in recip elliptic zeta; do
-        step "bake vs plate: $example" \
-            "${PYTHON[@]}" "$ROOT/tests/compare_bake.py" "$example"
-        step "preview vs plate: $example" \
-            "${PYTHON[@]}" "$ROOT/tests/compare_preview.py" "$example"
-    done
-    # gamma at its published settings is ten thousand squared and adaptive; a
-    # bundle carries one uniform grid, so this is the --no-adaptive form of it
-    # at a size that finishes. See examples/gamma.py: SCENE_CAVEATS.
-    GAMMA=(--res 700 --no-adaptive --surface-res 700 --buffer 3000)
-    step "bake vs plate: gamma" \
-        "${PYTHON[@]}" "$ROOT/tests/compare_bake.py" gamma "${GAMMA[@]}"
-    step "preview vs plate: gamma" \
-        "${PYTHON[@]}" "$ROOT/tests/compare_preview.py" gamma "${GAMMA[@]}"
-fi
 
 printf '\n'
 if [ "$failures" = 0 ]; then
