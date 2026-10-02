@@ -9,8 +9,8 @@ import simd
 /// necessarily differ is the *height*: Python has f and evaluates it, this has
 /// the grid and interpolates it, so a stroke's top sits at the grid's crest
 /// rather than the function's. That difference is the grid's interpolation
-/// error, and `tests/compare_bake.py function --derived` is where its size is
-/// reported rather than assumed.
+/// error, half a cell's rise at most, and the walls of a native landscape
+/// take their heights from f through the refiner where one is in play.
 ///
 /// Why this is here at all, rather than a list of strokes in the bundle: the cap
 /// is a slider. Moving it moves every plateau, which moves every cap stroke and

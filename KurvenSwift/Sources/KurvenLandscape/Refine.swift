@@ -33,13 +33,27 @@ import KurvenMath
 /// the wrapped grid interpolates straight through the jump and emits a crossing
 /// for *every* level between: a bundle of spurious segments along each wrap
 /// line, in the Python plates as much as here (a third of the gamma plate's
-/// phase vertices, measured). A vertex whose two edge samples differ by more
-/// than π is on a wrap, not on the level set; the refiner drops it and splits
-/// the path there. A chord midpoint whose residual is a jump is likewise left
-/// alone rather than solved toward the wrong branch.
+/// phase vertices, measured). Two samples cannot tell such a vertex from a
+/// real one beside a zero, where the phase turns a full circle within a cell
+/// and one edge can legitimately span more than π of it. So the phase is
+/// tracked through the edge's midpoint, each half the short way round, and a
+/// vertex is a crossing only where that path passes the level (`bracket`);
+/// otherwise it is dropped and the path split there. Residuals of the phase
+/// are taken the short way round throughout, so a level near π is as near to
+/// a sample at -π as it is. A chord midpoint whose residual is a jump is
+/// likewise left alone rather than solved toward the wrong branch.
+///
+/// Every phase meets at a zero of f, and a phase contour ends there. The grid
+/// stops it at the last cell edge before the zero; the refiner, which has f,
+/// carries each run whose end lies within a cell or so of a zero -- found by
+/// Newton from the end -- to the zero itself (`ended(atZeros:)`).
 public struct ContourRefiner: Sendable {
+    /// f itself, for the roots the phase contours end at.
+    public let value: @Sendable (Complex) -> Complex
     public let magnitude: @Sendable (Complex) -> Double
     public let phase: @Sendable (Complex) -> Double
+    /// arg(-f): the phase turned a half turn, whose zero level is f's cut.
+    public let turnedPhase: @Sendable (Complex) -> Double
     public let grid: Domain
     public let width: Int
     public let height: Int
@@ -51,6 +65,7 @@ public struct ContourRefiner: Sendable {
 
     public init(_ compiled: KurvenMath.Expression.Compiled, domain: Domain,
                 width: Int, height: Int, tolerance: Double = 0.02, maxDepth: Int = 5) {
+        self.value = { z in compiled(z) }
         self.magnitude = { z in
             let v = compiled(z)
             return v.isFinite ? min(v.magnitude, NativeLandscape.huge) : NativeLandscape.huge
@@ -58,6 +73,10 @@ public struct ContourRefiner: Sendable {
         self.phase = { z in
             let v = compiled(z)
             return v.isFinite ? v.argument : 0
+        }
+        self.turnedPhase = { z in
+            let v = compiled(z)
+            return v.isFinite ? (-v).argument : 0
         }
         self.grid = domain; self.width = width; self.height = height
         self.tolerance = tolerance; self.maxDepth = maxDepth
@@ -68,8 +87,34 @@ public struct ContourRefiner: Sendable {
     /// The cell size the tolerances are measured against.
     public var cell: Double { max(abs(dx), abs(dy)) }
 
+    /// An angle brought into [-π, π]: the short way round.
+    static func wrapped(_ angle: Double) -> Double {
+        angle - (angle / (2 * .pi)).rounded() * 2 * .pi
+    }
+
+    /// How far a sample is from the level: for the phase, the short way round.
+    func residual(_ sample: Double, level: Double, cut: Bool) -> Double {
+        cut ? Self.wrapped(sample - level) : sample - level
+    }
+
+    /// Whether a domain point is inside the grid's window, to rounding: the
+    /// zeros of a function sampled on a half-plane sit on its edge.
+    func inWindow(_ p: P2<DomainSpace>) -> Bool {
+        let r = grid.real, i = grid.imag, slack = 1e-9 * cell
+        return p.x >= min(r.lo, r.hi) - slack && p.x <= max(r.lo, r.hi) + slack
+            && p.y >= min(i.lo, i.hi) - slack && p.y <= max(i.lo, i.hi) + slack
+    }
+
     func field(_ f: ContourField) -> @Sendable (Complex) -> Double {
         f == .magnitude ? magnitude : phase
+    }
+
+    /// The scalar field and level a contour is solved on. A phase level of
+    /// ±π is the cut, which `Surface.derive` contours as the zero level of
+    /// arg(-f) (`Contour.cut`), and is placed on that.
+    func field(_ f: ContourField, level: Double) -> (g: @Sendable (Complex) -> Double, level: Double) {
+        if f == .phase && Contour.isCut(level) { return (turnedPhase, 0) }
+        return (field(f), level)
     }
 
     /// `Surface.derive`'s hook.
@@ -79,7 +124,7 @@ public struct ContourRefiner: Sendable {
 
     public func refine(field: ContourField, level: Double,
                        _ paths: [[P2<DomainSpace>]]) -> [[P2<DomainSpace>]] {
-        let g = self.field(field)
+        let (g, level) = self.field(field, level: level)
         let cut = field == .phase
         var out = [[[P2<DomainSpace>]]](repeating: [], count: paths.count)
         out.withUnsafeMutableBufferPointer { buffer in
@@ -120,7 +165,115 @@ public struct ContourRefiner: Sendable {
             previous = vertex
         }
         if out.count >= 2 { runs.append(out) }
-        return runs
+        return cut ? runs.map { ended(atZeros: $0, level: level, g: g) } : runs
+    }
+
+    /// A phase run carried to the zero of f it ends beside, at either end.
+    ///
+    /// Every phase meets at a zero, so a phase contour that stops within a
+    /// cell or so of one was always going there: the grid's marching squares
+    /// put its last vertex on the last cell edge it crossed. The zero is found
+    /// from the end by Newton on f, accepted when the iteration converges
+    /// without leaving the end's neighbourhood and lands on a value a million
+    /// times smaller than the end's, and the new segment is subdivided like
+    /// any other. A run that already ends on a zero, or that is closed, is
+    /// left alone.
+    func ended(atZeros run: [P2<DomainSpace>], level: Double,
+               g: @Sendable (Complex) -> Double) -> [P2<DomainSpace>] {
+        guard run.count >= 2, run.first != run.last else { return run }
+        /// The zero this end leads to, when the chord to it lies on the level
+        /// set -- its midpoint's phase within an eighth of a turn of the level,
+        /// which a different contour's end beside the same zero fails -- and
+        /// the run does not already end there from the other side, as a stub
+        /// in a pit a cell wide would.
+        func zero(for end: P2<DomainSpace>, other: P2<DomainSpace>) -> P2<DomainSpace>? {
+            guard let z = self.zero(near: end) else { return nil }
+            let apart = ((z.x - other.x) * (z.x - other.x) + (z.y - other.y) * (z.y - other.y)).squareRoot()
+            guard apart > 1e-9 * cell else { return nil }
+            let mid = Complex((z.x + end.x) / 2, (z.y + end.y) / 2)
+            let r = residual(g(mid), level: level, cut: true)
+            return r.isFinite && abs(r) <= .pi / 4 ? z : nil
+        }
+        var out = run
+        if let z = zero(for: out[0], other: out[out.count - 1]) {
+            var lead: [P2<DomainSpace>] = []
+            subdivide(z, out[0], level: level, g: g, cut: true, depth: 0, into: &lead)
+            out = [z] + lead + out
+        }
+        if let z = zero(for: out[out.count - 1], other: out[0]) {
+            subdivide(out[out.count - 1], z, level: level, g: g, cut: true, depth: 0, into: &out)
+            out.append(z)
+        }
+        return out
+    }
+
+    /// How far from a run's end a zero is looked for, in cells. The grid's
+    /// contour can stop two cells short where the zero's own cells pair
+    /// their crossings the other way.
+    static let reach = 3.0
+
+    /// A zero of f within `reach` cells of `p`, or nil.
+    func zero(near p: P2<DomainSpace>) -> P2<DomainSpace>? {
+        var z = Complex(p.x, p.y)
+        let f0 = value(z)
+        guard f0.isFinite, f0.magnitude > 0 else { return nil }
+        let h = 1e-6 * cell
+        for _ in 0..<40 {
+            let fz = value(z)
+            guard fz.isFinite else { return nil }
+            let d = (value(z + h) - value(z - h)) / (2 * h)
+            guard d.isFinite, d.squaredMagnitude > 0 else { return nil }
+            let step = fz / d
+            guard step.isFinite else { return nil }
+            z = z - step
+            guard Complex(z.re - p.x, z.im - p.y).magnitude <= Self.reach * cell else { return nil }
+            if step.magnitude <= 1e-12 * cell {
+                let at = value(z)
+                guard at.isFinite, at.magnitude <= 1e-6 * f0.magnitude else { return nil }
+                let q = P2<DomainSpace>(z.re, z.im)
+                return inWindow(q) ? q : nil
+            }
+        }
+        return nil
+    }
+
+    /// The sub-edge of `a -> b` on which the level is crossed, with the
+    /// residuals at its ends, of opposite sign or zero; nil when it is not
+    /// crossed.
+    ///
+    /// For a field without a cut that is the whole edge when the residuals
+    /// differ in sign. For the phase, the two samples alone cannot say: a
+    /// difference of more than π is a wrap when the samples straddle the cut,
+    /// and a genuine turn when the edge passes beside a zero. So the phase is
+    /// tracked through the edge's midpoint, each half the short way round --
+    /// a straight edge subtends less than a half turn from a simple zero, so
+    /// each half is unambiguous -- and the level is crossed on whichever half
+    /// that path passes a multiple of 2π of its residual.
+    func bracket(_ a: P2<DomainSpace>, _ b: P2<DomainSpace>, level: Double,
+                 g: @Sendable (Complex) -> Double, cut: Bool)
+        -> (a: P2<DomainSpace>, b: P2<DomainSpace>, ra: Double, rb: Double)? {
+        let pa = g(Complex(a.x, a.y)), pb = g(Complex(b.x, b.y))
+        guard pa.isFinite, pb.isFinite else { return nil }
+        guard cut else {
+            let ra = pa - level, rb = pb - level
+            return ra == 0 || rb == 0 || ra.sign != rb.sign ? (a, b, ra, rb) : nil
+        }
+        let m = P2<DomainSpace>((a.x + b.x) / 2, (a.y + b.y) / 2)
+        let pm = g(Complex(m.x, m.y))
+        guard pm.isFinite else { return nil }
+        let ra = Self.wrapped(pa - level)
+        let rm = ra + Self.wrapped(pm - pa)
+        let rb = rm + Self.wrapped(pb - pm)
+        if let k = Self.turn(between: ra, rm) { return (a, m, ra - k, rm - k) }
+        if let k = Self.turn(between: rm, rb) { return (m, b, rm - k, rb - k) }
+        return nil
+    }
+
+    /// The multiple of 2π between two residuals, if there is one.
+    static func turn(between u: Double, _ v: Double) -> Double? {
+        let lo = min(u, v), hi = max(u, v)
+        let k = (lo / (2 * .pi)).rounded(.up) * 2 * .pi
+        return k <= hi ? k : nil
     }
 
     /// The exact crossing on the grid edge this vertex sits on; nil for a
@@ -153,7 +306,7 @@ public struct ContourRefiner: Sendable {
             // not recorded, but if exactly one of the node's four edges
             // brackets the level, that is the one.
             let i = Int(fx.rounded()), j = Int(fy.rounded())
-            let gp = g(Complex(p.x, p.y)) - level
+            let gp = residual(g(Complex(p.x, p.y)), level: level, cut: cut)
             guard gp.isFinite, !(cut && abs(gp) > .pi / 2) else { return p }
             let (gx, gy) = gradient(g, at: p)
             let slope = (gx * gx + gy * gy).squareRoot()
@@ -163,25 +316,28 @@ public struct ContourRefiner: Sendable {
                 let ni = i + di, nj = j + dj
                 guard ni >= 0, ni < width, nj >= 0, nj < height else { continue }
                 let n = P2<DomainSpace>(grid.real.lo + Double(ni) * dx, grid.imag.lo + Double(nj) * dy)
-                let gn = g(Complex(n.x, n.y)) - level
-                guard gn.isFinite, !(cut && abs(gn - gp) > .pi) else { continue }
-                if gn.sign != gp.sign { bracketing.append(n) }
+                if bracket(p, n, level: level, g: g, cut: cut) != nil { bracketing.append(n) }
             }
             guard bracketing.count == 1 else { return p }
             a = p; b = bracketing[0]
         } else {
             return p       // nowhere a marching-squares vertex can be
         }
-        var ga = g(Complex(a.x, a.y)) - level
-        var gb = g(Complex(b.x, b.y)) - level
-        if cut && abs(ga - gb) > .pi { return nil }
-        guard ga.isFinite, gb.isFinite else { return p }
-        if ga == 0 { return a }
-        if gb == 0 { return b }
-        // The float32 grid saw a crossing that f, in double, does not: the
-        // level set passes within rounding of a node. The nearer endpoint is
-        // the honest position.
-        guard ga.sign != gb.sign else { return abs(ga) <= abs(gb) ? a : b }
+        guard let edge = bracket(a, b, level: level, g: g, cut: cut) else {
+            let ra = residual(g(Complex(a.x, a.y)), level: level, cut: cut)
+            let rb = residual(g(Complex(b.x, b.y)), level: level, cut: cut)
+            guard ra.isFinite, rb.isFinite else { return p }
+            // The float32 grid saw a crossing that f, in double, does not:
+            // the level set passes within rounding of a node. The nearer
+            // endpoint is the honest position. For the phase, anything else
+            // is a wrap, which is not a crossing of anything.
+            if cut && min(abs(ra), abs(rb)) > 1e-9 { return nil }
+            return abs(ra) <= abs(rb) ? a : b
+        }
+        let (a1, b1) = (edge.a, edge.b)
+        var ga = edge.ra, gb = edge.rb
+        if ga == 0 { return a1 }
+        if gb == 0 { return b1 }
         // Illinois regula falsi on t in [0, 1] along the edge, which cannot
         // fail to converge on a bracketed root; sixty iterations is far more
         // than it ever takes -- except against a bracket like exp(1/z)'s
@@ -192,13 +348,13 @@ public struct ContourRefiner: Sendable {
         // which halves the bracket whatever the values are.
         var ta = 0.0, tb = 1.0
         var side = 0, stuck = 0
-        var t = (p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)
-        t /= max((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y), .leastNormalMagnitude)
+        var t = (p.x - a1.x) * (b1.x - a1.x) + (p.y - a1.y) * (b1.y - a1.y)
+        t /= max((b1.x - a1.x) * (b1.x - a1.x) + (b1.y - a1.y) * (b1.y - a1.y), .leastNormalMagnitude)
         t = min(max(t, 0), 1)
         var q = p
         for _ in 0..<60 {
-            q = P2<DomainSpace>(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y))
-            let gq = g(Complex(q.x, q.y)) - level
+            q = P2<DomainSpace>(a1.x + t * (b1.x - a1.x), a1.y + t * (b1.y - a1.y))
+            let gq = residual(g(Complex(q.x, q.y)), level: level, cut: cut)
             if !gq.isFinite { return p }
             if abs(gq) <= 1e-13 * max(abs(level), 1) { return q }
             if gq.sign == ga.sign {
@@ -229,7 +385,7 @@ public struct ContourRefiner: Sendable {
                    into out: inout [P2<DomainSpace>]) {
         guard depth < maxDepth else { return }
         let mid = P2<DomainSpace>((a.x + b.x) / 2, (a.y + b.y) / 2)
-        let r = g(Complex(mid.x, mid.y)) - level
+        let r = residual(g(Complex(mid.x, mid.y)), level: level, cut: cut)
         guard r.isFinite else { return }
         if cut && abs(r) > .pi / 2 { return }
         let chord = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
@@ -268,7 +424,7 @@ public struct ContourRefiner: Sendable {
         for _ in 0..<24 {
             if abs(t1) > chord { break }
             let q = P2<DomainSpace>(mid.x + t1 * nx, mid.y + t1 * ny)
-            let r1 = g(Complex(q.x, q.y)) - level
+            let r1 = residual(g(Complex(q.x, q.y)), level: level, cut: cut)
             guard r1.isFinite, !(cut && abs(r1) > .pi / 2) else { break }
             if best == nil || abs(r1) < abs(best!.r) { best = (q, r1) }
             let stalled = abs(t1 - t0) < 1e-10 * cell
@@ -306,9 +462,9 @@ public struct ContourRefiner: Sendable {
     /// |f| is 1e-109) it runs to 1e106 and says only "far".
     public func positionErrors(_ path: [P2<DomainSpace>], field: ContourField,
                                level: Double) -> [Double] {
-        let g = self.field(field)
+        let (g, level) = self.field(field, level: level)
         return path.map { p in
-            let r = g(Complex(p.x, p.y)) - level
+            let r = residual(g(Complex(p.x, p.y)), level: level, cut: field == .phase)
             let (gx, gy) = gradient(g, at: p)
             let slope = (gx * gx + gy * gy).squareRoot()
             guard r.isFinite, slope > 0, slope.isFinite else { return .nan }
@@ -405,7 +561,13 @@ public extension NativeLandscape {
             case .phase: guard let p = bundle.surface.phase else { continue }; grid = p
             }
             var contoured: [(level: Double, paths: [[P2<DomainSpace>]])] = []
-            let gridTime = clock.measure { contoured = Contour.levels(of: grid, levels) }
+            let gridTime = clock.measure {
+                // As `Surface.derive` contours them under a refiner: the cut
+                // once, as the zero level of the turned phase.
+                let plain = field == .phase ? levels.filter { !Contour.isCut($0) } : levels
+                contoured = Contour.levels(of: grid, plain)
+                if plain.count < levels.count { contoured.append((.pi, Contour.cut(of: grid))) }
+            }
             var refined: [(level: Double, paths: [[P2<DomainSpace>]])] = []
             let refineTime = clock.measure {
                 refined = contoured.map { ($0.level, refiner.refine(field: field, level: $0.level, $0.paths)) }
@@ -425,8 +587,8 @@ public extension NativeLandscape {
             let before = errors(contoured), after = errors(refined)
             var wraps = 0
             if field == .phase {
-                let g = refiner.field(field)
                 for (level, paths) in contoured {
+                    let (g, level) = refiner.field(field, level: level)
                     for path in paths where path.count >= 2 {
                         for p in path where refiner.snap(p, level: level, g: g, cut: true) == nil {
                             wraps += 1

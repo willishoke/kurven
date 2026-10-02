@@ -16,8 +16,9 @@ import KurvenMetal
 /// machine with nothing on it reads as what it is. One kind is held to a
 /// stricter rule: a suite skipped for want of a Metal device fails the run
 /// unless `KURVEN_TEST_SKIP_GPU=1` says this machine is known to have none,
-/// because the GPU suites are the ones that compare the preview and the bake
-/// to the oracle, and a run that silently never drew anything is not green.
+/// because the GPU suites are the ones that draw -- the depth pass against the
+/// ray cast, the preview against the bake -- and a run that silently never
+/// drew anything is not green.
 enum Check {
     nonisolated(unsafe) static var failures: [String] = []
     nonisolated(unsafe) static var skipped: [String] = []

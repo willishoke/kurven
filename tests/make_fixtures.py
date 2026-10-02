@@ -1,8 +1,10 @@
-"""Generate `tests/fixtures/` — the oracle the Swift frontend is tested against.
+"""Generate `tests/fixtures/` — the contract both lanes read.
 
-Correctness of the frontend is anchored on this pipeline, not on a second
-opinion. Every fixture here is a Python-computed answer to a question the Swift
-side must answer identically, cheapest first:
+Every fixture here is a Python-computed answer to a question the Swift side
+must answer identically. They are frozen files: the Swift lane is the one that
+draws, and holds what it draws to analytic references of its own; these pin
+the parts that were ported rule for rule and have not moved since. Cheapest
+first:
 
     contract/  tiny bundles exercising every arm of every sum type. Decode,
                re-encode the manifest, compare canonical JSON. This is the only
@@ -23,8 +25,7 @@ side must answer identically, cheapest first:
                definition. The consumer derives the same strokes from the same
                description, and this is where the two are compared. Heights
                here come from the *grid*, not from f, because that is all the
-               consumer has; the plate's own hatching uses f, and the size of
-               that difference is `tests/compare_bake.py --derived`.
+               consumer has without a refiner; the plate's own hatching uses f.
 
 Determinism: contouring runs single-chunk, the point sets come from a seeded
 generator, and the depth buffer is stored as float32 with the expected clip

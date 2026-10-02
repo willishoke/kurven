@@ -1,15 +1,15 @@
-# Both lanes, on every change; the whole thing, every night.
+# Everything, on every change.
 #
 # `scripts/check.sh` is the one definition of "the tests pass", here as on a
-# laptop: this file only decides when to run it and with which flag. The quick
-# form builds the package, runs the Swift lane, the Python lane, the expression
-# checks and the cross-language schema round trip. The full form adds the
-# end-to-end comparisons of the Swift bake and preview against the Python
-# plates, which sample and contour the real grids and take minutes, so they run
-# on a schedule and on request rather than on every push.
+# laptop: this file only decides when to run it. It builds the package, runs
+# the Swift lane, the Python lane, the expression checks and the
+# cross-language schema round trip. There is no slow form any more: the
+# end-to-end comparisons against the Python plates were the cutover's test,
+# and what they measured is now held by the Swift lane against analytic
+# references, in seconds rather than minutes.
 #
-# Before either, the fixture generator is run and its output compared with what
-# is committed. The fixtures are the oracle both lanes read, and a generator
+# Before it, the fixture generator is run and its output compared with what is
+# committed. The fixtures are the contract both lanes read, and a generator
 # that no longer reproduces them is drift that a green run would otherwise
 # hide. The git SHA each manifest records is the one line allowed to differ.
 #
@@ -23,14 +23,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "17 9 * * *"
   workflow_dispatch:
-    inputs:
-      full:
-        description: "Run the end-to-end comparisons too"
-        type: boolean
-        default: true
 
 concurrency:
   group: check-${{ github.ref }}
@@ -39,7 +32,7 @@ concurrency:
 jobs:
   check:
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
@@ -61,14 +54,5 @@ jobs:
           git add --intent-to-add tests/fixtures
           git diff --exit-code --stat -I '"gitSha"' -- tests/fixtures
 
-      - name: Quick check
-        if: github.event_name == 'push' || github.event_name == 'pull_request'
-        run: scripts/check.sh --quick
-
-      - name: Full check
-        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full)
+      - name: Check
         run: scripts/check.sh
-
-      - name: Quick check, on request
-        if: github.event_name == 'workflow_dispatch' && !inputs.full
-        run: scripts/check.sh --quick

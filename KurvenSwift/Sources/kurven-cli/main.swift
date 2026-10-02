@@ -95,10 +95,9 @@ usage: kurven-cli <command> [options]
         depth resolution and clip margin -- the settings the published plate
         was made with. --silhouette traces the outline of the drawn region off
         the depth buffer and adds it as a stroke of that width. --dump also
-        writes each layer's strokes as
-        PREFIX.<layer>.npy plus CSR offsets, which is what
-        tests/compare_bake.py reads to check the result against the Python
-        plate stroke for stroke.
+        writes each layer's strokes as PREFIX.<layer>.npy plus CSR offsets,
+        and the frame as PREFIX.frame.json, for checking a bake stroke for
+        stroke outside this program.
 
   surface torus [--lines U,V] [--samples N]
   surface sn [--modulus M] [--grid N]
@@ -147,7 +146,7 @@ usage: kurven-cli <command> [options]
 
   preview <bundle> [--preset NAME] [--width N] [--height N] [--mode M]
           [--orbit "AZ,EL"] [--center RE,IM,Z] [--zoom F] [--levels N] [--fov DEGREES]
-          [--margin M] [--slope K] [--ink-width W] [--refine] -o out.png
+          [--margin M] [--slope K] [--ink-width W] [--no-refine] -o out.png
         Render one preview frame offscreen and write it as a PNG. Modes:
         plate (the default), shaded, depth. --orbit turns the preset camera by
         that many degrees before drawing; --center puts that world point at
@@ -158,8 +157,9 @@ usage: kurven-cli <command> [options]
         ink test: the hidden-line margin, and how many pixels' worth of the
         surface's depth change it also allows (0 is the bake's predicate).
         --ink-width is the widest layer's stroke in pixels (default 1.5); the
-        others are drawn in proportion to their plate widths. --refine places
-        the contours by the function, as the window does; bake, depth and
+        others are drawn in proportion to their plate widths. A bundle that
+        names its function has its contours placed by it, as the window does;
+        --no-refine draws the grid's contours instead, and bake, depth and
         flicker take it too. This is how the preview is checked against the
         plate without a window in the way.
 
@@ -213,10 +213,11 @@ func loadScene(_ args: Args) throws -> (KurvenBundle, CameraPreset, Scene) {
         throw CLIError("which bundle?")
     }
     var bundle = try KurvenBundle.read(at: URL(fileURLWithPath: path))
-    // `--refine`: the contours placed by the function, as the window draws
-    // them (`Document.refineContours`). Off by default, so that a bake stays
-    // comparable with the Python plate it is checked against.
-    if args.switches.contains("refine"), let refiner = NativeLandscape.refiner(for: bundle) {
+    // The contours placed by the function, as the window draws them
+    // (`Document.refineContours`), whenever the bundle names a function to
+    // place them by. `--no-refine` draws the grid's contours instead, which
+    // is the stage the fixtures pin.
+    if !args.switches.contains("no-refine"), let refiner = NativeLandscape.refiner(for: bundle) {
         bundle = bundle.refined(by: refiner.refine)
     }
     let preset: CameraPreset
@@ -863,9 +864,9 @@ func flicker(_ args: Args) throws {
     let renderer = try MetalRenderer()
     let target = try renderer.makePreviewTarget(viewport)
     let pixels = viewport.width * viewport.height
-    // Ink is any visible mark, the test `compare_preview.py` applies to both
-    // of its pictures: a stroke narrower than a pixel is drawn lighter, not
-    // narrower, so mid-grey would miss the plate's thinnest layers.
+    // Ink is any visible mark: a stroke narrower than a pixel is drawn
+    // lighter, not narrower, so mid-grey would miss the plate's thinnest
+    // layers.
     func ink(_ scene: Scene, _ navigator: Navigator) throws -> [Bool] {
         try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
                                    options: options, into: target)
