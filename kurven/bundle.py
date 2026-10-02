@@ -585,6 +585,8 @@ class LayerSource:
                                  bool(d.get("tiled", False)))
         if kind == "capOutline":
             return LayerCapOutline(bool(d.get("tiled", False)))
+        if kind == "foldLines":
+            return LayerFoldLines()
         raise BundleError(f"LayerSource: unknown kind {kind!r}")
 
 
@@ -707,6 +709,17 @@ class LayerCapOutline(LayerSource):
 
     def to_dict(self):
         return {"kind": "capOutline", "tiled": bool(self.tiled)}
+
+
+@dataclass(frozen=True)
+class LayerFoldLines(LayerSource):
+    """The fold lines: where the surface turns edge-on to the camera, which is
+    where its outline and every inner silhouette lie. They depend on the
+    camera, so a bundle carries the description and never the ink; the
+    consumer traces them for whatever camera it draws with."""
+
+    def to_dict(self):
+        return {"kind": "foldLines"}
 
 
 @dataclass(frozen=True)

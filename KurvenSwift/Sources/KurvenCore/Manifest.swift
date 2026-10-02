@@ -486,6 +486,12 @@ public enum LayerSource: Sendable, Equatable {
     /// carries its surface coordinate, so the ink is judged by where on the
     /// surface it lies.
     case parameterLines(u: Int, v: Int)
+    /// Windings of a parametric surface: `count` straight lines through its
+    /// parameter rectangle at `slope` turns of `v` per turn of `u`, each
+    /// drawn `turns` turns round -- or until it closes, when the slope is a
+    /// fraction. Each vertex carries its surface coordinate, as the
+    /// parameter lines' do.
+    case winding(slope: Double, turns: Int, count: Int)
     /// The fold lines of a parametric surface -- its outline and inner
     /// silhouettes -- which depend on the camera and are derived for it.
     case foldLines
@@ -542,12 +548,16 @@ public enum LayerSource: Sendable, Equatable {
         case "parameterLines":
             self = .parameterLines(u: try o.int("u", "LayerSource.parameterLines"),
                                    v: try o.int("v", "LayerSource.parameterLines"))
+        case "winding":
+            self = .winding(slope: try o.double("slope", "LayerSource.winding"),
+                            turns: try o.int("turns", "LayerSource.winding"),
+                            count: try o.int("count", "LayerSource.winding"))
         case let other:
             throw ManifestError.unknownKind(other, of: "LayerSource",
                                             known: ["file", "contour", "wallHatch",
                                                     "wallOutline", "capHatch",
                                                     "capOutline", "parameterLines",
-                                                    "foldLines", "trajectory"])
+                                                    "winding", "foldLines", "trajectory"])
         }
     }
     public var json: JSONValue {
@@ -575,6 +585,9 @@ public enum LayerSource: Sendable, Equatable {
             .object(["kind": .string("capOutline"), "tiled": .bool(tiled)])
         case .parameterLines(let u, let v):
             .object(["kind": .string("parameterLines"), "u": .int(u), "v": .int(v)])
+        case .winding(let slope, let turns, let count):
+            .object(["kind": .string("winding"), "slope": .double(slope), "turns": .int(turns),
+                     "count": .int(count)])
         case .foldLines:
             .object(["kind": .string("foldLines")])
         case .trajectory:
@@ -601,6 +614,17 @@ public struct LayerSpec: Sendable, Equatable {
     /// False for ink that lies *in* the occluding geometry -- a cut-face hatch,
     /// which a depth test would half erase.
     public var clipped: Bool
+
+    /// Whether the ink lies on the heightfield's own surface: the contours of
+    /// |f| and arg f, lifted onto it -- by any height policy, since a
+    /// magnitude contour at its level and a phase line at |f| are on the
+    /// surface as surely as ink lifted by the grid. Such ink can be judged by
+    /// which way the surface faces under it, as well as by depth. The
+    /// scaffold -- rims, hatches, outlines -- sits on creases and walls,
+    /// where the surface's facing is not the ink's.
+    public var liesOnSurface: Bool {
+        clipped && (role == .magnitude || role == .phase)
+    }
 
     public init(name: String, role: LayerRole, source: LayerSource,
                 width: Double, heightPolicy: HeightPolicy,

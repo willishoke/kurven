@@ -206,3 +206,31 @@ func frequencyTests() {
         Check.expect(long.slope < 1e-7, "and so are its derivatives", "max \(long.slope)")
     }
 }
+
+// MARK: - continued fractions
+
+func continuedFractionTests() {
+    Check.suite("continued fractions: the fractions a number is nearly") {
+        func names(_ c: [ContinuedFraction.Convergent]) -> [String] { c.map { "\($0.p)/\($0.q)" } }
+        Check.expect(names(ContinuedFraction.convergents(of: .pi, maxDenominator: 200))
+                     == ["3/1", "22/7", "333/106", "355/113"],
+                     "π is nearly 22/7, 333/106, 355/113")
+        Check.expect(ContinuedFraction.quotients(of: .pi, count: 5) == [3, 7, 15, 1, 292],
+                     "and its quotients begin [3; 7, 15, 1, 292]")
+        Check.expect(ContinuedFraction.quotients(of: 0.4) == [0, 2, 2]
+                     && names(ContinuedFraction.convergents(of: 0.4)) == ["0/1", "1/2", "2/5"],
+                     "a fraction's expansion ends, at the fraction")
+        let phi = (1 + 5.0.squareRoot()) / 2
+        Check.expect(ContinuedFraction.quotients(of: phi, count: 8).allSatisfy { $0 == 1 }
+                     && names(ContinuedFraction.convergents(of: phi, maxDenominator: 13))
+                         == ["1/1", "2/1", "3/2", "5/3", "8/5", "13/8", "21/13"],
+                     "the golden ratio is all ones, and its convergents are Fibonacci")
+        Check.expect(ContinuedFraction.describe([0, 2, 2, 1, 2, 5], ellipsis: true)
+                     == "[0; 2, 2, 1, 2, 5, …]"
+                     && ContinuedFraction.describe([3], ellipsis: false) == "[3]",
+                     "written as [a₀; a₁, a₂, …]")
+        Check.expect(ContinuedFraction.convergents(of: 2.5, maxDenominator: 1)
+                     == [ContinuedFraction.Convergent(2, 1)],
+                     "a denominator bound keeps the convergents within it")
+    }
+}

@@ -103,10 +103,10 @@ final class Thumbnails {
         // A trajectory as long as the window's, at a quarter the width, is
         // grey moiré: a quarter of it keeps its windings as far apart.
         if case .forced(let system, let fit, let harmonics, let radial, let axial, let radius,
-                        let duration, let every) = request.shape {
+                        let turns) = request.shape {
             request.shape = .forced(system: system, fit: fit, harmonics: harmonics,
                                     radial: radial, axial: axial, radius: radius,
-                                    duration: duration / 4, every: every)
+                                    turns: max(turns / 4, 1))
         }
         return request
     }

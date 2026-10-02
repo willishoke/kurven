@@ -1,6 +1,22 @@
 # kurven
 
-A Python library for rendering **analytic landscapes** — the 3D surface visualization of complex functions pioneered by Jahnke and Emde in their 1909 atlas *Tafeln höherer Funktionen*. The height of the surface at each point z is |f(z)|; magnitude and phase contour lines are projected onto the surface and clipped against a depth buffer to produce a hidden-line-removed vector graphic.
+**Analytic landscapes**, drawn from the formula alone. Jahnke and Emde's 1909
+atlas *Tafeln höherer Funktionen* drew the surface |f(z)| over the complex
+plane, with the contours of magnitude and phase draped over it and everything
+behind the surface left out. kurven reproduces those plates: f is evaluated,
+contoured, lifted onto its own surface, projected the way the plates were
+projected, and clipped against a depth buffer of the surface. The result is a
+vector drawing, every line of it a level set of f, with nothing in it that was
+not computed.
+
+Two implementations draw the same picture. The **Swift and Metal** side is the
+app, the CLI, the realtime preview and the exact bake; it samples any
+expression natively and depends on nothing. The **Python** side is the
+original, and is now the oracle: it writes the fixtures the Swift lane is held
+to, bundle for bundle and vertex for vertex, and the four published plate
+programs still live there. Where the two differ, the difference is measured
+and written down (see *[Testing across the two
+lanes](#testing-across-the-two-lanes)*).
 
 The published plates are reproductions — each one a program that knows its
 function, its window and where to cut its poles. **Landscapes you choose** are
@@ -29,41 +45,132 @@ The doubly periodic function cn(z, m = 0.64). One fundamental tile [−K, 0] × 
 ## Algorithm
 
 The pipeline has six stages: **sample → contour → lift → project → depth-buffer → clip**.
+The ink and the occluder travel separately and meet only at the last stage:
+the contours never know about the surface as a mesh, and the mesh never knows
+about the contours. That separation is what lets the first three stages run
+once per function and the last three run once per frame (see *[The camera
+seam](#the-camera-seam-and-the-swift-frontend)*).
 
 ### 1. Sample
 
-Evaluate f(z) on a uniform grid of complex values. For functions with poles or rapid variation (e.g. Γ near the negative integers), an **adaptive sampler** (`kurven/sampling.py`) first probes a coarse grid to locate high-gradient regions via |∇ log|f||, then re-samples those zones at a finer density. This concentrates resolution where contours are densest without paying for it everywhere.
+Evaluate f(z) on a uniform grid over the window. Poles make the interesting
+places the expensive ones: the Python plates answer that with an **adaptive
+sampler** (`kurven/sampling.py`) that probes a coarse grid for high-gradient
+regions via |∇ log|f|| and re-samples those zones finely; the native side
+samples one grid and moves the contours onto f afterwards instead (see
+*[Contours placed by f](#contours-placed-by-f)*).
 
 ### 2. Contour
 
-Extract iso-lines of |f(z)| and arg(f(z)) at a chosen set of levels using marching squares (via [contourpy](https://contourpy.readthedocs.io/)). Two families of curves are generated — magnitude and phase — each at major and minor spacings. The contourpy threaded backend parallelizes across levels; chunk-boundary seams are stitched by exact endpoint matching (`_stitch_chunk_seams`).
-
-For functions with adaptive sampling, coarse contours that fall inside a fine zone are dropped; fine contours fill in. Where a coarse and fine path meet at a zone boundary they are welded together (`_stitch_paths`).
+Marching squares over the grid, for |f(z)| and for arg f(z), each at major and
+minor levels. Python uses [contourpy](https://contourpy.readthedocs.io/) and
+stitches its chunk seams by exact endpoint matching; Swift has its own walker
+(`Contour`), in scan order so a grid gives the same lines every run. A phase
+grid wraps at ±π, and marching squares emits a crossing for every level along
+the wrap line; the refiner recognises those as wraps and drops them.
 
 ### 3. Lift to 3D
 
-Each contour vertex (x, y) in the complex plane is lifted to (x, y, |f(x + iy)|). This turns the flat contour diagram into a network of curves draped over the magnitude surface.
+Each contour vertex (x, y) is lifted to (x, y, |f(x + iy)|), on the grid's
+heights, so the ink lies on the surface that will be drawn rather than on the
+one f describes. Under a cap the lift is clamped, and a run that reaches the
+cap is carried to the rim rather than ending at its last vertex under it.
 
 ### 4. Project
 
-An isometric-style projection:
+The plates are **oblique parallel projections**, not isometric ones. The
+imaginary axis is sheared along the real one in the ground plane, then a
+rotation about z and a tilt about x turn the surface toward the viewer. The
+real axis lands horizontal on the paper, the |f| axis vertical and at true
+length, and the imaginary axis recedes at a slant. Each plate has its own
+slant; measured on the paper, relative to the vertical:
 
-1. **Shear** — y′ = y + s·x (default s = 0.5) introduces foreshortening perpendicular to the viewer, matching the visual style of the original Jahnke-Emde plates.
-2. **Rotate** — a Z rotation followed by an X rotation tilts the surface toward the viewer.
+| plate | real axis | imaginary axis |
+|---|---|---|
+| Γ, 1/Γ | 1.22 | 0.93 at 49° |
+| cn | 1.12 | 0.77 at 42° |
+| ζ | 0.76 | 0.26 at 135° |
 
-The result is a 3D point cloud in screen space.
+A textbook cabinet projection is 1.00 and 0.50 at 45°, cavalier 1.00 and 1.00
+at 45°; the plates sit between them, with the real axis stretched, which is
+the look no isometric drawing has. The three numbers a plate stores (`shear`,
+`xAngle`, `yScale`, with `zAngle` always −90) are that family in other
+coordinates: with the azimuth fixed, any receding angle, receding length and
+real-axis length is reachable, and so is a true isometric or a cabinet
+drawing. In the app the projection is the plate camera with its two angles
+made adjustable, so a preset is a starting point for navigation rather than a
+fixed picture.
 
 ### 5. Depth buffer
 
-The magnitude surface is independently meshed as a triangulated grid and rasterized into a Z-buffer (`kurven/zbuffer.py`). Each pixel stores the maximum depth value seen so far. A GPU path via [moderngl](https://moderngl.readthedocs.io/) rasterizes with `GL_MAX` blending; the CPU fallback rasterizes triangle-by-triangle using barycentric interpolation.
+The surface is meshed as a triangulated grid and rasterized into a Z-buffer
+holding, per pixel, the greatest view depth seen. On the GPU that is `MAX`
+blending into a float32 colour attachment, in Python via moderngl and in
+Swift via Metal; Python's CPU rasterizer, triangle by triangle with
+barycentric interpolation, is the definition the two are compared against.
+The mesh is the clamped heightfield, plus vertical **wall curtains** along
+every cut face, plus the **cap rim**: the cells a cap plane crosses, cut along
+the line the rim is contoured on, so the corner where a wall meets a cap is
+drawn where it is and not a cell's rise below.
 
 ### 6. Clip and outline
 
-**Hidden-line removal** (`clip_hidden_lines`): each contour point is checked against the Z-buffer. Points behind the surface are invisible; the remaining runs are split into visible segments.
+**Hidden-line removal**: each contour vertex is tested against the depth
+buffer within a margin; the runs that survive are the visible segments. Ink
+that lies on the surface is first tested for **facing**: a heightfield bounds
+the solid under it, so ink on a part of the surface that faces away from the
+eye is hidden whatever the depth buffer says, a test the margin cannot make
+where a steep flank turns away.
 
-**Silhouette** (`extract_outline`): the Z-buffer is binarized (filled vs. empty) and the level-0 contour gives the outer boundary of the rendered shape — the "picture frame" silhouette.
+**Silhouette**: the depth buffer binarized, and the level-0 contour of that is
+the outer boundary of the drawn shape.
 
-Both are saved as SVG polylines via matplotlib.
+The strokes are written as SVG polylines.
+
+### What goes wrong at a pole
+
+Every hard case in a plate is a boundary condition: a pole, a cap, a cut face,
+a steep flank. Each of these was a visible defect with a commit behind it, and
+each is a picture the pipeline can draw both ways.
+
+- **A pole is a needle and a floor.** The cap says where to cut, and gamma's
+  caps vary by band of Re so each spire's plateau reads from above. The cut
+  faces and the plateaus are hatched, which is the part every published plate
+  wrote by hand (see *[Truncation](#truncation-and-the-hatching-that-goes-with-it)*).
+- **The rim is not a contour.** Under band caps the cap outline is the zero set
+  of |f| − cap(x), which is a contour of nothing else; it has its own layer,
+  and the magnitude level at exactly the cap is dropped so the line is not
+  drawn twice (`87ff162`).
+- **A plateau is blank but for its hatching.** Phase contours are lifted to
+  the *unclamped* magnitude and cut the same way, so they end at the rim
+  rather than converging on the pole across the cap (`87ff162`).
+- **The occluder must not bridge a notch.** The first occluder was a Delaunay
+  triangulation of the contour vertices, which triangulates the convex hull
+  and so spanned the elliptic plate's cutout with phantom triangles that hid
+  the front face. A meshed heightfield with wall curtains replaced it, and
+  `MAX` blending tolerates the tile seams, so the cutout is handled by
+  omission (`26f3e05`).
+- **Ink on a steep flank flickers.** The preview tests a line's depth where it
+  crosses a pixel against the surface's depth at the pixel's centre, up to
+  half a pixel apart; on a surface steep in view that is more depth than the
+  margin. The margin is scaled by the surface's own slope, as shadow maps bias
+  by slope, and the crawl goes from 2.2% of ink per frame to 0.3% (`c81ff55`).
+- **The last vertex under the cap.** A contour kept below the cap used to end
+  at its last sample under it, up to a sample's rise short of the rim. The
+  crossing with the cap plane is now solved on the lifted heights and the run
+  ends on the rim at exactly the cap's height (`bd605b1`).
+- **The cell that straddles the cap.** Clamping heights at the lattice
+  vertices and interpolating between them draws a cell with one corner over
+  the cap as a slope from the cap to the low corner, cutting off the corner
+  where the wall meets the cap by up to the cell's rise, half a world unit on
+  a pole's flank. The cells a cap crosses are drawn as min(interpolated, cap),
+  exactly (`52d62b7`, `18fe661`).
+- **Back-face ink inside the margin.** Where a flank turns away, its back
+  lies within the margin of its front for a stretch that zoom magnifies, and
+  the other family of contours showed through as ticks along the silhouette.
+  The facing test hides it before the depth test is asked (`b1bbf95`).
+- **What remains.** At a needle a few cells wide a contour genuinely hooks
+  round its edge: 0.35 px at plate resolution, and correct.
 
 ---
 
@@ -226,7 +333,7 @@ kurven/
   perimeter.py   — a boundary outline: walls, ground ink and mask from one definition
   occluder.py    — heightfield + wall curtains, tiled, as one mesh
   scaffold.py    — the drawn structural line-work (the ink twin of occluder.py)
-  projection.py  — isometric shear + rotation
+  projection.py  — the plates' oblique projection: shear, then rotation
   zbuffer.py     — Z-buffer class, CPU and GPU triangle rasterizers
   outline.py     — hidden-line clipping, silhouette extraction
   scene.py       — Scene: the camera-independent half of a plate
@@ -513,6 +620,29 @@ its own grid.** `examples/zeta.py` was born from a precomputed ζ grid in the
 author's notes; where that file is absent it looks for `$KURVEN_ZETA_CACHE`,
 then `~/.cache/kurven/zeta_5000.npy`, and failing both samples the grid with
 `kurven.expr`'s ζ (three seconds) and saves it there.
+
+## Where it came from
+
+The depth-buffer occlusion at the centre of this is older than the repository.
+It was written in two notebooks at the start of 2024, in the author's public
+[notebooks](https://github.com/willishoke/notebooks) repository, whose commit
+dates GitHub holds:
+
+- [`zbuffer.ipynb`](https://github.com/willishoke/notebooks/blob/main/zbuffer.ipynb)
+  (commit `b7759bb`, 2 January 2024): a Z-buffer over a Delaunay
+  triangulation, with the depth of a point inside a triangle taken from its
+  barycentric coordinates.
+- [`3d_mtn_contour.ipynb`](https://github.com/willishoke/notebooks/blob/main/3d_mtn_contour.ipynb)
+  (commit `d1bdeb9`, 3 January 2024): the same occlusion applied to contours
+  of a USGS 3DEP elevation grid of Mount Hood, which is the pipeline here with
+  a mountain in place of a function.
+
+Everything since is that algorithm made exact and fast: the Delaunay occluder
+became a meshed heightfield with walls and a rim (`26f3e05`), the CPU
+rasterizer became a `MAX`-blended pass on the GPU, and the contours were moved
+off the grid and onto f. This repository began in June 2026 as an extraction
+from the gamma notebook, and the work in it has been done with AI assistance,
+which the commit trailers record.
 
 ## References
 

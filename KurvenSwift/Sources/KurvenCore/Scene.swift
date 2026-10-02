@@ -43,6 +43,184 @@ public struct Heightfield: Sendable {
             surface.forEachSample(step: step) { body(tile($0)) }
         }
     }
+
+    /// The outward normal of the capped surface over a world point:
+    /// `(-∂h/∂x, -∂h/∂y, 1)`, not normalized, by central differences a grid
+    /// spacing wide, the height read through whichever tile the point is in.
+    ///
+    /// The solid is what lies under the graph, so outward is up, and a
+    /// sight line that reaches a point of the surface facing away from the
+    /// eye has entered the solid already: such a point is hidden, whatever
+    /// the depth buffer says to within its margin. That is the test the
+    /// margin cannot make -- where a steep flank turns away, the back of it
+    /// lies within the margin of the front for a stretch that zoom
+    /// magnifies, and back-face ink shows there as ticks.
+    ///
+    /// Differences in world coordinates, so a tile's reflection is already
+    /// in them; on the cap the differences vanish and the normal is up.
+    public func normal(at p: P2<WorldSpace>) -> SIMD3<Double> {
+        let g = surface.height
+        let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1))
+        let dy = abs(g.domain.imag.length) / Double(max(g.height - 1, 1))
+        func h(_ x: Double, _ y: Double) -> Double {
+            surface.height(at: P2<DomainSpace>(x, y), tiles: tiles)
+        }
+        let hx = (h(p.x + dx, p.y) - h(p.x - dx, p.y)) / (2 * dx)
+        let hy = (h(p.x, p.y + dy) - h(p.x, p.y - dy)) / (2 * dy)
+        return SIMD3(-hx, -hy, 1)
+    }
+
+    /// The fold lines under a camera: where the surface turns edge-on,
+    /// `n · sight = 0`, which is where its outline and every inner silhouette
+    /// lie -- the far edge of a pit, the crest of a flank seen from the side.
+    /// The 1933 plates draw them, and the notebooks drew them from a
+    /// thresholded matrix of gradients, contoured. This is that, with the
+    /// sight line as the threshold: the facing is sampled on the lattice,
+    /// its zero level traced by marching squares, and, when `refined`, every
+    /// vertex moved onto the exact fold by bisection along the facing's
+    /// gradient -- the same facing `HeightfieldVisibility` cuts ink by, so
+    /// the two agree on where the surface turns. Nothing on a cap, which is
+    /// flat and faces up and has a rim of its own, and nothing outside the
+    /// region. They depend on the camera, so they are derived for one, never
+    /// stored.
+    public func foldLines(view: Transform<WorldSpace, ViewSpace>,
+                          refined: Bool = true) -> PolylineSet<WorldSpace> {
+        let sight = view.sightLine
+        let g = surface.height
+        let nx = g.width, ny = g.height
+        guard nx >= 2, ny >= 2 else { return .empty }
+        func facing(_ p: P2<WorldSpace>) -> Double {
+            let n = normal(at: p)
+            let len = simd_length(n)
+            return len > 0 ? -simd_dot(n, sight) / len : 0
+        }
+        let cell = max(abs(g.domain.real.length) / Double(nx - 1),
+                       abs(g.domain.imag.length) / Double(ny - 1))
+        let h = 0.25 * cell
+        /// Onto the fold: bracket a sign change along the gradient within a
+        /// cell either way, then bisect it to the last bit.
+        func onto(_ c: P2<WorldSpace>) -> P2<WorldSpace> {
+            let gx = facing(P2(c.x + h, c.y)) - facing(P2(c.x - h, c.y))
+            let gy = facing(P2(c.x, c.y + h)) - facing(P2(c.x, c.y - h))
+            let len = (gx * gx + gy * gy).squareRoot()
+            guard len > 0 else { return c }
+            let d = SIMD2(gx, gy) / len * cell
+            var a = SIMD2(c.x, c.y) - d, b = SIMD2(c.x, c.y) + d
+            var fa = facing(P2(a.x, a.y))
+            guard (fa > 0) != (facing(P2(b.x, b.y)) > 0) else { return c }
+            for _ in 0..<60 {
+                let m = 0.5 * (a + b)
+                let fm = facing(P2(m.x, m.y))
+                if (fm > 0) == (fa > 0) { a = m; fa = fm } else { b = m }
+            }
+            let m = 0.5 * (a + b)
+            return P2(m.x, m.y)
+        }
+
+        var paths: [[P3<WorldSpace>]] = []
+        let d = g.domain
+        for tile in tiles {
+            // The tile's image of the domain, as a box: the tiles are
+            // reflections and translations, so it is one.
+            let corners = [(d.real.lo, d.imag.lo), (d.real.hi, d.imag.lo),
+                           (d.real.lo, d.imag.hi), (d.real.hi, d.imag.hi)]
+                .map { tile(P3<WorldSpace>($0.0, $0.1, 0)) }
+            let lo = SIMD2(corners.map(\.x).min()!, corners.map(\.y).min()!)
+            let hi = SIMD2(corners.map(\.x).max()!, corners.map(\.y).max()!)
+            let sx = (hi.x - lo.x) / Double(nx - 1), sy = (hi.y - lo.y) / Double(ny - 1)
+            var values = [Float](repeating: 0, count: nx * ny)
+            values.withUnsafeMutableBufferPointer { out in
+                // Each row writes only its own slots, so sharing is safe.
+                nonisolated(unsafe) let base = out.baseAddress!
+                DispatchQueue.concurrentPerform(iterations: ny) { j in
+                    for i in 0..<nx {
+                        base[j * nx + i] = Float(facing(P2(lo.x + Double(i) * sx,
+                                                           lo.y + Double(j) * sy)))
+                    }
+                }
+            }
+            let field = Grid2D(width: nx, height: ny,
+                               domain: Domain(real: Interval(lo: lo.x, hi: hi.x),
+                                              imag: Interval(lo: lo.y, hi: hi.y)),
+                               values: values)
+            for line in Contour.lines(of: field, level: 0) {
+                var run: [P3<WorldSpace>] = []
+                for v in line {
+                    var p = P2<WorldSpace>(v.x, v.y)
+                    if refined { p = onto(p) }
+                    let z = surface.height(at: P2<DomainSpace>(p.x, p.y), tiles: tiles)
+                    if region.contains(p) && z < surface.caps.height(atX: p.x) - 1e-9 {
+                        run.append(P3(p.x, p.y, z))
+                    } else {
+                        if run.count >= 2 { paths.append(run) }
+                        run = []
+                    }
+                }
+                if run.count >= 2 { paths.append(run) }
+            }
+        }
+        return PolylineSet(paths: paths)
+    }
+
+    /// The fold lines that can be seen: `foldLines`, less what the surface
+    /// hides. A fold cannot be judged by the depth buffer: the surface is
+    /// edge-on there, so its depth changes by the whole flank within one
+    /// pixel, and the pixel's value is the near side's, in front of the fold
+    /// by far more than any margin. It is judged by the solid instead: a fold
+    /// vertex is hidden when the sight line from it to the eye passes under
+    /// the surface, which is a march up that line in half-cell steps until
+    /// it is above everything -- the question the depth pass answers for
+    /// every pixel, asked here for every vertex, exactly. `margin` is the
+    /// plate's hidden-line margin, which keeps a vertex on the surface it
+    /// belongs to from hiding behind that surface's own rounding.
+    public func visibleFolds(view: Transform<WorldSpace, ViewSpace>, margin: Double,
+                             refined: Bool = true) -> PolylineSet<WorldSpace> {
+        let folds = foldLines(view: view, refined: refined)
+        guard !folds.vertices.isEmpty else { return folds }
+        let toward = -view.sightLine
+        let g = surface.height
+        let cell = max(abs(g.domain.real.length) / Double(max(g.width - 1, 1)),
+                       abs(g.domain.imag.length) / Double(max(g.height - 1, 1)))
+        var top = -Double.infinity
+        var lo = SIMD2(Double.infinity, Double.infinity), hi = -lo
+        forEachSample {
+            top = max(top, $0.z)
+            lo = simd_min(lo, SIMD2($0.x, $0.y)); hi = simd_max(hi, SIMD2($0.x, $0.y))
+        }
+        let rise = toward.z
+        func unoccluded(_ p: P3<WorldSpace>) -> Bool {
+            // Nothing can stand in the way of a sight line that does not
+            // descend toward the solid, once it has left this point.
+            guard rise > 0 else { return true }
+            let step = 0.5 * cell / max(simd_length(SIMD2(toward.x, toward.y)), 1e-12)
+            var t = step
+            while true {
+                let q = p.v + t * toward
+                // Above everything, or out past the box of every tile, which
+                // is convex and so is not re-entered: open air from here on.
+                if q.z > top { return true }
+                if q.x < lo.x || q.x > hi.x || q.y < lo.y || q.y > hi.y { return true }
+                if q.z + margin < surface.height(at: P2<DomainSpace>(q.x, q.y), tiles: tiles) {
+                    return false
+                }
+                t += step
+            }
+        }
+        var out: [[P3<WorldSpace>]] = []
+        for i in 0..<folds.count {
+            var run: [P3<WorldSpace>] = []
+            for v in folds[path: i] {
+                if unoccluded(v) {
+                    run.append(v)
+                } else {
+                    if run.count >= 2 { out.append(run) }
+                    run = []
+                }
+            }
+            if run.count >= 2 { out.append(run) }
+        }
+        return PolylineSet(paths: out)
+    }
 }
 
 /// What the depth pass draws.
@@ -151,12 +329,19 @@ public struct Scene: Sendable {
 
     /// Every layer's vertices in view space, in declaration (draw) order.
     ///
-    /// Ink that depends on the camera -- the fold lines of a parametric
-    /// surface -- is derived here, for this camera, rather than carried.
+    /// Ink that depends on the camera -- the fold lines of a surface, of
+    /// either kind -- is derived here, for this camera, rather than carried.
     public func projectedLayers() -> [(Layer, PolylineSet<ViewSpace>)] {
         layers.map { layer in
-            if case .foldLines = layer.spec.source, let s = parametric {
-                return (layer, s.foldLines(sight: camera.view.sightLine).mapped(camera.view))
+            if case .foldLines = layer.spec.source {
+                if let s = parametric {
+                    return (layer, s.foldLines(sight: camera.view.sightLine).mapped(camera.view))
+                }
+                if let h = heightfield {
+                    // Already judged for visibility, by the solid: the bake
+                    // passes these through.
+                    return (layer, h.visibleFolds(view: camera.view, margin: margin).mapped(camera.view))
+                }
             }
             return (layer, layer.paths.mapped(camera.view))
         }

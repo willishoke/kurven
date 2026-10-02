@@ -148,6 +148,10 @@ public extension MetalRenderer {
         let visibility = scene.parametric.flatMap { s in
             image.map { SurfaceVisibility(surface: s, image: $0, view: scene.camera.view) }
         }
+        let onHeightfield = scene.heightfield.map { h in
+            HeightfieldVisibility(heightfield: h, depth: depth, margin: margin,
+                                  view: scene.camera.view)
+        }
         var layers: [(style: Style, paths: PolylineSet<PlateSpace>)] = []
         for (layer, projected) in scene.projectedLayers() {
             let clipped: PolylineSet<PlateSpace>
@@ -159,6 +163,15 @@ public extension MetalRenderer {
                 let onFolds: Bool
                 if case .foldLines = layer.spec.source { onFolds = true } else { onFolds = false }
                 clipped = HiddenLine.clip(projected, on: visibility, onFolds: onFolds)
+            } else if let onHeightfield, layer.spec.liesOnSurface {
+                // Ink on the heightfield itself is hidden where the surface
+                // faces away, and depth-tested where it does not.
+                clipped = HiddenLine.clip(projected, world: layer.paths, on: onHeightfield)
+            } else if onHeightfield != nil, case .foldLines = layer.spec.source {
+                // A heightfield's folds come already judged, by the solid
+                // (`Heightfield.visibleFolds`): the depth buffer cannot judge
+                // ink on an edge-on surface.
+                clipped = HiddenLine.pass(projected)
             } else {
                 clipped = HiddenLine.clip(projected, against: depth, margin: margin)
             }
