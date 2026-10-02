@@ -1332,8 +1332,13 @@ func serviceTests() {
                      && kinds.contains { if case .capOutline = $0 { true } else { false } }
                      && kinds.contains { if case .wallOutline = $0 { true } else { false } },
                      "including the hatching of its sides and its tops")
-        Check.expect(landscape.layers.allSatisfy { !$0.paths.isEmpty },
-                     "and every one of them derives to actual ink",
+        // All but the fold lines, which are the camera's and are traced when
+        // the plate is drawn, not when it is built.
+        Check.expect(landscape.layers.allSatisfy { layer in
+                         if case .foldLines = layer.spec.source { return layer.paths.isEmpty }
+                         return !layer.paths.isEmpty
+                     },
+                     "and every one of them derives to actual ink, but the folds",
                      landscape.layers.map { "\($0.spec.name) \($0.paths.count)" }
                          .joined(separator: " "))
         // The levels Python chose for this cap are the ones this side would
@@ -1402,6 +1407,7 @@ shaderTests()
 previewTests()
 bakeTests()
 facingTests()
+foldLineTests()
 depthTests()
 serviceTests()
 expressionTests()

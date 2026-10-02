@@ -38,7 +38,7 @@ import numpy as np
 from kurven.bundle import (Affine2, CameraPreset, Caps, Domain, Interval,
                            KeepAll, KeepBand, KeepBelowCap, KeepEvery,
                            KeepRegion, LayerCapHatch, LayerCapOutline,
-                           LayerContour, LayerSpec, LayerWallHatch,
+                           LayerContour, LayerFoldLines, LayerSpec, LayerWallHatch,
                            LayerWallOutline, NoCaps, PlateProjection,
                            RealBandCaps, UniformCap, swap_from_world)
 from kurven.expr import canonical, compile_expression
@@ -461,6 +461,10 @@ def default_layers(domain, shape, caps, ceiling, *, spacing=None, phase=True):
                   0.3, "surface"),
         LayerSpec("wall_hatch", "scaffold",
                   LayerWallHatch(edges, spacing, pitch), 0.25, "surface"),
+        # The outline and inner silhouettes, derived per camera by the
+        # consumer: the bounding curves along the curved edges, as the wall
+        # outline is along the straight ones.
+        LayerSpec("folds", "outline", LayerFoldLines(), 0.4, "surface"),
     ]
     return tuple(layers)
 
@@ -574,7 +578,9 @@ def build_scene(spec, *, verbose=True, geometry=True, chunk_count=1):
     layers = []
     index = 0
     for spec_layer in specs:
-        if not geometry:
+        # Fold lines are the camera's: the bundle carries the description
+        # and no ink, whether or not the rest is built.
+        if not geometry or isinstance(spec_layer.source, LayerFoldLines):
             layers.append(InkLayer(spec_layer.name, spec_layer.role,
                                    np.zeros((0, 3)), np.zeros(0, dtype=np.int64),
                                    spec_layer.width, spec_layer.height_policy,

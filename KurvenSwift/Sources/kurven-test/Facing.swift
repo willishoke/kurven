@@ -1,6 +1,9 @@
 import Foundation
 import simd
 import KurvenCore
+import KurvenMetal
+import KurvenBake
+import KurvenLandscape
 
 // MARK: - ink on a heightfield is hidden where the surface faces away
 //
@@ -101,5 +104,110 @@ func facingTests() {
         Check.expect(kept < ink.vertices.count && kept > ink.vertices.count / 2,
                      "and the stretch between them, facing away, is gone",
                      "\(ink.vertices.count - kept) of \(ink.vertices.count) vertices hidden")
+    }
+}
+
+// MARK: - the fold lines of a heightfield
+//
+// The same ridge: its folds are the two lines x = const where h'(x) is the
+// sight line's slope, straight along y. `Heightfield.foldLines` must find
+// both, nothing else, and put every vertex on them to rounding. Then a real
+// landscape: every fold vertex is where the surface faces exactly edge-on,
+// none sits on a cap, and the pits have their far edges.
+
+func foldLineTests() {
+    Check.suite("folds: a heightfield's fold lines are where it turns edge-on") {
+        let amplitude = 3.0, width = 0.5
+        func height(_ x: Double) -> Double { amplitude * exp(-x * x / (width * width)) }
+        func slope(_ x: Double) -> Double { -2 * x / (width * width) * height(x) }
+        let nx = 801, ny = 21
+        let domain = Domain(real: Interval(lo: -2, hi: 2), imag: Interval(lo: 0, hi: 1))
+        var values = [Float](repeating: 0, count: nx * ny)
+        for j in 0..<ny {
+            for i in 0..<nx {
+                values[j * nx + i] = Float(height(-2 + 4 * Double(i) / Double(nx - 1)))
+            }
+        }
+        let surface = Surface(height: Grid2D(width: nx, height: ny, domain: domain, values: values),
+                              phase: nil, caps: .none)
+        let field = Heightfield(surface: surface, occluder: Mesh(vertices: [], triangles: []),
+                                tiles: [.identity], step: 1)
+        let cameras = [0.0, 90.0].map {
+            Camera.plate(PlateProjection(shear: 0, xAngle: -55, zAngle: $0, flipX: false, yScale: nil))
+        }
+        let camera = cameras.max { abs($0.view.sightLine.x) < abs($1.view.sightLine.x) }!
+        let sight = camera.view.sightLine
+        let critical = sight.z / sight.x
+        var folds: [Double] = []
+        var previous = -2.0
+        for x in stride(from: -1.99, through: 2.0, by: 0.01) {
+            if (slope(previous) - critical > 0) != (slope(x) - critical > 0) {
+                var lo = previous, hi = x
+                for _ in 0..<60 {
+                    let mid = 0.5 * (lo + hi)
+                    if (slope(lo) - critical > 0) == (slope(mid) - critical > 0) { lo = mid } else { hi = mid }
+                }
+                folds.append(0.5 * (lo + hi))
+            }
+            previous = x
+        }
+        let traced = field.foldLines(view: camera.view)
+        Check.expect(traced.count == 2, "two fold lines, one per analytic fold",
+                     "\(traced.count) lines for folds at \(folds.map { String(format: "%.3f", $0) })")
+        var worst = 0.0
+        for v in traced.vertices {
+            worst = max(worst, folds.map { abs(v.x - $0) }.min() ?? .infinity)
+        }
+        Check.expect(worst < 1e-3, "every vertex lies on one of them",
+                     String(format: "worst %.1e in x", worst))
+        for i in 0..<traced.count {
+            let ys = traced[path: i].map(\.y)
+            Check.expect((ys.min() ?? 1) < 0.05 && (ys.max() ?? 0) > 0.95,
+                         "and each runs the whole width of the ridge",
+                         String(format: "y from %.2f to %.2f", ys.min() ?? 0, ys.max() ?? 0))
+        }
+        let lattice = field.foldLines(view: camera.view, refined: false)
+        var latticeWorst = 0.0
+        for v in lattice.vertices {
+            latticeWorst = max(latticeWorst, folds.map { abs(v.x - $0) }.min() ?? .infinity)
+        }
+        Check.expect(lattice.count == traced.count && latticeWorst < 4.0 / Double(nx - 1),
+                     "read off the lattice alone, the same lines within a cell",
+                     String(format: "worst %.1e in x", latticeWorst))
+    }
+
+    Check.suite("folds: a landscape's pits have their far edges") {
+        let preset = Catalog.native.preset("rgamma")!
+        let bundle = try NativeLandscape.build(LandscapeRequest(preset: preset, resolution: 240))
+        let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
+        let h = scene.heightfield!
+        Check.expect(scene.layers.contains { if case .foldLines = $0.spec.source { return true }; return false },
+                     "a landscape describes its fold lines")
+        let folds = h.foldLines(view: scene.camera.view)
+        let ink = (0..<folds.count).reduce(0.0) { total, i in
+            let p = folds[path: i]
+            return total + zip(p, p.dropFirst()).reduce(0) { $0 + simd_length($1.1.v - $1.0.v) }
+        }
+        Check.expect(folds.count > 0 && ink > 1, "it has fold lines", String(format: "%d lines, %.2f units", folds.count, ink))
+        guard let bounds = scene.viewBounds() else { Check.expect(false, "the plate has bounds"); return }
+        let frame = DepthFrame(covering: bounds, resolution: 10)
+        let empty = DepthImage(frame: frame, values: [Float](repeating: -.infinity, count: frame.rows * frame.cols))
+        let visibility = HeightfieldVisibility(heightfield: h, depth: empty, margin: 0.02, view: scene.camera.view)
+        let edgeOn = folds.vertices.map { abs(visibility.facing(P2($0.x, $0.y))) }.max() ?? .infinity
+        Check.expect(edgeOn < 1e-6, "every vertex is where the surface faces exactly edge-on",
+                     String(format: "worst |facing| %.1e", edgeOn))
+        let cap = h.surface.caps
+        Check.expect(folds.vertices.allSatisfy { $0.z < cap.height(atX: $0.x) - 1e-9 },
+                     "and none is on a cap")
+        // The pit at -3: its far edge is a fold running down to the floor.
+        let pit = folds.vertices.filter { abs($0.x + 3) < 0.4 && $0.y < 0.6 }
+        Check.expect((pit.map(\.z).min() ?? .infinity) < 0.5,
+                     "the pit at -3 has a fold reaching down its wall",
+                     String(format: "lowest fold vertex at z = %.3f", pit.map(\.z).min() ?? .infinity))
+        // The bake draws them: judged by depth, not by facing.
+        let baked = try MetalRenderer().bake(scene, options: BakeOptions(resolution: 400))
+        let drawn = baked.strokes.layers.last!.paths
+        Check.expect(drawn.vertices.count > 0, "the bake draws the fold layer",
+                     "\(drawn.count) strokes")
     }
 }

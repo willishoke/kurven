@@ -2038,7 +2038,7 @@
  "landscapes": [
   {
    "bundle": "landscape_gamma.kurven",
-   "layers": 8,
+   "layers": 9,
    "spec": {
     "caps": {
      "kind": "uniform",
@@ -2063,7 +2063,7 @@
   },
   {
    "bundle": "landscape_cubic.kurven",
-   "layers": 8,
+   "layers": 9,
    "spec": {
     "caps": {
      "kind": "uniform",
@@ -2088,7 +2088,7 @@
   },
   {
    "bundle": "landscape_typed.kurven",
-   "layers": 8,
+   "layers": 9,
    "spec": {
     "caps": null,
     "domain": {

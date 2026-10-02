@@ -169,6 +169,11 @@ public enum NativeLandscape {
                       source: .wallHatch(edges: edges, spacing: spacing, pitch: pitch,
                                          trim: true, base: 0, topOffset: 0),
                       width: 0.25, heightPolicy: .surface),
+            // The outline and inner silhouettes, derived per camera: the
+            // bounding curves along the curved edges, as the wall outline is
+            // along the straight ones.
+            LayerSpec(name: "folds", role: .outline, source: .foldLines,
+                      width: 0.4, heightPolicy: .surface),
         ]
         return layers
     }

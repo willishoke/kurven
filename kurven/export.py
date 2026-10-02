@@ -36,6 +36,7 @@ import numpy as np
 from kurven.bundle import (
     Domain,
     LayerContour,
+    LayerFoldLines,
     GridRef,
     Interval,
     LayerSpec,
@@ -106,9 +107,12 @@ def manifest_of(scene, *, phase=True, chunk_count=1, wall_mesh=True, derived=Fal
     """
     s = scene.surface
     ny, nx = len(s.imag), len(s.real)
+    # Fold lines are always a description: there is no ink to dump, since
+    # they are the camera's and the consumer traces them.
     layers = tuple(
         LayerSpec(l.name, l.role,
-                  l.source if (derived and l.source is not None)
+                  l.source if (l.source is not None
+                               and (derived or isinstance(l.source, LayerFoldLines)))
                   else LayerFile(f"layers/{l.name}.npy", f"layers/{l.name}.idx.npy"),
                   l.width, l.height_policy, l.color, l.clipped)
         for l in scene.layers)

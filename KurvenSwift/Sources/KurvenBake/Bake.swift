@@ -167,6 +167,11 @@ public extension MetalRenderer {
                 // Ink on the heightfield itself is hidden where the surface
                 // faces away, and depth-tested where it does not.
                 clipped = HiddenLine.clip(projected, world: layer.paths, on: onHeightfield)
+            } else if onHeightfield != nil, case .foldLines = layer.spec.source {
+                // A heightfield's folds come already judged, by the solid
+                // (`Heightfield.visibleFolds`): the depth buffer cannot judge
+                // ink on an edge-on surface.
+                clipped = HiddenLine.pass(projected)
             } else {
                 clipped = HiddenLine.clip(projected, against: depth, margin: margin)
             }

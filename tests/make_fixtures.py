@@ -53,6 +53,7 @@ from kurven.bundle import (  # noqa: E402
     AXES,
     LayerCapHatch,
     LayerCapOutline,
+    LayerFoldLines,
     LayerWallHatch,
     LayerWallOutline,
     Affine2,
@@ -249,7 +250,8 @@ def contract_fixtures(out):
                    LayerWallOutline((0, 1, 2, 3), 0.1, 0.0), 0.3, "surface"),
          LayerSpec("wall_hatch", "scaffold",
                    LayerWallHatch((0, 2), 0.3, 0.1, True, 0.01, -0.02),
-                   0.25, "surface")),
+                   0.25, "surface"),
+         LayerSpec("folds", "outline", LayerFoldLines(), 0.4, "surface")),
         (CameraPreset("plate", PRESETS["recip"], 0.02, 4000),),
         _provenance("1/gamma(z)", expression="1/gamma(z)", resolution=4),
     )

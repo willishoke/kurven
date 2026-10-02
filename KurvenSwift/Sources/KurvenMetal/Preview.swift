@@ -20,6 +20,15 @@ struct LineGeometry {
         var ranges: [(first: Int, count: Int)] = []
         for layer in scene.layers {
             let first = vertices.count
+            // A heightfield's fold lines are the camera's, traced here for
+            // this one -- read off the lattice, not refined onto the exact
+            // fold as the bake's are -- and judged by the solid here rather
+            // than per fragment: the surface is edge-on at a fold, which is
+            // where a depth test is worth nothing. They are drawn unclipped.
+            var paths = layer.paths
+            if case .foldLines = layer.spec.source, let h = scene.heightfield {
+                paths = h.visibleFolds(view: scene.camera.view, margin: scene.margin, refined: false)
+            }
             // Ink on a heightfield's surface carries the surface's outward
             // normal, so the stroke shader can hide it where the surface
             // faces away; a zero normal is ink judged by depth alone. Once
@@ -27,7 +36,7 @@ struct LineGeometry {
             // thousand, and each normal is four height reads.
             var normals: [SIMD3<Float>]?
             if let h = scene.heightfield, layer.spec.liesOnSurface {
-                let points = layer.paths.vertices
+                let points = paths.vertices
                 var out = [SIMD3<Float>](repeating: .zero, count: points.count)
                 let chunk = 4096, n = points.count
                 out.withUnsafeMutableBufferPointer { buffer in
@@ -40,8 +49,8 @@ struct LineGeometry {
                 }
                 normals = out
             }
-            for i in 0..<layer.paths.count {
-                let lo = layer.paths.offsets[i], hi = layer.paths.offsets[i + 1]
+            for i in 0..<paths.count {
+                let lo = paths.offsets[i], hi = paths.offsets[i + 1]
                 // Separate segments, not a strip: a strip would join the end of
                 // one path to the start of the next, which is precisely the
                 // welding the CSR representation exists to prevent. Each pair is
@@ -49,7 +58,7 @@ struct LineGeometry {
                 for k in lo..<(hi - 1) {
                     for end in [k, k + 1] {
                         vertices.append(KVLineVertex(
-                            position: SIMD3<Float>(layer.paths.vertices[end].v),
+                            position: SIMD3<Float>(paths.vertices[end].v),
                             normal: normals?[end] ?? .zero))
                     }
                 }
@@ -236,8 +245,11 @@ public extension MetalRenderer {
                 guard range.count > 0 else { continue }
                 // Unclipped ink is drawn with an unreachable margin rather than
                 // a second pipeline: a cut-face hatch lies *in* the wall it
-                // hatches, and a depth test would erase about half of it.
-                shading.margin = layer.spec.clipped ? Float(scene.margin) : .infinity
+                // hatches, and a depth test would erase about half of it. A
+                // heightfield's folds were judged on the way in.
+                let folds: Bool
+                if case .foldLines = layer.spec.source { folds = true } else { folds = false }
+                shading.margin = layer.spec.clipped && !folds ? Float(scene.margin) : .infinity
                 shading.color = Self.color(layer.spec.color)
                 shading.strokeWidth = options.inkWidth
                     * Float(widest > 0 ? layer.spec.width / widest : 1)
