@@ -499,6 +499,17 @@ public enum LayerSource: Sendable, Equatable {
     /// coordinates on the invariant surface it winds round.
     case trajectory
 
+    /// Ink that lies in a cut face: a wall's hatch and its outline. On a
+    /// heightfield it is judged by the wall it lies in and by the solid
+    /// (`Heightfield.visibleWallInk`), never by the depth buffer, which
+    /// cannot judge ink on a face it sees edge-on.
+    public var isWallInk: Bool {
+        switch self {
+        case .wallHatch, .wallOutline: true
+        default: false
+        }
+    }
+
     public init(json: JSONValue) throws {
         let o = try json.object("LayerSource")
         switch try o.string("kind", "LayerSource") {

@@ -28,6 +28,10 @@ struct LineGeometry {
             var paths = layer.paths
             if case .foldLines = layer.spec.source, let h = scene.heightfield {
                 paths = h.visibleFolds(view: scene.camera.view, margin: scene.margin, refined: false)
+            } else if layer.spec.source.isWallInk, layer.spec.clipped, let h = scene.heightfield {
+                // Wall ink likewise: judged by the wall it lies in and the
+                // solid, and drawn unclipped.
+                paths = h.visibleWallInk(layer.paths, view: scene.camera.view, margin: scene.margin)
             }
             // Ink on a heightfield's surface carries the surface's outward
             // normal, so the stroke shader can hide it where the surface
@@ -246,10 +250,10 @@ public extension MetalRenderer {
                 // Unclipped ink is drawn with an unreachable margin rather than
                 // a second pipeline: a cut-face hatch lies *in* the wall it
                 // hatches, and a depth test would erase about half of it. A
-                // heightfield's folds were judged on the way in.
-                let folds: Bool
-                if case .foldLines = layer.spec.source { folds = true } else { folds = false }
-                shading.margin = layer.spec.clipped && !folds ? Float(scene.margin) : .infinity
+                // heightfield's folds and wall ink were judged on the way in.
+                var judged = scene.heightfield != nil && layer.spec.source.isWallInk
+                if case .foldLines = layer.spec.source { judged = true }
+                shading.margin = layer.spec.clipped && !judged ? Float(scene.margin) : .infinity
                 shading.color = Self.color(layer.spec.color)
                 shading.strokeWidth = options.inkWidth
                     * Float(widest > 0 ? layer.spec.width / widest : 1)

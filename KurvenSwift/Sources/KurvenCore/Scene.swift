@@ -177,40 +177,77 @@ public struct Heightfield: Sendable {
                              refined: Bool = true) -> PolylineSet<WorldSpace> {
         let folds = foldLines(view: view, refined: refined)
         guard !folds.vertices.isEmpty else { return folds }
-        let toward = -view.sightLine
-        let g = surface.height
-        let cell = max(abs(g.domain.real.length) / Double(max(g.width - 1, 1)),
-                       abs(g.domain.imag.length) / Double(max(g.height - 1, 1)))
-        var top = -Double.infinity
-        var lo = SIMD2(Double.infinity, Double.infinity), hi = -lo
-        forEachSample {
-            top = max(top, $0.z)
-            lo = simd_min(lo, SIMD2($0.x, $0.y)); hi = simd_max(hi, SIMD2($0.x, $0.y))
+        let march = SightMarch(self, view: view, margin: margin)
+        return Self.runs(of: folds) { march.unoccluded($0) }
+    }
+
+    /// Ink that lies in a cut face -- the wall's hatch and its outline --
+    /// less what cannot be seen. A wall is a plane the plate camera often
+    /// sees nearly edge-on, and the depth buffer cannot judge ink on such a
+    /// face: one pixel spans the whole receding wall, keeps the near side's
+    /// depth, and erases most of the hatch, leaving spots. So wall ink is
+    /// judged as the folds are: hidden where the wall it lies in faces away
+    /// from the eye -- it is then behind the solid the wall bounds -- and
+    /// otherwise hidden only where the sight line from it passes under the
+    /// surface. A post at a corner lies in two walls and shows if either
+    /// does. Which wall a vertex lies in is read off its position against
+    /// the box of each tile, since every wall of a described landscape
+    /// stands on a tile's edge.
+    ///
+    /// The crest is the exception: it is the surface's own edge as much as
+    /// the wall's top, and the far edge of a plate is in plain view over a
+    /// wall that faces away. A vertex at the surface's height is judged by
+    /// the march alone, which hides it exactly when the surface in front of
+    /// it does.
+    public func visibleWallInk(_ paths: PolylineSet<WorldSpace>,
+                               view: Transform<WorldSpace, ViewSpace>,
+                               margin: Double) -> PolylineSet<WorldSpace> {
+        guard !paths.vertices.isEmpty else { return paths }
+        let sight = view.sightLine
+        let march = SightMarch(self, view: view, margin: margin)
+        let d = surface.domain
+        let slack = 1e-6 * march.cell
+        func onCrest(_ p: P3<WorldSpace>) -> Bool {
+            let h = surface.height(at: P2<DomainSpace>(p.x, p.y), tiles: tiles)
+            return p.z >= h - 1e-9 * max(1, abs(h))
         }
-        let rise = toward.z
-        func unoccluded(_ p: P3<WorldSpace>) -> Bool {
-            // Nothing can stand in the way of a sight line that does not
-            // descend toward the solid, once it has left this point.
-            guard rise > 0 else { return true }
-            let step = 0.5 * cell / max(simd_length(SIMD2(toward.x, toward.y)), 1e-12)
-            var t = step
-            while true {
-                let q = p.v + t * toward
-                // Above everything, or out past the box of every tile, which
-                // is convex and so is not re-entered: open air from here on.
-                if q.z > top { return true }
-                if q.x < lo.x || q.x > hi.x || q.y < lo.y || q.y > hi.y { return true }
-                if q.z + margin < surface.height(at: P2<DomainSpace>(q.x, q.y), tiles: tiles) {
-                    return false
+        let boxes: [(lo: SIMD2<Double>, hi: SIMD2<Double>)] = tiles.map { tile in
+            let corners = [(d.real.lo, d.imag.lo), (d.real.hi, d.imag.lo),
+                           (d.real.lo, d.imag.hi), (d.real.hi, d.imag.hi)]
+                .map { tile(P3<WorldSpace>($0.0, $0.1, 0)) }
+            return (SIMD2(corners.map(\.x).min()!, corners.map(\.y).min()!),
+                    SIMD2(corners.map(\.x).max()!, corners.map(\.y).max()!))
+        }
+        /// Whether some wall this point lies in faces the eye.
+        func facesEye(_ p: P3<WorldSpace>) -> Bool {
+            var onAnyWall = false
+            for box in boxes {
+                let walls: [(on: Bool, outward: SIMD3<Double>)] = [
+                    (abs(p.x - box.lo.x) <= slack, SIMD3(-1, 0, 0)),
+                    (abs(p.x - box.hi.x) <= slack, SIMD3(1, 0, 0)),
+                    (abs(p.y - box.lo.y) <= slack, SIMD3(0, -1, 0)),
+                    (abs(p.y - box.hi.y) <= slack, SIMD3(0, 1, 0)),
+                ]
+                for wall in walls where wall.on {
+                    onAnyWall = true
+                    if -simd_dot(wall.outward, sight) > 0 { return true }
                 }
-                t += step
             }
+            // Ink that stands in no wall is left to the march alone.
+            return !onAnyWall
         }
+        return Self.runs(of: paths) { (onCrest($0) || facesEye($0)) && march.unoccluded($0) }
+    }
+
+    /// The runs of each path whose vertices pass `keep`, split where one
+    /// does not; runs shorter than two vertices draw nothing and are dropped.
+    static func runs(of paths: PolylineSet<WorldSpace>,
+                     keep: (P3<WorldSpace>) -> Bool) -> PolylineSet<WorldSpace> {
         var out: [[P3<WorldSpace>]] = []
-        for i in 0..<folds.count {
+        for i in 0..<paths.count {
             var run: [P3<WorldSpace>] = []
-            for v in folds[path: i] {
-                if unoccluded(v) {
+            for v in paths[path: i] {
+                if keep(v) {
                     run.append(v)
                 } else {
                     if run.count >= 2 { out.append(run) }
@@ -220,6 +257,58 @@ public struct Heightfield: Sendable {
             if run.count >= 2 { out.append(run) }
         }
         return PolylineSet(paths: out)
+    }
+}
+
+/// A march up a sight line through a heightfield's solid: the question the
+/// depth pass answers for every pixel, asked for one point, exactly. Built
+/// once per camera, since it scans the samples for the solid's extent.
+struct SightMarch {
+    let heightfield: Heightfield
+    let toward: SIMD3<Double>
+    let margin: Double
+    let cell: Double
+    let top: Double
+    let lo: SIMD2<Double>, hi: SIMD2<Double>
+
+    init(_ heightfield: Heightfield, view: Transform<WorldSpace, ViewSpace>, margin: Double) {
+        self.heightfield = heightfield
+        self.toward = -view.sightLine
+        self.margin = margin
+        let g = heightfield.surface.height
+        cell = max(abs(g.domain.real.length) / Double(max(g.width - 1, 1)),
+                   abs(g.domain.imag.length) / Double(max(g.height - 1, 1)))
+        var top = -Double.infinity
+        var lo = SIMD2(Double.infinity, Double.infinity), hi = -lo
+        heightfield.forEachSample {
+            top = max(top, $0.z)
+            lo = simd_min(lo, SIMD2($0.x, $0.y)); hi = simd_max(hi, SIMD2($0.x, $0.y))
+        }
+        self.top = top; self.lo = lo; self.hi = hi
+    }
+
+    /// Whether nothing of the solid stands between `p` and the eye: half-cell
+    /// steps up the sight line, hidden where one passes under the surface
+    /// inside the region, done once above everything or out past the box of
+    /// every tile, which is convex and so is not re-entered.
+    func unoccluded(_ p: P3<WorldSpace>) -> Bool {
+        // Nothing can stand in the way of a sight line that does not descend
+        // toward the solid, once it has left this point.
+        guard toward.z > 0 else { return true }
+        let step = 0.5 * cell / max(simd_length(SIMD2(toward.x, toward.y)), 1e-12)
+        var t = step
+        while true {
+            let q = p.v + t * toward
+            if q.z > top { return true }
+            if q.x < lo.x || q.x > hi.x || q.y < lo.y || q.y > hi.y { return true }
+            let over = P2<WorldSpace>(q.x, q.y)
+            if heightfield.region.contains(over),
+               q.z + margin < heightfield.surface.height(at: P2<DomainSpace>(q.x, q.y),
+                                                          tiles: heightfield.tiles) {
+                return false
+            }
+            t += step
+        }
     }
 }
 
@@ -342,6 +431,12 @@ public struct Scene: Sendable {
                     // passes these through.
                     return (layer, h.visibleFolds(view: camera.view, margin: margin).mapped(camera.view))
                 }
+            }
+            if layer.spec.source.isWallInk, layer.spec.clipped, let h = heightfield {
+                // Likewise judged by the wall it lies in and the solid, since
+                // the depth buffer cannot judge ink on an edge-on face.
+                return (layer, h.visibleWallInk(layer.paths, view: camera.view, margin: margin)
+                            .mapped(camera.view))
             }
             return (layer, layer.paths.mapped(camera.view))
         }

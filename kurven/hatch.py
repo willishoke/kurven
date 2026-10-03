@@ -162,11 +162,31 @@ def wall_hatch(source, perimeter, height):
     return out
 
 
-def wall_outline(source, perimeter, height):
+def _cap_crossing(ax, ay, ea, bx, by, eb, cap_at):
+    """Where the straight segment from `a`, under the cap, to `b`, over it,
+    reaches the cap: solved on the heights linearly, which is the same
+    interpolation the rim is contoured by, so the crest meets the rim where
+    the rim ends. `ea`, `eb` are the heights' excess over the cap. None when
+    the crossing is one of the ends. The arithmetic is `Surface.capCrossing`'s,
+    operation for operation, since the fixtures hold the two to the bit."""
+    t = ea / (ea - eb)
+    if not (t > 0.0 and t < 1.0):
+        return None
+    x = ax + (bx - ax) * t
+    y = ay + (by - ay) * t
+    return (x, y, float(np.asarray(cap_at(x))))
+
+
+def wall_outline(source, perimeter, height, magnitude=None, caps=None):
     """`LayerWallOutline` -> crest and foot per edge, then a post per corner.
 
     The corners are deduplicated by exact coordinate, so a closed traversal
     stands one post at each of its corners rather than two.
+
+    With `magnitude` (the uncapped height) and `caps`, the crest gains a vertex
+    wherever it reaches the cap between two samples: without it the crest met
+    the cap only at the next sample, a cell past where the rim ends, and the
+    two were drawn with a gap between them.
     """
     out = []
     corners = []
@@ -176,7 +196,23 @@ def wall_outline(source, perimeter, height):
         edge = perimeter.edges[index]
         x, y = edge_points(edge, max(int(edge.density), 2))
         z = np.asarray(height(x, y), dtype=float)
-        out.append(np.column_stack([x, y, z]))
+        crest = np.column_stack([x, y, z])
+        if magnitude is not None and caps is not None:
+            u = np.asarray(magnitude(x, y), dtype=float)
+            e = u - np.asarray(caps.at(x), dtype=float)
+            rows = []
+            for i in range(len(x)):
+                if i > 0:
+                    under, over = (i - 1, i) if e[i - 1] <= 0 < e[i] else (
+                        (i, i - 1) if e[i] <= 0 < e[i - 1] else (None, None))
+                    if under is not None and np.isfinite(e[under]) and np.isfinite(e[over]):
+                        rim = _cap_crossing(x[under], y[under], e[under],
+                                            x[over], y[over], e[over], caps.at)
+                        if rim is not None:
+                            rows.append(rim)
+                rows.append((x[i], y[i], z[i]))
+            crest = np.array(rows, dtype=float)
+        out.append(crest)
         out.append(np.column_stack([x, y, np.full(len(x), source.base)]))
         for corner in (edge.start, edge.end):
             if corner not in corners:
@@ -386,7 +422,7 @@ def derive(source, *, perimeter=None, region=None, tiles=(), height=None,
     elif isinstance(source, LayerWallOutline):
         if perimeter is None:
             return []
-        paths = wall_outline(source, perimeter, height)
+        paths = wall_outline(source, perimeter, height, magnitude, caps)
     elif isinstance(source, LayerCapHatch):
         paths = cap_hatch(source, domain, height_grid.shape, caps, magnitude)
         if source.tiled:

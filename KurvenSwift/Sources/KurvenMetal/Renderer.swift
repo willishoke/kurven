@@ -327,11 +327,13 @@ public final class MetalRenderer {
     /// content, so moving a level set rebuilds the strokes and leaves the
     /// heightfield texture alone.
     func lineGeometry(for scene: Scene) throws -> LineGeometry {
-        let folds = scene.heightfield != nil && scene.layers.contains { layer in
+        // Fold lines and wall ink on a heightfield are judged for the camera,
+        // so the geometry is the camera's too.
+        let judged = scene.heightfield != nil && scene.layers.contains { layer in
             if case .foldLines = layer.spec.source { return true }
-            return false
+            return layer.spec.source.isWallInk && layer.spec.clipped
         }
-        let key: Camera? = folds ? scene.camera : nil
+        let key: Camera? = judged ? scene.camera : nil
         if let c = cachedLines, c.ink == scene.ink, c.camera == key { return c.geometry }
         let g = try LineGeometry(scene: scene, device: device)
         cachedLines = (scene.ink, key, g)
