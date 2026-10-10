@@ -775,8 +775,12 @@ struct SightMarch: Sendable {
     {
         let u = magnitude(q)
         let e = 1e-4 * cell
-        let hx = (magnitude(P2(q.x + e, q.y)) - magnitude(P2(q.x - e, q.y))) / (2 * e)
-        let hy = (magnitude(P2(q.x, q.y + e)) - magnitude(P2(q.x, q.y - e))) / (2 * e)
+        // One-sided, from the value already in hand: three evaluations of
+        // f per sample rather than five, at a step small enough that the
+        // difference from the centred slope is below what the cosine or
+        // the rate is used for.
+        let hx = (magnitude(P2(q.x + e, q.y)) - u) / e
+        let hy = (magnitude(P2(q.x, q.y + e)) - u) / e
         return (u.isNaN ? .infinity : u, SIMD2(hx, hy))
     }
 
@@ -801,29 +805,27 @@ struct SightMarch: Sendable {
         /// it: over the interpolated facet and over the cap, and the facet's
         /// cosine; nil where the point is outside the region, over which
         /// nothing is drawn.
-        func gaps(_ t: Double) -> (overFacet: Double, overCap: Double, cosine: Double)? {
-            let q = pxy + t * dxy
-            guard heightfield.region.contains(P2<WorldSpace>(q.x, q.y)) else { return nil }
-            let (interpolated, cap, cosine) = drawnSurface(at: q)
-            let z = p.z + t * d.z
-            return (z - interpolated, z - cap, cosine)
-        }
-        /// With the function: the line's gap over f at `t` and the rate the
-        /// gap changes along the line, for finding a dip of f under the
-        /// line between two crossings, where the facet model has nothing to
-        /// find. Nil outside the region.
+        /// With the function, the sample also carries the rate the gap over
+        /// f changes along the line, from the same three evaluations, for
+        /// finding where the gap peaks or dips between two crossings.
+        /// Through a reflected tile the slope's sign flips with the
+        /// reflection; only its product with the line's direction is needed,
+        /// and both are read in the same frame.
         let magnitude = heightfield.refine?.magnitude
-        func gapOverF(_ t: Double) -> (gap: Double, rate: Double)? {
-            guard let magnitude else { return nil }
+        typealias Sample = (overFacet: Double, overCap: Double, cosine: Double, rate: Double)
+        func gaps(_ t: Double) -> Sample? {
             let q = pxy + t * dxy
             guard heightfield.region.contains(P2<WorldSpace>(q.x, q.y)) else { return nil }
-            let dq = heightfield.surface.inTile(P2<DomainSpace>(q.x, q.y), tiles: heightfield.tiles)
-            let (u, slope) = functionSurface(at: dq, magnitude: magnitude)
             let z = p.z + t * d.z
-            // Through a reflected tile the slope's sign flips with the
-            // reflection; only its product with the line's direction is
-            // needed, and both are read in the same frame here.
-            return (z - u, d.z - simd_dot(slope, dxy))
+            if let magnitude {
+                let dq = heightfield.surface.inTile(P2<DomainSpace>(q.x, q.y), tiles: heightfield.tiles)
+                let (u, slope) = functionSurface(at: dq, magnitude: magnitude)
+                let cosine = 1 / (1 + simd_dot(slope, slope)).squareRoot()
+                let cap = heightfield.surface.caps.height(atX: dq.x)
+                return (z - u, z - cap, cosine.isNaN ? 0 : cosine, d.z - simd_dot(slope, dxy))
+            }
+            let (interpolated, cap, cosine) = drawnSurface(at: q)
+            return (z - interpolated, z - cap, cosine, 0)
         }
         // The cap's bands, if any, as levels of the lattice's u where the
         // cap steps: a crossing of the drawn surface too.
@@ -856,7 +858,10 @@ struct SightMarch: Sendable {
             if u0.x > 1e-9, u0.x < lattice.extent.x - 1e-9,
                u0.y > 1e-9, u0.y < lattice.extent.y - 1e-9 { strictlyInside = true }
             ts.append(ta); ts.append(tb)
-            for family in 0..<3 {
+            // The diagonals split the lattice's cells into the facets the
+            // depth pass draws; f has no facets, and its brackets are the
+            // rows and columns.
+            for family in 0..<(magnitude == nil ? 3 : 2) {
                 let f0 = family < 2 ? u0[family] : u0.x + u0.y
                 let df = family < 2 ? du[family] : du.x + du.y
                 guard abs(df) > 1e-15 else { continue }
@@ -891,8 +896,7 @@ struct SightMarch: Sendable {
         var startJudged = false
         /// Hidden at `t`, judged under a facet of the given cosine; `g` is
         /// the gap there, nil beyond the region (outside, then).
-        func hidden(_ t: Double, _ g: (overFacet: Double, overCap: Double, cosine: Double)?,
-                    cosine: Double) -> Bool {
+        func hidden(_ t: Double, _ g: Sample?, cosine: Double) -> Bool {
             var judged = t > tEps
             if !judged, strictlyInside, !startJudged { judged = true; startJudged = true }
             // At the start, a point on the surface to rounding is in its own
@@ -932,16 +936,22 @@ struct SightMarch: Sendable {
             return depth + margin < 0
         }
         trace?(String(format: "from (%.4f, %.4f, %.4f), %d samples to %.4g cells", p.x, p.y, p.z, ts.count, (ts.last ?? 0) / cell))
+        var previousMiddle: Sample?
         for k in 0..<ts.count {
             let t = ts[k], g = values[k]
             // A point on a lattice line lies under two facets: judged by
-            // the facet behind it and the one ahead.
-            let before = k > 0 ? gaps(0.5 * (ts[k - 1] + t))?.cosine : nil
-            let after = k + 1 < ts.count ? gaps(0.5 * (t + ts[k + 1]))?.cosine : nil
-            let cosines = [before, after].compactMap { $0 }
-            for cosine in cosines.isEmpty ? [g?.cosine ?? 1] : cosines {
-                if hidden(t, g, cosine: cosine) { return false }
-            }
+            // the facet behind it and the one ahead. Under f the cosine is
+            // continuous and the sample's own serves. The sample at the
+            // middle of the interval ahead is taken once, for this and for
+            // the search of the interval.
+            let middle: Sample? = k + 1 < ts.count ? gaps(0.5 * (t + ts[k + 1])) : nil
+            if magnitude == nil {
+                let cosines = [previousMiddle?.cosine, middle?.cosine].compactMap { $0 }
+                for cosine in cosines.isEmpty ? [g?.cosine ?? 1] : cosines {
+                    if hidden(t, g, cosine: cosine) { return false }
+                }
+            } else if hidden(t, g, cosine: g?.cosine ?? 1) { return false }
+            previousMiddle = middle
             // With the function, a dip of f under the line between this
             // crossing and the next: where the gap over f falls at one end
             // and rises at the other it has a least value between, found by
@@ -959,29 +969,28 @@ struct SightMarch: Sendable {
             // the greatest if that came first. A point just in front of a
             // fold is the case: its line leaves the surface, passes under it
             // and comes out again before the cut.
-            if magnitude != nil, k + 1 < ts.count, g != nil, values[k + 1] != nil,
-               let ra = gapOverF(t), let rb = gapOverF(ts[k + 1]),
-               let rm = gapOverF(0.5 * (t + ts[k + 1])) {
+            if magnitude != nil, k + 1 < ts.count, let ra = g, let rb = values[k + 1], let rm = middle {
                 let ta = t, tb = ts[k + 1], tm = 0.5 * (ta + tb)
                 let phi = (5.0.squareRoot() - 1) / 2
+                func gapOverF(_ x: Double) -> Double { gaps(x)?.overFacet ?? .infinity }
                 /// The t of the least (or, negated, the greatest) gap on a span.
                 func extremum(_ lo0: Double, _ hi0: Double, sign: Double) -> Double {
                     var lo = lo0, hi = hi0
                     var c = hi - phi * (hi - lo), e = lo + phi * (hi - lo)
-                    var fc = sign * (gapOverF(c)?.gap ?? .infinity), fe = sign * (gapOverF(e)?.gap ?? .infinity)
+                    var fc = sign * gapOverF(c), fe = sign * gapOverF(e)
                     for _ in 0..<60 {
-                        if fc < fe { hi = e; e = c; fe = fc; c = hi - phi * (hi - lo); fc = sign * (gapOverF(c)?.gap ?? .infinity) }
-                        else { lo = c; c = e; fc = fe; e = lo + phi * (hi - lo); fe = sign * (gapOverF(e)?.gap ?? .infinity) }
+                        if fc < fe { hi = e; e = c; fe = fc; c = hi - phi * (hi - lo); fc = sign * gapOverF(c) }
+                        else { lo = c; c = e; fc = fe; e = lo + phi * (hi - lo); fe = sign * gapOverF(e) }
                         if hi - lo < tEps { break }
                     }
                     return 0.5 * (lo + hi)
                 }
                 var peak: Double?
-                if rm.gap > max(ra.gap, rb.gap) { peak = extremum(ta, tb, sign: -1) }
+                if rm.overFacet > max(ra.overFacet, rb.overFacet) { peak = extremum(ta, tb, sign: -1) }
                 else if ra.rate > 0, rm.rate < 0 { peak = extremum(ta, tm, sign: -1) }
                 else if rm.rate > 0, rb.rate < 0 { peak = extremum(tm, tb, sign: -1) }
                 var dip: Double?
-                if rm.gap < min(ra.gap, rb.gap) { dip = extremum(ta, tb, sign: 1) }
+                if rm.overFacet < min(ra.overFacet, rb.overFacet) { dip = extremum(ta, tb, sign: 1) }
                 else if ra.rate < 0, rm.rate > 0 { dip = extremum(ta, tm, sign: 1) }
                 else if rm.rate < 0, rb.rate > 0 { dip = extremum(tm, tb, sign: 1) }
                 else if ra.rate < 0, rb.rate > 0 { dip = extremum(ta, tb, sign: 1) }
@@ -1011,7 +1020,7 @@ struct SightMarch: Sendable {
                         rim = 0.5 * (lo + hi)
                     }
                     if rim > tEps, let gr = gaps(rim) {
-                        if hidden(rim, gr, cosine: after ?? gr.cosine) { return false }
+                        if hidden(rim, gr, cosine: middle?.cosine ?? gr.cosine) { return false }
                         if hidden(rim, gr, cosine: 1) { return false }
                     }
                 }
