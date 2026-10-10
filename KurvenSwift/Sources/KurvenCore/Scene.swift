@@ -901,7 +901,17 @@ struct SightMarch: Sendable {
             guard let g, g.overFacet < zEps, g.overCap < zEps else {
                 // Outside here, the start included: a point on the boundary
                 // that stands above the surface is outside from the start,
-                // and what its line then enters is an occluder.
+                // and what its line then enters is an occluder. Against f,
+                // outside means outside by more than the margin: a line that
+                // grazes out of the surface by less than its skin and back
+                // in has not left it.
+                if let g, magnitude != nil {
+                    let clearance = g.overFacet > g.overCap ? g.overFacet * cosine : g.overCap
+                    if clearance <= margin {
+                        trace?(String(format: "t %.4g cells: within the skin, %.3e over f", t / cell, g.overFacet))
+                        return false
+                    }
+                }
                 outsideYet = true
                 trace?(String(format: "t %.4g cells: outside (gap %@)", t / cell,
                               g.map { String(format: "%+.3e over f, %+.3e over cap", $0.overFacet, $0.overCap) } ?? "off the region"))
@@ -936,22 +946,51 @@ struct SightMarch: Sendable {
             // crossing and the next: where the gap over f falls at one end
             // and rises at the other it has a least value between, found by
             // golden section; under the line, it is judged where it is.
+            // With the function, the gap over f between this crossing and
+            // the next is not the facet's straight line: it can rise above
+            // the surface's skin and fall back under it, or dip under and
+            // come back out, between two samples that see neither. The gap
+            // and its rate are read at both ends and at the middle; a
+            // greatest value is bracketed where the gap rises at one end and
+            // falls at the other, or the middle is above both ends, and a
+            // least value likewise; each is found by golden section. The
+            // greatest, if its clearance exceeds the margin, is the line
+            // leaving the surface; the least is judged where it is, after
+            // the greatest if that came first. A point just in front of a
+            // fold is the case: its line leaves the surface, passes under it
+            // and comes out again before the cut.
             if magnitude != nil, k + 1 < ts.count, g != nil, values[k + 1] != nil,
                let ra = gapOverF(t), let rb = gapOverF(ts[k + 1]),
-               ra.gap > 0, rb.gap > 0, ra.rate < 0, rb.rate > 0 {
-                var lo = t, hi = ts[k + 1]
+               let rm = gapOverF(0.5 * (t + ts[k + 1])) {
+                let ta = t, tb = ts[k + 1], tm = 0.5 * (ta + tb)
                 let phi = (5.0.squareRoot() - 1) / 2
-                var c = hi - phi * (hi - lo), e = lo + phi * (hi - lo)
-                var fc = gapOverF(c)?.gap ?? .infinity, fe = gapOverF(e)?.gap ?? .infinity
-                for _ in 0..<60 {
-                    if fc < fe { hi = e; e = c; fe = fc; c = hi - phi * (hi - lo); fc = gapOverF(c)?.gap ?? .infinity }
-                    else { lo = c; c = e; fc = fe; e = lo + phi * (hi - lo); fe = gapOverF(e)?.gap ?? .infinity }
-                    if hi - lo < tEps { break }
+                /// The t of the least (or, negated, the greatest) gap on a span.
+                func extremum(_ lo0: Double, _ hi0: Double, sign: Double) -> Double {
+                    var lo = lo0, hi = hi0
+                    var c = hi - phi * (hi - lo), e = lo + phi * (hi - lo)
+                    var fc = sign * (gapOverF(c)?.gap ?? .infinity), fe = sign * (gapOverF(e)?.gap ?? .infinity)
+                    for _ in 0..<60 {
+                        if fc < fe { hi = e; e = c; fe = fc; c = hi - phi * (hi - lo); fc = sign * (gapOverF(c)?.gap ?? .infinity) }
+                        else { lo = c; c = e; fc = fe; e = lo + phi * (hi - lo); fe = sign * (gapOverF(e)?.gap ?? .infinity) }
+                        if hi - lo < tEps { break }
+                    }
+                    return 0.5 * (lo + hi)
                 }
-                let tm = 0.5 * (lo + hi)
-                trace?(String(format: "dip between %.4g and %.4g cells: least gap %+.3e at %.4g cells",
-                              t / cell, ts[k + 1] / cell, gaps(tm)?.overFacet ?? .nan, tm / cell))
-                if let gm = gaps(tm), gm.overFacet < 0, hidden(tm, gm, cosine: gm.cosine) { return false }
+                var peak: Double?
+                if rm.gap > max(ra.gap, rb.gap) { peak = extremum(ta, tb, sign: -1) }
+                else if ra.rate > 0, rm.rate < 0 { peak = extremum(ta, tm, sign: -1) }
+                else if rm.rate > 0, rb.rate < 0 { peak = extremum(tm, tb, sign: -1) }
+                var dip: Double?
+                if rm.gap < min(ra.gap, rb.gap) { dip = extremum(ta, tb, sign: 1) }
+                else if ra.rate < 0, rm.rate > 0 { dip = extremum(ta, tm, sign: 1) }
+                else if rm.rate < 0, rb.rate > 0 { dip = extremum(tm, tb, sign: 1) }
+                else if ra.rate < 0, rb.rate > 0 { dip = extremum(ta, tb, sign: 1) }
+                func judge(_ tx: Double) -> Bool {
+                    guard let gx = gaps(tx) else { return false }
+                    trace?(String(format: "extremum at %.4g cells between %.4g and %.4g: gap %+.3e", tx / cell, ta / cell, tb / cell, gx.overFacet))
+                    return hidden(tx, gx, cosine: gx.cosine)
+                }
+                for tx in [peak, dip].compactMap({ $0 }).sorted() where judge(tx) { return false }
             }
             // The rim between this crossing and the next, where the facet
             // meets the cap: a crease, judged under both.

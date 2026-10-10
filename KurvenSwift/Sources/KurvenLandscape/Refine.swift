@@ -403,7 +403,19 @@ public struct ContourRefiner: Sendable {
         let slope = (gx * gx + gy * gy).squareRoot()
         guard slope > 0, slope.isFinite else { return }
         let error = abs(r) / slope
-        guard error > tolerance * cell else { return }
+        // A phase line is a curve in space: across the plane it is placed to
+        // the tolerance, but on a steep flank its height between two
+        // vertices is not the chord's, and in projection the chords kink.
+        // So a chord is also split where |f| at its midpoint departs from
+        // the mean of |f| at its ends by more than the tolerance. A
+        // magnitude line is level and has no height to depart in.
+        var sag = 0.0
+        if cut {
+            let ua = magnitude(Complex(a.x, a.y)), ub = magnitude(Complex(b.x, b.y))
+            let um = magnitude(Complex(mid.x, mid.y))
+            if ua.isFinite, ub.isFinite, um.isFinite { sag = abs(um - 0.5 * (ua + ub)) }
+        }
+        guard error > tolerance * cell || sag > tolerance * cell else { return }
         // Solve along the unit normal to the chord, starting from the Newton
         // step, secant thereafter; give up rather than wander further than a
         // chord's length from the midpoint.

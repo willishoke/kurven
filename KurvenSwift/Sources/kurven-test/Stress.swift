@@ -201,7 +201,8 @@ func exactlyHidden(_ mesh: Mesh<WorldSpace>, from p: SIMD3<Double>, along toward
 /// or beyond the margin's reach is occlusion. The oracle for `SightMarch`
 /// with the function at hand.
 func denselyHidden(_ h: Heightfield, magnitude: ContourRefine.Magnitude, from p: SIMD3<Double>,
-                   along toward: SIMD3<Double>, margin: Double, perUnit: Double, cell: Double) -> Double? {
+                   along toward: SIMD3<Double>, margin: Double, perUnit: Double, cell: Double,
+                   trace: ((String) -> Void)? = nil) -> Double? {
     let reach = margin / max(perUnit, 1e-12)
     var top = -Double.infinity
     h.forEachSample { top = max(top, $0.z) }
@@ -242,10 +243,23 @@ func denselyHidden(_ h: Heightfield, magnitude: ContourRefine.Magnitude, from p:
         && p.y > box.lo.y + 1e-9 && p.y < box.hi.y - 1e-9
     func hidden(_ t: Double, _ g: (overF: Double, overCap: Double, cosine: Double)?) -> Bool {
         let zEps = t > tEps ? 0 : 1e-9 * cell
-        guard inside(g, zEps: zEps), let g else { outsideYet = true; return false }
+        guard inside(g, zEps: zEps), let g else {
+            // As the march: outside by less than the margin is within the
+            // surface's skin, not outside it.
+            if let g {
+                let clearance = g.overF > g.overCap ? g.overF * g.cosine : g.overCap
+                if clearance <= margin { return false }
+            }
+            trace?(String(format: "cast t %.4g cells: outside (%@)", t / cell, g.map { String(format: "%+.3e over f", $0.overF) } ?? "off"))
+            outsideYet = true; return false
+        }
         guard t > tEps || strictlyInside else { return false }
-        if outsideYet { return t + tEps >= reach }
+        if outsideYet {
+            trace?(String(format: "cast t %.4g cells: inside by %.3e after outside: %@", t / cell, -g.overF, t + tEps >= reach ? "hidden" : "forgiven"))
+            return t + tEps >= reach
+        }
         let depth = g.overF > g.overCap ? g.overF * g.cosine : g.overCap
+        trace?(String(format: "cast t %.4g cells: inside by %.3e, cosine %.4f, depth %.3e, margin %.3e: %@", t / cell, -g.overF, g.cosine, depth, margin, depth + margin < 0 ? "hidden" : "forgiven"))
         return depth + margin < 0
     }
     // The line leaves the region eventually; walk until it has.
@@ -269,10 +283,10 @@ func denselyHidden(_ h: Heightfield, magnitude: ContourRefine.Magnitude, from p:
             let tc = insideLo ? lo : hi
             if hidden(tc, gaps(tc)) { return tc }
         }
-        if hidden(tn, g) { return tn }
         // Leaving the region between the two: the march judges the exit
         // itself, so the cast does too -- bisected, and judged a hair
-        // inside, where a line passing under a crest is inside the solid.
+        // inside, where a line passing under a crest is inside the solid --
+        // before the sample beyond it, which is off the region.
         if previous != nil, g == nil {
             var lo = t, hi = tn
             for _ in 0..<50 {
@@ -281,6 +295,7 @@ func denselyHidden(_ h: Heightfield, magnitude: ContourRefine.Magnitude, from p:
             }
             if hidden(lo, gaps(lo)) { return lo }
         }
+        if hidden(tn, g) { return tn }
         if g == nil, previous == nil { left += 1; if left > 64 { break } } else { left = 0 }
         previous = g; t = tn
     }
@@ -483,6 +498,8 @@ func stressTests() {
                             }
                             print(profile)
                             print("    the march: " + visF.explain(v).replacingOccurrences(of: "\n", with: "\n    "))
+                            _ = denselyHidden(withF, magnitude: magnitude, from: v.v, along: toward, margin: visF.margin,
+                                              perUnit: perUnit, cell: cell) { print("    " + $0) }
                         }
                         if disagreeF <= 6 {
                             let v = vertices[k]
