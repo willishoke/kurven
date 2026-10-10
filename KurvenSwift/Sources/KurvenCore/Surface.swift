@@ -124,6 +124,47 @@ public struct Surface: Sendable {
         return best ?? p
     }
 
+    /// The height as the depth pass draws it over a domain point: the grid
+    /// decimated by `step`, each cell as the two triangles the rasterizer
+    /// splits it into -- from corner (1, 0) to corner (0, 1) -- then capped.
+    /// `height(at:)` interpolates bilinearly, which is what the Python plate
+    /// placed its ink by and the fixtures pin; this is what the ink is drawn
+    /// against, and the two differ within a cell by its twist.
+    func drawnHeight(at p: P2<DomainSpace>, step: Int) -> Double {
+        let drawn = drawnSurface(at: p, step: step)
+        return min(drawn.interpolated, drawn.cap)
+    }
+
+    /// `drawnHeight` as the two numbers it is the lesser of -- the lattice's
+    /// interpolated height and the cap over the point -- with the cosine of
+    /// the interpolating facet's tilt, `1 / sqrt(1 + |∇h|²)`, which turns a
+    /// vertical gap to that facet into a perpendicular distance.
+    func drawnSurface(at p: P2<DomainSpace>, step: Int)
+        -> (interpolated: Double, cap: Double, cosine: Double)
+    {
+        let g = height
+        let step = max(step, 1)
+        let nx = (g.width + step - 1) / step, ny = (g.height + step - 1) / step
+        let cap = caps.height(atX: p.x)
+        guard nx >= 2, ny >= 2 else { return (Double(g[0, 0]), cap, 1) }
+        let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1)) * Double(step)
+        let dy = abs(g.domain.imag.length) / Double(max(g.height - 1, 1)) * Double(step)
+        let f = g.index(of: p) / Double(step)
+        let fx = min(max(f.x, 0), Double(nx - 1)), fy = min(max(f.y, 0), Double(ny - 1))
+        let i = min(Int(fx), nx - 2), j = min(Int(fy), ny - 2)
+        let u = fx - Double(i), v = fy - Double(j)
+        let h00 = Double(g[i * step, j * step]), h10 = Double(g[(i + 1) * step, j * step])
+        let h01 = Double(g[i * step, (j + 1) * step]), h11 = Double(g[(i + 1) * step, (j + 1) * step])
+        let lower = u + v <= 1
+        let h = lower
+            ? h00 + u * (h10 - h00) + v * (h01 - h00)
+            : h11 + (1 - u) * (h01 - h11) + (1 - v) * (h10 - h11)
+        let hx = (lower ? h10 - h00 : h11 - h01) / dx
+        let hy = (lower ? h01 - h00 : h11 - h10) / dy
+        let cosine = 1 / (1 + hx * hx + hy * hy).squareRoot()
+        return (h.isNaN ? .infinity : h, cap, cosine.isNaN ? 0 : cosine)
+    }
+
     /// Lift a domain point onto the (capped) surface.
     public func lift(_ p: P2<DomainSpace>) -> P3<WorldSpace> {
         P3(p.x, p.y, height(at: p))

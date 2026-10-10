@@ -65,10 +65,9 @@ func facingTests() {
         let empty = DepthImage(frame: frame,
                                values: [Float](repeating: -.infinity, count: frame.rows * frame.cols),
                                empty: -.infinity)
-        let visibility = HeightfieldVisibility(heightfield: field, depth: empty, margin: 0.02,
-                                               view: camera.view)
         let byDepth = HiddenLine.clip(projected, against: empty, margin: 0.02)
-        let cut = HiddenLine.clip(projected, world: ink, on: visibility)
+        // An infinite margin disarms the march: the facing alone decides.
+        let cut = field.visibleSurfaceInk(ink, view: camera.view, margin: .infinity).mapped(camera.view)
         Check.expect(byDepth.count == 1 && byDepth.vertices.count == ink.vertices.count,
                      "judged by depth alone, the whole path is kept")
 
@@ -104,6 +103,14 @@ func facingTests() {
         Check.expect(kept < ink.vertices.count && kept > ink.vertices.count / 2,
                      "and the stretch between them, facing away, is gone",
                      "\(ink.vertices.count - kept) of \(ink.vertices.count) vertices hidden")
+        // With the march armed, the far foot -- facing the eye again, but
+        // behind the ridge from where the eye is -- goes too: the sight line
+        // from it passes under the crest.
+        let judged = field.visibleSurfaceInk(ink, view: camera.view, margin: 0.02).mapped(camera.view)
+        let lastKept = judged.vertices.last.map { simd_length($0.v - expected[0].v) } ?? .infinity
+        Check.expect(judged.count == 1 && lastKept < 2e-3,
+                     "judged by the solid as well, only the near flank remains, up to the first fold",
+                     "\(judged.count) runs, last vertex \(String(format: "%.1e", lastKept)) from the fold")
     }
 }
 
@@ -192,7 +199,7 @@ func foldLineTests() {
         guard let bounds = scene.viewBounds() else { Check.expect(false, "the plate has bounds"); return }
         let frame = DepthFrame(covering: bounds, resolution: 10)
         let empty = DepthImage(frame: frame, values: [Float](repeating: -.infinity, count: frame.rows * frame.cols))
-        let visibility = HeightfieldVisibility(heightfield: h, depth: empty, margin: 0.02, view: scene.camera.view)
+        let visibility = HeightfieldVisibility(heightfield: h, view: scene.camera.view, margin: 0.02)
         let edgeOn = folds.vertices.map { abs(visibility.facing(P2($0.x, $0.y))) }.max() ?? .infinity
         Check.expect(edgeOn < 1e-6, "every vertex is where the surface faces exactly edge-on",
                      String(format: "worst |facing| %.1e", edgeOn))

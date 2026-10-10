@@ -148,12 +148,8 @@ public extension MetalRenderer {
         let visibility = scene.parametric.flatMap { s in
             image.map { SurfaceVisibility(surface: s, image: $0, view: scene.camera.view) }
         }
-        let onHeightfield = scene.heightfield.map { h in
-            HeightfieldVisibility(heightfield: h, depth: depth, margin: margin,
-                                  view: scene.camera.view)
-        }
         var layers: [(style: Style, paths: PolylineSet<PlateSpace>)] = []
-        for (layer, projected) in scene.projectedLayers() {
+        for (layer, projected) in scene.judgedLayers(margin: margin) {
             let clipped: PolylineSet<PlateSpace>
             if !layer.spec.clipped {
                 clipped = HiddenLine.pass(projected)
@@ -163,21 +159,17 @@ public extension MetalRenderer {
                 let onFolds: Bool
                 if case .foldLines = layer.spec.source { onFolds = true } else { onFolds = false }
                 clipped = HiddenLine.clip(projected, on: visibility, onFolds: onFolds)
-            } else if let onHeightfield, layer.spec.liesOnSurface {
-                // Ink on the heightfield itself is hidden where the surface
-                // faces away, and depth-tested where it does not.
-                clipped = HiddenLine.clip(projected, world: layer.paths, on: onHeightfield)
-            } else if onHeightfield != nil, layer.spec.source.isWallInk {
-                // A heightfield's wall ink comes already judged, by the wall
-                // it lies in and the solid (`Heightfield.visibleWallInk`).
-                clipped = HiddenLine.pass(projected)
-            } else if onHeightfield != nil, case .foldLines = layer.spec.source {
-                // A heightfield's folds come already judged, by the solid
-                // (`Heightfield.visibleFolds`): the depth buffer cannot judge
-                // ink on an edge-on surface.
-                clipped = HiddenLine.pass(projected)
-            } else {
+            } else if visibility != nil {
+                // Ink on a parametric surface that carries no coordinates
+                // falls back to depth, at the margin.
                 clipped = HiddenLine.clip(projected, against: depth, margin: margin)
+            } else {
+                // A heightfield's ink comes judged by the facing of what it
+                // lies on and by the solid (`SightMarch`). It never consults
+                // the depth buffer, which is why the drawing is the same at
+                // every resolution: the buffer is rendered for the `depth`
+                // output and the silhouette, and for nothing the ink depends on.
+                clipped = HiddenLine.pass(projected)
             }
             layers.append((Style(layer.spec), clipped))
         }
