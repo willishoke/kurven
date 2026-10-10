@@ -498,6 +498,9 @@ public enum LayerSource: Sendable, Equatable {
     /// A trajectory of a flow, integrated and carried as ink with its
     /// coordinates on the invariant surface it winds round.
     case trajectory
+    /// The edges of a solid, judged per edge by its two faces and cut
+    /// exactly where another face hides them (`Solid.visibleEdges`).
+    case edges
 
     /// Ink that lies in a cut face: a wall's hatch and its outline. On a
     /// heightfield it is judged by the wall it lies in and by the solid
@@ -556,6 +559,8 @@ public enum LayerSource: Sendable, Equatable {
             self = .foldLines
         case "trajectory":
             self = .trajectory
+        case "edges":
+            self = .edges
         case "parameterLines":
             self = .parameterLines(u: try o.int("u", "LayerSource.parameterLines"),
                                    v: try o.int("v", "LayerSource.parameterLines"))
@@ -568,7 +573,8 @@ public enum LayerSource: Sendable, Equatable {
                                             known: ["file", "contour", "wallHatch",
                                                     "wallOutline", "capHatch",
                                                     "capOutline", "parameterLines",
-                                                    "winding", "foldLines", "trajectory"])
+                                                    "winding", "foldLines", "trajectory",
+                                                    "edges"])
         }
     }
     public var json: JSONValue {
@@ -603,6 +609,8 @@ public enum LayerSource: Sendable, Equatable {
             .object(["kind": .string("foldLines")])
         case .trajectory:
             .object(["kind": .string("trajectory")])
+        case .edges:
+            .object(["kind": .string("edges")])
         }
     }
 

@@ -18,24 +18,26 @@ import simd
 /// The two questions asked of ink on a heightfield: does the surface face
 /// the eye where the ink lies, and is anything in front of it.
 ///
-/// The second is the depth test with its margin, as ever. The first is what
-/// `SurfaceVisibility` asks of a parametric surface, and a heightfield can
-/// answer it too, since it bounds the solid under it: the normal is the
-/// gradient, read off the grid. Without it, where a steep flank turns away
-/// from the eye its back lies within the margin of its front for a stretch,
-/// and the ink there -- the other family of contours, wrapping round the
-/// back -- shows through as ticks along the silhouette that zoom magnifies.
+/// The first is what `SurfaceVisibility` asks of a parametric surface, and a
+/// heightfield can answer it too, since it bounds the solid under it: the
+/// normal is the gradient, read off the grid. Without it, where a steep
+/// flank turns away from the eye its back lies within any margin of its
+/// front for a stretch, and the ink there -- the other family of contours,
+/// wrapping round the back -- shows through as ticks along the silhouette.
+/// The second is the march up the sight line (`SightMarch`): the exact
+/// question the depth buffer approximates per pixel, asked per vertex with
+/// no pixel in it.
 public struct HeightfieldVisibility: Sendable {
     public let heightfield: Heightfield
-    public let depth: DepthImage
     public let margin: Double
     /// The direction sight lines travel, in world space.
     public let sight: SIMD3<Double>
+    let march: SightMarch
 
-    public init(heightfield: Heightfield, depth: DepthImage, margin: Double,
-                view: Transform<WorldSpace, ViewSpace>) {
-        self.heightfield = heightfield; self.depth = depth; self.margin = margin
+    public init(heightfield: Heightfield, view: Transform<WorldSpace, ViewSpace>, margin: Double) {
+        self.heightfield = heightfield; self.margin = margin
         self.sight = view.sightLine
+        self.march = SightMarch(heightfield, view: view, margin: margin)
     }
 
     /// How squarely the surface faces the viewer over `p`: positive facing,
@@ -45,10 +47,13 @@ public struct HeightfieldVisibility: Sendable {
         return -simd_dot(n, sight) / simd_length(n)
     }
 
-    /// The depth test: nothing closer than the margin is in front of `v`.
-    public func isInFront(_ v: P3<ViewSpace>) -> Bool {
-        v.z + margin > depth.depth(under: v.xy)
-    }
+    /// Whether nothing of the solid stands between `p` and the eye, to
+    /// within the margin.
+    public func isClear(_ p: P3<WorldSpace>) -> Bool { march.unoccluded(p) }
+
+    /// The margin as a distance along the sight line: an occluder must
+    /// stand in front of the ink by more than this.
+    public var marginAlongSight: Double { march.reach }
 
     /// Where along the straight segment `a -> b` over the plane the surface
     /// turns edge-on, as a fraction of the way; nil when both ends face the
@@ -86,57 +91,10 @@ public enum HiddenLine {
         return PolylineSet(paths: out)
     }
 
-    /// Hidden-line removal for ink lying on a heightfield: the depth test
-    /// above, and before it the facing test a heightfield allows.
-    ///
-    /// A heightfield bounds the solid under it, so ink on a part of the
-    /// surface that faces away from the eye is hidden, full stop -- the
-    /// depth test's margin has no say. Where a segment crosses the fold it
-    /// is cut at the fold itself, found by bisection on the normal, and the
-    /// new vertex belongs to the run on the visible side, judged by depth
-    /// alone. This is `clip(_:on:onFolds:)`'s shape with the front-most
-    /// test replaced by the depth test: a heightfield has no coordinate
-    /// image, but its normal is a gradient away.
-    ///
-    /// `world` is `paths` before the camera, index for index.
-    public static func clip(_ paths: PolylineSet<ViewSpace>, world: PolylineSet<WorldSpace>,
-                            on visibility: HeightfieldVisibility) -> PolylineSet<PlateSpace> {
-        precondition(paths.vertices.count == world.vertices.count
-                     && paths.offsets == world.offsets,
-                     "the view and world paths of a layer are the same paths")
-        let facing = world.vertices.map { visibility.facing(P2($0.x, $0.y)) }
-        var out: [[P3<PlateSpace>]] = []
-        var run: [P3<PlateSpace>] = []
-        func take(_ v: P3<ViewSpace>, _ visible: Bool) {
-            if visible {
-                run.append(P3(v.v))
-            } else {
-                if run.count >= 2 { out.append(run) }
-                run = []
-            }
-        }
-        for path in 0..<paths.count {
-            let lo = paths.offsets[path], hi = paths.offsets[path + 1]
-            for k in lo..<hi {
-                if k > lo, let t = visibility.foldCrossing(
-                    from: P2(world.vertices[k - 1].x, world.vertices[k - 1].y), facing[k - 1],
-                    to: P2(world.vertices[k].x, world.vertices[k].y), facing[k]) {
-                    let a = paths.vertices[k - 1], b = paths.vertices[k]
-                    let v = P3<ViewSpace>(a.v + (b.v - a.v) * t)
-                    take(v, visibility.isInFront(v))
-                }
-                take(paths.vertices[k], facing[k] > 0 && visibility.isInFront(paths.vertices[k]))
-            }
-            if run.count >= 2 { out.append(run) }
-            run = []
-        }
-        return PolylineSet(paths: out)
-    }
-
-    /// Ink that is not depth-tested: a cut-face hatch lies *in* the wall it
-    /// hatches, so testing it would erase about half of it to no purpose.
-    /// Passing it through this rather than casting keeps "which space am I in"
-    /// a decision the type system witnesses.
+    /// Ink that is not depth-tested: unclipped ink, and every layer of a
+    /// heightfield or a solid, which arrives already judged by its geometry
+    /// (`Scene.judgedLayers`). Passing it through this rather than casting
+    /// keeps "which space am I in" a decision the type system witnesses.
     public static func pass(_ paths: PolylineSet<ViewSpace>) -> PolylineSet<PlateSpace> {
         PolylineSet(vertices: paths.vertices.map { P3<PlateSpace>($0.v) },
                     offsets: paths.offsets)

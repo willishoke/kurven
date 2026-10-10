@@ -210,7 +210,7 @@ public final class MetalRenderer {
     func resources(for scene: Scene) throws -> SceneResources {
         if let r = cachedResources, r.content == scene.content { return r }
         guard let h = scene.heightfield else {
-            throw RendererError.unsupported("drawing a parametric surface as a heightfield")
+            throw RendererError.unsupported("drawing this geometry as a heightfield")
         }
         let r = try SceneResources(scene: scene, heightfield: h, device: device)
         cachedResources = r
@@ -408,6 +408,9 @@ public final class MetalRenderer {
         if scene.parametric != nil {
             return try renderSurface(scene, frame: frame).depth
         }
+        if let solid = scene.solid {
+            return try renderMesh(solid.mesh, scene: scene, frame: frame)
+        }
         let res = try resources(for: scene)
         let out = try target(rows: frame.rows, cols: frame.cols)
         var uniforms = self.uniforms(scene, frame: frame, resources: res)
@@ -433,6 +436,58 @@ public final class MetalRenderer {
         commands.waitUntilCompleted()
         if let error = commands.error { throw RendererError.pipeline("\(error)") }
 
+        return out.read(frame: frame, empty: Self.emptySentinel)
+    }
+
+    /// A solid's vertex buffer, memoized on content as the heightfield's
+    /// resources are.
+    private var cachedSolid: (content: ContentID, vertices: MTLBuffer, count: Int)?
+
+    /// The depth pass over an explicit mesh alone: a solid's faces, through
+    /// the wall pipeline, since a wall curtain is the same kind of thing.
+    func renderMesh(_ mesh: Mesh<WorldSpace>, scene: Scene, frame: DepthFrame) throws -> DepthImage {
+        guard frame.cols <= metalTextureLimit, frame.rows <= metalTextureLimit else {
+            throw RendererError.textureTooLarge(max(frame.rows, frame.cols),
+                                                limit: metalTextureLimit)
+        }
+        let buffer: MTLBuffer, count: Int
+        if let c = cachedSolid, c.content == scene.content {
+            (buffer, count) = (c.vertices, c.count)
+        } else {
+            let vertices = mesh.triangles.flatMap { t in
+                t.indices.map { i in KVVertex(position: SIMD3<Float>(mesh.vertices[Int(t[i])].v)) }
+            }
+            guard !vertices.isEmpty, let b = vertices.withUnsafeBytes({ bytes in
+                device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count,
+                                  options: .storageModeShared)
+            }) else { throw RendererError.allocation("the solid's vertices") }
+            (buffer, count) = (b, vertices.count)
+            cachedSolid = (scene.content, b, count)
+        }
+        let out = try target(rows: frame.rows, cols: frame.cols)
+        var uniforms = KVUniforms(
+            view: scene.camera.view.float4x4, clip: clipMatrix(scene, frame: frame),
+            domainLo: .zero, domainSize: .zero, lattice: SIMD2(0, 0), gridSize: SIMD2(0, 0),
+            step: 1, cap: .infinity, regionCount: 0, empty: Self.emptySentinel)
+
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = out.texture
+        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].storeAction = .store
+        descriptor.colorAttachments[0].clearColor =
+            MTLClearColor(red: Double(Self.emptySentinel), green: 0, blue: 0, alpha: 0)
+        guard let commands = queue.makeCommandBuffer(),
+              let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) else {
+            throw RendererError.allocation("a render encoder")
+        }
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<KVUniforms>.stride, index: 0)
+        encoder.setRenderPipelineState(meshPipeline)
+        encoder.setVertexBuffer(buffer, offset: 0, index: 3)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: count)
+        encoder.endEncoding()
+        commands.commit()
+        commands.waitUntilCompleted()
+        if let error = commands.error { throw RendererError.pipeline("\(error)") }
         return out.read(frame: frame, empty: Self.emptySentinel)
     }
 

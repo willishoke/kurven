@@ -1,4 +1,5 @@
 import Foundation
+import simd
 import KurvenCore
 import KurvenMetal
 import KurvenBake
@@ -127,6 +128,18 @@ usage: kurven-cli <command> [options]
         lines -- outline and inner silhouettes -- are drawn at --folds (twice
         --width by default; 0 leaves them out). An output ending in .png
         renders one frame of the realtime preview instead of baking.
+
+  surface solid [--kind K] [--size R] [--width W] [--x-angle DEG] [--z-angle DEG]
+          [--shear S] [--resolution N] -o out.svg
+        Bake a polyhedron to SVG, its edges as the ink. K is one of
+        tetrahedron, cube, octahedron, dodecahedron, icosahedron -- built
+        from their vertex coordinates by a convex hull, set down on a face --
+        or csaszar, the seven-vertex torus. An edge shows where one of its
+        two faces faces the eye and no other face stands in front, and the
+        second half is a cast of the edge against every face, solved in
+        closed form: no margin, no pixel, the same drawing at any
+        --resolution, which only the depth output sees. --size is the
+        circumradius (2 by default).
 
   surface-costs [--repeat N]
         Time what each of the window's surface controls costs: the plate
@@ -301,6 +314,7 @@ func bake(_ args: Args) throws {
 
 func surfaceCommand(_ args: Args) throws {
     let shape = args.positional.dropFirst().first ?? "torus"
+    if shape == "solid" { return try solidCommand(args) }
     let R = try args.double("major") ?? 2
     let r = try args.double("minor") ?? 1
     let width = try args.double("width") ?? 0.3
@@ -425,6 +439,65 @@ func surfaceCommand(_ args: Args) throws {
         in \(result.tiles * result.tiles) pass\(result.tiles == 1 ? "" : "es")
           strokes    \(result.strokes.pathCount) paths, \
         ink \(String(format: "%.1f", result.strokes.inkLength))
+          took       \(elapsed)
+        """)
+}
+
+/// `surface solid`: a polyhedron, baked straight to SVG. No bundle: a
+/// solid is a table and a rule, and the rule is exact.
+func solidCommand(_ args: Args) throws {
+    let kind = args.flags["kind"] ?? "dodecahedron"
+    let size = try args.double("size") ?? 2
+    let width = try args.double("width") ?? 0.6
+    let solid: Solid
+    if kind == "csaszar" {
+        // Császár's own coordinates stand on the table already; scaled so
+        // its base is about the size of the others.
+        let c = Solid.csaszar
+        let r = c.vertices.map { simd_length(SIMD2($0.x, $0.y)) }.max() ?? 1
+        solid = c.transformed(rotation: matrix_identity_double3x3 * (size / r))
+    } else if let platonic = Solid.Platonic(rawValue: kind) {
+        solid = Solid.platonic(platonic, circumradius: size).resting(on: 0)
+    } else {
+        throw CLIError("unknown solid '\(kind)'; the table has: "
+                       + Solid.Platonic.allCases.map(\.rawValue).joined(separator: ", ")
+                       + ", csaszar")
+    }
+    var projection = SurfaceRequest.projection
+    projection.shear = try args.double("shear") ?? projection.shear
+    projection.xAngle = try args.double("x-angle") ?? projection.xAngle
+    projection.zAngle = try args.double("z-angle") ?? projection.zAngle
+    let camera = Camera.plate(projection)
+    let layer = Layer(spec: LayerSpec(name: "edges", role: .outline, source: .edges,
+                                      width: width, heightPolicy: .surface),
+                      paths: solid.edgePaths)
+    let scene = Scene(solid: solid, layers: [layer], camera: camera)
+    let output = URL(fileURLWithPath: try args.string("output"))
+    let options = BakeOptions(resolution: try args.int("resolution", 3000),
+                              tiles: args.flags["tiles"].flatMap(Int.init))
+    let renderer = try MetalRenderer()
+    let clock = ContinuousClock()
+    var result: Bake!
+    let elapsed = try clock.measure { result = try renderer.bake(scene, options: options) }
+    try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
+    let drawn = result.strokes.layers[0].paths
+    let corners = solid.vertices.map { camera.view($0).v }
+    let whole = (0..<drawn.count).filter { i in
+        let p = drawn[path: i]
+        return solid.edges.contains { e in
+            simd_length(p.first!.v - corners[e.a]) < 1e-9
+                && simd_length(p.last!.v - corners[e.b]) < 1e-9
+        }
+    }.count
+    print("""
+        \(kind) -> \(output.lastPathComponent)
+          solid      \(solid.vertices.count) vertices, \(solid.edges.count) edges, \
+        \(solid.faces.count) faces, χ = \(solid.eulerCharacteristic), \
+        \(solid.isConvex ? "convex: the sign test alone decides" : "not convex: edges are cast against the faces")
+          edges      \(drawn.count) pieces drawn, \(whole) of them whole edges, \
+        ink \(String(format: "%.2f", result.strokes.inkLength))
+          depth      \(result.depth.frame.rows)x\(result.depth.frame.cols), \
+        which the ink does not consult
           took       \(elapsed)
         """)
 }
@@ -1141,6 +1214,7 @@ func sourceName(_ source: LayerSource) -> String {
         "\(count) winding\(count == 1 ? "" : "s") at slope \(fmt(slope)), \(turns) turns"
     case .foldLines: "fold lines"
     case .trajectory: "a trajectory"
+    case .edges: "the edges of a solid"
     }
 }
 
