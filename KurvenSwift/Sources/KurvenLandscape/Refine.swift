@@ -123,16 +123,20 @@ public struct ContourRefiner: Sendable {
     /// carried to. The magnitude is the one the grid was sampled with,
     /// clamped at `NativeLandscape.huge` beside a pole.
     public var refine: ContourRefine {
-        ContourRefine(contours: { field, level, paths in
-                          self.refine(field: field, level: level, paths)
+        let zeros = self.zeros()
+        return ContourRefine(contours: { field, level, paths in
+                          self.refine(field: field, level: level, paths, zeros: zeros)
                       },
                       magnitude: { p in self.magnitude(Complex(p.x, p.y)) },
                       zero: { p in self.zero(near: p) },
                       tolerance: tolerance)
     }
 
+    /// The grid's paths at one level of one field, placed on f; and, for the
+    /// magnitude with the zeros at hand, the rings around each zero that the
+    /// grid could not see (`seededRings`).
     public func refine(field: ContourField, level: Double,
-                       _ paths: [[P2<DomainSpace>]]) -> [[P2<DomainSpace>]] {
+                       _ paths: [[P2<DomainSpace>]], zeros: [P2<DomainSpace>] = []) -> [[P2<DomainSpace>]] {
         let (g, level) = self.field(field, level: level)
         let cut = field == .phase
         var out = [[[P2<DomainSpace>]]](repeating: [], count: paths.count)
@@ -143,7 +147,185 @@ public struct ContourRefiner: Sendable {
                 base[i] = refine(paths[i], level: level, g: g, cut: cut)
             }
         }
-        return out.flatMap { $0 }
+        var placed = out.flatMap { $0 }
+        if field == .magnitude, !zeros.isEmpty {
+            placed += seededRings(level: level, zeros: zeros, existing: placed)
+        }
+        return placed
+    }
+
+    // MARK: rings the grid cannot see
+
+    /// The zeros of f in the window. Every node that is a local minimum of
+    /// |f| among its neighbours is taken to the zero beside it by Newton:
+    /// |f| has no local minimum but a zero (the maximum principle), so the
+    /// interior hides none, and a node on the window's edge that is a
+    /// minimum without a zero fails Newton's test. Found once per refiner.
+    func zeros() -> [P2<DomainSpace>] {
+        guard width >= 2, height >= 2 else { return [] }
+        var values = [Double](repeating: .infinity, count: width * height)
+        values.withUnsafeMutableBufferPointer { buffer in
+            nonisolated(unsafe) let base = buffer.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: height) { j in
+                for i in 0..<width {
+                    base[j * width + i] = magnitude(Complex(grid.real.lo + Double(i) * dx,
+                                                            grid.imag.lo + Double(j) * dy))
+                }
+            }
+        }
+        var found: [P2<DomainSpace>] = []
+        for j in 0..<height {
+            for i in 0..<width {
+                let v = values[j * width + i]
+                guard v.isFinite else { continue }
+                var least = true
+                for dj in -1...1 {
+                    for di in -1...1 where di != 0 || dj != 0 {
+                        let ni = i + di, nj = j + dj
+                        guard ni >= 0, ni < width, nj >= 0, nj < height else { continue }
+                        if values[nj * width + ni] < v { least = false }
+                    }
+                }
+                guard least,
+                      let z = zero(near: P2(grid.real.lo + Double(i) * dx, grid.imag.lo + Double(j) * dy))
+                else { continue }
+                if !found.contains(where: { Self.apart($0, z) <= 1e-6 * cell }) { found.append(z) }
+            }
+        }
+        return found
+    }
+
+    static func apart(_ a: P2<DomainSpace>, _ b: P2<DomainSpace>) -> Double {
+        ((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)).squareRoot()
+    }
+
+    /// How far round `z` the path turns, in radians: ±2π for a loop round it.
+    static func winding(_ path: [P2<DomainSpace>], around z: P2<DomainSpace>) -> Double {
+        var total = 0.0
+        for (a, b) in zip(path, path.dropFirst()) {
+            let ta = atan2(a.y - z.y, a.x - z.x), tb = atan2(b.y - z.y, b.x - z.x)
+            total += wrapped(tb - ta)
+        }
+        return total
+    }
+
+    /// The rings at one level that the grid cannot see: around a zero, at a
+    /// level below |f| at every corner of the cell the zero lies in, no node
+    /// lies inside the loop and marching squares draws nothing, though the
+    /// loop exists -- around a simple zero every such level is one closed
+    /// curve. The grid decides which contours exist only where it can see
+    /// them; at a zero, f decides. Each ring is seeded from the zero as a
+    /// circle of radius level / |f'|, every vertex moved onto the level along
+    /// its ray by bisection, the loop subdivided to the tolerance like any
+    /// other, and cut to the window where it leaves it, each crossing solved
+    /// along the window's edge. A level the grid did see -- a path already
+    /// turning round the zero -- is left to the grid.
+    func seededRings(level: Double, zeros: [P2<DomainSpace>],
+                     existing: [[P2<DomainSpace>]]) -> [[P2<DomainSpace>]] {
+        guard level > 0, level.isFinite else { return [] }
+        var out: [[P2<DomainSpace>]] = []
+        for z0 in zeros {
+            let fx = (z0.x - grid.real.lo) / dx, fy = (z0.y - grid.imag.lo) / dy
+            let i = min(max(Int(fx.rounded(.down)), 0), width - 2)
+            let j = min(max(Int(fy.rounded(.down)), 0), height - 2)
+            var lowest = Double.infinity
+            for (ci, cj) in [(i, j), (i + 1, j), (i, j + 1), (i + 1, j + 1)] {
+                lowest = min(lowest, magnitude(Complex(grid.real.lo + Double(ci) * dx, grid.imag.lo + Double(cj) * dy)))
+            }
+            guard level < lowest else { continue }
+            guard !existing.contains(where: { abs(Self.winding($0, around: z0)) > .pi / 2 }) else { continue }
+            let c = Complex(z0.x, z0.y)
+            let h = 1e-6 * cell
+            let d = (value(c + h) - value(c - h)) / (2 * h)
+            guard d.isFinite, d.magnitude > 0 else { continue }
+            let r0 = level / d.magnitude
+            guard r0.isFinite, r0 < 2 * cell else { continue }
+            let n = 24
+            var loop: [P2<DomainSpace>] = []
+            for k in 0..<n {
+                let theta = 2 * Double.pi * Double(k) / Double(n)
+                let dir = Complex(cos(theta), sin(theta))
+                func excess(_ r: Double) -> Double { magnitude(c + r * dir) - level }
+                // Bracket the crossing along the ray from the zero, where
+                // |f| is below the level, outward to where it is above.
+                var lo = 0.0, hi = r0
+                var tries = 0
+                while excess(hi) <= 0, tries < 12 { hi *= 2; tries += 1 }
+                guard excess(hi) > 0, hi <= 4 * cell else { loop = []; break }
+                for _ in 0..<60 {
+                    let m = 0.5 * (lo + hi)
+                    if excess(m) > 0 { hi = m } else { lo = m }
+                }
+                let r = 0.5 * (lo + hi)
+                loop.append(P2(c.re + r * dir.re, c.im + r * dir.im))
+            }
+            guard loop.count == n else { continue }
+            loop.append(loop[0])
+            var refined: [P2<DomainSpace>] = [loop[0]]
+            for (a, b) in zip(loop, loop.dropFirst()) {
+                subdivide(a, b, level: level, g: magnitude, cut: false, depth: 0, into: &refined)
+                refined.append(b)
+            }
+            out += clippedToWindow(refined, level: level)
+        }
+        return out
+    }
+
+    /// A loop cut to the window: the runs of it inside, each ending where
+    /// it crosses the window's edge, the crossing solved on the edge itself
+    /// so that it lies on the level as the grid's own edge vertices do. A
+    /// loop wholly inside is returned closed.
+    func clippedToWindow(_ loop: [P2<DomainSpace>], level: Double) -> [[P2<DomainSpace>]] {
+        let inside = loop.map { inWindow($0) }
+        if inside.allSatisfy({ $0 }) { return [loop] }
+        /// The level's crossing of the window's edge between an inside vertex
+        /// and an outside one.
+        func crossing(_ a: P2<DomainSpace>, _ b: P2<DomainSpace>) -> P2<DomainSpace>? {
+            var lo = a, hi = b
+            for _ in 0..<60 {
+                let m = P2<DomainSpace>(0.5 * (lo.x + hi.x), 0.5 * (lo.y + hi.y))
+                if inWindow(m) { lo = m } else { hi = m }
+            }
+            let p = lo
+            // Along whichever edge it is on, solve |f| = level by bisection
+            // between the chord point and a step either way.
+            let r = grid.real, im = grid.imag
+            let onRow = abs(p.y - im.lo) <= 1e-6 * cell || abs(p.y - im.hi) <= 1e-6 * cell
+            let onColumn = abs(p.x - r.lo) <= 1e-6 * cell || abs(p.x - r.hi) <= 1e-6 * cell
+            guard onRow || onColumn else { return p }
+            func at(_ s: Double) -> P2<DomainSpace> { onRow ? P2(p.x + s, p.y) : P2(p.x, p.y + s) }
+            func excess(_ s: Double) -> Double { magnitude(Complex(at(s).x, at(s).y)) - level }
+            var slo = -1e-3 * cell, shi = 1e-3 * cell
+            var tries = 0
+            while (excess(slo) > 0) == (excess(shi) > 0), tries < 10 { slo *= 2; shi *= 2; tries += 1 }
+            guard (excess(slo) > 0) != (excess(shi) > 0) else { return p }
+            var elo = excess(slo)
+            for _ in 0..<60 {
+                let m = 0.5 * (slo + shi)
+                let em = excess(m)
+                if (em > 0) == (elo > 0) { slo = m; elo = em } else { shi = m }
+            }
+            return at(0.5 * (slo + shi))
+        }
+        // Start the walk at an outside vertex so no run is split in two.
+        let n = loop.count - 1
+        guard n >= 2, let start = inside.firstIndex(of: false) else { return [loop] }
+        var runs: [[P2<DomainSpace>]] = []
+        var run: [P2<DomainSpace>] = []
+        for step in 0...n {
+            let k = (start + step) % n
+            let v = loop[k]
+            if inside[k] {
+                if run.isEmpty, step > 0, let c = crossing(v, loop[(start + step - 1) % n]) { run.append(c) }
+                run.append(v)
+            } else if !run.isEmpty {
+                if let c = crossing(run[run.count - 1], v) { run.append(c) }
+                if run.count >= 2 { runs.append(run) }
+                run = []
+            }
+        }
+        if run.count >= 2 { runs.append(run) }
+        return runs
     }
 
     // MARK: one path

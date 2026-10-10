@@ -2,6 +2,7 @@ import Foundation
 import simd
 import KurvenCore
 import KurvenLandscape
+import KurvenMath
 
 // MARK: - the crest of a cut face, placed on f
 
@@ -170,6 +171,58 @@ func crestTests() {
         Check.expect(sag <= 0.02 * cell + 1e-12, "and no chord departs from it by more than 0.02 of a cell",
                      String(format: "worst sag %.2e, cell %.3f", sag, cell))
         Check.expect(crest.allSatisfy { $0.z <= 2 + 1e-12 }, "and none rises above the cap")
+    }
+
+    Check.suite("rings the grid cannot see: the pit carries the same levels at 24, 48 and 96 samples") {
+        // A ring at level L round the zero at -3 is a loop of radius L/6.
+        // Marching squares draws a loop only if a node lies inside it, and
+        // no node is at the zero, so every level below the nearest node's
+        // value went missing, and which levels those were depended on the
+        // lattice. Seeded from the zero, every requested level is drawn at
+        // every lattice, each ring on its level, each cut to the window on
+        // the front edge where the zero sits.
+        let domain = Domain(real: Interval(lo: -3.8, hi: -2.2), imag: Interval(lo: 0, hi: 0.8))
+        var levelsSeen: [Int: [Double]] = [:]
+        for res in [24, 48, 96] {
+            let request = LandscapeRequest(expression: "1/gamma(z)", domain: domain, resolution: res,
+                                           caps: .uniform(2))
+            let bundle = try NativeLandscape.build(request, refine: true)
+            let refiner = try NativeLandscape.refiner(for: "1/gamma(z)", domain: domain,
+                                                      shape: (nReal: res, nImag: res))
+            var rings: [(level: Double, path: [P3<WorldSpace>])] = []
+            for name in ["mag_major", "mag_minor"] {
+                let paths = try bundle.layer(name).paths
+                for i in 0..<paths.count {
+                    let p = Array(paths[path: i])
+                    let xs = p.map(\.x)
+                    guard xs.min()! < -3, xs.max()! > -3,
+                          p.allSatisfy({ (($0.x + 3) * ($0.x + 3) + $0.y * $0.y).squareRoot() < 0.3 }) else { continue }
+                    rings.append((p[0].z, p))
+                }
+            }
+            rings.sort { $0.level < $1.level }
+            levelsSeen[res] = rings.map(\.level)
+            var offLevel = 0.0, offEdge = 0.0
+            for ring in rings {
+                for v in ring.path {
+                    offLevel = max(offLevel, abs(refiner.magnitude(Complex(v.x, v.y)) - ring.level))
+                }
+                offEdge = max(offEdge, abs(ring.path.first!.y), abs(ring.path.last!.y))
+            }
+            Check.expect(offLevel < 1e-6 * 1, "\(res): every vertex of every ring in the pit is on its level",
+                         String(format: "%d rings, worst %.1e", rings.count, offLevel))
+            Check.expect(offEdge < 1e-9, "\(res): and each ring ends on the front edge, where the zero is",
+                         String(format: "worst %.1e", offEdge))
+            let distinct = Set(rings.map { Int(($0.level * 100).rounded()) })
+            Check.expect(distinct.count == rings.count, "\(res): and no level is drawn twice",
+                         "\(rings.count) rings, \(distinct.count) levels")
+        }
+        let l24 = levelsSeen[24]!.map { Int(($0 * 100).rounded()) }
+        let l48 = levelsSeen[48]!.map { Int(($0 * 100).rounded()) }
+        let l96 = levelsSeen[96]!.map { Int(($0 * 100).rounded()) }
+        Check.expect(l24 == l48 && l48 == l96 && l24.first == 4,
+                     "the same levels at every lattice, down to the lowest asked for",
+                     "24: \(l24)  48: \(l48)  96: \(l96)")
     }
 
     Check.suite("one surface: on a lattice of 24 the pit of 1/Γ at -3 is drawn from f alone") {
