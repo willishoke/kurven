@@ -381,8 +381,23 @@ func stressTests() {
                       paths: PolylineSet(vertices: layer.paths.vertices.map { P3<WorldSpace>($0.v * s) },
                                          offsets: layer.paths.offsets))
             }
+            // The scaled plate is the scaled function: the refiner's |f| and
+            // its zeros, read at the point scaled back, scaled up again. The
+            // contours are not re-derived under the judge, so they pass.
+            let refine: ContourRefine? = h.refine.map { r -> ContourRefine in
+                let magnitude: ContourRefine.Magnitude? = r.magnitude.map { m -> ContourRefine.Magnitude in
+                    { (p: P2<DomainSpace>) -> Double in s * m(P2<DomainSpace>(p.x / s, p.y / s)) }
+                }
+                let zero: ContourRefine.Zero? = r.zero.map { z -> ContourRefine.Zero in
+                    { (p: P2<DomainSpace>) -> P2<DomainSpace>? in
+                        z(P2<DomainSpace>(p.x / s, p.y / s)).map { P2<DomainSpace>($0.x * s, $0.y * s) }
+                    }
+                }
+                return ContourRefine(contours: { _, _, lines in lines }, magnitude: magnitude, zero: zero)
+            }
             let scaled = Scene(surface: surface, occluder: occluder, tiles: h.tiles, region: h.region,
-                               step: h.step, layers: layers, camera: scene.camera, margin: scene.margin * s)
+                               step: h.step, layers: layers, camera: scene.camera, margin: scene.margin * s,
+                               refine: refine)
             let judgedScaled = scaled.judgedLayers()
             var worst = 0.0, structure = true
             for ((layer, a), (_, b)) in zip(judged, judgedScaled) {

@@ -117,9 +117,17 @@ public struct ContourRefiner: Sendable {
         return (field(f), level)
     }
 
-    /// `Surface.derive`'s hook.
+    /// `Surface.derive`'s hook, and `Surface.crest`'s and
+    /// `Heightfield.foldLines`'s: the contours placed, |f| for the crest's
+    /// minima and the zeros' heights, and the zeros the fold lines are
+    /// carried to. The magnitude is the one the grid was sampled with,
+    /// clamped at `NativeLandscape.huge` beside a pole.
     public var refine: ContourRefine {
-        { field, level, paths in self.refine(field: field, level: level, paths) }
+        ContourRefine(contours: { field, level, paths in
+                          self.refine(field: field, level: level, paths)
+                      },
+                      magnitude: { p in self.magnitude(Complex(p.x, p.y)) },
+                      zero: { p in self.zero(near: p) })
     }
 
     public func refine(field: ContourField, level: Double,

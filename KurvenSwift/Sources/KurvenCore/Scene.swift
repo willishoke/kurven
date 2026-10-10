@@ -26,11 +26,14 @@ public struct Heightfield: Sendable {
     public let region: Region
     /// Subsampling step for the heightfield when it is rasterized.
     public let step: Int
+    /// The function behind the grids, when a consumer attached one to the
+    /// bundle: the fold lines are carried to its zeros.
+    public let refine: ContourRefine?
 
     public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],
-                region: Region = .full, step: Int) {
+                region: Region = .full, step: Int, refine: ContourRefine? = nil) {
         self.surface = surface; self.occluder = occluder; self.tiles = tiles
-        self.region = region; self.step = step
+        self.region = region; self.step = step; self.refine = refine
     }
 
     /// Every vertex of the decimated, capped heightfield, once per tile.
@@ -83,6 +86,13 @@ public struct Heightfield: Sendable {
     /// flat and faces up and has a rim of its own, and nothing outside the
     /// region. They depend on the camera, so they are derived for one, never
     /// stored.
+    ///
+    /// A fold that ends beside a zero of f was going there: the silhouette
+    /// of a pit runs down its flank into the zero, the apex of the cone.
+    /// The lattice loses it a cell or two short, where its chord across the
+    /// floor flattens the facing out. With the function at hand (`refine`),
+    /// an open run's end is carried to the zero the refiner finds from it,
+    /// at |f|'s own height there -- the floor -- as the phase lines are.
     public func foldLines(view: Transform<WorldSpace, ViewSpace>,
                           refined: Bool = true) -> PolylineSet<WorldSpace> {
         let sight = view.sightLine
@@ -143,6 +153,9 @@ public struct Heightfield: Sendable {
                                domain: Domain(real: Interval(lo: lo.x, hi: hi.x),
                                               imag: Interval(lo: lo.y, hi: hi.y)),
                                values: values)
+            // Only on the fundamental tile: the zero is found on the
+            // function, which is sampled there.
+            let fundamental = tile == .identity
             for line in Contour.lines(of: field, level: 0) {
                 var run: [P3<WorldSpace>] = []
                 for v in line {
@@ -152,11 +165,11 @@ public struct Heightfield: Sendable {
                     if region.contains(p) && z < surface.caps.height(atX: p.x) - 1e-9 {
                         run.append(P3(p.x, p.y, z))
                     } else {
-                        if run.count >= 2 { paths.append(run) }
+                        if run.count >= 2 { paths.append(fundamental ? endedAtZeros(run, cell: cell) : run) }
                         run = []
                     }
                 }
-                if run.count >= 2 { paths.append(run) }
+                if run.count >= 2 { paths.append(fundamental ? endedAtZeros(run, cell: cell) : run) }
             }
         }
         return PolylineSet(paths: paths)
@@ -169,6 +182,30 @@ public struct Heightfield: Sendable {
     /// judge and the rasterizer cannot disagree about where the surface is.
     public func drawnHeight(at p: P2<WorldSpace>) -> Double {
         surface.drawnHeight(at: surface.inTile(P2<DomainSpace>(p.x, p.y), tiles: tiles), step: step)
+    }
+
+    /// An open fold run carried to the zero of f either end leads to, when
+    /// the refiner finds one within reach that the run does not already
+    /// touch, inside the region: the new vertex is the zero at |f|'s height.
+    /// `cell` is the lattice spacing, which is the only length the test of
+    /// "already touches" is measured against, so a scaled plate carries the
+    /// scaled fold.
+    func endedAtZeros(_ run: [P3<WorldSpace>], cell: Double) -> [P3<WorldSpace>] {
+        guard let refine, let zero = refine.zero, let magnitude = refine.magnitude,
+              run.count >= 2, run.first != run.last else { return run }
+        func carried(_ end: P3<WorldSpace>, other: P3<WorldSpace>) -> P3<WorldSpace>? {
+            guard let z = zero(P2(end.x, end.y)), region.contains(P2<WorldSpace>(z.x, z.y)) else { return nil }
+            let toEnd = ((z.x - end.x) * (z.x - end.x) + (z.y - end.y) * (z.y - end.y)).squareRoot()
+            let toOther = ((z.x - other.x) * (z.x - other.x) + (z.y - other.y) * (z.y - other.y)).squareRoot()
+            guard toEnd > 1e-9 * cell, toEnd < toOther else { return nil }
+            let u = magnitude(z)
+            guard u.isFinite else { return nil }
+            return P3(z.x, z.y, min(u, surface.caps.height(atX: z.x)))
+        }
+        var out = run
+        if let z = carried(out[0], other: out[out.count - 1]) { out.insert(z, at: 0) }
+        if let z = carried(out[out.count - 1], other: out[0]) { out.append(z) }
+        return out
     }
 
     /// The fold lines that can be seen: `foldLines`, less what the surface
@@ -665,10 +702,11 @@ public struct Scene: Sendable {
     /// A heightfield scene.
     public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],
                 region: Region = .full, step: Int, layers: [Layer], camera: Camera,
-                mode: PreviewMode = .plate, margin: Double) {
+                mode: PreviewMode = .plate, margin: Double, refine: ContourRefine? = nil) {
         self.init(content: ContentID(), ink: ContentID(),
                   geometry: .heightfield(Heightfield(surface: surface, occluder: occluder,
-                                                     tiles: tiles, region: region, step: step)),
+                                                     tiles: tiles, region: region, step: step,
+                                                     refine: refine)),
                   layers: layers, camera: camera, mode: mode, margin: margin)
     }
 
@@ -698,7 +736,8 @@ public struct Scene: Sendable {
                   step: bundle.manifest.occluder.step,
                   layers: bundle.layers,
                   camera: .plate(preset.plate),
-                  margin: preset.margin)
+                  margin: preset.margin,
+                  refine: bundle.refine)
     }
 
     /// The heightfield, when that is what this scene draws.

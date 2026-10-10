@@ -200,9 +200,14 @@ func foldLineTests() {
         let frame = DepthFrame(covering: bounds, resolution: 10)
         let empty = DepthImage(frame: frame, values: [Float](repeating: -.infinity, count: frame.rows * frame.cols))
         let visibility = HeightfieldVisibility(heightfield: h, view: scene.camera.view, margin: 0.02)
-        let edgeOn = folds.vertices.map { abs(visibility.facing(P2($0.x, $0.y))) }.max() ?? .infinity
+        // Every vertex but a run's end carried to a zero of f, which is on
+        // the floor, where the lattice's facing is its chord's.
+        let edgeOn = folds.vertices.filter { $0.z > 1e-9 }.map { abs(visibility.facing(P2($0.x, $0.y))) }.max() ?? .infinity
         Check.expect(edgeOn < 1e-6, "every vertex is where the surface faces exactly edge-on",
                      String(format: "worst |facing| %.1e", edgeOn))
+        let atZeros = folds.vertices.filter { $0.z <= 1e-9 }.count
+        Check.expect(atZeros >= 2, "and the pits' silhouettes run down to their zeros on the front edge",
+                     "\(atZeros) fold ends on the floor")
         let cap = h.surface.caps
         Check.expect(folds.vertices.allSatisfy { $0.z < cap.height(atX: $0.x) - 1e-9 },
                      "and none is on a cap")
