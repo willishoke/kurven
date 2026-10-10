@@ -191,12 +191,33 @@ extension Surface {
         var crest: [P3<WorldSpace>] = []
         crest.reserveCapacity(n)
         var previous: (p: P2<DomainSpace>, excess: Double)?
-        for k in 0..<n {
-            let p = Surface.point(on: edge, at: Double(k) / Double(n - 1))
+        // The nodes along the edge; with the function, where a banded cap
+        // steps between two nodes, the step's two vertices as well, on
+        // either side of the boundary at its own band's height -- the
+        // boundary itself belongs to the band beyond it, so the near side
+        // is a rounding step short of it.
+        var stations: [P2<DomainSpace>] = (0..<n).map { Surface.point(on: edge, at: Double($0) / Double(n - 1)) }
+        if magnitudeOfF != nil, case .realBands(let bands, _) = caps {
+            var withSteps: [P2<DomainSpace>] = []
+            for (a, b) in zip(stations, stations.dropFirst()) {
+                withSteps.append(a)
+                for band in bands {
+                    let x = band.below
+                    guard (a.x < x && b.x >= x) || (b.x < x && a.x >= x), b.x != a.x else { continue }
+                    let t = (x - a.x) / (b.x - a.x)
+                    let y = a.y + (b.y - a.y) * t
+                    let near = P2<DomainSpace>(a.x < x ? x.nextDown : x, y), far = P2<DomainSpace>(a.x < x ? x : x.nextDown, y)
+                    withSteps.append(near); withSteps.append(far)
+                }
+            }
+            withSteps.append(stations[stations.count - 1])
+            stations = withSteps
+        }
+        for p in stations {
             let u = magnitudeOfF.map { $0(inTile(p, tiles: tiles)) } ?? magnitude(at: p, tiles: tiles)
             let cap = caps.height(atX: p.x)
             let excess = u - cap
-            if let a = previous, excess.isFinite, a.excess.isFinite {
+            if let a = previous, excess.isFinite, a.excess.isFinite, a.p.x != p.x || a.p.y != p.y {
                 let here: (p: P2<DomainSpace>, excess: Double) = (p, excess)
                 var under: (p: P2<DomainSpace>, excess: Double)?
                 var over: (p: P2<DomainSpace>, excess: Double)?
@@ -270,6 +291,8 @@ extension Surface {
         func subdivide(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>, depth: Int,
                        into out: inout [P3<WorldSpace>]) {
             guard depth < 5, a.z.isFinite, b.z.isFinite else { return }
+            // The two vertices of a banded cap's step stand at one point.
+            guard abs(a.x - b.x) + abs(a.y - b.y) > 1e-9 * cell else { return }
             let mid = P2<DomainSpace>(0.5 * (a.x + b.x), 0.5 * (a.y + b.y))
             let z = profile(mid)
             guard z.isFinite, abs(z - 0.5 * (a.z + b.z)) > tolerance * cell else { return }
@@ -531,30 +554,158 @@ extension Surface {
     }
 
     /// The rim of the cap: the zero level of the grid's excess over the cap,
-    /// at the cap's height. With a refiner and a uniform cap it is the
-    /// contour |f| = cap placed on f, as the rings are, and an end of it on
-    /// the domain's edge is re-solved by the crest's own bisection along
-    /// that edge (`capCrossing`), so the crest meets the rim to rounding. A
-    /// banded cap's rim stays the grid's: its level changes from band to
-    /// band, and the refiner places one level at a time.
+    /// at the cap's height. With a refiner it is the contour |f| = cap
+    /// placed on f, as the rings are, and an end of it on the domain's edge
+    /// is re-solved by the crest's own bisection along that edge
+    /// (`capCrossing`), so the crest meets the rim to rounding. A banded
+    /// cap's rim is placed band by band at each band's own level
+    /// (`bandedRim`), with the top of the wall where the cap steps.
     func capOutline(tiles: [Affine2] = [.identity], refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         guard let excess = capExcess() else { return [] }
         var out: [[P3<WorldSpace>]] = []
         for (_, lines) in Contour.levels(of: excess, [0.0]) {
-            var paths = lines
-            if let refine, let magnitude = refine.magnitude, case .uniform(let cap) = caps, cap.isFinite {
-                paths = refine.contours(.magnitude, cap, lines).map { line in
-                    var line = line
-                    for i in Set([0, line.count - 1]) where line.count >= 2 {
-                        if let q = onEdgeCapCrossing(near: line[i], tiles: tiles, magnitude: magnitude) {
-                            line[i] = q
+            if let refine, let magnitude = refine.magnitude {
+                switch caps {
+                case .uniform(let cap) where cap.isFinite:
+                    for line in refine.contours(.magnitude, cap, lines) {
+                        var line = line
+                        for i in Set([0, line.count - 1]) where line.count >= 2 {
+                            if let q = onEdgeCapCrossing(near: line[i], tiles: tiles, magnitude: magnitude) {
+                                line[i] = q
+                            }
                         }
+                        out.append(line.map { P3($0.x, $0.y, cap) })
                     }
-                    return line
+                    continue
+                case .realBands(let bands, let beyond):
+                    out += bandedRim(lines, bands: bands, beyond: beyond, tiles: tiles,
+                                     refine: refine, magnitude: magnitude)
+                    continue
+                default:
+                    break
                 }
             }
-            for line in paths {
+            for line in lines {
                 out.append(line.map { P3($0.x, $0.y, caps.height(atX: $0.x)) })
+            }
+        }
+        return out
+    }
+
+    /// The rim of a banded cap, on f. Within a band the rim is the contour
+    /// |f| = that band's cap: the grid's rim lines are split by band, each
+    /// run placed by the refiner at its own level, and a run's end beside a
+    /// band's boundary is solved onto the boundary, where |f| reaches the
+    /// cap along it. Where the cap steps the surface has a wall, and its
+    /// top is the rim there: along the boundary, at the lesser cap where
+    /// |f| is below it and at f's own height up to the greater cap, from
+    /// one end of the lesser band's rim to the other. The grid's vertices
+    /// in the cells that straddle a boundary are interpolated between two
+    /// caps and mean nothing; they are dropped, and the boundary's own
+    /// pieces take their place.
+    func bandedRim(_ lines: [[P2<DomainSpace>]], bands: [RealBand], beyond: Double, tiles: [Affine2],
+                   refine: ContourRefine, magnitude: ContourRefine.Magnitude) -> [[P3<WorldSpace>]] {
+        let boundaries = bands.map(\.below).sorted()
+        let g = height
+        let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1))
+        let dy = abs(g.domain.imag.length) / Double(max(g.height - 1, 1))
+        let cell = self.cell
+        let tolerance = refine.tolerance * cell
+        func mag(_ p: P2<DomainSpace>) -> Double { magnitude(inTile(p, tiles: tiles)) }
+        /// The boundary a point is beside, within a column either way.
+        func boundary(beside x: Double) -> Double? {
+            boundaries.first { abs(x - $0) <= 1.0001 * dx }
+        }
+        /// The point on the boundary x = b where |f| = cap, nearest in y to
+        /// `near`: bracketed by walking out from it, then bisected.
+        func ontoBoundary(_ b: Double, cap: Double, near: P2<DomainSpace>) -> P2<DomainSpace>? {
+            func excess(_ y: Double) -> Double { mag(P2(b, y)) - cap }
+            let step = dy / 8
+            var lo = near.y, hi = near.y
+            var elo = excess(lo), ehi = elo
+            guard elo.isFinite else { return nil }
+            var found = false
+            for k in 1...24 {
+                let up = near.y + Double(k) * step, down = near.y - Double(k) * step
+                let eUp = excess(up), eDown = excess(down)
+                if eUp.isFinite, (eUp > 0) != (elo > 0) { lo = near.y + Double(k - 1) * step; elo = excess(lo); hi = up; ehi = eUp; found = true; break }
+                if eDown.isFinite, (eDown > 0) != (elo > 0) { hi = near.y - Double(k - 1) * step; ehi = excess(hi); lo = down; elo = eDown; found = true; break }
+            }
+            guard found, (elo > 0) != (ehi > 0) else { return nil }
+            for _ in 0..<60 {
+                let m = 0.5 * (lo + hi)
+                let em = excess(m)
+                if (em > 0) == (elo > 0) { lo = m; elo = em } else { hi = m; ehi = em }
+            }
+            return P2(b, 0.5 * (lo + hi))
+        }
+
+        var out: [[P3<WorldSpace>]] = []
+        /// The ends of refined runs that lie on a boundary, by boundary:
+        /// the cap they belong to and the point.
+        var endsOnBoundary: [Double: [(cap: Double, point: P2<DomainSpace>)]] = [:]
+        for line in lines {
+            // Runs of one band's vertices, the straddling cells' dropped.
+            var runs: [(cap: Double, points: [P2<DomainSpace>])] = []
+            var broken = true
+            for v in line {
+                if boundary(beside: v.x) != nil { broken = true; continue }
+                let c = caps.height(atX: v.x)
+                if !broken, let last = runs.last, last.cap == c {
+                    runs[runs.count - 1].points.append(v)
+                } else {
+                    runs.append((c, [v]))
+                }
+                broken = false
+            }
+            // A closed line whose first and last runs are the same band and
+            // unbroken between is one run.
+            if line.first == line.last, runs.count >= 2, runs[0].cap == runs[runs.count - 1].cap,
+               boundary(beside: line[0].x) == nil {
+                let last = runs.removeLast()
+                runs[0].points = last.points.dropLast() + runs[0].points
+            }
+            for run in runs where run.points.count >= 2 && run.cap.isFinite {
+                for piece in refine.contours(.magnitude, run.cap, [run.points]) where piece.count >= 2 {
+                    var piece = piece
+                    for i in [0, piece.count - 1] {
+                        if let q = onEdgeCapCrossing(near: piece[i], tiles: tiles, magnitude: magnitude) {
+                            piece[i] = q
+                        } else if let b = boundary(beside: piece[i].x) ?? boundaries.first(where: { abs(piece[i].x - $0) <= 2 * dx }),
+                                  let q = ontoBoundary(b, cap: run.cap, near: piece[i]) {
+                            if i == 0 { piece.insert(q, at: 0) } else { piece.append(q) }
+                            endsOnBoundary[b, default: []].append((run.cap, q))
+                        }
+                    }
+                    out.append(piece.map { P3($0.x, $0.y, run.cap) })
+                }
+            }
+        }
+        // The top of each step wall: between the two ends of the lesser
+        // band's rim on the boundary, nearest each other in y, at f's
+        // height capped by the greater band.
+        for (b, ends) in endsOnBoundary {
+            let left = caps.height(atX: b.nextDown), right = caps.height(atX: b)
+            let lesser = min(left, right), greater = max(left, right)
+            guard lesser.isFinite, lesser < greater else { continue }
+            let lows = ends.filter { $0.cap == lesser }.map(\.point).sorted { $0.y < $1.y }
+            var k = 0
+            while k + 1 < lows.count {
+                let a = lows[k], c = lows[k + 1]
+                k += 2
+                func top(_ y: Double) -> Double { min(mag(P2(b, y)), greater) }
+                var curve: [P3<WorldSpace>] = [P3(b, a.y, top(a.y))]
+                func subdivide(_ y0: Double, _ z0: Double, _ y1: Double, _ z1: Double, depth: Int) {
+                    guard depth < 7, abs(y1 - y0) > 1e-9 * cell else { return }
+                    let ym = 0.5 * (y0 + y1), zm = top(ym)
+                    guard zm.isFinite, abs(zm - 0.5 * (z0 + z1)) > tolerance else { return }
+                    subdivide(y0, z0, ym, zm, depth: depth + 1)
+                    curve.append(P3(b, ym, zm))
+                    subdivide(ym, zm, y1, z1, depth: depth + 1)
+                }
+                subdivide(a.y, top(a.y), c.y, top(c.y), depth: 0)
+                curve.append(P3(b, c.y, top(c.y)))
+                out.append(curve)
             }
         }
         return out

@@ -261,6 +261,84 @@ func crestTests() {
         Check.expect(seenAtRim >= 2, "and both are seen up to the rim", "\(seenAtRim) seen runs end on the rim")
     }
 
+    Check.suite("banded rim: a tower cut at two heights, its rim on f band by band, with the step's top") {
+        // 1/(z - 1/2) over Re [-1/2, 3/2], Im [-1, 1]: a tower at 1/2, capped
+        // at 2 for Re z < 1/2 and at 4 beyond. The rim is the half circle
+        // |z - 1/2| = 1/2 on the left and |z - 1/2| = 1/4 on the right, and
+        // between them, along Re z = 1/2, the top of the step: 2 at |Im z|
+        // = 1/2, rising with |f| = 1/|Im z| to 4 at |Im z| = 1/4, flat at 4
+        // between.
+        let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        let request = LandscapeRequest(expression: "1/(z - 0.5)", domain: domain, resolution: 32,
+                                       caps: .realBands([RealBand(below: 0.5, cap: 2)], beyond: 4))
+        let bundle = try NativeLandscape.build(request, refine: true)
+        let rim = try bundle.layer("cap_outline").paths
+        func f(_ v: P3<WorldSpace>) -> Double { 1 / ((v.x - 0.5) * (v.x - 0.5) + v.y * v.y).squareRoot() }
+        var leftOff = 0.0, rightOff = 0.0, stepOff = 0.0, left = 0, right = 0, step = 0
+        var leftEnds: [Double] = [], rightEnds: [Double] = [], stepEnds: [Double] = []
+        for i in 0..<rim.count {
+            let p = Array(rim[path: i])
+            let onStep = p.allSatisfy { abs($0.x - 0.5) < 1e-12 }
+            if onStep {
+                step += 1
+                for v in p { stepOff = max(stepOff, abs(v.z - min(f(v), 4))) }
+                stepEnds += [p.first!.y, p.last!.y]
+                // a curve to the tolerance: no chord's midpoint height off by more than it
+                for (a, b) in zip(p, p.dropFirst()) {
+                    let ym = 0.5 * (a.y + b.y), zm = min(1 / abs(ym), 4)
+                    stepOff = max(stepOff, min(abs(zm - 0.5 * (a.z + b.z)), 1) * 0.0) // measured below
+                }
+            } else if p.allSatisfy({ $0.x <= 0.5 + 1e-12 }) {
+                left += 1
+                for v in p { leftOff = max(leftOff, abs(f(v) - 2), abs(v.z - 2)) }
+                for e in [p.first!, p.last!] where abs(e.x - 0.5) < 1e-12 { leftEnds.append(e.y) }
+            } else {
+                right += 1
+                for v in p { rightOff = max(rightOff, abs(f(v) - 4), abs(v.z - 4)) }
+                for e in [p.first!, p.last!] where abs(e.x - 0.5) < 1e-12 { rightEnds.append(e.y) }
+            }
+        }
+        Check.expect(left >= 1 && leftOff < 1e-9, "left of the boundary the rim is |f| = 2 at height 2",
+                     String(format: "%d pieces, worst %.1e", left, leftOff))
+        Check.expect(right >= 1 && rightOff < 1e-9, "beyond it the rim is |f| = 4 at height 4",
+                     String(format: "%d pieces, worst %.1e", right, rightOff))
+        let le = leftEnds.map { abs(abs($0) - 0.5) }.max() ?? .infinity
+        let re = rightEnds.map { abs(abs($0) - 0.25) }.max() ?? .infinity
+        Check.expect(leftEnds.count == 2 && le < 1e-9, "the left rim ends on the boundary at Im z = ±1/2",
+                     String(format: "%d ends, worst %.1e", leftEnds.count, le))
+        Check.expect(rightEnds.count == 2 && re < 1e-9, "the right rim ends on the boundary at Im z = ±1/4",
+                     String(format: "%d ends, worst %.1e", rightEnds.count, re))
+        let se = stepEnds.map { abs(abs($0) - 0.5) }.max() ?? .infinity
+        Check.expect(step == 1 && se < 1e-9 && stepOff < 1e-9,
+                     "and the step's top runs along the boundary from one left end to the other, at min(|f|, 4)",
+                     String(format: "%d pieces, ends off by %.1e, heights off by %.1e", step, se, stepOff))
+        var sag = 0.0
+        for i in 0..<rim.count {
+            let p = Array(rim[path: i])
+            guard p.allSatisfy({ abs($0.x - 0.5) < 1e-12 }) else { continue }
+            for (a, b) in zip(p, p.dropFirst()) {
+                let ym = 0.5 * (a.y + b.y)
+                sag = max(sag, abs(min(1 / abs(ym), 4) - 0.5 * (a.z + b.z)))
+            }
+        }
+        let cell = 2.0 / 31
+        Check.expect(sag <= 0.02 * cell + 1e-12, "and is a curve to the refiner's tolerance",
+                     String(format: "worst sag %.2e against %.2e", sag, 0.02 * cell))
+        // The crest of the front edge (Im z = -1) steps at Re z = 1/2: two
+        // vertices there, at each band's height, |f| = 1 being under both.
+        let outline = try bundle.layer("wall_outline").paths
+        var crest: [P3<WorldSpace>] = []
+        for i in 0..<outline.count {
+            let p = Array(outline[path: i])
+            if p.allSatisfy({ abs($0.y + 1) < 1e-9 }), Set(p.map { $0.z }).count > 1, p.count > crest.count { crest = p }
+        }
+        let atStep = crest.filter { abs($0.x - 0.5) < 1e-9 }
+        Check.expect(atStep.count == 2 && atStep.allSatisfy { abs($0.z - 1) < 1e-9 },
+                     "the front crest has the step's two vertices at Re z = 1/2, both at |f| = 1 there",
+                     "\(atStep.count) vertices, heights \(atStep.map { String(format: "%.4f", $0.z) })")
+        Check.expect(crest.allSatisfy { $0.z <= min(f($0), $0.x < 0.5 ? 2 : 4) + 1e-9 }, "and none rises above its band's cap")
+    }
+
     Check.suite("one surface: on a lattice of 24 the pit of 1/Γ at -3 is drawn from f alone") {
         // The figure's own window: 1/Γ over Re [-3.8, -2.2], Im [0, 0.8],
         // capped at 2, on 24 samples across, so that a cell is a visible
