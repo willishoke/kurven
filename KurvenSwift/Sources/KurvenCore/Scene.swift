@@ -235,7 +235,9 @@ public struct Heightfield: Sendable {
             /// edges. Bracketing along the gradient instead can miss where
             /// the facing is sharp -- a pit one cell wide -- and leave the
             /// vertex on the chord.
-            func ontoEdge(_ c: P2<WorldSpace>) -> P2<WorldSpace> {
+            /// The lattice edges a marching-squares vertex lies on: one, or
+            /// two for a vertex on a node.
+            func latticeEdges(through c: P2<WorldSpace>) -> [(SIMD2<Double>, SIMD2<Double>)] {
                 let fx = (c.x - lo.x) / sx, fy = (c.y - lo.y) / sy
                 let onColumn = abs(fx - fx.rounded()) < 1e-6, onRow = abs(fy - fy.rounded()) < 1e-6
                 var ends: [(SIMD2<Double>, SIMD2<Double>)] = []
@@ -249,7 +251,34 @@ public struct Heightfield: Sendable {
                     ends.append((SIMD2(lo.x + Double(i) * sx, lo.y + Double(j) * sy),
                                  SIMD2(lo.x + Double(i + 1) * sx, lo.y + Double(j) * sy)))
                 }
-                for (a0, b0) in ends {
+                return ends
+            }
+            /// Onto the crease, along the lattice edge the vertex lies on:
+            /// where the surface's height reaches the cap, bisected to the
+            /// last bit, for a fold's end on the rim. The vertex itself
+            /// when the edge does not cross the rim.
+            func ontoCrease(_ c: P2<WorldSpace>) -> P2<WorldSpace> {
+                func excess(_ q: SIMD2<Double>) -> Double {
+                    let p = P2<WorldSpace>(q.x, q.y)
+                    return surfaceHeight(at: p) - surface.caps.height(atX: p.x)
+                }
+                for (a0, b0) in latticeEdges(through: c) {
+                    var a = a0, b = b0
+                    var ea = excess(a)
+                    let eb = excess(b)
+                    guard ea.isFinite, eb.isFinite, (ea < 0) != (eb < 0) else { continue }
+                    for _ in 0..<60 {
+                        let m = 0.5 * (a + b)
+                        let em = excess(m)
+                        if (em < 0) == (ea < 0) { a = m; ea = em } else { b = m }
+                    }
+                    let m = 0.5 * (a + b)
+                    return P2(m.x, m.y)
+                }
+                return c
+            }
+            func ontoEdge(_ c: P2<WorldSpace>) -> P2<WorldSpace> {
+                for (a0, b0) in latticeEdges(through: c) {
                     var a = a0, b = b0
                     var fa = facing(P2(a.x, a.y))
                     let fb = facing(P2(b.x, b.y))
@@ -272,7 +301,18 @@ public struct Heightfield: Sendable {
             // cell short of the rim at every lattice. On the rim it is the
             // run's end, or the start of the next; a chain of rim vertices
             // on its own, which the back of a tower yields, draws nothing.
+            // The facing is read by differences a ten-thousandth of a cell
+            // wide, so the bisection lands within that of the crease, on
+            // either side: a vertex that far below the rim, in height that
+            // is the step times the flank's slope, is the crease point, not
+            // a point of the flank, and a point of the flank that near the
+            // rim would have its line clipped by the rim's edge by a hair.
             let onRim = refine?.magnitude != nil
+            func rimBand(_ p: P2<WorldSpace>) -> Double {
+                guard onRim else { return 0 }
+                let n = normal(at: p)
+                return 2 * 1e-4 * cell * (n.x * n.x + n.y * n.y).squareRoot()
+            }
             for line in Contour.lines(of: field, level: 0) {
                 var run: [P3<WorldSpace>] = []
                 var pending: P3<WorldSpace>?
@@ -285,12 +325,14 @@ public struct Heightfield: Sendable {
                     if refined { p = ontoEdge(p) }
                     let z = height(p)
                     let cap = surface.caps.height(atX: p.x)
-                    if region.contains(p) && z < cap - 1e-9 {
+                    let band = cap.isFinite ? max(1e-9 * max(1, abs(cap)), rimBand(p)) : 0
+                    if region.contains(p) && z < cap - band {
                         if run.isEmpty, let r = pending { run.append(r) }
                         pending = nil
                         run.append(P3(p.x, p.y, z))
-                    } else if onRim, region.contains(p), z.isFinite, cap.isFinite, abs(z - cap) <= 1e-9 * max(1, abs(cap)) {
-                        let r = P3<WorldSpace>(p.x, p.y, cap)
+                    } else if onRim, region.contains(p), z.isFinite, cap.isFinite, abs(z - cap) <= band {
+                        let q = ontoCrease(p)
+                        let r = P3<WorldSpace>(q.x, q.y, surface.caps.height(atX: q.x))
                         if run.isEmpty { pending = r } else { run.append(r); close() }
                     } else {
                         close()

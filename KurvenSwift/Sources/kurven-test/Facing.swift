@@ -202,7 +202,11 @@ func foldLineTests() {
         let visibility = HeightfieldVisibility(heightfield: h, view: scene.camera.view, margin: 0.02)
         // Every vertex but a run's end carried to a zero of f, which is on
         // the floor, where the lattice's facing is its chord's.
-        let offFold = folds.vertices.filter { $0.z > 1e-9 }.map { ($0, abs(visibility.facing(P2($0.x, $0.y)))) }
+        // Every vertex but a run's end carried to a zero (on the floor) or
+        // to the rim (on the crease, where the facing jumps).
+        let capAt = h.surface.caps
+        let offFold = folds.vertices.filter { $0.z > 1e-9 && $0.z < capAt.height(atX: $0.x) - 1e-9 }
+            .map { ($0, abs(visibility.facing(P2($0.x, $0.y)))) }
         let worstOff = offFold.max { $0.1 < $1.1 }
         let edgeOn = worstOff?.1 ?? .infinity
         let where_ = worstOff.map { String(format: " at (%.4f, %.4f, %.4f), cap %.3f, |f| %.4f", $0.0.x, $0.0.y, $0.0.z,
