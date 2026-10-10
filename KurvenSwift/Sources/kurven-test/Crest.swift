@@ -225,6 +225,42 @@ func crestTests() {
                      "24: \(l24)  48: \(l48)  96: \(l96)")
     }
 
+    Check.suite("folds to the rim: a tower's silhouette runs up to the cap") {
+        // 1/z capped at 2: a tower round the pole, its rim the circle
+        // |z| = 1/2. The fold either side of the tower is its silhouette,
+        // and it meets the rim where the rim's tangent lies along the sight
+        // line. Traced on the lattice the fold's last vertex sat on the
+        // crease at the cap's height and was dropped as cap ink, so the
+        // silhouette stopped a cell short of the rim.
+        let domain = Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: -1, hi: 1))
+        let request = LandscapeRequest(expression: "1/z", domain: domain, resolution: 24, caps: .uniform(2))
+        let bundle = try NativeLandscape.build(request, refine: true)
+        let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
+        let h = scene.heightfield!
+        let folds = h.foldLines(view: scene.camera.view)
+        var atRim = 0, onCap = 0, worstOffRim = 0.0
+        for i in 0..<folds.count {
+            let p = Array(folds[path: i])
+            for v in p where v.z >= 2 - 1e-9 { onCap += 1 }
+            for end in [p.first!, p.last!] where end.z >= 2 - 1e-9 {
+                atRim += 1
+                worstOffRim = max(worstOffRim, abs((end.x * end.x + end.y * end.y).squareRoot() - 0.5))
+            }
+        }
+        Check.expect(atRim >= 2, "the silhouette reaches the rim at both sides of the tower", "\(atRim) fold ends at the cap's height")
+        // To the step the facing is read at, a ten-thousandth of a cell:
+        // across the crease the facing jumps, and the bisection lands where
+        // the differenced facing crosses zero, within that step of it.
+        Check.expect(worstOffRim < 1e-4 * (2.0 / 23), "and ends on the rim, |z| = 1/2, to the facing's step",
+                     String(format: "worst %.1e off", worstOffRim))
+        Check.expect(onCap == atRim, "and nothing of a fold lies on the cap but those ends", "\(onCap) vertices at the cap's height, \(atRim) of them ends")
+        let seen = h.visibleFolds(view: scene.camera.view, margin: scene.margin)
+        let seenAtRim = (0..<seen.count).filter { i in
+            let p = Array(seen[path: i]); return p.first!.z >= 2 - 1e-9 || p.last!.z >= 2 - 1e-9
+        }.count
+        Check.expect(seenAtRim >= 2, "and both are seen up to the rim", "\(seenAtRim) seen runs end on the rim")
+    }
+
     Check.suite("one surface: on a lattice of 24 the pit of 1/Γ at -3 is drawn from f alone") {
         // The figure's own window: 1/Γ over Re [-3.8, -2.2], Im [0, 0.8],
         // capped at 2, on 24 samples across, so that a cell is a visible

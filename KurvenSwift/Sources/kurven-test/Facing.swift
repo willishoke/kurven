@@ -213,9 +213,18 @@ func foldLineTests() {
         let atZeros = folds.vertices.filter { $0.z <= 1e-9 }.count
         Check.expect(atZeros >= 2, "and the pits' silhouettes run down to their zeros on the front edge",
                      "\(atZeros) fold ends on the floor")
+        // Nothing on a cap but the one vertex where a fold up a flank meets
+        // the rim, which ends its run.
         let cap = h.surface.caps
-        Check.expect(folds.vertices.allSatisfy { $0.z < cap.height(atX: $0.x) - 1e-9 },
-                     "and none is on a cap")
+        var interiorOnCap = 0, endsOnRim = 0
+        for i in 0..<folds.count {
+            let p = Array(folds[path: i])
+            for (k, v) in p.enumerated() where v.z >= cap.height(atX: v.x) - 1e-9 {
+                if k == 0 || k == p.count - 1 { endsOnRim += 1 } else { interiorOnCap += 1 }
+            }
+        }
+        Check.expect(interiorOnCap == 0, "and none is on a cap but a run's end on the rim",
+                     "\(interiorOnCap) interior vertices on a cap, \(endsOnRim) ends on a rim")
         // The pit at -3: its far edge is a fold running down to the floor.
         let pit = folds.vertices.filter { abs($0.x + 3) < 0.4 && $0.y < 0.6 }
         Check.expect((pit.map(\.z).min() ?? .infinity) < 0.5,

@@ -139,6 +139,10 @@ public struct Heightfield: Sendable {
         func subdivide(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>, tolerance: Double, depth: Int,
                        into out: inout [P3<WorldSpace>]) {
             guard depth < 5 else { return }
+            // A segment that ends on the rim is left straight: across the
+            // crease the facing jumps, and the midpoint would land on the
+            // crease rather than the fold.
+            guard a.z < surface.caps.height(atX: a.x) - 1e-9, b.z < surface.caps.height(atX: b.x) - 1e-9 else { return }
             let chord = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
             guard chord > 1e-9 * cell else { return }
             let mid = SIMD2(0.5 * (a.x + b.x), 0.5 * (a.y + b.y))
@@ -260,20 +264,39 @@ public struct Heightfield: Sendable {
                 }
                 return onto(c)
             }
+            // Nothing on a cap, which faces up and has a rim of its own --
+            // except the one vertex where a fold up the flank meets the
+            // rim. The facing jumps there, from the flank's to the cap's,
+            // and the bisection along the lattice edge lands on the crease
+            // at the cap's own height; dropped as cap ink, the fold ended a
+            // cell short of the rim at every lattice. On the rim it is the
+            // run's end, or the start of the next; a chain of rim vertices
+            // on its own, which the back of a tower yields, draws nothing.
+            let onRim = refine?.magnitude != nil
             for line in Contour.lines(of: field, level: 0) {
                 var run: [P3<WorldSpace>] = []
+                var pending: P3<WorldSpace>?
+                func close() {
+                    if run.count >= 2 { paths.append(fundamental ? endedAtZeros(subdivided(run), cell: cell) : run) }
+                    run = []; pending = nil
+                }
                 for v in line {
                     var p = P2<WorldSpace>(v.x, v.y)
                     if refined { p = ontoEdge(p) }
                     let z = height(p)
-                    if region.contains(p) && z < surface.caps.height(atX: p.x) - 1e-9 {
+                    let cap = surface.caps.height(atX: p.x)
+                    if region.contains(p) && z < cap - 1e-9 {
+                        if run.isEmpty, let r = pending { run.append(r) }
+                        pending = nil
                         run.append(P3(p.x, p.y, z))
+                    } else if onRim, region.contains(p), z.isFinite, cap.isFinite, abs(z - cap) <= 1e-9 * max(1, abs(cap)) {
+                        let r = P3<WorldSpace>(p.x, p.y, cap)
+                        if run.isEmpty { pending = r } else { run.append(r); close() }
                     } else {
-                        if run.count >= 2 { paths.append(fundamental ? endedAtZeros(subdivided(run), cell: cell) : run) }
-                        run = []
+                        close()
                     }
                 }
-                if run.count >= 2 { paths.append(fundamental ? endedAtZeros(subdivided(run), cell: cell) : run) }
+                close()
             }
         }
         return PolylineSet(paths: paths)
