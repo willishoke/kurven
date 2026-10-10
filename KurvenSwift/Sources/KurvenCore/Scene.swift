@@ -333,12 +333,40 @@ public struct Heightfield: Sendable {
     /// the surface (`SightMarch`). `margin` is the plate's hidden-line
     /// margin, which keeps a vertex on the surface it belongs to from hiding
     /// behind that surface's own rounding.
+    ///
+    /// With the function at hand, ink on the surface is judged where the
+    /// surface is (`onSurface`) and the margin is rounding: a fold vertex
+    /// lies on f to the last bit, and forgiving the tolerance instead draws
+    /// a stub of a bowl's fold beside the cut, hidden by less than the
+    /// tolerance, almost on the crest.
     public func visibleFolds(view: Transform<WorldSpace, ViewSpace>, margin: Double,
                              refined: Bool = true) -> PolylineSet<WorldSpace> {
         let folds = foldLines(view: view, refined: refined)
         guard !folds.vertices.isEmpty else { return folds }
-        let march = SightMarch(self, view: view, margin: margin)
-        return Self.runs(of: folds) { march.unoccluded($0) }
+        let march = SightMarch(self, view: view, margin: surfaceMargin(margin))
+        return Self.runs(of: folds) { march.unoccluded(self.onSurface($0)) }
+    }
+
+    /// The margin ink on the surface is judged with: the plate's against the
+    /// lattice, whose chords are that far from f; rounding against f, since
+    /// the ink is judged on f itself.
+    func surfaceMargin(_ margin: Double) -> Double {
+        guard refine?.magnitude != nil else { return margin }
+        let g = surface.height
+        let cell = max(abs(g.domain.real.length) / Double(max(g.width - 1, 1)),
+                       abs(g.domain.imag.length) / Double(max(g.height - 1, 1)))
+        return 1e-9 * cell
+    }
+
+    /// A point of ink on the surface, at the surface's own height over it:
+    /// where it is judged. A ring's vertex is on f to a hundredth of the
+    /// tolerance and a point of its chord to the tolerance; both are judged
+    /// on f, so that a point of a ring at a fold is judged exactly as the
+    /// fold is, and the ring's end and the fold's end agree.
+    func onSurface(_ p: P3<WorldSpace>) -> P3<WorldSpace> {
+        guard refine?.magnitude != nil else { return p }
+        let z = surfaceHeight(at: P2(p.x, p.y))
+        return z.isFinite ? P3(p.x, p.y, z) : p
     }
 
     /// Ink that lies in a cut face -- the wall's hatch and its outline --
@@ -420,7 +448,7 @@ public struct Heightfield: Sendable {
                                   view: Transform<WorldSpace, ViewSpace>,
                                   margin: Double) -> PolylineSet<WorldSpace> {
         guard !paths.vertices.isEmpty else { return paths }
-        let vis = HeightfieldVisibility(heightfield: self, view: view, margin: margin)
+        let vis = HeightfieldVisibility(heightfield: self, view: view, margin: surfaceMargin(margin))
         let vertices = paths.vertices
         let facing = Self.parallelMap(vertices) { vis.facing(P2($0.x, $0.y)) }
         // The segments whose ends face opposite ways, each cut on the fold.
@@ -439,9 +467,9 @@ public struct Heightfield: Sendable {
         var fold = [P3<WorldSpace>?](repeating: nil, count: vertices.count)
         for (i, k) in crossing.enumerated() { fold[k] = onFold[i] }
         let clear = Self.parallelMap(Array(vertices.indices)) { k in
-            facing[k] > 0 && vis.isClear(vertices[k])
+            facing[k] > 0 && vis.isClear(self.onSurface(vertices[k]))
         }
-        let foldClear = Self.parallelMap(fold) { $0.map { vis.isClear($0) } ?? false }
+        let foldClear = Self.parallelMap(fold) { $0.map { vis.isClear(self.onSurface($0)) } ?? false }
 
         // The sequence each path is judged as: its vertices with the fold
         // crossings between them, each with its verdict and whether the
@@ -470,7 +498,7 @@ public struct Heightfield: Sendable {
         let judgedSequence = sequence
         let turned = Self.parallelMap(crossings) { c -> P3<WorldSpace>? in
             let a = judgedSequence[c.path][c.k - 1], b = judgedSequence[c.path][c.k]
-            return Self.turning(from: a.v, a.visible, to: b.v) { vis.isClear($0) }
+            return Self.turning(from: a.v, a.visible, to: b.v) { vis.isClear(self.onSurface($0)) }
         }
         var turn: [[P3<WorldSpace>?]] = sequence.map { [P3<WorldSpace>?](repeating: nil, count: $0.count) }
         for (i, c) in crossings.enumerated() { turn[c.path][c.k] = turned[i] }

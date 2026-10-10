@@ -210,16 +210,14 @@ func crestTests() {
                 return total + zip(p, p.dropFirst()).reduce(0) { $0 + simd_length($1.1.v - $1.0.v) }
             }
         }
-        // With no margin at all, the only fold vertices that can be seen
-        // are on the cut, whose sight lines leave the solid at once. With
-        // the plate's margin, what shows of the fold is hidden by less than
-        // the margin, which the judge forgives by design.
-        let strict = h.visibleFolds(view: view, margin: 0)
-        let offCut = strict.vertices.map(\.y).max() ?? 0
-        Check.expect(traced.count >= 1 && ink(traced) > 0.5 && offCut < 1e-6,
+        // The only fold vertices that can be seen are on the cut, whose
+        // sight lines leave the solid at once: a fold is judged with no
+        // margin, since its vertices lie on f exactly.
+        let offCut = folds.vertices.map(\.y).max() ?? 0
+        Check.expect(traced.count >= 1 && ink(traced) > 0.5 && offCut < 1e-3 * cell,
                      "no fold is seen in the pit: a sight line tangent to a bowl's flank runs through the flank",
-                     String(format: "%.3f units traced, %.3f seen at no margin, furthest %.1e from the cut; %.3f seen at the plate's margin",
-                            ink(traced), ink(strict), offCut, ink(folds)))
+                     String(format: "%.3f units traced, %.3f seen, furthest %.1e from the cut",
+                            ink(traced), ink(folds), offCut))
         /// Distance from a point to the nearest fold segment, in 3D.
         func toFolds(_ v: P3<WorldSpace>) -> Double {
             var best = Double.infinity
