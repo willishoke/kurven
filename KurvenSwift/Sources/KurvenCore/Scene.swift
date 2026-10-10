@@ -61,10 +61,30 @@ public struct Heightfield: Sendable {
     ///
     /// Differences in world coordinates, so a tile's reflection is already
     /// in them; on the cap the differences vanish and the normal is up.
+    ///
+    /// With the function at hand (`refine`), the slope is f's own, read by
+    /// differences a step small against the cell and large against
+    /// rounding, as the refiner reads it: the ink on the surface is placed
+    /// on f to the last bit, and a facing read off the lattice a cell wide
+    /// judges it with a ruler a cell long -- a ring ends a stencil's width
+    /// short of the fold on a convex flank and shows a stencil's width past
+    /// it on a hump, whatever the lattice. Without the function, the lattice
+    /// is the surface and its chords are the slope.
     public func normal(at p: P2<WorldSpace>) -> SIMD3<Double> {
         let g = surface.height
         let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1))
         let dy = abs(g.domain.imag.length) / Double(max(g.height - 1, 1))
+        if let magnitude = refine?.magnitude {
+            let step = 1e-4 * max(dx, dy)
+            func h(_ x: Double, _ y: Double) -> Double {
+                let q = surface.inTile(P2<DomainSpace>(x, y), tiles: tiles)
+                let u = magnitude(q)
+                return min(u.isNaN ? .infinity : u, surface.caps.height(atX: q.x))
+            }
+            let hx = (h(p.x + step, p.y) - h(p.x - step, p.y)) / (2 * step)
+            let hy = (h(p.x, p.y + step) - h(p.x, p.y - step)) / (2 * step)
+            if hx.isFinite, hy.isFinite { return SIMD3(-hx, -hy, 1) }
+        }
         func h(_ x: Double, _ y: Double) -> Double {
             surface.height(at: P2<DomainSpace>(x, y), tiles: tiles)
         }
@@ -107,8 +127,55 @@ public struct Heightfield: Sendable {
         let cell = max(abs(g.domain.real.length) / Double(nx - 1),
                        abs(g.domain.imag.length) / Double(ny - 1))
         let h = 0.25 * cell
-        /// Onto the fold: bracket a sign change along the gradient within a
-        /// cell either way, then bisect it to the last bit.
+        /// The surface's height over a fold vertex: f's, capped, with the
+        /// function at hand, so the fold is drawn at the height the rings
+        /// that end on it are drawn at; the lattice's otherwise.
+        func height(_ p: P2<WorldSpace>) -> Double { surfaceHeight(at: p) }
+        /// Between two vertices on the fold, the fold itself: the chord's
+        /// midpoint moved onto the fold along the chord's normal, kept when
+        /// it moved further than the refiner's tolerance, and the two halves
+        /// likewise -- the contour refiner's rule, so a fold is a curve to
+        /// the same tolerance the rings that end on it are.
+        func subdivide(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>, tolerance: Double, depth: Int,
+                       into out: inout [P3<WorldSpace>]) {
+            guard depth < 5 else { return }
+            let chord = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
+            guard chord > 1e-9 * cell else { return }
+            let mid = SIMD2(0.5 * (a.x + b.x), 0.5 * (a.y + b.y))
+            let n = SIMD2(-(b.y - a.y), b.x - a.x) / chord
+            var lo = mid - 0.5 * chord * n, hi = mid + 0.5 * chord * n
+            var flo = facing(P2(lo.x, lo.y))
+            guard (flo > 0) != (facing(P2(hi.x, hi.y)) > 0) else { return }
+            for _ in 0..<60 {
+                let m = 0.5 * (lo + hi)
+                let fm = facing(P2(m.x, m.y))
+                if (fm > 0) == (flo > 0) { lo = m; flo = fm } else { hi = m }
+            }
+            let q = 0.5 * (lo + hi)
+            let p = P2<WorldSpace>(q.x, q.y)
+            guard region.contains(p) else { return }
+            let z = height(p)
+            guard z.isFinite, z < surface.caps.height(atX: p.x) - 1e-9 else { return }
+            let v = P3<WorldSpace>(p.x, p.y, z)
+            // The fold is a curve in space: its departure from the chord is
+            // measured there, across and up.
+            guard simd_length(v.v - 0.5 * (a.v + b.v)) > tolerance * cell else { return }
+            subdivide(a, v, tolerance: tolerance, depth: depth + 1, into: &out)
+            out.append(v)
+            subdivide(v, b, tolerance: tolerance, depth: depth + 1, into: &out)
+        }
+        func subdivided(_ run: [P3<WorldSpace>]) -> [P3<WorldSpace>] {
+            guard refined, let tolerance = refine?.tolerance, run.count >= 2 else { return run }
+            var out: [P3<WorldSpace>] = [run[0]]
+            for (a, b) in zip(run, run.dropFirst()) {
+                subdivide(a, b, tolerance: tolerance, depth: 0, into: &out)
+                out.append(b)
+            }
+            return out
+        }
+        /// Onto the fold, along the gradient: bracket a sign change within a
+        /// cell either way, then bisect it to the last bit. The fallback,
+        /// for a vertex that lies on no lattice edge.
         func onto(_ c: P2<WorldSpace>) -> P2<WorldSpace> {
             let gx = facing(P2(c.x + h, c.y)) - facing(P2(c.x - h, c.y))
             let gy = facing(P2(c.x, c.y + h)) - facing(P2(c.x, c.y - h))
@@ -156,23 +223,72 @@ public struct Heightfield: Sendable {
             // Only on the fundamental tile: the zero is found on the
             // function, which is sampled there.
             let fundamental = tile == .identity
+            /// Onto the fold, along the lattice edge the vertex lies on: a
+            /// marching-squares vertex is the chord's crossing of an edge
+            /// whose two nodes face opposite ways, so the edge brackets the
+            /// fold by construction, and bisecting it to the last bit lands
+            /// on the fold, as the contour refiner lands on f along the same
+            /// edges. Bracketing along the gradient instead can miss where
+            /// the facing is sharp -- a pit one cell wide -- and leave the
+            /// vertex on the chord.
+            func ontoEdge(_ c: P2<WorldSpace>) -> P2<WorldSpace> {
+                let fx = (c.x - lo.x) / sx, fy = (c.y - lo.y) / sy
+                let onColumn = abs(fx - fx.rounded()) < 1e-6, onRow = abs(fy - fy.rounded()) < 1e-6
+                var ends: [(SIMD2<Double>, SIMD2<Double>)] = []
+                if onColumn, fy < Double(ny - 1) {
+                    let i = Int(fx.rounded()), j = Int(fy.rounded(.down))
+                    ends.append((SIMD2(lo.x + Double(i) * sx, lo.y + Double(j) * sy),
+                                 SIMD2(lo.x + Double(i) * sx, lo.y + Double(j + 1) * sy)))
+                }
+                if onRow, fx < Double(nx - 1) {
+                    let i = Int(fx.rounded(.down)), j = Int(fy.rounded())
+                    ends.append((SIMD2(lo.x + Double(i) * sx, lo.y + Double(j) * sy),
+                                 SIMD2(lo.x + Double(i + 1) * sx, lo.y + Double(j) * sy)))
+                }
+                for (a0, b0) in ends {
+                    var a = a0, b = b0
+                    var fa = facing(P2(a.x, a.y))
+                    let fb = facing(P2(b.x, b.y))
+                    guard (fa > 0) != (fb > 0) else { continue }
+                    for _ in 0..<60 {
+                        let m = 0.5 * (a + b)
+                        let fm = facing(P2(m.x, m.y))
+                        if (fm > 0) == (fa > 0) { a = m; fa = fm } else { b = m }
+                    }
+                    let m = 0.5 * (a + b)
+                    return P2(m.x, m.y)
+                }
+                return onto(c)
+            }
             for line in Contour.lines(of: field, level: 0) {
                 var run: [P3<WorldSpace>] = []
                 for v in line {
                     var p = P2<WorldSpace>(v.x, v.y)
-                    if refined { p = onto(p) }
-                    let z = surface.height(at: P2<DomainSpace>(p.x, p.y), tiles: tiles)
+                    if refined { p = ontoEdge(p) }
+                    let z = height(p)
                     if region.contains(p) && z < surface.caps.height(atX: p.x) - 1e-9 {
                         run.append(P3(p.x, p.y, z))
                     } else {
-                        if run.count >= 2 { paths.append(fundamental ? endedAtZeros(run, cell: cell) : run) }
+                        if run.count >= 2 { paths.append(fundamental ? endedAtZeros(subdivided(run), cell: cell) : run) }
                         run = []
                     }
                 }
-                if run.count >= 2 { paths.append(fundamental ? endedAtZeros(run, cell: cell) : run) }
+                if run.count >= 2 { paths.append(fundamental ? endedAtZeros(subdivided(run), cell: cell) : run) }
             }
         }
         return PolylineSet(paths: paths)
+    }
+
+    /// The height of the surface the ink is judged against, over a world
+    /// point: f's own, capped, read through the tile the point is in, when
+    /// the function is at hand; the lattice's interpolated height otherwise.
+    public func surfaceHeight(at p: P2<WorldSpace>) -> Double {
+        if let magnitude = refine?.magnitude {
+            let q = surface.inTile(P2<DomainSpace>(p.x, p.y), tiles: tiles)
+            let u = magnitude(q)
+            if u.isFinite { return min(u, surface.caps.height(atX: q.x)) }
+        }
+        return surface.height(at: P2<DomainSpace>(p.x, p.y), tiles: tiles)
     }
 
     /// The height of the surface *as the depth pass draws it* over a world
@@ -251,7 +367,6 @@ public struct Heightfield: Sendable {
         let march = SightMarch(self, view: view, margin: margin)
         let d = surface.domain
         let slack = 1e-6 * march.cell
-        let s = surface, t = tiles
         let boxes: [(lo: SIMD2<Double>, hi: SIMD2<Double>)] = tiles.map { tile in
             let corners = [(d.real.lo, d.imag.lo), (d.real.hi, d.imag.lo),
                            (d.real.lo, d.imag.hi), (d.real.hi, d.imag.hi)]
@@ -259,10 +374,13 @@ public struct Heightfield: Sendable {
             return (SIMD2(corners.map(\.x).min()!, corners.map(\.y).min()!),
                     SIMD2(corners.map(\.x).max()!, corners.map(\.y).max()!))
         }
-        return Self.runs(of: paths) { p in
-            let h = s.height(at: P2<DomainSpace>(p.x, p.y), tiles: t)
-            let onCrest = p.z >= h - 1e-9 * max(1, abs(h))
-            /// Whether some wall this point lies in faces the eye.
+        let cell = march.cell
+        /// Whether the point is judged by the march at all: on the crest, in
+        /// a wall that faces the eye, or in no wall. Ink that stands in no
+        /// wall is left to the march alone.
+        @Sendable func admitted(_ p: P3<WorldSpace>) -> Bool {
+            let h = self.surfaceHeight(at: P2(p.x, p.y))
+            let onCrest = p.z >= h - 1e-9 * max(cell, abs(h))
             var onAnyWall = false, facesEye = false
             for box in boxes {
                 let walls: [(on: Bool, outward: SIMD3<Double>)] = [
@@ -276,9 +394,10 @@ public struct Heightfield: Sendable {
                     if -simd_dot(wall.outward, sight) > 0 { facesEye = true }
                 }
             }
-            // Ink that stands in no wall is left to the march alone.
-            return (onCrest || facesEye || !onAnyWall) && march.unoccluded(p)
+            return onCrest || facesEye || !onAnyWall
         }
+        return Self.runs(of: paths, keep: { p in admitted(p) && march.unoccluded(p) },
+                         bisectable: { a, b in admitted(a) && admitted(b) })
     }
 
     /// Ink that lies on the surface itself -- the contours of |f| and arg f,
@@ -324,20 +443,50 @@ public struct Heightfield: Sendable {
         }
         let foldClear = Self.parallelMap(fold) { $0.map { vis.isClear($0) } ?? false }
 
-        var out: [[P3<WorldSpace>]] = []
-        var run: [P3<WorldSpace>] = []
-        func take(_ v: P3<WorldSpace>, _ visible: Bool) {
-            if visible {
-                run.append(v)
-            } else {
-                if run.count >= 2 { out.append(run) }
-                run = []
+        // The sequence each path is judged as: its vertices with the fold
+        // crossings between them, each with its verdict and whether the
+        // march alone decided it (a back-facing vertex is hidden by the
+        // fold, and the run already ends on the fold crossing).
+        var sequence: [[(v: P3<WorldSpace>, visible: Bool, byMarch: Bool)]] = []
+        for path in 0..<paths.count {
+            var seq: [(v: P3<WorldSpace>, visible: Bool, byMarch: Bool)] = []
+            for k in paths.offsets[path]..<paths.offsets[path + 1] {
+                if let f = fold[k] { seq.append((f, foldClear[k], true)) }
+                seq.append((vertices[k], clear[k], facing[k] > 0))
+            }
+            sequence.append(seq)
+        }
+        // Where a run ends between a visible point and one the march hides,
+        // it ends where the march turns, by bisection along the segment: a
+        // ring passing behind a crest ends on the crest as drawn, not a
+        // segment short of it.
+        var crossings: [(path: Int, k: Int)] = []
+        for (i, seq) in sequence.enumerated() {
+            for k in 1..<max(seq.count, 1) where seq[k - 1].visible != seq[k].visible
+                && (seq[k - 1].visible ? seq[k].byMarch : seq[k - 1].byMarch) {
+                crossings.append((i, k))
             }
         }
-        for path in 0..<paths.count {
-            for k in paths.offsets[path]..<paths.offsets[path + 1] {
-                if let f = fold[k] { take(f, foldClear[k]) }
-                take(vertices[k], clear[k])
+        let judgedSequence = sequence
+        let turned = Self.parallelMap(crossings) { c -> P3<WorldSpace>? in
+            let a = judgedSequence[c.path][c.k - 1], b = judgedSequence[c.path][c.k]
+            return Self.turning(from: a.v, a.visible, to: b.v) { vis.isClear($0) }
+        }
+        var turn: [[P3<WorldSpace>?]] = sequence.map { [P3<WorldSpace>?](repeating: nil, count: $0.count) }
+        for (i, c) in crossings.enumerated() { turn[c.path][c.k] = turned[i] }
+
+        var out: [[P3<WorldSpace>]] = []
+        var run: [P3<WorldSpace>] = []
+        for (i, seq) in sequence.enumerated() {
+            for (k, item) in seq.enumerated() {
+                if item.visible {
+                    if let t = turn[i][k] { run.append(t) }
+                    run.append(item.v)
+                } else {
+                    if let t = turn[i][k] { run.append(t) }
+                    if run.count >= 2 { out.append(run) }
+                    run = []
+                }
             }
             if run.count >= 2 { out.append(run) }
             run = []
@@ -361,16 +510,43 @@ public struct Heightfield: Sendable {
     /// does not; runs shorter than two vertices draw nothing and are dropped.
     /// `keep` is asked of every vertex in parallel, since the march behind it
     /// is the expensive part of a bake.
+    ///
+    /// Where a run ends between a kept vertex and a dropped one, it ends
+    /// where `keep` turns, found by bisection along the segment to the last
+    /// bit: a ring passing behind a crest ends on the crest as drawn, not at
+    /// its last vertex in front of it. Only across a segment `bisectable`
+    /// admits: the march's verdict turns at a point of the segment, but a
+    /// test of where the vertex *is* -- in a wall that faces the eye, on the
+    /// crest -- does not, and bisecting it would draw the sliver of a stroke
+    /// between the crest as drawn and f.
     static func runs(of paths: PolylineSet<WorldSpace>,
-                     keep: @Sendable (P3<WorldSpace>) -> Bool) -> PolylineSet<WorldSpace> {
+                     keep: @Sendable (P3<WorldSpace>) -> Bool,
+                     bisectable: @Sendable (P3<WorldSpace>, P3<WorldSpace>) -> Bool = { _, _ in true })
+        -> PolylineSet<WorldSpace>
+    {
         let kept = parallelMap(paths.vertices, keep)
+        let vertices = paths.vertices
+        var crossings: [Int] = []
+        for path in 0..<paths.count {
+            for k in (paths.offsets[path] + 1)..<paths.offsets[path + 1]
+            where kept[k - 1] != kept[k] && bisectable(vertices[k - 1], vertices[k]) {
+                crossings.append(k)
+            }
+        }
+        let turned = parallelMap(crossings) { k -> P3<WorldSpace>? in
+            Self.turning(from: vertices[k - 1], kept[k - 1], to: vertices[k], keep: keep)
+        }
+        var turn = [P3<WorldSpace>?](repeating: nil, count: vertices.count)
+        for (i, k) in crossings.enumerated() { turn[k] = turned[i] }
         var out: [[P3<WorldSpace>]] = []
         for i in 0..<paths.count {
             var run: [P3<WorldSpace>] = []
             for k in paths.offsets[i]..<paths.offsets[i + 1] {
                 if kept[k] {
+                    if let t = turn[k] { run.append(t) }
                     run.append(paths.vertices[k])
                 } else {
+                    if let t = turn[k] { run.append(t) }
                     if run.count >= 2 { out.append(run) }
                     run = []
                 }
@@ -378,6 +554,23 @@ public struct Heightfield: Sendable {
             if run.count >= 2 { out.append(run) }
         }
         return PolylineSet(paths: out)
+    }
+
+    /// Where `keep` turns on the segment from `a` to `b`, given it holds at
+    /// `a` iff `keptA`: bisection to the last bit of the fraction, returning
+    /// the last point at which it still holds on the kept side.
+    static func turning(from a: P3<WorldSpace>, _ keptA: Bool, to b: P3<WorldSpace>,
+                        keep: @Sendable (P3<WorldSpace>) -> Bool) -> P3<WorldSpace>? {
+        var lo = 0.0, hi = 1.0
+        while hi - lo > 1e-13 {
+            let mid = 0.5 * (lo + hi)
+            if keep(P3(a.v + (b.v - a.v) * mid)) == keptA { lo = mid } else { hi = mid }
+        }
+        // Turned within rounding of the kept end: the kept vertex is where
+        // the ink ends, and a second vertex there would be a run of nothing.
+        let t = keptA ? lo : 1 - hi
+        guard t > 1e-12 else { return nil }
+        return P3(a.v + (b.v - a.v) * (keptA ? lo : hi))
     }
 
     /// `items.map(body)`, in parallel chunks.
@@ -462,20 +655,31 @@ struct SightMarch: Sendable {
     init(_ heightfield: Heightfield, view: Transform<WorldSpace, ViewSpace>, margin: Double) {
         self.heightfield = heightfield
         self.toward = -view.sightLine
-        self.margin = margin
         // View depth per unit of travel along the sight line: the camera's
         // third row dotted with the direction, which under a sheared plate
         // camera is not one.
         let c = view.m.columns
         let perUnit = abs(simd_dot(SIMD3(c.0.z, c.1.z, c.2.z), toward))
-        self.reach = margin / max(perUnit, 1e-12)
         let g = heightfield.surface.height
         let step = max(heightfield.step, 1)
         self.step = step
         let nx = (g.width + step - 1) / step, ny = (g.height + step - 1) / step
         let dx = g.domain.real.length / Double(max(g.width - 1, 1)) * Double(step)
         let dy = g.domain.imag.length / Double(max(g.height - 1, 1)) * Double(step)
-        cell = max(abs(dx), abs(dy))
+        let cell = max(abs(dx), abs(dy))
+        self.cell = cell
+        // The margin forgives the ink its distance from the solid it is
+        // judged against. Against the lattice that is the chord's departure
+        // from f, the plate's margin. Against f it is the refiner's own
+        // tolerance: a vertex is on f to a hundredth of it, and a chord
+        // between two vertices departs from the curve by at most the
+        // tolerance of a cell, measured across the curve -- which is the
+        // perpendicular distance the march judges by, since along a level
+        // line f is flat. A plate-scale margin would let a ring show
+        // through a wall for the margin's reach past the crest.
+        let bounded = heightfield.refine.map { min(margin, $0.tolerance * cell) } ?? margin
+        self.margin = bounded
+        self.reach = bounded / max(perUnit, 1e-12)
         var top = -Double.infinity, floor = Double.infinity
         heightfield.forEachSample { top = max(top, $0.z); floor = min(floor, $0.z) }
         for v in heightfield.occluder.vertices { floor = min(floor, v.z) }
@@ -501,7 +705,7 @@ struct SightMarch: Sendable {
     func drawnSurface(at p: SIMD2<Double>) -> (interpolated: Double, cap: Double, cosine: Double) {
         let s = heightfield.surface
         guard backs.count > 1 else {
-            return s.drawnSurface(at: P2<DomainSpace>(p.x, p.y), step: step)
+            return surface(at: P2<DomainSpace>(p.x, p.y))
         }
         let d = s.domain
         let (xlo, xhi) = (min(d.real.lo, d.real.hi), max(d.real.lo, d.real.hi))
@@ -517,11 +721,41 @@ struct SightMarch: Sendable {
                 if distance == 0 { break }
             }
         }
-        return s.drawnSurface(at: best, step: step)
+        return surface(at: best)
     }
 
-    /// Whether nothing of the solid stands between `p` and the eye.
-    func unoccluded(_ p: P3<WorldSpace>) -> Bool {
+    /// The surface over a point of the fundamental tile: f's own height and
+    /// the cosine of its tilt, by differences a step small against the cell,
+    /// when the function is at hand; the lattice's facet otherwise. The ink
+    /// is placed on f, so the solid it is judged against is f: a ring seen
+    /// through a notch is hidden where f's crest hides it, not where the
+    /// chord across the nearest two nodes would.
+    func surface(at q: P2<DomainSpace>) -> (interpolated: Double, cap: Double, cosine: Double) {
+        let s = heightfield.surface
+        guard let magnitude = heightfield.refine?.magnitude else {
+            return s.drawnSurface(at: q, step: step)
+        }
+        let (u, slope) = functionSurface(at: q, magnitude: magnitude)
+        let cosine = 1 / (1 + simd_dot(slope, slope)).squareRoot()
+        return (u, s.caps.height(atX: q.x), cosine.isNaN ? 0 : cosine)
+    }
+
+    /// f's height over a point of the fundamental tile and its slope there,
+    /// by differences a step small against the cell.
+    func functionSurface(at q: P2<DomainSpace>, magnitude: ContourRefine.Magnitude)
+        -> (height: Double, slope: SIMD2<Double>)
+    {
+        let u = magnitude(q)
+        let e = 1e-4 * cell
+        let hx = (magnitude(P2(q.x + e, q.y)) - magnitude(P2(q.x - e, q.y))) / (2 * e)
+        let hy = (magnitude(P2(q.x, q.y + e)) - magnitude(P2(q.x, q.y - e))) / (2 * e)
+        return (u.isNaN ? .infinity : u, SIMD2(hx, hy))
+    }
+
+    /// Whether nothing of the solid stands between `p` and the eye. With
+    /// `trace`, every sample the march takes and what it made of it, for
+    /// asking why a vertex is hidden.
+    func unoccluded(_ p: P3<WorldSpace>, trace: ((String) -> Void)? = nil) -> Bool {
         let d = toward
         let pxy = SIMD2(p.x, p.y), dxy = SIMD2(d.x, d.y)
         // How far up the line there can be anything: once above the highest
@@ -545,6 +779,23 @@ struct SightMarch: Sendable {
             let (interpolated, cap, cosine) = drawnSurface(at: q)
             let z = p.z + t * d.z
             return (z - interpolated, z - cap, cosine)
+        }
+        /// With the function: the line's gap over f at `t` and the rate the
+        /// gap changes along the line, for finding a dip of f under the
+        /// line between two crossings, where the facet model has nothing to
+        /// find. Nil outside the region.
+        let magnitude = heightfield.refine?.magnitude
+        func gapOverF(_ t: Double) -> (gap: Double, rate: Double)? {
+            guard let magnitude else { return nil }
+            let q = pxy + t * dxy
+            guard heightfield.region.contains(P2<WorldSpace>(q.x, q.y)) else { return nil }
+            let dq = heightfield.surface.inTile(P2<DomainSpace>(q.x, q.y), tiles: heightfield.tiles)
+            let (u, slope) = functionSurface(at: dq, magnitude: magnitude)
+            let z = p.z + t * d.z
+            // Through a reflected tile the slope's sign flips with the
+            // reflection; only its product with the line's direction is
+            // needed, and both are read in the same frame here.
+            return (z - u, d.z - simd_dot(slope, dxy))
         }
         // The cap's bands, if any, as levels of the lattice's u where the
         // cap steps: a crossing of the drawn surface too.
@@ -624,13 +875,25 @@ struct SightMarch: Sendable {
                 // that stands above the surface is outside from the start,
                 // and what its line then enters is an occluder.
                 outsideYet = true
+                trace?(String(format: "t %.4g cells: outside (gap %@)", t / cell,
+                              g.map { String(format: "%+.3e over f, %+.3e over cap", $0.overFacet, $0.overCap) } ?? "off the region"))
                 return false
             }
-            guard judged else { return false }
-            if outsideYet { return t + tEps >= reach }
+            guard judged else {
+                trace?(String(format: "t %.4g cells: inside by %.3e, not judged at the start", t / cell, -g.overFacet))
+                return false
+            }
+            if outsideYet {
+                trace?(String(format: "t %.4g cells: inside by %.3e after being outside, reach %.4g cells: %@",
+                              t / cell, -g.overFacet, reach / cell, t + tEps >= reach ? "hidden" : "forgiven"))
+                return t + tEps >= reach
+            }
             let depth = g.overFacet > g.overCap ? g.overFacet * cosine : g.overCap
+            trace?(String(format: "t %.4g cells: inside by %.3e in its own surface's neighbourhood, depth %.3e, margin %.3e: %@",
+                          t / cell, -g.overFacet, depth, margin, depth + margin < 0 ? "hidden" : "forgiven"))
             return depth + margin < 0
         }
+        trace?(String(format: "from (%.4f, %.4f, %.4f), %d samples to %.4g cells", p.x, p.y, p.z, ts.count, (ts.last ?? 0) / cell))
         for k in 0..<ts.count {
             let t = ts[k], g = values[k]
             // A point on a lattice line lies under two facets: judged by
@@ -641,12 +904,45 @@ struct SightMarch: Sendable {
             for cosine in cosines.isEmpty ? [g?.cosine ?? 1] : cosines {
                 if hidden(t, g, cosine: cosine) { return false }
             }
+            // With the function, a dip of f under the line between this
+            // crossing and the next: where the gap over f falls at one end
+            // and rises at the other it has a least value between, found by
+            // golden section; under the line, it is judged where it is.
+            if magnitude != nil, k + 1 < ts.count, g != nil, values[k + 1] != nil,
+               let ra = gapOverF(t), let rb = gapOverF(ts[k + 1]),
+               ra.gap > 0, rb.gap > 0, ra.rate < 0, rb.rate > 0 {
+                var lo = t, hi = ts[k + 1]
+                let phi = (5.0.squareRoot() - 1) / 2
+                var c = hi - phi * (hi - lo), e = lo + phi * (hi - lo)
+                var fc = gapOverF(c)?.gap ?? .infinity, fe = gapOverF(e)?.gap ?? .infinity
+                for _ in 0..<60 {
+                    if fc < fe { hi = e; e = c; fe = fc; c = hi - phi * (hi - lo); fc = gapOverF(c)?.gap ?? .infinity }
+                    else { lo = c; c = e; fc = fe; e = lo + phi * (hi - lo); fe = gapOverF(e)?.gap ?? .infinity }
+                    if hi - lo < tEps { break }
+                }
+                let tm = 0.5 * (lo + hi)
+                trace?(String(format: "dip between %.4g and %.4g cells: least gap %+.3e at %.4g cells",
+                              t / cell, ts[k + 1] / cell, gaps(tm)?.overFacet ?? .nan, tm / cell))
+                if let gm = gaps(tm), gm.overFacet < 0, hidden(tm, gm, cosine: gm.cosine) { return false }
+            }
             // The rim between this crossing and the next, where the facet
             // meets the cap: a crease, judged under both.
             if k + 1 < ts.count, let ga = g, let gb = values[k + 1] {
                 let ea = ga.overFacet - ga.overCap, eb = gb.overFacet - gb.overCap
                 if (ea > 0) != (eb > 0), ea != eb {
-                    let rim = t + (ts[k + 1] - t) * ea / (ea - eb)
+                    var rim = t + (ts[k + 1] - t) * ea / (ea - eb)
+                    if heightfield.refine?.magnitude != nil {
+                        // On f the excess is not linear between crossings:
+                        // bisect the sign change to the last bit.
+                        var lo = t, hi = ts[k + 1], elo = ea
+                        for _ in 0..<60 {
+                            let m = 0.5 * (lo + hi)
+                            guard let gm = gaps(m) else { break }
+                            let em = gm.overFacet - gm.overCap
+                            if (em > 0) == (elo > 0) { lo = m; elo = em } else { hi = m }
+                        }
+                        rim = 0.5 * (lo + hi)
+                    }
                     if rim > tEps, let gr = gaps(rim) {
                         if hidden(rim, gr, cosine: after ?? gr.cosine) { return false }
                         if hidden(rim, gr, cosine: 1) { return false }

@@ -202,9 +202,14 @@ func foldLineTests() {
         let visibility = HeightfieldVisibility(heightfield: h, view: scene.camera.view, margin: 0.02)
         // Every vertex but a run's end carried to a zero of f, which is on
         // the floor, where the lattice's facing is its chord's.
-        let edgeOn = folds.vertices.filter { $0.z > 1e-9 }.map { abs(visibility.facing(P2($0.x, $0.y))) }.max() ?? .infinity
+        let offFold = folds.vertices.filter { $0.z > 1e-9 }.map { ($0, abs(visibility.facing(P2($0.x, $0.y)))) }
+        let worstOff = offFold.max { $0.1 < $1.1 }
+        let edgeOn = worstOff?.1 ?? .infinity
+        let where_ = worstOff.map { String(format: " at (%.4f, %.4f, %.4f), cap %.3f, |f| %.4f", $0.0.x, $0.0.y, $0.0.z,
+                                           h.surface.caps.height(atX: $0.0.x), h.surface.magnitude(at: P2<DomainSpace>($0.0.x, $0.0.y))) } ?? ""
+        let offCount = offFold.filter { $0.1 > 1e-6 }.count
         Check.expect(edgeOn < 1e-6, "every vertex is where the surface faces exactly edge-on",
-                     String(format: "worst |facing| %.1e", edgeOn))
+                     String(format: "worst |facing| %.1e", edgeOn) + where_ + ", \(offCount) of \(offFold.count) off")
         let atZeros = folds.vertices.filter { $0.z <= 1e-9 }.count
         Check.expect(atZeros >= 2, "and the pits' silhouettes run down to their zeros on the front edge",
                      "\(atZeros) fold ends on the floor")
@@ -277,15 +282,37 @@ func wallInkTests() {
                      "wall_hatch: what is kept is every stroke on a wall that faces the eye",
                      String(format: "%.3f of %.3f units, %d of %d paths", length(keptHatch),
                             length(hatch.paths), keptHatch.count, hatch.paths.count))
-        Check.expect(keptHatch.vertices.allSatisfy { v in wallsOf(v).contains { faces[$0] } },
-                     "wall_hatch: and nothing on a wall that faces away")
+        let strays = keptHatch.vertices.filter { v in !wallsOf(v).contains { faces[$0] } }
+        let strayNote = strays.prefix(3).map { v in
+            String(format: "(%.3f, %.3f, %.4f) f %.4f lattice %.4f walls %@", v.x, v.y, v.z,
+                   h.surfaceHeight(at: P2(v.x, v.y)), h.surface.height(at: P2<DomainSpace>(v.x, v.y)),
+                   wallsOf(v).description)
+        }.joined(separator: "; ")
+        Check.expect(strays.isEmpty, "wall_hatch: and nothing on a wall that faces away",
+                     "\(strays.count) stray vertices " + strayNote)
+        if let stray = strays.first {
+            let visibility = HeightfieldVisibility(heightfield: h, view: scene.camera.view, margin: scene.margin)
+            for i in 0..<hatch.paths.count {
+                let p = Array(hatch.paths[path: i])
+                guard p.contains(where: { simd_length($0.v - stray.v) < 1e-12 }) else { continue }
+                print("    the stroke: " + p.map { String(format: "%.4f", $0.z) }.joined(separator: " "))
+                for j in 0..<keptHatch.count {
+                    let q = Array(keptHatch[path: j])
+                    if q.contains(where: { simd_length($0.v - stray.v) < 1e-12 }) {
+                        print("    kept as: " + q.map { String(format: "(%.3f, %.3f, %.5f)", $0.x, $0.y, $0.z) }.joined(separator: " "))
+                    }
+                }
+                print("    " + visibility.explain(stray).replacingOccurrences(of: "\n", with: "\n    "))
+                break
+            }
+        }
 
         // The outline: a crest is the surface's edge and shows over any wall
         // where the surface does; a foot shows only on a facing wall.
         let outline = scene.layers.first { $0.spec.name == "wall_outline" }!
         let keptOutline = h.visibleWallInk(outline.paths, view: scene.camera.view, margin: scene.margin)
         func isCrest(_ p: [P3<WorldSpace>]) -> Bool {
-            p.allSatisfy { abs($0.z - h.surface.height(at: P2<DomainSpace>($0.x, $0.y))) < 1e-9 * max(1, abs($0.z)) }
+            p.allSatisfy { abs($0.z - h.surfaceHeight(at: P2($0.x, $0.y))) < 1e-9 * max(1, abs($0.z)) }
                 && !p.allSatisfy { $0.z == 0 }
         }
         var crestWanted = [Double](repeating: 0, count: 4), crestGot = [Double](repeating: 0, count: 4)

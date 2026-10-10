@@ -193,6 +193,100 @@ func exactlyHidden(_ mesh: Mesh<WorldSpace>, from p: SIMD3<Double>, along toward
 }
 
 /// A small heightfield with random heights, for the lattice tests.
+/// Whether f hides `p` from the eye, by walking the sight line in steps of
+/// a sixty-fourth of a cell and bisecting each crossing of the surface it
+/// finds, under the march's own meaning of the margin: in its own surface's
+/// neighbourhood from the start, the line is forgiven the margin
+/// perpendicular to the surface; once it has been outside, being inside at
+/// or beyond the margin's reach is occlusion. The oracle for `SightMarch`
+/// with the function at hand.
+func denselyHidden(_ h: Heightfield, magnitude: ContourRefine.Magnitude, from p: SIMD3<Double>,
+                   along toward: SIMD3<Double>, margin: Double, perUnit: Double, cell: Double) -> Double? {
+    let reach = margin / max(perUnit, 1e-12)
+    var top = -Double.infinity
+    h.forEachSample { top = max(top, $0.z) }
+    let d = toward
+    var tMax = Double.infinity
+    if d.z > 0 { tMax = max((top - p.z) / d.z, 0) } else if d.z == 0, p.z > top { return nil }
+    precondition(h.tiles.count == 1, "the dense cast reads f on the fundamental tile only")
+    let e: Double = 1e-4 * cell
+    /// The line's gaps over f and over the cap at `t`, and f's cosine; nil
+    /// outside the region.
+    let dom = h.surface.domain
+    let box = (lo: SIMD2(min(dom.real.lo, dom.real.hi), min(dom.imag.lo, dom.imag.hi)),
+               hi: SIMD2(max(dom.real.lo, dom.real.hi), max(dom.imag.lo, dom.imag.hi)))
+    func gaps(_ t: Double) -> (overF: Double, overCap: Double, cosine: Double)? {
+        let q = P2<WorldSpace>(p.x + t * d.x, p.y + t * d.y)
+        // Nothing is drawn outside the domain's box: the march stops at the
+        // lattice's edge, and f beyond it is not the solid.
+        guard q.x >= box.lo.x, q.x <= box.hi.x, q.y >= box.lo.y, q.y <= box.hi.y,
+              h.region.contains(q) else { return nil }
+        let dq = P2<DomainSpace>(q.x, q.y)
+        let u: Double = magnitude(dq)
+        let cap: Double = h.surface.caps.height(atX: dq.x)
+        let hx: Double = (magnitude(P2<DomainSpace>(dq.x + e, dq.y)) - magnitude(P2<DomainSpace>(dq.x - e, dq.y))) / (2 * e)
+        let hy: Double = (magnitude(P2<DomainSpace>(dq.x, dq.y + e)) - magnitude(P2<DomainSpace>(dq.x, dq.y - e))) / (2 * e)
+        let cosine = 1 / (1 + hx * hx + hy * hy).squareRoot()
+        let z = p.z + t * d.z
+        return (z - (u.isNaN ? .infinity : u), z - cap, cosine.isNaN ? 0 : cosine)
+    }
+    func inside(_ g: (overF: Double, overCap: Double, cosine: Double)?, zEps: Double) -> Bool {
+        guard let g else { return false }
+        return g.overF < zEps && g.overCap < zEps
+    }
+    var outsideYet = false
+    let tEps = 1e-9 * cell
+    // As the march: a point on the solid's boundary -- the domain's edge --
+    // is judged only from where the line goes next.
+    let strictlyInside = p.x > box.lo.x + 1e-9 && p.x < box.hi.x - 1e-9
+        && p.y > box.lo.y + 1e-9 && p.y < box.hi.y - 1e-9
+    func hidden(_ t: Double, _ g: (overF: Double, overCap: Double, cosine: Double)?) -> Bool {
+        let zEps = t > tEps ? 0 : 1e-9 * cell
+        guard inside(g, zEps: zEps), let g else { outsideYet = true; return false }
+        guard t > tEps || strictlyInside else { return false }
+        if outsideYet { return t + tEps >= reach }
+        let depth = g.overF > g.overCap ? g.overF * g.cosine : g.overCap
+        return depth + margin < 0
+    }
+    // The line leaves the region eventually; walk until it has.
+    let step = cell / 64
+    var t = 0.0
+    var previous = gaps(0)
+    if hidden(0, previous) { return 0 }
+    var left = 0
+    while t < tMax, left < 100_000 {
+        let tn = t + step
+        let g = gaps(tn)
+        // A crossing of the surface between the two: bisect it and judge
+        // just inside.
+        if inside(previous, zEps: 0) != inside(g, zEps: 0) {
+            var lo = t, hi = tn
+            let insideLo = inside(previous, zEps: 0)
+            for _ in 0..<50 {
+                let m = 0.5 * (lo + hi)
+                if inside(gaps(m), zEps: 0) == insideLo { lo = m } else { hi = m }
+            }
+            let tc = insideLo ? lo : hi
+            if hidden(tc, gaps(tc)) { return tc }
+        }
+        if hidden(tn, g) { return tn }
+        // Leaving the region between the two: the march judges the exit
+        // itself, so the cast does too -- bisected, and judged a hair
+        // inside, where a line passing under a crest is inside the solid.
+        if previous != nil, g == nil {
+            var lo = t, hi = tn
+            for _ in 0..<50 {
+                let m = 0.5 * (lo + hi)
+                if gaps(m) != nil { lo = m } else { hi = m }
+            }
+            if hidden(lo, gaps(lo)) { return lo }
+        }
+        if g == nil, previous == nil { left += 1; if left > 64 { break } } else { left = 0 }
+        previous = g; t = tn
+    }
+    return nil
+}
+
 func randomLattice(cells: Int, seed: UInt64, caps: Caps, amplitude: Double = 3) -> Heightfield {
     let n = cells + 1
     let rng = SplitMix(seed: seed)
@@ -296,7 +390,12 @@ func stressTests() {
         let preset = Catalog.native.preset("rgamma")!
         let bundle = try NativeLandscape.build(LandscapeRequest(preset: preset, resolution: 240))
         let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
-        let h = scene.heightfield!
+        // The lattice judge: the plate without its function, whose solid is
+        // the drawn triangles the cast is against. With the function the
+        // judge's solid is f (below).
+        let withF = scene.heightfield!
+        let h = Heightfield(surface: withF.surface, occluder: withF.occluder, tiles: withF.tiles,
+                            region: withF.region, step: withF.step)
         let view = scene.camera.view
         let mesh = drawnTriangles(h, base: 0)
         let vis = HeightfieldVisibility(heightfield: h, view: view, margin: scene.margin)
@@ -347,6 +446,60 @@ func stressTests() {
                      "in the pit at -4 both hide what the depth buffer missed",
                      "\(pit.total) facing vertices: march \(pit.march), cast \(pit.cast), depth buffer \(pit.depth)")
         Check.expect(elapsed < .seconds(60), "in reasonable time", "\(elapsed)")
+
+        // With the function, the judge's solid is f: the march samples the
+        // sight line at the lattice's crossings and reads f there, and is
+        // held to a cast that walks the line in steps of a sixty-fourth of
+        // a cell and bisects every crossing of f. What the march can miss
+        // is a dip of f within one cell along the line; the count is the
+        // measure of that, on the real plate.
+        let visF = HeightfieldVisibility(heightfield: withF, view: view, margin: scene.margin)
+        let magnitude = withF.refine!.magnitude!
+        var totalF = 0, marchF = 0, castF = 0, disagreeF = 0
+        var examples = ""
+        let elapsedF = clock.measure {
+            for layer in scene.layers where layer.spec.liesOnSurface {
+                let vertices = layer.paths.vertices
+                let facing = vertices.map { visF.facing($0.xy) > 0 }
+                let march = vertices.map { visF.isClear($0) }
+                let cast = Heightfield.parallelMap(vertices) { v in
+                    denselyHidden(withF, magnitude: magnitude, from: v.v, along: toward,
+                                  margin: visF.margin, perUnit: perUnit, cell: cell)
+                }
+                for k in vertices.indices where facing[k] {
+                    totalF += 1
+                    if !march[k] { marchF += 1 }
+                    if cast[k] != nil { castF += 1 }
+                    if march[k] != (cast[k] == nil) {
+                        disagreeF += 1
+                        if disagreeF == 1 {
+                            let v = vertices[k]
+                            var profile = "    gap over f along the line, every eighth of a cell:"
+                            for i in 0...48 {
+                                let t = Double(i) * cell / 8
+                                let q = P2<DomainSpace>(v.x + t * toward.x, v.y + t * toward.y)
+                                let u = magnitude(q)
+                                profile += String(format: " %+.3f", v.z + t * toward.z - min(u, withF.surface.caps.height(atX: q.x)))
+                            }
+                            print(profile)
+                            print("    the march: " + visF.explain(v).replacingOccurrences(of: "\n", with: "\n    "))
+                        }
+                        if disagreeF <= 6 {
+                            let v = vertices[k]
+                            examples += String(format: " [(%.3f, %.3f, %.3f) cap %.2f |f| %.4f: march %@, cast %@]",
+                                               v.x, v.y, v.z, withF.surface.caps.height(atX: v.x),
+                                               magnitude(P2<DomainSpace>(v.x, v.y)),
+                                               march[k] ? "clear" : "hidden",
+                                               cast[k].map { String(format: "hides at t = %.4f cells", $0 / cell) } ?? "clear")
+                        }
+                    }
+                }
+            }
+        }
+        Check.expect(disagreeF == 0 && totalF > 5000,
+                     "with the function, the march against f is the dense cast against f",
+                     "\(totalF) vertices; march hides \(marchF), cast hides \(castF), \(disagreeF) disagree" + examples)
+        Check.expect(elapsedF < .seconds(120), "in reasonable time", "\(elapsedF)")
     }
 
     Check.suite("stress: scaling the plate scales the drawing") {

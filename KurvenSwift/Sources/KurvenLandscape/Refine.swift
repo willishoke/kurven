@@ -127,7 +127,8 @@ public struct ContourRefiner: Sendable {
                           self.refine(field: field, level: level, paths)
                       },
                       magnitude: { p in self.magnitude(Complex(p.x, p.y)) },
-                      zero: { p in self.zero(near: p) })
+                      zero: { p in self.zero(near: p) },
+                      tolerance: tolerance)
     }
 
     public func refine(field: ContourField, level: Double,

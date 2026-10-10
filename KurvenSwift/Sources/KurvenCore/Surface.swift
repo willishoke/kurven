@@ -196,9 +196,15 @@ public struct ContourRefine: Sendable {
     /// With it, a fold line that ends beside a zero of f is carried to the
     /// zero (`Heightfield.foldLines`), as the refiner carries the phase lines.
     public let zero: Zero?
+    /// How far a chord may depart from the curve it stands for, in cells:
+    /// the refiner's own tolerance, which the crest of a cut face and the
+    /// fold lines are subdivided to as well, so every curve of the drawing
+    /// is a curve to the same tolerance.
+    public let tolerance: Double
 
     public init(contours: @escaping Contours, magnitude: Magnitude? = nil,
-                zero: Zero? = nil) {
+                zero: Zero? = nil, tolerance: Double = 0.02) {
+        self.tolerance = tolerance
         self.contours = contours; self.magnitude = magnitude; self.zero = zero
     }
 }
@@ -301,7 +307,20 @@ public extension Surface {
             // exactly where they run.
             let refined = refine.map { r in r.contours(field, level, lines) } ?? lines
             for line in refined {
-                var lifted = lift(line, policy: policy, level: level)
+                // Lifted onto f where the function is at hand: a phase line
+                // lifted to the lattice's height stands a chord's error off
+                // the surface the rings, the folds and the crest are drawn
+                // on, and the judge hides it there or shows it floating.
+                var lifted: [P3<WorldSpace>]
+                if policy != .level, let magnitude = refine?.magnitude {
+                    lifted = line.map { p in
+                        let u = magnitude(p)
+                        guard u.isFinite else { return lift([p], policy: policy, level: level)[0] }
+                        return P3(p.x, p.y, policy == .surface ? min(u, caps.height(atX: p.x)) : u)
+                    }
+                } else {
+                    lifted = lift(line, policy: policy, level: level)
+                }
                 // A run the refiner carried to a zero of f ends at the zero's
                 // own height. The grid has no sample there: its chord over a
                 // pit's floor bottoms out at the nearest sample's height, a

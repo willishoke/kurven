@@ -85,7 +85,7 @@ public extension Surface {
             paths = capHatch(axis: axis, spacing: spacing)
             if tiled { paths = Surface.replicate(paths, context.tiles) }
         case .capOutline(let tiled):
-            paths = capOutline()
+            paths = capOutline(tiles: context.tiles, refine: refine)
             if tiled { paths = Surface.replicate(paths, context.tiles) }
         }
         return PolylineSet(paths: Surface.clip(paths, to: context.region))
@@ -168,27 +168,32 @@ extension Surface {
     /// reaches the cap between two nodes and, with a refiner, wherever it has
     /// a minimum between two nodes.
     ///
-    /// The cap crossing is solved on the grid's heights linearly, as the rim
-    /// is contoured (`kurven.hatch._cap_crossing`, operation for operation),
-    /// so the crest meets the rim where the rim ends rather than a sample
-    /// later. The minimum is solved on f: the grid has no sample at a zero of
-    /// f, so its chord across a pit bottoms out at the nearer node, a whole
-    /// cell's rise above the floor the phase lines fan down to -- on a plate's
-    /// narrowest pit a quarter of the cap's height. A node lower than both
-    /// its neighbours has the profile's minimum somewhere between them;
-    /// golden-section search on |f| over that span finds it to rounding, and
-    /// where it is not the node itself it is a vertex, at a zero on the edge
-    /// the floor. Everything else stays the grid's, so the crest coincides
-    /// with the rim, the fold lines and the lifted contours as before.
+    /// Without a refiner the cap crossing is solved on the grid's heights
+    /// linearly, as the rim is contoured (`kurven.hatch._cap_crossing`,
+    /// operation for operation), so the crest meets the rim where the rim
+    /// ends rather than a sample later, and everything else is the grid's.
+    ///
+    /// With one, the crest is f's own profile along the edge: the nodes at
+    /// f's height, the cap crossing bisected on f along the edge (the rim,
+    /// refined, ends on the same bisection: `capOutline`), a vertex at each
+    /// minimum of |f| between two nodes (`withMinima`: the grid has no
+    /// sample at a zero of f, so its chord across a pit bottoms out at the
+    /// nearer node, a whole cell's rise above the floor the phase lines fan
+    /// down to), and between any two of these the profile subdivided until
+    /// no chord departs from f by more than the refiner's tolerance
+    /// (`subdividedProfile`). The rings are placed on f, the fold lines are
+    /// traced on f and the ink is judged against f, so the crest has to be
+    /// f's too, or the rings end on a fold the crest parts from.
     func crest(of edge: PerimeterEdge, tiles: [Affine2],
                refine: ContourRefine?) -> [P3<WorldSpace>] {
         let n = max(edge.density, 2)
+        let magnitudeOfF = refine?.magnitude
         var crest: [P3<WorldSpace>] = []
         crest.reserveCapacity(n)
         var previous: (p: P2<DomainSpace>, excess: Double)?
         for k in 0..<n {
             let p = Surface.point(on: edge, at: Double(k) / Double(n - 1))
-            let u = magnitude(at: p, tiles: tiles)
+            let u = magnitudeOfF.map { $0(inTile(p, tiles: tiles)) } ?? magnitude(at: p, tiles: tiles)
             let cap = caps.height(atX: p.x)
             let excess = u - cap
             if let a = previous, excess.isFinite, a.excess.isFinite {
@@ -198,19 +203,87 @@ extension Surface {
                 if a.excess <= 0 && excess > 0 { under = a; over = here }
                 if excess <= 0 && a.excess > 0 { under = here; over = a }
                 if let under, let over {
-                    let t = under.excess / (under.excess - over.excess)
-                    if t > 0, t < 1 {
-                        let x = under.p.x + (over.p.x - under.p.x) * t
-                        let y = under.p.y + (over.p.y - under.p.y) * t
-                        crest.append(P3(x, y, caps.height(atX: x)))
+                    if let magnitudeOfF {
+                        if let q = capCrossing(from: under.p, under.excess, to: over.p, over.excess,
+                                               tiles: tiles, magnitude: magnitudeOfF) {
+                            crest.append(P3(q.x, q.y, caps.height(atX: q.x)))
+                        }
+                    } else {
+                        let t = under.excess / (under.excess - over.excess)
+                        if t > 0, t < 1 {
+                            let x = under.p.x + (over.p.x - under.p.x) * t
+                            let y = under.p.y + (over.p.y - under.p.y) * t
+                            crest.append(P3(x, y, caps.height(atX: x)))
+                        }
                     }
                 }
             }
             crest.append(P3(p.x, p.y, min(u, cap)))
             previous = (p, excess)
         }
-        guard let magnitude = refine?.magnitude else { return crest }
-        return withMinima(crest, tiles: tiles, magnitude: magnitude)
+        guard let refine, let magnitude = refine.magnitude else { return crest }
+        return subdividedProfile(withMinima(crest, tiles: tiles, magnitude: magnitude),
+                                 tiles: tiles, magnitude: magnitude, tolerance: refine.tolerance)
+    }
+
+    /// The grid's spacing, the larger of the two directions: what the
+    /// refiner's tolerance is measured against.
+    var cell: Double {
+        max(abs(height.domain.real.length) / Double(max(height.width - 1, 1)),
+            abs(height.domain.imag.length) / Double(max(height.height - 1, 1)))
+    }
+
+    /// Where |f| crosses the cap on the straight segment from `a` to `b`,
+    /// given the excess over the cap at each end: bisection on f to the last
+    /// bit, nil when both ends lie on one side. One routine for the crest
+    /// and the rim's ends, so the two meet to rounding.
+    func capCrossing(from a: P2<DomainSpace>, _ ea: Double, to b: P2<DomainSpace>, _ eb: Double,
+                     tiles: [Affine2], magnitude: ContourRefine.Magnitude) -> P2<DomainSpace>? {
+        guard ea.isFinite, eb.isFinite, (ea > 0) != (eb > 0) else { return nil }
+        func excess(_ p: P2<DomainSpace>) -> Double {
+            magnitude(inTile(p, tiles: tiles)) - caps.height(atX: p.x)
+        }
+        var lo = SIMD2(a.x, a.y), hi = SIMD2(b.x, b.y)
+        var elo = ea
+        for _ in 0..<60 {
+            let m = 0.5 * (lo + hi)
+            let em = excess(P2(m.x, m.y))
+            guard em.isFinite else { return nil }
+            if (em > 0) == (elo > 0) { lo = m; elo = em } else { hi = m }
+        }
+        let m = 0.5 * (lo + hi)
+        return P2(m.x, m.y)
+    }
+
+    /// The crest with f's profile between its vertices: each chord's
+    /// midpoint is taken onto the profile where the chord departs from it
+    /// by more than `tolerance` cells, and the halves likewise, five deep.
+    /// The crest is a function of the distance along its straight edge, so
+    /// the vertices keep their order.
+    func subdividedProfile(_ crest: [P3<WorldSpace>], tiles: [Affine2],
+                           magnitude: ContourRefine.Magnitude, tolerance: Double) -> [P3<WorldSpace>] {
+        guard crest.count >= 2 else { return crest }
+        let cell = self.cell
+        func profile(_ p: P2<DomainSpace>) -> Double {
+            min(magnitude(inTile(p, tiles: tiles)), caps.height(atX: p.x))
+        }
+        func subdivide(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>, depth: Int,
+                       into out: inout [P3<WorldSpace>]) {
+            guard depth < 5, a.z.isFinite, b.z.isFinite else { return }
+            let mid = P2<DomainSpace>(0.5 * (a.x + b.x), 0.5 * (a.y + b.y))
+            let z = profile(mid)
+            guard z.isFinite, abs(z - 0.5 * (a.z + b.z)) > tolerance * cell else { return }
+            let v = P3<WorldSpace>(mid.x, mid.y, z)
+            subdivide(a, v, depth: depth + 1, into: &out)
+            out.append(v)
+            subdivide(v, b, depth: depth + 1, into: &out)
+        }
+        var out: [P3<WorldSpace>] = [crest[0]]
+        for (a, b) in zip(crest, crest.dropFirst()) {
+            subdivide(a, b, depth: 0, into: &out)
+            out.append(b)
+        }
+        return out
     }
 
     /// The crest with a vertex at every minimum of |f| that falls between two
@@ -457,14 +530,60 @@ extension Surface {
                       values: values)
     }
 
-    func capOutline() -> [[P3<WorldSpace>]] {
+    /// The rim of the cap: the zero level of the grid's excess over the cap,
+    /// at the cap's height. With a refiner and a uniform cap it is the
+    /// contour |f| = cap placed on f, as the rings are, and an end of it on
+    /// the domain's edge is re-solved by the crest's own bisection along
+    /// that edge (`capCrossing`), so the crest meets the rim to rounding. A
+    /// banded cap's rim stays the grid's: its level changes from band to
+    /// band, and the refiner places one level at a time.
+    func capOutline(tiles: [Affine2] = [.identity], refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         guard let excess = capExcess() else { return [] }
         var out: [[P3<WorldSpace>]] = []
         for (_, lines) in Contour.levels(of: excess, [0.0]) {
-            for line in lines {
+            var paths = lines
+            if let refine, let magnitude = refine.magnitude, case .uniform(let cap) = caps, cap.isFinite {
+                paths = refine.contours(.magnitude, cap, lines).map { line in
+                    var line = line
+                    for i in Set([0, line.count - 1]) where line.count >= 2 {
+                        if let q = onEdgeCapCrossing(near: line[i], tiles: tiles, magnitude: magnitude) {
+                            line[i] = q
+                        }
+                    }
+                    return line
+                }
+            }
+            for line in paths {
                 out.append(line.map { P3($0.x, $0.y, caps.height(atX: $0.x)) })
             }
         }
         return out
+    }
+
+    /// For a rim vertex on the domain's edge, the cap crossing between the
+    /// two grid nodes beside it on that edge, by the crest's bisection; nil
+    /// for a vertex off the edge or with no crossing beside it.
+    func onEdgeCapCrossing(near p: P2<DomainSpace>, tiles: [Affine2],
+                           magnitude: ContourRefine.Magnitude) -> P2<DomainSpace>? {
+        let g = height
+        let eps = 1e-9 * cell
+        let f = g.index(of: p)
+        let onRow = abs(p.y - g.domain.imag.lo) <= eps || abs(p.y - g.domain.imag.hi) <= eps
+        let onColumn = abs(p.x - g.domain.real.lo) <= eps || abs(p.x - g.domain.real.hi) <= eps
+        guard onRow || onColumn else { return nil }
+        func excess(_ q: P2<DomainSpace>) -> Double {
+            magnitude(inTile(q, tiles: tiles)) - caps.height(atX: q.x)
+        }
+        let a: P2<DomainSpace>, b: P2<DomainSpace>
+        if onRow {
+            let j = abs(p.y - g.domain.imag.lo) <= eps ? 0 : g.height - 1
+            let i = min(max(Int(f.x.rounded(.down)), 0), g.width - 2)
+            a = g.position(x: i, y: j); b = g.position(x: i + 1, y: j)
+        } else {
+            let i = abs(p.x - g.domain.real.lo) <= eps ? 0 : g.width - 1
+            let j = min(max(Int(f.y.rounded(.down)), 0), g.height - 2)
+            a = g.position(x: i, y: j); b = g.position(x: i, y: j + 1)
+        }
+        return capCrossing(from: a, excess(a), to: b, excess(b), tiles: tiles, magnitude: magnitude)
     }
 }
