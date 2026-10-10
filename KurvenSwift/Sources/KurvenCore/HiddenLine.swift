@@ -92,7 +92,7 @@ public enum HiddenLine {
     }
 
     /// Ink that is not depth-tested: unclipped ink, and every layer of a
-    /// heightfield, which arrives already judged by its geometry
+    /// heightfield or a solid, which arrives already judged by its geometry
     /// (`Scene.judgedLayers`). Passing it through this rather than casting
     /// keeps "which space am I in" a decision the type system witnesses.
     public static func pass(_ paths: PolylineSet<ViewSpace>) -> PolylineSet<PlateSpace> {

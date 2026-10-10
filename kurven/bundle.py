@@ -587,6 +587,8 @@ class LayerSource:
             return LayerCapOutline(bool(d.get("tiled", False)))
         if kind == "foldLines":
             return LayerFoldLines()
+        if kind == "edges":
+            return LayerEdges()
         raise BundleError(f"LayerSource: unknown kind {kind!r}")
 
 
@@ -720,6 +722,16 @@ class LayerFoldLines(LayerSource):
 
     def to_dict(self):
         return {"kind": "foldLines"}
+
+
+@dataclass(frozen=True)
+class LayerEdges(LayerSource):
+    """The edges of a solid: a polyhedron's ink, judged per edge by its two
+    faces and cut where another face hides it. Mirrored here so the schema
+    stays one definition; the Swift side is the only one that draws them."""
+
+    def to_dict(self):
+        return {"kind": "edges"}
 
 
 @dataclass(frozen=True)

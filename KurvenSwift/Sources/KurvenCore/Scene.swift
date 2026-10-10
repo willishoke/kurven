@@ -630,6 +630,8 @@ struct SightMarch: Sendable {
 public enum SceneGeometry: Sendable {
     case heightfield(Heightfield)
     case parametric(ParametricSurface)
+    /// A polyhedron, whose ink is its edges (`Solid`).
+    case solid(Solid)
 }
 
 /// An immutable snapshot of everything a frame needs.
@@ -680,6 +682,13 @@ public struct Scene: Sendable {
                   layers: layers, camera: camera, mode: mode, margin: margin)
     }
 
+    /// A solid, with its edges as ink.
+    public init(solid: Solid, layers: [Layer], camera: Camera,
+                mode: PreviewMode = .plate, margin: Double = 0) {
+        self.init(content: ContentID(), ink: ContentID(), geometry: .solid(solid),
+                  layers: layers, camera: camera, mode: mode, margin: margin)
+    }
+
     /// The scene a bundle describes under one of its presets.
     public init(bundle: KurvenBundle, preset: CameraPreset) {
         self.init(surface: bundle.surface,
@@ -701,6 +710,12 @@ public struct Scene: Sendable {
     /// The parametric surface, when that is what this scene draws.
     public var parametric: ParametricSurface? {
         if case .parametric(let s) = geometry { return s }
+        return nil
+    }
+
+    /// The solid, when that is what this scene draws.
+    public var solid: Solid? {
+        if case .solid(let s) = geometry { return s }
         return nil
     }
 
@@ -729,8 +744,8 @@ public struct Scene: Sendable {
     /// for this camera wherever the geometry can judge it exactly.
     ///
     /// Ink that depends on the camera -- the fold lines of a surface, of
-    /// either kind -- is derived here, for this camera, rather than
-    /// carried. On a heightfield every clipped layer is
+    /// either kind, and the edges of a solid -- is derived here, for this
+    /// camera, rather than carried. On a heightfield every clipped layer is
     /// judged here, by the facing of what it lies on and by the solid
     /// (`SightMarch`), and the depth buffer has no part in it: the drawing is
     /// a function of the geometry and the camera, never of a resolution. A
@@ -763,6 +778,11 @@ public struct Scene: Sendable {
                     judged = h.visibleInk(layer.paths, view: view, margin: margin)
                 }
                 return (layer, judged.mapped(view))
+            case .solid(let s):
+                if case .edges = layer.spec.source, layer.spec.clipped {
+                    return (layer, s.visibleEdges(view: view).mapped(view))
+                }
+                return (layer, layer.paths.mapped(view))
             }
         }
     }
@@ -799,6 +819,8 @@ public struct Scene: Sendable {
             h.forEachSample { add(camera.view($0)) }
         case .parametric(let s):
             for p in s.positions { add(camera.view(p)) }
+        case .solid(let s):
+            for p in s.vertices { add(camera.view(p)) }
         }
         // The ink as carried, before any judging: judging is the bake's
         // expensive step and would be paid twice, and ink the judge drops is
@@ -853,6 +875,8 @@ public struct Scene: Sendable {
             for i in Swift.stride(from: 0, to: s.positions.count, by: stride) {
                 add(camera.view(s.positions[i]))
             }
+        case .solid(let s):
+            for p in s.vertices { add(camera.view(p)) }
         }
         return any ? AABB(lo: lo, hi: hi) : nil
     }

@@ -98,7 +98,7 @@ public extension MetalRenderer {
         let depth: DepthImage
         let image: SurfaceImage?
         switch scene.geometry {
-        case .heightfield:
+        case .heightfield, .solid:
             image = nil
             if n == 1 {
                 // One pass is the whole plate. Copying it into a second buffer
@@ -165,10 +165,11 @@ public extension MetalRenderer {
                 clipped = HiddenLine.clip(projected, against: depth, margin: margin)
             } else {
                 // A heightfield's ink comes judged by the facing of what it
-                // lies on and by the solid (`SightMarch`). It never consults
-                // the depth buffer, which is why the drawing is the same at
-                // every resolution: the buffer is rendered for the `depth`
-                // output and the silhouette, and for nothing the ink depends on.
+                // lies on and by the solid (`SightMarch`); a solid's edges by
+                // their faces (`Solid.visibleEdges`). Neither consults the
+                // depth buffer, which is why the drawing is the same at every
+                // resolution: the buffer is rendered for the `depth` output
+                // and the silhouette, and for nothing the ink depends on.
                 clipped = HiddenLine.pass(projected)
             }
             layers.append((Style(layer.spec), clipped))
