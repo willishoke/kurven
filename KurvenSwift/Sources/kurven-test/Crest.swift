@@ -390,28 +390,42 @@ func crestTests() {
         let cell = 1.5 / 23
         func f(_ x: Double, _ y: Double) -> Complex { Complex.exp(1 / Complex(x, y)) }
         var chords = 0, strayed = 0, jumps = 0, worstStray = 0.0
+        var examples: [String] = []
         for (spec, layer) in zip(bundle.manifest.layers, bundle.layers) where spec.name.hasPrefix("ang") {
             for i in 0..<layer.paths.count {
                 let p = Array(layer.paths[path: i])
                 for (a, b) in zip(p, p.dropFirst()) {
                     chords += 1
-                    // the phase along the chord, against the level its far end sits on
+                    // the chord's departure from the level set at its quarter
+                    // points: the phase residual against the level its far end
+                    // sits on, over the gradient of the phase there, in cells
                     let level = f(b.x, b.y).argument
                     for t in [0.25, 0.5, 0.75] {
-                        var r = f(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y)).argument - level
+                        let q = (a.x + t * (b.x - a.x), a.y + t * (b.y - a.y))
+                        var r = f(q.0, q.1).argument - level
                         while r > .pi { r -= 2 * .pi }; while r < -.pi { r += 2 * .pi }
-                        if abs(r) > .pi / 2 { strayed += 1 }
-                        worstStray = max(worstStray, abs(r))
+                        let s = 1e-5 * cell
+                        func ph(_ x: Double, _ y: Double) -> Double { f(x, y).argument }
+                        var dx = ph(q.0 + s, q.1) - ph(q.0 - s, q.1), dy = ph(q.0, q.1 + s) - ph(q.0, q.1 - s)
+                        while dx > .pi { dx -= 2 * .pi }; while dx < -.pi { dx += 2 * .pi }
+                        while dy > .pi { dy -= 2 * .pi }; while dy < -.pi { dy += 2 * .pi }
+                        let slope = (dx * dx + dy * dy).squareRoot() / (2 * s)
+                        let off = slope > 0 && slope.isFinite ? abs(r) / slope / cell : abs(r)
+                        if off > 0.021 {
+                            strayed += 1
+                            if examples.count < 4 { examples.append(String(format: "(%.5f, %.5f, %.3f)->(%.5f, %.5f, %.3f) t %.2f off %.3f cells r %.2f", a.x, a.y, a.z, b.x, b.y, b.z, t, off, r)) }
+                        }
+                        worstStray = max(worstStray, off)
                     }
                     // no chord climbs the cliff: a jump in height of more than a cell's worth of slope
-                    if abs(a.z - b.z) > 1.5 { jumps += 1 }
+                    if abs(a.z - b.z) > 1.5 { jumps += 1; examples.append(String(format: "jump (%.5f, %.5f, %.3f)->(%.5f, %.5f, %.3f)", a.x, a.y, a.z, b.x, b.y, b.z)) }
                 }
             }
         }
         Check.expect(chords > 100, "phase chords are drawn beside the singularity", "\(chords) chords")
-        Check.expect(strayed == 0, "and along none of them does the phase stray more than a quarter turn from the level",
-                     String(format: "%d quarter points stray, worst %.2f rad", strayed, worstStray))
-        Check.expect(jumps == 0, "and none climbs the cliff at the origin", "\(jumps) chords rise by more than 1.5")
+        Check.expect(strayed == 0, "and every one of them lies on the level set to the tolerance at its quarter points",
+                     String(format: "%d quarter points off, worst %.3f cells  %@", strayed, worstStray, examples.joined(separator: "; ") as NSString))
+        Check.expect(jumps == 0, "and none climbs the cliff at the origin", "\(jumps) chords rise by more than 1.5  \(examples.joined(separator: "; "))")
         // the rings all pass through the origin and are placed: every ring vertex is on its level
         var ringVertices = 0, off = 0
         for (spec, layer) in zip(bundle.manifest.layers, bundle.layers) where spec.name.hasPrefix("mag") {
@@ -424,7 +438,28 @@ func crestTests() {
             }
         }
         Check.expect(ringVertices > 100 && off == 0, "every ring vertex off the origin is on its level", "\(off) of \(ringVertices) off")
-        _ = cell
+        // The phase lines are followed on f to the origin: marching squares
+        // ends them a cell short, where it can no longer bracket a phase
+        // that turns many times within a cell; from there each is traced
+        // along its circle until f's phase runs out, which is where exp(1/z)
+        // underflows a hair from the origin.
+        var interiorEnds = 0, farEnds = 0, worstEnd = 0.0
+        for (spec, layer) in zip(bundle.manifest.layers, bundle.layers) where spec.name.hasPrefix("ang") {
+            for i in 0..<layer.paths.count {
+                let p = Array(layer.paths[path: i])
+                for e in [p.first!, p.last!] {
+                    let onEdge = abs(e.x + 1.1) < 1e-6 || abs(e.x - 0.4) < 1e-6 || abs(e.y) < 1e-6 || abs(e.y - 0.75) < 1e-6
+                    let onRim = f(e.x, e.y).magnitude >= 3 - 1e-3
+                    guard !onEdge, !onRim, e.x < 0.1, e.y < 0.2 else { continue }
+                    interiorEnds += 1
+                    let d = (e.x * e.x + e.y * e.y).squareRoot()
+                    worstEnd = max(worstEnd, d)
+                    if d > 0.1 * cell { farEnds += 1 }
+                }
+            }
+        }
+        Check.expect(interiorEnds >= 10 && farEnds == 0, "and the phase lines beside the origin run to within a tenth of a cell of it",
+                     String(format: "%d ends beside it, %d further off, worst %.4f cells", interiorEnds, farEnds, worstEnd / cell))
     }
 
     Check.suite("banded rim: a tower cut at two heights, its rim on f band by band, with the step's top") {

@@ -70,13 +70,17 @@ public struct ContourRefiner: Sendable {
             let v = compiled(z)
             return v.isFinite ? min(v.magnitude, NativeLandscape.huge) : NativeLandscape.huge
         }
+        // The phase is undefined where f is not finite and where it has
+        // underflowed to zero: the argument of 0 + 0i is a number, but not
+        // one of f's. NaN there, which no bracket, snap or chord accepts,
+        // so beside a singularity the lines end where f's phase does.
         self.phase = { z in
             let v = compiled(z)
-            return v.isFinite ? v.argument : 0
+            return v.isFinite && v.magnitude > 0 ? v.argument : .nan
         }
         self.turnedPhase = { z in
             let v = compiled(z)
-            return v.isFinite ? (-v).argument : 0
+            return v.isFinite && v.magnitude > 0 ? (-v).argument : .nan
         }
         self.grid = domain; self.width = width; self.height = height
         self.tolerance = tolerance; self.maxDepth = maxDepth
@@ -362,7 +366,157 @@ public struct ContourRefiner: Sendable {
             previous = vertex
         }
         runs = runs.filter { $0.count >= 2 }
-        return cut ? runs.map { ended(atZeros: $0, level: level, g: g) } : runs
+        guard cut else { return runs }
+        return runs.map { traced(ended(atZeros: $0, level: level, g: g), level: level, g: g) }
+    }
+
+    /// A phase run followed on f beyond either end that lies inside the
+    /// window and on no zero. Marching squares ends a run where it cannot
+    /// bracket the level on a lattice edge: beside an essential singularity
+    /// the phase turns many times within a cell, and the lines stopped a
+    /// cell short of the origin they run into. From the last vertex the
+    /// lattice placed, the curve is followed on f: a step along the
+    /// tangent, corrected onto the level set along the gradient, kept only
+    /// when the chord to it can be placed (`subdivide`) and halved
+    /// otherwise, until the curve leaves the window, where it ends on the
+    /// edge, or the step has shrunk to nothing at a singularity.
+    func traced(_ run: [P2<DomainSpace>], level: Double, g: @Sendable (Complex) -> Double) -> [P2<DomainSpace>] {
+        guard run.count >= 2, run.first != run.last else { return run }
+        func interior(_ p: P2<DomainSpace>) -> Bool {
+            let r = grid.real, i = grid.imag, slack = 1e-6 * cell
+            return p.x > min(r.lo, r.hi) + slack && p.x < max(r.lo, r.hi) - slack
+                && p.y > min(i.lo, i.hi) + slack && p.y < max(i.lo, i.hi) - slack
+        }
+        func onZero(_ p: P2<DomainSpace>) -> Bool {
+            let u = magnitude(Complex(p.x, p.y))
+            return !(u.isFinite && u > 1e-9)
+        }
+        var out = run
+        if interior(out[out.count - 1]), !onZero(out[out.count - 1]) {
+            out += trace(from: out[out.count - 1], before: out[out.count - 2], level: level, g: g)
+        }
+        if interior(out[0]), !onZero(out[0]) {
+            out = trace(from: out[0], before: out[1], level: level, g: g).reversed() + out
+        }
+        return out
+    }
+
+    /// The vertices the curve through `p` continues with, away from `before`.
+    func trace(from p0: P2<DomainSpace>, before: P2<DomainSpace>, level: Double,
+               g: @Sendable (Complex) -> Double) -> [P2<DomainSpace>] {
+        var out: [P2<DomainSpace>] = []
+        var p = p0, prev = before
+        var h = 0.25 * cell
+        let hMin = 1e-7 * cell, hMax = 0.5 * cell
+        /// `q` moved onto the level set along the gradient, by Newton; nil
+        /// when it does not converge within half a step.
+        func corrected(_ q0: P2<DomainSpace>, within reach: Double) -> P2<DomainSpace>? {
+            var q = q0
+            for _ in 0..<30 {
+                let r = residual(g(Complex(q.x, q.y)), level: level, cut: true)
+                guard r.isFinite else { return nil }
+                let (gx, gy) = gradient(g, at: q)
+                let s2 = gx * gx + gy * gy
+                guard s2 > 0, s2.isFinite else { return nil }
+                let step = r / s2
+                q = P2(q.x - step * gx, q.y - step * gy)
+                let moved = ((q.x - q0.x) * (q.x - q0.x) + (q.y - q0.y) * (q.y - q0.y)).squareRoot()
+                guard moved <= reach else { return nil }
+                if abs(step) * s2.squareRoot() <= 1e-12 * cell { return q }
+            }
+            return nil
+        }
+        var ended = false
+        let u0 = magnitude(Complex(p0.x, p0.y))
+        /// Onto the zero within two cells of `p`, when the chord to it can
+        /// be placed: every phase line through a zero ends on it.
+        func carriedToZero() -> Bool {
+            guard let z = zero(near: p),
+                  ((z.x - p.x) * (z.x - p.x) + (z.y - p.y) * (z.y - p.y)).squareRoot() <= 2 * cell else { return false }
+            var runs: [[P2<DomainSpace>]] = [[]]
+            subdivide(p, z, level: level, g: g, cut: true, depth: 0, into: &runs)
+            guard runs.count == 1 else { return false }
+            out += runs[0]; out.append(z)
+            return true
+        }
+        for _ in 0..<4000 {
+            // A trace is a few hundred vertices at most: a phase line that
+            // winds into a pole or a zero shrinks its steps there and is
+            // ended below, not followed to the last bit.
+            guard out.count < 400 else { break }
+            // Approaching a zero, the line ends on it rather than stepping
+            // through it onto another ray; approaching a pole, it stops.
+            let u = magnitude(Complex(p.x, p.y))
+            if u < 1e-2 * u0, carriedToZero() { ended = true; break }
+            if u > 1e6 { break }
+            let (gx, gy) = gradient(g, at: p)
+            let slope = (gx * gx + gy * gy).squareRoot()
+            guard slope > 0, slope.isFinite else { break }
+            var tx = -gy / slope, ty = gx / slope
+            if tx * (p.x - prev.x) + ty * (p.y - prev.y) < 0 { tx = -tx; ty = -ty }
+            var placed: [P2<DomainSpace>]?
+            var next: P2<DomainSpace>?
+            while h >= hMin {
+                let q0 = P2<DomainSpace>(p.x + h * tx, p.y + h * ty)
+                if let q = corrected(q0, within: 0.5 * h) {
+                    var runs: [[P2<DomainSpace>]] = [[]]
+                    subdivide(p, q, level: level, g: g, cut: true, depth: 0, into: &runs)
+                    if runs.count == 1 { placed = runs[0]; next = q; break }
+                }
+                h *= 0.5
+            }
+            guard let q = next, let between = placed else { break }
+            if !inWindow(q) {
+                // Ended on the window's edge: the chord's crossing of the
+                // edge, then the level solved along the edge itself.
+                var lo = p, hi = q
+                for _ in 0..<60 {
+                    let m = P2<DomainSpace>(0.5 * (lo.x + hi.x), 0.5 * (lo.y + hi.y))
+                    if inWindow(m) { lo = m } else { hi = m }
+                }
+                let e = lo
+                let r = grid.real, im = grid.imag
+                let onRow = abs(e.y - im.lo) <= 1e-6 * cell || abs(e.y - im.hi) <= 1e-6 * cell
+                func at(_ t: Double) -> P2<DomainSpace> { onRow ? P2(e.x + t, e.y) : P2(e.x, e.y + t) }
+                func res(_ t: Double) -> Double { residual(g(Complex(at(t).x, at(t).y)), level: level, cut: true) }
+                var slo = -1e-3 * cell, shi = 1e-3 * cell, tries = 0
+                while (res(slo) > 0) == (res(shi) > 0), tries < 8 { slo *= 2; shi *= 2; tries += 1 }
+                var end: P2<DomainSpace>?
+                if (res(slo) > 0) != (res(shi) > 0), abs(res(slo)) < .pi / 2, abs(res(shi)) < .pi / 2 {
+                    var rlo = res(slo)
+                    for _ in 0..<60 {
+                        let m = 0.5 * (slo + shi)
+                        let rm = res(m)
+                        if (rm > 0) == (rlo > 0) { slo = m; rlo = rm } else { shi = m }
+                    }
+                    end = at(0.5 * (slo + shi))
+                }
+                // Only an end on the level, that the surface has a height
+                // at, reached by a chord that can be placed: a line that
+                // meets the edge where the level is not crossed along it,
+                // or runs into a singularity on the edge, stops at its last
+                // vertex rather than ending off the level or jumping to the cap.
+                if let end {
+                    var runs: [[P2<DomainSpace>]] = [[]]
+                    subdivide(p, end, level: level, g: g, cut: true, depth: 0, into: &runs)
+                    let rEnd = residual(g(Complex(end.x, end.y)), level: level, cut: true)
+                    if rEnd.isFinite, abs(rEnd) <= 1e-9, magnitude(Complex(end.x, end.y)).isFinite, runs.count == 1 {
+                        out += runs[0]
+                        out.append(end)
+                    }
+                }
+                _ = r
+                ended = true
+                break
+            }
+            out += between
+            out.append(q)
+            prev = p; p = q
+            if between.isEmpty { h = min(h * 1.5, hMax) }
+        }
+        // Stopped inside the window: on the zero beside it, if any.
+        if !ended { _ = carriedToZero() }
+        return out
     }
 
     /// A phase run carried to the zero of f it ends beside, at either end.
@@ -506,7 +660,8 @@ public struct ContourRefiner: Sendable {
             // brackets the level, that is the one.
             let i = Int(fx.rounded()), j = Int(fy.rounded())
             let gp = residual(g(Complex(p.x, p.y)), level: level, cut: cut)
-            guard gp.isFinite, !(cut && abs(gp) > .pi / 2) else { return p }
+            guard gp.isFinite else { return nil }
+            guard !(cut && abs(gp) > .pi / 2) else { return p }
             let (gx, gy) = gradient(g, at: p)
             let slope = (gx * gx + gy * gy).squareRoot()
             guard slope > 0, slope.isFinite, abs(gp) / slope > 1e-2 * tolerance * cell else { return p }
@@ -525,7 +680,11 @@ public struct ContourRefiner: Sendable {
         guard let edge = bracket(a, b, level: level, g: g, cut: cut) else {
             let ra = residual(g(Complex(a.x, a.y)), level: level, cut: cut)
             let rb = residual(g(Complex(b.x, b.y)), level: level, cut: cut)
-            guard ra.isFinite, rb.isFinite else { return p }
+            // An end where the field has no value -- a node on a zero, or
+            // where f is not finite: the vertex was placed by a sample that
+            // meant nothing, and is dropped; a phase line is carried onto
+            // the zero from its last placed vertex instead.
+            guard ra.isFinite, rb.isFinite else { return nil }
             // The float32 grid saw a crossing that f, in double, does not:
             // the level set passes within rounding of a node. The nearer
             // endpoint is the honest position. For the phase, anything else
@@ -597,27 +756,48 @@ public struct ContourRefiner: Sendable {
                    into runs: inout [[P2<DomainSpace>]]) {
         func unplaced() { runs.append([]) }
         let mid = P2<DomainSpace>((a.x + b.x) / 2, (a.y + b.y) / 2)
-        let r = residual(g(Complex(mid.x, mid.y)), level: level, cut: cut)
+        var r = residual(g(Complex(mid.x, mid.y)), level: level, cut: cut)
         guard r.isFinite else { return unplaced() }
-        if cut {
-            // A phase level repeats every turn: beside an essential
-            // singularity the circles of one level crowd together, and a
-            // chord from one to the next can have its midpoint on a third.
-            // The phase is read at the quarter points too, and a chord
-            // along which it strays more than a quarter turn from the
-            // level joins vertices the curve does not.
-            for t in [0.25, 0.5, 0.75] {
-                let q = Complex(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y))
-                let rq = residual(g(q), level: level, cut: true)
-                guard rq.isFinite, abs(rq) <= .pi / 2 else { return unplaced() }
-            }
-        }
         let chord = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
         guard chord > 1e-9 * cell else { return }
         let (gx, gy) = gradient(g, at: mid)
         let slope = (gx * gx + gy * gy).squareRoot()
         guard slope > 0, slope.isFinite else { return }
-        let error = abs(r) / slope
+        var error = abs(r) / slope
+        if cut {
+            // A phase level repeats every turn: beside an essential
+            // singularity the circles of one level crowd together, and a
+            // chord from one circle to the next can have its midpoint on a
+            // third, with a residual that says nothing. The phase is read
+            // at eight points along the chord and unwrapped from one to
+            // the next; a jump of more than a quarter turn between
+            // neighbours is a chord the samples cannot follow, and a
+            // residual that does not return to the level at the far end
+            // is a chord that has wound round. Along a chord the samples
+            // can follow, its departure from the level set is the largest
+            // residual over the gradient at any sample, so a chord that
+            // follows a small circle to the tolerance is placed although
+            // the phase turns steeply beside it.
+            // The ends themselves are not read: a chord's end may be a zero,
+            // where the phase is undefined.
+            var unwrapped = 0.0
+            for k in 1...7 {
+                let t = Double(k) / 8
+                let q = P2<DomainSpace>(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y))
+                let rq = residual(g(Complex(q.x, q.y)), level: level, cut: true)
+                guard rq.isFinite else { return unplaced() }
+                var d = rq - unwrapped
+                while d > .pi { d -= 2 * .pi }
+                while d < -.pi { d += 2 * .pi }
+                guard abs(d) <= .pi / 2 else { return unplaced() }
+                unwrapped += d
+                guard abs(unwrapped) <= .pi / 2 else { return unplaced() }
+                if k == 4 { r = unwrapped }
+                let (qx, qy) = gradient(g, at: q)
+                let s = (qx * qx + qy * qy).squareRoot()
+                if s > 0, s.isFinite { error = max(error, abs(unwrapped) / s) }
+            }
+        }
         // A phase line is a curve in space: across the plane it is placed to
         // the tolerance, but on a steep flank its height between two
         // vertices is not the chord's, and in projection the chords kink.
