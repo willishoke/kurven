@@ -261,6 +261,82 @@ func crestTests() {
         Check.expect(seenAtRim >= 2, "and both are seen up to the rim", "\(seenAtRim) seen runs end on the rim")
     }
 
+    Check.suite("folds arrive along the fold: a tower's silhouette meets the rim where the flank turns edge-on") {
+        // (z - 1)/(z + 1) over Re [-2.1, 2.1], Im [0, 1.4], capped at 3, on a
+        // grid of 24: the pole at -1 sits on the front edge, and the tower's
+        // right flank carries a silhouette up to the rim. Traced on the
+        // capped surface the fold's last vertex was where a lattice edge
+        // crossed the crease, a cell from where the fold meets the rim, and
+        // the straight chord joining them cut across the cap's projection.
+        // Traced on the flank the fold runs on under the cap and is ended
+        // at its own crossing of |f| = cap, so it arrives along itself.
+        let domain = Domain(real: Interval(lo: -2.1, hi: 2.1), imag: Interval(lo: 0, hi: 1.4))
+        let request = LandscapeRequest(expression: "(z-1)/(z+1)", domain: domain, resolution: 24, caps: .uniform(3))
+        let bundle = try NativeLandscape.build(request, refine: true)
+        let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
+        let h = scene.heightfield!
+        let cell = 4.2 / 23
+        func f(_ x: Double, _ y: Double) -> Double {
+            ((x - 1) * (x - 1) + y * y).squareRoot() / ((x + 1) * (x + 1) + y * y).squareRoot()
+        }
+        // The sight line, as the kernel of the plate projection.
+        let o = scene.camera.plateCoordinates(of: P3(0, 0, 0))
+        let cols = [P3<WorldSpace>(1, 0, 0), P3(0, 1, 0), P3(0, 0, 1)].map { scene.camera.plateCoordinates(of: $0) }
+        let row0 = SIMD3(cols[0].x - o.x, cols[1].x - o.x, cols[2].x - o.x)
+        let row1 = SIMD3(cols[0].y - o.y, cols[1].y - o.y, cols[2].y - o.y)
+        let sight = simd_normalize(simd_cross(row0, row1))
+        /// The flank's facing: f's own slope, uncapped.
+        func flankFacing(_ x: Double, _ y: Double) -> Double {
+            let s = 1e-6
+            let n = SIMD3(-(f(x + s, y) - f(x - s, y)) / (2 * s), -(f(x, y + s) - f(x, y - s)) / (2 * s), 1)
+            return -simd_dot(n, sight) / simd_length(n)
+        }
+        let folds = h.foldLines(view: scene.camera.view)
+        var rimEnds = 0, worstFacing = 0.0, worstOffRim = 0.0, underCap = 0, longestLastChord = 0.0, offFold = 0.0
+        for i in 0..<folds.count {
+            let p = Array(folds[path: i])
+            for v in p where v.z >= 3 - 1e-9 {
+                rimEnds += 1
+                worstFacing = max(worstFacing, abs(flankFacing(v.x, v.y)))
+                worstOffRim = max(worstOffRim, abs(f(v.x, v.y) - 3))
+            }
+            for v in p where v.z < 3 - 1e-9 {
+                if f(v.x, v.y) > 3 { underCap += 1 }
+                offFold = max(offFold, abs(flankFacing(v.x, v.y)))
+            }
+            for (a, b) in zip(p, p.dropFirst()) where a.z >= 3 - 1e-9 || b.z >= 3 - 1e-9 {
+                longestLastChord = max(longestLastChord, simd_length(a.v - b.v))
+            }
+        }
+        Check.expect(rimEnds >= 1, "a fold ends on the rim", "\(rimEnds) rim ends")
+        Check.expect(worstOffRim < 1e-9, "on |f| = 3 to the last bit", String(format: "worst %.1e off", worstOffRim))
+        Check.expect(worstFacing < 1e-6, "where the flank turns edge-on, not where a lattice edge crosses the crease",
+                     String(format: "flank facing %.1e at a rim end", worstFacing))
+        Check.expect(offFold < 1e-6, "and every flank vertex is on the fold", String(format: "facing %.1e", offFold))
+        Check.expect(underCap == 0, "no fold vertex lies under the cap", "\(underCap) do")
+        Check.expect(longestLastChord < 0.25 * cell, "the last chord to the rim is a subdivided piece of the fold, not a cell-long jump",
+                     String(format: "%.3f cells", longestLastChord / cell))
+        let seen = h.visibleFolds(view: scene.camera.view, margin: scene.margin)
+        let reaches = (0..<seen.count).contains { i in
+            let p = Array(seen[path: i])
+            let top = max(p.first!.z, p.last!.z), bottom = min(p.first!.z, p.last!.z)
+            return top >= 3 - 1e-9 && bottom < 2.2
+        }
+        Check.expect(reaches, "and the silhouette is seen in one piece from the flank up to the rim")
+        // The cap's hatch is ruled on f: no stroke reaches past the rim.
+        let hatch = try bundle.layer("cap_hatch").paths
+        var past = 0, endsOff = 0.0, strokes = 0
+        for i in 0..<hatch.count {
+            let p = Array(hatch[path: i]); strokes += 1
+            for v in p where f(v.x, v.y) < 3 - 1e-9 { past += 1 }
+            for end in [p.first!, p.last!] where abs(end.x) < 2.1 - 1e-9 && end.y > 1e-9 && end.y < 1.4 - 1e-9 {
+                endsOff = max(endsOff, abs(f(end.x, end.y) - 3))
+            }
+        }
+        Check.expect(strokes > 0 && past == 0, "no cap hatch vertex lies outside the rim drawn on f", "\(past) of \(strokes) strokes' vertices")
+        Check.expect(endsOff < 1e-9, "and every stroke ends on |f| = 3", String(format: "worst %.1e off", endsOff))
+    }
+
     Check.suite("banded rim: a tower cut at two heights, its rim on f band by band, with the step's top") {
         // 1/(z - 1/2) over Re [-1/2, 3/2], Im [-1, 1]: a tower at 1/2, capped
         // at 2 for Re z < 1/2 and at 4 beyond. The rim is the half circle
