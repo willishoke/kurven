@@ -35,9 +35,10 @@ public struct HeightfieldVisibility: Sendable {
     let march: SightMarch
 
     public init(heightfield: Heightfield, view: Transform<WorldSpace, ViewSpace>, margin: Double) {
-        self.heightfield = heightfield; self.margin = margin
-        self.sight = view.sightLine
+        self.heightfield = heightfield
         self.march = SightMarch(heightfield, view: view, margin: margin)
+        self.margin = self.march.margin
+        self.sight = view.sightLine
     }
 
     /// How squarely the surface faces the viewer over `p`: positive facing,
@@ -50,6 +51,15 @@ public struct HeightfieldVisibility: Sendable {
     /// Whether nothing of the solid stands between `p` and the eye, to
     /// within the margin.
     public func isClear(_ p: P3<WorldSpace>) -> Bool { march.unoccluded(p) }
+
+    /// Why `p` is hidden or clear: every sample the march took along the
+    /// sight line from it and what it made of each, one line per sample.
+    public func explain(_ p: P3<WorldSpace>) -> String {
+        var lines: [String] = []
+        let clear = march.unoccluded(p) { lines.append($0) }
+        lines.append(clear ? "clear" : "hidden")
+        return lines.joined(separator: "\n")
+    }
 
     /// The margin as a distance along the sight line: an occluder must
     /// stand in front of the ink by more than this.

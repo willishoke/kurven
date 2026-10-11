@@ -173,12 +173,41 @@ public struct Surface: Sendable {
 
 // MARK: - deriving ink from the grids
 
-/// Moves the paths of one level of one field onto the function's own level
-/// set, given the field, the level and the marching-squares paths in domain
-/// space. Core has the grids and not the function, so a consumer that has the
-/// function supplies this (`KurvenLandscape`'s `ContourRefiner`).
-public typealias ContourRefine = @Sendable (ContourField, Double, [[P2<DomainSpace>]])
-    -> [[P2<DomainSpace>]]
+/// What a consumer that has the function supplies, so the ink can be placed by
+/// f rather than by the grid. Core has the grids and not the function;
+/// `KurvenLandscape`'s `ContourRefiner` builds one of these.
+public struct ContourRefine: Sendable {
+    /// Moves the paths of one level of one field onto the function's own
+    /// level set, given the field, the level and the marching-squares paths
+    /// in domain space.
+    public typealias Contours = @Sendable (ContourField, Double, [[P2<DomainSpace>]])
+        -> [[P2<DomainSpace>]]
+    /// |f| at a domain point, uncapped, as the grid would hold it.
+    public typealias Magnitude = @Sendable (P2<DomainSpace>) -> Double
+    /// A zero of f within a few cells of a domain point, or nil.
+    public typealias Zero = @Sendable (P2<DomainSpace>) -> P2<DomainSpace>?
+
+    public let contours: Contours
+    /// With it, the crest of a cut face gains a vertex at each minimum of |f|
+    /// between two grid nodes (`Surface.crest`), and a contour that ends on a
+    /// zero of f ends at the zero's height (`Surface.derive`). Nil for a
+    /// consumer that can place contours and not heights.
+    public let magnitude: Magnitude?
+    /// With it, a fold line that ends beside a zero of f is carried to the
+    /// zero (`Heightfield.foldLines`), as the refiner carries the phase lines.
+    public let zero: Zero?
+    /// How far a chord may depart from the curve it stands for, in cells:
+    /// the refiner's own tolerance, which the crest of a cut face and the
+    /// fold lines are subdivided to as well, so every curve of the drawing
+    /// is a curve to the same tolerance.
+    public let tolerance: Double
+
+    public init(contours: @escaping Contours, magnitude: Magnitude? = nil,
+                zero: Zero? = nil, tolerance: Double = 0.02) {
+        self.tolerance = tolerance
+        self.contours = contours; self.magnitude = magnitude; self.zero = zero
+    }
+}
 
 public extension Surface {
     /// Lift a domain-space path onto the surface, by policy.
@@ -276,9 +305,38 @@ public extension Surface {
             // the vertices onto its true level set, in domain space, before
             // the lift: the grid decides which contours exist, f decides
             // exactly where they run.
-            let refined = refine.map { r in r(field, level, lines) } ?? lines
+            let refined = refine.map { r in r.contours(field, level, lines) } ?? lines
             for line in refined {
-                let lifted = lift(line, policy: policy, level: level)
+                // Lifted onto f where the function is at hand: a phase line
+                // lifted to the lattice's height stands a chord's error off
+                // the surface the rings, the folds and the crest are drawn
+                // on, and the judge hides it there or shows it floating.
+                var lifted: [P3<WorldSpace>]
+                if policy != .level, let magnitude = refine?.magnitude {
+                    lifted = line.map { p in
+                        let u = magnitude(p)
+                        guard u.isFinite else { return lift([p], policy: policy, level: level)[0] }
+                        return P3(p.x, p.y, policy == .surface ? min(u, caps.height(atX: p.x)) : u)
+                    }
+                } else {
+                    lifted = lift(line, policy: policy, level: level)
+                }
+                // A run the refiner carried to a zero of f ends at the zero's
+                // own height. The grid has no sample there: its chord over a
+                // pit's floor bottoms out at the nearest sample's height, a
+                // cell's rise above the zero, and lifting the end to the
+                // chord would hang the fan of phase lines that far above the
+                // crest that f draws under them. Only an end that *is* a zero,
+                // to rounding against the grid's own height, so a vertex the
+                // grid places a hair under f is left on the drawn surface.
+                if policy != .level, let magnitude = refine?.magnitude, !lifted.isEmpty {
+                    for i in Set([0, lifted.count - 1]) {
+                        let u = magnitude(line[i])
+                        if u.isFinite, u <= 1e-6 * lifted[i].z {
+                            lifted[i] = P3(lifted[i].x, lifted[i].y, u)
+                        }
+                    }
+                }
                 var run: [P3<WorldSpace>] = []
                 var previous: (vertex: P3<WorldSpace>, admitted: Bool)?
                 for v in lifted {

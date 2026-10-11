@@ -132,7 +132,7 @@ func capTests() {
         let rampCap = 3.5
         let s = Surface(height: ramp, phase: phase, caps: .uniform(rampCap))
         let source = LayerSource.contour(field: .phase, levels: [0], keep: .belowCap, tiled: false)
-        let identity: ContourRefine = { _, _, paths in paths }
+        let identity = ContourRefine(contours: { _, _, paths in paths })
 
         let plain = s.derive(source, policy: .magnitude, region: .full, tiles: [.identity])
         let carried = s.derive(source, policy: .magnitude, region: .full, tiles: [.identity],
