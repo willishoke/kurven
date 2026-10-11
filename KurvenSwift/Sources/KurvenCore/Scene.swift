@@ -93,6 +93,27 @@ public struct Heightfield: Sendable {
         return SIMD3(-hx, -hy, 1)
     }
 
+    /// The normal of the flank over `p`: f's own slope, uncapped, read as
+    /// `normal(at:)` reads it, so a fold is traced on the one surface the
+    /// flank is and continues under the cap, where the rim cuts it. The
+    /// capped normal without the function, or where f's slope is not
+    /// finite.
+    func flankNormal(at p: P2<WorldSpace>) -> SIMD3<Double> {
+        guard let magnitude = refine?.magnitude else { return normal(at: p) }
+        let g = surface.height
+        let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1))
+        let dy = abs(g.domain.imag.length) / Double(max(g.height - 1, 1))
+        let step = 1e-4 * max(dx, dy)
+        func h(_ x: Double, _ y: Double) -> Double {
+            let u = magnitude(surface.inTile(P2<DomainSpace>(x, y), tiles: tiles))
+            return u.isNaN ? .infinity : u
+        }
+        let hx = (h(p.x + step, p.y) - h(p.x - step, p.y)) / (2 * step)
+        let hy = (h(p.x, p.y + step) - h(p.x, p.y - step)) / (2 * step)
+        guard hx.isFinite, hy.isFinite else { return normal(at: p) }
+        return SIMD3(-hx, -hy, 1)
+    }
+
     /// The fold lines under a camera: where the surface turns edge-on,
     /// `n · sight = 0`, which is where its outline and every inner silhouette
     /// lie -- the far edge of a pit, the crest of a flank seen from the side.
@@ -119,14 +140,27 @@ public struct Heightfield: Sendable {
         let g = surface.height
         let nx = g.width, ny = g.height
         guard nx >= 2, ny >= 2 else { return .empty }
+        // With the function at hand the facing is the flank's, uncapped:
+        // the fold is a property of the one surface the flank is, and
+        // runs on under the cap, where the cap cuts it at the rim. The
+        // capped facing jumps at the crease, and its zero there is the
+        // crease, not the fold.
+        let onF = refine?.magnitude != nil
         func facing(_ p: P2<WorldSpace>) -> Double {
-            let n = normal(at: p)
+            let n = onF ? flankNormal(at: p) : normal(at: p)
             let len = simd_length(n)
             return len > 0 ? -simd_dot(n, sight) / len : 0
         }
         let cell = max(abs(g.domain.real.length) / Double(nx - 1),
                        abs(g.domain.imag.length) / Double(ny - 1))
         let h = 0.25 * cell
+        /// |f| over a world point, uncapped, through its tile; the lattice's
+        /// height without the function.
+        func flankHeight(_ p: P2<WorldSpace>) -> Double {
+            guard let magnitude = refine?.magnitude else { return surfaceHeight(at: p) }
+            let u = magnitude(surface.inTile(P2<DomainSpace>(p.x, p.y), tiles: tiles))
+            return u.isNaN ? .infinity : u
+        }
         /// The surface's height over a fold vertex: f's, capped, with the
         /// function at hand, so the fold is drawn at the height the rings
         /// that end on it are drawn at; the lattice's otherwise.
@@ -139,10 +173,6 @@ public struct Heightfield: Sendable {
         func subdivide(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>, tolerance: Double, depth: Int,
                        into out: inout [P3<WorldSpace>]) {
             guard depth < 5 else { return }
-            // A segment that ends on the rim is left straight: across the
-            // crease the facing jumps, and the midpoint would land on the
-            // crease rather than the fold.
-            guard a.z < surface.caps.height(atX: a.x) - 1e-9, b.z < surface.caps.height(atX: b.x) - 1e-9 else { return }
             let chord = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
             guard chord > 1e-9 * cell else { return }
             let mid = SIMD2(0.5 * (a.x + b.x), 0.5 * (a.y + b.y))
@@ -253,29 +283,45 @@ public struct Heightfield: Sendable {
                 }
                 return ends
             }
-            /// Onto the crease, along the lattice edge the vertex lies on:
-            /// where the surface's height reaches the cap, bisected to the
-            /// last bit, for a fold's end on the rim. The vertex itself
-            /// when the edge does not cross the rim.
-            func ontoCrease(_ c: P2<WorldSpace>) -> P2<WorldSpace> {
-                func excess(_ q: SIMD2<Double>) -> Double {
-                    let p = P2<WorldSpace>(q.x, q.y)
-                    return surfaceHeight(at: p) - surface.caps.height(atX: p.x)
-                }
-                for (a0, b0) in latticeEdges(through: c) {
-                    var a = a0, b = b0
-                    var ea = excess(a)
-                    let eb = excess(b)
-                    guard ea.isFinite, eb.isFinite, (ea < 0) != (eb < 0) else { continue }
+            /// Where the fold crosses the rim, between a vertex on the flank
+            /// and one under the cap: the chord's points moved onto the fold
+            /// along the chord's normal, as `subdivide` moves a midpoint, and
+            /// the one where |f| reaches the cap found by bisection to the
+            /// last bit. The lattice's crossing of the crease is where a
+            /// lattice edge meets the rim, which is not where the fold does:
+            /// joined to the flank by one straight chord a cell long, the
+            /// fold cut across the cap's projection on its way to the rim.
+            func ontoRim(from a: P2<WorldSpace>, to b: P2<WorldSpace>) -> P3<WorldSpace>? {
+                let chord = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
+                guard chord > 1e-9 * cell else { return nil }
+                let n = SIMD2(-(b.y - a.y), b.x - a.x) / chord
+                func onFold(_ t: Double) -> P2<WorldSpace> {
+                    let m = SIMD2(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y))
+                    var lo = m - 0.5 * chord * n, hi = m + 0.5 * chord * n
+                    var flo = facing(P2(lo.x, lo.y))
+                    guard (flo > 0) != (facing(P2(hi.x, hi.y)) > 0) else { return P2(m.x, m.y) }
                     for _ in 0..<60 {
-                        let m = 0.5 * (a + b)
-                        let em = excess(m)
-                        if (em < 0) == (ea < 0) { a = m; ea = em } else { b = m }
+                        let c = 0.5 * (lo + hi)
+                        let fc = facing(P2(c.x, c.y))
+                        if (fc > 0) == (flo > 0) { lo = c; flo = fc } else { hi = c }
                     }
-                    let m = 0.5 * (a + b)
-                    return P2(m.x, m.y)
+                    let c = 0.5 * (lo + hi)
+                    return P2(c.x, c.y)
                 }
-                return c
+                func excess(_ t: Double) -> Double {
+                    let q = onFold(t)
+                    return flankHeight(q) - surface.caps.height(atX: q.x)
+                }
+                var lo = 0.0, hi = 1.0
+                guard excess(lo) < 0, excess(hi) >= 0 else { return nil }
+                for _ in 0..<60 {
+                    let m = 0.5 * (lo + hi)
+                    if excess(m) < 0 { lo = m } else { hi = m }
+                }
+                let q = onFold(0.5 * (lo + hi))
+                let cap = surface.caps.height(atX: q.x)
+                guard region.contains(q), cap.isFinite else { return nil }
+                return P3(q.x, q.y, cap)
             }
             func ontoEdge(_ c: P2<WorldSpace>) -> P2<WorldSpace> {
                 for (a0, b0) in latticeEdges(through: c) {
@@ -293,50 +339,32 @@ public struct Heightfield: Sendable {
                 }
                 return onto(c)
             }
-            // Nothing on a cap, which faces up and has a rim of its own --
-            // except the one vertex where a fold up the flank meets the
-            // rim. The facing jumps there, from the flank's to the cap's,
-            // and the bisection along the lattice edge lands on the crease
-            // at the cap's own height; dropped as cap ink, the fold ended a
-            // cell short of the rim at every lattice. On the rim it is the
-            // run's end, or the start of the next; a chain of rim vertices
-            // on its own, which the back of a tower yields, draws nothing.
-            // The facing is read by differences a ten-thousandth of a cell
-            // wide, so the bisection lands within that of the crease, on
-            // either side: a vertex that far below the rim, in height that
-            // is the step times the flank's slope, is the crease point, not
-            // a point of the flank, and a point of the flank that near the
-            // rim would have its line clipped by the rim's edge by a hair.
-            let onRim = refine?.magnitude != nil
-            func rimBand(_ p: P2<WorldSpace>) -> Double {
-                guard onRim else { return 0 }
-                let n = normal(at: p)
-                return 2 * 1e-4 * cell * (n.x * n.x + n.y * n.y).squareRoot()
-            }
+            // Nothing on a cap, which faces up and has a rim of its own.
+            // With the function at hand the fold is traced on the flank
+            // alone and runs on under the cap: where a run passes under the
+            // rim it ends on the rim, at the fold's own crossing of |f| =
+            // cap, so a tower's silhouette reaches the cap and arrives
+            // along the fold.
             for line in Contour.lines(of: field, level: 0) {
                 var run: [P3<WorldSpace>] = []
-                var pending: P3<WorldSpace>?
+                var previous: (p: P2<WorldSpace>, inRegion: Bool, onFlank: Bool)?
                 func close() {
                     if run.count >= 2 { paths.append(fundamental ? endedAtZeros(subdivided(run), cell: cell) : run) }
-                    run = []; pending = nil
+                    run = []
                 }
                 for v in line {
                     var p = P2<WorldSpace>(v.x, v.y)
                     if refined { p = ontoEdge(p) }
                     let z = height(p)
                     let cap = surface.caps.height(atX: p.x)
-                    let band = cap.isFinite ? max(1e-9 * max(1, abs(cap)), rimBand(p)) : 0
-                    if region.contains(p) && z < cap - band {
-                        if run.isEmpty, let r = pending { run.append(r) }
-                        pending = nil
-                        run.append(P3(p.x, p.y, z))
-                    } else if onRim, region.contains(p), z.isFinite, cap.isFinite, abs(z - cap) <= band {
-                        let q = ontoCrease(p)
-                        let r = P3<WorldSpace>(q.x, q.y, surface.caps.height(atX: q.x))
-                        if run.isEmpty { pending = r } else { run.append(r); close() }
-                    } else {
-                        close()
+                    let inRegion = region.contains(p)
+                    let onFlank = inRegion && z.isFinite && z < cap
+                    if onF, let last = previous, last.inRegion, inRegion, last.onFlank != onFlank, cap.isFinite,
+                       let r = onFlank ? ontoRim(from: p, to: last.p) : ontoRim(from: last.p, to: p) {
+                        run.append(r)
                     }
+                    if onFlank { run.append(P3(p.x, p.y, z)) } else { close() }
+                    previous = (p, inRegion, onFlank)
                 }
                 close()
             }

@@ -82,7 +82,7 @@ public extension Surface {
             paths = wallOutline(perimeter, edges: edges, pitch: pitch, base: base,
                                 tiles: context.tiles, refine: refine)
         case .capHatch(let axis, let spacing, let tiled):
-            paths = capHatch(axis: axis, spacing: spacing)
+            paths = capHatch(axis: axis, spacing: spacing, refine: refine)
             if tiled { paths = Surface.replicate(paths, context.tiles) }
         case .capOutline(let tiled):
             paths = capOutline(tiles: context.tiles, refine: refine)
@@ -452,7 +452,7 @@ extension Surface {
         return zip(edges, edges.dropFirst()).filter { $1 > $0 }.map { ($0, $1) }
     }
 
-    func capHatch(axis: KeepAxis, spacing: Double) -> [[P3<WorldSpace>]] {
+    func capHatch(axis: KeepAxis, spacing: Double, refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         guard spacing.isFinite, spacing > 0 else { return [] }
         let grid = height
         let across = axis == .real ? grid.domain.imag : grid.domain.real
@@ -484,11 +484,24 @@ extension Surface {
                 var coord = [a]
                 coord.append(contentsOf: samples.filter { $0 > a && $0 < b })
                 coord.append(b)
-                let excess = coord.map { t -> Double in
+                // With the function at hand the strokes are ruled on f and
+                // end where |f| reaches the cap along them, bisected: the
+                // lattice's chords lie above f on a convex flank, so its cap
+                // region reaches past the rim drawn on f by a fraction of a
+                // cell, and a stroke ruled on it poked out past the rim.
+                func excessAt(_ t: Double) -> Double {
                     let p = axis == .real ? P2<DomainSpace>(t, c) : P2<DomainSpace>(c, t)
+                    if let f = refine?.magnitude {
+                        let u = f(p)
+                        return (u.isNaN ? .infinity : u) - cap
+                    }
                     return magnitude(at: p) - cap
                 }
-                for run in Surface.runsAtOrAbove(coord, excess) {
+                let excess = coord.map(excessAt)
+                let runs = refine?.magnitude == nil
+                    ? Surface.runsAtOrAbove(coord, excess)
+                    : Surface.runsAtOrAbove(coord, excess) { lo, hi in Surface.bisected(lo, hi, excessAt) }
+                for run in runs {
                     out.append(run.map { t in
                         axis == .real ? P3<WorldSpace>(t, c, cap)
                                       : P3<WorldSpace>(c, t, cap)
@@ -504,7 +517,8 @@ extension Surface {
     /// `t = e0 / (e0 - e1)` is where the same linear interpolation puts the rim
     /// contour, so a stroke ends exactly on the rim rather than at the last
     /// sample inside it.
-    static func runsAtOrAbove(_ coord: [Double], _ excess: [Double]) -> [[Double]] {
+    static func runsAtOrAbove(_ coord: [Double], _ excess: [Double],
+                              crossing: ((Double, Double) -> Double)? = nil) -> [[Double]] {
         var runs: [[Double]] = []
         var start: Int?
         for i in 0...coord.count {
@@ -513,21 +527,43 @@ extension Surface {
             if !inside, let a = start {
                 var line: [Double] = []
                 if a > 0 {
-                    let (e0, e1) = (excess[a - 1], excess[a])
-                    let t = e0 != e1 ? e0 / (e0 - e1) : 0
-                    line.append(coord[a - 1] + t * (coord[a] - coord[a - 1]))
+                    if let crossing {
+                        line.append(crossing(coord[a - 1], coord[a]))
+                    } else {
+                        let (e0, e1) = (excess[a - 1], excess[a])
+                        let t = e0 != e1 ? e0 / (e0 - e1) : 0
+                        line.append(coord[a - 1] + t * (coord[a] - coord[a - 1]))
+                    }
                 }
                 line.append(contentsOf: coord[a..<i])
                 if i < coord.count {
-                    let (e0, e1) = (excess[i - 1], excess[i])
-                    let t = e0 != e1 ? e0 / (e0 - e1) : 0
-                    line.append(coord[i - 1] + t * (coord[i] - coord[i - 1]))
+                    if let crossing {
+                        line.append(crossing(coord[i - 1], coord[i]))
+                    } else {
+                        let (e0, e1) = (excess[i - 1], excess[i])
+                        let t = e0 != e1 ? e0 / (e0 - e1) : 0
+                        line.append(coord[i - 1] + t * (coord[i] - coord[i - 1]))
+                    }
                 }
                 if line.count >= 2 { runs.append(line) }
                 start = nil
             }
         }
         return runs
+    }
+
+    /// The coordinate between `lo` and `hi` where `f` changes sign, bisected
+    /// to the last bit; `lo` when it does not.
+    static func bisected(_ lo: Double, _ hi: Double, _ f: (Double) -> Double) -> Double {
+        var a = lo, b = hi
+        var fa = f(a)
+        guard (fa < 0) != (f(b) < 0) else { return lo }
+        for _ in 0..<60 {
+            let m = 0.5 * (a + b)
+            let fm = f(m)
+            if (fm < 0) == (fa < 0) { a = m; fa = fm } else { b = m }
+        }
+        return 0.5 * (a + b)
     }
 
     /// |f| - cap, as a grid, in float32 -- the same subtraction the Python side
