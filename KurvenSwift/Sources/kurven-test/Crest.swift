@@ -261,6 +261,207 @@ func crestTests() {
         Check.expect(seenAtRim >= 2, "and both are seen up to the rim", "\(seenAtRim) seen runs end on the rim")
     }
 
+    Check.suite("folds arrive along the fold: a tower's silhouette meets the rim where the flank turns edge-on") {
+        // (z - 1)/(z + 1) over Re [-2.1, 2.1], Im [0, 1.4], capped at 3, on a
+        // grid of 24: the pole at -1 sits on the front edge, and the tower's
+        // right flank carries a silhouette up to the rim. Traced on the
+        // capped surface the fold's last vertex was where a lattice edge
+        // crossed the crease, a cell from where the fold meets the rim, and
+        // the straight chord joining them cut across the cap's projection.
+        // Traced on the flank the fold runs on under the cap and is ended
+        // at its own crossing of |f| = cap, so it arrives along itself.
+        let domain = Domain(real: Interval(lo: -2.1, hi: 2.1), imag: Interval(lo: 0, hi: 1.4))
+        let request = LandscapeRequest(expression: "(z-1)/(z+1)", domain: domain, resolution: 24, caps: .uniform(3))
+        let bundle = try NativeLandscape.build(request, refine: true)
+        let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
+        let h = scene.heightfield!
+        let cell = 4.2 / 23
+        func f(_ x: Double, _ y: Double) -> Double {
+            ((x - 1) * (x - 1) + y * y).squareRoot() / ((x + 1) * (x + 1) + y * y).squareRoot()
+        }
+        // The sight line, as the kernel of the plate projection.
+        let o = scene.camera.plateCoordinates(of: P3(0, 0, 0))
+        let cols = [P3<WorldSpace>(1, 0, 0), P3(0, 1, 0), P3(0, 0, 1)].map { scene.camera.plateCoordinates(of: $0) }
+        let row0 = SIMD3(cols[0].x - o.x, cols[1].x - o.x, cols[2].x - o.x)
+        let row1 = SIMD3(cols[0].y - o.y, cols[1].y - o.y, cols[2].y - o.y)
+        let sight = simd_normalize(simd_cross(row0, row1))
+        /// The flank's facing: f's own slope, uncapped.
+        func flankFacing(_ x: Double, _ y: Double) -> Double {
+            let s = 1e-6
+            let n = SIMD3(-(f(x + s, y) - f(x - s, y)) / (2 * s), -(f(x, y + s) - f(x, y - s)) / (2 * s), 1)
+            return -simd_dot(n, sight) / simd_length(n)
+        }
+        let folds = h.foldLines(view: scene.camera.view)
+        var rimEnds = 0, worstFacing = 0.0, worstOffRim = 0.0, underCap = 0, longestLastChord = 0.0, offFold = 0.0
+        for i in 0..<folds.count {
+            let p = Array(folds[path: i])
+            for v in p where v.z >= 3 - 1e-9 {
+                rimEnds += 1
+                worstFacing = max(worstFacing, abs(flankFacing(v.x, v.y)))
+                worstOffRim = max(worstOffRim, abs(f(v.x, v.y) - 3))
+            }
+            for v in p where v.z < 3 - 1e-9 {
+                if f(v.x, v.y) > 3 { underCap += 1 }
+                offFold = max(offFold, abs(flankFacing(v.x, v.y)))
+            }
+            for (a, b) in zip(p, p.dropFirst()) where a.z >= 3 - 1e-9 || b.z >= 3 - 1e-9 {
+                longestLastChord = max(longestLastChord, simd_length(a.v - b.v))
+            }
+        }
+        Check.expect(rimEnds >= 1, "a fold ends on the rim", "\(rimEnds) rim ends")
+        Check.expect(worstOffRim < 1e-9, "on |f| = 3 to the last bit", String(format: "worst %.1e off", worstOffRim))
+        Check.expect(worstFacing < 1e-6, "where the flank turns edge-on, not where a lattice edge crosses the crease",
+                     String(format: "flank facing %.1e at a rim end", worstFacing))
+        Check.expect(offFold < 1e-6, "and every flank vertex is on the fold", String(format: "facing %.1e", offFold))
+        Check.expect(underCap == 0, "no fold vertex lies under the cap", "\(underCap) do")
+        Check.expect(longestLastChord < 0.25 * cell, "the last chord to the rim is a subdivided piece of the fold, not a cell-long jump",
+                     String(format: "%.3f cells", longestLastChord / cell))
+        let seen = h.visibleFolds(view: scene.camera.view, margin: scene.margin)
+        let reaches = (0..<seen.count).contains { i in
+            let p = Array(seen[path: i])
+            let top = max(p.first!.z, p.last!.z), bottom = min(p.first!.z, p.last!.z)
+            return top >= 3 - 1e-9 && bottom < 2.2
+        }
+        Check.expect(reaches, "and the silhouette is seen in one piece from the flank up to the rim")
+        // The cap's hatch is ruled on f: no stroke reaches past the rim.
+        let hatch = try bundle.layer("cap_hatch").paths
+        var past = 0, endsOff = 0.0, strokes = 0
+        for i in 0..<hatch.count {
+            let p = Array(hatch[path: i]); strokes += 1
+            for v in p where f(v.x, v.y) < 3 - 1e-9 { past += 1 }
+            for end in [p.first!, p.last!] where abs(end.x) < 2.1 - 1e-9 && end.y > 1e-9 && end.y < 1.4 - 1e-9 {
+                endsOff = max(endsOff, abs(f(end.x, end.y) - 3))
+            }
+        }
+        Check.expect(strokes > 0 && past == 0, "no cap hatch vertex lies outside the rim drawn on f", "\(past) of \(strokes) strokes' vertices")
+        Check.expect(endsOff < 1e-9, "and every stroke ends on |f| = 3", String(format: "worst %.1e off", endsOff))
+    }
+
+    Check.suite("a crest comes out from behind a tower where the march turns, not at the next node") {
+        // tan(z) over Re [-0.7, 2.3], Im [0, 1], capped at 2.5, on a grid of
+        // 24: the tower at pi/2 hides a stretch of the back edge's crest.
+        // The crest is concave there, so the chord between two of its
+        // vertices lies under it, in the back wall, which faces away: a
+        // run's end bisected along the chord found nothing admitted and the
+        // crest began at the next node, half a cell past where it comes
+        // into view beside the silhouette's cusp.
+        let domain = Domain(real: Interval(lo: -0.7, hi: 2.3), imag: Interval(lo: 0, hi: 1.0))
+        let request = LandscapeRequest(expression: "tan(z)", domain: domain, resolution: 24, caps: .uniform(2.5))
+        let bundle = try NativeLandscape.build(request, refine: true)
+        let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
+        let h = scene.heightfield!
+        let view = scene.camera.view
+        let cell = 3.0 / 23
+        let crest = try bundle.layer("wall_outline").paths
+        let drawn = h.visibleWallInk(crest, view: view, margin: scene.margin)
+        // the run of the back crest that begins right of the tower
+        var start: P3<WorldSpace>?
+        for i in 0..<drawn.count {
+            let p = Array(drawn[path: i])
+            guard p.allSatisfy({ abs($0.y - 1.0) < 1e-9 }), p.first!.z > 0.01 else { continue }
+            let left = p.min { $0.x < $1.x }!
+            if left.x > 1.5 && left.x < 2.0 { start = left }
+        }
+        Check.expect(start != nil, "the back crest's run right of the tower is drawn")
+        if let s = start {
+            let vis = HeightfieldVisibility(heightfield: h, view: view, margin: scene.margin)
+            func at(_ x: Double) -> P3<WorldSpace> { P3(x, 1.0, h.surfaceHeight(at: P2(x, 1.0))) }
+            let node = (s.x + 0.7) / cell
+            Check.expect(abs(node - node.rounded()) > 1e-3, "and begins between nodes", String(format: "at x = %.4f, node %.3f", s.x, node))
+            Check.expect(!vis.isClear(at(s.x - 1e-4 * cell)) && vis.isClear(at(s.x + 1e-4 * cell)),
+                         "where the crest comes into view, to a ten-thousandth of a cell",
+                         String(format: "x = %.5f: hidden before %@, clear after %@", s.x,
+                                vis.isClear(at(s.x - 1e-4 * cell)) ? "no" : "yes", vis.isClear(at(s.x + 1e-4 * cell)) ? "yes" : "no"))
+            Check.expect(abs(s.z - h.surfaceHeight(at: P2(s.x, s.y))) < 1e-9, "on the crest", String(format: "%.2e under f", h.surfaceHeight(at: P2(s.x, s.y)) - s.z))
+        }
+    }
+
+    Check.suite("a chord the refiner cannot place is not drawn") {
+        // exp(1/z) over Re [-1.1, 0.4], Im [0, 0.75], capped at 3, on a grid
+        // of 24: an essential singularity at the origin, on the front edge.
+        // The circles of one phase level crowd into it, so marching squares
+        // joins vertices of different circles, and the phase line along the
+        // real axis jumps from the floor to the cap at the origin. Those
+        // chords used to be drawn as they were: hooks and zigzags beside the
+        // origin, and a line up the cliff.
+        let domain = Domain(real: Interval(lo: -1.1, hi: 0.4), imag: Interval(lo: 0, hi: 0.75))
+        let request = LandscapeRequest(expression: "exp(1/z)", domain: domain, resolution: 24, caps: .uniform(3))
+        let bundle = try NativeLandscape.build(request, refine: true)
+        let cell = 1.5 / 23
+        func f(_ x: Double, _ y: Double) -> Complex { Complex.exp(1 / Complex(x, y)) }
+        var chords = 0, strayed = 0, jumps = 0, worstStray = 0.0
+        var examples: [String] = []
+        for (spec, layer) in zip(bundle.manifest.layers, bundle.layers) where spec.name.hasPrefix("ang") {
+            for i in 0..<layer.paths.count {
+                let p = Array(layer.paths[path: i])
+                for (a, b) in zip(p, p.dropFirst()) {
+                    chords += 1
+                    // the chord's departure from the level set at its quarter
+                    // points: the phase residual against the level its far end
+                    // sits on, over the gradient of the phase there, in cells
+                    let level = f(b.x, b.y).argument
+                    for t in [0.25, 0.5, 0.75] {
+                        let q = (a.x + t * (b.x - a.x), a.y + t * (b.y - a.y))
+                        var r = f(q.0, q.1).argument - level
+                        while r > .pi { r -= 2 * .pi }; while r < -.pi { r += 2 * .pi }
+                        let s = 1e-5 * cell
+                        func ph(_ x: Double, _ y: Double) -> Double { f(x, y).argument }
+                        var dx = ph(q.0 + s, q.1) - ph(q.0 - s, q.1), dy = ph(q.0, q.1 + s) - ph(q.0, q.1 - s)
+                        while dx > .pi { dx -= 2 * .pi }; while dx < -.pi { dx += 2 * .pi }
+                        while dy > .pi { dy -= 2 * .pi }; while dy < -.pi { dy += 2 * .pi }
+                        let slope = (dx * dx + dy * dy).squareRoot() / (2 * s)
+                        let off = slope > 0 && slope.isFinite ? abs(r) / slope / cell : abs(r)
+                        if off > 0.021 {
+                            strayed += 1
+                            if examples.count < 4 { examples.append(String(format: "(%.5f, %.5f, %.3f)->(%.5f, %.5f, %.3f) t %.2f off %.3f cells r %.2f", a.x, a.y, a.z, b.x, b.y, b.z, t, off, r)) }
+                        }
+                        worstStray = max(worstStray, off)
+                    }
+                    // no chord climbs the cliff: a jump in height of more than a cell's worth of slope
+                    if abs(a.z - b.z) > 1.5 { jumps += 1; examples.append(String(format: "jump (%.5f, %.5f, %.3f)->(%.5f, %.5f, %.3f)", a.x, a.y, a.z, b.x, b.y, b.z)) }
+                }
+            }
+        }
+        Check.expect(chords > 100, "phase chords are drawn beside the singularity", "\(chords) chords")
+        Check.expect(strayed == 0, "and every one of them lies on the level set to the tolerance at its quarter points",
+                     String(format: "%d quarter points off, worst %.3f cells  %@", strayed, worstStray, examples.joined(separator: "; ") as NSString))
+        Check.expect(jumps == 0, "and none climbs the cliff at the origin", "\(jumps) chords rise by more than 1.5  \(examples.joined(separator: "; "))")
+        // the rings all pass through the origin and are placed: every ring vertex is on its level
+        var ringVertices = 0, off = 0
+        for (spec, layer) in zip(bundle.manifest.layers, bundle.layers) where spec.name.hasPrefix("mag") {
+            for i in 0..<layer.paths.count {
+                let p = Array(layer.paths[path: i])
+                for v in p where v.x * v.x + v.y * v.y > 1e-12 {
+                    ringVertices += 1
+                    if abs(f(v.x, v.y).magnitude - v.z) > 1e-6 * max(1, v.z) { off += 1 }
+                }
+            }
+        }
+        Check.expect(ringVertices > 100 && off == 0, "every ring vertex off the origin is on its level", "\(off) of \(ringVertices) off")
+        // The phase lines are followed on f to the origin: marching squares
+        // ends them a cell short, where it can no longer bracket a phase
+        // that turns many times within a cell; from there each is traced
+        // along its circle until f's phase runs out, which is where exp(1/z)
+        // underflows a hair from the origin.
+        var interiorEnds = 0, farEnds = 0, worstEnd = 0.0
+        for (spec, layer) in zip(bundle.manifest.layers, bundle.layers) where spec.name.hasPrefix("ang") {
+            for i in 0..<layer.paths.count {
+                let p = Array(layer.paths[path: i])
+                for e in [p.first!, p.last!] {
+                    let onEdge = abs(e.x + 1.1) < 1e-6 || abs(e.x - 0.4) < 1e-6 || abs(e.y) < 1e-6 || abs(e.y - 0.75) < 1e-6
+                    let onRim = f(e.x, e.y).magnitude >= 3 - 1e-3
+                    guard !onEdge, !onRim, e.x < 0.1, e.y < 0.2 else { continue }
+                    interiorEnds += 1
+                    let d = (e.x * e.x + e.y * e.y).squareRoot()
+                    worstEnd = max(worstEnd, d)
+                    if d > 0.1 * cell { farEnds += 1 }
+                }
+            }
+        }
+        Check.expect(interiorEnds >= 10 && farEnds == 0, "and the phase lines beside the origin run to within a tenth of a cell of it",
+                     String(format: "%d ends beside it, %d further off, worst %.4f cells", interiorEnds, farEnds, worstEnd / cell))
+    }
+
     Check.suite("banded rim: a tower cut at two heights, its rim on f band by band, with the step's top") {
         // 1/(z - 1/2) over Re [-1/2, 3/2], Im [-1, 1]: a tower at 1/2, capped
         // at 2 for Re z < 1/2 and at 4 beyond. The rim is the half circle

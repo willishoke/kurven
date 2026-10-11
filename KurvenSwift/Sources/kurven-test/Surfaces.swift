@@ -588,6 +588,7 @@ func periodicTorusTests() {
         let m = 0.64
         let plate = try PeriodicTorus.jacobiSN(modulus: m)
         var worst = 0.0, off = 0.0, vertices = 0, singular = 0
+        var worstWhere = ""
         for layer in plate.layers {
             guard case .contour(let field, let levels, _, _) = layer.spec.source else { continue }
             let coords = layer.paths.coords!
@@ -602,6 +603,9 @@ func periodicTorusTests() {
                 let value = field == .magnitude ? f.magnitude : f.argument
                 let level = levels.min { abs($0 - value) < abs($1 - value) }!
                 let scale = field == .magnitude ? max(level, 1) : 1
+                if abs(value - level) / scale > worst {
+                    worstWhere = String(format: "%@ at (%.5f, %.5f) |f| %.3e value %.4f level %.4f", layer.spec.name as NSString, c.x, c.y, f.magnitude, value, level)
+                }
                 worst = max(worst, abs(value - level) / scale)
                 off = max(off, simd_length(layer.paths.vertices[k].v
                                            - plate.surface.map(c).position))
@@ -609,7 +613,7 @@ func periodicTorusTests() {
         }
         Check.expect(vertices > 10_000 && worst < 1e-6,
                      "every contour vertex is on its level of sn",
-                     "\(vertices) vertices, worst \(worst);"
+                     "\(vertices) vertices, worst \(worst) \(worstWhere);"
                      + " \(singular) phase ends at a zero or pole not asked")
         Check.expect(off < 1e-12, "and sits on the torus where its coordinate says", "\(off)")
 
