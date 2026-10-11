@@ -499,9 +499,12 @@ public struct Heightfield: Sendable {
         /// Whether the point is judged by the march at all: on the crest, in
         /// a wall that faces the eye, or in no wall. Ink that stands in no
         /// wall is left to the march alone.
-        @Sendable func admitted(_ p: P3<WorldSpace>) -> Bool {
+        @Sendable func onCrest(_ p: P3<WorldSpace>) -> Bool {
             let h = self.surfaceHeight(at: P2(p.x, p.y))
-            let onCrest = p.z >= h - 1e-9 * max(cell, abs(h))
+            return p.z >= h - 1e-9 * max(cell, abs(h))
+        }
+        @Sendable func admitted(_ p: P3<WorldSpace>) -> Bool {
+            let onCrest = onCrest(p)
             var onAnyWall = false, facesEye = false
             for box in boxes {
                 let walls: [(on: Bool, outward: SIMD3<Double>)] = [
@@ -517,8 +520,17 @@ public struct Heightfield: Sendable {
             }
             return onCrest || facesEye || !onAnyWall
         }
+        // A crest run ends where the march turns along the crest itself: the
+        // chord between two crest vertices lies under a concave crest, and a
+        // point under the crest is in the wall, which, facing away, is
+        // never admitted -- so bisected along the chord the run began at
+        // the next vertex, half a cell late, and the far edge of a plate
+        // came out from behind a tower with a stub missing beside the
+        // silhouette's cusp. Judged on the surface, the chord's points are
+        // crest points.
         return Self.runs(of: paths, keep: { p in admitted(p) && march.unoccluded(p) },
-                         bisectable: { a, b in admitted(a) && admitted(b) })
+                         bisectable: { a, b in admitted(a) && admitted(b) },
+                         lift: { a, b, q in onCrest(a) && onCrest(b) ? self.onSurface(q) : q })
     }
 
     /// Ink that lies on the surface itself -- the contours of |f| and arg f,
@@ -591,7 +603,7 @@ public struct Heightfield: Sendable {
         let judgedSequence = sequence
         let turned = Self.parallelMap(crossings) { c -> P3<WorldSpace>? in
             let a = judgedSequence[c.path][c.k - 1], b = judgedSequence[c.path][c.k]
-            return Self.turning(from: a.v, a.visible, to: b.v) { vis.isClear(self.onSurface($0)) }
+            return Self.turning(from: a.v, a.visible, to: b.v, keep: { vis.isClear(self.onSurface($0)) })
         }
         var turn: [[P3<WorldSpace>?]] = sequence.map { [P3<WorldSpace>?](repeating: nil, count: $0.count) }
         for (i, c) in crossings.enumerated() { turn[c.path][c.k] = turned[i] }
@@ -640,9 +652,13 @@ public struct Heightfield: Sendable {
     /// test of where the vertex *is* -- in a wall that faces the eye, on the
     /// crest -- does not, and bisecting it would draw the sliver of a stroke
     /// between the crest as drawn and f.
+    /// `lift` places a point of the chord `a -> b` where the ink between
+    /// the two vertices actually runs, for the bisection of a run's end:
+    /// the chord itself by default.
     static func runs(of paths: PolylineSet<WorldSpace>,
                      keep: @Sendable (P3<WorldSpace>) -> Bool,
-                     bisectable: @Sendable (P3<WorldSpace>, P3<WorldSpace>) -> Bool = { _, _ in true })
+                     bisectable: @Sendable (P3<WorldSpace>, P3<WorldSpace>) -> Bool = { _, _ in true },
+                     lift: @Sendable (P3<WorldSpace>, P3<WorldSpace>, P3<WorldSpace>) -> P3<WorldSpace> = { _, _, q in q })
         -> PolylineSet<WorldSpace>
     {
         let kept = parallelMap(paths.vertices, keep)
@@ -655,7 +671,8 @@ public struct Heightfield: Sendable {
             }
         }
         let turned = parallelMap(crossings) { k -> P3<WorldSpace>? in
-            Self.turning(from: vertices[k - 1], kept[k - 1], to: vertices[k], keep: keep)
+            let a = vertices[k - 1], b = vertices[k]
+            return Self.turning(from: a, kept[k - 1], to: b, keep: keep) { lift(a, b, $0) }
         }
         var turn = [P3<WorldSpace>?](repeating: nil, count: vertices.count)
         for (i, k) in crossings.enumerated() { turn[k] = turned[i] }
@@ -681,17 +698,18 @@ public struct Heightfield: Sendable {
     /// `a` iff `keptA`: bisection to the last bit of the fraction, returning
     /// the last point at which it still holds on the kept side.
     static func turning(from a: P3<WorldSpace>, _ keptA: Bool, to b: P3<WorldSpace>,
-                        keep: @Sendable (P3<WorldSpace>) -> Bool) -> P3<WorldSpace>? {
+                        keep: @Sendable (P3<WorldSpace>) -> Bool,
+                        lift: (P3<WorldSpace>) -> P3<WorldSpace> = { $0 }) -> P3<WorldSpace>? {
         var lo = 0.0, hi = 1.0
         while hi - lo > 1e-13 {
             let mid = 0.5 * (lo + hi)
-            if keep(P3(a.v + (b.v - a.v) * mid)) == keptA { lo = mid } else { hi = mid }
+            if keep(lift(P3(a.v + (b.v - a.v) * mid))) == keptA { lo = mid } else { hi = mid }
         }
         // Turned within rounding of the kept end: the kept vertex is where
         // the ink ends, and a second vertex there would be a run of nothing.
         let t = keptA ? lo : 1 - hi
         guard t > 1e-12 else { return nil }
-        return P3(a.v + (b.v - a.v) * (keptA ? lo : hi))
+        return lift(P3(a.v + (b.v - a.v) * (keptA ? lo : hi)))
     }
 
     /// `items.map(body)`, in parallel chunks.
@@ -993,8 +1011,11 @@ struct SightMarch: Sendable {
             var judged = t > tEps
             if !judged, strictlyInside, !startJudged { judged = true; startJudged = true }
             // At the start, a point on the surface to rounding is in its own
-            // surface's neighbourhood, not outside it.
-            let zEps = t > tEps ? 0 : 1e-9 * cell
+            // surface's neighbourhood, not outside it. Further along, a line
+            // under the surface by rounding alone is not inside it: the last
+            // sample lies at the highest height by construction, and over a
+            // cap at that height the sign of its gap is a rounding error.
+            let zEps = t > tEps ? -1e-9 * cell : 1e-9 * cell
             guard let g, g.overFacet < zEps, g.overCap < zEps else {
                 // Outside here, the start included: a point on the boundary
                 // that stands above the surface is outside from the start,
@@ -1019,8 +1040,8 @@ struct SightMarch: Sendable {
                 return false
             }
             if outsideYet {
-                trace?(String(format: "t %.4g cells: inside by %.3e after being outside, reach %.4g cells: %@",
-                              t / cell, -g.overFacet, reach / cell, t + tEps >= reach ? "hidden" : "forgiven"))
+                trace?(String(format: "t %.4g cells: inside by %.3e (under the cap by %.3e) after being outside, reach %.4g cells: %@",
+                              t / cell, -g.overFacet, -g.overCap, reach / cell, t + tEps >= reach ? "hidden" : "forgiven"))
                 return t + tEps >= reach
             }
             let depth = g.overFacet > g.overCap ? g.overFacet * cosine : g.overCap

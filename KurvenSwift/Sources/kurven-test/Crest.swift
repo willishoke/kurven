@@ -337,6 +337,45 @@ func crestTests() {
         Check.expect(endsOff < 1e-9, "and every stroke ends on |f| = 3", String(format: "worst %.1e off", endsOff))
     }
 
+    Check.suite("a crest comes out from behind a tower where the march turns, not at the next node") {
+        // tan(z) over Re [-0.7, 2.3], Im [0, 1], capped at 2.5, on a grid of
+        // 24: the tower at pi/2 hides a stretch of the back edge's crest.
+        // The crest is concave there, so the chord between two of its
+        // vertices lies under it, in the back wall, which faces away: a
+        // run's end bisected along the chord found nothing admitted and the
+        // crest began at the next node, half a cell past where it comes
+        // into view beside the silhouette's cusp.
+        let domain = Domain(real: Interval(lo: -0.7, hi: 2.3), imag: Interval(lo: 0, hi: 1.0))
+        let request = LandscapeRequest(expression: "tan(z)", domain: domain, resolution: 24, caps: .uniform(2.5))
+        let bundle = try NativeLandscape.build(request, refine: true)
+        let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
+        let h = scene.heightfield!
+        let view = scene.camera.view
+        let cell = 3.0 / 23
+        let crest = try bundle.layer("wall_outline").paths
+        let drawn = h.visibleWallInk(crest, view: view, margin: scene.margin)
+        // the run of the back crest that begins right of the tower
+        var start: P3<WorldSpace>?
+        for i in 0..<drawn.count {
+            let p = Array(drawn[path: i])
+            guard p.allSatisfy({ abs($0.y - 1.0) < 1e-9 }), p.first!.z > 0.01 else { continue }
+            let left = p.min { $0.x < $1.x }!
+            if left.x > 1.5 && left.x < 2.0 { start = left }
+        }
+        Check.expect(start != nil, "the back crest's run right of the tower is drawn")
+        if let s = start {
+            let vis = HeightfieldVisibility(heightfield: h, view: view, margin: scene.margin)
+            func at(_ x: Double) -> P3<WorldSpace> { P3(x, 1.0, h.surfaceHeight(at: P2(x, 1.0))) }
+            let node = (s.x + 0.7) / cell
+            Check.expect(abs(node - node.rounded()) > 1e-3, "and begins between nodes", String(format: "at x = %.4f, node %.3f", s.x, node))
+            Check.expect(!vis.isClear(at(s.x - 1e-4 * cell)) && vis.isClear(at(s.x + 1e-4 * cell)),
+                         "where the crest comes into view, to a ten-thousandth of a cell",
+                         String(format: "x = %.5f: hidden before %@, clear after %@", s.x,
+                                vis.isClear(at(s.x - 1e-4 * cell)) ? "no" : "yes", vis.isClear(at(s.x + 1e-4 * cell)) ? "yes" : "no"))
+            Check.expect(abs(s.z - h.surfaceHeight(at: P2(s.x, s.y))) < 1e-9, "on the crest", String(format: "%.2e under f", h.surfaceHeight(at: P2(s.x, s.y)) - s.z))
+        }
+    }
+
     Check.suite("banded rim: a tower cut at two heights, its rim on f band by band, with the step's top") {
         // 1/(z - 1/2) over Re [-1/2, 3/2], Im [-1, 1]: a tower at 1/2, capped
         // at 2 for Re z < 1/2 and at 4 beyond. The rim is the half circle
