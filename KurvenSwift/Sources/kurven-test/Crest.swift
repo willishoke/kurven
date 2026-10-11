@@ -376,6 +376,57 @@ func crestTests() {
         }
     }
 
+    Check.suite("a chord the refiner cannot place is not drawn") {
+        // exp(1/z) over Re [-1.1, 0.4], Im [0, 0.75], capped at 3, on a grid
+        // of 24: an essential singularity at the origin, on the front edge.
+        // The circles of one phase level crowd into it, so marching squares
+        // joins vertices of different circles, and the phase line along the
+        // real axis jumps from the floor to the cap at the origin. Those
+        // chords used to be drawn as they were: hooks and zigzags beside the
+        // origin, and a line up the cliff.
+        let domain = Domain(real: Interval(lo: -1.1, hi: 0.4), imag: Interval(lo: 0, hi: 0.75))
+        let request = LandscapeRequest(expression: "exp(1/z)", domain: domain, resolution: 24, caps: .uniform(3))
+        let bundle = try NativeLandscape.build(request, refine: true)
+        let cell = 1.5 / 23
+        func f(_ x: Double, _ y: Double) -> Complex { Complex.exp(1 / Complex(x, y)) }
+        var chords = 0, strayed = 0, jumps = 0, worstStray = 0.0
+        for (spec, layer) in zip(bundle.manifest.layers, bundle.layers) where spec.name.hasPrefix("ang") {
+            for i in 0..<layer.paths.count {
+                let p = Array(layer.paths[path: i])
+                for (a, b) in zip(p, p.dropFirst()) {
+                    chords += 1
+                    // the phase along the chord, against the level its far end sits on
+                    let level = f(b.x, b.y).argument
+                    for t in [0.25, 0.5, 0.75] {
+                        var r = f(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y)).argument - level
+                        while r > .pi { r -= 2 * .pi }; while r < -.pi { r += 2 * .pi }
+                        if abs(r) > .pi / 2 { strayed += 1 }
+                        worstStray = max(worstStray, abs(r))
+                    }
+                    // no chord climbs the cliff: a jump in height of more than a cell's worth of slope
+                    if abs(a.z - b.z) > 1.5 { jumps += 1 }
+                }
+            }
+        }
+        Check.expect(chords > 100, "phase chords are drawn beside the singularity", "\(chords) chords")
+        Check.expect(strayed == 0, "and along none of them does the phase stray more than a quarter turn from the level",
+                     String(format: "%d quarter points stray, worst %.2f rad", strayed, worstStray))
+        Check.expect(jumps == 0, "and none climbs the cliff at the origin", "\(jumps) chords rise by more than 1.5")
+        // the rings all pass through the origin and are placed: every ring vertex is on its level
+        var ringVertices = 0, off = 0
+        for (spec, layer) in zip(bundle.manifest.layers, bundle.layers) where spec.name.hasPrefix("mag") {
+            for i in 0..<layer.paths.count {
+                let p = Array(layer.paths[path: i])
+                for v in p where v.x * v.x + v.y * v.y > 1e-12 {
+                    ringVertices += 1
+                    if abs(f(v.x, v.y).magnitude - v.z) > 1e-6 * max(1, v.z) { off += 1 }
+                }
+            }
+        }
+        Check.expect(ringVertices > 100 && off == 0, "every ring vertex off the origin is on its level", "\(off) of \(ringVertices) off")
+        _ = cell
+    }
+
     Check.suite("banded rim: a tower cut at two heights, its rim on f band by band, with the step's top") {
         // 1/(z - 1/2) over Re [-1/2, 3/2], Im [-1, 1]: a tower at 1/2, capped
         // at 2 for Re z < 1/2 and at 4 beyond. The rim is the half circle

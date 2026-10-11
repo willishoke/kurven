@@ -261,12 +261,17 @@ public struct ContourRefiner: Sendable {
             }
             guard loop.count == n else { continue }
             loop.append(loop[0])
-            var refined: [P2<DomainSpace>] = [loop[0]]
+            var refined: [[P2<DomainSpace>]] = [[loop[0]]]
             for (a, b) in zip(loop, loop.dropFirst()) {
                 subdivide(a, b, level: level, g: magnitude, cut: false, depth: 0, into: &refined)
-                refined.append(b)
+                refined[refined.count - 1].append(b)
             }
-            out += clippedToWindow(refined, level: level)
+            if refined.count == 1 {
+                out += clippedToWindow(refined[0], level: level)
+            } else {
+                // Broken where a chord could not be placed: its pieces, open.
+                for piece in refined where piece.count >= 2 { out += clippedToWindow(piece, level: level, closed: false) }
+            }
         }
         return out
     }
@@ -275,7 +280,7 @@ public struct ContourRefiner: Sendable {
     /// it crosses the window's edge, the crossing solved on the edge itself
     /// so that it lies on the level as the grid's own edge vertices do. A
     /// loop wholly inside is returned closed.
-    func clippedToWindow(_ loop: [P2<DomainSpace>], level: Double) -> [[P2<DomainSpace>]] {
+    func clippedToWindow(_ loop: [P2<DomainSpace>], level: Double, closed: Bool = true) -> [[P2<DomainSpace>]] {
         let inside = loop.map { inWindow($0) }
         if inside.allSatisfy({ $0 }) { return [loop] }
         /// The level's crossing of the window's edge between an inside vertex
@@ -307,12 +312,13 @@ public struct ContourRefiner: Sendable {
             }
             return at(0.5 * (slo + shi))
         }
-        // Start the walk at an outside vertex so no run is split in two.
-        let n = loop.count - 1
-        guard n >= 2, let start = inside.firstIndex(of: false) else { return [loop] }
+        // A closed loop: start the walk at an outside vertex so no run is
+        // split in two. An open run is walked from its first vertex.
+        let n = closed ? loop.count - 1 : loop.count
+        guard n >= 2, let start = closed ? inside.firstIndex(of: false) : 0 else { return [loop] }
         var runs: [[P2<DomainSpace>]] = []
         var run: [P2<DomainSpace>] = []
-        for step in 0...n {
+        for step in 0...(closed ? n : n - 1) {
             let k = (start + step) % n
             let v = loop[k]
             if inside[k] {
@@ -338,24 +344,24 @@ public struct ContourRefiner: Sendable {
         let closed = path.first == path.last
         var snapped = path.map { snap($0, level: level, g: g, cut: cut) }
         if closed { snapped[snapped.count - 1] = snapped[0] }
-        var runs: [[P2<DomainSpace>]] = []
-        var out: [P2<DomainSpace>] = []
-        out.reserveCapacity(snapped.count * 2)
+        // The runs: a new one begins at a dropped wrap vertex and wherever a
+        // chord could not be placed on the level set (`subdivide`), so that
+        // nothing is drawn between two vertices the curve does not join.
+        var runs: [[P2<DomainSpace>]] = [[]]
         var previous: P2<DomainSpace>?
         for vertex in snapped {
             guard let vertex else {
-                if out.count >= 2 { runs.append(out) }
-                out = []
+                runs.append([])
                 previous = nil
                 continue
             }
             if let previous {
-                subdivide(previous, vertex, level: level, g: g, cut: cut, depth: 0, into: &out)
+                subdivide(previous, vertex, level: level, g: g, cut: cut, depth: 0, into: &runs)
             }
-            out.append(vertex)
+            runs[runs.count - 1].append(vertex)
             previous = vertex
         }
-        if out.count >= 2 { runs.append(out) }
+        runs = runs.filter { $0.count >= 2 }
         return cut ? runs.map { ended(atZeros: $0, level: level, g: g) } : runs
     }
 
@@ -387,13 +393,15 @@ public struct ContourRefiner: Sendable {
         }
         var out = run
         if let z = zero(for: out[0], other: out[out.count - 1]) {
-            var lead: [P2<DomainSpace>] = []
+            var lead: [[P2<DomainSpace>]] = [[]]
             subdivide(z, out[0], level: level, g: g, cut: true, depth: 0, into: &lead)
-            out = [z] + lead + out
+            // Carried only when the whole chord to the zero could be placed.
+            if lead.count == 1 { out = [z] + lead[0] + out }
         }
         if let z = zero(for: out[out.count - 1], other: out[0]) {
-            subdivide(out[out.count - 1], z, level: level, g: g, cut: true, depth: 0, into: &out)
-            out.append(z)
+            var tail: [[P2<DomainSpace>]] = [[]]
+            subdivide(out[out.count - 1], z, level: level, g: g, cut: true, depth: 0, into: &tail)
+            if tail.count == 1 { out += tail[0]; out.append(z) }
         }
         return out
     }
@@ -571,14 +579,39 @@ public struct ContourRefiner: Sendable {
     /// The estimated distance from the chord `a-b` to the level set, and the
     /// point on the level set nearest the chord's midpoint, when it is worth
     /// inserting.
+    /// The vertices placed between `a` and `b` go on the last run of
+    /// `runs`. A chord that cannot be placed on the level set -- its
+    /// midpoint's value is not finite or, on a phase line, more than a
+    /// quarter turn off the level, so the chord spans a jump of the phase;
+    /// the depth limit is reached with the error still above the tolerance;
+    /// or no point of the level set is found along the chord's normal --
+    /// breaks the run there, so that nothing is drawn between two vertices
+    /// the curve does not join. Beside an essential singularity the grid
+    /// brackets nothing and marching squares joins vertices of different
+    /// branches; those chords used to be drawn as they were, as hooks and
+    /// zigzags. A chord whose midpoint lies on a critical point of the
+    /// field, where the level set crosses itself, has nothing to measure
+    /// by and is kept.
     func subdivide(_ a: P2<DomainSpace>, _ b: P2<DomainSpace>, level: Double,
                    g: @Sendable (Complex) -> Double, cut: Bool, depth: Int,
-                   into out: inout [P2<DomainSpace>]) {
-        guard depth < maxDepth else { return }
+                   into runs: inout [[P2<DomainSpace>]]) {
+        func unplaced() { runs.append([]) }
         let mid = P2<DomainSpace>((a.x + b.x) / 2, (a.y + b.y) / 2)
         let r = residual(g(Complex(mid.x, mid.y)), level: level, cut: cut)
-        guard r.isFinite else { return }
-        if cut && abs(r) > .pi / 2 { return }
+        guard r.isFinite else { return unplaced() }
+        if cut {
+            // A phase level repeats every turn: beside an essential
+            // singularity the circles of one level crowd together, and a
+            // chord from one to the next can have its midpoint on a third.
+            // The phase is read at the quarter points too, and a chord
+            // along which it strays more than a quarter turn from the
+            // level joins vertices the curve does not.
+            for t in [0.25, 0.5, 0.75] {
+                let q = Complex(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y))
+                let rq = residual(g(q), level: level, cut: true)
+                guard rq.isFinite, abs(rq) <= .pi / 2 else { return unplaced() }
+            }
+        }
         let chord = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
         guard chord > 1e-9 * cell else { return }
         let (gx, gy) = gradient(g, at: mid)
@@ -598,6 +631,7 @@ public struct ContourRefiner: Sendable {
             if ua.isFinite, ub.isFinite, um.isFinite { sag = abs(um - 0.5 * (ua + ub)) }
         }
         guard error > tolerance * cell || sag > tolerance * cell else { return }
+        guard depth < maxDepth else { return unplaced() }
         // Solve along the unit normal to the chord, starting from the Newton
         // step, secant thereafter; give up rather than wander further than a
         // chord's length from the midpoint.
@@ -642,9 +676,9 @@ public struct ContourRefiner: Sendable {
         }
         if found == nil, let best, converged(best.q, best.r) { found = best.q }
         guard let point = found else { return }
-        subdivide(a, point, level: level, g: g, cut: cut, depth: depth + 1, into: &out)
-        out.append(point)
-        subdivide(point, b, level: level, g: g, cut: cut, depth: depth + 1, into: &out)
+        subdivide(a, point, level: level, g: g, cut: cut, depth: depth + 1, into: &runs)
+        runs[runs.count - 1].append(point)
+        subdivide(point, b, level: level, g: g, cut: cut, depth: depth + 1, into: &runs)
     }
 
     /// The gradient of g at p, by central differences at a step that is small
