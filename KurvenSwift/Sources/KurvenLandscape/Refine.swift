@@ -797,49 +797,80 @@ public struct ContourRefiner: Sendable {
         }
         guard error > tolerance * cell || sag > tolerance * cell else { return }
         guard depth < maxDepth else { return unplaced() }
-        // Solve along the unit normal to the chord, starting from the Newton
-        // step, secant thereafter; give up rather than wander further than a
-        // chord's length from the midpoint.
+        // Solve along the unit normal to the chord, never further than a
+        // chord's length from the midpoint. Where the level curve crosses
+        // itself at a critical point (|cn| = 1 at 0, |sin| = 1 at π/2,
+        // 1/(z³ - 1) = 1 at 0 with f'' = 0 too) the residual along the
+        // normal has a multiple root, which an iteration that does not
+        // bracket creeps toward linearly and may stop short of.
         let nx = -(b.y - a.y) / chord, ny = (b.x - a.x) / chord
         let gn = gx * nx + gy * ny
         guard abs(gn) > 1e-3 * slope else { return }
-        var t0 = 0.0, r0 = r
-        var t1 = -r / gn
+        func along(_ t: Double) -> P2<DomainSpace> { P2(mid.x + t * nx, mid.y + t * ny) }
+        func res(_ t: Double) -> Double {
+            let q = along(t)
+            return residual(g(Complex(q.x, q.y)), level: level, cut: cut)
+        }
+        // So first look for a sign change: step toward the Newton step,
+        // doubling until the residual changes sign or the step reaches the
+        // chord's length.
+        var reach = abs(r / gn)
+        let toward: Double = r / gn > 0 ? -1 : 1
+        var end: (t: Double, r: Double)?
+        while true {
+            let t = toward * min(reach, chord)
+            let rt = res(t)
+            guard rt.isFinite, !(cut && abs(rt) > .pi / 2) else { break }
+            if rt == 0 || rt.sign != r.sign { end = (t, rt); break }
+            guard reach < chord else { break }
+            reach *= 2
+        }
         var found: P2<DomainSpace>?
-        var best: (q: P2<DomainSpace>, r: Double)?
-        // Accept only a converged point: an unconverged one would be a vertex
-        // off the level set, which is what this is here to remove. Converged
-        // means within a hundredth of the tolerance by the estimate the
-        // measurement uses, residual over the gradient at the point itself.
-        // A residual at rounding is not enough on its own: where the level
-        // set crosses itself at a critical point (|cn| = 1 at 0, |sin| = 1 at
-        // π/2, 1/(z³ - 1) = 1 at 0 with f'' = 0 too) the residual along the
-        // normal has a multiple root, so it is tiny well before the point is
-        // close, and the secant converges only linearly, so it may never
-        // reach rounding at all. The gradient is the part that shrinks
-        // toward a saddle, and the estimate knows it.
-        func converged(_ q: P2<DomainSpace>, _ r: Double) -> Bool {
-            let (gx, gy) = gradient(g, at: q)
-            let s = (gx * gx + gy * gy).squareRoot()
-            return s > 0 && s.isFinite && abs(r) / s <= 1e-2 * tolerance * cell
-        }
-        for _ in 0..<24 {
-            if abs(t1) > chord { break }
-            let q = P2<DomainSpace>(mid.x + t1 * nx, mid.y + t1 * ny)
-            let r1 = residual(g(Complex(q.x, q.y)), level: level, cut: cut)
-            guard r1.isFinite, !(cut && abs(r1) > .pi / 2) else { break }
-            if best == nil || abs(r1) < abs(best!.r) { best = (q, r1) }
-            let stalled = abs(t1 - t0) < 1e-10 * cell
-            if abs(r1) <= 1e-13 * max(abs(level), 1) || stalled {
-                if converged(q, r1) { found = q }
-                if found != nil || stalled { break }
+        if let end {
+            // A bracket, and Brent's method within it, whose multiplicity
+            // bisection does not care about. The bracket is the certificate:
+            // the level curve crosses the normal within xtol of the point.
+            // The residual over the gradient could not say so at a saddle,
+            // where the gradient vanishes at the very point sought. A phase
+            // residual also changes sign across a wrap, so a point whose
+            // residual is near a half turn is refused.
+            if let t = Root.brent(res, 0, end.t, fa: r, fb: end.r, xtol: 1e-10 * cell),
+               !(cut && abs(res(t)) > .pi / 2) {
+                found = along(t)
             }
-            let denominator = r1 - r0
-            guard denominator != 0 else { break }
-            let t2 = t1 - r1 * (t1 - t0) / denominator
-            t0 = t1; r0 = r1; t1 = t2
+        } else {
+            // No sign change: the residual only touches zero, as it does
+            // along a line through a simple saddle (|cn| - 1 ~ y²/2 up the
+            // imaginary axis), and there is nothing to bracket. Newton's
+            // step, then the secant, accepting only a converged point: within
+            // a hundredth of the tolerance by the estimate the measurement
+            // uses, residual over the gradient at the point itself.
+            func converged(_ q: P2<DomainSpace>, _ r: Double) -> Bool {
+                let (gx, gy) = gradient(g, at: q)
+                let s = (gx * gx + gy * gy).squareRoot()
+                return s > 0 && s.isFinite && abs(r) / s <= 1e-2 * tolerance * cell
+            }
+            var t0 = 0.0, r0 = r
+            var t1 = -r / gn
+            var best: (q: P2<DomainSpace>, r: Double)?
+            for _ in 0..<24 {
+                if abs(t1) > chord { break }
+                let q = along(t1)
+                let r1 = res(t1)
+                guard r1.isFinite, !(cut && abs(r1) > .pi / 2) else { break }
+                if best == nil || abs(r1) < abs(best!.r) { best = (q, r1) }
+                let stalled = abs(t1 - t0) < 1e-10 * cell
+                if abs(r1) <= 1e-13 * max(abs(level), 1) || stalled {
+                    if converged(q, r1) { found = q }
+                    if found != nil || stalled { break }
+                }
+                let denominator = r1 - r0
+                guard denominator != 0 else { break }
+                let t2 = t1 - r1 * (t1 - t0) / denominator
+                t0 = t1; r0 = r1; t1 = t2
+            }
+            if found == nil, let best, converged(best.q, best.r) { found = best.q }
         }
-        if found == nil, let best, converged(best.q, best.r) { found = best.q }
         guard let point = found else { return }
         subdivide(a, point, level: level, g: g, cut: cut, depth: depth + 1, into: &runs)
         runs[runs.count - 1].append(point)
