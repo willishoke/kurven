@@ -66,8 +66,11 @@ struct Args {
         // window is written and its left end is usually negative. Without this
         // the token falls through to a positional, and `landscape --re -6,8`
         // sampled rgamma over the wrong window while reporting a parse error
-        // about the comma in an expression nobody typed.
-        return token.split(separator: ",").allSatisfy { Double($0) != nil }
+        // about the comma in an expression nobody typed. And a list of
+        // number pairs, `--bands -3.5:2.5,0.5:5.5`, for the same reason.
+        return token.split(separator: ",").allSatisfy {
+            $0.split(separator: ":", omittingEmptySubsequences: false).allSatisfy { Double($0) != nil }
+        }
     }
 
     func string(_ name: String) throws -> String {
@@ -199,12 +202,18 @@ usage: kurven-cli <command> [options]
         and kurven-test holds it to the Python side's.
 
   landscape [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI]
-            [--res N] [--cap Z] [--spacing S] [--service] -o out.kurven
+            [--res N] [--cap Z | --bands BELOW:CAP,... --beyond Z]
+            [--spacing S] [--service] -o out.kurven
         Sample a function over a rectangle and write its bundle -- natively,
         with no Python in the loop, or by the service with --service, which
         is the comparison path. Every layer is a description, so the result's
         cap, levels and hatch spacing are editable afterwards -- in the app,
         or by `bake --levels`.
+        --bands truncates at a height per band of Re z, as the gamma plate
+        does: each BELOW:CAP is the height where Re z < BELOW, the first band
+        that matches wins, and --beyond is the height past the last. The
+        contour levels are chosen up to the highest of them, so set the
+        truncation here rather than in the manifest afterwards.
 
   refine [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI] [--res N]
          [--tolerance CELLS] [--depth N]
@@ -1093,6 +1102,25 @@ func interval(_ text: String, _ what: String) throws -> Interval {
     return Interval(lo: lo, hi: hi)
 }
 
+/// `--bands BELOW:CAP,... --beyond Z` as caps: a height per band of Re z.
+func realBands(_ text: String, beyond: String?) throws -> Caps {
+    var bands: [RealBand] = []
+    for part in text.split(separator: ",") {
+        let pair = part.split(separator: ":").map { Double($0.trimmingCharacters(in: .whitespaces)) }
+        guard pair.count == 2, let below = pair[0], let cap = pair[1], cap > 0 else {
+            throw CLIError("--bands wants BELOW:CAP,... with each CAP > 0, got '\(part)'")
+        }
+        bands.append(RealBand(below: below, cap: cap))
+    }
+    guard !bands.isEmpty, zip(bands, bands.dropFirst()).allSatisfy({ $0.below < $1.below }) else {
+        throw CLIError("--bands wants its bands in increasing BELOW, got '\(text)'")
+    }
+    guard let beyond, let z = Double(beyond), z > 0 else {
+        throw CLIError("--bands needs --beyond Z, the height past the last band")
+    }
+    return .realBands(bands, beyond: z)
+}
+
 func landscapeCommand(_ args: Args) throws {
     let output = URL(fileURLWithPath: try args.string("output"))
     let catalog = Catalog.native
@@ -1116,6 +1144,7 @@ func landscapeCommand(_ args: Args) throws {
     if let im = args.flags["im"] { request.domain.imag = try interval(im, "im") }
     if let res = args.flags["res"], let n = Int(res) { request.resolution = n }
     if let cap = args.flags["cap"], let z = Double(cap) { request.caps = .uniform(z) }
+    if let bands = args.flags["bands"] { request.caps = try realBands(bands, beyond: args.flags["beyond"]) }
     if args.switches.contains("no-cap") { request.caps = Caps.none }
     if let s = args.flags["spacing"], let v = Double(s) { request.spacing = v }
 
