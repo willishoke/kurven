@@ -30,17 +30,24 @@ def run(*args):
     return r.stdout
 
 
-def landscape(work, name, expression, re_, im, res, cap, cameras, caps=None):
-    """Sample `expression` and give the bundle one preset per camera."""
+def landscape(work, name, expression, re_, im, res, cap, cameras):
+    """Sample `expression` and give the bundle one preset per camera.
+
+    `cap` is the truncation height, or `(bands, beyond)` for a height per band
+    of Re z: `bands` as (below, height) pairs. It is set when the function is
+    sampled, because the contour levels are chosen then, up to the highest."""
     bundle = work / f"{name}.kurven"
+    if isinstance(cap, tuple):
+        bands, beyond = cap
+        truncation = ["--bands", ",".join(f"{b}:{h}" for b, h in bands), "--beyond", beyond]
+    else:
+        truncation = ["--cap", cap]
     run("landscape", expression, "--re", f"{re_[0]},{re_[1]}", "--im", f"{im[0]},{im[1]}",
-        "--res", res, "--cap", cap, "-o", bundle)
+        "--res", res, *truncation, "-o", bundle)
     path = bundle / "manifest.json"
     m = json.loads(path.read_text())
     base = m["presets"][0]
     m["presets"] = [dict(base, name=key, plate=dict(base["plate"], **plate)) for key, plate in cameras.items()]
-    if caps:
-        m["caps"] = caps
     path.write_text(json.dumps(m, indent=1))
     return bundle
 
@@ -103,11 +110,9 @@ def main():
     try:
         # Γ, as the published plate frames it: the strip |Im z| ≤ 2.5, a cap
         # per pole band, and that plate's camera.
-        gamma = landscape(work, "gamma", "gamma(z)", (-4.5, 4.5), (-2.5, 2.5), 1000, 5,
-                          {"plate": dict(shear=-0.5, xAngle=-55.0, zAngle=-90.0, flipX=False)},
-                          caps={"kind": "realBands", "beyond": 4.0, "bands": [
-                              {"below": -3.5, "cap": 2.5}, {"below": -2.5, "cap": 3.0},
-                              {"below": -1.5, "cap": 4.0}, {"below": 0.5, "cap": 5.5}]})
+        gamma = landscape(work, "gamma", "gamma(z)", (-4.5, 4.5), (-2.5, 2.5), 1000,
+                          ([(-3.5, 2.5), (-2.5, 3.0), (-1.5, 4.0), (0.5, 5.5)], 4.0),
+                          {"plate": dict(shear=-0.5, xAngle=-55.0, zAngle=-90.0, flipX=False)})
         (OUT / "gamma.svg").write_text(on_paper(inked(bake(gamma, "plate", work / "gamma.svg"), README_PX)))
 
         # cn(z, 0.64) over the elliptic plate's block of quarter periods,
