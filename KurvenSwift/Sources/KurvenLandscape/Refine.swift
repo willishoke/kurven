@@ -15,8 +15,7 @@ import KurvenMath
 ///
 ///  1. **Snap.** Every vertex lies on a grid edge whose two samples bracket the
 ///     level. A one-dimensional root find along that edge, against f itself,
-///     moves the vertex to the exact crossing. Regula falsi with the Illinois
-///     modification, half a dozen evaluations.
+///     moves the vertex to the exact crossing, by Brent's method (`Root.brent`).
 ///  2. **Subdivide.** Between two snapped vertices the contour may curve away
 ///     from the chord. The residual at the chord's midpoint, divided by the
 ///     gradient there, estimates how far off the chord is; where that exceeds
@@ -693,46 +692,32 @@ public struct ContourRefiner: Sendable {
             return abs(ra) <= abs(rb) ? a : b
         }
         let (a1, b1) = (edge.a, edge.b)
-        var ga = edge.ra, gb = edge.rb
-        if ga == 0 { return a1 }
-        if gb == 0 { return b1 }
-        // Illinois regula falsi on t in [0, 1] along the edge, which cannot
-        // fail to converge on a bracketed root; sixty iterations is far more
-        // than it ever takes -- except against a bracket like exp(1/z)'s
-        // beside its essential singularity, 1e-109 at one end and the 1e12
-        // cap at the other, where every secant step lands beside the small
-        // end and sixty halvings of 1e12 still do not reach the crossing.
-        // Two steps in a row on the same side and the next is a bisection,
-        // which halves the bracket whatever the values are.
-        var ta = 0.0, tb = 1.0
-        var side = 0, stuck = 0
-        var t = (p.x - a1.x) * (b1.x - a1.x) + (p.y - a1.y) * (b1.y - a1.y)
-        t /= max((b1.x - a1.x) * (b1.x - a1.x) + (b1.y - a1.y) * (b1.y - a1.y), .leastNormalMagnitude)
-        t = min(max(t, 0), 1)
-        var q = p
-        for _ in 0..<60 {
-            q = P2<DomainSpace>(a1.x + t * (b1.x - a1.x), a1.y + t * (b1.y - a1.y))
-            let gq = residual(g(Complex(q.x, q.y)), level: level, cut: cut)
-            if !gq.isFinite { return p }
-            if abs(gq) <= 1e-13 * max(abs(level), 1) { return q }
-            if gq.sign == ga.sign {
-                ta = t; ga = gq
-                if side == -1 { gb /= 2; stuck += 1 } else { stuck = 0 }
-                side = -1
-            } else {
-                tb = t; gb = gq
-                if side == 1 { ga /= 2; stuck += 1 } else { stuck = 0 }
-                side = 1
-            }
-            if tb - ta < 1e-12 { return q }
-            if stuck >= 2 {
-                t = (ta + tb) / 2; stuck = 0
-            } else {
-                t = tb - gb * (tb - ta) / (gb - ga)
-                if !(t > ta && t < tb) { t = (ta + tb) / 2 }
-            }
+        // Brent's method on t in [0, 1] along the edge. A bracket like
+        // exp(1/z)'s beside its essential singularity, 1e-109 at one end and
+        // the 1e12 cap at the other, defeats interpolation -- every step lands
+        // beside the small end -- and there it bisects.
+        func at(_ t: Double) -> P2<DomainSpace> {
+            P2(a1.x + t * (b1.x - a1.x), a1.y + t * (b1.y - a1.y))
         }
-        return q
+        func r(_ t: Double) -> Double {
+            let q = at(t)
+            return residual(g(Complex(q.x, q.y)), level: level, cut: cut)
+        }
+        // An edge can cross the level more than once. The crossing meant is
+        // the one marching squares put the vertex beside, so the bracket is
+        // first split at the vertex, keeping the half that changes sign.
+        var (ta, tb, ra, rb) = (0.0, 1.0, edge.ra, edge.rb)
+        var t0 = (p.x - a1.x) * (b1.x - a1.x) + (p.y - a1.y) * (b1.y - a1.y)
+        t0 /= max((b1.x - a1.x) * (b1.x - a1.x) + (b1.y - a1.y) * (b1.y - a1.y), .leastNormalMagnitude)
+        if t0 > 0, t0 < 1, ra != 0, rb != 0 {
+            let r0 = r(t0)
+            guard r0.isFinite else { return p }
+            if r0 == 0 { return at(t0) }
+            if r0.sign == ra.sign { (ta, ra) = (t0, r0) } else { (tb, rb) = (t0, r0) }
+        }
+        guard let t = Root.brent(r, ta, tb, fa: ra, fb: rb,
+                                 xtol: 1e-12, ftol: 1e-13 * max(abs(level), 1)) else { return p }
+        return at(t)
     }
 
     /// The estimated distance from the chord `a-b` to the level set, and the

@@ -268,6 +268,34 @@ func firstDifference(_ a: String, _ b: String) -> String {
 /// within tolerance of it, the phase wraps are gone, and a restyle keeps all
 /// of that.
 func refinementTests() {
+    Check.suite("root: Brent's method converges where bisection would, and faster") {
+        var calls = 0
+        func counted(_ f: @escaping (Double) -> Double) -> (Double) -> Double {
+            { x in calls += 1; return f(x) }
+        }
+        // Dottie's number: bisection needs forty halvings for 1e-12.
+        let dottie = 0.7390851332151607
+        let x = Root.brent(counted { cos($0) - $0 }, 0, 1, fa: 1, fb: cos(1) - 1, xtol: 1e-12)
+        Check.expect(x.map { abs($0 - dottie) <= 1e-12 } ?? false && calls <= 10,
+                     "cos x = x, to 1e-12 in a handful of evaluations",
+                     "\(x ?? .nan) after \(calls)")
+        // A bracket like exp(1/z)'s beside its essential singularity: -1 at
+        // one end, 1e76 at the other, where interpolation lands beside the
+        // small end every time and only bisection makes progress.
+        calls = 0
+        let steep: (Double) -> Double = { exp(250 * ($0 - 0.3)) - 1 }
+        let y = Root.brent(counted(steep), 0, 1, fa: steep(0), fb: steep(1), xtol: 1e-12)
+        Check.expect(y.map { abs($0 - 0.3) <= 1e-11 } ?? false && calls <= 120,
+                     "a bracket of -1 against 1e76 still converges",
+                     "\(y ?? .nan) after \(calls)")
+        Check.expect(Root.brent({ $0 }, 0, 1, fa: 0, fb: 1, xtol: 1e-12) == 0,
+                     "a zero at an end is that end")
+        Check.expect(Root.brent({ $0 * $0 + 1 }, -1, 1, fa: 2, fb: 2, xtol: 1e-12) == nil,
+                     "ends of one sign bracket nothing")
+        Check.expect(Root.brent({ $0 < 0.5 ? -1 : .nan }, 0, 1, fa: -1, fb: 1, xtol: 1e-12) == nil,
+                     "a value that is not finite ends the search")
+    }
+
     Check.suite("refine: contours placed by the function") {
         let request = LandscapeRequest(preset: Catalog.native.preset("gamma")!, resolution: 300)
         let (bundle, reports) = try NativeLandscape.benchmarkRefinement(request)
