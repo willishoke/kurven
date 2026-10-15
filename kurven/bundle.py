@@ -678,10 +678,11 @@ class LayerWallOutline(LayerSource):
 class LayerCapHatch(LayerSource):
     """Parallel strokes across the truncated tops, at the cap.
 
-    The strokes run parallel to `axis` and lie on the lines where the *other*
-    coordinate is a whole multiple of `spacing` -- anchored to the plane rather
-    than to the domain, so dragging the domain slides the landscape under a
-    fixed ruling instead of re-ruling it. Along a line, a stroke covers exactly
+    The strokes run parallel to `axis` and divide the domain's extent in the
+    *other* coordinate evenly, `spacing` rounded to the nearest whole count of
+    gaps the way `LayerWallHatch` divides an edge, so the ruling meets the
+    top's edges with whole gaps and lines up with the walls' strokes where it
+    reaches them. Along a line, a stroke covers exactly
     the stretch where |f| is at or above the cap: the excess |f| - cap is sampled
     at every grid column the line crosses and its sign changes are solved
     linearly, which puts each stroke's ends on the same rim `LayerCapOutline`

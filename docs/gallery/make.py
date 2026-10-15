@@ -8,6 +8,11 @@ for gamma, the published plate's caps, then baked (`kurven-cli bake`, which
 places the contours on f and judges every line exactly). Standard library
 only: nothing here computes a line, it only sets up the bundles and lays the
 results out. A white ground is added so the plates read in a dark theme.
+
+The bake keeps every vertex the refiner placed, about two to the pixel at
+README width. Safari strokes chains that fine with a visible wobble, so each
+polyline is thinned here to the vertices it needs to stay within
+`SIMPLIFY_PX` of itself, which leaves segments a few pixels long.
 """
 import json, math, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
@@ -17,10 +22,18 @@ CLI = ROOT / "KurvenSwift/.build/release/kurven-cli"
 OUT = Path(__file__).resolve().parent
 PAPER = "#ffffff"
 # The bake's widths are for a sixteen-inch page; a README column is 880 px.
-# Scale every stroke alike so the heaviest is about a pixel there, keeping
-# the plate's hierarchy of major over minor lines.
+# Scale every stroke alike so the heaviest is a fine line there, keeping the
+# plate's hierarchy of major over minor lines.
 README_PX = 880
-HEAVIEST_PX = 1.1
+HEAVIEST_PX = 0.5
+# The bake's viewBox is tight to the ink; a plate sits on its page with this
+# much paper on every side, as a fraction of the drawing's width.
+MARGIN = 0.1
+# The landscape rules the cap and walls at about seventy strokes along the
+# window's longer side; the plates rule them this much closer.
+HATCH = 0.75
+# How far, in README pixels, a thinned polyline may stray from the bake's.
+SIMPLIFY_PX = 0.05
 
 
 def run(*args):
@@ -48,6 +61,9 @@ def landscape(work, name, expression, re_, im, res, cap, cameras):
     m = json.loads(path.read_text())
     base = m["presets"][0]
     m["presets"] = [dict(base, name=key, plate=dict(base["plate"], **plate)) for key, plate in cameras.items()]
+    for layer in m["layers"]:
+        if layer["source"]["kind"] in ("capHatch", "wallHatch"):
+            layer["source"]["spacing"] *= HATCH
     path.write_text(json.dumps(m, indent=1))
     return bundle
 
@@ -55,6 +71,38 @@ def landscape(work, name, expression, re_, im, res, cap, cameras):
 def bake(bundle, preset, svg):
     run("bake", bundle, "--preset", preset, "-o", svg)
     return svg.read_text()
+
+
+def thinned(points, tol):
+    """`points` reduced by Douglas–Peucker to those within `tol` of the line."""
+    keep, stack = {0, len(points) - 1}, [(0, len(points) - 1)]
+    while stack:
+        i, j = stack.pop()
+        (ax, ay), (bx, by) = points[i], points[j]
+        dx, dy = bx - ax, by - ay
+        length = math.hypot(dx, dy)
+        far, k = -1.0, None
+        for n in range(i + 1, j):
+            px, py = points[n][0] - ax, points[n][1] - ay
+            d = abs(px * dy - py * dx) / length if length > 1e-12 else math.hypot(px, py)
+            if d > far:
+                far, k = d, n
+        if far > tol:
+            keep.add(k)
+            stack += [(i, k), (k, j)]
+    return [points[n] for n in sorted(keep)]
+
+
+def simplified(svg, px_across):
+    """`svg` with every polyline thinned to within `SIMPLIFY_PX` when its
+    viewBox is shown `px_across` pixels wide."""
+    across = float(re.search(r'viewBox="([^"]+)"', svg).group(1).split()[2])
+    tol = SIMPLIFY_PX * across / px_across
+
+    def thin(m):
+        points = [tuple(map(float, p.split(","))) for p in m.group(1).split()]
+        return 'points="' + " ".join(f"{x:.5f},{y:.5f}" for x, y in thinned(points, tol)) + '"'
+    return re.sub(r'points="([^"]+)"', thin, svg)
 
 
 def inked(svg, px_across):
@@ -67,14 +115,19 @@ def inked(svg, px_across):
 
 
 def on_paper(svg):
-    """The bake's SVG with a ground under it."""
-    vb = re.search(r'viewBox="([^"]+)"', svg).group(1)
-    x, y, w, h = vb.split()
-    rect = f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{PAPER}"/>'
+    """The bake's SVG with `MARGIN` of paper round the drawing and a ground
+    under it."""
+    x, y, w, h = map(float, re.search(r'viewBox="([^"]+)"', svg).group(1).split())
+    pad = MARGIN * w
+    x, y, w, h = x - pad, y - pad, w + 2 * pad, h + 2 * pad
+    px = float(re.search(r'<svg[^>]*\swidth="([0-9.]+)"', svg).group(1))
+    svg = re.sub(r'viewBox="[^"]+"', f'viewBox="{x:.4f} {y:.4f} {w:.4f} {h:.4f}"', svg, count=1)
+    svg = re.sub(r'(<svg[^>]*\s)height="[0-9.]+"', rf'\g<1>height="{px * h / w:.3f}"', svg, count=1)
+    rect = f'<rect x="{x:.4f}" y="{y:.4f}" width="{w:.4f}" height="{h:.4f}" fill="{PAPER}"/>'
     return re.sub(r"(<svg[^>]*>)", r"\1" + rect, svg, count=1)
 
 
-def grid(svgs, cols, cell=1000, gap=0.04):
+def grid(svgs, cols, cell=1000, gap=2 * MARGIN):
     """Tiles at one scale: each bake's drawing centred in a square cell whose
     side is the largest extent among them."""
     parts = []
@@ -83,7 +136,8 @@ def grid(svgs, cols, cell=1000, gap=0.04):
         body = re.search(r"<svg[^>]*>(.*)</svg>", s, re.S).group(1)
         parts.append(((x + w / 2, y + h / 2), max(w, h), body))
     side = max(p[1] for p in parts) * (1 + gap)
-    parts = [(c, e, inked(f'<svg viewBox="0 0 {side} {side}">{b}</svg>', README_PX / cols)[len(f'<svg viewBox="0 0 {side} {side}">'):-len("</svg>")])
+    tile = f'<svg viewBox="0 0 {side} {side}">'
+    parts = [(c, e, simplified(inked(tile + b + "</svg>", README_PX / cols), README_PX / cols)[len(tile):-len("</svg>")])
              for c, e, b in parts]
     rows = math.ceil(len(parts) / cols)
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {cols * cell} {rows * cell}" '
@@ -113,7 +167,7 @@ def main():
         gamma = landscape(work, "gamma", "gamma(z)", (-4.5, 4.5), (-2.5, 2.5), 1000,
                           ([(-3.5, 2.5), (-2.5, 3.0), (-1.5, 4.0), (0.5, 5.5)], 4.0),
                           {"plate": dict(shear=-0.5, xAngle=-55.0, zAngle=-90.0, flipX=False)})
-        (OUT / "gamma.svg").write_text(on_paper(inked(bake(gamma, "plate", work / "gamma.svg"), README_PX)))
+        (OUT / "gamma.svg").write_text(simplified(inked(on_paper(bake(gamma, "plate", work / "gamma.svg")), README_PX), README_PX))
 
         # cn(z, 0.64) over the elliptic plate's block of quarter periods,
         # [−K, 5K] × [0, 3K′], with that plate's camera.
@@ -122,7 +176,7 @@ def main():
         Kp = math.pi / (2 * agm(1, math.sqrt(m)))
         cn = landscape(work, "cn", f"cn(z, {m})", (-K, 5 * K), (0, 3 * Kp), 1200, 4,
                        {"plate": dict(shear=0.51, xAngle=-63.0, zAngle=-90.0, flipX=True)})
-        (OUT / "cn.svg").write_text(on_paper(inked(bake(cn, "plate", work / "cn.svg"), README_PX)))
+        (OUT / "cn.svg").write_text(simplified(inked(on_paper(bake(cn, "plate", work / "cn.svg")), README_PX), README_PX))
 
         # 1/(z³ − 1) from four oblique corners: the front face head-on from
         # either side (turn ±90°), the depth receding right or left (shear ±½).

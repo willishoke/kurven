@@ -732,6 +732,54 @@ func hatchTests() {
         }
     }
 
+    // What the ruling is for, held to arithmetic rather than to Python: the
+    // top's strokes split its width into equal whole gaps, and every one of
+    // them stands where a wall across it stands a stroke, so the ruling turns
+    // the corner instead of missing it. 0.3 does not divide the fixture's
+    // width, which is the case the rule exists for.
+    Check.suite("hatch: a top's ruling divides its width and meets the walls") {
+        let caps = try index.value("caps", "hatch").object("hatch.caps")
+        let surface = Surface(height: grid, phase: nil,
+                              caps: try Caps(json: caps.value("uniform", "hatch.caps")))
+        let context = Surface.HatchContext(perimeter: perimeter)
+        let spacing = 0.3
+        let across = grid.domain.imag
+        let width = across.hi - across.lo
+        let gaps = Double(Int((width / spacing + 0.5).rounded(.down)))
+        guard let top = surface.hatch(.capHatch(axis: .real, spacing: spacing, tiled: false),
+                                      in: context) else {
+            Check.expect(false, "the cap hatch derives")
+            return
+        }
+        let rows = Set(top.paths.compactMap { $0.first?.y })
+        Check.expect(!rows.isEmpty && width / spacing != gaps,
+                     "the top is ruled, at a spacing that does not divide it",
+                     "\(rows.count) rows, \(width / spacing) spacings across")
+        let offGrid = rows.map { c -> Double in
+            let k = (c - across.lo) / width * gaps
+            return abs(k - k.rounded())
+        }.max() ?? .infinity
+        Check.expect(offGrid < 1e-9, "every row stands on a whole gap of width / \(Int(gaps))",
+                     "worst \(offGrid) of a gap")
+
+        let crossing = perimeter.edges.indices.filter {
+            perimeter.edges[$0].start.x == perimeter.edges[$0].end.x
+        }
+        for i in crossing {
+            guard let wall = surface.hatch(.wallHatch(edges: [i], spacing: spacing, pitch: 0.5,
+                                                      trim: true, base: 0, topOffset: 0),
+                                           in: context) else {
+                Check.expect(false, "the wall on edge \(i) derives")
+                continue
+            }
+            let posts = wall.paths.compactMap { $0.first?.y }
+            let missed = rows.map { c in posts.map { abs($0 - c) }.min() ?? .infinity }.max() ?? 0
+            Check.expect(posts.count == Int(gaps) - 1 && missed < 1e-12,
+                         "the wall on edge \(i) stands a stroke under every row",
+                         "\(posts.count) strokes, worst miss \(missed)")
+        }
+    }
+
     // The rule for choosing contour levels under a cap lives on both sides:
     // Python picks them when it builds a landscape, and the app picks them
     // again whenever the cap slider moves, because a level list is absolute and

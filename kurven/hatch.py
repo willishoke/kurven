@@ -293,14 +293,14 @@ def cap_hatch(source, domain, shape, caps, magnitude):
     spacing = float(source.spacing)
     if not np.isfinite(spacing) or spacing <= 0:
         return out
-    # Anchored to whole multiples of the spacing rather than to the domain, so
-    # the ruling stays put when the domain moves under it.
-    first = int(np.ceil(across_interval.lo / spacing))
-    last = int(np.floor(across_interval.hi / spacing))
-    for k in range(first, last + 1):
-        c = k * spacing
-        if not (across_interval.lo < c < across_interval.hi):
-            continue
+    # Divided across the domain the way `wall_hatch` divides an edge: the
+    # spacing asks for a count and the strokes are spread to fit it, so the
+    # ruling meets the top's edges with whole gaps and each stroke stands where
+    # the walls across it stand theirs.
+    lo, hi = across_interval.lo, across_interval.hi
+    n = _stroke_count(hi - lo, spacing)
+    for k in range(1, max(n - 1, 1)):
+        c = lo + (hi - lo) * k / (n - 1)
         # The cap varies with Re and with nothing else. A line along the real
         # axis therefore crosses the bands and is solved piece by piece; a line
         # along the imaginary axis stays in one band for its whole length, and
