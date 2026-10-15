@@ -463,15 +463,14 @@ extension Surface {
         }
 
         var out: [[P3<WorldSpace>]] = []
-        // Anchored to whole multiples of the spacing rather than to the domain,
-        // so dragging the domain slides the landscape under a fixed ruling
-        // instead of re-ruling it.
-        let first = Int((across.lo / spacing).rounded(.up))
-        let last = Int((across.hi / spacing).rounded(.down))
-        guard first <= last else { return out }
-        for k in first...last {
-            let c = Double(k) * spacing
-            guard c > across.lo, c < across.hi else { continue }
+        // Divided across the domain the way `wallHatch` divides an edge: the
+        // spacing asks for a count, and the strokes are spread to fit it. The
+        // ruling then meets the top's edges with whole gaps, and each stroke
+        // stands where the walls that run across it stand theirs, so it turns
+        // the corner down the wall instead of missing it.
+        let n = Surface.strokeCount(length: across.hi - across.lo, spacing: spacing)
+        for k in 1..<max(n - 1, 1) {
+            let c = across.lo + (across.hi - across.lo) * Double(k) / Double(n - 1)
             // The cap varies with Re and with nothing else: a line along the
             // real axis crosses the bands and is solved piece by piece, and one
             // along the imaginary axis stays in a single band for its length.

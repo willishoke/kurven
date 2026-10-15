@@ -103,8 +103,8 @@ struct Inspector: View {
                 // A hatching carries its spacing the way a contour family
                 // carries its levels, and for the same reason: it is a
                 // description, so the number in it is a control.
-                if let spacing = document.spacing(ofLayer: index) {
-                    spacingSlider(index: index, spacing: spacing)
+                if let count = document.hatchCount(ofLayer: index) {
+                    strokeSlider(index: index, count: count)
                 }
                 if case .capHatch(let axis, _, _) = layer.spec.source {
                     axisPicker(axis)
@@ -131,19 +131,21 @@ struct Inspector: View {
         .padding(.leading, 20)
     }
 
-    /// World units between hatch strokes. Restyling, not resampling: the
-    /// strokes are re-derived from grids that are already here, so this redraws
-    /// within a frame however large the landscape is.
+    /// Hatch strokes along the domain's longer side, in whole steps: each face
+    /// divides itself evenly, so a ruling is a count, and a drag steps through
+    /// counts rather than sliding a ruling past the edges. Restyling, not
+    /// resampling: the strokes are re-derived from grids that are already
+    /// here, so this redraws within a frame however large the landscape is.
     @ViewBuilder
-    private func spacingSlider(index: Int, spacing: Double) -> some View {
-        let live = Binding(get: { spacing }, set: {
-            document.setSpacing($0, ofLayer: index)
+    private func strokeSlider(index: Int, count: Int) -> some View {
+        let live = Binding(get: { Double(count) }, set: {
+            document.setHatchCount(Int($0.rounded()), ofLayer: index)
         })
         HStack(spacing: 6) {
-            Text("spacing").font(.caption).foregroundStyle(.secondary)
-            Slider(value: live, in: max(spacing / 20, 0.002)...max(spacing * 8, 0.05))
-            Text(String(format: "%.3g", spacing))
-                .font(.caption).monospacedDigit().frame(width: 34, alignment: .trailing)
+            Text("strokes").font(.caption).foregroundStyle(.secondary)
+            Slider(value: live, in: 2...400, step: 1)
+            Text("\(count)")
+                .font(.caption).monospacedDigit().frame(width: 28, alignment: .trailing)
         }
         .padding(.leading, 20)
     }

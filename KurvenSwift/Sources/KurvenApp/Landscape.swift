@@ -218,6 +218,30 @@ extension Document {
         }
     }
 
+    /// How many gaps a hatching layer rules along the domain's longer side,
+    /// the side `LandscapeStyle.hatchSpacing` counts its seventy strokes on.
+    ///
+    /// Every face rounds its own count from the spacing and spreads its strokes
+    /// to fit, so the ruling a person sees is a count, not a length. Setting
+    /// the spacing from a whole count makes that count exact on the longer
+    /// faces and the nearest whole one on the others.
+    func hatchCount(ofLayer index: Int) -> Int? {
+        guard let spacing = spacing(ofLayer: index), let reach = hatchReach,
+              spacing > 0 else { return nil }
+        return max(1, Int((reach / spacing).rounded()))
+    }
+
+    func setHatchCount(_ count: Int, ofLayer index: Int) {
+        guard let reach = hatchReach, count > 0 else { return }
+        setSpacing(reach / Double(count), ofLayer: index)
+    }
+
+    private var hatchReach: Double? {
+        guard let domain = bundle?.manifest.domain else { return nil }
+        let reach = max(abs(domain.real.length), abs(domain.imag.length))
+        return reach > 0 ? reach : nil
+    }
+
     func setSpacing(_ value: Double, ofLayer index: Int) {
         restyle { manifest in
             guard index < manifest.layers.count else { return }

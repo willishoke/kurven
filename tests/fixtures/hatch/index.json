@@ -95,7 +95,7 @@
    "caps": "uniform",
    "name": "uniform_cap_hatch_imag",
    "offsets": "uniform_cap_hatch_imag.idx.npy",
-   "paths": 4,
+   "paths": 3,
    "source": {
     "axis": "imag",
     "kind": "capHatch",
@@ -190,7 +190,7 @@
    "caps": "bands",
    "name": "bands_cap_hatch_imag",
    "offsets": "bands_cap_hatch_imag.idx.npy",
-   "paths": 3,
+   "paths": 5,
    "source": {
     "axis": "imag",
     "kind": "capHatch",

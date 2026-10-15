@@ -251,6 +251,16 @@ def check_hatch():
                              if len(p) > 2])
     check("and covers only what the cap truncated",
           bool(np.all(inside >= cap.z - 1e-6)), f"{len(inside)} interior samples")
+    # The ruling is a whole count of equal gaps across the domain, as a wall's
+    # is along its edge, at a spacing that does not divide the width.
+    width = domain.imag.hi - domain.imag.lo
+    gaps = hatch._stroke_count(width, 0.3) - 1
+    rows = {float(p[0, 1]) for p in hatch.cap_hatch(LayerCapHatch("real", 0.3), domain,
+                                                     height.shape, cap, sampler)}
+    k = np.array([(c - domain.imag.lo) / width * gaps for c in rows])
+    check("the ruling divides the width into whole gaps",
+          bool(rows) and width / 0.3 != gaps and bool(np.all(np.abs(k - np.round(k)) < 1e-9)),
+          f"{len(rows)} rows on width / {gaps}")
 
     bands = RealBandCaps((RealBand(-1.0, 1.2), RealBand(0.4, 2.5)), 1.6)
     banded = hatch.cap_hatch(LayerCapHatch("real", 0.25), domain, height.shape,

@@ -476,8 +476,9 @@ public enum LayerSource: Sendable, Equatable {
                    base: Double, topOffset: Double)
     /// Each listed edge's crest and foot, and a post at each distinct corner.
     case wallOutline(edges: [Int], pitch: Double, base: Double)
-    /// Strokes across the truncated tops, parallel to `axis`, on the lines
-    /// where the other coordinate is a whole multiple of `spacing`.
+    /// Strokes across the truncated tops, parallel to `axis`, dividing the
+    /// domain's extent in the other coordinate evenly: `spacing` rounded to a
+    /// whole count of gaps, as `wallHatch` divides an edge.
     case capHatch(axis: KeepAxis, spacing: Double, tiled: Bool)
     /// The rim of every truncated top: the zero contour of |f| - cap(x).
     case capOutline(tiled: Bool)
