@@ -5,20 +5,34 @@ import KurvenLandscape
 
 // MARK: - 10. the expression language and its functions
 
-/// The native evaluator against the Python one, at every point of every
-/// fixture grid.
+/// The native evaluator against the oracles -- numpy for the elementary
+/// functions, scipy.special where it has a complex form, mpmath where it does
+/// not -- at every point of every fixture grid. `tests/oracles.py` names the
+/// library behind each case, and each case records it.
 ///
 /// The comparison is `|a - b| <= tol * max(|b|, 1)`: relative where the value
 /// is large, absolute where it is small, so a zero of a function is not held to
 /// a relative error it cannot have, and both sides agreeing that a point is a
 /// pole is agreement. The tolerance is per case, stated in the fixture, and it
-/// is a statement about the algorithm: 1e-12 where this side runs scipy's own
-/// method, 1e-9 for the Bessel and Airy families, whose engines are different
-/// from AMOS and agree with it to about 1e-11 across these windows.
+/// is a statement about the algorithm: 1e-12 where this side runs the
+/// oracle's own method or one as good, 1e-9 for the Bessel and Airy families,
+/// whose engines are different from AMOS and agree with it to about 1e-11
+/// across these windows.
 func expressionTests() {
-    Check.suite("expression: the functions agree with scipy on the fixture grids") {
+    Check.suite("expression: the functions agree with numpy, scipy and mpmath on the fixture grids") {
         let index = try Fixtures.json("expr/index.json")
         let cases = try index.array("cases", "expr index")
+        // Every function in the table has a case, or is listed as held to
+        // something else; the oracle script refuses to write a table that
+        // leaves one out, and this is the same rule read from the other side.
+        let named = Set(try cases.map { try $0.object("case").string("name", "case") })
+        let unheld: [String: JSONValue] = (try? index.value("unheld", "expr index")
+                                                .object("unheld")) ?? [:]
+        let uncovered = Catalog.native.functions.map(\.name).filter {
+            !named.contains("table_\($0)") && unheld[$0] == nil
+        }
+        Check.expect(uncovered.isEmpty, "every function in the table has an oracle",
+                     uncovered.joined(separator: ", "))
         var worstOverall = 0.0
         var failed = 0
         for entry in cases {
@@ -42,7 +56,7 @@ func expressionTests() {
                     let a = f(z)
                     let k = 2 * (i * ni + j)
                     let b = Complex(want[k], want[k + 1])
-                    // A NaN on the Python side is scipy declining to answer
+                    // A NaN from the oracle is the library declining to answer
                     // (Γ at a pole it hit exactly), not a value to be held to;
                     // an infinity is a value, and both sides must agree on it.
                     if b.isNaN { continue }
@@ -60,7 +74,8 @@ func expressionTests() {
             }
             worstOverall = max(worstOverall, worst.isFinite ? worst : 0)
             if disagreements > 0 { failed += 1 }
-            Check.expect(disagreements == 0, "\(name): \(text)",
+            let oracle = (try? e.string("oracle", "case")) ?? "?"
+            Check.expect(disagreements == 0, "\(name): \(text) against \(oracle)",
                          String(format: "worst %.1e at %@ (tol %g)%@", worst, "\(worstAt)", tol,
                                 disagreements == 0 ? "" : ", \(disagreements) points over"))
         }
@@ -68,22 +83,44 @@ func expressionTests() {
                      String(format: "worst %.1e", worstOverall))
     }
 
-    Check.suite("expression: the parser reads what Python reads") {
-        let index = try Fixtures.json("expr/index.json")
-        let canonical = try index.value("canonical", "expr index").object("canonical")
+    // `language.json` is frozen and edited by hand: the readings two
+    // reasonable people disagree about, the character each malformed
+    // expression is refused at, and the function table. It was last written
+    // by the Python implementation of the language, and it is the record of
+    // what this one was ported to read.
+    Check.suite("expression: the parser reads the frozen readings") {
+        let index = try Fixtures.json("expr/language.json")
+        let canonical = try index.value("canonical", "language").object("canonical")
+        let grid = try index.value("grid", "language").object("grid")
+        let gr = try grid.doubles("real", "grid"), gi = try grid.doubles("imag", "grid")
+        let points = NativeLandscape.linspace(gr[0], gr[1], Int(gr[2])).flatMap { r in
+            NativeLandscape.linspace(gi[0], gi[1], Int(gi[2])).map { Complex(r, $0) }
+        }
         var wrong: [String] = []
+        var unlike: [String] = []
         for (source, want) in canonical.sorted(by: { $0.key < $1.key }) {
             guard case .string(let wanted) = want else { wrong.append("\(source): not a string"); continue }
             let got = try KurvenMath.Expression.canonical(source)
-            if got != wanted { wrong.append("\(source) -> \(got), Python \(wanted)") }
+            if got != wanted { wrong.append("\(source) -> \(got), frozen \(wanted)") }
             // And the canonical form is a fixed point that means the same thing.
             let again = try KurvenMath.Expression.canonical(got)
             if again != got { wrong.append("\(got) is not a fixed point (\(again))") }
+            let f = try KurvenMath.Expression.compile(source)
+            let g = try KurvenMath.Expression.compile(wanted)
+            let apart = points.contains { z in
+                let a = f(z), b = g(z)
+                if a.isNaN && b.isNaN { return false }
+                if !a.isFinite || !b.isFinite { return a.isFinite != b.isFinite }
+                return (a - b).magnitude > 1e-12 * max(b.magnitude, 1)
+            }
+            if apart { unlike.append("\(source) / \(wanted)") }
         }
         Check.expect(wrong.isEmpty, "\(canonical.count) canonical spellings",
                      wrong.joined(separator: "; "))
+        Check.expect(unlike.isEmpty, "and each spelling evaluates to its reading's values",
+                     unlike.joined(separator: "; "))
 
-        let errors = try index.array("errors", "expr index")
+        let errors = try index.array("errors", "language")
         var misplaced: [String] = []
         for entry in errors {
             let e = try entry.object("error")
@@ -98,7 +135,7 @@ func expressionTests() {
                 let length = (try? e.int("length", "error")) ?? 1
                 if error.position != position || error.length != length {
                     misplaced.append("'\(text)' refused at \(error.position.map(String.init) ?? "nil")"
-                                     + "+\(error.length), Python \(position.map(String.init) ?? "nil")"
+                                     + "+\(error.length), frozen \(position.map(String.init) ?? "nil")"
                                      + "+\(length)")
                 }
             }
@@ -114,9 +151,9 @@ func expressionTests() {
         }
     }
 
-    Check.suite("expression: the language table is the one Python reports") {
-        let index = try Fixtures.json("expr/index.json")
-        let language = try index.value("language", "expr index").object("language")
+    Check.suite("expression: the language table is the frozen one") {
+        let index = try Fixtures.json("expr/language.json")
+        let language = try index.value("language", "language").object("language")
         let functions = try language.array("functions", "language").map(LanguageFunction.init(json:))
         let mine = Catalog.native.functions
         Check.expect(functions.map(\.name) == mine.map(\.name),
@@ -138,48 +175,23 @@ func expressionTests() {
         let variable = try language.string("variable", "language")
         Check.expect(variable == "z", "and z is the variable")
     }
-
-    Check.suite("expression: the native catalog is Python's, entry for entry") {
-        let index = try Fixtures.json("expr/index.json")
-        let presets = try index.array("catalog", "expr index").map(FunctionPreset.init(json:))
-        let mine = Catalog.native.presets
-        Check.expect(presets.map(\.name) == mine.map(\.name),
-                     "the same \(presets.count) presets, in the same order",
-                     mine.map(\.name).joined(separator: " "))
-        var differ: [String] = []
-        for (theirs, ours) in zip(presets, mine) where theirs != ours {
-            differ.append(theirs.name)
-        }
-        Check.expect(differ.isEmpty, "with the same expressions, windows, caps and notes",
-                     differ.joined(separator: ", "))
-        let defaults = try index.value("defaults", "expr index").object("defaults")
-        Check.expect(try defaults.int("resolution", "defaults") == Catalog.native.defaultResolution
-                     && defaults.int("buffer", "defaults") == Catalog.native.defaultBuffer,
-                     "and the same default resolution and bake size")
-    }
 }
 
 // MARK: - 11. the native landscape
 
-/// `NativeLandscape.build` against the bundles `kurven.landscape` wrote for
-/// the same specs: the same manifest, the same grids, the same ink.
+/// `NativeLandscape.build` against the bundles it wrote for the same specs
+/// when they were last regenerated (`kurven-cli fixtures`): the same manifest,
+/// the same grids, the same ink. The bundles are golden. They prove nothing
+/// about correctness, only that a change to a landscape was made on purpose --
+/// they were byte-compared with the Python builder's once, when it was retired.
 func landscapeTests() {
-    Check.suite("landscape: built here, it is the bundle Python writes") {
-        let index = try Fixtures.json("expr/index.json")
-        for entry in try index.array("landscapes", "expr index") {
+    Check.suite("landscape: built here, it is the committed bundle") {
+        let index = try Fixtures.json("expr/landscapes.json")
+        for entry in try index.array("landscapes", "landscapes") {
             let e = try entry.object("landscape")
             let name = try e.string("bundle", "landscape")
             let spec = try LandscapeRequest(json: e.value("spec", "landscape"))
             let bundle = Fixtures.url("expr/\(name)")
-            guard FileManager.default.fileExists(
-                atPath: bundle.appendingPathComponent("manifest.json").path) else {
-                // The bundle is in git with the rest of the oracle; its absence
-                // means a checkout older than that, or a fixture tree someone
-                // regenerated by hand and then pruned.
-                Check.skip("landscape: \(name)",
-                           "not in tests/fixtures/expr; regenerate with tests/make_fixtures.py")
-                continue
-            }
             let theirs = try KurvenBundle.read(at: bundle)
             let clock = ContinuousClock()
             var ours: KurvenBundle!
@@ -218,10 +230,10 @@ func landscapeTests() {
             compare(ours.surface.phase, theirs.surface.phase, "phase")
 
             var inkDiffers: [String] = []
-            for (mine, python) in zip(ours.layers, theirs.layers) {
-                let a = mine.paths.inkLength, b = python.paths.inkLength
-                if mine.paths.count != python.paths.count || abs(a - b) > 1e-6 * max(b, 1) {
-                    inkDiffers.append("\(mine.spec.name) \(mine.paths.count)/\(python.paths.count) paths, "
+            for (mine, committed) in zip(ours.layers, theirs.layers) {
+                let a = mine.paths.inkLength, b = committed.paths.inkLength
+                if mine.paths.count != committed.paths.count || abs(a - b) > 1e-6 * max(b, 1) {
+                    inkDiffers.append("\(mine.spec.name) \(mine.paths.count)/\(committed.paths.count) paths, "
                                       + String(format: "length %.6g/%.6g", a, b))
                 }
             }
@@ -259,7 +271,7 @@ func firstDifference(_ a: String, _ b: String) -> String {
     var i = 0
     while i < min(x.count, y.count), x[i] == y[i] { i += 1 }
     let from = max(0, i - 60), to = min(min(x.count, y.count), i + 60)
-    return "at \(i): python …\(String(x[from..<min(x.count, to)]))… swift …\(String(y[from..<min(y.count, to)]))…"
+    return "at \(i): committed …\(String(x[from..<min(x.count, to)]))… built …\(String(y[from..<min(y.count, to)]))…"
 }
 
 // MARK: - 12. contour refinement
