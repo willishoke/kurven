@@ -228,6 +228,14 @@ usage: kurven-cli <command> [options]
   contract <dir>
         Decode every .kurven bundle in <dir>, re-encode its manifest, and
         compare canonical JSON against the file. The schema test.
+
+  fixtures <dir>
+        Write the golden fixture sets under <dir> (tests/fixtures): contract,
+        camera, clip, hatch and the three landscape bundles in expr. The
+        frozen inputs among them (the contract bundles' noise layers, the
+        camera's points, the clip fixture's buffer and polylines) are read
+        from <dir>, not written. scripts/check.sh runs this and fails on any
+        difference from the commit.
 """
 
 func loadScene(_ args: Args) throws -> (KurvenBundle, CameraPreset, Scene) {
@@ -1360,6 +1368,7 @@ do {
     case "resample": try resample(args)
     case "inspect": try inspect(args)
     case "contract": try contract(args)
+    case "fixtures": try fixturesCommand(args)
     default:
         print(usage)
         exit(args.positional.isEmpty ? 0 : 1)

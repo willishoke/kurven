@@ -172,7 +172,7 @@ public struct BoundaryPerimeter: Sendable, Equatable {
         let o = try json.object("Perimeter")
         self.init(edges: try o.array("edges", "Perimeter").map(PerimeterEdge.init(json:)))
     }
-    var json: JSONValue { .object(["edges": .array(edges.map(\.json))]) }
+    public var json: JSONValue { .object(["edges": .array(edges.map(\.json))]) }
 }
 
 // MARK: - caps
