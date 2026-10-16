@@ -3,7 +3,6 @@ import simd
 import KurvenCore
 import KurvenMetal
 import KurvenBake
-import KurvenService
 import KurvenLandscape
 
 /// The Swift lane of the cross-language tests.
@@ -1276,161 +1275,6 @@ func previewTests() {
     }
 }
 
-// MARK: - 9. the service
-
-func serviceTests() {
-    // The service is optional infrastructure: a bundle is a complete document
-    // without it, and a machine with no checkout has nothing to connect to. So
-    // a missing one is reported and skipped rather than failed -- the tests
-    // that matter are the ones about the file format, and they do not need it.
-    Check.suite("service: round trip through the protocol") {
-        let repo = Fixtures.dir.deletingLastPathComponent().deletingLastPathComponent()
-        guard let command = Service.Command.autodetect(near: repo) else {
-            Check.skip("service: round trip through the protocol",
-                       "no kurven/serve.py near \(repo.path)")
-            return
-        }
-        let service = try Service(command: command)
-        defer { service.stop() }
-
-        let description = try blocking { try await service.describe() }
-        Check.expect(description.protocolVersion == Service.protocolVersion,
-                     "the server speaks the protocol this client does",
-                     "\(description.protocolVersion)")
-        Check.expect(description.examples.contains { $0.name == "recip" },
-                     "it offers the examples",
-                     description.examples.map(\.name).joined(separator: ", "))
-
-        guard let recip = description.example("recip"), recip.available else {
-            Check.expect(false, "recip is available"); return
-        }
-        Check.expect(recip.arguments.contains { $0.name == "res" && $0.kind == .int },
-                     "and reports their options with types",
-                     "\(recip.arguments.count) options")
-
-        // A small bundle, described rather than dumped, built and read back.
-        // This is the whole loop: ask for a landscape, get a path, open it.
-        let output = FileManager.default.temporaryDirectory
-            .appendingPathComponent("kurven-service-\(UUID().uuidString).kurven")
-        defer { try? FileManager.default.removeItem(at: output) }
-        let result = try blocking {
-            try await service.export(example: "recip", to: output,
-                                     arguments: ["res": "120", "occluder_res": "60"],
-                                     derived: true)
-        }
-        Check.expect(result.manifest.provenance.example == "recip",
-                     "the bundle records which example made it")
-        Check.expect(result.manifest.layers.contains { $0.files == nil },
-                     "and --derived describes its contour layers")
-
-        let bundle = try KurvenBundle.read(at: result.url)
-        Check.expect(bundle.surface.height.width == 120,
-                     "the resampled grid is the size asked for",
-                     "\(bundle.surface.height.width)")
-        Check.expect(bundle.layers.contains { !$0.paths.isEmpty },
-                     "and its described layers derive to actual ink")
-
-        // The other half of the protocol: not "run this published plate" but
-        // "sample this function". A landscape is the one thing a frozen bundle
-        // cannot be, and the one thing the file format alone cannot test.
-        let catalog = try blocking { try await service.catalog() }
-        Check.expect(catalog.presets.count >= 10 && catalog.functions.count >= 20,
-                     "the catalog offers presets and the language behind them",
-                     "\(catalog.presets.count) presets, \(catalog.functions.count) functions")
-        Check.expect(catalog.presets.allSatisfy {
-                         $0.domain.real.length > 0 && $0.window.real.length
-                             >= $0.domain.real.length
-                     },
-                     "every preset's window has room around its domain")
-
-        Check.expect((try? blocking { try await service.validate("1/Γ(z)") }) == "1/gamma(z)",
-                     "an expression validates to its canonical spelling")
-        do {
-            _ = try blocking { try await service.validate("gamma(z") }
-            Check.expect(false, "an unclosed call is refused")
-        } catch let error as Service.Failure {
-            if case .remote(let kind, let message) = error {
-                Check.expect(kind == "badExpression",
-                             "an unclosed call is refused, by kind", message)
-            } else {
-                Check.expect(false, "an unclosed call is refused", "\(error)")
-            }
-        }
-
-        let landscapeOutput = FileManager.default.temporaryDirectory
-            .appendingPathComponent("kurven-landscape-\(UUID().uuidString).kurven")
-        defer { try? FileManager.default.removeItem(at: landscapeOutput) }
-        guard let preset = catalog.preset("gamma") else {
-            Check.expect(false, "the catalog has gamma"); return
-        }
-        var request = LandscapeRequest(preset: preset, resolution: 200)
-        request.caps = .realBands([RealBand(below: -2.5, cap: 3), RealBand(below: 0.5, cap: 4)],
-                                  beyond: 5)
-        let wanted = request
-        let sampled = try blocking { try await service.landscape(wanted, to: landscapeOutput) }
-        let landscape = try KurvenBundle.read(at: sampled.url)
-        Check.expect(landscape.manifest.caps == wanted.caps,
-                     "the landscape is truncated the way it was asked to be")
-        Check.expect(landscape.manifest.layers.allSatisfy { $0.files == nil },
-                     "every layer of a landscape is a description",
-                     "\(landscape.manifest.layers.count) layers")
-        let kinds = landscape.manifest.layers.map(\.source)
-        Check.expect(kinds.contains { if case .capHatch = $0 { true } else { false } }
-                     && kinds.contains { if case .wallHatch = $0 { true } else { false } }
-                     && kinds.contains { if case .capOutline = $0 { true } else { false } }
-                     && kinds.contains { if case .wallOutline = $0 { true } else { false } },
-                     "including the hatching of its sides and its tops")
-        // All but the fold lines, which are the camera's and are traced when
-        // the plate is drawn, not when it is built.
-        Check.expect(landscape.layers.allSatisfy { layer in
-                         if case .foldLines = layer.spec.source { return layer.paths.isEmpty }
-                         return !layer.paths.isEmpty
-                     },
-                     "and every one of them derives to actual ink, but the folds",
-                     landscape.layers.map { "\($0.spec.name) \($0.paths.count)" }
-                         .joined(separator: " "))
-        // The levels Python chose for this cap are the ones this side would
-        // choose for it: the rule the cap slider re-applies is the same rule.
-        if let major = landscape.manifest.layers.first(where: { $0.name == "mag_major" }),
-           case .contour(_, let levels, _, _) = major.source {
-            let mine = LandscapeStyle.levels(under: wanted.caps!).major
-            Check.expect(levels.count == mine.count
-                         && zip(levels, mine).allSatisfy { abs($0 - $1) < 1e-9 },
-                         "and its contour levels are the ones this side derives",
-                         "\(levels.count) levels up to \(levels.last ?? 0)")
-        }
-
-        // Errors arrive typed, not as a string to parse.
-        do {
-            _ = try blocking {
-                try await service.export(example: "recip", to: output,
-                                         arguments: ["resolution": "120"])
-            }
-            Check.expect(false, "an unknown option is refused")
-        } catch let error as Service.Failure {
-            if case .remote(let kind, _) = error {
-                Check.expect(kind == "unknownArgument",
-                             "an unknown option is refused, by kind", kind)
-            } else {
-                Check.expect(false, "an unknown option is refused", "\(error)")
-            }
-        }
-    }
-}
-
-/// Run an async call from this synchronous program.
-func blocking<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
-    let semaphore = DispatchSemaphore(value: 0)
-    nonisolated(unsafe) var outcome: Result<T, Error>!
-    Task {
-        do { outcome = .success(try await body()) }
-        catch { outcome = .failure(error) }
-        semaphore.signal()
-    }
-    semaphore.wait()
-    return try outcome.get()
-}
-
 // MARK: - entry
 
 import Metal
@@ -1461,7 +1305,6 @@ wallInkTests()
 stressTests()
 solidTests()
 depthTests()
-serviceTests()
 expressionTests()
 literalTests()
 landscapeTests()

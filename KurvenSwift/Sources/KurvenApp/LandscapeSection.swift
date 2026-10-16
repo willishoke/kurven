@@ -1,6 +1,5 @@
 import SwiftUI
 import KurvenCore
-import KurvenService
 import KurvenLandscape
 import KurvenMath
 
@@ -12,7 +11,7 @@ import KurvenMath
 /// drag to redraw four numbers.
 ///
 /// Every control here says which side of the seam it is on. The function, the
-/// window and the resolution resample (Python evaluates f again); the cap and
+/// window and the resolution resample (f is evaluated again); the cap and
 /// the hatch spacing restyle (the grids are already here). The status line
 /// reports the first and never the second, because the second has no duration
 /// worth reporting.
@@ -44,6 +43,20 @@ struct LandscapeSection: View {
             literalSliders(landscape)
             domainControls(landscape, window: window(catalog, landscape))
             resolutionControl(landscape)
+            if document.bundle != nil && !document.isLandscape {
+                // A plate bundle from the retired Python pipeline: the controls
+                // start from its provenance, and this builds the same window
+                // natively without waiting for a control to move.
+                HStack {
+                    Button(document.sampling ? "Rebuilding…" : "Rebuild") {
+                        document.landscapeEdited(draft: false)
+                    }
+                    .disabled(document.sampling)
+                    Spacer()
+                }
+                .help("Sample this plate's function natively over the window and at "
+                      + "the resolution above, in place of the bundle's frozen arrays.")
+            }
             Toggle("Place contours by f, not by the grid",
                    isOn: Binding(get: { document.refineContours },
                                  set: { document.setRefinement($0) }))

@@ -1,7 +1,6 @@
 import Foundation
 import Observation
 import KurvenCore
-import KurvenService
 import KurvenLandscape
 
 /// The half of a document that is a *choice* rather than a file.
@@ -107,9 +106,18 @@ extension Document {
     /// Note the landscape a newly opened bundle is, so its controls start where
     /// it is rather than where the catalog's defaults are. A bundle written by
     /// `landscape` records its own request in `provenance.params`.
+    ///
+    /// A bundle from one of the retired Python plates records the plate's
+    /// arguments instead, under the function it sampled. When that function is
+    /// a catalog preset, the controls start from those arguments
+    /// (`request(fromPlate:)`), and the first edit -- or Rebuild -- is a native
+    /// landscape over the same window. A bundle whose provenance names nothing
+    /// in the catalog opens read-only.
     func adoptLandscape(_ bundle: KurvenBundle) {
         guard bundle.manifest.provenance.example == "function" else {
-            landscape = nil
+            landscape = Self.request(fromPlate: bundle.manifest, catalog: catalog)
+            // Nothing on screen came from this request, so even an unchanged
+            // one is a landscape to build rather than one already shown.
             shown = nil
             return
         }
@@ -139,6 +147,27 @@ extension Document {
         shown = request
     }
 
+    /// The request a plate bundle's provenance describes: the catalog preset it
+    /// names, over the window and at the resolution and truncation its
+    /// arguments record (`plateArguments`). Missing arguments fall back to the
+    /// manifest, which records the same window and caps. Nil when the function
+    /// is not in the catalog: then there is no native landscape to rebuild.
+    static func request(fromPlate manifest: Manifest, catalog: Catalog) -> LandscapeRequest? {
+        guard let preset = catalog.preset(manifest.provenance.function) else { return nil }
+        var request = LandscapeRequest(preset: preset, resolution: catalog.defaultResolution)
+        request.domain = manifest.domain
+        request.caps = manifest.caps
+        var arguments: [String: Double] = [:]
+        for (key, value) in manifest.provenance.params {
+            switch value {
+            case .double(let d): arguments[key] = d
+            case .int(let i): arguments[key] = Double(i)
+            default: break
+            }
+        }
+        return request.applying(plateArguments: arguments)
+    }
+
     // MARK: - restyling, which costs nothing
 
     /// Edit the manifest and re-derive the ink from the grids already in
@@ -156,7 +185,8 @@ extension Document {
         var scene = Scene(bundle: restyled, preset: preset)
         scene.camera = navigator.camera
         self.scene = scene
-        if isLandscape { landscape?.caps = manifest.caps }
+        // A plate bundle being rebuilt keeps the cap it was given here, too.
+        if landscape != nil { landscape?.caps = manifest.caps }
     }
 
     var caps: Caps { bundle?.manifest.caps ?? .none }
@@ -186,8 +216,8 @@ extension Document {
         restyle { manifest in
             manifest.caps = caps
             // The levels are absolute, so a cap raised past them would leave the
-            // top of the landscape blank. `LandscapeStyle` is the rule Python
-            // used to choose them in the first place, applied again to the new
+            // top of the landscape blank. `LandscapeStyle` is the rule the
+            // build used to choose them in the first place, applied again to the new
             // ceiling -- by name, because in a landscape's bundle those two
             // names are what the two magnitude families are called.
             guard isLandscape, LandscapeStyle.ceiling(of: caps) != nil else { return }
@@ -281,11 +311,9 @@ extension Document {
 
     /// Write the landscape as a `.kurven` bundle.
     ///
-    /// Written here rather than asked of Python, because everything that would
-    /// go in it is already in memory and half of it -- the cap, the levels, the
-    /// spacing -- exists only here: the service was last asked for a landscape
-    /// several edits ago. A described bundle is a manifest and two grids, which
-    /// is why this is short.
+    /// Everything that would go in it is already in memory, and half of it --
+    /// the cap, the levels, the spacing -- exists only here. A described bundle
+    /// is a manifest and two grids, which is why this is short.
     func saveBundle(to url: URL) {
         guard let bundle else { return }
         do {
@@ -300,5 +328,21 @@ extension Document {
 extension Array {
     subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil
+    }
+}
+
+extension LandscapeRequest {
+    /// This request under a Python plate's arguments, as its provenance
+    /// recorded them: `rMin`, `rMax`, `iMin`, `iMax` the window, `res` the
+    /// resolution, `zLimit` a uniform cap. Other keys are not the landscape's
+    /// business (the plate's camera, its buffer) and are ignored.
+    func applying(plateArguments a: [String: Double]) -> LandscapeRequest {
+        var request = self
+        request.domain = Domain(
+            real: Interval(lo: a["rMin"] ?? domain.real.lo, hi: a["rMax"] ?? domain.real.hi),
+            imag: Interval(lo: a["iMin"] ?? domain.imag.lo, hi: a["iMax"] ?? domain.imag.hi))
+        if let res = a["res"] { request.resolution = Int(res.rounded()) }
+        if let z = a["zLimit"] { request.caps = .uniform(z) }
+        return request
     }
 }

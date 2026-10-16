@@ -61,9 +61,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate(ignoringOtherApps: true)
-        // The service is what makes a landscape possible, and with no bundle
-        // open there is nothing else to trigger the search for it.
-        document.connectService()
         // A path on the command line opens it, so the app can be driven from a
         // shell the same way the CLI is.
         let args = CommandLine.arguments.dropFirst()
@@ -86,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // it the only way to know the window draws the right thing is to look at
         // it, and a test that requires someone to look at it is not one.
         // `--landscape NAME|EXPRESSION [--screenshot PATH]` samples a landscape
-        // through the window's own Document and Service -- the same path the
+        // through the window's own Document -- the same path the
         // picker takes -- so "the function picker works" is checkable by
         // comparing a PNG rather than by clicking.
         if let i = args.firstIndex(of: "--landscape"), i + 1 < args.endIndex {
@@ -330,41 +327,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         document.saveBundle(to: url)
     }
 
-    /// `--resample NAME=VALUE ... --screenshot PATH` drives the window's own
-    /// resample: the same Document, the same Service, the same reload. Without
-    /// it the only way to know the Rebuild button works is to press it.
+    /// `--resample KEY=VALUE ... --screenshot PATH` drives the window's own
+    /// Rebuild of a plate bundle: the same Document, the same request mapped
+    /// from the bundle's provenance, the same native build. The keys are the
+    /// plate's provenance arguments (`res`, `rMin`, `rMax`, `iMin`, `iMax`,
+    /// `zLimit`; snake_case is accepted, as the Python plates spelled their
+    /// flags). Without it the only way to know the Rebuild button works is to
+    /// press it.
     private func resample(bundle: URL, settings: [String: String],
                           screenshot: URL?) async {
         await document.load(bundle)
-        document.connectService()
-        // The description arrives on its own task; wait for it or for the
-        // failure that explains why it will not.
-        for _ in 0..<200 where document.serviceDescription == nil
-            && document.serviceStatus == nil {
-            try? await Task.sleep(for: .milliseconds(25))
-        }
-        guard document.example != nil else {
-            let why = document.serviceStatus
-                ?? (document.serviceDescription == nil
-                    ? "the service never answered"
-                    : "this bundle records no example to rebuild "
-                      + "(provenance.example is empty)")
+        guard let manifest = document.bundle?.manifest else {
+            var why = "it did not open"
+            if case .failed(_, let message) = document.state { why = message }
             FileHandle.standardError.write(Data("Kurven: cannot resample — \(why)\n".utf8))
             exit(1)
         }
-        for (key, value) in settings { document.arguments[key] = value }
-        let before = document.url
-        document.resample()
-        while document.resampling { try? await Task.sleep(for: .milliseconds(25)) }
-        guard document.url != before, document.scene != nil else {
-            var why = document.serviceStatus ?? "unknown"
-            if case .failed(_, let message) = document.state { why = message }
+        var overrides: [String: Double] = [:]
+        for (key, value) in settings {
+            guard let number = Double(value) else {
+                FileHandle.standardError.write(Data("Kurven: \(key)=\(value) is not a number\n".utf8))
+                exit(1)
+            }
+            let parts = key.split(separator: "_")
+            let camel = ([String(parts.first ?? "")] + parts.dropFirst().map(\.capitalized)).joined()
+            overrides[camel] = number
+        }
+        guard let request = (manifest.provenance.example == "function"
+                ? document.landscape
+                : Document.request(fromPlate: manifest, catalog: document.catalog))?
+            .applying(plateArguments: overrides) else {
+            FileHandle.standardError.write(Data(("Kurven: cannot resample — this bundle's "
+                + "provenance names '\(manifest.provenance.function)', which is not a "
+                + "function in the catalog, so it opens read-only\n").utf8))
+            exit(1)
+        }
+        document.landscape = request
+        document.landscapeEdited(draft: false)
+        while document.sampling { try? await Task.sleep(for: .milliseconds(25)) }
+        guard document.isLandscape, document.scene != nil else {
+            let why = document.landscapeStatus ?? "unknown"
             FileHandle.standardError.write(Data("Kurven: resample failed — \(why)\n".utf8))
             exit(1)
         }
-        print("Kurven: resampled -> \(document.url?.lastPathComponent ?? "?") "
-              + "(\(document.layers.count) layers)")
-        if let screenshot { await self.screenshot(bundle: document.url!, to: screenshot) }
+        print("Kurven: rebuilt \(bundle.lastPathComponent) natively — "
+              + "\(document.landscapeStatus ?? ""), \(document.layers.count) layers, "
+              + "\(document.layers.reduce(0) { $0 + $1.paths.count }) paths")
+        if let screenshot { renderScreenshot(to: screenshot, what: document.title) }
         exit(0)
     }
 
