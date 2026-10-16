@@ -3,7 +3,8 @@ import Foundation
 /// A JSON value, and a canonical writer for it.
 ///
 /// `Codable` is deliberately not used for the manifest. The contract test is
-/// "decode a manifest, re-encode it, compare bytes with what Python wrote", and
+/// "decode a manifest, re-encode it, compare bytes with the file", the files
+/// were Python's until the golden sets were regenerated from here, and
 /// `JSONEncoder` cannot produce Python-canonical output: it renders the `Double`
 /// 5.0 as `5`, so a cap height would round-trip to a different document every
 /// time. Owning the writer costs sixty lines and buys an exact comparison, plus

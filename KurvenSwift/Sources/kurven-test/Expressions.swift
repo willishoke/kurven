@@ -182,8 +182,9 @@ func expressionTests() {
 /// `NativeLandscape.build` against the bundles it wrote for the same specs
 /// when they were last regenerated (`kurven-cli fixtures`): the same manifest,
 /// the same grids, the same ink. The bundles are golden. They prove nothing
-/// about correctness, only that a change to a landscape was made on purpose --
-/// they were byte-compared with the Python builder's once, when it was retired.
+/// about correctness, only that a change to a landscape was made on purpose.
+/// When the Python builder was retired, the grids written here were
+/// byte-identical to its own and the manifests differed only in gitSha.
 func landscapeTests() {
     Check.suite("landscape: built here, it is the committed bundle") {
         let index = try Fixtures.json("expr/landscapes.json")

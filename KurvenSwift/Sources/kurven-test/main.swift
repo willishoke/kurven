@@ -5,13 +5,14 @@ import KurvenMetal
 import KurvenBake
 import KurvenLandscape
 
-/// The Swift lane of the cross-language tests.
+/// The test suite.
 ///
-/// Every fixture read here was written by `tests/make_fixtures.py` from the
-/// Python pipeline, and `tests/check_bundle.py` asserts the same things about
-/// the same files. That is what makes them a contract: not two implementations
-/// agreeing in principle, but two implementations agreeing on one set of bytes.
-/// Cheapest question first -- does the schema round trip, does the array reader
+/// The fixtures it reads are of two kinds. The oracle sets -- `expr/` values,
+/// `contour/`, `npy/` -- are numpy's, scipy's, mpmath's and contourpy's
+/// answers, written by `tests/oracles.py`. The golden sets -- `contract/`,
+/// `camera/`, `clip/`, `hatch/`, the landscape bundles -- are kurven's own,
+/// written by `kurven-cli fixtures`, byte-compared with the retired Python
+/// pipeline's once, and regenerated only on purpose. Cheapest question first -- does the schema round trip, does the array reader
 /// accept what it should and refuse what it should not, does the camera land on
 /// the same points, does the clipper split the same runs -- so a failure names
 /// the earliest stage that broke rather than the last one to notice.
@@ -45,7 +46,7 @@ enum Fixtures {
 // MARK: - 1. the schema contract
 
 func contractTests() {
-    Check.suite("contract: the schema is one definition and one mirror") {
+    Check.suite("contract: every fixture manifest round trips byte for byte") {
         let bundles = Fixtures.contractBundles
         Check.expect(bundles.count == 4, "four fixture bundles are present",
                      "found \(bundles.count)")
@@ -172,10 +173,10 @@ func npyTests() {
 // MARK: - 3. the camera
 
 func cameraTests() {
-    // The test that makes "the bake reproduces the plate" credible before any
-    // GPU code exists. If this passes, the only thing between Swift and the
-    // Python plate is rasterization.
-    Check.suite("camera: each plate preset lands on the Python projection") {
+    // The camera the published plates were drawn with. The projections were
+    // scipy's Rotation composed as the Python plates composed it until the
+    // golden set was regenerated from Camera.plate (within 7.1e-15 of them).
+    Check.suite("camera: each plate preset lands on the committed projection") {
         for name in ["recip", "elliptic", "zeta"] {
             let spec = try Fixtures.json("camera/\(name).json")
             let plate = try PlateProjection(json: spec.value("plate", "fixture"))
@@ -217,10 +218,10 @@ func cameraTests() {
 
 func clipTests() {
     // `clip` is pure and takes a `DepthImage` value, so this runs the real
-    // hidden-line stage against a Python-dumped buffer with no GPU in the loop.
+    // hidden-line stage against a frozen CPU depth buffer with no GPU in the loop.
     // Exact equality, not a tolerance: same integer pixel lookup, same run
     // splitting, same dropped singletons.
-    Check.suite("clip: reproduces clip_hidden_lines exactly") {
+    Check.suite("clip: reproduces the committed visible runs exactly") {
         let meta = try Fixtures.json("clip/meta.json")
         let axis0 = try meta.doubles("axis0", "clip meta")
         let axis1 = try meta.doubles("axis1", "clip meta")
@@ -648,13 +649,13 @@ func contourTests() {
 
 // MARK: - the hatching
 
-/// The four hatching sources, against `kurven.hatch`, which defines them.
+/// The four hatching sources, against the golden strokes.
 ///
-/// Every height in the fixture was read out of the grid the fixture ships, by
-/// the transcription of `Grid2D.sample` that `kurven.hatch.grid_sampler` is. So
-/// this is not a tolerance test of two approximations: it is the same
-/// arithmetic on the same float32 samples, and the answers are expected to
-/// agree to the last few bits.
+/// Every height in the fixture is read out of the float32 grid the fixture
+/// ships, so this is not a tolerance test of two approximations: it is the
+/// same arithmetic on the same samples, and the answers are expected to agree
+/// to the last few bits. The strokes were `kurven.hatch`'s, which defined
+/// them, until the set was regenerated from this side byte for byte.
 func hatchTests() {
     let index: [String: JSONValue]
     let grid: Grid2D<Float>
@@ -675,7 +676,7 @@ func hatchTests() {
         return
     }
 
-    Check.suite("hatch: every source reproduces kurven.hatch stroke for stroke") {
+    Check.suite("hatch: every source reproduces the committed strokes") {
         let caps = try index.value("caps", "hatch").object("hatch.caps")
         for case .object(let c) in try index.array("cases", "hatch") {
             let name = try c.string("name", "hatch.case")
@@ -779,12 +780,12 @@ func hatchTests() {
         }
     }
 
-    // The rule for choosing contour levels under a cap lives on both sides:
-    // Python picks them when it builds a landscape, and the app picks them
-    // again whenever the cap slider moves, because a level list is absolute and
-    // a raised cap would otherwise leave the top of the plate blank. Two
-    // implementations of one rule, pinned to each other here.
-    Check.suite("landscape: the derived numbers agree with kurven.landscape") {
+    // The rule for choosing contour levels under a cap runs twice: when a
+    // landscape is built, and again whenever the cap slider moves, because a
+    // level list is absolute and a raised cap would otherwise leave the top of
+    // the plate blank. Pinned to the numbers the Python rule chose, which the
+    // golden index has carried unchanged since.
+    Check.suite("landscape: the derived numbers are the committed ones") {
         let style = try index.value("style", "hatch").object("hatch.style")
         var niceOK = true
         for case .object(let n) in try style.array("nice", "style") {
@@ -794,7 +795,7 @@ func hatchTests() {
             niceOK = niceOK && LandscapeStyle.nice(x) == up
                 && LandscapeStyle.nice(x, down: true) == down
         }
-        Check.expect(niceOK, "nice() rounds the way Python's does")
+        Check.expect(niceOK, "nice() rounds as it always has")
 
         var levelsOK = true
         var detail = ""
@@ -812,7 +813,7 @@ func hatchTests() {
             }
             levelsOK = levelsOK && same
         }
-        Check.expect(levelsOK, "magnitudeLevels() chooses the levels Python chose", detail)
+        Check.expect(levelsOK, "magnitudeLevels() chooses the committed levels", detail)
     }
 }
 

@@ -1,12 +1,11 @@
 import Foundation
 
-/// The Swift mirror of `kurven/bundle.py`.
+/// The bundle schema: the one definition of it.
 ///
-/// One source of truth for the schema (the Python dataclasses) and one mirror
-/// kept honest by a fixture, not by codegen: `tests/fixtures/contract/*.kurven`
-/// are decoded here and re-encoded, and the canonical JSON must come back byte
-/// for byte. A mirror that has drifted fails that test on the first run rather
-/// than producing a landscape that is subtly wrong.
+/// It began as the mirror of the Python package's dataclasses and is now the
+/// only copy. `tests/fixtures/contract/*.kurven` are decoded here and
+/// re-encoded, and the canonical JSON must come back byte for byte, so a
+/// change to the schema is a change to those golden files, made on purpose.
 ///
 /// Every sum type here is an `enum` with an exhaustive `switch` at each use
 /// site, so "a cap kind nobody handled" is a compile error rather than a
@@ -463,8 +462,8 @@ public enum LayerSource: Sendable, Equatable {
     case contour(field: ContourField, levels: [Double], keep: Keep, tiled: Bool)
 
     // The four hatchings: the ink that shades a cut face and a truncated top.
-    // `kurven.hatch` is the definition of every one of them and
-    // `tests/fixtures/hatch` is where this implementation is held to it. They
+    // `Hatch.swift` is the definition of every one of them, ported from the
+    // Python pipeline's, and `tests/fixtures/hatch` pins its strokes. They
     // are descriptions rather than dumped strokes for the same reason the
     // contours are: a landscape whose cap the user is dragging has to re-hatch
     // itself, and a plateau that moves is a different set of strokes.
@@ -748,9 +747,10 @@ public struct CameraPreset: Sendable, Equatable {
 
 public struct Provenance: Sendable, Equatable {
     public var function: String
-    /// The `kurven.export` example that produced this, when one did. `function`
-    /// names the mathematics; this names the recipe, and it is what lets a
-    /// consumer ask the service for the same landscape at another resolution.
+    /// The recipe that produced this: "function" for a native landscape, or
+    /// the name of the retired Python plate that wrote it. `function` names
+    /// the mathematics; a plate bundle whose function is a catalog preset can
+    /// be rebuilt natively from it and `params`.
     public var example: String
     public var params: [String: JSONValue]
     /// The contourpy chunk count the bundle was written with. Anything but 1

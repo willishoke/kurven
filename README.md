@@ -111,7 +111,8 @@ on a CPU, with nothing to look at in between. It is now a different program:
   display's clock, up to 120 Hz: a full preview frame at 3200² takes 6.8 ms
   for the elliptic plate.
 - **An expression language.** Any function you can type is a landscape. The
-  special functions are evaluated natively and checked against scipy, and
+  special functions are evaluated natively and checked against scipy and
+  mpmath, and
   every number in an expression becomes a control in the app.
 - **Edits in milliseconds.** A new function is sampled in about 10 ms (70 ms
   for ζ). A change of truncation height, contour levels or hatching shows up in the next

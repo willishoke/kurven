@@ -14,11 +14,11 @@ import KurvenMath
 /// value this process builds from a `LandscapeRequest` in the time it takes to
 /// evaluate f on a grid.
 ///
-/// The rules are ported line for line and the result is held to the Python
-/// one by `tests/fixtures/expr`: for the same spec, the same manifest (but for
-/// the git sha) and the same float32 grids. Where Python rounds (`round()` is
-/// half-to-even), this rounds the same way; where numpy's `linspace` computes
-/// `start + i * step`, so does this.
+/// The rules were ported line for line, and when the Python builder was
+/// retired the bundles in `tests/fixtures/expr` were byte-identical from both
+/// (but for the git sha); they are golden now. Where Python rounds (`round()`
+/// is half-to-even), this rounds the same way; where numpy's `linspace`
+/// computes `start + i * step`, so does this.
 public enum NativeLandscape {
     /// Samples along the longer side of the domain.
     public static let defaultResolution = 600

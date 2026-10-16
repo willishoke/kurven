@@ -927,7 +927,7 @@ public extension NativeLandscape {
     }
 
     /// A refiner for a bundle that records its expression -- one written by
-    /// `build`, or by the Python service for a landscape.
+    /// `build`.
     static func refiner(for bundle: KurvenBundle) -> ContourRefiner? {
         guard bundle.manifest.provenance.example == "function" else { return nil }
         let expression: String

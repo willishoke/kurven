@@ -4,15 +4,14 @@ import simd
 
 /// Marching squares on a sample grid.
 ///
-/// The one stage that sits on the fence between the two halves of the pipeline:
-/// cheap enough to port, and porting it is what turns a level set from something
-/// baked into a bundle into something you can drag a slider on. contourpy
-/// remains the oracle -- `tests/make_fixtures.py` dumps its answers and
-/// `kurven-test` compares against them -- but it is no longer in the loop.
+/// Porting it is what turned a level set from something baked into a bundle
+/// into something you can drag a slider on. contourpy remains the oracle --
+/// `tests/oracles.py` dumps its answers and `kurven-test` compares against
+/// them -- but it is not in the loop.
 ///
 /// Seam-free by construction: this contours the whole grid as one region, so
 /// there are no chunk boundaries to stitch and none of the thread-completion
-/// nondeterminism that makes the Python side pass `chunk_count = 1` to get a
+/// nondeterminism that makes the oracle pass `chunk_count = 1` to get a
 /// reproducible answer.
 public enum Contour {
     /// A crossing sits on a grid edge, and a grid edge is named by an integer.
