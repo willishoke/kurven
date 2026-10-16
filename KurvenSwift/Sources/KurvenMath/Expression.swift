@@ -154,6 +154,11 @@ public enum Expression {
 
         /// The value at z. Total: a pole is inf and a branch point nan, never
         /// an error, because a landscape is a picture of where those are.
+        ///
+        /// Walks the tree: a function is looked up by name and handed its
+        /// arguments in an array at every call. Right, and what `Compiled`
+        /// does once; a landscape evaluates f by the million, and does it
+        /// through `compiled()`.
         public func evaluate(_ z: Complex) -> Complex {
             switch self {
             case .number(let v): return Complex(v)
@@ -172,6 +177,52 @@ public enum Expression {
                 }
             case .negate(let n): return -n.evaluate(z)
             case .factorial(let n): return Gamma.gamma(n.evaluate(z) + 1)
+            }
+        }
+
+        /// The tree as nested closures, the same values as `evaluate` to
+        /// the bit: every name resolved and every operator chosen when the
+        /// expression is compiled rather than at each of the million points
+        /// it is evaluated at, and a function of one or two arguments
+        /// called with them rather than with an array of them. Half the
+        /// cost of evaluating Γ through the tree was the tree.
+        public func compiled() -> @Sendable (Complex) -> Complex {
+            switch self {
+            case .number(let v):
+                let c = Complex(v)
+                return { _ in c }
+            case .variable:
+                return { $0 }
+            case .constant(_, let v):
+                return { _ in v }
+            case .call(let name, let args):
+                let f = Language.function(name)!
+                let compiled = args.map { $0.compiled() }
+                if compiled.count == 1, let unary = f.unary {
+                    let a = compiled[0]
+                    return { unary(a($0)) }
+                }
+                if compiled.count == 2, let binary = f.binary {
+                    let a = compiled[0], b = compiled[1]
+                    return { binary(a($0), b($0)) }
+                }
+                let apply = f.apply
+                return { z in apply(compiled.map { $0(z) }) }
+            case .binary(let op, let l, let r):
+                let a = l.compiled(), b = r.compiled()
+                switch op {
+                case "+": return { a($0) + b($0) }
+                case "-": return { a($0) - b($0) }
+                case "*": return { a($0) * b($0) }
+                case "/": return { a($0) / b($0) }
+                default: return { Complex.pow(a($0), b($0)) }
+                }
+            case .negate(let n):
+                let a = n.compiled()
+                return { -a($0) }
+            case .factorial(let n):
+                let a = n.compiled()
+                return { Gamma.gamma(a($0) + 1) }
             }
         }
     }
@@ -361,8 +412,13 @@ public enum Expression {
 
     public struct Compiled: Sendable {
         public let node: Node
+        private let body: @Sendable (Complex) -> Complex
+        public init(node: Node) {
+            self.node = node
+            self.body = node.compiled()
+        }
         public var expression: String { node.format() }
-        public func callAsFunction(_ z: Complex) -> Complex { node.evaluate(z) }
+        public func callAsFunction(_ z: Complex) -> Complex { body(z) }
     }
 }
 
@@ -381,6 +437,9 @@ public enum Language {
         /// a point of the plane, `order` or `modulus` for a parameter.
         public let parameters: [String]
         let apply: @Sendable ([Complex]) -> Complex
+        /// The same function without the array, for `Node.compiled()`.
+        let unary: (@Sendable (Complex) -> Complex)?
+        let binary: (@Sendable (Complex, Complex) -> Complex)?
     }
 
     public struct Constant: Sendable {
@@ -398,14 +457,14 @@ public enum Language {
     static func f1(_ name: String, _ help: String, _ aliases: [String] = [],
                    _ body: @escaping @Sendable (Complex) -> Complex) -> Function {
         Function(name: name, arity: 1, aliases: aliases, help: help,
-                 parameters: ["argument"]) { body($0[0]) }
+                 parameters: ["argument"], apply: { body($0[0]) }, unary: body, binary: nil)
     }
 
     static func f2(_ name: String, _ help: String, _ aliases: [String] = [],
                    parameters: [String],
                    _ body: @escaping @Sendable (Complex, Complex) -> Complex) -> Function {
         Function(name: name, arity: 2, aliases: aliases, help: help,
-                 parameters: parameters) { body($0[0], $0[1]) }
+                 parameters: parameters, apply: { body($0[0], $0[1]) }, unary: nil, binary: body)
     }
 
     public static let functions: [Function] = [

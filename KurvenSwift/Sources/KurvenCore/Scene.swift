@@ -722,11 +722,12 @@ public struct Heightfield: Sendable {
     }
 
     /// `items.map(body)`, in parallel chunks.
-    public static func parallelMap<T: Sendable, R: Sendable>(_ items: [T],
+    /// `chunk` items go to a thread at a time: hundreds for a vertex's
+    /// worth of work, one for a level's.
+    public static func parallelMap<T: Sendable, R: Sendable>(_ items: [T], chunk: Int = 512,
                                                       _ body: @Sendable (T) -> R) -> [R] {
         let n = items.count
         guard n > 0 else { return [] }
-        let chunk = 512
         return [R](unsafeUninitializedCapacity: n) { buffer, initialized in
             // Each chunk writes only its own slots, so sharing is safe.
             nonisolated(unsafe) let base = buffer.baseAddress!

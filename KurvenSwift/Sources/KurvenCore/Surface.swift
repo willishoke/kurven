@@ -299,13 +299,20 @@ public extension Surface {
         }
         let carry = refine != nil && keep.keepsBelowCap
 
+        // A refiner has the function the grid was sampled from and moves
+        // the vertices onto its true level set, in domain space, before
+        // the lift: the grid decides which contours exist, f decides
+        // exactly where they run. Every level at once: a level is a few
+        // closed rings, each followed along its own length, and refined one
+        // level at a time a layer kept two cores of ten busy.
+        let refinedLevels: [[[P2<DomainSpace>]]] = refine.map { r in
+            Heightfield.parallelMap(contoured.map { ($0.level, $0.paths) }, chunk: 1) { level, lines in
+                r.contours(field, level, lines)
+            }
+        } ?? contoured.map(\.paths)
+
         var paths: [[P3<WorldSpace>]] = []
-        for (level, lines) in contoured {
-            // A refiner has the function the grid was sampled from and moves
-            // the vertices onto its true level set, in domain space, before
-            // the lift: the grid decides which contours exist, f decides
-            // exactly where they run.
-            let refined = refine.map { r in r.contours(field, level, lines) } ?? lines
+        for ((level, _), refined) in zip(contoured, refinedLevels) {
             for line in refined {
                 // Lifted onto f where the function is at hand: a phase line
                 // lifted to the lattice's height stands a chord's error off

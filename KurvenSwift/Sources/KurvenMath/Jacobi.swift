@@ -46,34 +46,42 @@ public enum Jacobi {
             ai *= t * phi
             return Real(sn: sn, cn: phi - ai * (twon - u), dn: phi + ai * (twon + u), ph: ph)
         }
-        var a = [Double](repeating: 1, count: 9)
-        var c = [Double](repeating: 0, count: 9)
-        c[0] = m.squareRoot()
-        var b = (1 - m).squareRoot()
-        var twon = 1.0
-        var i = 0
-        while abs(c[i] / a[i]) > 2.220446049250313e-16 {
-            if i > 7 { break }
-            let ai = a[i]
-            i += 1
-            c[i] = (ai - b) / 2
-            let t = (ai * b).squareRoot()
-            a[i] = (ai + b) / 2
-            b = t
-            twon *= 2
+        // The mean's two tables, nine terms each, on the stack: this is
+        // called once per evaluation of sn, and an evaluation is the unit
+        // the contour refiner and the hidden-line march spend by the
+        // million. Two heap arrays here were a third of the sn plate's
+        // build.
+        return withUnsafeTemporaryAllocation(of: Double.self, capacity: 18) { table in
+            let a = table.baseAddress!, c = a + 9
+            a.initialize(repeating: 1, count: 9)
+            c.initialize(repeating: 0, count: 9)
+            c[0] = m.squareRoot()
+            var b = (1 - m).squareRoot()
+            var twon = 1.0
+            var i = 0
+            while abs(c[i] / a[i]) > 2.220446049250313e-16 {
+                if i > 7 { break }
+                let ai = a[i]
+                i += 1
+                c[i] = (ai - b) / 2
+                let t = (ai * b).squareRoot()
+                a[i] = (ai + b) / 2
+                b = t
+                twon *= 2
+            }
+            var phi = twon * a[i] * u
+            var bb = 0.0
+            while i > 0 {
+                let t = c[i] * sin(phi) / a[i]
+                bb = phi
+                phi = (asin(t) + phi) / 2
+                i -= 1
+            }
+            let sn = sin(phi), t = cos(phi)
+            let dnfac = cos(phi - bb)
+            let dn = abs(dnfac) < 0.1 ? (1 - m * sn * sn).squareRoot() : t / dnfac
+            return Real(sn: sn, cn: t, dn: dn, ph: phi)
         }
-        var phi = twon * a[i] * u
-        var bb = 0.0
-        while i > 0 {
-            let t = c[i] * sin(phi) / a[i]
-            bb = phi
-            phi = (asin(t) + phi) / 2
-            i -= 1
-        }
-        let sn = sin(phi), t = cos(phi)
-        let dnfac = cos(phi - bb)
-        let dn = abs(dnfac) < 0.1 ? (1 - m * sn * sn).squareRoot() : t / dnfac
-        return Real(sn: sn, cn: t, dn: dn, ph: phi)
     }
 
     /// (sn, cn, dn)(z, m) for complex z.

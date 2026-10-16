@@ -21,8 +21,8 @@ import KurvenDynamics
 ///              line counts              11 ms      ink only
 ///              winding slope            11 ms      ink only
 ///     sn       radii                     6 ms      contours re-placed, not resampled
-///              modulus                 100 ms      resampled; 38 ms while dragging
-///              samples                  70 ms      resampled; ink only
+///              modulus                 115 ms      resampled; 65 ms while dragging
+///              samples                 100 ms      resampled; ink only
 ///     forced   ring radius              39 ms      lattice re-placed from state space;
 ///                                                  7 ms while dragging
 ///              radius from, height from 32 ms      re-placed
