@@ -36,6 +36,15 @@ public struct Heightfield: Sendable {
         self.region = region; self.step = step; self.refine = refine
     }
 
+    /// The same heightfield without its function: traced and judged on the
+    /// lattice, whose chords are a height read each where f is an
+    /// evaluation. What a preview can afford for a camera that is still
+    /// moving.
+    public var onLattice: Heightfield {
+        Heightfield(surface: surface, occluder: occluder, tiles: tiles,
+                    region: region, step: step, refine: nil)
+    }
+
     /// Every vertex of the decimated, capped heightfield, once per tile.
     ///
     /// The lattice is `Surface.grid_mesh`'s `self.clamped[::step, ::step]`. Not
