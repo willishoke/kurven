@@ -176,7 +176,6 @@ func solidTests() {
         // that passes it runs partly behind a face, and the cast splits it.
         // Every piece the cast draws is held to a brute-force sampling of
         // the edge, point by point against every face.
-        let mesh = s.mesh
         var split = 0, cameras = 0, compared = 0, wrong = 0
         var example = ""
         for (name, view) in stressCameras() {
@@ -212,8 +211,6 @@ func solidTests() {
                     let seenByCast = runs.contains { t > $0.0 && t < $0.1 }
                     // The brute force: a hit on any face but the edge's own
                     // two, which contain the point.
-                    var others = mesh
-                    _ = others
                     let own = Set([e.left, e.right])
                     var hit = false
                     for (f, face) in s.faces.enumerated() where !own.contains(f) {

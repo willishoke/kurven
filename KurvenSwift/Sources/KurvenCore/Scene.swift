@@ -155,7 +155,7 @@ public struct Heightfield: Sendable {
         // capped facing jumps at the crease, and its zero there is the
         // crease, not the fold.
         let onF = refine?.magnitude != nil
-        func facing(_ p: P2<WorldSpace>) -> Double {
+        @Sendable func facing(_ p: P2<WorldSpace>) -> Double {
             let n = onF ? flankNormal(at: p) : normal(at: p)
             let len = simd_length(n)
             return len > 0 ? -simd_dot(n, sight) / len : 0

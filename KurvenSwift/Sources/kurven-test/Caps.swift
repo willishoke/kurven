@@ -46,7 +46,7 @@ func capTests() {
             guard u >= -eps, v >= -eps, w >= -eps else { return nil }
             return u * a.z + v * b.z + w * c.z
         }
-        var rng = SplitMix(seed: 11)
+        let rng = SplitMix(seed: 11)
         var worst = 0.0
         var tested = 0
         var straddled = 0
