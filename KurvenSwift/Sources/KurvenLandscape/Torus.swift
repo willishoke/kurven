@@ -86,7 +86,8 @@ public enum PeriodicTorus {
         public func relief(amplitude: Double, reach: Double) -> Plate {
             guard let height, amplitude != 0 else { return self }
             let encloses = surface.outward != nil && amplitude * ceiling < reach
-            let displaced = surface.displaced(by: height, amplitude: amplitude, encloses: encloses)
+            let displaced = surface.displaced(by: height, amplitude: amplitude, ceiling: ceiling,
+                                              encloses: encloses)
             let layers = self.layers.map { layer -> Layer in
                 guard let coords = layer.paths.coords else { return layer }
                 return Layer(spec: layer.spec,

@@ -63,6 +63,50 @@ public struct SurfaceJet: Sendable, Equatable {
     public var normal: SIMD3<Double> { simd_cross(du, dv) }
 }
 
+/// The solid a surface bounds, for a march along a sight line.
+///
+/// A point of space is inside the solid exactly when its signed distance
+/// from the base surface, along the base's normal line through its foot, is
+/// under the surface's standoff from the base at that foot. The round torus
+/// has its foot in closed form, and a surface displaced along the torus's
+/// normal keeps that foot and adds the displacement as its standoff, so
+/// the test is a point test with no raster in it. The gap, distance less
+/// standoff, is positive outside, negative inside and zero on the surface,
+/// and over the points outside the solid and within the shell of the base
+/// it changes by at most `lipschitz` per unit of travel: a march that
+/// steps by the gap over that constant cannot step through the solid, and
+/// a sight line is clear exactly when every step along it is.
+public struct Enclosure: Sendable {
+    /// The surface coordinate whose normal line passes through a point,
+    /// and the point's signed distance along it, positive outward.
+    public let foot: @Sendable (SIMD3<Double>) -> (coordinate: P2<ParamSpace>, distance: Double)
+    /// How far the surface stands off the base along the normal at a
+    /// coordinate, positive outward.
+    public let standoff: @Sendable (P2<ParamSpace>) -> Double
+    /// The standoff's bounds: it is never more than `above` nor less than
+    /// `-below`. Beyond `above` a point is outside, under `-below` inside.
+    public let above: Double, below: Double
+    /// The most the gap changes per unit of travel, over the points outside
+    /// the solid and within the shell.
+    public let lipschitz: Double
+    /// How fast the foot's coordinate moves per unit of travel, per axis,
+    /// over the points between `inside` under the base and `outside` over
+    /// it: what a standoff's gradient is multiplied by.
+    public let spread: @Sendable (_ outside: Double, _ inside: Double) -> SIMD2<Double>
+    /// A ball containing the solid.
+    public let centre: SIMD3<Double>, radius: Double
+
+    public init(foot: @escaping @Sendable (SIMD3<Double>) -> (coordinate: P2<ParamSpace>, distance: Double),
+                standoff: @escaping @Sendable (P2<ParamSpace>) -> Double,
+                above: Double, below: Double, lipschitz: Double,
+                spread: @escaping @Sendable (Double, Double) -> SIMD2<Double>,
+                centre: SIMD3<Double>, radius: Double) {
+        self.foot = foot; self.standoff = standoff
+        self.above = above; self.below = below; self.lipschitz = lipschitz
+        self.spread = spread; self.centre = centre; self.radius = radius
+    }
+}
+
 /// A surface given as a map from a parameter rectangle into space.
 ///
 /// The map is exact and carries its derivatives, because the questions asked
@@ -90,13 +134,18 @@ public struct ParametricSurface: Sendable {
     /// about its geometry -- it cannot be read off samples -- so it is
     /// declared, and the orientation is then computed rather than guessed.
     public let outward: Double?
+    /// The solid the surface bounds as a point test, for surfaces that have
+    /// one in closed form; nil otherwise, and the ink is then judged by the
+    /// coordinate image.
+    public let enclosure: Enclosure?
 
     /// - Parameter encloses: the surface is closed, embedded and orientable.
     ///   Declaring it for a surface that passes through itself, or has a
     ///   boundary, culls ink that is in plain view.
-    public init(u: ParamAxis, v: ParamAxis, encloses: Bool,
+    public init(u: ParamAxis, v: ParamAxis, encloses: Bool, enclosure: Enclosure? = nil,
                 map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet) {
         self.u = u; self.v = v; self.map = map
+        self.enclosure = encloses ? enclosure : nil
         var positions: [P3<WorldSpace>] = []
         positions.reserveCapacity(u.samples * v.samples)
         // Six times the enclosed volume, by the divergence theorem over the
@@ -128,11 +177,13 @@ public struct ParametricSurface: Sendable {
     /// The orientation comes from the lattice's own central-difference
     /// normals rather than the map's: only its sign is used, and a lattice
     /// fine enough to draw is fine enough for the sign of its volume.
-    public init(u: ParamAxis, v: ParamAxis, encloses: Bool, positions: [P3<WorldSpace>],
+    public init(u: ParamAxis, v: ParamAxis, encloses: Bool, enclosure: Enclosure? = nil,
+                positions: [P3<WorldSpace>],
                 map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet) {
         precondition(positions.count == u.samples * v.samples,
                      "\(positions.count) positions for a \(u.samples)x\(v.samples) lattice")
         self.u = u; self.v = v; self.map = map; self.positions = positions
+        self.enclosure = encloses ? enclosure : nil
         guard encloses else { outward = nil; return }
         func at(_ i: Int, _ j: Int) -> SIMD3<Double> {
             let ii = u.periodic ? u.sample(i) : min(max(i, 0), u.samples - 1)
@@ -479,7 +530,25 @@ public extension ParametricSurface {
         precondition(u.periodic && v.periodic, "a torus is periodic both ways")
         let (su0, sv0) = (u.range.lo, v.range.lo)
         let (ku, kv) = (2 * Double.pi / u.range.length, 2 * Double.pi / v.range.length)
-        return ParametricSurface(u: u, v: v, encloses: R > r) { c in
+        // The solid: a point's foot is the nearest point of the core circle
+        // turned toward it, its distance how far it stands from that circle
+        // less the tube's radius. The ring angle moves fastest where the
+        // ring is narrowest, the tube angle where the tube is.
+        let enclosure = Enclosure(
+            foot: { q in
+                var a = atan2(q.y, q.x), rho = (q.x * q.x + q.y * q.y).squareRoot()
+                var b = atan2(q.z, rho - R)
+                if a < 0 { a += 2 * .pi }
+                if b < 0 { b += 2 * .pi }
+                let tube = ((rho - R) * (rho - R) + q.z * q.z).squareRoot()
+                return (P2(su0 + a / ku, sv0 + b / kv), tube - r)
+            },
+            standoff: { _ in 0 }, above: 0, below: 0, lipschitz: 1,
+            spread: { outside, inside in
+                SIMD2(1 / (ku * max(R - r - outside, 1e-12)), 1 / (kv * max(r - inside, 1e-12)))
+            },
+            centre: .zero, radius: R + r)
+        return ParametricSurface(u: u, v: v, encloses: R > r, enclosure: enclosure) { c in
             let a = ku * (c.x - su0), b = kv * (c.y - sv0)
             let (ca, sa, cb, sb) = (cos(a), sin(a), cos(b), sin(b))
             let ring = R + r * cb
@@ -522,8 +591,10 @@ public extension ParametricSurface {
     /// does. The jet is the chain rule, d(p + h n) = dp + dh ⊗ n + h dn,
     /// with dh and dn, the shape operator of the base, by central
     /// differences on the base's map.
+    /// `ceiling` bounds the height, for the displaced solid's shell: the
+    /// displacement is never more than `amplitude` times it.
     func displaced(by height: @escaping @Sendable (P2<ParamSpace>) -> Double,
-                   amplitude: Double, encloses: Bool) -> ParametricSurface {
+                   amplitude: Double, ceiling: Double, encloses: Bool) -> ParametricSurface {
         let base = map, sign = outward ?? 1
         let eu = 1e-5 * u.spacing, ev = 1e-5 * v.spacing
         @Sendable func unitNormal(_ c: P2<ParamSpace>) -> SIMD3<Double> {
@@ -531,7 +602,7 @@ public extension ParametricSurface {
             return sign * n / max(simd_length(n), .leastNormalMagnitude)
         }
         @Sendable func h(_ c: P2<ParamSpace>) -> Double { amplitude * height(c) }
-        return ParametricSurface(u: u, v: v, encloses: encloses) { c in
+        let displaced = ParametricSurface(u: u, v: v, encloses: encloses) { c in
             let jet = base(c), n = unitNormal(c), hc = h(c)
             let cu1 = P2<ParamSpace>(c.x + eu, c.y), cu0 = P2<ParamSpace>(c.x - eu, c.y)
             let cv1 = P2<ParamSpace>(c.x, c.y + ev), cv0 = P2<ParamSpace>(c.x, c.y - ev)
@@ -542,5 +613,48 @@ public extension ParametricSurface {
                               du: jet.du + dhu * n + hc * dnu,
                               dv: jet.dv + dhv * n + hc * dnv)
         }
+        // The displaced solid, when the base has one: the same foot, the
+        // displacement added to the standoff. The gap's Lipschitz constant
+        // needs the displacement's steepest slope, read off the lattice
+        // just built -- the displacement at a lattice point is what was
+        // added to the base there -- in parameter units, times how fast
+        // the foot's coordinate can move; with half as much again, for the
+        // slope between lattice points.
+        guard encloses, let e = enclosure else { return displaced }
+        let nu = u.samples, nv = v.samples
+        var standoffs = [Double](repeating: 0, count: nu * nv)
+        standoffs.withUnsafeMutableBufferPointer { out in
+            nonisolated(unsafe) let dst = out.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: nv) { j in
+                for i in 0..<nu {
+                    let c = P2<ParamSpace>(u.coordinate(i), v.coordinate(j))
+                    dst[j * nu + i] = simd_dot(displaced.positions[j * nu + i].v - base(c).position,
+                                               unitNormal(c))
+                }
+            }
+        }
+        var su = 0.0, sv = 0.0
+        for j in 0..<nv {
+            for i in 0..<nu {
+                let t = standoffs[j * nu + i]
+                if i + 1 < nu || u.periodic {
+                    su = max(su, abs(standoffs[j * nu + u.sample(i + 1)] - t) / u.spacing)
+                }
+                if j + 1 < nv || v.periodic {
+                    sv = max(sv, abs(standoffs[v.sample(j + 1) * nu + i] - t) / v.spacing)
+                }
+            }
+        }
+        let above = e.above + max(amplitude, 0) * ceiling
+        let below = e.below + max(-amplitude, 0) * ceiling
+        let spread = e.spread(above, below)
+        let standoff = e.standoff
+        let lifted = Enclosure(
+            foot: e.foot, standoff: { c in standoff(c) + h(c) },
+            above: above, below: below,
+            lipschitz: e.lipschitz + 1.5 * (su * spread.x + sv * spread.y),
+            spread: e.spread, centre: e.centre, radius: e.radius + above)
+        return ParametricSurface(u: u, v: v, encloses: true, enclosure: lifted,
+                                 positions: displaced.positions, map: displaced.map)
     }
 }

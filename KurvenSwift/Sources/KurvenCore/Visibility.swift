@@ -6,29 +6,40 @@ import simd
 ///
 /// Two tests, and each covers the other's blind spot:
 ///
-/// - **Front-most.** The surface in front of the ink, at the ink's pixel or
-///   one beside it, is the ink's own neighbourhood of the surface. A second
-///   sheet in front is far away in coordinates however close it is in depth,
-///   which is where a depth margin fails.
 /// - **Facing.** On a surface that bounds a solid, ink whose outward normal
-///   faces away from the eye is hidden, full stop. This is the test the first
-///   cannot make: across a fold the front and the back of the surface are
-///   neighbours in coordinates, so "front-most is my neighbourhood" holds on
-///   both sides of it.
+///   faces away from the eye is hidden, full stop. This is the test the
+///   second cannot make: across a fold the front and the back of the surface
+///   are neighbours in coordinates, so "front-most is my neighbourhood" holds
+///   on both sides of it.
+/// - **Nothing in front.** With the solid as a point test (`Enclosure`), the
+///   sight line from the ink is marched against it, stepping by the gap
+///   over its Lipschitz constant so that no step can pass through the
+///   solid: exact, with no pixel in it. Without one, the surface in front of
+///   the ink, at the ink's pixel or one beside it, must be the ink's own
+///   neighbourhood of the surface. A second sheet in front is far away in
+///   coordinates however close it is in depth, which is where a depth margin
+///   fails; but a raster is right only to its resolution, and relief puts
+///   the ink where that runs out.
 ///
-/// Where a segment crosses a fold, it is cut at the fold itself, found by root
-/// finding on the exact normal. Visibility changes exactly there, and the
-/// pixel grid has no say in where.
+/// Where visibility changes along a segment -- at a fold, or where the
+/// segment passes behind something -- the segment is cut exactly there, by
+/// bisection on the exact test, and the pixel grid has no say in where.
 public struct SurfaceVisibility: Sendable {
     public let surface: ParametricSurface
     public let image: SurfaceImage
+    public let view: Transform<WorldSpace, ViewSpace>
     /// The direction sight lines travel, in world space.
     public let sight: SIMD3<Double>
 
     public init(surface: ParametricSurface, image: SurfaceImage,
                 view: Transform<WorldSpace, ViewSpace>) {
-        self.surface = surface; self.image = image; self.sight = view.sightLine
+        self.surface = surface; self.image = image; self.view = view
+        self.sight = view.sightLine
     }
+
+    /// Whether the ink is judged by the march against the solid, or by the
+    /// coordinate image.
+    public var marches: Bool { surface.enclosure != nil }
 
     /// Positive facing the eye, negative facing away, nil on a surface that
     /// bounds no solid.
@@ -94,6 +105,45 @@ public struct SurfaceVisibility: Sendable {
         return !covered
     }
 
+    /// Whether nothing of the solid stands between the surface point `q` and
+    /// the eye: the march.
+    ///
+    /// Up the sight line from `q`, stepping by the gap over the solid's
+    /// Lipschitz constant, which cannot reach the solid, until the line has
+    /// left the ball that holds it. Above the shell the gap is at least the
+    /// height over it, and that is the step, with no standoff asked. The
+    /// first step is a small fraction of the solid's size: the ink lies on
+    /// the surface to rounding, where the gap is zero and says nothing, and
+    /// from a point facing the eye the line is outside from there on. On a
+    /// fold the line is tangent, and the gap grows or shrinks with the
+    /// surface's curvature along it: a convex fold is seen, a concave one
+    /// lies behind the surface it folds into, and the first step decides
+    /// which. A step shorter than that fraction is never taken, so an
+    /// occluder thinner than it along the line can be stepped over; it is a
+    /// hundred-thousandth of the solid, under any pixel.
+    public func isClear(_ q: SIMD3<Double>) -> Bool {
+        guard let e = surface.enclosure else { return true }
+        let d = -sight
+        let o = q - e.centre
+        let b = simd_dot(o, d), c = simd_dot(o, o) - e.radius * e.radius
+        let disc = b * b - c
+        guard disc > 0 else { return true }
+        let exit = -b + disc.squareRoot()
+        let eps = 1e-9 * e.radius, least = 1e-5 * e.radius
+        var t = least
+        while t < exit {
+            let p = q + t * d
+            let (coord, distance) = e.foot(p)
+            let over = distance - e.above
+            if over > least { t += over; continue }
+            if distance < -e.below - eps { return false }
+            let gap = distance - e.standoff(coord)
+            if gap < -eps { return false }
+            t += max(gap / e.lipschitz, least)
+        }
+        return true
+    }
+
     /// Ink at view point `p`, lying on the surface at `c`.
     public func isVisible(_ p: P3<ViewSpace>, at c: P2<ParamSpace>) -> Bool {
         isVisible(p, at: c, facing: facing(c))
@@ -101,7 +151,18 @@ public struct SurfaceVisibility: Sendable {
 
     func isVisible(_ p: P3<ViewSpace>, at c: P2<ParamSpace>, facing f: Double?) -> Bool {
         if let f, f <= 0 { return false }
+        if marches { return isClear(surface.map(c).position) }
         return isFrontMost(c, at: p.xy)
+    }
+
+    /// Ink at surface coordinate `c`, placed by the map: whether it is seen,
+    /// and where it is in the view. `facing` nil asks only the march, for
+    /// ink on the folds, where the facing is zero by construction.
+    func judge(_ c: P2<ParamSpace>, onFolds: Bool) -> (seen: Bool, at: P3<ViewSpace>) {
+        let world = surface.map(c).position
+        let p = view(P3<WorldSpace>(world))
+        if !onFolds, let f = facing(c), f <= 0 { return (false, p) }
+        return (marches ? isClear(world) : isFrontMost(c, at: p.xy), p)
     }
 
     /// Where along the straight segment `a -> b` in coordinates the surface
@@ -136,21 +197,70 @@ public extension HiddenLine {
     ///
     /// The runs are `clip`'s -- hidden vertices split a path, and runs of
     /// fewer than two vertices draw nothing -- with one difference: a segment
-    /// that crosses a fold gains a vertex exactly on the fold, which belongs
-    /// to the run on its visible side. That vertex is judged by the front-most
-    /// test alone, since on the fold the facing is zero by construction.
+    /// along which the verdict changes gains a vertex where it changes,
+    /// which belongs to the run on its visible side. Judged by the march,
+    /// that vertex is found by bisection on the whole test, so it lies on
+    /// the fold or on the silhouette of whatever came in front, whichever
+    /// cut the ink. Judged by the coordinate image, a segment that crosses a
+    /// fold is cut at the fold, found on the exact normal, and that vertex is
+    /// judged by the front-most test alone, since on the fold the facing is
+    /// zero by construction.
     ///
     /// Ink that lies on the folds themselves -- `ParametricSurface.foldLines`
     /// -- is edge-on everywhere by construction, so its facing is noise about
     /// zero and must not be asked: pass `onFolds` and it is judged by the
-    /// front-most test alone.
+    /// march or the front-most test alone.
+    ///
+    /// Every vertex is judged in parallel, and so is every cut: a march is
+    /// hundreds of evaluations of the standoff, and a cut is forty marches.
     static func clip(_ paths: PolylineSet<ViewSpace>, on visibility: SurfaceVisibility,
                      onFolds: Bool = false) -> PolylineSet<PlateSpace> {
         guard let coords = paths.coords else {
             preconditionFailure("clipping on a surface needs the ink's surface coordinates")
         }
-        let facing = onFolds ? [Double?](repeating: nil, count: coords.count)
-                             : coords.map { visibility.facing($0) }
+        let n = coords.count
+        let facing: [Double?] = onFolds ? [Double?](repeating: nil, count: n)
+                                       : Heightfield.parallelMap(coords) { visibility.facing($0) }
+        let kept: [Bool] = Heightfield.parallelMap(Array(0..<n), chunk: 32) { k in
+            visibility.isVisible(paths.vertices[k], at: coords[k], facing: facing[k])
+        }
+        // Every segment along which the verdict changes, and the vertex
+        // that goes in at the change. By the march, bisection on the test
+        // itself; by the image, the fold crossing if there is one.
+        var changes: [Int] = []
+        for path in 0..<paths.count {
+            let lo = paths.offsets[path], hi = paths.offsets[path + 1]
+            for k in (lo + 1)..<hi where kept[k - 1] != kept[k]
+                || (!visibility.marches && facing[k - 1] != nil && facing[k] != nil
+                    && (facing[k - 1]! > 0) != (facing[k]! > 0)) {
+                changes.append(k)
+            }
+        }
+        let cuts: [(at: P3<ViewSpace>, seen: Bool)?] =
+            Heightfield.parallelMap(changes, chunk: 1) { k -> (at: P3<ViewSpace>, seen: Bool)? in
+                let a = coords[k - 1], b = coords[k]
+                if visibility.marches {
+                    guard kept[k - 1] != kept[k] else { return nil }
+                    var lo = 0.0, hi = 1.0
+                    var at = kept[k - 1] ? paths.vertices[k - 1] : paths.vertices[k]
+                    while hi - lo > 1e-13 {
+                        let mid = 0.5 * (lo + hi)
+                        let j = visibility.judge(P2(a.v + (b.v - a.v) * mid), onFolds: onFolds)
+                        if j.seen == kept[k - 1] { lo = mid } else { hi = mid }
+                        if j.seen { at = j.at }
+                    }
+                    return (at, true)
+                }
+                guard let fa = facing[k - 1], let fb = facing[k],
+                      let t = visibility.foldCrossing(from: a, fa, to: b, fb) else { return nil }
+                let pa = paths.vertices[k - 1], pb = paths.vertices[k]
+                let v = P3<ViewSpace>(pa.v + (pb.v - pa.v) * t)
+                let c = P2<ParamSpace>(a.v + (b.v - a.v) * t)
+                return (v, visibility.isFrontMost(c, at: v.xy))
+            }
+        var cut = [(at: P3<ViewSpace>, seen: Bool)?](repeating: nil, count: n)
+        for (i, k) in changes.enumerated() { cut[k] = cuts[i] }
+
         var out: [[P3<PlateSpace>]] = []
         var run: [P3<PlateSpace>] = []
         func take(_ v: P3<ViewSpace>, _ visible: Bool) {
@@ -164,15 +274,8 @@ public extension HiddenLine {
         for path in 0..<paths.count {
             let lo = paths.offsets[path], hi = paths.offsets[path + 1]
             for k in lo..<hi {
-                if k > lo, let fa = facing[k - 1], let fb = facing[k],
-                   let t = visibility.foldCrossing(from: coords[k - 1], fa, to: coords[k], fb) {
-                    let a = paths.vertices[k - 1], b = paths.vertices[k]
-                    let v = P3<ViewSpace>(a.v + (b.v - a.v) * t)
-                    let c = P2<ParamSpace>(coords[k - 1].v + (coords[k].v - coords[k - 1].v) * t)
-                    take(v, visibility.isFrontMost(c, at: v.xy))
-                }
-                take(paths.vertices[k],
-                     visibility.isVisible(paths.vertices[k], at: coords[k], facing: facing[k]))
+                if let c = cut[k] { take(c.at, c.seen) }
+                take(paths.vertices[k], kept[k])
             }
             if run.count >= 2 { out.append(run) }
             run = []
