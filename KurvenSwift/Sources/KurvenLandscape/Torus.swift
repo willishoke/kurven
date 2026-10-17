@@ -97,8 +97,11 @@ public enum PeriodicTorus {
         let phase = Grid2D(width: coverShape.nReal, height: coverShape.nImag, domain: cover,
                            values: NativeLandscape.quantize(samples.phase))
         let field = Surface(height: height, phase: phase, caps: .uniform(ceiling))
+        // Not lifted: the ink lies on the torus, placed by its coordinate,
+        // and |f| is no height of it.
         let refiner = ContourRefiner(compiled, domain: cover,
-                                     width: coverShape.nReal, height: coverShape.nImag)
+                                     width: coverShape.nReal, height: coverShape.nImag,
+                                     lifted: false)
         // The rounding the clip allows at the rectangle's edges: wider than
         // the error the function is evaluated to, so that a zero found on
         // the far edge by Newton is on one side of it, not sometimes on

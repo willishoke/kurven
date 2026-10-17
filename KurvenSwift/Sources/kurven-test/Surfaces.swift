@@ -682,6 +682,60 @@ func periodicTorusTests() {
                      "\(seam.count) ends on the seam, \(unmatched.count) unmatched"
                      + (unmatched.isEmpty ? "" : ": " + unmatched.prefix(6).joined(separator: "; ")))
     }
+
+    // sn² has periods 2K and 2iK', double zeros and double poles. At a
+    // double point every level has two rays, which the lattice cannot
+    // resolve inside the point's cell: the fan is read off the normal form,
+    // f(z) ≈ a (z − z₀)^±2, and its rays are what the grid's lines are
+    // spliced onto. The rectangle is shifted so that one zero and one pole
+    // are interior, where every ray of the fan ends on the point itself.
+    Check.suite("surfaces: a double zero and a double pole each hold two rays of every level") {
+        let m = 0.64
+        let K = Jacobi.quarterPeriod(m), Kp = Jacobi.quarterPeriod(1 - m)
+        let plate = try PeriodicTorus.plate("sn(z, \(m))^2", origin: Complex(-K / 2, -Kp / 2),
+                                            periods: (2 * K, 2 * Kp))
+        let u = plate.surface.u.range, v = plate.surface.v.range
+        var atZero = 0, atPole = 0, levels = 0
+        var loose: [String] = []
+        var seam: [(text: String, at: SIMD3<Double>)] = []
+        for layer in plate.layers {
+            guard case .contour(let field, let list, _, _) = layer.spec.source, field == .phase,
+                  let coords = layer.paths.coords else { continue }
+            // The cut, ±π, is drawn once.
+            levels += list.filter { $0 > -.pi + 1e-9 }.count
+            let offsets = layer.paths.offsets
+            for i in 0..<(offsets.count - 1) {
+                let run = coords[offsets[i]..<offsets[i + 1]]
+                guard let a = run.first, let b = run.last, a != b else { continue }
+                for c in [a, b] {
+                    if hypot(c.x, c.y) < 1e-6 { atZero += 1; continue }
+                    if hypot(c.x, c.y - Kp) < 1e-6 { atPole += 1; continue }
+                    let f = Jacobi.complex(Complex(c.x, c.y), m).sn
+                    let f2 = f.magnitude * f.magnitude
+                    if f2 < 1e-6 || !f.isFinite || f2 > 1e6 { continue }
+                    let text = String(format: "%@ (%.5f, %.5f) |f| %.3g",
+                                      layer.spec.name as NSString, c.x, c.y, f2)
+                    if abs(c.x - u.lo) < 1e-7 || abs(c.x - u.hi) < 1e-7
+                        || abs(c.y - v.lo) < 1e-7 || abs(c.y - v.hi) < 1e-7 {
+                        seam.append((text, plate.surface.map(c).position))
+                    } else {
+                        loose.append(text)
+                    }
+                }
+            }
+        }
+        let unmatched = seam.indices.filter { k in
+            !seam.indices.contains { $0 != k && simd_length(seam[$0].at - seam[k].at) < 1e-8 }
+        }
+        Check.expect(atZero == 2 * levels && atPole == 2 * levels,
+                     "two rays of each of the \(levels) levels end on the double zero and on the double pole",
+                     "\(atZero) ends on the zero, \(atPole) on the pole")
+        Check.expect(loose.isEmpty, "and no line ends in the open",
+                     "\(loose.count) do: \(loose.prefix(6).joined(separator: "; "))")
+        Check.expect(!seam.isEmpty && unmatched.isEmpty,
+                     "and every end on the seam meets its continuation, to 1e-8",
+                     "\(seam.count) ends on the seam, \(unmatched.count) unmatched")
+    }
 }
 
 func surfacePreviewTests() {
