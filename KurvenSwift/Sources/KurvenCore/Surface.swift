@@ -203,12 +203,25 @@ public struct ContourRefine: Sendable {
     /// fold lines are subdivided to as well, so every curve of the drawing
     /// is a curve to the same tolerance.
     public let tolerance: Double
+    /// The same refiner with nothing shared: f compiled again, into closures
+    /// of its own. Each thread of a parallel judgement takes one
+    /// (`Heightfield.parallelMap(_:chunk:worker:_:)`): a closure's context is
+    /// a reference-counted object, and with every core calling the same one
+    /// the counts were the cores writing one cache line in turn -- at
+    /// eighteen threads a march cost twice its single-threaded time, and
+    /// forked, a third more. Nil, a refiner that cannot be forked, is shared.
+    public let fork: (@Sendable () -> ContourRefine)?
 
     public init(contours: @escaping Contours, magnitude: Magnitude? = nil,
-                zero: Zero? = nil, tolerance: Double = 0.02) {
+                zero: Zero? = nil, tolerance: Double = 0.02,
+                fork: (@Sendable () -> ContourRefine)? = nil) {
         self.tolerance = tolerance
         self.contours = contours; self.magnitude = magnitude; self.zero = zero
+        self.fork = fork
     }
+
+    /// A copy for one thread: `fork`'s, or this one.
+    public func forked() -> ContourRefine { fork?() ?? self }
 }
 
 public extension Surface {

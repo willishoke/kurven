@@ -540,6 +540,71 @@ func crestTests() {
         Check.expect(crest.allSatisfy { $0.z <= min(f($0), $0.x < 0.5 ? 2 : 4) + 1e-9 }, "and none rises above its band's cap")
     }
 
+    Check.suite("a window's ink is judged to its pixel: every end within the resolution asked for") {
+        // The preview places the ends of judged ink to a quarter of its pixel
+        // (`Scene.resolution`), and a bake to the last bit. The two drawings
+        // differ only where a run ends, and there by less than what was
+        // asked for, measured in the view plane: a point of either lies
+        // within it of the other. A run that is itself shorter than that --
+        // a vertex a hair in front of where the fold passes behind, drawn to
+        // the last bit as a speck of no length -- is not drawn at all.
+        let request = LandscapeRequest(preset: Catalog.native.preset("cn")!, resolution: 240)
+        let bundle = try NativeLandscape.build(request, refine: true)
+        let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
+        let h = scene.heightfield!
+        let view = scene.camera.view
+        let bounds = scene.quickBounds()!
+        let pixel = Framing.fitting(bounds, in: Viewport(width: 1600, height: 1000)).unitsPerPixel
+        let resolution = 0.25 * pixel
+        func onScreen(_ set: PolylineSet<WorldSpace>) -> [[SIMD2<Double>]] {
+            (0..<set.count).map { i in
+                set.vertices[set.offsets[i]..<set.offsets[i + 1]].map { let q = view($0); return SIMD2(q.x, q.y) }
+            }
+        }
+        func distance(_ p: SIMD2<Double>, _ runs: [[SIMD2<Double>]]) -> Double {
+            var best = Double.infinity
+            for run in runs {
+                for (a, b) in zip(run, run.dropFirst()) {
+                    let ab = b - a, l2 = simd_dot(ab, ab)
+                    let t = l2 > 0 ? max(0, min(1, simd_dot(p - a, ab) / l2)) : 0
+                    best = min(best, simd_length(a + t * ab - p))
+                }
+            }
+            return best
+        }
+        func length(_ run: [SIMD2<Double>]) -> Double {
+            zip(run, run.dropFirst()).reduce(0) { $0 + simd_length($1.1 - $1.0) }
+        }
+        var worst = 0.0, longestDropped = 0.0
+        var fewer = 0
+        var pairs = [(h.visibleFolds(view: view, margin: scene.margin),
+                      h.visibleFolds(view: view, margin: scene.margin, resolution: resolution))]
+        for layer in scene.layers where layer.spec.source.isWallInk && layer.spec.clipped {
+            pairs.append((h.visibleWallInk(layer.paths, view: view, margin: scene.margin),
+                          h.visibleWallInk(layer.paths, view: view, margin: scene.margin,
+                                           resolution: resolution)))
+        }
+        for (exact, coarse) in pairs {
+            let a = onScreen(exact), b = onScreen(coarse)
+            for run in a {
+                let far = run.map { distance($0, b) }.max() ?? 0
+                if far > resolution, length(run) <= resolution {
+                    longestDropped = max(longestDropped, length(run))
+                } else {
+                    worst = max(worst, far)
+                }
+            }
+            for run in b { for p in run { worst = max(worst, distance(p, a)) } }
+            fewer += exact.vertices.count - coarse.vertices.count
+        }
+        Check.expect(worst <= resolution * (1 + 1e-9),
+                     "each drawing lies within a quarter pixel of the other",
+                     String(format: "worst %.3f of a pixel", worst / pixel))
+        Check.expect(fewer > 0, "and the ends a pixel cannot show are not placed", "\(fewer) fewer vertices")
+        Check.expect(longestDropped <= resolution, "and what is not drawn is a speck",
+                     String(format: "longest %.4f of a pixel", longestDropped / pixel))
+    }
+
     Check.suite("one surface: on a lattice of 24 the pit of 1/Γ at -3 is drawn from f alone") {
         // The figure's own window: 1/Γ over Re [-3.8, -2.2], Im [0, 0.8],
         // capped at 2, on 24 samples across, so that a cell is a visible

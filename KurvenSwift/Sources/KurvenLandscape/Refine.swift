@@ -62,8 +62,12 @@ public struct ContourRefiner: Sendable {
     /// How many times one grid-level segment may be halved.
     public var maxDepth: Int
 
+    /// The expression f was compiled from, for a fork to compile again.
+    let node: KurvenMath.Expression.Node
+
     public init(_ compiled: KurvenMath.Expression.Compiled, domain: Domain,
                 width: Int, height: Int, tolerance: Double = 0.02, maxDepth: Int = 5) {
+        self.node = compiled.node
         self.value = { z in compiled(z) }
         self.magnitude = { z in
             let v = compiled(z)
@@ -130,14 +134,27 @@ public struct ContourRefiner: Sendable {
     /// through every restyle of its grids, and a restyle asks again for
     /// curves it has already placed.
     public var refine: ContourRefine {
-        let zeros = self.zeros()
+        hook(zeros: zeros()).remembering()
+    }
+
+    /// The hook over these zeros, forking into a refiner of its own: f
+    /// compiled again from its tree, so the fork's closures share nothing
+    /// with these (`ContourRefine.fork`).
+    func hook(zeros: [P2<DomainSpace>]) -> ContourRefine {
+        let node = node, grid = grid, width = width, height = height
+        let tolerance = tolerance, maxDepth = maxDepth
         return ContourRefine(contours: { field, level, paths, ceiling in
-                          self.refine(field: field, level: level, paths, zeros: zeros,
-                                      ceiling: ceiling)
-                      },
-                      magnitude: { p in self.magnitude(Complex(p.x, p.y)) },
-                      zero: { p in self.zero(near: p) },
-                      tolerance: tolerance).remembering()
+                                 self.refine(field: field, level: level, paths, zeros: zeros,
+                                             ceiling: ceiling)
+                             },
+                             magnitude: { p in self.magnitude(Complex(p.x, p.y)) },
+                             zero: { p in self.zero(near: p) },
+                             tolerance: tolerance,
+                             fork: {
+                                 ContourRefiner(KurvenMath.Expression.Compiled(node: node), domain: grid,
+                                                width: width, height: height, tolerance: tolerance,
+                                                maxDepth: maxDepth).hook(zeros: zeros)
+                             })
     }
 
     /// The grid's paths at one level of one field, placed on f; and, for the

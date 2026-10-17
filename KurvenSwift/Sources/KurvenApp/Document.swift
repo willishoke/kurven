@@ -54,6 +54,8 @@ final class Document {
         guard var scene, let navigator else { return nil }
         scene.camera = navigator.camera
         scene.margin = margin
+        // A quarter of a drawable pixel: finer than any end of ink can show.
+        scene.resolution = 0.25 * navigator.framing.unitsPerPixel
         return scene
     }
 

@@ -31,15 +31,25 @@ public extension ContourRefine {
     /// before it is asked about, so on one rung a cap slider's steps are the
     /// same question.
     func remembering(budget: Int = 4_000_000) -> ContourRefine {
-        let memo = ContourMemo(budget: budget)
+        remembering(in: ContourMemo(budget: budget))
+    }
+
+    /// Remembering in `memo`, and so are its forks: a fork is the same
+    /// function, so what one thread placed another need not place again.
+    internal func remembering(in memo: ContourMemo) -> ContourRefine {
         let contours = self.contours
+        let forked: (@Sendable () -> ContourRefine)? = self.fork.map { f in
+            let remembered: @Sendable () -> ContourRefine = { f().remembering(in: memo) }
+            return remembered
+        }
         return ContourRefine(contours: { field, level, paths, ceiling in
                                  let rung = ContourRefine.rung(above: ceiling)
                                  return memo.placed(field, level, paths, rung) {
                                      contours(field, level, paths, rung)
                                  }
                              },
-                             magnitude: magnitude, zero: zero, tolerance: tolerance)
+                             magnitude: magnitude, zero: zero, tolerance: tolerance,
+                             fork: forked)
     }
 }
 

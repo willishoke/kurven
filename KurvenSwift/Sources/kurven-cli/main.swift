@@ -671,11 +671,17 @@ func bench(_ args: Args) throws {
               + "\(ms(ts[ts.count / 2]).padding(toLength: 12, withPad: " ", startingAt: 0))"
               + "\(count) vertices")
     }
+    // What the window judges its ink to (`Document.framedScene`).
+    let pixel = 0.25 * navigator.framing.unitsPerPixel
     print("judging, per camera change (median of 5)")
     if h.refine != nil {
         time("folds traced on f") { h.foldLines(view: view, refined: false).vertices.count }
         time("folds traced and judged on f") {
             h.visibleFolds(view: view, margin: base.margin, refined: false).vertices.count
+        }
+        time("folds judged on f, ends to a quarter pixel") {
+            h.visibleFolds(view: view, margin: base.margin, refined: false,
+                           resolution: pixel).vertices.count
         }
     }
     time("folds traced on the lattice") { lattice.foldLines(view: view, refined: false).vertices.count }
@@ -686,6 +692,10 @@ func bench(_ args: Args) throws {
         if h.refine != nil {
             time("\(layer.spec.name) judged on f") {
                 h.visibleWallInk(layer.paths, view: view, margin: base.margin).vertices.count
+            }
+            time("\(layer.spec.name) judged on f, to a quarter pixel") {
+                h.visibleWallInk(layer.paths, view: view, margin: base.margin,
+                                 resolution: pixel).vertices.count
             }
         }
         time("\(layer.spec.name) judged on the lattice") {

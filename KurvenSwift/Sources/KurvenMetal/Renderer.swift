@@ -336,7 +336,7 @@ public final class MetalRenderer {
         let judged = LineGeometry.isJudged(scene)
         let key: Camera? = judged ? scene.camera : nil
         if let c = cachedLines, c.ink == scene.ink, c.camera == key,
-           !judged || !c.draft || draft {
+           !judged || (!c.draft && c.laid.serves(scene)) || draft {
             return c.geometry
         }
         let laid = LineGeometry.layOut(scene: scene, draft: judged && draft,
