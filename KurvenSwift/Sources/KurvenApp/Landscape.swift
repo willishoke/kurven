@@ -27,18 +27,18 @@ import KurvenLandscape
 ///
 /// What each costs, measured by `kurven-cli landscape-costs` on an Apple M5
 /// Max at 600², off the main actor; `KurvenApp --landscape NAME --drag cap 30`
-/// measures the main actor's longest stall during a drag, 21 ms or less on
+/// measures the main actor's longest stall during a drag, 22 ms or less on
 /// every preset:
 ///
 ///                   sample    dragging   cap step   hatch   levels    dragging
-///     zeta          4.5 s      10 ms      82 ms     12 ms   3.1 s      2 ms
-///     rgamma        467 ms      2 ms      30 ms      1 ms   220 ms     1 ms
-///     cn            206 ms      4 ms      38 ms      9 ms   123 ms     2 ms
+///     zeta           50 ms      3 ms      22 ms      9 ms    14 ms     2 ms
+///     cn             70 ms      4 ms      44 ms      9 ms    14 ms     2 ms
+///     exp_inv        52 ms      3 ms      14 ms      1 ms    27 ms     2 ms
 ///
-/// Before the refiner remembered, a cap step on zeta was 4.5 s on the main
-/// actor. A layer's levels placed on f are still seconds there: a new count
-/// spreads every level anew, so none is a curve already placed, and the
-/// release pays for all of them while the window carries on.
+/// Every preset samples in 70 ms or less. zeta took 4.5 s, on the main actor
+/// for a cap step: the refiner placed every phase line over the cap, where
+/// its ink is cut away (`ContourRefine.Contours`' ceiling), and every
+/// evaluation of ζ queued for one lock (`Zeta.weights`).
 @MainActor
 extension Document {
     var isLandscape: Bool {

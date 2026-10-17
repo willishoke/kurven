@@ -2,6 +2,15 @@ import Foundation
 import Synchronization
 
 public extension ContourRefine {
+    /// The ceiling a remembering refiner is asked about for `height`: the
+    /// next power of 2^(1/4) at or above it, so a cap dragged through a fifth
+    /// of its height asks one question. A rung is its own rung, so one
+    /// remembering refiner wrapped in another asks what it was asked.
+    static func rung(above height: Double) -> Double {
+        guard height.isFinite, height > 0 else { return height > 0 ? .infinity : height }
+        return Foundation.pow(2, (4 * Foundation.log2(height) - 1e-9).rounded(.up) / 4)
+    }
+
     /// The same refiner, remembering what it placed.
     ///
     /// Placing a contour on f is a function of the field, the level and the
@@ -17,11 +26,18 @@ public extension ContourRefine {
     /// the same with or without it, to the bit. What it costs is memory:
     /// every placed curve and the grid paths it came from, up to `budget`
     /// points, past which the least recently asked are forgotten.
+    ///
+    /// A ceiling is rounded up to a rung of `ContourRefine.rung`'s ladder
+    /// before it is asked about, so on one rung a cap slider's steps are the
+    /// same question.
     func remembering(budget: Int = 4_000_000) -> ContourRefine {
         let memo = ContourMemo(budget: budget)
         let contours = self.contours
-        return ContourRefine(contours: { field, level, paths in
-                                 memo.placed(field, level, paths) { contours(field, level, paths) }
+        return ContourRefine(contours: { field, level, paths, ceiling in
+                                 let rung = ContourRefine.rung(above: ceiling)
+                                 return memo.placed(field, level, paths, rung) {
+                                     contours(field, level, paths, rung)
+                                 }
                              },
                              magnitude: magnitude, zero: zero, tolerance: tolerance)
     }
@@ -35,8 +51,10 @@ final class ContourMemo: Sendable {
         /// By its bits, so -0 and 0 are different levels, as they are to
         /// anyone comparing the answers.
         let level: UInt64
+        let ceiling: UInt64
         let paths: [[P2<DomainSpace>]]
     }
+
 
     private struct Entry {
         var placed: [[P2<DomainSpace>]]
@@ -67,8 +85,8 @@ final class ContourMemo: Sendable {
     /// the same new key both solve it, which costs time and never a
     /// different answer.
     func placed(_ field: ContourField, _ level: Double, _ paths: [[P2<DomainSpace>]],
-                solve: () -> [[P2<DomainSpace>]]) -> [[P2<DomainSpace>]] {
-        let key = Key(field: field, level: level.bitPattern, paths: paths)
+                _ ceiling: Double, solve: () -> [[P2<DomainSpace>]]) -> [[P2<DomainSpace>]] {
+        let key = Key(field: field, level: level.bitPattern, ceiling: ceiling.bitPattern, paths: paths)
         let found: [[P2<DomainSpace>]]? = table.withLock { t in
             t.clock += 1
             guard var entry = t.entries[key] else { t.misses += 1; return nil }

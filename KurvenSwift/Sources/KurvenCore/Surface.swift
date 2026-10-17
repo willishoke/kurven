@@ -178,9 +178,11 @@ public struct Surface: Sendable {
 /// `KurvenLandscape`'s `ContourRefiner` builds one of these.
 public struct ContourRefine: Sendable {
     /// Moves the paths of one level of one field onto the function's own
-    /// level set, given the field, the level and the marching-squares paths
-    /// in domain space.
-    public typealias Contours = @Sendable (ContourField, Double, [[P2<DomainSpace>]])
+    /// level set, given the field, the level, the marching-squares paths in
+    /// domain space, and the ceiling: the height above which the ink is cut
+    /// away (`Keep.belowCap`), so a stretch of a phase line wholly above it
+    /// need not be placed. `.infinity` places all of it.
+    public typealias Contours = @Sendable (ContourField, Double, [[P2<DomainSpace>]], Double)
         -> [[P2<DomainSpace>]]
     /// |f| at a domain point, uncapped, as the grid would hold it.
     public typealias Magnitude = @Sendable (P2<DomainSpace>) -> Double
@@ -298,6 +300,13 @@ public extension Surface {
             }
         }
         let carry = refine != nil && keep.keepsBelowCap
+        // Ink lifted to |f| and kept below the cap is cut away wherever |f|
+        // is above it, so the refiner need not place it there: on zeta and
+        // 1/Γ that was nineteen phase vertices of every twenty. A tenth over
+        // the cap is room for a chord whose ends lie above it and whose middle
+        // dips under. Ink lifted to the capped surface is drawn on the cap's
+        // top, and placed all over.
+        let ceiling = keep.keepsBelowCap && policy == .magnitude ? 1.1 * caps.highest : .infinity
 
         // A refiner has the function the grid was sampled from and moves
         // the vertices onto its true level set, in domain space, before
@@ -307,7 +316,7 @@ public extension Surface {
         // level at a time a layer kept two cores of ten busy.
         let refinedLevels: [[[P2<DomainSpace>]]] = refine.map { r in
             Heightfield.parallelMap(contoured.map { ($0.level, $0.paths) }, chunk: 1) { level, lines in
-                r.contours(field, level, lines)
+                r.contours(field, level, lines, ceiling)
             }
         } ?? contoured.map(\.paths)
 

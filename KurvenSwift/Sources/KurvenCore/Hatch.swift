@@ -602,7 +602,7 @@ extension Surface {
             if let refine, let magnitude = refine.magnitude {
                 switch caps {
                 case .uniform(let cap) where cap.isFinite:
-                    for line in refine.contours(.magnitude, cap, lines) {
+                    for line in refine.contours(.magnitude, cap, lines, .infinity) {
                         var line = line
                         for i in Set([0, line.count - 1]) where line.count >= 2 {
                             if let q = onEdgeCapCrossing(near: line[i], tiles: tiles, magnitude: magnitude) {
@@ -701,7 +701,7 @@ extension Surface {
                 runs[0].points = last.points.dropLast() + runs[0].points
             }
             for run in runs where run.points.count >= 2 && run.cap.isFinite {
-                for piece in refine.contours(.magnitude, run.cap, [run.points]) where piece.count >= 2 {
+                for piece in refine.contours(.magnitude, run.cap, [run.points], .infinity) where piece.count >= 2 {
                     var piece = piece
                     for i in [0, piece.count - 1] {
                         if let q = onEdgeCapCrossing(near: piece[i], tiles: tiles, magnitude: magnitude) {
