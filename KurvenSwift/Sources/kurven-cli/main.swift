@@ -683,6 +683,10 @@ func bench(_ args: Args) throws {
             h.visibleFolds(view: view, margin: base.margin, refined: false,
                            resolution: pixel).vertices.count
         }
+        time("folds refined onto f") { h.foldLines(view: view).vertices.count }
+        time("folds refined and judged, ends to a quarter pixel") {
+            h.visibleFolds(view: view, margin: base.margin, resolution: pixel).vertices.count
+        }
     }
     time("folds traced on the lattice") { lattice.foldLines(view: view, refined: false).vertices.count }
     time("folds traced and judged on the lattice") {

@@ -40,8 +40,8 @@ struct LineGeometry {
     /// done on another thread; `init(_:device:)` uploads it.
     ///
     /// A heightfield's fold lines are the camera's, traced here for this
-    /// one -- read off the lattice, not refined onto the exact fold as the
-    /// bake's are -- and judged by the solid here rather than per fragment:
+    /// one -- on f and refined onto the exact fold, as the bake's are --
+    /// and judged by the solid here rather than per fragment:
     /// the surface is edge-on at a fold, which is where a depth test is
     /// worth nothing. Wall ink likewise: judged by the wall it lies in and
     /// the solid. Both are drawn unclipped.
@@ -67,9 +67,16 @@ struct LineGeometry {
             var vertices: [KVLineVertex] = []
             var paths = layer.paths
             if case .foldLines = layer.spec.source, let h = scene.heightfield {
+                // At rest the folds are the bake's: every vertex moved onto
+                // the exact fold of f before the march judges it against f.
+                // Traced on the lattice and left there, a vertex lies up to
+                // a cell from the silhouette, which on a steep flank is far
+                // more than the march's margin on f, so vertices fell
+                // alternately in front of the flank and behind it and the
+                // fold drew as dashes.
                 paths = draft
                     ? h.onLattice.foldLines(view: scene.camera.view, refined: false)
-                    : h.visibleFolds(view: scene.camera.view, margin: scene.margin, refined: false,
+                    : h.visibleFolds(view: scene.camera.view, margin: scene.margin,
                                      resolution: scene.resolution)
             } else if layer.spec.source.isWallInk, layer.spec.clipped, !draft,
                       let h = scene.heightfield {
