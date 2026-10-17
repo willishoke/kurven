@@ -1,22 +1,26 @@
-[build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
+# Python is in this repository as an oracle and nothing else: tests/oracles.py
+# asks numpy, scipy, mpmath and contourpy for the answers the Swift package is
+# held to, and writes them to tests/fixtures. There is no package to build.
+#
+#     uv run tests/oracles.py
+#
+# The `figures` extra is for the matplotlib scripts that draw figures for
+# notes and handoffs from kurven-cli's output.
 
 [project]
-name = "kurven"
+name = "kurven-oracles"
 version = "0.1.0"
-description = "Analytic-landscape rendering — sample, contour, project, depth-buffer, vectorize."
+description = "The third-party oracles kurven's Swift fixtures are written from."
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
-    "matplotlib>=3.7",
-    "tqdm>=4.65",
+    "mpmath>=1.3",
+    "contourpy>=1.2",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
-gpu = ["moderngl>=5.10"]
+figures = ["matplotlib>=3.7"]
 
-[tool.setuptools.packages.find]
-include = ["kurven*"]
+[tool.uv]
+package = false

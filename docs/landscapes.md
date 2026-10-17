@@ -1,6 +1,6 @@
 # Landscapes you choose
 
-A published plate is a program. `examples/gamma.py` knows that it is drawing Γ,
+A published plate was a program. The gamma plate knew that it was drawing Γ,
 on [−4.5, 4.5] × [−2.5, 2.5], with four pole spires truncated at four different
 heights, hatched down the front face at a density someone picked by eye. That
 is the right way to reproduce a plate from 1909 and the wrong way to look at a
@@ -44,11 +44,13 @@ below the critical line, and Euler–Maclaurin at the points where Borwein's
 own `1 − 2^(1−s)` factor vanishes: σ = 1, t ≈ 9.06, 18.13, …, which are
 inside the ζ plate's own window), and the **Jacobi elliptics** sn, cn, dn.
 
-`tests/fixtures/expr` holds every function to scipy at every point of a grid
-that runs along the real axis at exactly `im = 0`, to 1e-12, or 1e-9 for
-Bessel and Airy, whose engines differ from AMOS. The Python language in
-`kurven/expr.py` is the original; it is kept for the published plates and is
-not extended.
+`tests/fixtures/expr` holds every function to an oracle at every point of a
+grid that runs along the real axis at exactly `im = 0`: numpy for the
+elementary functions, scipy.special where it has a complex form, and mpmath
+for ζ and the Jacobi three, to 1e-12, or 1e-9 for Bessel and Airy, whose
+engines differ from AMOS. The language itself was ported from a Python
+original, since retired; the readings two reasonable people disagree about
+(`-z^2`, `2z^2`, `1/2z`) are frozen in `tests/fixtures/expr/language.json`.
 
 Every number written in the expression is also a control. `cn(z, 0.64)` puts a
 row under the field labelled *Modulus*, `besselj(2, z)` one labelled *Order*,

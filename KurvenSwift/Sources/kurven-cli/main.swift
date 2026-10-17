@@ -3,7 +3,6 @@ import simd
 import KurvenCore
 import KurvenMetal
 import KurvenBake
-import KurvenService
 import KurvenLandscape
 import KurvenMath
 import KurvenDynamics
@@ -13,8 +12,7 @@ import KurvenDynamics
 /// The app is not the product of Phase 1; this is. Everything the interactive
 /// shell will do to a scene, this does to the same `Scene` value, so "the UI
 /// bakes the same picture as the CLI" is true because they are one function
-/// called twice, and the picture can be checked against the Python plates
-/// before any window exists.
+/// called twice, and the picture can be checked before any window exists.
 ///
 ///     kurven-cli bake recip.kurven --preset recip -o recip.svg
 ///     kurven-cli inspect recip.kurven
@@ -151,8 +149,8 @@ usage: kurven-cli <command> [options]
         draft lattice a drag uses. The numbers SurfaceSection's doc records.
 
   depth <bundle> [--preset NAME] [--resolution N] -o depth.npy
-        Dump the depth buffer as float32 .npy, for comparison against the
-        Python Z-buffer. This is what stands in for a GPU frame capture.
+        Dump the depth buffer as float32 .npy, for comparison against a
+        reference. This is what stands in for a GPU frame capture.
 
   bench <bundle> [--preset NAME] [--resolution N] [--frames N] [--judging]
         Render the depth pass repeatedly from a moving camera and report the
@@ -191,24 +189,16 @@ usage: kurven-cli <command> [options]
   inspect <bundle>
         Print the manifest: domain, caps, occluder, layers, presets, provenance.
 
-  describe [--python PATH] [--repo PATH]
-        Ask the Python service what functions it can sample and what options
-        each takes. The service is found by walking up from the working
-        directory for kurven/serve.py; KURVEN_REPO and KURVEN_PYTHON override.
-
   catalog
         Print the functions this program can sample and the language they are
-        written in. This is the menu the app's function picker is built from,
-        and kurven-test holds it to the Python side's.
+        written in. This is the menu the app's function picker is built from.
 
   landscape [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI]
             [--res N] [--cap Z | --bands BELOW:CAP,... --beyond Z]
-            [--spacing S] [--service] -o out.kurven
-        Sample a function over a rectangle and write its bundle -- natively,
-        with no Python in the loop, or by the service with --service, which
-        is the comparison path. Every layer is a description, so the result's
-        cap, levels and hatch spacing are editable afterwards -- in the app,
-        or by `bake --levels`.
+            [--spacing S] -o out.kurven
+        Sample a function over a rectangle and write its bundle. Every layer
+        is a description, so the result's cap, levels and hatch spacing are
+        editable afterwards -- in the app, or by `bake --levels`.
         --bands truncates at a height per band of Re z, as the gamma plate
         does: each BELOW:CAP is the height where Re z < BELOW, the first band
         that matches wins, and --beyond is the height past the last. The
@@ -220,14 +210,17 @@ usage: kurven-cli <command> [options]
         Benchmark the contour refinement: each contour layer derived from the
         grid, then placed by f, with both timed and both measured against f.
 
-  resample <example> [--set NAME=VALUE ...] [--derived] -o out.kurven
-        Ask the service to rebuild one of the published plates. That is what
-        Python is still for: the four plates are Python programs, and a
-        frozen bundle of one cannot change its own domain or resolution.
-
   contract <dir>
         Decode every .kurven bundle in <dir>, re-encode its manifest, and
         compare canonical JSON against the file. The schema test.
+
+  fixtures <dir>
+        Write the golden fixture sets under <dir> (tests/fixtures): contract,
+        camera, clip, hatch and the three landscape bundles in expr. The
+        frozen inputs among them (the contract bundles' noise layers, the
+        camera's points, the clip fixture's buffer and polylines) are read
+        from <dir>, not written. scripts/check.sh runs this and fails on any
+        difference from the commit.
 """
 
 func loadScene(_ args: Args) throws -> (KurvenBundle, CameraPreset, Scene) {
@@ -1063,80 +1056,6 @@ func flicker(_ args: Args) throws {
     }
 }
 
-func service(_ args: Args) throws -> Service {
-    let command: Service.Command
-    if let python = args.flags["python"] {
-        command = Service.Command(
-            executable: URL(fileURLWithPath: python),
-            arguments: ["-m", "kurven.serve"],
-            directory: args.flags["repo"].map { URL(fileURLWithPath: $0) })
-    } else {
-        let near = args.flags["repo"].map { URL(fileURLWithPath: $0) }
-            ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        guard let found = Service.Command.autodetect(near: near) else {
-            throw CLIError("""
-                could not find kurven/serve.py above \(near.path).                 Pass --repo, or set KURVEN_REPO.
-                """)
-        }
-        command = found
-    }
-    return try Service(command: command)
-}
-
-func describe(_ args: Args) throws {
-    let service = try service(args)
-    defer { service.stop() }
-    print("service: \(service.command.display)")
-    let description = try blocking { try await service.describe() }
-    print("  protocol \(description.protocolVersion)")
-    for example in description.examples {
-        guard example.available else {
-            print("  \(example.name): unavailable — \(example.reason ?? "?")")
-            continue
-        }
-        print("  \(example.name)")
-        for a in example.arguments {
-            let value = a.defaultText.map { " = \($0)" } ?? ""
-            print("    \(pad(a.name, 16)) \(pad(a.kind.rawValue, 7))\(value)")
-        }
-    }
-}
-
-func resample(_ args: Args) throws {
-    guard let example = args.positional.dropFirst().first else {
-        throw CLIError("which example? try 'describe'")
-    }
-    let output = URL(fileURLWithPath: try args.string("output"))
-    let settings: [String: String] = try (args.repeated["set"] ?? [])
-        .reduce(into: [:]) { out, setting in
-            guard let equals = setting.firstIndex(of: "=") else {
-                throw CLIError("--set wants NAME=VALUE, got '\(setting)'")
-            }
-            out[String(setting[setting.startIndex..<equals])] =
-                String(setting[setting.index(after: equals)...])
-        }
-
-    let service = try service(args)
-    defer { service.stop() }
-    let clock = ContinuousClock()
-    var result: ExportResult!
-    let elapsed = try clock.measure {
-        result = try blocking {
-            try await service.export(example: example, to: output,
-                                     arguments: settings,
-                                     derived: args.switches.contains("derived"))
-        }
-    }
-    print("""
-        \(example) -> \(result.url.lastPathComponent)          (\(String(format: "%.1f", Double(result.bytes) / 1e6)) MB in \(elapsed))
-          \(result.manifest.layers.count) layers,         \(result.manifest.occluder.tiles.count) tile(s),         caps \(result.manifest.caps)
-        """)
-    for spec in result.manifest.layers {
-        let what = spec.files == nil ? "derived" : "dumped "
-        print("    \(pad(spec.name, 14)) \(what)  lw \(spec.width)")
-    }
-}
-
 func catalogCommand(_ args: Args) throws {
     let catalog = Catalog.native
     print("  \(catalog.presets.count) presets, default resolution \(catalog.defaultResolution)")
@@ -1215,16 +1134,11 @@ func landscapeCommand(_ args: Args) throws {
     // --repeat N builds it N times over, which is how a profiler gets a long
     // enough look at one build.
     for _ in 1..<(try args.int("repeat", 1)) { _ = try NativeLandscape.build(request) }
-    let sampled = try clock.measure {
-        bundle = try args.switches.contains("service")
-            ? sampledByService(request, to: output, args)
-            : NativeLandscape.build(request)
-    }
-    if !args.switches.contains("service") { try bundle.write(to: output) }
+    let sampled = try clock.measure { bundle = try NativeLandscape.build(request) }
+    try bundle.write(to: output)
     let m = bundle.manifest
     print("""
-        \(m.provenance.function) -> \(output.lastPathComponent) \
-        (\(args.switches.contains("service") ? "by the service" : "natively") in \(sampled))
+        \(m.provenance.function) -> \(output.lastPathComponent) (in \(sampled))
           \(m.height.shape.nx)x\(m.height.shape.ny) samples, caps \(m.caps)
         """)
     for spec in m.layers {
@@ -1280,17 +1194,6 @@ func refineCommand(_ args: Args) throws {
     }
 }
 
-/// The same request answered by the Python service: the comparison path,
-/// kept so a native landscape can be checked against the one Python would
-/// have written for it.
-func sampledByService(_ request: LandscapeRequest, to output: URL, _ args: Args) throws
-    -> KurvenBundle {
-    let service = try service(args)
-    defer { service.stop() }
-    let result = try blocking { try await service.landscape(request, to: output) }
-    return try KurvenBundle.read(at: result.url)
-}
-
 func fmt(_ x: Double) -> String { String(format: "%g", x) }
 
 func sourceName(_ source: LayerSource) -> String {
@@ -1310,22 +1213,6 @@ func sourceName(_ source: LayerSource) -> String {
     case .trajectory: "a trajectory"
     case .edges: "the edges of a solid"
     }
-}
-
-/// Run an async call from this synchronous program.
-///
-/// The CLI is one command and then it exits, so there is nothing for a
-/// concurrency runtime to overlap; a semaphore is the honest shape.
-func blocking<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
-    let semaphore = DispatchSemaphore(value: 0)
-    nonisolated(unsafe) var outcome: Result<T, Error>!
-    Task {
-        do { outcome = .success(try await body()) }
-        catch { outcome = .failure(error) }
-        semaphore.signal()
-    }
-    semaphore.wait()
-    return try outcome.get()
 }
 
 func inspect(_ args: Args) throws {
@@ -1383,7 +1270,7 @@ func firstDifference(_ a: String, _ b: String) -> String {
     var i = 0
     while i < min(x.count, y.count), x[i] == y[i] { i += 1 }
     let from = max(0, i - 40), to = min(min(x.count, y.count), i + 40)
-    return "        at \(i):\n          python: \(String(x[from..<min(x.count, to)]))\n"
+    return "        at \(i):\n          file  : \(String(x[from..<min(x.count, to)]))\n"
          + "          swift : \(String(y[from..<min(y.count, to)]))"
 }
 
@@ -1418,13 +1305,12 @@ do {
     case "bench": try bench(args)
     case "preview": try preview(args)
     case "flicker": try flicker(args)
-    case "describe": try describe(args)
     case "catalog": try catalogCommand(args)
     case "landscape": try landscapeCommand(args)
     case "refine": try refineCommand(args)
-    case "resample": try resample(args)
     case "inspect": try inspect(args)
     case "contract": try contract(args)
+    case "fixtures": try fixturesCommand(args)
     default:
         print(usage)
         exit(args.positional.isEmpty ? 0 : 1)

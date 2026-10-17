@@ -424,9 +424,9 @@ public enum Expression {
 
 /// The function table and the constants: everything the language can name.
 ///
-/// This is the data `kurven.expr.LANGUAGE` reports over the service, kept in
-/// step with it by the fixture. The help strings are the same words because a
-/// picker shows them, whichever side is answering.
+/// The table `kurven.expr.LANGUAGE` reported when there was a Python side,
+/// frozen in `tests/fixtures/expr/language.json` and held to it by
+/// `kurven-test`; a change here is a change there, made on purpose.
 public enum Language {
     public struct Function: Sendable {
         public let name: String

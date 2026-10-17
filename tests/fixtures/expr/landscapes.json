@@ -1,0 +1,76 @@
+{
+ "landscapes": [
+  {
+   "bundle": "landscape_gamma.kurven",
+   "layers": 9,
+   "spec": {
+    "caps": {
+     "kind": "uniform",
+     "z": 5.0
+    },
+    "domain": {
+     "imag": {
+      "hi": 2.5,
+      "lo": 0.0
+     },
+     "real": {
+      "hi": 4.5,
+      "lo": -4.5
+     }
+    },
+    "expression": "gamma(z)",
+    "layers": null,
+    "name": "gamma",
+    "resolution": 90,
+    "spacing": null
+   }
+  },
+  {
+   "bundle": "landscape_cubic.kurven",
+   "layers": 9,
+   "spec": {
+    "caps": {
+     "kind": "uniform",
+     "z": 5.0
+    },
+    "domain": {
+     "imag": {
+      "hi": 2.0,
+      "lo": -2.0
+     },
+     "real": {
+      "hi": 2.0,
+      "lo": -2.0
+     }
+    },
+    "expression": "1/(z^3 - 1)",
+    "layers": null,
+    "name": "cubic",
+    "resolution": 64,
+    "spacing": 0.4
+   }
+  },
+  {
+   "bundle": "landscape_typed.kurven",
+   "layers": 9,
+   "spec": {
+    "caps": null,
+    "domain": {
+     "imag": {
+      "hi": 1.5,
+      "lo": -1.5
+     },
+     "real": {
+      "hi": 5.0,
+      "lo": -5.0
+     }
+    },
+    "expression": "sin(z)/z",
+    "layers": null,
+    "name": "",
+    "resolution": 48,
+    "spacing": null
+   }
+  }
+ ]
+}

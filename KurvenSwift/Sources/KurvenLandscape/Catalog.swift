@@ -87,10 +87,9 @@ public struct Catalog: Sendable, Equatable {
         presets.first { $0.name == name }
     }
 
-    /// The menu this side carries: `kurven.landscape.CATALOG`, and the language
-    /// `KurvenMath` implements. `tests/fixtures/expr` compares it with the
-    /// Python one entry for entry, so a preset added on either side is a test
-    /// failure on the other until it is added there too.
+    /// The menu: the presets, ported from the Python package's catalog and
+    /// defined here since, and the language `KurvenMath` implements, whose
+    /// table `tests/fixtures/expr/language.json` freezes.
     public static let native = Catalog(
         presets: NativeCatalog.presets,
         functions: Language.functions.map {

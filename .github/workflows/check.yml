@@ -2,20 +2,18 @@
 #
 # `scripts/check.sh` is the one definition of "the tests pass", here as on a
 # laptop: this file only decides when to run it. It builds the package, runs
-# the Swift lane, the Python lane, the expression checks and the
-# cross-language schema round trip. There is no slow form any more: the
-# end-to-end comparisons against the Python plates were the cutover's test,
-# and what they measured is now held by the Swift lane against analytic
-# references, in seconds rather than minutes.
-#
-# Before it, the fixture generator is run and its output compared with what is
-# committed. The fixtures are the contract both lanes read, and a generator
-# that no longer reproduces them is drift that a green run would otherwise
-# hide. The git SHA each manifest records is the one line allowed to differ.
+# the Swift lane, round trips the schema, and checks that `kurven-cli
+# fixtures` reproduces the committed golden fixtures byte for byte. No step
+# runs Python: the oracle fixtures are committed, written by hand with
+# tests/oracles.py when an oracle or a case changes.
 #
 # The runner is Apple Silicon: the Swift lane draws with Metal, and a run that
 # finds no device fails rather than skips (see kurven-test's Harness.swift),
 # which is the way to learn that an image has lost its GPU.
+#
+# `oracles`, on dispatch only, runs tests/oracles.py under uv and checks that
+# the committed oracle fixtures still come out of the libraries -- the thing
+# to run after a scipy or mpmath bump, and never on a push.
 
 name: check
 
@@ -24,6 +22,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      oracles:
+        description: Also regenerate the oracle fixtures and diff them
+        type: boolean
+        default: false
 
 concurrency:
   group: check-${{ github.ref }}
@@ -36,23 +39,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Toolchain
+        run: swift --version
+
+      - name: Check
+        run: scripts/check.sh
+
+  oracles:
+    if: github.event_name == 'workflow_dispatch' && inputs.oracles
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
       # v7 is the newest floating major tag the action publishes; the v8+
       # releases exist only as full versions.
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
-      - name: Toolchains
+      - name: The committed oracle fixtures are what the oracles answer
         run: |
-          swift --version
-          uv --version
-          uv run --frozen --extra gpu python --version
-
-      - name: The committed fixtures are what the generator writes
-        run: |
-          uv run --frozen --extra gpu python tests/make_fixtures.py
+          uv run --frozen tests/oracles.py
           git add --intent-to-add tests/fixtures
-          git diff --exit-code --stat -I '"gitSha"' -- tests/fixtures
-
-      - name: Check
-        run: scripts/check.sh
+          git diff --exit-code --stat -- tests/fixtures

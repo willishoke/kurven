@@ -1,6 +1,5 @@
 import SwiftUI
 import KurvenCore
-import KurvenService
 import KurvenLandscape
 import KurvenDynamics
 
@@ -29,7 +28,7 @@ struct Inspector: View {
                 Section("Surface") { SurfaceSection(document: document) }
             }
             if document.plate != nil {
-                // A surface is not a bundle: no truncation, margin, resample
+                // A surface is not a bundle: no truncation, margin
                 // or provenance. Its camera has the one plate projection it
                 // opened at, so "reset" still has somewhere to go.
                 Section("Camera") {
@@ -48,7 +47,6 @@ struct Inspector: View {
                 }
                 Section("Layers") { layerList }
                 Section("Ink") { marginField }
-                Section("Resample") { resamplePanel }
                 Section("Bake") { BakeSection(document: document) }
                 Section("Bundle") { provenance(bundle) }
             } else {
@@ -181,59 +179,6 @@ struct Inspector: View {
         }
     }
 
-    // MARK: - resample
-
-    /// The only thing a frozen bundle cannot do for itself.
-    ///
-    /// The form is built from what the service says the example accepts, not
-    /// from a list written here, so an option added to a Python example appears
-    /// in this window without anyone editing Swift.
-    @ViewBuilder
-    private var resamplePanel: some View {
-        if let example = document.example {
-            ForEach(example.arguments) { spec in
-                argumentField(spec)
-            }
-            HStack {
-                Button(document.resampling ? "Resampling…" : "Rebuild") {
-                    document.resample()
-                }
-                .disabled(document.resampling)
-                Spacer()
-            }
-        } else if document.serviceDescription != nil {
-            Text("This bundle does not record which example made it, so there "
-                 + "is nothing to ask the service for.")
-                .font(.caption).foregroundStyle(.secondary)
-        } else {
-            Text("Looking for the Python service…")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-        if let status = document.serviceStatus {
-            Text(status).font(.caption).foregroundStyle(.secondary)
-                .textSelection(.enabled)
-        }
-    }
-
-    @ViewBuilder
-    private func argumentField(_ spec: ArgumentSpec) -> some View {
-        let value = Binding(
-            get: { document.arguments[spec.name] ?? spec.defaultText ?? "" },
-            set: { document.arguments[spec.name] = $0 })
-        LabeledContent(spec.name.replacingOccurrences(of: "_", with: " ")) {
-            switch spec.kind {
-            case .flag:
-                Toggle("", isOn: Binding(get: { value.wrappedValue == "true" },
-                                         set: { value.wrappedValue = $0 ? "true" : "false" }))
-                    .labelsHidden()
-            default:
-                TextField("", text: value)
-                    .labelsHidden().monospacedDigit().frame(width: 110)
-            }
-        }
-        .help(spec.help)
-    }
-
     // MARK: - provenance
 
     @ViewBuilder
@@ -273,7 +218,7 @@ struct SurfaceStatus: View {
 ///
 /// Its own view, and so its own observation scope, because it is the part of
 /// the sidebar that reads `navigator` -- which every drag writes. Inline, that
-/// read made the whole sidebar (layers, sliders, the resample form) re-evaluate
+/// read made the whole sidebar (layers, sliders, the landscape controls) re-evaluate
 /// on every mouse event to redraw four numbers.
 struct CameraSection: View {
     @Bindable var document: Document
@@ -316,7 +261,7 @@ struct CameraSection: View {
             .controlSize(.small)
             .help("Navigate in perspective. Baking still requires an "
                   + "orthographic camera — the plates are orthographic, and a "
-                  + "perspective bake would have no Python oracle to check it "
+                  + "perspective bake would have nothing to check it "
                   + "against.")
     }
 

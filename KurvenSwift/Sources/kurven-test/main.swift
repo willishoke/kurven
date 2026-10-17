@@ -3,16 +3,16 @@ import simd
 import KurvenCore
 import KurvenMetal
 import KurvenBake
-import KurvenService
 import KurvenLandscape
 
-/// The Swift lane of the cross-language tests.
+/// The test suite.
 ///
-/// Every fixture read here was written by `tests/make_fixtures.py` from the
-/// Python pipeline, and `tests/check_bundle.py` asserts the same things about
-/// the same files. That is what makes them a contract: not two implementations
-/// agreeing in principle, but two implementations agreeing on one set of bytes.
-/// Cheapest question first -- does the schema round trip, does the array reader
+/// The fixtures it reads are of two kinds. The oracle sets -- `expr/` values,
+/// `contour/`, `npy/` -- are numpy's, scipy's, mpmath's and contourpy's
+/// answers, written by `tests/oracles.py`. The golden sets -- `contract/`,
+/// `camera/`, `clip/`, `hatch/`, the landscape bundles -- are kurven's own,
+/// written by `kurven-cli fixtures`, byte-compared with the retired Python
+/// pipeline's once, and regenerated only on purpose. Cheapest question first -- does the schema round trip, does the array reader
 /// accept what it should and refuse what it should not, does the camera land on
 /// the same points, does the clipper split the same runs -- so a failure names
 /// the earliest stage that broke rather than the last one to notice.
@@ -46,7 +46,7 @@ enum Fixtures {
 // MARK: - 1. the schema contract
 
 func contractTests() {
-    Check.suite("contract: the schema is one definition and one mirror") {
+    Check.suite("contract: every fixture manifest round trips byte for byte") {
         let bundles = Fixtures.contractBundles
         Check.expect(bundles.count == 4, "four fixture bundles are present",
                      "found \(bundles.count)")
@@ -173,10 +173,10 @@ func npyTests() {
 // MARK: - 3. the camera
 
 func cameraTests() {
-    // The test that makes "the bake reproduces the plate" credible before any
-    // GPU code exists. If this passes, the only thing between Swift and the
-    // Python plate is rasterization.
-    Check.suite("camera: each plate preset lands on the Python projection") {
+    // The camera the published plates were drawn with. The projections were
+    // scipy's Rotation composed as the Python plates composed it until the
+    // golden set was regenerated from Camera.plate (within 7.1e-15 of them).
+    Check.suite("camera: each plate preset lands on the committed projection") {
         for name in ["recip", "elliptic", "zeta"] {
             let spec = try Fixtures.json("camera/\(name).json")
             let plate = try PlateProjection(json: spec.value("plate", "fixture"))
@@ -218,10 +218,10 @@ func cameraTests() {
 
 func clipTests() {
     // `clip` is pure and takes a `DepthImage` value, so this runs the real
-    // hidden-line stage against a Python-dumped buffer with no GPU in the loop.
+    // hidden-line stage against a frozen CPU depth buffer with no GPU in the loop.
     // Exact equality, not a tolerance: same integer pixel lookup, same run
     // splitting, same dropped singletons.
-    Check.suite("clip: reproduces clip_hidden_lines exactly") {
+    Check.suite("clip: reproduces the committed visible runs exactly") {
         let meta = try Fixtures.json("clip/meta.json")
         let axis0 = try meta.doubles("axis0", "clip meta")
         let axis1 = try meta.doubles("axis1", "clip meta")
@@ -649,13 +649,13 @@ func contourTests() {
 
 // MARK: - the hatching
 
-/// The four hatching sources, against `kurven.hatch`, which defines them.
+/// The four hatching sources, against the golden strokes.
 ///
-/// Every height in the fixture was read out of the grid the fixture ships, by
-/// the transcription of `Grid2D.sample` that `kurven.hatch.grid_sampler` is. So
-/// this is not a tolerance test of two approximations: it is the same
-/// arithmetic on the same float32 samples, and the answers are expected to
-/// agree to the last few bits.
+/// Every height in the fixture is read out of the float32 grid the fixture
+/// ships, so this is not a tolerance test of two approximations: it is the
+/// same arithmetic on the same samples, and the answers are expected to agree
+/// to the last few bits. The strokes were `kurven.hatch`'s, which defined
+/// them, until the set was regenerated from this side byte for byte.
 func hatchTests() {
     let index: [String: JSONValue]
     let grid: Grid2D<Float>
@@ -676,7 +676,7 @@ func hatchTests() {
         return
     }
 
-    Check.suite("hatch: every source reproduces kurven.hatch stroke for stroke") {
+    Check.suite("hatch: every source reproduces the committed strokes") {
         let caps = try index.value("caps", "hatch").object("hatch.caps")
         for case .object(let c) in try index.array("cases", "hatch") {
             let name = try c.string("name", "hatch.case")
@@ -780,12 +780,12 @@ func hatchTests() {
         }
     }
 
-    // The rule for choosing contour levels under a cap lives on both sides:
-    // Python picks them when it builds a landscape, and the app picks them
-    // again whenever the cap slider moves, because a level list is absolute and
-    // a raised cap would otherwise leave the top of the plate blank. Two
-    // implementations of one rule, pinned to each other here.
-    Check.suite("landscape: the derived numbers agree with kurven.landscape") {
+    // The rule for choosing contour levels under a cap runs twice: when a
+    // landscape is built, and again whenever the cap slider moves, because a
+    // level list is absolute and a raised cap would otherwise leave the top of
+    // the plate blank. Pinned to the numbers the Python rule chose, which the
+    // golden index has carried unchanged since.
+    Check.suite("landscape: the derived numbers are the committed ones") {
         let style = try index.value("style", "hatch").object("hatch.style")
         var niceOK = true
         for case .object(let n) in try style.array("nice", "style") {
@@ -795,7 +795,7 @@ func hatchTests() {
             niceOK = niceOK && LandscapeStyle.nice(x) == up
                 && LandscapeStyle.nice(x, down: true) == down
         }
-        Check.expect(niceOK, "nice() rounds the way Python's does")
+        Check.expect(niceOK, "nice() rounds as it always has")
 
         var levelsOK = true
         var detail = ""
@@ -813,7 +813,7 @@ func hatchTests() {
             }
             levelsOK = levelsOK && same
         }
-        Check.expect(levelsOK, "magnitudeLevels() chooses the levels Python chose", detail)
+        Check.expect(levelsOK, "magnitudeLevels() chooses the committed levels", detail)
     }
 }
 
@@ -1276,161 +1276,6 @@ func previewTests() {
     }
 }
 
-// MARK: - 9. the service
-
-func serviceTests() {
-    // The service is optional infrastructure: a bundle is a complete document
-    // without it, and a machine with no checkout has nothing to connect to. So
-    // a missing one is reported and skipped rather than failed -- the tests
-    // that matter are the ones about the file format, and they do not need it.
-    Check.suite("service: round trip through the protocol") {
-        let repo = Fixtures.dir.deletingLastPathComponent().deletingLastPathComponent()
-        guard let command = Service.Command.autodetect(near: repo) else {
-            Check.skip("service: round trip through the protocol",
-                       "no kurven/serve.py near \(repo.path)")
-            return
-        }
-        let service = try Service(command: command)
-        defer { service.stop() }
-
-        let description = try blocking { try await service.describe() }
-        Check.expect(description.protocolVersion == Service.protocolVersion,
-                     "the server speaks the protocol this client does",
-                     "\(description.protocolVersion)")
-        Check.expect(description.examples.contains { $0.name == "recip" },
-                     "it offers the examples",
-                     description.examples.map(\.name).joined(separator: ", "))
-
-        guard let recip = description.example("recip"), recip.available else {
-            Check.expect(false, "recip is available"); return
-        }
-        Check.expect(recip.arguments.contains { $0.name == "res" && $0.kind == .int },
-                     "and reports their options with types",
-                     "\(recip.arguments.count) options")
-
-        // A small bundle, described rather than dumped, built and read back.
-        // This is the whole loop: ask for a landscape, get a path, open it.
-        let output = FileManager.default.temporaryDirectory
-            .appendingPathComponent("kurven-service-\(UUID().uuidString).kurven")
-        defer { try? FileManager.default.removeItem(at: output) }
-        let result = try blocking {
-            try await service.export(example: "recip", to: output,
-                                     arguments: ["res": "120", "occluder_res": "60"],
-                                     derived: true)
-        }
-        Check.expect(result.manifest.provenance.example == "recip",
-                     "the bundle records which example made it")
-        Check.expect(result.manifest.layers.contains { $0.files == nil },
-                     "and --derived describes its contour layers")
-
-        let bundle = try KurvenBundle.read(at: result.url)
-        Check.expect(bundle.surface.height.width == 120,
-                     "the resampled grid is the size asked for",
-                     "\(bundle.surface.height.width)")
-        Check.expect(bundle.layers.contains { !$0.paths.isEmpty },
-                     "and its described layers derive to actual ink")
-
-        // The other half of the protocol: not "run this published plate" but
-        // "sample this function". A landscape is the one thing a frozen bundle
-        // cannot be, and the one thing the file format alone cannot test.
-        let catalog = try blocking { try await service.catalog() }
-        Check.expect(catalog.presets.count >= 10 && catalog.functions.count >= 20,
-                     "the catalog offers presets and the language behind them",
-                     "\(catalog.presets.count) presets, \(catalog.functions.count) functions")
-        Check.expect(catalog.presets.allSatisfy {
-                         $0.domain.real.length > 0 && $0.window.real.length
-                             >= $0.domain.real.length
-                     },
-                     "every preset's window has room around its domain")
-
-        Check.expect((try? blocking { try await service.validate("1/Γ(z)") }) == "1/gamma(z)",
-                     "an expression validates to its canonical spelling")
-        do {
-            _ = try blocking { try await service.validate("gamma(z") }
-            Check.expect(false, "an unclosed call is refused")
-        } catch let error as Service.Failure {
-            if case .remote(let kind, let message) = error {
-                Check.expect(kind == "badExpression",
-                             "an unclosed call is refused, by kind", message)
-            } else {
-                Check.expect(false, "an unclosed call is refused", "\(error)")
-            }
-        }
-
-        let landscapeOutput = FileManager.default.temporaryDirectory
-            .appendingPathComponent("kurven-landscape-\(UUID().uuidString).kurven")
-        defer { try? FileManager.default.removeItem(at: landscapeOutput) }
-        guard let preset = catalog.preset("gamma") else {
-            Check.expect(false, "the catalog has gamma"); return
-        }
-        var request = LandscapeRequest(preset: preset, resolution: 200)
-        request.caps = .realBands([RealBand(below: -2.5, cap: 3), RealBand(below: 0.5, cap: 4)],
-                                  beyond: 5)
-        let wanted = request
-        let sampled = try blocking { try await service.landscape(wanted, to: landscapeOutput) }
-        let landscape = try KurvenBundle.read(at: sampled.url)
-        Check.expect(landscape.manifest.caps == wanted.caps,
-                     "the landscape is truncated the way it was asked to be")
-        Check.expect(landscape.manifest.layers.allSatisfy { $0.files == nil },
-                     "every layer of a landscape is a description",
-                     "\(landscape.manifest.layers.count) layers")
-        let kinds = landscape.manifest.layers.map(\.source)
-        Check.expect(kinds.contains { if case .capHatch = $0 { true } else { false } }
-                     && kinds.contains { if case .wallHatch = $0 { true } else { false } }
-                     && kinds.contains { if case .capOutline = $0 { true } else { false } }
-                     && kinds.contains { if case .wallOutline = $0 { true } else { false } },
-                     "including the hatching of its sides and its tops")
-        // All but the fold lines, which are the camera's and are traced when
-        // the plate is drawn, not when it is built.
-        Check.expect(landscape.layers.allSatisfy { layer in
-                         if case .foldLines = layer.spec.source { return layer.paths.isEmpty }
-                         return !layer.paths.isEmpty
-                     },
-                     "and every one of them derives to actual ink, but the folds",
-                     landscape.layers.map { "\($0.spec.name) \($0.paths.count)" }
-                         .joined(separator: " "))
-        // The levels Python chose for this cap are the ones this side would
-        // choose for it: the rule the cap slider re-applies is the same rule.
-        if let major = landscape.manifest.layers.first(where: { $0.name == "mag_major" }),
-           case .contour(_, let levels, _, _) = major.source {
-            let mine = LandscapeStyle.levels(under: wanted.caps!).major
-            Check.expect(levels.count == mine.count
-                         && zip(levels, mine).allSatisfy { abs($0 - $1) < 1e-9 },
-                         "and its contour levels are the ones this side derives",
-                         "\(levels.count) levels up to \(levels.last ?? 0)")
-        }
-
-        // Errors arrive typed, not as a string to parse.
-        do {
-            _ = try blocking {
-                try await service.export(example: "recip", to: output,
-                                         arguments: ["resolution": "120"])
-            }
-            Check.expect(false, "an unknown option is refused")
-        } catch let error as Service.Failure {
-            if case .remote(let kind, _) = error {
-                Check.expect(kind == "unknownArgument",
-                             "an unknown option is refused, by kind", kind)
-            } else {
-                Check.expect(false, "an unknown option is refused", "\(error)")
-            }
-        }
-    }
-}
-
-/// Run an async call from this synchronous program.
-func blocking<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
-    let semaphore = DispatchSemaphore(value: 0)
-    nonisolated(unsafe) var outcome: Result<T, Error>!
-    Task {
-        do { outcome = .success(try await body()) }
-        catch { outcome = .failure(error) }
-        semaphore.signal()
-    }
-    semaphore.wait()
-    return try outcome.get()
-}
-
 // MARK: - entry
 
 import Metal
@@ -1461,7 +1306,6 @@ wallInkTests()
 stressTests()
 solidTests()
 depthTests()
-serviceTests()
 expressionTests()
 literalTests()
 landscapeTests()

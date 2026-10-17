@@ -8,8 +8,7 @@ import KurvenMetal
 /// `import Testing` does not resolve and `swift test` cannot build a bundle
 /// without Xcode (see `Package.swift`). A dependency-free runner keeps the whole
 /// package buildable and testable from a terminal, which is the property the
-/// design commits to; it also matches the Python lane, which runs
-/// `tests/check_bundle.py` rather than pytest.
+/// design commits to.
 ///
 /// A check passes, fails, or is *skipped*: the thing it needs is not on this
 /// machine, and it says so. Skips are listed in the summary so a green run on a

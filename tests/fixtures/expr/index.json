@@ -1,33 +1,4 @@
 {
- "canonical": {
-  "(-z)^2": "(-z)^2",
-  "(z-1)(z+1)": "(z-1)*(z+1)",
-  "(z-1)(z+1)/(z^2+1)": "(z-1)*(z+1)/(z^2+1)",
-  "-(-z)": "--z",
-  "-z!": "-z!",
-  "-z^2": "-z^2",
-  "-z^2+2z-1/(z^2+1)": "-z^2+2*z-1/(z^2+1)",
-  "0.5e": "0.5*e",
-  "1 / Γ(z)": "1/gamma(z)",
-  "1/Γ(z)": "1/gamma(z)",
-  "123456789012345.6 z": "123456789012345.6*z",
-  "1e-05 z": "1e-05*z",
-  "1e-3z": "0.001*z",
-  "1e16z": "1e+16*z",
-  "2 pi i": "2*pi*i",
-  "2**z": "2^z",
-  "2.50z": "2.5*z",
-  "2^-z": "2^-z",
-  "2z^2": "2*z^2",
-  "besselj(0.5, z)": "besselj(0.5, z)",
-  "cn(z, 0.64)": "cn(z, 0.64)",
-  "exp(1/z)": "exp(1/z)",
-  "ln(z)": "log(z)",
-  "z!^2": "z!^2",
-  "z(z+1)": "z*(z+1)",
-  "z^(1/3)": "z^(1/3)",
-  "z^-1": "z^-1"
- },
  "cases": [
   {
    "expression": "abs(z)",
@@ -38,6 +9,7 @@
     13
    ],
    "name": "table_abs",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -54,6 +26,7 @@
     13
    ],
    "name": "table_acos",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -70,6 +43,7 @@
     13
    ],
    "name": "table_acosh",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -86,6 +60,7 @@
     13
    ],
    "name": "table_airyai",
+   "oracle": "scipy.special.airy",
    "real": [
     -3.5,
     3.5,
@@ -102,6 +77,7 @@
     13
    ],
    "name": "table_airybi",
+   "oracle": "scipy.special.airy",
    "real": [
     -3.5,
     3.5,
@@ -118,6 +94,7 @@
     13
    ],
    "name": "table_arg",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -134,6 +111,7 @@
     13
    ],
    "name": "table_asin",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -150,6 +128,7 @@
     13
    ],
    "name": "table_asinh",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -166,6 +145,7 @@
     13
    ],
    "name": "table_atan",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -182,6 +162,7 @@
     13
    ],
    "name": "table_atanh",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -198,6 +179,7 @@
     13
    ],
    "name": "table_besseli",
+   "oracle": "scipy.special.iv",
    "real": [
     -3.5,
     3.5,
@@ -214,6 +196,7 @@
     13
    ],
    "name": "table_besselj",
+   "oracle": "scipy.special.jv",
    "real": [
     -3.5,
     3.5,
@@ -230,6 +213,7 @@
     13
    ],
    "name": "table_besselk",
+   "oracle": "scipy.special.kv",
    "real": [
     -3.5,
     3.5,
@@ -246,6 +230,7 @@
     13
    ],
    "name": "table_bessely",
+   "oracle": "scipy.special.yv",
    "real": [
     -3.5,
     3.5,
@@ -262,6 +247,7 @@
     13
    ],
    "name": "table_cn",
+   "oracle": "mpmath.ellipfun",
    "real": [
     -3.5,
     3.5,
@@ -278,6 +264,7 @@
     13
    ],
    "name": "table_conj",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -294,6 +281,7 @@
     13
    ],
    "name": "table_cos",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -310,6 +298,7 @@
     13
    ],
    "name": "table_cosh",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -326,6 +315,7 @@
     13
    ],
    "name": "table_cot",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -342,6 +332,7 @@
     13
    ],
    "name": "table_csc",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -358,6 +349,7 @@
     13
    ],
    "name": "table_digamma",
+   "oracle": "scipy.special.psi",
    "real": [
     -3.5,
     3.5,
@@ -374,6 +366,7 @@
     13
    ],
    "name": "table_dn",
+   "oracle": "mpmath.ellipfun",
    "real": [
     -3.5,
     3.5,
@@ -390,6 +383,7 @@
     13
    ],
    "name": "table_erf",
+   "oracle": "scipy.special.erf",
    "real": [
     -3.5,
     3.5,
@@ -406,6 +400,7 @@
     13
    ],
    "name": "table_erfc",
+   "oracle": "scipy.special.erfc",
    "real": [
     -3.5,
     3.5,
@@ -422,6 +417,7 @@
     13
    ],
    "name": "table_erfi",
+   "oracle": "scipy.special.erfi",
    "real": [
     -3.5,
     3.5,
@@ -438,6 +434,7 @@
     13
    ],
    "name": "table_exp",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -454,6 +451,7 @@
     13
    ],
    "name": "table_expi",
+   "oracle": "scipy.special.exp1",
    "real": [
     -3.5,
     3.5,
@@ -470,6 +468,7 @@
     13
    ],
    "name": "table_gamma",
+   "oracle": "scipy.special.gamma",
    "real": [
     -3.5,
     3.5,
@@ -486,6 +485,7 @@
     13
    ],
    "name": "table_im",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -502,6 +502,7 @@
     13
    ],
    "name": "table_lambertw",
+   "oracle": "scipy.special.lambertw",
    "real": [
     -3.5,
     3.5,
@@ -518,6 +519,7 @@
     13
    ],
    "name": "table_log",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -534,6 +536,7 @@
     13
    ],
    "name": "table_loggamma",
+   "oracle": "scipy.special.loggamma",
    "real": [
     -3.5,
     3.5,
@@ -550,6 +553,7 @@
     13
    ],
    "name": "table_re",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -566,6 +570,7 @@
     13
    ],
    "name": "table_rgamma",
+   "oracle": "scipy.special.rgamma",
    "real": [
     -3.5,
     3.5,
@@ -582,6 +587,7 @@
     13
    ],
    "name": "table_sec",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -598,6 +604,7 @@
     13
    ],
    "name": "table_sin",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -614,6 +621,7 @@
     13
    ],
    "name": "table_sinh",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -630,6 +638,7 @@
     13
    ],
    "name": "table_sn",
+   "oracle": "mpmath.ellipfun",
    "real": [
     -3.5,
     3.5,
@@ -646,6 +655,7 @@
     13
    ],
    "name": "table_sqrt",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -662,6 +672,7 @@
     13
    ],
    "name": "table_tan",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -678,6 +689,7 @@
     13
    ],
    "name": "table_tanh",
+   "oracle": "numpy",
    "real": [
     -3.5,
     3.5,
@@ -694,6 +706,7 @@
     13
    ],
    "name": "table_wofz",
+   "oracle": "scipy.special.wofz",
    "real": [
     -3.5,
     3.5,
@@ -710,6 +723,7 @@
     13
    ],
    "name": "table_zeta",
+   "oracle": "mpmath.zeta",
    "real": [
     -3.5,
     3.5,
@@ -726,6 +740,7 @@
     25
    ],
    "name": "gamma_wide",
+   "oracle": "scipy.special.gamma",
    "real": [
     -12,
     12,
@@ -742,6 +757,7 @@
     25
    ],
    "name": "rgamma_wide",
+   "oracle": "scipy.special.rgamma",
    "real": [
     -12,
     12,
@@ -758,6 +774,7 @@
     25
    ],
    "name": "loggamma_wide",
+   "oracle": "scipy.special.loggamma",
    "real": [
     -12,
     12,
@@ -774,6 +791,7 @@
     25
    ],
    "name": "digamma_wide",
+   "oracle": "scipy.special.psi",
    "real": [
     -12,
     12,
@@ -790,6 +808,7 @@
     31
    ],
    "name": "zeta_wide",
+   "oracle": "mpmath.zeta",
    "real": [
     -5,
     8,
@@ -806,6 +825,7 @@
     33
    ],
    "name": "erf_wide",
+   "oracle": "scipy.special.erf",
    "real": [
     -8,
     8,
@@ -822,6 +842,7 @@
     33
    ],
    "name": "erfc_wide",
+   "oracle": "scipy.special.erfc",
    "real": [
     -8,
     8,
@@ -838,6 +859,7 @@
     33
    ],
    "name": "erfi_wide",
+   "oracle": "scipy.special.erfi",
    "real": [
     -8,
     8,
@@ -854,6 +876,7 @@
     33
    ],
    "name": "wofz_wide",
+   "oracle": "scipy.special.wofz",
    "real": [
     -8,
     8,
@@ -870,6 +893,7 @@
     51
    ],
    "name": "expi_wide",
+   "oracle": "scipy.special.exp1",
    "real": [
     -25,
     25,
@@ -886,6 +910,7 @@
     33
    ],
    "name": "lambertw_wide",
+   "oracle": "scipy.special.lambertw",
    "real": [
     -8,
     8,
@@ -902,6 +927,7 @@
     17
    ],
    "name": "besselj0_wide",
+   "oracle": "scipy.special.jv",
    "real": [
     -25,
     25,
@@ -918,6 +944,7 @@
     31
    ],
    "name": "besselj10_wide",
+   "oracle": "scipy.special.jv",
    "real": [
     -30,
     30,
@@ -934,6 +961,7 @@
     31
    ],
    "name": "bessely2p7_wide",
+   "oracle": "scipy.special.yv",
    "real": [
     -30,
     30,
@@ -950,6 +978,7 @@
     17
    ],
    "name": "besseli1p5_wide",
+   "oracle": "scipy.special.iv",
    "real": [
     -25,
     25,
@@ -966,6 +995,7 @@
     31
    ],
    "name": "besselk5_wide",
+   "oracle": "scipy.special.kv",
    "real": [
     -30,
     30,
@@ -982,6 +1012,7 @@
     26
    ],
    "name": "besselkm2p3_wide",
+   "oracle": "scipy.special.kv",
    "real": [
     -25,
     25,
@@ -998,6 +1029,7 @@
     49
    ],
    "name": "airyai_wide",
+   "oracle": "scipy.special.airy",
    "real": [
     -12,
     12,
@@ -1014,6 +1046,7 @@
     49
    ],
    "name": "airybi_wide",
+   "oracle": "scipy.special.airy",
    "real": [
     -12,
     12,
@@ -1030,6 +1063,7 @@
     17
    ],
    "name": "cn_wide",
+   "oracle": "mpmath.ellipfun",
    "real": [
     -6,
     6,
@@ -1046,6 +1080,7 @@
     17
    ],
    "name": "sn_wide",
+   "oracle": "mpmath.ellipfun",
    "real": [
     -6,
     6,
@@ -1062,6 +1097,7 @@
     17
    ],
    "name": "tan_wide",
+   "oracle": "numpy",
    "real": [
     -12,
     12,
@@ -1078,951 +1114,16 @@
     49
    ],
    "name": "sinh_wide",
+   "oracle": "numpy",
    "real": [
     -12,
     12,
     49
    ],
    "tol": 1e-12
-  },
-  {
-   "expression": "-z^2",
-   "file": "reading_0.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_0",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "2^-z",
-   "file": "reading_1.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_1",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "2z^2",
-   "file": "reading_2.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_2",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "z^2^3",
-   "file": "reading_3.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_3",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "(z^2)^3",
-   "file": "reading_4.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_4",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "1/2z",
-   "file": "reading_5.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_5",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "z(z+1)",
-   "file": "reading_6.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_6",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "(z-1)(z+1)",
-   "file": "reading_7.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_7",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "2 pi i",
-   "file": "reading_8.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_8",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "2sin(z)",
-   "file": "reading_9.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_9",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "1e-3z",
-   "file": "reading_10.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_10",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "2e",
-   "file": "reading_11.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_11",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "z - -z",
-   "file": "reading_12.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_12",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "--z",
-   "file": "reading_13.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_13",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "z!",
-   "file": "reading_14.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_14",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "(z+1)!",
-   "file": "reading_15.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_15",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "1/Γ(z)",
-   "file": "reading_16.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_16",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "ζ(z) + ψ(z)",
-   "file": "reading_17.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_17",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "ln(z) + arcsin(z)",
-   "file": "reading_18.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_18",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "z!^2",
-   "file": "reading_19.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_19",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "exp(1/z)",
-   "file": "reading_20.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_20",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "(z-1)(z+1)/(z^2+1)",
-   "file": "reading_21.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_21",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "-z^2+2z-1/(z^2+1)",
-   "file": "reading_22.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_22",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "2**z",
-   "file": "reading_23.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_23",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "abs(z)^2 + re(z)*im(z) - arg(conj(z))",
-   "file": "reading_24.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_24",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "1e16z",
-   "file": "reading_25.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_25",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "0.000125z",
-   "file": "reading_26.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_26",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  },
-  {
-   "expression": "sqrt(z) + log(z) + acos(z) + atanh(z) + acosh(z) + asinh(z) + atan(z)",
-   "file": "reading_27.npy",
-   "imag": [
-    -2.5,
-    2.5,
-    13
-   ],
-   "name": "reading_27",
-   "real": [
-    -3.5,
-    3.5,
-    15
-   ],
-   "tol": 1e-12
-  }
- ],
- "catalog": [
-  {
-   "cap": 5.0,
-   "domain": {
-    "imag": {
-     "hi": 2.5,
-     "lo": 0.0
-    },
-    "real": {
-     "hi": 4.0,
-     "lo": -5.5
-    }
-   },
-   "expression": "1/gamma(z)",
-   "label": "1/Γ(z) — reciprocal factorial",
-   "name": "rgamma",
-   "notes": "Entire, with zeros at the non-positive integers: the ripple along the negative real axis. Jahnke-Emde's Fig. 6.",
-   "window": {
-    "imag": {
-     "hi": 6.0,
-     "lo": -6.0
-    },
-    "real": {
-     "hi": 8.0,
-     "lo": -12.0
-    }
-   }
-  },
-  {
-   "cap": 5.0,
-   "domain": {
-    "imag": {
-     "hi": 2.5,
-     "lo": 0.0
-    },
-    "real": {
-     "hi": 4.5,
-     "lo": -4.5
-    }
-   },
-   "expression": "gamma(z)",
-   "label": "Γ(z) — gamma",
-   "name": "gamma",
-   "notes": "A pole spire at each non-positive integer. Truncating per band cuts each spire at its own height, as the published plate does.",
-   "window": {
-    "imag": {
-     "hi": 6.0,
-     "lo": -6.0
-    },
-    "real": {
-     "hi": 10.0,
-     "lo": -10.0
-    }
-   }
-  },
-  {
-   "cap": 6.0,
-   "domain": {
-    "imag": {
-     "hi": 30.0,
-     "lo": 0.0
-    },
-    "real": {
-     "hi": 8.0,
-     "lo": -6.0
-    }
-   },
-   "expression": "zeta(z)",
-   "label": "ζ(z) — Riemann zeta",
-   "name": "zeta",
-   "notes": "The pole at s = 1 and the zeros on the critical line. Sampled here rather than loaded from a cache.",
-   "window": {
-    "imag": {
-     "hi": 40.0,
-     "lo": -40.0
-    },
-    "real": {
-     "hi": 20.0,
-     "lo": -20.0
-    }
-   }
-  },
-  {
-   "cap": 4.0,
-   "domain": {
-    "imag": {
-     "hi": 3.5,
-     "lo": -3.5
-    },
-    "real": {
-     "hi": 4.0,
-     "lo": -4.0
-    }
-   },
-   "expression": "cn(z, 0.64)",
-   "label": "cn(z, 0.64) — Jacobi elliptic",
-   "name": "cn",
-   "notes": "Doubly periodic: a lattice of poles, one per quarter-period cell.",
-   "window": {
-    "imag": {
-     "hi": 12.0,
-     "lo": -12.0
-    },
-    "real": {
-     "hi": 12.0,
-     "lo": -12.0
-    }
-   }
-  },
-  {
-   "cap": 5.0,
-   "domain": {
-    "imag": {
-     "hi": 1.6,
-     "lo": -1.6
-    },
-    "real": {
-     "hi": 4.8,
-     "lo": -4.8
-    }
-   },
-   "expression": "tan(z)",
-   "label": "tan z",
-   "name": "tan",
-   "notes": "A pole at every half-period along the real axis, and flat plateaus of |tan| -> 1 away from it.",
-   "window": {
-    "imag": {
-     "hi": 4.0,
-     "lo": -4.0
-    },
-    "real": {
-     "hi": 12.0,
-     "lo": -12.0
-    }
-   }
-  },
-  {
-   "cap": 2.5,
-   "domain": {
-    "imag": {
-     "hi": 1.5,
-     "lo": -1.5
-    },
-    "real": {
-     "hi": 5.0,
-     "lo": -5.0
-    }
-   },
-   "expression": "sin(z)",
-   "label": "sin z",
-   "name": "sin",
-   "notes": "Entire: zeros on the real axis, growing exponentially away from it.",
-   "window": {
-    "imag": {
-     "hi": 5.0,
-     "lo": -5.0
-    },
-    "real": {
-     "hi": 12.0,
-     "lo": -12.0
-    }
-   }
-  },
-  {
-   "cap": 5.0,
-   "domain": {
-    "imag": {
-     "hi": 1.2,
-     "lo": -1.2
-    },
-    "real": {
-     "hi": 1.2,
-     "lo": -1.2
-    }
-   },
-   "expression": "exp(1/z)",
-   "label": "exp(1/z) — essential singularity",
-   "name": "exp_inv",
-   "notes": "Every value, infinitely often, in every neighbourhood of the origin. The landscape shows why.",
-   "window": {
-    "imag": {
-     "hi": 4.0,
-     "lo": -4.0
-    },
-    "real": {
-     "hi": 4.0,
-     "lo": -4.0
-    }
-   }
-  },
-  {
-   "cap": 5.0,
-   "domain": {
-    "imag": {
-     "hi": 2.0,
-     "lo": -2.0
-    },
-    "real": {
-     "hi": 2.0,
-     "lo": -2.0
-    }
-   },
-   "expression": "1/(z^3 - 1)",
-   "label": "1/(z³ - 1)",
-   "name": "cubic",
-   "notes": "Three simple poles at the cube roots of unity, evenly spaced on the unit circle. The polynomial itself is not a landscape at any setting -- |z³| runs to 16 in the corners of a window this small, so it reads as a tower or, capped, as a table.",
-   "window": {
-    "imag": {
-     "hi": 6.0,
-     "lo": -6.0
-    },
-    "real": {
-     "hi": 6.0,
-     "lo": -6.0
-    }
-   }
-  },
-  {
-   "cap": 4.0,
-   "domain": {
-    "imag": {
-     "hi": 2.0,
-     "lo": -2.0
-    },
-    "real": {
-     "hi": 2.5,
-     "lo": -2.5
-    }
-   },
-   "expression": "(z^2 - 1)/(z^2 + 1)",
-   "label": "(z² - 1)/(z² + 1)",
-   "name": "moebius",
-   "notes": "Zeros at ±1, poles at ±i: two spires and two pits.",
-   "window": {
-    "imag": {
-     "hi": 6.0,
-     "lo": -6.0
-    },
-    "real": {
-     "hi": 6.0,
-     "lo": -6.0
-    }
-   }
-  },
-  {
-   "cap": null,
-   "domain": {
-    "imag": {
-     "hi": 2.0,
-     "lo": -2.0
-    },
-    "real": {
-     "hi": 2.5,
-     "lo": -2.5
-    }
-   },
-   "expression": "sqrt(z)",
-   "label": "√z — a branch cut",
-   "name": "sqrt",
-   "notes": "The principal branch: the phase contours end on the cut along the negative real axis, where the surface is continuous and arg is not.",
-   "window": {
-    "imag": {
-     "hi": 6.0,
-     "lo": -6.0
-    },
-    "real": {
-     "hi": 6.0,
-     "lo": -6.0
-    }
-   }
-  },
-  {
-   "cap": 3.0,
-   "domain": {
-    "imag": {
-     "hi": 2.0,
-     "lo": -2.0
-    },
-    "real": {
-     "hi": 2.5,
-     "lo": -2.5
-    }
-   },
-   "expression": "log(z)",
-   "label": "log z",
-   "name": "log",
-   "notes": "A logarithmic pole at the origin: the one spire that grows slowly enough to see the shape of.",
-   "window": {
-    "imag": {
-     "hi": 6.0,
-     "lo": -6.0
-    },
-    "real": {
-     "hi": 6.0,
-     "lo": -6.0
-    }
-   }
-  },
-  {
-   "cap": 5.0,
-   "domain": {
-    "imag": {
-     "hi": 2.5,
-     "lo": -2.5
-    },
-    "real": {
-     "hi": 3.0,
-     "lo": -3.0
-    }
-   },
-   "expression": "erf(z)",
-   "label": "erf z",
-   "name": "erf",
-   "notes": "Entire, but it grows like exp(z²) off the real axis.",
-   "window": {
-    "imag": {
-     "hi": 8.0,
-     "lo": -8.0
-    },
-    "real": {
-     "hi": 8.0,
-     "lo": -8.0
-    }
-   }
-  },
-  {
-   "cap": 3.0,
-   "domain": {
-    "imag": {
-     "hi": 3.0,
-     "lo": -3.0
-    },
-    "real": {
-     "hi": 11.0,
-     "lo": -11.0
-    }
-   },
-   "expression": "besselj(0, z)",
-   "label": "J₀(z)",
-   "name": "besselj",
-   "notes": "Oscillating and decaying along the real axis, growing off it.",
-   "window": {
-    "imag": {
-     "hi": 8.0,
-     "lo": -8.0
-    },
-    "real": {
-     "hi": 25.0,
-     "lo": -25.0
-    }
-   }
-  },
-  {
-   "cap": 5.0,
-   "domain": {
-    "imag": {
-     "hi": 2.5,
-     "lo": 0.0
-    },
-    "real": {
-     "hi": 4.5,
-     "lo": -4.5
-    }
-   },
-   "expression": "digamma(z)",
-   "label": "ψ(z) — digamma",
-   "name": "digamma",
-   "notes": "Γ's logarithmic derivative: simple poles at the non-positive integers, and no zeros in sight.",
-   "window": {
-    "imag": {
-     "hi": 6.0,
-     "lo": -6.0
-    },
-    "real": {
-     "hi": 10.0,
-     "lo": -10.0
-    }
-   }
   }
  ],
  "columns": "[real][imag]",
- "defaults": {
-  "buffer": 4000,
-  "resolution": 600
- },
- "errors": [
-  {
-   "length": 1,
-   "message": "there is no expression here, only empty space",
-   "position": 0,
-   "text": ""
-  },
-  {
-   "length": 1,
-   "message": "expected ')' to close the call to sin",
-   "position": 5,
-   "text": "sin(z"
-  },
-  {
-   "length": 1,
-   "message": "expected ')' to close the group",
-   "position": 4,
-   "text": "(z+1"
-  },
-  {
-   "length": 1,
-   "message": "the expression stops in the middle",
-   "position": 3,
-   "text": "z +"
-  },
-  {
-   "length": 3,
-   "message": "there is no 'foo' in this language; the variable is z, and `describe` lists what else there is",
-   "position": 0,
-   "text": "foo(z)"
-  },
-  {
-   "length": 11,
-   "message": "gamma takes 1 argument, not 2",
-   "position": 0,
-   "text": "gamma(z, 2)"
-  },
-  {
-   "length": 1,
-   "message": "'.' is not something this language uses",
-   "position": 1,
-   "text": "z..2"
-  },
-  {
-   "length": 5,
-   "message": "gamma is a function; it needs an argument, as in gamma(z)",
-   "position": 0,
-   "text": "gamma"
-  },
-  {
-   "length": 1,
-   "message": "'@' is not something this language uses",
-   "position": 4,
-   "text": "z 2 @"
-  },
-  {
-   "length": 1,
-   "message": "')' cannot start a term",
-   "position": 0,
-   "text": ")"
-  },
-  {
-   "length": 4,
-   "message": "there is no 'gama'; did you mean gamma or rgamma or lgamma?",
-   "position": 0,
-   "text": "gama(z)"
-  },
-  {
-   "length": 1,
-   "message": "the expression stops in the middle",
-   "position": 2,
-   "text": "1/"
-  },
-  {
-   "length": 1,
-   "message": "the expression stops in the middle",
-   "position": 2,
-   "text": "z^"
-  },
-  {
-   "length": 5,
-   "message": "cn takes 2 arguments, not 1",
-   "position": 0,
-   "text": "cn(z)"
-  },
-  {
-   "length": 2,
-   "message": "there is no 'PI' in this language; the variable is z, and `describe` lists what else there is",
-   "position": 2,
-   "text": "2 PI"
-  },
-  {
-   "length": 1,
-   "message": "'\"' is not something this language uses",
-   "position": 11,
-   "text": "__import__(\"os\")"
-  },
-  {
-   "length": 1,
-   "message": "';' is not something this language uses",
-   "position": 1,
-   "text": "z; print(1)"
-  }
- ],
  "grid": {
   "imag": [
    -2.5,
@@ -2035,419 +1136,5 @@
    15
   ]
  },
- "landscapes": [
-  {
-   "bundle": "landscape_gamma.kurven",
-   "layers": 9,
-   "spec": {
-    "caps": {
-     "kind": "uniform",
-     "z": 5.0
-    },
-    "domain": {
-     "imag": {
-      "hi": 2.5,
-      "lo": 0.0
-     },
-     "real": {
-      "hi": 4.5,
-      "lo": -4.5
-     }
-    },
-    "expression": "gamma(z)",
-    "layers": null,
-    "name": "gamma",
-    "resolution": 90,
-    "spacing": null
-   }
-  },
-  {
-   "bundle": "landscape_cubic.kurven",
-   "layers": 9,
-   "spec": {
-    "caps": {
-     "kind": "uniform",
-     "z": 5.0
-    },
-    "domain": {
-     "imag": {
-      "hi": 2.0,
-      "lo": -2.0
-     },
-     "real": {
-      "hi": 2.0,
-      "lo": -2.0
-     }
-    },
-    "expression": "1/(z^3 - 1)",
-    "layers": null,
-    "name": "cubic",
-    "resolution": 64,
-    "spacing": 0.4
-   }
-  },
-  {
-   "bundle": "landscape_typed.kurven",
-   "layers": 9,
-   "spec": {
-    "caps": null,
-    "domain": {
-     "imag": {
-      "hi": 1.5,
-      "lo": -1.5
-     },
-     "real": {
-      "hi": 5.0,
-      "lo": -5.0
-     }
-    },
-    "expression": "sin(z)/z",
-    "layers": null,
-    "name": "",
-    "resolution": 48,
-    "spacing": null
-   }
-  }
- ],
- "language": {
-  "constants": [
-   {
-    "aliases": [
-     "j"
-    ],
-    "help": "the imaginary unit",
-    "name": "i"
-   },
-   {
-    "aliases": [
-     "π"
-    ],
-    "help": "π",
-    "name": "pi"
-   },
-   {
-    "aliases": [],
-    "help": "Euler's number",
-    "name": "e"
-   },
-   {
-    "aliases": [
-     "τ"
-    ],
-    "help": "2π",
-    "name": "tau"
-   }
-  ],
-  "functions": [
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "e raised to z",
-    "name": "exp"
-   },
-   {
-    "aliases": [
-     "ln"
-    ],
-    "arity": 1,
-    "help": "natural logarithm, principal branch",
-    "name": "log"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "square root, principal branch",
-    "name": "sqrt"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "sine",
-    "name": "sin"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "cosine",
-    "name": "cos"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "tangent — poles at the odd multiples of π/2",
-    "name": "tan"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "cotangent",
-    "name": "cot"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "secant",
-    "name": "sec"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "cosecant",
-    "name": "csc"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "hyperbolic sine",
-    "name": "sinh"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "hyperbolic cosine",
-    "name": "cosh"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "hyperbolic tangent",
-    "name": "tanh"
-   },
-   {
-    "aliases": [
-     "arcsin"
-    ],
-    "arity": 1,
-    "help": "inverse sine",
-    "name": "asin"
-   },
-   {
-    "aliases": [
-     "arccos"
-    ],
-    "arity": 1,
-    "help": "inverse cosine",
-    "name": "acos"
-   },
-   {
-    "aliases": [
-     "arctan"
-    ],
-    "arity": 1,
-    "help": "inverse tangent",
-    "name": "atan"
-   },
-   {
-    "aliases": [
-     "arcsinh"
-    ],
-    "arity": 1,
-    "help": "inverse hyperbolic sine",
-    "name": "asinh"
-   },
-   {
-    "aliases": [
-     "arccosh"
-    ],
-    "arity": 1,
-    "help": "inverse hyperbolic cosine",
-    "name": "acosh"
-   },
-   {
-    "aliases": [
-     "arctanh"
-    ],
-    "arity": 1,
-    "help": "inverse hyperbolic tangent",
-    "name": "atanh"
-   },
-   {
-    "aliases": [
-     "Γ"
-    ],
-    "arity": 1,
-    "help": "Γ(z) — poles at the non-positive integers",
-    "name": "gamma"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "1/Γ(z), entire; zeros at 0, -1, -2, ...",
-    "name": "rgamma"
-   },
-   {
-    "aliases": [
-     "lgamma"
-    ],
-    "arity": 1,
-    "help": "log Γ(z), principal branch",
-    "name": "loggamma"
-   },
-   {
-    "aliases": [
-     "psi",
-     "ψ"
-    ],
-    "arity": 1,
-    "help": "ψ(z) = Γ'(z)/Γ(z)",
-    "name": "digamma"
-   },
-   {
-    "aliases": [
-     "ζ"
-    ],
-    "arity": 1,
-    "help": "ζ(z) — the pole is at z = 1",
-    "name": "zeta"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "the error function",
-    "name": "erf"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "the complementary error function",
-    "name": "erfc"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "the imaginary error function",
-    "name": "erfi"
-   },
-   {
-    "aliases": [
-     "faddeeva"
-    ],
-    "arity": 1,
-    "help": "the Faddeeva function w(z)",
-    "name": "wofz"
-   },
-   {
-    "aliases": [
-     "Ei"
-    ],
-    "arity": 1,
-    "help": "the exponential integral, continued as -E₁(-z)",
-    "name": "expi"
-   },
-   {
-    "aliases": [
-     "W"
-    ],
-    "arity": 1,
-    "help": "W(z), the principal branch of the Lambert W function",
-    "name": "lambertw"
-   },
-   {
-    "aliases": [
-     "Ai"
-    ],
-    "arity": 1,
-    "help": "Ai(z)",
-    "name": "airyai"
-   },
-   {
-    "aliases": [
-     "Bi"
-    ],
-    "arity": 1,
-    "help": "Bi(z)",
-    "name": "airybi"
-   },
-   {
-    "aliases": [
-     "jv"
-    ],
-    "arity": 2,
-    "help": "J_n(z), first argument the order",
-    "name": "besselj"
-   },
-   {
-    "aliases": [
-     "yv"
-    ],
-    "arity": 2,
-    "help": "Y_n(z), first argument the order",
-    "name": "bessely"
-   },
-   {
-    "aliases": [
-     "iv"
-    ],
-    "arity": 2,
-    "help": "I_n(z), first argument the order",
-    "name": "besseli"
-   },
-   {
-    "aliases": [
-     "kv"
-    ],
-    "arity": 2,
-    "help": "K_n(z), first argument the order",
-    "name": "besselk"
-   },
-   {
-    "aliases": [],
-    "arity": 2,
-    "help": "Jacobi sn(z, m), doubly periodic",
-    "name": "sn"
-   },
-   {
-    "aliases": [],
-    "arity": 2,
-    "help": "Jacobi cn(z, m), doubly periodic",
-    "name": "cn"
-   },
-   {
-    "aliases": [],
-    "arity": 2,
-    "help": "Jacobi dn(z, m), doubly periodic",
-    "name": "dn"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "|z|, as a real value",
-    "name": "abs"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "the real part",
-    "name": "re"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "the imaginary part",
-    "name": "im"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "the complex conjugate",
-    "name": "conj"
-   },
-   {
-    "aliases": [],
-    "arity": 1,
-    "help": "the argument of z",
-    "name": "arg"
-   }
-  ],
-  "operators": [
-   "+",
-   "-",
-   "*",
-   "/",
-   "^",
-   "**",
-   "!"
-  ],
-  "variable": "z"
- }
+ "unheld": {}
 }
