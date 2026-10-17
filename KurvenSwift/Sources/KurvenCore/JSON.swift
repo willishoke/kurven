@@ -3,7 +3,8 @@ import Foundation
 /// A JSON value, and a canonical writer for it.
 ///
 /// `Codable` is deliberately not used for the manifest. The contract test is
-/// "decode a manifest, re-encode it, compare bytes with what Python wrote", and
+/// "decode a manifest, re-encode it, compare bytes with the file", the files
+/// were Python's until the golden sets were regenerated from here, and
 /// `JSONEncoder` cannot produce Python-canonical output: it renders the `Double`
 /// 5.0 as `5`, so a cap height would round-trip to a different document every
 /// time. Owning the writer costs sixty lines and buys an exact comparison, plus
@@ -83,6 +84,31 @@ public extension JSONValue {
         }
     }
 
+    /// The document `json.dumps(value, sort_keys=True, indent=indent,
+    /// ensure_ascii=ascii)` writes, byte for byte: the fixture indexes are
+    /// read by people as well as programs, and a golden file regenerated here
+    /// must diff cleanly against one Python wrote.
+    func pretty(indent: Int = 1, ascii: Bool = true) -> String {
+        func render(_ v: JSONValue, _ depth: Int) -> String {
+            let inner = String(repeating: " ", count: indent * (depth + 1))
+            let outer = String(repeating: " ", count: indent * depth)
+            switch v {
+            case .array(let a) where !a.isEmpty:
+                return "[\n" + a.map { inner + render($0, depth + 1) }.joined(separator: ",\n")
+                    + "\n" + outer + "]"
+            case .object(let o) where !o.isEmpty:
+                return "{\n" + o.keys.sorted().map {
+                    inner + JSONValue.quote($0, ascii: ascii) + ": " + render(o[$0]!, depth + 1)
+                }.joined(separator: ",\n") + "\n" + outer + "}"
+            case .array: return "[]"
+            case .object: return "{}"
+            case .string(let s): return JSONValue.quote(s, ascii: ascii)
+            default: return v.canonical
+            }
+        }
+        return render(self, 0)
+    }
+
     /// Python's `repr` for a float: the shortest decimal that round-trips, with
     /// a trailing `.0` on integral values. Swift's `Double.description` agrees,
     /// so this is mostly a place to state the requirement and to refuse the
@@ -92,9 +118,14 @@ public extension JSONValue {
         return d.description
     }
 
-    static func quote(_ s: String) -> String {
+    static func quote(_ s: String, ascii: Bool = false) -> String {
         var out = "\""
         for c in s.unicodeScalars {
+            if ascii, c.value > 0x7F {
+                // Python's ensure_ascii: UTF-16 code units, as \uXXXX.
+                for unit in String(c).utf16 { out += String(format: "\\u%04x", unit) }
+                continue
+            }
             switch c {
             case "\"": out += "\\\""
             case "\\": out += "\\\\"

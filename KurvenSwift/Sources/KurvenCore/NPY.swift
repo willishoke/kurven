@@ -224,16 +224,33 @@ public extension NPYArray {
 // MARK: - writing
 
 public extension NPY {
-    /// Write a C-order array. Only what the CLI needs to dump a depth image for
-    /// comparison against the Python oracle -- the bundle itself is written by
-    /// the Python side.
-    public static func write(_ values: [Float], shape: [Int], to url: URL) throws {
+    /// Write a C-order float32 array: a depth image, a bundle's grids.
+    static func write(_ values: [Float], shape: [Int], to url: URL) throws {
+        try write(values, dtype: .float32, shape: shape, to: url)
+    }
+
+    /// Write a C-order float64 array: vertices, the golden fixtures' answers.
+    static func write(_ values: [Double], shape: [Int], to url: URL) throws {
+        try write(values, dtype: .float64, shape: shape, to: url)
+    }
+
+    /// Write a C-order int64 array: a polyline set's offsets, a mesh's
+    /// triangles.
+    static func write(_ values: [Int], shape: [Int], to url: URL) throws {
+        try write(values.map(Int64.init), dtype: .int64, shape: shape, to: url)
+    }
+
+    /// The bytes `np.save` writes for a C-contiguous array of this dtype, so a
+    /// fixture written here is byte-identical to one numpy wrote.
+    private static func write<T>(_ values: [T], dtype: NPYDType, shape: [Int],
+                                 to url: URL) throws {
+        precondition(MemoryLayout<T>.stride == dtype.itemSize, "element size is not \(dtype)")
         precondition(shape.reduce(1, *) == values.count, "shape does not match count")
         var out = Data()
         let shapeText = shape.count == 1
             ? "(\(shape[0]),)"
             : "(" + shape.map(String.init).joined(separator: ", ") + ")"
-        var header = "{'descr': '<f4', 'fortran_order': False, 'shape': \(shapeText), }"
+        var header = "{'descr': '\(dtype.rawValue)', 'fortran_order': False, 'shape': \(shapeText), }"
         // numpy pads the header so the data starts on a 64-byte boundary.
         let unpadded = 10 + header.utf8.count + 1
         let padding = (64 - unpadded % 64) % 64

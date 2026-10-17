@@ -17,13 +17,11 @@ Build release for anything larger than a smoke test: the readback and the
 judge are tight scalar loops, and unoptimized Swift bounds-checks every element
 of a several-hundred-megabyte buffer.
 
-Swift is the one canonical implementation. Python remains for three things:
-the four published plates (`examples/`), which are Python programs; the
-fixture generator; and the Python lane of the tests, which uses scipy as the
-reference for the special functions. It is not a second backend, and new
-behaviour is not mirrored into it. `uv` finds or makes its environment from
-the lockfile on first use, so a fresh clone or worktree needs no setup step;
-`KURVEN_PYTHON` names an interpreter explicitly.
+Swift is the only implementation. Python is in the repository for one
+purpose: where kurven implements something a third-party library already
+implements, that library is the oracle, and `tests/oracles.py` asks it for the
+answers and writes them to `tests/fixtures`. Nothing in the build or the checks
+runs Python.
 
 ## Checks
 
@@ -41,37 +39,51 @@ surface's visibility to its analytic answer. The end-to-end comparisons that
 drew every plate in both languages were the cutover's test and are gone: they
 had come to pin the grid contours the refiner moved past.
 
-What remains of the cross-language contract is in files. `tests/make_fixtures.py`
-writes `tests/fixtures/`; both lanes read the same files, and the files are in
-git, the three landscape bundles included, so the Swift lane needs nothing but
-a checkout.
+The fixtures in `tests/fixtures` are in git and are of two kinds.
 
-- **The schema round trip.** A fixture manifest decoded by Swift and
-  re-encoded must come back byte for byte. That is the only check that the two
-  schema definitions agree, and it is why the Swift mirror needs no codegen.
-- **The hatching.** `tests/fixtures/hatch` is every one of the four hatching
-  kinds derived by `kurven/hatch.py` from one grid, one perimeter and two kinds
-  of truncation (one height, and a height per band); the Swift lane derives them again from the same description and
-  compares vertex for vertex.
-- **The functions.** `tests/fixtures/expr` holds every function of the
-  language to scipy on a grid that includes the real axis exactly.
+- **Oracle** sets are a third-party library's answers. `expr/` holds every
+  function of the language to numpy, scipy.special or mpmath (scipy's zeta
+  and ellipj are real-only) on a grid that includes the real axis exactly,
+  plus each special function on the window its landscape uses; `contour/`
+  holds the native marching squares to contourpy on three awkward grids;
+  `npy/` holds the reader to files numpy wrote. `tests/oracles.py` writes
+  them, names the library behind each function, and refuses a language table
+  with a function it has no oracle for. CI never runs it: regenerate by hand
+  when an oracle or a case changes, and commit the result on its own.
+- **Golden** sets are kurven's own answers, written by
+  `kurven-cli fixtures tests/fixtures`: the schema round-trip bundles
+  (`contract/`), the plate cameras (`camera/`), the hidden-line clip
+  (`clip/`), every hatching kind (`hatch/`), and three native landscapes with
+  their specs (`expr/landscape_*`, `expr/landscapes.json`). A golden file proves
+  nothing about correctness; it proves that a change to the output was made on
+  purpose. `scripts/check.sh` regenerates them in place and fails on any
+  difference, so a change to one is a regeneration committed on its own, with
+  the diff in the message. A few files in these sets are frozen *inputs* (the
+  contract bundles' noise layers, the camera's points, the clip fixture's depth
+  buffer and probes), which the writer reads rather than writes.
+
+`expr/language.json` is neither: the canonical spellings of the ambiguous
+readings, the error positions and the function table, frozen as the retired
+Python implementation of the language reported them, and edited by hand.
 
 Or a piece at a time:
 
 ```bash
-swift run -c release --package-path KurvenSwift kurven-test   # the Swift lane
-python tests/check_bundle.py           # python lane: schema, CSR, camera, clip
-python tests/check_expr.py             # the expression language and its numerics
-python tests/make_fixtures.py          # regenerate the fixtures
+swift run -c release --package-path KurvenSwift kurven-test        # the Swift lane
+swift run -c release --package-path KurvenSwift kurven-cli fixtures tests/fixtures
+uv run tests/oracles.py                                            # the oracle sets
 ```
 
-Run `kurven-test` with no argument; it finds the fixtures itself.
+Run `kurven-test` with no argument; it finds the fixtures itself. `uv` makes
+the oracles' environment (numpy, scipy, mpmath, contourpy) from the lockfile on
+first use; `uv sync --extra figures` adds matplotlib for the scripts that draw
+figures for notes.
 
 **CI** (`.github/workflows/check.yml`) runs `scripts/check.sh` on every push
 to main and every pull request, on an Apple Silicon runner so the Swift lane
-draws with Metal. Before it, CI regenerates the fixtures and compares them
-with what is committed, with the git SHA each manifest records as the one
-line allowed to differ.
+draws with Metal. Run by hand with the `oracles` input, it also regenerates the
+oracle sets under uv and diffs them, which is the check to run after a scipy or
+mpmath bump.
 
 A check that cannot run on a machine is *skipped* and listed in the summary
 rather than failed, with one exception: a suite skipped for want of a Metal
@@ -92,36 +104,28 @@ KurvenSwift/Sources/
                    forced systems
   KurvenMetal/     the depth pass, the preview, the resource cache
   KurvenBake/      scene -> strokes; tiling; PNG
-  KurvenService/   the Python plates over a pipe
   KurvenApp/       the window, the picker, the landscape as a set of controls
   kurven-cli/      landscape, bake, surface, preview, bench, refine, catalog,
-                   inspect, contract, ...
-  kurven-test/     the Swift lane of the tests
-kurven/            the Python library behind the published plates, the bundle
-                   schema's Python side, and the hatching reference
-examples/          the published plates as Python programs: gamma, elliptic,
-                   zeta, recip_factorial; function.py for any landscape
-tests/             the fixture generator and the Python lane
+                   inspect, contract, fixtures, ...
+  kurven-test/     the test suite
+tests/             oracles.py and the fixtures
 scripts/           check.sh, bundle-app.sh
 docs/gallery/      the README's figures and the script that bakes them
 ```
 
-## The published plates
+## Bundles from the Python plates
 
-The four plates of the original atlas are Python programs, and a frozen bundle
-of one cannot change its own domain or resolution. `python -m kurven.export`
-writes one as a bundle, and `kurven-cli resample` asks the service to rebuild
-one; the app opens either.
+The four plates of the original atlas were Python programs, retired with the
+rest of the Python package; their bundles still open, since reading is native.
+A plate bundle records the plate's arguments in `provenance.params`, and when
+its `provenance.function` is a catalog preset the app fills the landscape
+controls from them (`rMin`, `rMax`, `iMin`, `iMax` the window, `res` the
+resolution, `zLimit` the cap) and Rebuild samples it natively. One whose
+function is not in the catalog opens read-only.
 
 ```bash
-python -m kurven.export recip -o recip.kurven --res 1600 --derived
-python examples/gamma.py --gpu          # the full plate: ~1 min with a GPU, ~10 on CPU
+KurvenApp --open recip.kurven --resample res=800 --screenshot recip.png
 ```
-
-`--derived` writes descriptions instead of arrays wherever it can. Not every
-layer can be described: elliptic's phase contours are trimmed by a rule
-written for that one plate, and those stay dumped, which the schema says
-rather than hides.
 
 ## Things worth knowing
 
@@ -135,9 +139,5 @@ rather than hides.
   as "opened with a file", and SwiftUI's `WindowGroup` then declines to create
   its default window. Use `--open PATH`. The Finder and `open -a` were never
   affected.
-- **zeta's plate samples its own grid.** `examples/zeta.py` was born from a
-  precomputed ζ grid in the author's notes; where that file is absent it looks
-  for `$KURVEN_ZETA_CACHE`, then `~/.cache/kurven/zeta_5000.npy`, and failing
-  both samples the grid itself (three seconds) and saves it there.
 - **The README's figures** are baked by `python3 docs/gallery/make.py` from a
   release build of the CLI. Rerun it after a change to how plates are drawn.

@@ -6,8 +6,8 @@ import Foundation
 /// Weideman's rational approximation ("Computation of the complex error
 /// function", 1994) with 64 terms: a single polynomial in `(L + iz)/(L - iz)`,
 /// accurate to a few ulps across the upper half-plane, whose coefficients are
-/// a discrete Fourier transform computed once (in `tests/make_fixtures.py`'s
-/// prototype) and written down here. The lower half-plane follows from
+/// a discrete Fourier transform computed once, in a scalar prototype, and
+/// written down here. The lower half-plane follows from
 /// `w(-z) = 2 e^{-z²} - w(z)`.
 public enum Faddeeva {
     static let L = 6.727171322029716
