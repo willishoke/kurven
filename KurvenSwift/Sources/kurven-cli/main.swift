@@ -332,12 +332,21 @@ func surfaceCommand(_ args: Args) throws {
     // cap, baked straight to SVG. A proof of concept: no window, no preview.
     if shape == "sn", let amplitude = try args.double("relief") {
         let m = try args.double("modulus") ?? 0.64
+        // `--repeat N[,M]`: N periods round the ring and M round the tube,
+        // the ink computed once and carried round by the periods.
+        let repeats = (args.flags["repeat"] ?? "1").split(separator: ",").compactMap { Int($0) }
+        guard (1...2).contains(repeats.count), repeats.allSatisfy({ $0 >= 1 }) else {
+            throw CLIError("--repeat wants N or N,M whole periods, as in 8 or 8,2")
+        }
+        // `--samples`: the lattice round the ring in all, 1024 a period at most.
+        let lattice = try args.int("samples", 8192)
         let clock = ContinuousClock()
         var plate: PeriodicTorus.Plate!
         let built = try clock.measure {
             plate = try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r,
                                                resolution: try args.int("grid", 600),
-                                               lattice: try args.int("samples", 1024), capped: true)
+                                               lattice: min(lattice, 1024), capped: true)
+                .repeated(real: repeats[0], imag: repeats.count > 1 ? repeats[1] : 1, lattice: lattice)
                 .relief(amplitude: amplitude, reach: min(r, R - r))
         }
         var projection = SurfaceRequest.projection

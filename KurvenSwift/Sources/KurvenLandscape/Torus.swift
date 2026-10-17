@@ -32,12 +32,48 @@ public enum PeriodicTorus {
         /// at the ceiling, for `relief`; nil for a plate built without f.
         public let height: (@Sendable (P2<ParamSpace>) -> Double)?
         public let ceiling: Double
+        /// The torus's radii, for a plate to be re-placed on the same torus.
+        public let radii: (major: Double, minor: Double)
 
         public init(surface: ParametricSurface, layers: [Layer],
                     height: (@Sendable (P2<ParamSpace>) -> Double)? = nil,
-                    ceiling: Double = .infinity) {
+                    ceiling: Double = .infinity, radii: (major: Double, minor: Double) = (2, 1)) {
             self.surface = surface; self.layers = layers
-            self.height = height; self.ceiling = ceiling
+            self.height = height; self.ceiling = ceiling; self.radii = radii
+        }
+
+        /// The same function over several periods: a torus whose rectangle
+        /// is `real` periods long and `imag` periods high, carrying `real`
+        /// × `imag` copies of the ink. The ink is periodic, so each copy is
+        /// a translation of the one computed; the bigger torus is the
+        /// quotient of the plane by the sublattice, and this is the
+        /// pullback along the covering. The lattice keeps the base's
+        /// samples per period around the ring, up to `lattice` in all.
+        public func repeated(real: Int, imag: Int = 1, lattice: Int) -> Plate {
+            guard real >= 1, imag >= 1, real * imag > 1 else { return self }
+            let pu = surface.u.range.length, pv = surface.v.range.length
+            let domain = Domain(real: Interval(lo: surface.u.range.lo, hi: surface.u.range.lo + Double(real) * pu),
+                                imag: Interval(lo: surface.v.range.lo, hi: surface.v.range.lo + Double(imag) * pv))
+            let torus = PeriodicTorus.torus(over: domain, major: radii.major, minor: radii.minor,
+                                            samples: (u: min(surface.u.samples * real, lattice),
+                                                      v: max(surface.v.samples * imag, 32)))
+            let layers = self.layers.map { layer -> Layer in
+                guard let coords = layer.paths.coords else { return layer }
+                var all: [[P2<ParamSpace>]] = []
+                for i in 0..<real {
+                    for j in 0..<imag {
+                        let shift = SIMD2(Double(i) * pu, Double(j) * pv)
+                        for k in 0..<(layer.paths.offsets.count - 1) {
+                            all.append(coords[layer.paths.offsets[k]..<layer.paths.offsets[k + 1]]
+                                .map { P2<ParamSpace>($0.x + shift.x, $0.y + shift.y) })
+                        }
+                    }
+                }
+                return Layer(spec: layer.spec,
+                             paths: PolylineSet(paths: all.map { $0.map { P3(torus.map($0).position) } },
+                                                coords: all))
+            }
+            return Plate(surface: torus, layers: layers, height: height, ceiling: ceiling, radii: radii)
         }
 
         /// The landscape in relief on the torus: the surface displaced along
@@ -57,7 +93,7 @@ public enum PeriodicTorus {
                              paths: PolylineSet(vertices: coords.map { P3(displaced.map($0).position) },
                                                 offsets: layer.paths.offsets, coords: coords))
             }
-            return Plate(surface: displaced, layers: layers, height: height, ceiling: ceiling)
+            return Plate(surface: displaced, layers: layers, height: height, ceiling: ceiling, radii: radii)
         }
 
         /// The same function on a torus of other radii. The contours are the
@@ -72,7 +108,7 @@ public enum PeriodicTorus {
                              paths: PolylineSet(vertices: coords.map { P3(torus.map($0).position) },
                                                 offsets: layer.paths.offsets, coords: coords))
             }
-            return Plate(surface: torus, layers: layers, height: height, ceiling: ceiling)
+            return Plate(surface: torus, layers: layers, height: height, ceiling: ceiling, radii: (R, r))
         }
     }
 
@@ -220,7 +256,7 @@ public enum PeriodicTorus {
             let v = compiled(Complex(c.x, c.y))
             return v.isFinite ? min(v.magnitude, ceiling) : ceiling
         }
-        return Plate(surface: surface, layers: layers, height: relief, ceiling: ceiling)
+        return Plate(surface: surface, layers: layers, height: relief, ceiling: ceiling, radii: (R, r))
     }
 
     /// The torus a rectangle of periods glues into, its lattice `lattice`
@@ -229,11 +265,16 @@ public enum PeriodicTorus {
     static func torus(over domain: Domain, major R: Double, minor r: Double,
                       lattice: Int) -> ParametricSurface {
         let aspect = domain.imag.length / domain.real.length
-        return ParametricSurface.torus(
-            major: R, minor: r,
-            u: ParamAxis(domain.real, periodic: true, samples: lattice),
-            v: ParamAxis(domain.imag, periodic: true,
-                         samples: max(Int(Double(lattice) * min(aspect, 1) * r / R), 32)))
+        return torus(over: domain, major: R, minor: r,
+                     samples: (lattice, max(Int(Double(lattice) * min(aspect, 1) * r / R), 32)))
+    }
+
+    /// The same torus with the lattice's samples given outright.
+    static func torus(over domain: Domain, major R: Double, minor r: Double,
+                      samples: (u: Int, v: Int)) -> ParametricSurface {
+        ParametricSurface.torus(major: R, minor: r,
+                                u: ParamAxis(domain.real, periodic: true, samples: samples.u),
+                                v: ParamAxis(domain.imag, periodic: true, samples: samples.v))
     }
 
     /// sn(z, m) on its fundamental rectangle, [0, 4K) × [0, 2K').
