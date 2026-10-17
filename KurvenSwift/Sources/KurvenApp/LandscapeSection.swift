@@ -13,8 +13,8 @@ import KurvenMath
 /// Every control here says which side of the seam it is on. The function, the
 /// window and the resolution resample (f is evaluated again); the cap and
 /// the hatch spacing restyle (the grids are already here). The status line
-/// reports the first and never the second, because the second has no duration
-/// worth reporting.
+/// reports every resample, and a restyle only when it is long enough to see
+/// -- turning refinement on, or levels the refiner has not placed before.
 struct LandscapeSection: View {
     @Bindable var document: Document
 
@@ -361,9 +361,11 @@ struct LandscapeSection: View {
 
     @ViewBuilder
     private var status: some View {
-        if let text = document.landscapeStatus {
+        if let text = document.drawingStatus ?? document.landscapeStatus {
             HStack(spacing: 6) {
-                if document.sampling { ProgressView().controlSize(.small) }
+                if document.sampling || document.drawingStatus != nil {
+                    ProgressView().controlSize(.small)
+                }
                 Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
         }
@@ -376,7 +378,8 @@ struct LandscapeSection: View {
 /// pole into a plateau you can see the top of. Because the bundle describes its
 /// layers rather than dumping them, moving it is a local re-derivation -- the
 /// heightfield, the wall crests, every cap stroke, the rim, and which contours
-/// survive, all from grids that never leave memory.
+/// survive, all from grids that never leave memory, on another thread, with
+/// the refiner's curves remembered (`Document.redraw`).
 struct TruncationSection: View {
     @Bindable var document: Document
 

@@ -11,6 +11,9 @@ import KurvenDynamics
 /// second copy of the camera to keep in step with the first.
 struct Inspector: View {
     @Bindable var document: Document
+    /// The layer whose level slider is being dragged: its ink is the grid's
+    /// until the drag ends, and placed on f when it does.
+    @State private var draggingLevels: Int?
 
     var body: some View {
         Form {
@@ -115,10 +118,14 @@ struct Inspector: View {
     private func levelSlider(index: Int, levels: [Double]) -> some View {
         let count = Binding(
             get: { Double(levels.count) },
-            set: { document.setLevelCount(Int($0.rounded()), forLayer: index) })
+            set: { document.setLevelCount(Int($0.rounded()), forLayer: index,
+                                          draft: draggingLevels == index) })
         HStack(spacing: 6) {
             Text("levels").font(.caption).foregroundStyle(.secondary)
-            Slider(value: count, in: 1...80, step: 1)
+            Slider(value: count, in: 1...80, step: 1, onEditingChanged: { editing in
+                draggingLevels = editing ? index : nil
+                if !editing { document.rebuildInk() }
+            })
             Text("\(levels.count)")
                 .font(.caption).monospacedDigit().frame(width: 24, alignment: .trailing)
             Button {

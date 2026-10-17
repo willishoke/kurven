@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import KurvenCore
 import KurvenMath
 import KurvenLandscape
@@ -456,6 +457,47 @@ func refinementTests() {
         let plain = try NativeLandscape.build(request, refine: false)
         Check.expect(cutPaths(plain).filter { length($0) > 10 * cell }.isEmpty,
                      "without a refiner the grid draws no cut, only its wrap bundles")
+    }
+
+    Check.suite("refine: a restyle places only the curves it has not placed before") {
+        // The cap slider's path in the app: the same grids under a new cap.
+        // Before the refiner remembered, every phase line of the landscape
+        // was solved again on each step -- 4.5 s on zeta at 600², for ink
+        // that differs from the step before only in where it is clipped.
+        let request = LandscapeRequest(preset: Catalog.native.preset("rgamma")!, resolution: 240)
+        let built = try NativeLandscape.build(request)
+        let inner = built.refine!
+        let solved = Mutex([ContourField: Int]())
+        let counted = ContourRefine(contours: { field, level, paths in
+                                        solved.withLock { $0[field, default: 0] += 1 }
+                                        return inner.contours(field, level, paths)
+                                    },
+                                    magnitude: inner.magnitude, zero: inner.zero,
+                                    tolerance: inner.tolerance).remembering()
+        let bundle = KurvenBundle(url: built.url, manifest: built.manifest, surface: built.surface,
+                                  layers: built.layers, wallMesh: built.wallMesh, refine: counted)
+        let cap = LandscapeStyle.ceiling(of: built.manifest.caps)!
+        var first = bundle.manifest, second = bundle.manifest
+        first.caps = .uniform(cap * 0.9)
+        second.caps = .uniform(cap * 0.8)
+        let once = bundle.restyled(first)
+        let asked = solved.withLock { $0 }
+        let twice = once.restyled(second)
+        let again = solved.withLock { $0 }
+        Check.expect(asked[.phase, default: 0] > 0, "the first restyle places the phase lines",
+                     "\(asked)")
+        Check.expect(again[.phase] == asked[.phase],
+                     "and the next cap places none of them again",
+                     "\(asked[.phase] ?? 0) then \(again[.phase] ?? 0)")
+        // The ink is the refiner's answer, remembered or not, to the bit.
+        let fresh = NativeLandscape.refiner(for: built)!.refine
+        let cold = KurvenBundle(url: built.url, manifest: built.manifest, surface: built.surface,
+                                layers: built.layers, wallMesh: built.wallMesh, refine: fresh)
+            .restyled(second)
+        Check.expect(twice.layers == cold.layers,
+                     "and the ink is the ink a cold refiner draws under that cap",
+                     "\(twice.layers.map(\.paths.vertices.count)) vs "
+                        + "\(cold.layers.map(\.paths.vertices.count))")
     }
 }
 

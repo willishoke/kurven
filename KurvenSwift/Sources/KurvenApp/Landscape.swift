@@ -15,12 +15,30 @@ import KurvenLandscape
 ///   - **the cap, the contour levels, the hatch spacing** need nothing but the
 ///     grids that are already here, because every layer of a landscape's bundle
 ///     is a description rather than dumped ink. They are `restyle`, which
-///     re-derives in milliseconds and never leaves the process.
+///     re-derives from the grids and never leaves the process.
 ///
-/// Dragging a slider therefore does one of two quite different things, and the
-/// difference is visible: a restyle redraws within a frame, a resample coalesces
-/// (one request in flight, the latest edit wins) and drops to a draft
-/// resolution until the drag ends.
+/// Neither runs on the main actor. Both coalesce -- one job in flight, the
+/// latest edit wins -- so a slow function makes the picture lag the hand and
+/// never stops the window. A resample drops to a draft resolution, with the
+/// grid's contours, until the drag ends. A restyle is fast because the
+/// refiner remembers the curves it has placed (`ContourRefine.remembering`):
+/// moving the cap places the rim and the rings at the new levels, and every
+/// phase line is the one already drawn.
+///
+/// What each costs, measured by `kurven-cli landscape-costs` on an Apple M5
+/// Max at 600², off the main actor; `KurvenApp --landscape NAME --drag cap 30`
+/// measures the main actor's longest stall during a drag, 21 ms or less on
+/// every preset:
+///
+///                   sample    dragging   cap step   hatch   levels    dragging
+///     zeta          4.5 s      10 ms      82 ms     12 ms   3.1 s      2 ms
+///     rgamma        467 ms      2 ms      30 ms      1 ms   220 ms     1 ms
+///     cn            206 ms      4 ms      38 ms      9 ms   123 ms     2 ms
+///
+/// Before the refiner remembered, a cap step on zeta was 4.5 s on the main
+/// actor. A layer's levels placed on f are still seconds there: a new count
+/// spreads every level anew, so none is a curve already placed, and the
+/// release pays for all of them while the window carries on.
 @MainActor
 extension Document {
     var isLandscape: Bool {
@@ -38,7 +56,7 @@ extension Document {
         // A different function is a different landscape, not an edit of this
         // one: its styling is the new function's defaults, so nothing of the
         // old plate's cap or levels is carried across.
-        send(request, framing: true)
+        send(request, framing: true, draft: false)
     }
 
     /// The controls changed. `draft` is true while one is being dragged.
@@ -49,12 +67,13 @@ extension Document {
         }
         // The styling travels with the request, so a change of window keeps the
         // truncation and the hatching the user chose rather than re-deriving
-        // them for the new rectangle.
-        if let manifest = bundle?.manifest, isLandscape {
-            request.caps = manifest.caps
-            request.layers = manifest.layers
+        // them for the new rectangle -- the styling asked for, which may not
+        // be drawn yet.
+        if let styling, isLandscape {
+            request.caps = styling.caps
+            request.layers = styling.layers
         }
-        send(request, framing: false)
+        send(request, framing: false, draft: draft)
     }
 
     /// One request in flight, the latest edit queued behind it.
@@ -63,14 +82,14 @@ extension Document {
     /// every intermediate one is worthless the moment the next arrives. Queueing
     /// them would make the picture lag the control by however long the queue is;
     /// dropping all but the last makes it lag by one sample.
-    private func send(_ request: LandscapeRequest, framing: Bool) {
-        wanted = (request, framing)
+    private func send(_ request: LandscapeRequest, framing: Bool, draft: Bool) {
+        wanted = (request, framing, draft)
         pump()
     }
 
     private func pump() {
-        guard !sampling, let (request, framing) = wanted else { return }
-        if let shown, shown.samples(as: request), !framing {
+        guard !sampling, let (request, framing, draft) = wanted else { return }
+        if let shown, shown.samples(as: request), !framing, !shownDraft || draft {
             // The samples on screen are already the ones asked for; only the
             // styling moved, and that is not this path's business.
             wanted = nil
@@ -86,15 +105,17 @@ extension Document {
             do {
                 // Sampled here, in this process: the evaluator is native, and
                 // the bundle is a value rather than a directory to read back.
+                let refining = refineContours && !draft
                 let bundle = try await Task.detached(priority: .userInitiated) {
-                    try NativeLandscape.build(request)
+                    try NativeLandscape.build(request, refine: refining)
                 }.value
                 // A surface chosen meanwhile is the document now.
                 if generation == asked {
-                    adopt(bundle, keepingCamera: !framing && scene != nil)
+                    adopt(bundle, keepingCamera: !framing && scene != nil, draft: draft)
                     shown = request
                 }
                 landscapeStatus = "\(request.resolution)² in \(clock.now - started)"
+                    + (draft ? " (draft)" : "")
             } catch {
                 landscapeStatus = "\(error)"
             }
@@ -168,42 +189,151 @@ extension Document {
         return request.applying(plateArguments: arguments)
     }
 
-    // MARK: - restyling, which costs nothing
+    // MARK: - restyling
 
-    /// Edit the manifest and re-derive the ink from the grids already in
+    /// The styling the controls show: the latest asked for, else the bundle's.
+    var styling: Styling? { styled ?? bundle.map { Styling($0.manifest) } }
+
+    /// Edit the styling and re-derive the ink from the grids already in
     /// memory. The landscape is unchanged -- the samples are the samples -- so
     /// the camera, the framing and the window all stay exactly as they are.
+    ///
+    /// The edit lands in `styled` at once, where the controls read it, and
+    /// the ink follows from another thread (`redraw`).
     func restyle(_ change: (inout Manifest) -> Void) {
-        guard let bundle, let navigator else { return }
+        guard let bundle, navigator != nil, let before = styling else { return }
         var manifest = bundle.manifest
+        before.apply(to: &manifest)
         change(&manifest)
-        guard manifest != bundle.manifest else { return }
-        let restyled = bundle.restyled(manifest)
-        replace(bundle: restyled)
-        derivedInk = [:]
-        guard let preset = restyled.manifest.presets.first else { return }
-        var scene = Scene(bundle: restyled, preset: preset)
-        scene.camera = navigator.camera
-        self.scene = scene
+        let after = Styling(manifest)
+        guard after != before else { return }
+        styled = after
         // A plate bundle being rebuilt keeps the cap it was given here, too.
-        if landscape != nil { landscape?.caps = manifest.caps }
+        if landscape != nil { landscape?.caps = after.caps }
+        redraw()
     }
 
-    var caps: Caps { bundle?.manifest.caps ?? .none }
+    var caps: Caps { styling?.caps ?? .none }
 
     /// Switch the contour refinement on or off for the open landscape: the
     /// same grids, the ink derived again, the camera where it was.
     func setRefinement(_ on: Bool) {
         refineContours = on
-        guard let bundle, let navigator, isLandscape else { return }
-        let refiner = on ? NativeLandscape.refiner(for: bundle)?.refine : nil
-        let redrawn = bundle.refined(by: refiner)
-        replace(bundle: redrawn)
-        derivedInk = [:]
-        guard let preset = redrawn.manifest.presets.first else { return }
-        var scene = Scene(bundle: redrawn, preset: preset)
-        scene.camera = navigator.camera
-        self.scene = scene
+        redraw()
+    }
+
+    /// The one job that derives ink off the main actor, coalesced like the
+    /// resample: one in flight, and when it lands, whatever was asked for
+    /// meanwhile. A restyle or a change of refinement comes first, since it
+    /// draws every layer; a layer's levels after, on the bundle that results.
+    ///
+    /// A result for a bundle that is no longer open -- a resample landed
+    /// while it was being drawn -- is dropped, and the styling still asked
+    /// for is drawn on the new one.
+    func redraw() {
+        guard !drawing, let bundle, let target = styling else { return }
+        let current = Styling(bundle.manifest)
+        if styled == current { styled = nil }
+        // A draft's contours are the grid's on purpose; the full build that
+        // follows the drag places them.
+        let refine = refineContours && isLandscape && !shownDraft
+        let refinementMoves = isLandscape && !shownDraft && (bundle.refine != nil) != refine
+        let job: Job
+        if target != current || refinementMoves {
+            job = .restyle(target, refine: refinementMoves ? refine : nil)
+        } else if let draft = inkWanted, scene != nil {
+            job = .levels(draft: draft)
+        } else {
+            return
+        }
+        inkWanted = job.isLevels ? nil : inkWanted
+        drawing = true
+        let asked = version
+        let levelSets = bundle.manifest.layers.indices.map { levels(forLayer: $0) }
+        let cached = derivedInk
+        // Said only when it is long enough to see: a cap that redraws within
+        // a frame should not flicker the status line on every step.
+        let slow = Task {
+            try? await Task.sleep(for: .milliseconds(150))
+            if !Task.isCancelled { drawingStatus = job.describing }
+        }
+        Task {
+            let clock = ContinuousClock()
+            let started = clock.now
+            let result = await Task.detached(priority: .userInitiated) { () -> Drawn in
+                switch job {
+                case .restyle(let styling, let refine):
+                    var b = bundle
+                    if let refine {
+                        b = KurvenBundle(url: b.url, manifest: b.manifest, surface: b.surface,
+                                         layers: b.layers, wallMesh: b.wallMesh,
+                                         refine: refine ? NativeLandscape.refiner(for: b)?.refine : nil)
+                    }
+                    var manifest = b.manifest
+                    styling.apply(to: &manifest)
+                    return .restyled(b.restyled(manifest))
+                case .levels(let draft):
+                    let (layers, derived) = Document.inked(bundle, levels: levelSets,
+                                                           cached: cached, draft: draft)
+                    return .inked(layers, derived)
+                }
+            }.value
+            slow.cancel()
+            drawing = false
+            drawingStatus = nil
+            if version == asked {
+                install(result)
+                if case .restyle(_, let refine?) = job, refine, bundle.refine == nil,
+                   self.bundle?.refine == nil {
+                    // Asked to refine a landscape whose function would not
+                    // compile again: say so on the toggle, rather than ask forever.
+                    refineContours = false
+                }
+                if clock.now - started > .milliseconds(150) {
+                    landscapeStatus = "\(job.describing.dropLast()) in \(clock.now - started)"
+                }
+            }
+            redraw()
+        }
+    }
+
+    private func install(_ drawn: Drawn) {
+        switch drawn {
+        case .restyled(let restyled):
+            replace(bundle: restyled)
+            derivedInk = [:]
+            if styled == Styling(restyled.manifest) { styled = nil }
+            guard let navigator, let preset = restyled.manifest.presets.first else { return }
+            var scene = Scene(bundle: restyled, preset: preset)
+            scene.camera = navigator.camera
+            self.scene = scene
+            // A layer drawn at levels of its own is drawn at them again.
+            if !levelCounts.isEmpty { inkWanted = inkWanted ?? false }
+        case .inked(let layers, let derived):
+            derivedInk = derived
+            if let scene { self.scene = scene.drawing(layers) }
+        }
+    }
+
+    private enum Job: Sendable {
+        /// The bundle under this styling; with `refine`, refined or not first.
+        case restyle(Styling, refine: Bool?)
+        case levels(draft: Bool)
+
+        var isLevels: Bool { if case .levels = self { true } else { false } }
+
+        var describing: String {
+            switch self {
+            case .restyle(_, let refine?): refine ? "placing contours on f…" : "drawing from the grid…"
+            case .restyle: "restyling…"
+            case .levels(let draft): draft ? "contouring…" : "placing contours on f…"
+            }
+        }
+    }
+
+    private enum Drawn: Sendable {
+        case restyled(KurvenBundle)
+        case inked([Layer], [Int: DerivedInk])
     }
 
     /// Truncate the landscape differently.
@@ -213,6 +343,8 @@ extension Document {
     /// stroke and rim, and which contours are cut off by `Keep.belowCap`.
     /// All of it is derived, so all of it is this one assignment.
     func setCaps(_ caps: Caps) {
+        // Overrides are of the levels the cap chose; a new cap chooses again.
+        levelCounts = [:]
         restyle { manifest in
             manifest.caps = caps
             // The levels are absolute, so a cap raised past them would leave the
@@ -235,12 +367,11 @@ extension Document {
                                                      keep: keep, tiled: tiled)
             }
         }
-        levelCounts = [:]
     }
 
     /// The hatch spacing of one described hatching layer, in world units.
     func spacing(ofLayer index: Int) -> Double? {
-        guard let spec = bundle?.manifest.layers[safe: index] else { return nil }
+        guard let spec = styling?.layers[safe: index] else { return nil }
         switch spec.source {
         case .wallHatch(_, let spacing, _, _, _, _): return spacing
         case .capHatch(_, let spacing, _): return spacing
@@ -290,7 +421,7 @@ extension Document {
 
     /// Which way the strokes on the truncated tops run.
     func capHatchAxis() -> KeepAxis? {
-        for spec in bundle?.manifest.layers ?? [] {
+        for spec in styling?.layers ?? [] {
             if case .capHatch(let axis, _, _) = spec.source { return axis }
         }
         return nil
@@ -322,6 +453,23 @@ extension Document {
         } catch {
             landscapeStatus = "could not save: \(error)"
         }
+    }
+}
+
+/// What a restyle changes: the cap and the layers' descriptions. Everything
+/// else in a manifest is the landscape's, and a restyle keeps it.
+struct Styling: Equatable, Sendable {
+    var caps: Caps
+    var layers: [LayerSpec]
+
+    init(_ manifest: Manifest) {
+        caps = manifest.caps
+        layers = manifest.layers
+    }
+
+    func apply(to manifest: inout Manifest) {
+        manifest.caps = caps
+        manifest.layers = layers
     }
 }
 

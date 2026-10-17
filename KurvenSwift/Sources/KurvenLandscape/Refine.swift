@@ -125,6 +125,10 @@ public struct ContourRefiner: Sendable {
     /// minima and the zeros' heights, and the zeros the fold lines are
     /// carried to. The magnitude is the one the grid was sampled with,
     /// clamped at `NativeLandscape.huge` beside a pole.
+    ///
+    /// Remembering (`ContourRefine.remembering`): a bundle carries this hook
+    /// through every restyle of its grids, and a restyle asks again for
+    /// curves it has already placed.
     public var refine: ContourRefine {
         let zeros = self.zeros()
         return ContourRefine(contours: { field, level, paths in
@@ -132,7 +136,7 @@ public struct ContourRefiner: Sendable {
                       },
                       magnitude: { p in self.magnitude(Complex(p.x, p.y)) },
                       zero: { p in self.zero(near: p) },
-                      tolerance: tolerance)
+                      tolerance: tolerance).remembering()
     }
 
     /// The grid's paths at one level of one field, placed on f; and, for the
