@@ -36,6 +36,15 @@ public struct Heightfield: Sendable {
         self.region = region; self.step = step; self.refine = refine
     }
 
+    /// The same heightfield without its function: traced and judged on the
+    /// lattice, whose chords are a height read each where f is an
+    /// evaluation. What a preview can afford for a camera that is still
+    /// moving.
+    public var onLattice: Heightfield {
+        Heightfield(surface: surface, occluder: occluder, tiles: tiles,
+                    region: region, step: step, refine: nil)
+    }
+
     /// Every vertex of the decimated, capped heightfield, once per tile.
     ///
     /// The lattice is `Surface.grid_mesh`'s `self.clamped[::step, ::step]`. Not
@@ -146,7 +155,7 @@ public struct Heightfield: Sendable {
         // capped facing jumps at the crease, and its zero there is the
         // crease, not the fold.
         let onF = refine?.magnitude != nil
-        func facing(_ p: P2<WorldSpace>) -> Double {
+        @Sendable func facing(_ p: P2<WorldSpace>) -> Double {
             let n = onF ? flankNormal(at: p) : normal(at: p)
             let len = simd_length(n)
             return len > 0 ? -simd_dot(n, sight) / len : 0
@@ -713,11 +722,12 @@ public struct Heightfield: Sendable {
     }
 
     /// `items.map(body)`, in parallel chunks.
-    public static func parallelMap<T: Sendable, R: Sendable>(_ items: [T],
+    /// `chunk` items go to a thread at a time: hundreds for a vertex's
+    /// worth of work, one for a level's.
+    public static func parallelMap<T: Sendable, R: Sendable>(_ items: [T], chunk: Int = 512,
                                                       _ body: @Sendable (T) -> R) -> [R] {
         let n = items.count
         guard n > 0 else { return [] }
-        let chunk = 512
         return [R](unsafeUninitializedCapacity: n) { buffer, initialized in
             // Each chunk writes only its own slots, so sharing is safe.
             nonisolated(unsafe) let base = buffer.baseAddress!

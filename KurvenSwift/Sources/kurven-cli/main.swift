@@ -142,7 +142,7 @@ usage: kurven-cli <command> [options]
         --resolution, which only the depth output sees. --size is the
         circumradius (2 by default).
 
-  surface-costs [--repeat N]
+  surface-costs [--repeat N] [--only torus|sn|forced]
         Time what each of the window's surface controls costs: the plate
         rebuilt from the one before it, and the first preview frame after,
         as the window would pay for them -- at full resolution, and at the
@@ -152,7 +152,7 @@ usage: kurven-cli <command> [options]
         Dump the depth buffer as float32 .npy, for comparison against a
         reference. This is what stands in for a GPU frame capture.
 
-  bench <bundle> [--preset NAME] [--resolution N] [--frames N]
+  bench <bundle> [--preset NAME] [--resolution N] [--frames N] [--judging]
         Render the depth pass repeatedly from a moving camera and report the
         frame time. This is the Phase 2 question -- whether navigation can hold
         60 fps -- asked without a window: the preview does exactly this work
@@ -160,7 +160,7 @@ usage: kurven-cli <command> [options]
 
   preview <bundle> [--preset NAME] [--width N] [--height N] [--mode M]
           [--orbit "AZ,EL"] [--center RE,IM,Z] [--zoom F] [--levels N] [--fov DEGREES]
-          [--margin M] [--slope K] [--ink-width W] [--no-refine] -o out.png
+          [--margin M] [--slope K] [--ink-width W] [--no-refine] [--draft] -o out.png
         Render one preview frame offscreen and write it as a PNG. Modes:
         plate (the default), shaded, depth. --orbit turns the preset camera by
         that many degrees before drawing; --center puts that world point at
@@ -621,6 +621,13 @@ func bench(_ args: Args) throws {
     times.sort()
     let median = times[times.count / 2]
     let p95 = times[min(times.count - 1, Int(Double(times.count) * 0.95))]
+    // The draft: what a frame costs while the camera is moving.
+    let drafts = try measure { i in
+        navigator.orbit = Orbit(matching: preset.plate)
+        navigator.orbit.azimuth = Angle(degrees: preset.plate.zAngle + Double(i) * 0.25)
+        try renderer.renderPreview(base, navigator: navigator, viewport: viewport,
+                                   options: PreviewOptions(mode: mode, draft: true), into: target)
+    }
 
     func ms(_ t: Double) -> String { String(format: "%.2f ms", t * 1000) }
     let depthMedian = depthTimes[depthTimes.count / 2]
@@ -629,9 +636,55 @@ func bench(_ args: Args) throws {
     print("  first frame  \(warmup)  (builds the resources)")
     print("  depth+read   median \(ms(depthMedian))   (what one bake tile costs)")
     print("  full preview median \(ms(median))  p95 \(ms(p95))  "
-          + "min \(ms(times[0]))  max \(ms(times[times.count - 1]))")
-    print("  that is      \(String(format: "%.0f", 1 / median)) fps at the median"
+          + "min \(ms(times[0]))  max \(ms(times[times.count - 1]))   (the camera at rest)")
+    print("  draft frame  median \(ms(drafts[drafts.count / 2]))  "
+          + "p95 \(ms(drafts[min(drafts.count - 1, Int(Double(drafts.count) * 0.95))]))"
+          + "   (the camera moving)")
+    print("  that is      \(String(format: "%.0f", 1 / median)) fps at rest, "
+          + "\(String(format: "%.0f", 1 / drafts[drafts.count / 2])) fps moving"
           + (renderer.hasLinearReadback ? "" : "   (readback is NOT linear here)"))
+
+    // --judging: where a heightfield frame's CPU time goes. Fold lines and
+    // wall ink are the camera's, so the preview derives and judges them per
+    // camera change; each step is timed on its own, on f (what the preview
+    // does) and on the lattice without the function (what a draft could do).
+    guard args.switches.contains("judging"), let h = base.heightfield else { return }
+    let view = camera(1).view
+    let lattice = Heightfield(surface: h.surface, occluder: h.occluder, tiles: h.tiles,
+                              region: h.region, step: h.step, refine: nil)
+    func seconds(_ d: Duration) -> Double {
+        Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
+    }
+    func time(_ label: String, _ body: () throws -> Int) rethrows {
+        var ts: [Double] = []
+        var count = 0
+        for _ in 0..<5 { ts.append(seconds(try clock.measure { count = try body() })) }
+        ts.sort()
+        print("  \(label.padding(toLength: 44, withPad: " ", startingAt: 0))"
+              + "\(ms(ts[ts.count / 2]).padding(toLength: 12, withPad: " ", startingAt: 0))"
+              + "\(count) vertices")
+    }
+    print("judging, per camera change (median of 5)")
+    if h.refine != nil {
+        time("folds traced on f") { h.foldLines(view: view, refined: false).vertices.count }
+        time("folds traced and judged on f") {
+            h.visibleFolds(view: view, margin: base.margin, refined: false).vertices.count
+        }
+    }
+    time("folds traced on the lattice") { lattice.foldLines(view: view, refined: false).vertices.count }
+    time("folds traced and judged on the lattice") {
+        lattice.visibleFolds(view: view, margin: base.margin, refined: false).vertices.count
+    }
+    for layer in base.layers where layer.spec.source.isWallInk && layer.spec.clipped {
+        if h.refine != nil {
+            time("\(layer.spec.name) judged on f") {
+                h.visibleWallInk(layer.paths, view: view, margin: base.margin).vertices.count
+            }
+        }
+        time("\(layer.spec.name) judged on the lattice") {
+            lattice.visibleWallInk(layer.paths, view: view, margin: base.margin).vertices.count
+        }
+    }
 }
 
 /// Every layer, with the described ones re-derived at `count` evenly spaced
@@ -778,6 +831,10 @@ func surfaceCosts(_ args: Args) throws {
     let presets = Dictionary(uniqueKeysWithValues: SurfacePreset.catalog.map { ($0.name, $0.request) })
     print("  \("control".padding(toLength: 40, withPad: " ", startingAt: 0))build     frame     total")
 
+    let only = args.flags["only"]
+    func wanted(_ section: String) -> Bool { only == nil || only == section }
+
+    if wanted("torus") {
     print("torus")
     let torus = presets["torus"]!
     try measure("radii", torus) { $0.shape = .torus(major: 2.3, minor: 0.9) }
@@ -786,7 +843,9 @@ func surfaceCosts(_ args: Args) throws {
     var wound = torus; wound.winding = SurfaceRequest.Winding(slope: 0.4, turns: 24, count: 3)
     try measure("winding on", torus) { $0.winding = wound.winding }
     try measure("winding slope", wound) { $0.winding?.slope = 0.618 }
+    }
 
+    if wanted("sn") {
     print("sn")
     let sn = presets["sn"]!
     try measure("radii", sn) { $0.shape = .sn(modulus: 0.64, major: 2.3, minor: 0.9, grid: 600) }
@@ -795,7 +854,9 @@ func surfaceCosts(_ args: Args) throws {
     try drag("radii", sn) { $0.shape = .sn(modulus: 0.64, major: 2.3, minor: 0.9, grid: 600) }
     try drag("modulus", sn) { $0.shape = .sn(modulus: 0.7, major: 2, minor: 1, grid: 600) }
     try drag("grid", sn) { $0.shape = .sn(modulus: 0.64, major: 2, minor: 1, grid: 400) }
+    }
 
+    guard wanted("forced") else { return }
     print("forced")
     let forced = presets["forced"]!
     let base = try SurfacePlate.build(forced)
@@ -854,6 +915,7 @@ func previewMode(_ args: Args) throws -> PreviewMode {
 /// widest stroke in pixels, which is what a Retina window doubles.
 func previewOptions(_ args: Args, mode: PreviewMode) throws -> PreviewOptions {
     var options = PreviewOptions(mode: mode)
+    options.draft = args.switches.contains("draft")
     if let k = try args.double("slope") { options.slopeScale = Float(k) }
     if let w = try args.double("ink-width") { options.inkWidth = Float(w) }
     return options
@@ -1069,6 +1131,9 @@ func landscapeCommand(_ args: Args) throws {
 
     let clock = ContinuousClock()
     var bundle: KurvenBundle!
+    // --repeat N builds it N times over, which is how a profiler gets a long
+    // enough look at one build.
+    for _ in 1..<(try args.int("repeat", 1)) { _ = try NativeLandscape.build(request) }
     let sampled = try clock.measure { bundle = try NativeLandscape.build(request) }
     try bundle.write(to: output)
     let m = bundle.manifest

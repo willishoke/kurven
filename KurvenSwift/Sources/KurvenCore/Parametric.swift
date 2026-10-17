@@ -179,7 +179,7 @@ public extension ParametricSurface {
     /// include both ends.
     func parameterLines(counts lines: (u: Int, v: Int),
                         resolution: Int) -> PolylineSet<WorldSpace> {
-        var paths: [[P3<WorldSpace>]] = [], coords: [[P2<ParamSpace>]] = []
+        var coords: [[P2<ParamSpace>]] = []
         func place(_ axis: ParamAxis, _ k: Int, of count: Int) -> Double {
             axis.range.lo + axis.range.length * Double(k)
                 / Double(axis.periodic ? count : max(count - 1, 1))
@@ -196,15 +196,17 @@ public extension ParametricSurface {
             coords.append(run(u).map { P2<ParamSpace>($0, fixed) })
         }
         // A line at a time, in parallel: the map may be expensive, as a
-        // fitted torus's Fourier series is.
-        paths = [[P3<WorldSpace>]](repeating: [], count: coords.count)
+        // fitted torus's Fourier series is. The lines are settled before
+        // the threads start, so each reads an immutable copy.
+        let lines = coords
+        var paths = [[P3<WorldSpace>]](repeating: [], count: lines.count)
         paths.withUnsafeMutableBufferPointer { out in
             nonisolated(unsafe) let base = out.baseAddress!
-            DispatchQueue.concurrentPerform(iterations: coords.count) { k in
-                base[k] = coords[k].map { P3(map($0).position) }
+            DispatchQueue.concurrentPerform(iterations: lines.count) { k in
+                base[k] = lines[k].map { P3(map($0).position) }
             }
         }
-        return PolylineSet(paths: paths, coords: coords)
+        return PolylineSet(paths: paths, coords: lines)
     }
 
     /// The fold lines for sight lines along `sight`: where the surface turns
@@ -219,7 +221,7 @@ public extension ParametricSurface {
     /// They depend on the camera, so they are derived for one, never stored.
     func foldLines(sight: SIMD3<Double>, grid: (u: Int, v: Int)? = nil) -> PolylineSet<WorldSpace> {
         let nu = grid?.u ?? u.cells, nv = grid?.v ?? v.cells
-        func edgeOn(_ c: P2<ParamSpace>) -> Double {
+        @Sendable func edgeOn(_ c: P2<ParamSpace>) -> Double {
             let n = map(c).normal
             let len = simd_length(n)
             return len > 0 ? simd_dot(n, sight) / len : 0
@@ -278,7 +280,7 @@ public extension ParametricSurface {
     /// Where the lattice is degenerate the normal is zero.
     func latticeNormals() -> [SIMD3<Float>] {
         let nu = u.samples, nv = v.samples
-        func at(_ i: Int, _ j: Int) -> SIMD3<Double> {
+        @Sendable func at(_ i: Int, _ j: Int) -> SIMD3<Double> {
             let ii = u.periodic ? u.sample(i) : min(max(i, 0), nu - 1)
             let jj = v.periodic ? v.sample(j) : min(max(j, 0), nv - 1)
             return positions[jj * nu + ii].v

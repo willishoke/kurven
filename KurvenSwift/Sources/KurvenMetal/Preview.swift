@@ -15,22 +15,63 @@ struct LineGeometry {
     /// `(first vertex, count)` per layer, in the scene's layer order.
     let ranges: [(first: Int, count: Int)]
 
-    init(scene: Scene, device: MTLDevice) throws {
-        var vertices: [KVLineVertex] = []
-        var ranges: [(first: Int, count: Int)] = []
-        for layer in scene.layers {
-            let first = vertices.count
-            // A heightfield's fold lines are the camera's, traced here for
-            // this one -- read off the lattice, not refined onto the exact
-            // fold as the bake's are -- and judged by the solid here rather
-            // than per fragment: the surface is edge-on at a fold, which is
-            // where a depth test is worth nothing. They are drawn unclipped.
+    init(scene: Scene, device: MTLDevice, draft: Bool = false) throws {
+        let laid = Self.layOut(scene: scene, draft: draft, reusing: nil)
+        try self.init(laid, device: device)
+    }
+
+    /// Whether a layer's line geometry is the camera's: a heightfield's fold
+    /// lines, or the ink in its walls.
+    static func isJudged(_ layer: Layer, in scene: Scene) -> Bool {
+        guard scene.heightfield != nil else { return false }
+        if case .foldLines = layer.spec.source { return true }
+        return layer.spec.source.isWallInk && layer.spec.clipped
+    }
+
+    /// Whether the scene has ink that is judged for the camera: a
+    /// heightfield's fold lines and the ink in its walls. Such a scene's
+    /// line geometry is the camera's, and is laid out again when it moves.
+    static func isJudged(_ scene: Scene) -> Bool {
+        scene.layers.contains { isJudged($0, in: scene) }
+    }
+
+    /// Every layer's segments, end to end, with a layer's range into them.
+    /// The CPU side of the geometry, apart from the renderer so it can be
+    /// done on another thread; `init(_:device:)` uploads it.
+    ///
+    /// A heightfield's fold lines are the camera's, traced here for this
+    /// one -- read off the lattice, not refined onto the exact fold as the
+    /// bake's are -- and judged by the solid here rather than per fragment:
+    /// the surface is edge-on at a fold, which is where a depth test is
+    /// worth nothing. Wall ink likewise: judged by the wall it lies in and
+    /// the solid. Both are drawn unclipped.
+    ///
+    /// A `draft` is what a frame can afford while the camera moves: the
+    /// folds traced on the lattice, not on f, and left to the depth test
+    /// with the wall ink, which is drawn as stored. On a landscape the
+    /// judged layout is hundreds of milliseconds and the draft is one, so
+    /// a drag draws drafts and the judged layout follows when the camera
+    /// rests.
+    ///
+    /// A layer that is not the camera's is taken from `reusing` -- the same
+    /// ink's last layout -- as it is: a contour's normals are read off f,
+    /// four evaluations a vertex, and the camera does not move them.
+    static func layOut(scene: Scene, draft: Bool, reusing previous: JudgedLines?) -> JudgedLines {
+        var layers: [[KVLineVertex]] = []
+        layers.reserveCapacity(scene.layers.count)
+        for (i, layer) in scene.layers.enumerated() {
+            if !isJudged(layer, in: scene), let previous, i < previous.layers.count {
+                layers.append(previous.layers[i])
+                continue
+            }
+            var vertices: [KVLineVertex] = []
             var paths = layer.paths
             if case .foldLines = layer.spec.source, let h = scene.heightfield {
-                paths = h.visibleFolds(view: scene.camera.view, margin: scene.margin, refined: false)
-            } else if layer.spec.source.isWallInk, layer.spec.clipped, let h = scene.heightfield {
-                // Wall ink likewise: judged by the wall it lies in and the
-                // solid, and drawn unclipped.
+                paths = draft
+                    ? h.onLattice.foldLines(view: scene.camera.view, refined: false)
+                    : h.visibleFolds(view: scene.camera.view, margin: scene.margin, refined: false)
+            } else if layer.spec.source.isWallInk, layer.spec.clipped, !draft,
+                      let h = scene.heightfield {
                 paths = h.visibleWallInk(layer.paths, view: scene.camera.view, margin: scene.margin)
             }
             // Ink on a heightfield's surface carries the surface's outward
@@ -67,7 +108,19 @@ struct LineGeometry {
                     }
                 }
             }
-            ranges.append((first, vertices.count - first))
+            layers.append(vertices)
+        }
+        return JudgedLines(layers: layers)
+    }
+
+    /// `layOut`'s result, uploaded: every layer's segments end to end.
+    init(_ laid: JudgedLines, device: MTLDevice) throws {
+        var ranges: [(first: Int, count: Int)] = []
+        var vertices: [KVLineVertex] = []
+        vertices.reserveCapacity(laid.layers.reduce(0) { $0 + $1.count })
+        for layer in laid.layers {
+            ranges.append((vertices.count, layer.count))
+            vertices.append(contentsOf: layer)
         }
         self.ranges = ranges
         if vertices.isEmpty {
@@ -82,6 +135,45 @@ struct LineGeometry {
     }
 
     var vertexCount: Int { ranges.reduce(0) { $0 + $1.count } }
+}
+
+/// Line geometry laid out and not yet uploaded, a layer at a time: the part
+/// of a frame's ink that can be made away from the renderer, and kept for
+/// the layers the next camera leaves alone.
+public struct JudgedLines: Sendable {
+    let layers: [[KVLineVertex]]
+}
+
+public extension MetalRenderer {
+    /// The judged line geometry of a scene, laid out: what `renderPreview`
+    /// would make for the camera when `draft` is off, made anywhere. A
+    /// window that draws drafts while the camera moves lays this out on
+    /// another thread once it rests, and `install`s it.
+    static func judgedLines(for scene: Scene, reusing previous: JudgedLines?) -> JudgedLines {
+        LineGeometry.layOut(scene: scene, draft: false, reusing: previous)
+    }
+
+    /// The scene's ink as last laid out, for `judgedLines` to keep what the
+    /// camera leaves alone; nil when the last layout was another's.
+    func laidLines(for scene: Scene) -> JudgedLines? {
+        guard let c = cachedLines, c.ink == scene.ink else { return nil }
+        return c.laid
+    }
+
+    /// Keep a judged layout for the next frame of its scene.
+    func install(_ lines: JudgedLines, for scene: Scene) throws {
+        let key: Camera? = LineGeometry.isJudged(scene) ? scene.camera : nil
+        cachedLines = (scene.ink, key, false, lines, try LineGeometry(lines, device: device))
+    }
+
+    /// Whether the next frame of this scene can be drawn judged without
+    /// laying its ink out first: the layout is in hand, or nothing in the
+    /// scene is judged for the camera.
+    func hasJudgedLines(for scene: Scene) -> Bool {
+        guard LineGeometry.isJudged(scene) else { return true }
+        guard let c = cachedLines, c.ink == scene.ink, c.camera == scene.camera else { return false }
+        return !c.draft
+    }
 }
 
 /// What a preview frame draws.
@@ -109,6 +201,13 @@ public struct PreviewOptions: Sendable {
     /// on a Retina screen as on any other.
     public var inkWidth: Float
 
+    /// Draw the frame a moving camera can afford: a heightfield's fold
+    /// lines traced on the lattice and left to the depth test, its wall ink
+    /// as stored. Off, they are judged by the solid for this camera, which
+    /// on a landscape is hundreds of milliseconds of CPU per camera; see
+    /// `LineGeometry.layOut`.
+    public var draft: Bool
+
     /// A pixel's worth covers the half-pixel between where a line crosses a
     /// pixel and the pixel's centre, with room for the surface to bend in
     /// between. Measured with `kurven-cli flicker`, not guessed.
@@ -118,9 +217,10 @@ public struct PreviewOptions: Sendable {
     public init(mode: PreviewMode = .plate, visibleLayers: Set<Int>? = nil,
                 background: SIMD4<Float> = SIMD4(1, 1, 1, 1),
                 slopeScale: Float = PreviewOptions.defaultSlopeScale,
-                inkWidth: Float = PreviewOptions.defaultInkWidth) {
+                inkWidth: Float = PreviewOptions.defaultInkWidth,
+                draft: Bool = false) {
         self.mode = mode; self.visibleLayers = visibleLayers; self.background = background
-        self.slopeScale = slopeScale; self.inkWidth = inkWidth
+        self.slopeScale = slopeScale; self.inkWidth = inkWidth; self.draft = draft
     }
 }
 
@@ -155,7 +255,7 @@ public extension MetalRenderer {
         let frame = navigator.framing.frame(viewport)
 
         let res = try resources(for: scene)
-        let lines = try lineGeometry(for: scene)
+        let lines = try lineGeometry(for: scene, draft: options.draft)
         let depth = try depthTexture(rows: viewport.height, cols: viewport.width)
         var uniforms = self.previewUniforms(scene, frame: frame, resources: res)
 
@@ -250,9 +350,11 @@ public extension MetalRenderer {
                 // Unclipped ink is drawn with an unreachable margin rather than
                 // a second pipeline: a cut-face hatch lies *in* the wall it
                 // hatches, and a depth test would erase about half of it. A
-                // heightfield's folds and wall ink were judged on the way in.
+                // heightfield's folds and wall ink were judged on the way in,
+                // unless this frame is a draft, which leaves them to the test.
                 var judged = scene.heightfield != nil && layer.spec.source.isWallInk
                 if case .foldLines = layer.spec.source { judged = true }
+                if options.draft { judged = false }
                 shading.margin = layer.spec.clipped && !judged ? Float(scene.margin) : .infinity
                 shading.color = Self.color(layer.spec.color)
                 shading.strokeWidth = options.inkWidth
@@ -462,7 +564,7 @@ extension MetalRenderer {
         scene.camera = navigator.camera
         let frame = navigator.framing.frame(viewport)
         let res = try surfaceResources(for: scene)
-        let lines = try lineGeometry(for: scene)
+        let lines = try lineGeometry(for: scene, draft: options.draft)
         let depth = try depthTexture(rows: viewport.height, cols: viewport.width)
         let (coordTexture, zTexture) = try coordinateTextures(rows: viewport.height,
                                                               cols: viewport.width)

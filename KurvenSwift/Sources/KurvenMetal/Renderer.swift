@@ -201,7 +201,8 @@ public final class MetalRenderer {
     private var cachedResources: SceneResources?
     /// Keyed by the camera too when the scene has fold lines on a
     /// heightfield, which are the camera's and are traced again when it moves.
-    private var cachedLines: (ink: ContentID, camera: Camera?, geometry: LineGeometry)?
+    var cachedLines: (ink: ContentID, camera: Camera?, draft: Bool, laid: JudgedLines,
+                      geometry: LineGeometry)?
     private var target: DepthTarget?
     private var previewDepth: MTLTexture?
     /// The depth attachment the last preview frame wrote, for pixel queries.
@@ -326,17 +327,22 @@ public final class MetalRenderer {
     /// Line geometry, cached on the scene's *ink* identity rather than its
     /// content, so moving a level set rebuilds the strokes and leaves the
     /// heightfield texture alone.
-    func lineGeometry(for scene: Scene) throws -> LineGeometry {
-        // Fold lines and wall ink on a heightfield are judged for the camera,
-        // so the geometry is the camera's too.
-        let judged = scene.heightfield != nil && scene.layers.contains { layer in
-            if case .foldLines = layer.spec.source { return true }
-            return layer.spec.source.isWallInk && layer.spec.clipped
-        }
+    ///
+    /// Fold lines and wall ink on a heightfield are judged for the camera,
+    /// so the geometry is the camera's too, and a draft of it is not the
+    /// judged one: a judged layout in hand serves a draft frame, since it is
+    /// the better picture, but a draft never serves a judged frame.
+    func lineGeometry(for scene: Scene, draft: Bool = false) throws -> LineGeometry {
+        let judged = LineGeometry.isJudged(scene)
         let key: Camera? = judged ? scene.camera : nil
-        if let c = cachedLines, c.ink == scene.ink, c.camera == key { return c.geometry }
-        let g = try LineGeometry(scene: scene, device: device)
-        cachedLines = (scene.ink, key, g)
+        if let c = cachedLines, c.ink == scene.ink, c.camera == key,
+           !judged || !c.draft || draft {
+            return c.geometry
+        }
+        let laid = LineGeometry.layOut(scene: scene, draft: judged && draft,
+                                       reusing: laidLines(for: scene))
+        let g = try LineGeometry(laid, device: device)
+        cachedLines = (scene.ink, key, judged && draft, laid, g)
         return g
     }
 

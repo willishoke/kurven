@@ -196,9 +196,7 @@ func foldLineTests() {
             return total + zip(p, p.dropFirst()).reduce(0) { $0 + simd_length($1.1.v - $1.0.v) }
         }
         Check.expect(folds.count > 0 && ink > 1, "it has fold lines", String(format: "%d lines, %.2f units", folds.count, ink))
-        guard let bounds = scene.viewBounds() else { Check.expect(false, "the plate has bounds"); return }
-        let frame = DepthFrame(covering: bounds, resolution: 10)
-        let empty = DepthImage(frame: frame, values: [Float](repeating: -.infinity, count: frame.rows * frame.cols))
+        guard scene.viewBounds() != nil else { Check.expect(false, "the plate has bounds"); return }
         let visibility = HeightfieldVisibility(heightfield: h, view: scene.camera.view, margin: 0.02)
         // Every vertex but a run's end carried to a zero of f, which is on
         // the floor, where the lattice's facing is its chord's.

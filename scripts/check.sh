@@ -54,7 +54,11 @@ else
           "$PACKAGE"/Sources/KurvenApp/*.swift 2>/dev/null
 fi
 
-step "swift build (release)" swift build -c release --package-path "$PACKAGE"
+# Warnings fail the build here, so a stray one is caught by this lane and by
+# CI instead of scrolling past in a terminal. A plain `swift build` still
+# tolerates them, which is the right default while iterating.
+step "swift build (release)" swift build -c release --package-path "$PACKAGE" \
+    -Xswiftc -warnings-as-errors
 BIN="$PACKAGE/.build/release"
 
 step "swift lane" "$BIN/kurven-test"
