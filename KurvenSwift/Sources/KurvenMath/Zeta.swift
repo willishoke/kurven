@@ -32,27 +32,50 @@ public enum Zeta {
         return d
     }
 
-    /// The orders are few (they depend on |t| through a ceiling), so the
-    /// coefficient tables are memoized behind a lock.
-    private static let cache = Cache()
-    private final class Cache: @unchecked Sendable {
-        private var tables: [Int: [Double]] = [:]
-        private let lock = NSLock()
-        func table(_ n: Int) -> [Double] {
-            lock.lock(); defer { lock.unlock() }
-            if let t = tables[n] { return t }
-            let t = borweinCoefficients(n)
-            tables[n] = t
-            return t
+    /// The orders `order(forHeight:)` can ask for.
+    static let orders = 16...200
+
+    /// The series' weights `±(d_k - d_n) / d_n`, k < n, for every order, laid
+    /// end to end: order n's start at `offset(n)`.
+    ///
+    /// Made once, into memory that is never freed, and read from every
+    /// thread at once. They were a dictionary behind a lock, and every
+    /// evaluation took the lock and retained the table it read: with a
+    /// landscape sampled and refined on every core, that was the cores
+    /// queueing for one lock and one reference count, and ζ ran on one and
+    /// a half of eighteen.
+    nonisolated(unsafe) static let weights: UnsafeBufferPointer<Double> = {
+        let buffer = UnsafeMutableBufferPointer<Double>.allocate(capacity: offset(orders.upperBound + 1))
+        for n in orders {
+            let d = borweinCoefficients(n)
+            for k in 0..<n {
+                var w = (d[k] - d[n]) / d[n]
+                if k % 2 == 1 { w = -w }
+                buffer[offset(n) + k] = w
+            }
         }
+        return UnsafeBufferPointer(buffer)
+    }()
+
+    /// Where order n's weights start: the orders below it, end to end.
+    static func offset(_ n: Int) -> Int {
+        let lo = orders.lowerBound
+        return (n - lo) * (n + lo - 1) / 2
     }
+
+    /// ln(k + 1) for every term of the longest series.
+    nonisolated(unsafe) static let logs: UnsafeBufferPointer<Double> = {
+        let buffer = UnsafeMutableBufferPointer<Double>.allocate(capacity: orders.upperBound)
+        for k in 0..<orders.upperBound { buffer[k] = Foundation.log(Double(k + 1)) }
+        return UnsafeBufferPointer(buffer)
+    }()
 
     /// How many terms the error bound needs at this height:
     /// `|γ_n(s)| ≲ 3(1 + 2|t|)e^{π|t|/2}(3+√8)^{-n}`.
     static func order(forHeight t: Double) -> Int {
         let need = (.pi * t / 2 + Foundation.log(3.0 * (1 + 2 * t))
                     + 15 * Foundation.log(10.0)) / logGrowth
-        return Int(min(max(need.rounded(.up), 16), 200))
+        return Int(min(max(need.rounded(.up), Double(orders.lowerBound)), Double(orders.upperBound)))
     }
 
     static func eulerMaclaurin(_ s: Complex, terms: Int = 12) -> Complex {
@@ -77,12 +100,10 @@ public enum Zeta {
     /// ζ on Re s >= 1/2.
     static func halfPlane(_ s: Complex) -> Complex {
         let n = order(forHeight: abs(s.im))
-        let d = cache.table(n)
+        let w = weights.baseAddress! + offset(n), logs = logs.baseAddress!
         var total = Complex.zero
         for k in 0..<n {
-            var w = (d[k] - d[n]) / d[n]
-            if k % 2 == 1 { w = -w }
-            total += w * Complex.exp(-s * Foundation.log(Double(k + 1)))
+            total += w[k] * Complex.exp(-s * logs[k])
         }
         let eta = 1 - Complex.pow(Complex(2), 1 - s)
         if eta.magnitude < 1e-5 { return eulerMaclaurin(s) }

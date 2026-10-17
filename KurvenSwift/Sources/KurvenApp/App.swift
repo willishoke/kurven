@@ -5,6 +5,7 @@ import KurvenCore
 import KurvenMetal
 import KurvenBake
 import KurvenDynamics
+import KurvenLandscape
 
 /// The window.
 ///
@@ -98,7 +99,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .flatMap { $0 + 1 < args.endIndex ? Int(args[$0 + 1]) : nil }
             let cap = args.firstIndex(of: "--cap")
                 .flatMap { $0 + 1 < args.endIndex ? Double(args[$0 + 1]) : nil }
-            Task { await headlessLandscape(what, resolution: resolution, cap: cap,
+            // `--drag cap|levels STEPS`: step that control as a drag does and
+            // report the main actor's longest stall -- the beachball, measured.
+            let drag = args.firstIndex(of: "--drag").flatMap { i -> (String, Int)? in
+                guard i + 2 < args.endIndex, let n = Int(args[i + 2]) else { return nil }
+                return (args[i + 1], n)
+            }
+            Task { await headlessLandscape(what, resolution: resolution, cap: cap, drag: drag,
                                            screenshot: shot, save: save) }
             return
         }
@@ -212,6 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Make the landscape and report it. The window is never shown; everything
     /// it would do is done through the same model.
     private func headlessLandscape(_ what: String, resolution: Int?, cap: Double?,
+                                   drag: (control: String, steps: Int)? = nil,
                                    screenshot: URL?, save: URL?) async {
         let catalog = document.catalog
         if let preset = catalog.preset(what) {
@@ -235,6 +243,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the ink derived again from grids that are already here. Driving it
         // from here is how that path is checked without a pair of hands.
         if let cap { document.setCaps(.uniform(cap)) }
+        while document.drawing { try? await Task.sleep(for: .milliseconds(25)) }
+        if let drag { await headlessDrag(drag.control, steps: drag.steps) }
         guard document.scene != nil else {
             let why = document.landscapeStatus ?? "no reason given"
             FileHandle.standardError.write(
@@ -247,6 +257,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let save { document.saveBundle(to: save) }
         if let screenshot { renderScreenshot(to: screenshot, what: document.title) }
         exit(0)
+    }
+
+    /// Step a control as a drag does, a step a frame, and say how long the
+    /// main actor was ever kept from the next one: a slider whose work is on
+    /// the main actor stalls by that work, and past a second or two macOS
+    /// shows the beachball. The time the last step's ink took to land is
+    /// what the picture lags the hand by.
+    private func headlessDrag(_ control: String, steps: Int) async {
+        let clock = ContinuousClock()
+        var longest: Duration = .zero
+        var last = clock.now
+        func tick() {
+            let now = clock.now
+            longest = max(longest, now - last)
+            last = now
+        }
+        let ceiling = LandscapeStyle.ceiling(of: document.caps) ?? 5
+        let layer = document.layers.firstIndex { $0.spec.name == "ang_minor" }
+            ?? document.layers.indices.first { document.isDerived(layer: $0) }
+        let base = layer.flatMap { document.levels(forLayer: $0)?.count } ?? 0
+        for k in 1...max(steps, 1) {
+            try? await Task.sleep(for: .milliseconds(16))
+            tick()
+            switch control {
+            case "cap":
+                document.setCaps(.uniform(ceiling * (1 - 0.3 * Double(k) / Double(steps))))
+            case "levels":
+                guard let layer else { break }
+                document.setLevelCount(base + k, forLayer: layer, draft: true)
+            default:
+                FileHandle.standardError.write(Data("Kurven: no control '\(control)' to drag\n".utf8))
+                exit(2)
+            }
+            tick()
+        }
+        let released = clock.now
+        if control == "levels" { document.rebuildInk() }
+        while document.drawing {
+            try? await Task.sleep(for: .milliseconds(16))
+            tick()
+        }
+        print("Kurven: dragged \(control) \(steps) steps; the main actor's longest stall "
+              + "\(longest.formatted(.units(allowed: [.milliseconds]))), the ink landed "
+              + "\((clock.now - released).formatted(.units(allowed: [.milliseconds]))) "
+              + "after the release")
     }
 
     /// Open a surface and report it, then draw or bake it and exit -- or, with

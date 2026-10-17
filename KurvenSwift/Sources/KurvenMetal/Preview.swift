@@ -69,10 +69,12 @@ struct LineGeometry {
             if case .foldLines = layer.spec.source, let h = scene.heightfield {
                 paths = draft
                     ? h.onLattice.foldLines(view: scene.camera.view, refined: false)
-                    : h.visibleFolds(view: scene.camera.view, margin: scene.margin, refined: false)
+                    : h.visibleFolds(view: scene.camera.view, margin: scene.margin, refined: false,
+                                     resolution: scene.resolution)
             } else if layer.spec.source.isWallInk, layer.spec.clipped, !draft,
                       let h = scene.heightfield {
-                paths = h.visibleWallInk(layer.paths, view: scene.camera.view, margin: scene.margin)
+                paths = h.visibleWallInk(layer.paths, view: scene.camera.view, margin: scene.margin,
+                                         resolution: scene.resolution)
             }
             // Ink on a heightfield's surface carries the surface's outward
             // normal, so the stroke shader can hide it where the surface
@@ -110,7 +112,7 @@ struct LineGeometry {
             }
             layers.append(vertices)
         }
-        return JudgedLines(layers: layers)
+        return JudgedLines(layers: layers, resolution: draft ? .infinity : scene.resolution)
     }
 
     /// `layOut`'s result, uploaded: every layer's segments end to end.
@@ -142,6 +144,11 @@ struct LineGeometry {
 /// the layers the next camera leaves alone.
 public struct JudgedLines: Sendable {
     let layers: [[KVLineVertex]]
+    /// The `Scene.resolution` the ink was judged to: a layout serves a scene
+    /// that asks no finer, so zooming out keeps it and zooming in judges again.
+    let resolution: Double
+
+    func serves(_ scene: Scene) -> Bool { resolution <= scene.resolution }
 }
 
 public extension MetalRenderer {
@@ -172,7 +179,7 @@ public extension MetalRenderer {
     func hasJudgedLines(for scene: Scene) -> Bool {
         guard LineGeometry.isJudged(scene) else { return true }
         guard let c = cachedLines, c.ink == scene.ink, c.camera == scene.camera else { return false }
-        return !c.draft
+        return !c.draft && c.laid.serves(scene)
     }
 }
 

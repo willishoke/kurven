@@ -221,10 +221,16 @@ public extension KurvenBundle {
                                       caps: honest.caps, cached: surface.cached)
         let bundle = KurvenBundle(url: url, manifest: honest, surface: restyledSurface,
                                   layers: [], wallMesh: wallMesh, refine: refine)
+        // A layer's ink is its spec drawn on the capped surface past the
+        // occluder, so a layer none of those moved for is the ink already
+        // here: a hatch step draws the hatching, not every phase line again.
+        let unmoved = honest.caps == self.manifest.caps && honest.occluder == self.manifest.occluder
         return KurvenBundle(url: url, manifest: honest, surface: restyledSurface,
                             layers: honest.layers.map { spec in
-                                spec.files == nil ? bundle.redrawn(spec)
-                                                  : redrawn(spec)
+                                if unmoved, let kept = layers.first(where: { $0.spec == spec }) {
+                                    return kept
+                                }
+                                return spec.files == nil ? bundle.redrawn(spec) : redrawn(spec)
                             },
                             wallMesh: wallMesh, refine: refine)
     }

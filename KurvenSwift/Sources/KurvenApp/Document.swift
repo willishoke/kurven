@@ -26,7 +26,12 @@ final class Document {
         case failed(URL, String)
     }
 
-    private(set) var state: State = .empty
+    private(set) var state: State = .empty {
+        didSet { version &+= 1 }
+    }
+    /// Bumped whenever `state` is written, so ink derived on another thread
+    /// from one bundle is dropped if a different one is open when it lands.
+    private(set) var version = 0
 
     /// The landscape and its ink. Its camera and margin are whatever they were
     /// when it was stored, and nothing reads them: `framedScene` supplies both.
@@ -49,6 +54,8 @@ final class Document {
         guard var scene, let navigator else { return nil }
         scene.camera = navigator.camera
         scene.margin = margin
+        // A quarter of a drawable pixel: finer than any end of ink can show.
+        scene.resolution = 0.25 * navigator.framing.unitsPerPixel
         return scene
     }
 
@@ -76,7 +83,11 @@ final class Document {
     var shown: LandscapeRequest?
     /// The latest edit, waiting for the request in flight to finish, and
     /// whether it should re-frame when it arrives.
-    var wanted: (request: LandscapeRequest, framing: Bool)?
+    var wanted: (request: LandscapeRequest, framing: Bool, draft: Bool)?
+    /// Whether the bundle on screen is a draft: its contours are the grid's,
+    /// so the same samples asked for in full are still a landscape to build,
+    /// and no restyle places them on f in the meantime.
+    var shownDraft = false
     var sampling = false
     var landscapeStatus: String?
     /// True while the picker is up. On the document because the menu command
@@ -85,8 +96,24 @@ final class Document {
     var browsing = false
     /// The resolution a landscape is sampled at while a control is being
     /// dragged. Low enough that the picture keeps up with the hand; the full
-    /// resolution follows when the drag ends.
+    /// resolution follows when the drag ends. A draft's contours are the
+    /// grid's, too: placing them on f costs by their length, not by the
+    /// resolution, and is most of a build (zeta: 2.7 s of a 240² draft).
     var draftResolution = 240
+
+    /// The styling the controls have asked for, ahead of the bundle that will
+    /// carry it: a restyle is derived on another thread (`Landscape.swift`),
+    /// and a slider reads its value from here so its thumb does not spring
+    /// back while the ink is being drawn. Nil when the bundle is up to date.
+    var styled: Styling?
+    /// Ink being derived on another thread: a restyle, a change of
+    /// refinement, or a layer's levels.
+    var drawing = false
+    /// A layer's levels changed, and whether the change was a draft.
+    var inkWanted: Bool?
+    /// Shown in the status line when drawing the ink takes long enough to
+    /// notice, which a slider that restyles within a frame never does.
+    var drawingStatus: String?
 
     // MARK: - the surface, when the document is one
     //
@@ -152,6 +179,16 @@ final class Document {
 
     func open(_ url: URL) { Task { await load(url) } }
 
+    /// A bundle read from disk, its contours placed by f when it names a
+    /// function and refinement is on -- here, off the main actor, because on
+    /// zeta that is seconds.
+    nonisolated static func read(_ url: URL, refining: Bool) throws -> KurvenBundle {
+        let bundle = try KurvenBundle.read(at: url)
+        guard refining, bundle.refine == nil,
+              let refiner = NativeLandscape.refiner(for: bundle) else { return bundle }
+        return bundle.refined(by: refiner.refine)
+    }
+
     /// The awaitable form, so a headless run can wait for the bundle rather
     /// than poll for it.
     func load(_ url: URL) async {
@@ -162,8 +199,9 @@ final class Document {
         // Reading is megabytes of npy; it does not belong on the main actor
         // even though it is fast, because a stalled window during an open is
         // the difference between an app and a script with a window.
+        let refining = refineContours
         let result = await Task.detached(priority: .userInitiated) { () -> Result<KurvenBundle, Error> in
-            do { return .success(try KurvenBundle.read(at: url)) }
+            do { return .success(try Self.read(url, refining: refining)) }
             catch { return .failure(error) }
         }.value
         switch result {
@@ -189,14 +227,19 @@ final class Document {
     /// expression, so it can be refined the same way a freshly sampled one is.
     var refineContours = true
 
-    func adopt(_ bundle: KurvenBundle, keepingCamera: Bool = false) {
-        var bundle = bundle
-        if refineContours, bundle.refine == nil, let refiner = NativeLandscape.refiner(for: bundle) {
-            bundle = bundle.refined(by: refiner.refine)
-        }
+    ///
+    /// Nothing here derives ink: the bundle arrives with its layers drawn,
+    /// refined or not, from whichever thread read or sampled it.
+    func adopt(_ bundle: KurvenBundle, keepingCamera: Bool = false, draft: Bool = false) {
         state = .ready(bundle)
         surface = nil
         surfaceShown = nil
+        shownDraft = draft
+        inkWanted = nil
+        if !keepingCamera { styled = nil }
+        // Styling asked for while this bundle was being sampled, and not in
+        // the request it was sampled from, is drawn on it next.
+        defer { redraw() }
         guard let preset = bundle.manifest.presets.first else {
             state = .failed(bundle.url, "the bundle declares no camera presets")
             return
@@ -319,32 +362,58 @@ final class Document {
     /// the line buffer and leaves the height texture uploaded -- which is the
     /// difference between a slider that redraws in milliseconds and one that
     /// re-uploads a hundred megabytes per frame.
-    func rebuildInk() {
-        guard let bundle, let scene else { return }
+    ///
+    /// Derived on another thread (`redraw`): a level set the refiner has not
+    /// placed before is seconds on zeta. A `draft`, while the slider is
+    /// dragged, is the grid's contours, and the release places them on f.
+    func rebuildInk(draft: Bool = false) {
+        // A full redraw asked for stays asked for, whatever drafts follow it.
+        inkWanted = draft && (inkWanted ?? true)
+        redraw()
+    }
+
+    /// The described layers at their current levels, from `cached` where the
+    /// levels are the same and the cached ink is as refined as asked.
+    nonisolated static func inked(_ bundle: KurvenBundle,
+                                  levels: [[Double]?],
+                                  cached: [Int: DerivedInk],
+                                  draft: Bool) -> (layers: [Layer], derived: [Int: DerivedInk]) {
+        // The grid's contours, for a draft: the same bundle without its refiner.
+        let grid = KurvenBundle(url: bundle.url, manifest: bundle.manifest, surface: bundle.surface,
+                                layers: bundle.layers, wallMesh: bundle.wallMesh, refine: nil)
+        let refined = bundle.refine != nil && !draft
+        var derived = cached
         let layers = bundle.manifest.layers.enumerated().map { index, spec -> Layer in
-            guard let levels = levels(forLayer: index) else {
+            guard let levels = levels[index] else {
                 return (try? bundle.layer(spec.name)) ?? Layer(spec: spec, paths: .empty)
             }
             // Only the layer whose slider moved is re-derived. Dragging one
             // changes one level set; re-contouring all four costs four times as
             // much to produce three identical answers.
-            if let cached = derivedInk[index], cached.levels == levels {
-                return cached.layer
+            if let c = cached[index], c.levels == levels, c.refined || !refined {
+                return c.layer
             }
-            let layer = bundle.layer(spec, levels: levels)
-            derivedInk[index] = (levels, layer)
+            let layer = (refined ? bundle : grid).layer(spec, levels: levels)
+            derived[index] = DerivedInk(levels: levels, layer: layer, refined: refined)
             return layer
         }
-        self.scene = scene.drawing(layers)
+        return (layers, derived)
     }
 
     /// The last derivation of each described layer, keyed by the levels that
     /// produced it. Cleared whenever the landscape underneath it changes.
-    var derivedInk: [Int: (levels: [Double], layer: Layer)] = [:]
+    var derivedInk: [Int: DerivedInk] = [:]
 
-    func setLevelCount(_ n: Int, forLayer index: Int) {
+    struct DerivedInk: Sendable {
+        var levels: [Double]
+        var layer: Layer
+        /// Placed on f, or the grid's: a draft's.
+        var refined: Bool
+    }
+
+    func setLevelCount(_ n: Int, forLayer index: Int, draft: Bool = false) {
         levelCounts[index] = max(n, 1)
-        rebuildInk()
+        rebuildInk(draft: draft)
     }
 
     func resetLevels(forLayer index: Int) {

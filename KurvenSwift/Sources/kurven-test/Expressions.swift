@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import KurvenCore
 import KurvenMath
 import KurvenLandscape
@@ -456,6 +457,92 @@ func refinementTests() {
         let plain = try NativeLandscape.build(request, refine: false)
         Check.expect(cutPaths(plain).filter { length($0) > 10 * cell }.isEmpty,
                      "without a refiner the grid draws no cut, only its wrap bundles")
+    }
+
+    Check.suite("refine: a phase line is placed only where it can be drawn") {
+        // Phase ink is lifted to |f| and cut away above the cap, and on tan
+        // most of every phase line is above it, on the poles' spires. Placed
+        // under a ceiling, the lines it draws are the same curves, and the
+        // stretches over the cap are not solved for: they were the most of
+        // the refiner's work on zeta and 1/Γ, for ink that was deleted.
+        let request = LandscapeRequest(preset: Catalog.native.preset("tan")!, resolution: 240)
+        let plain = try NativeLandscape.build(request, refine: false)
+        let refiner = NativeLandscape.refiner(for: plain)!
+        let cap = plain.manifest.caps.highest
+        let cell = refiner.cell
+        func drawn(_ p: P2<DomainSpace>) -> Bool { refiner.magnitude(Complex(p.x, p.y)) <= cap }
+        func distance(_ v: P2<DomainSpace>, to runs: [[P2<DomainSpace>]]) -> Double {
+            var best = Double.infinity
+            for run in runs {
+                for (p, q) in zip(run, run.dropFirst()) {
+                    let dx = q.x - p.x, dy = q.y - p.y, l2 = dx * dx + dy * dy
+                    let t = l2 > 0 ? max(0, min(1, ((v.x - p.x) * dx + (v.y - p.y) * dy) / l2)) : 0
+                    best = min(best, ((p.x + t * dx - v.x) * (p.x + t * dx - v.x)
+                                      + (p.y + t * dy - v.y) * (p.y + t * dy - v.y)).squareRoot())
+                }
+            }
+            return best
+        }
+        var everywhere = 0, under = 0, lost = 0, added = 0
+        for (level, paths) in Contour.levels(of: plain.surface.phase!, [-2.618, -1.047, 0.524, 2.094]) {
+            let all = refiner.refine(field: .phase, level: level, paths)
+            let capped = refiner.refine(field: .phase, level: level, paths, ceiling: 1.1 * cap)
+            everywhere += all.reduce(0) { $0 + $1.count }
+            under += capped.reduce(0) { $0 + $1.count }
+            for run in all { for v in run where drawn(v) && distance(v, to: capped) > 0.05 * cell { lost += 1 } }
+            for run in capped { for v in run where drawn(v) && distance(v, to: all) > 0.05 * cell { added += 1 } }
+        }
+        Check.expect(lost == 0 && added == 0,
+                     "under the cap, the lines placed under a ceiling are the lines placed everywhere",
+                     "\(lost) drawn vertices lost, \(added) added")
+        Check.expect(under * 3 < everywhere, "and most of the placing was over the cap",
+                     "\(under) vertices placed, of \(everywhere)")
+    }
+
+    Check.suite("refine: a restyle places only the curves it has not placed before") {
+        // The cap slider's path in the app: the same grids under a new cap.
+        // Before the refiner remembered, every phase line of the landscape
+        // was solved again on each step -- 4.5 s on zeta at 600², for ink
+        // that differs from the step before only in where it is clipped.
+        let request = LandscapeRequest(preset: Catalog.native.preset("rgamma")!, resolution: 240)
+        let built = try NativeLandscape.build(request)
+        let inner = built.refine!
+        let solved = Mutex([ContourField: Int]())
+        let counted = ContourRefine(contours: { field, level, paths, ceiling in
+                                        solved.withLock { $0[field, default: 0] += 1 }
+                                        return inner.contours(field, level, paths, ceiling)
+                                    },
+                                    magnitude: inner.magnitude, zero: inner.zero,
+                                    tolerance: inner.tolerance).remembering()
+        let bundle = KurvenBundle(url: built.url, manifest: built.manifest, surface: built.surface,
+                                  layers: built.layers, wallMesh: built.wallMesh, refine: counted)
+        let cap = LandscapeStyle.ceiling(of: built.manifest.caps)!
+        var first = bundle.manifest, second = bundle.manifest
+        // Two caps on one rung of the ceiling's ladder (`ContourRefine.rung`),
+        // as a slider's neighbouring steps are.
+        let near = [0.97, 0.95, 0.9].first {
+            ContourRefine.rung(above: 1.1 * cap * 0.9 * $0) == ContourRefine.rung(above: 1.1 * cap * 0.9)
+        }!
+        first.caps = .uniform(cap * 0.9)
+        second.caps = .uniform(cap * 0.9 * near)
+        let once = bundle.restyled(first)
+        let asked = solved.withLock { $0 }
+        let twice = once.restyled(second)
+        let again = solved.withLock { $0 }
+        Check.expect(asked[.phase, default: 0] > 0, "the first restyle places the phase lines",
+                     "\(asked)")
+        Check.expect(again[.phase] == asked[.phase],
+                     "and the next cap places none of them again",
+                     "\(asked[.phase] ?? 0) then \(again[.phase] ?? 0)")
+        // The ink is the refiner's answer, remembered or not, to the bit.
+        let fresh = NativeLandscape.refiner(for: built)!.refine
+        let cold = KurvenBundle(url: built.url, manifest: built.manifest, surface: built.surface,
+                                layers: built.layers, wallMesh: built.wallMesh, refine: fresh)
+            .restyled(second)
+        Check.expect(twice.layers == cold.layers,
+                     "and the ink is the ink a cold refiner draws under that cap",
+                     "\(twice.layers.map(\.paths.vertices.count)) vs "
+                        + "\(cold.layers.map(\.paths.vertices.count))")
     }
 }
 

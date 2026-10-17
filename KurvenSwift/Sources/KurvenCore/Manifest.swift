@@ -211,6 +211,15 @@ public enum Caps: Sendable, Equatable {
         }
     }
 
+    /// The highest the cap is anywhere; `.infinity` where there is none.
+    public var highest: Double {
+        switch self {
+        case .none: .infinity
+        case .uniform(let z): z
+        case .realBands(let bands, let beyond): bands.map(\.cap).reduce(beyond, max)
+        }
+    }
+
     public init(json: JSONValue) throws {
         let o = try json.object("Caps")
         switch try o.string("kind", "Caps") {

@@ -62,8 +62,12 @@ public struct ContourRefiner: Sendable {
     /// How many times one grid-level segment may be halved.
     public var maxDepth: Int
 
+    /// The expression f was compiled from, for a fork to compile again.
+    let node: KurvenMath.Expression.Node
+
     public init(_ compiled: KurvenMath.Expression.Compiled, domain: Domain,
                 width: Int, height: Int, tolerance: Double = 0.02, maxDepth: Int = 5) {
+        self.node = compiled.node
         self.value = { z in compiled(z) }
         self.magnitude = { z in
             let v = compiled(z)
@@ -125,29 +129,54 @@ public struct ContourRefiner: Sendable {
     /// minima and the zeros' heights, and the zeros the fold lines are
     /// carried to. The magnitude is the one the grid was sampled with,
     /// clamped at `NativeLandscape.huge` beside a pole.
+    ///
+    /// Remembering (`ContourRefine.remembering`): a bundle carries this hook
+    /// through every restyle of its grids, and a restyle asks again for
+    /// curves it has already placed.
     public var refine: ContourRefine {
-        let zeros = self.zeros()
-        return ContourRefine(contours: { field, level, paths in
-                          self.refine(field: field, level: level, paths, zeros: zeros)
-                      },
-                      magnitude: { p in self.magnitude(Complex(p.x, p.y)) },
-                      zero: { p in self.zero(near: p) },
-                      tolerance: tolerance)
+        hook(zeros: zeros()).remembering()
+    }
+
+    /// The hook over these zeros, forking into a refiner of its own: f
+    /// compiled again from its tree, so the fork's closures share nothing
+    /// with these (`ContourRefine.fork`).
+    func hook(zeros: [P2<DomainSpace>]) -> ContourRefine {
+        let node = node, grid = grid, width = width, height = height
+        let tolerance = tolerance, maxDepth = maxDepth
+        return ContourRefine(contours: { field, level, paths, ceiling in
+                                 self.refine(field: field, level: level, paths, zeros: zeros,
+                                             ceiling: ceiling)
+                             },
+                             magnitude: { p in self.magnitude(Complex(p.x, p.y)) },
+                             zero: { p in self.zero(near: p) },
+                             tolerance: tolerance,
+                             fork: {
+                                 ContourRefiner(KurvenMath.Expression.Compiled(node: node), domain: grid,
+                                                width: width, height: height, tolerance: tolerance,
+                                                maxDepth: maxDepth).hook(zeros: zeros)
+                             })
     }
 
     /// The grid's paths at one level of one field, placed on f; and, for the
     /// magnitude with the zeros at hand, the rings around each zero that the
     /// grid could not see (`seededRings`).
+    ///
+    /// A phase path is placed only where it can be drawn: along the
+    /// stretches with a vertex at or under `ceiling`, the height above which
+    /// its ink is cut away (`ContourRefine.Contours`). A magnitude line is
+    /// level, and wholly under the cap or wholly over it.
     public func refine(field: ContourField, level: Double,
-                       _ paths: [[P2<DomainSpace>]], zeros: [P2<DomainSpace>] = []) -> [[P2<DomainSpace>]] {
+                       _ paths: [[P2<DomainSpace>]], zeros: [P2<DomainSpace>] = [],
+                       ceiling: Double = .infinity) -> [[P2<DomainSpace>]] {
         let (g, level) = self.field(field, level: level)
         let cut = field == .phase
+        let ceiling = cut ? ceiling : .infinity
         var out = [[[P2<DomainSpace>]]](repeating: [], count: paths.count)
         out.withUnsafeMutableBufferPointer { buffer in
             // Each iteration writes only its own slot, so sharing is safe.
             nonisolated(unsafe) let base = buffer.baseAddress!
             DispatchQueue.concurrentPerform(iterations: paths.count) { i in
-                base[i] = refine(paths[i], level: level, g: g, cut: cut)
+                base[i] = refine(paths[i], level: level, g: g, cut: cut, ceiling: ceiling)
             }
         }
         var placed = out.flatMap { $0 }
@@ -340,9 +369,52 @@ public struct ContourRefiner: Sendable {
     // MARK: one path
 
     /// One grid path, refined: possibly several, where wrap vertices were
-    /// dropped.
+    /// dropped, and only its stretches that reach under `ceiling`.
+    ///
+    /// A segment is placed when either of its grid vertices has |f| at or
+    /// under the ceiling, so the vertex just over the cap is placed too and
+    /// the cut at the rim (`Surface.capCrossing`) is the one it always was.
+    /// A stretch of segments wholly over it is left out: its ink is cut away
+    /// whatever its vertices are. The ends this makes are not ends of the
+    /// curve, so they are not followed on f (`traced`) or carried to a zero.
     func refine(_ path: [P2<DomainSpace>], level: Double,
-                g: @Sendable (Complex) -> Double, cut: Bool) -> [[P2<DomainSpace>]] {
+                g: @Sendable (Complex) -> Double, cut: Bool,
+                ceiling: Double = .infinity) -> [[P2<DomainSpace>]] {
+        guard path.count >= 2 else { return [] }
+        guard ceiling.isFinite else { return placed(path, level: level, g: g, cut: cut) }
+        let n = path.count - 1
+        // Not over: a vertex where |f| is not a number is the snap's to judge.
+        let low = path.map { p in !(magnitude(Complex(p.x, p.y)) > ceiling) }
+        let wanted = (0..<n).map { low[$0] || low[$0 + 1] }
+        if !wanted.contains(false) { return placed(path, level: level, g: g, cut: cut) }
+        guard wanted.contains(true) else { return [] }
+        var vertices = path, want = wanted
+        let closed = path.first == path.last
+        if closed {
+            // Walked from the start of a stretch, so none is split in two.
+            let s = (0..<n).first { wanted[$0] && !wanted[($0 + n - 1) % n] }!
+            vertices = (0...n).map { path[(s + $0) % n] }
+            want = (0..<n).map { wanted[(s + $0) % n] }
+        }
+        var out: [[P2<DomainSpace>]] = []
+        var k = 0
+        while k < n {
+            guard want[k] else { k += 1; continue }
+            var e = k
+            while e < n && want[e] { e += 1 }
+            out += placed(Array(vertices[k...e]), level: level, g: g, cut: cut,
+                          followStart: !closed && k == 0, followEnd: !closed && e == n)
+            k = e
+        }
+        return out
+    }
+
+    /// A run of grid vertices placed on f. `followStart` and `followEnd` say
+    /// whether its ends are the curve's, to be followed on f and carried to
+    /// a zero, or a cut at the ceiling.
+    func placed(_ path: [P2<DomainSpace>], level: Double,
+                g: @Sendable (Complex) -> Double, cut: Bool,
+                followStart: Bool = true, followEnd: Bool = true) -> [[P2<DomainSpace>]] {
         guard path.count >= 2 else { return [] }
         let closed = path.first == path.last
         var snapped = path.map { snap($0, level: level, g: g, cut: cut) }
@@ -364,9 +436,18 @@ public struct ContourRefiner: Sendable {
             runs[runs.count - 1].append(vertex)
             previous = vertex
         }
-        runs = runs.filter { $0.count >= 2 }
-        guard cut else { return runs }
-        return runs.map { traced(ended(atZeros: $0, level: level, g: g), level: level, g: g) }
+        // Which runs begin at the path's first vertex and end at its last:
+        // only those ends can be cuts at the ceiling.
+        let headed = snapped.first! != nil, tailed = snapped.last! != nil
+        let marked = runs.enumerated()
+            .map { (run: $1, start: $0 == 0 && headed, end: $0 == runs.count - 1 && tailed) }
+            .filter { $0.run.count >= 2 }
+        guard cut else { return marked.map(\.run) }
+        return marked.map { r in
+            let ends = (start: followStart || !r.start, end: followEnd || !r.end)
+            return traced(ended(atZeros: r.run, level: level, g: g, ends: ends),
+                          level: level, g: g, ends: ends)
+        }
     }
 
     /// A phase run followed on f beyond either end that lies inside the
@@ -379,7 +460,8 @@ public struct ContourRefiner: Sendable {
     /// when the chord to it can be placed (`subdivide`) and halved
     /// otherwise, until the curve leaves the window, where it ends on the
     /// edge, or the step has shrunk to nothing at a singularity.
-    func traced(_ run: [P2<DomainSpace>], level: Double, g: @Sendable (Complex) -> Double) -> [P2<DomainSpace>] {
+    func traced(_ run: [P2<DomainSpace>], level: Double, g: @Sendable (Complex) -> Double,
+                ends: (start: Bool, end: Bool) = (true, true)) -> [P2<DomainSpace>] {
         guard run.count >= 2, run.first != run.last else { return run }
         func interior(_ p: P2<DomainSpace>) -> Bool {
             let r = grid.real, i = grid.imag, slack = 1e-6 * cell
@@ -391,10 +473,10 @@ public struct ContourRefiner: Sendable {
             return !(u.isFinite && u > 1e-9)
         }
         var out = run
-        if interior(out[out.count - 1]), !onZero(out[out.count - 1]) {
+        if ends.end, interior(out[out.count - 1]), !onZero(out[out.count - 1]) {
             out += trace(from: out[out.count - 1], before: out[out.count - 2], level: level, g: g)
         }
-        if interior(out[0]), !onZero(out[0]) {
+        if ends.start, interior(out[0]), !onZero(out[0]) {
             out = trace(from: out[0], before: out[1], level: level, g: g).reversed() + out
         }
         return out
@@ -529,7 +611,8 @@ public struct ContourRefiner: Sendable {
     /// any other. A run that already ends on a zero, or that is closed, is
     /// left alone.
     func ended(atZeros run: [P2<DomainSpace>], level: Double,
-               g: @Sendable (Complex) -> Double) -> [P2<DomainSpace>] {
+               g: @Sendable (Complex) -> Double,
+               ends: (start: Bool, end: Bool) = (true, true)) -> [P2<DomainSpace>] {
         guard run.count >= 2, run.first != run.last else { return run }
         /// The zero this end leads to, when the chord to it lies on the level
         /// set -- its midpoint's phase within an eighth of a turn of the level,
@@ -545,13 +628,13 @@ public struct ContourRefiner: Sendable {
             return r.isFinite && abs(r) <= .pi / 4 ? z : nil
         }
         var out = run
-        if let z = zero(for: out[0], other: out[out.count - 1]) {
+        if ends.start, let z = zero(for: out[0], other: out[out.count - 1]) {
             var lead: [[P2<DomainSpace>]] = [[]]
             subdivide(z, out[0], level: level, g: g, cut: true, depth: 0, into: &lead)
             // Carried only when the whole chord to the zero could be placed.
             if lead.count == 1 { out = [z] + lead[0] + out }
         }
-        if let z = zero(for: out[out.count - 1], other: out[0]) {
+        if ends.end, let z = zero(for: out[out.count - 1], other: out[0]) {
             var tail: [[P2<DomainSpace>]] = [[]]
             subdivide(out[out.count - 1], z, level: level, g: g, cut: true, depth: 0, into: &tail)
             if tail.count == 1 { out += tail[0]; out.append(z) }

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import simd
 
 /// The identity of a piece of content.
@@ -34,6 +35,13 @@ public struct Heightfield: Sendable {
                 region: Region = .full, step: Int, refine: ContourRefine? = nil) {
         self.surface = surface; self.occluder = occluder; self.tiles = tiles
         self.region = region; self.step = step; self.refine = refine
+    }
+
+    /// The same heightfield for one thread of a parallel judgement: its
+    /// function forked (`ContourRefine.fork`), its grids shared.
+    public func forked() -> Heightfield {
+        Heightfield(surface: surface, occluder: occluder, tiles: tiles, region: region,
+                    step: step, refine: refine?.forked())
     }
 
     /// The same heightfield without its function: traced and judged on the
@@ -155,8 +163,9 @@ public struct Heightfield: Sendable {
         // capped facing jumps at the crease, and its zero there is the
         // crease, not the fold.
         let onF = refine?.magnitude != nil
-        @Sendable func facing(_ p: P2<WorldSpace>) -> Double {
-            let n = onF ? flankNormal(at: p) : normal(at: p)
+        @Sendable func facing(_ p: P2<WorldSpace>) -> Double { facing(self, p) }
+        @Sendable func facing(_ hf: Heightfield, _ p: P2<WorldSpace>) -> Double {
+            let n = onF ? hf.flankNormal(at: p) : hf.normal(at: p)
             let len = simd_length(n)
             return len > 0 ? -simd_dot(n, sight) / len : 0
         }
@@ -248,17 +257,14 @@ public struct Heightfield: Sendable {
             let lo = SIMD2(corners.map(\.x).min()!, corners.map(\.y).min()!)
             let hi = SIMD2(corners.map(\.x).max()!, corners.map(\.y).max()!)
             let sx = (hi.x - lo.x) / Double(nx - 1), sy = (hi.y - lo.y) / Double(ny - 1)
-            var values = [Float](repeating: 0, count: nx * ny)
-            values.withUnsafeMutableBufferPointer { out in
-                // Each row writes only its own slots, so sharing is safe.
-                nonisolated(unsafe) let base = out.baseAddress!
-                DispatchQueue.concurrentPerform(iterations: ny) { j in
-                    for i in 0..<nx {
-                        base[j * nx + i] = Float(facing(P2(lo.x + Double(i) * sx,
-                                                           lo.y + Double(j) * sy)))
-                    }
+            // A row at a time, each worker with its own f (`forked`): every
+            // node's facing is three evaluations of f.
+            let rows = Self.parallelMap(Array(0..<ny), chunk: 1, worker: { self.forked() }) { hf, j in
+                (0..<nx).map { i in
+                    Float(facing(hf, P2(lo.x + Double(i) * sx, lo.y + Double(j) * sy)))
                 }
             }
+            let values = Array(rows.joined())
             let field = Grid2D(width: nx, height: ny,
                                domain: Domain(real: Interval(lo: lo.x, hi: hi.x),
                                               imag: Interval(lo: lo.y, hi: hi.y)),
@@ -441,12 +447,35 @@ public struct Heightfield: Sendable {
     /// lies on f to the last bit, and forgiving the tolerance instead draws
     /// a stub of a bowl's fold beside the cut, hidden by less than the
     /// tolerance, almost on the crest.
+    ///
+    /// `resolution` is how finely a fold's end behind the solid is placed,
+    /// as a length in the view plane (`runs(of:)`); zero, to the last bit.
     public func visibleFolds(view: Transform<WorldSpace, ViewSpace>, margin: Double,
-                             refined: Bool = true) -> PolylineSet<WorldSpace> {
+                             refined: Bool = true, resolution: Double = 0) -> PolylineSet<WorldSpace> {
         let folds = foldLines(view: view, refined: refined)
         guard !folds.vertices.isEmpty else { return folds }
         let march = SightMarch(self, view: view, margin: surfaceMargin(margin))
-        return Self.runs(of: folds) { march.unoccluded(self.onSurface($0)) }
+        return Self.runs(of: folds, worker: {
+            let m = march.forked(), h = m.heightfield
+            return (keep: { m.unoccluded(h.onSurface($0)) }, lift: { _, _, q in q })
+        }, stop: Self.stop(resolution, view))
+    }
+
+    /// The fraction of a segment `a -> b` to which `turning` bisects for ink
+    /// placed to `resolution` in the view plane: the segment's own length on
+    /// the screen, in resolutions, inverted. A preview places a run's end to
+    /// a fraction of its pixel, and a march per halving is milliseconds on
+    /// f; bisected to the last bit, as a bake is, a fold of cn cost three
+    /// quarters of a second a camera for ends no pixel can show.
+    static func stop(_ resolution: Double, _ view: Transform<WorldSpace, ViewSpace>)
+        -> @Sendable (P3<WorldSpace>, P3<WorldSpace>) -> Double
+    {
+        guard resolution > 0 else { return { _, _ in 0 } }
+        return { a, b in
+            let pa = view(a), pb = view(b)
+            let length = ((pb.x - pa.x) * (pb.x - pa.x) + (pb.y - pa.y) * (pb.y - pa.y)).squareRoot()
+            return length > 0 ? resolution / length : 0
+        }
     }
 
     /// The margin ink on the surface is judged with: the plate's against the
@@ -491,7 +520,7 @@ public struct Heightfield: Sendable {
     /// it does.
     public func visibleWallInk(_ paths: PolylineSet<WorldSpace>,
                                view: Transform<WorldSpace, ViewSpace>,
-                               margin: Double) -> PolylineSet<WorldSpace> {
+                               margin: Double, resolution: Double = 0) -> PolylineSet<WorldSpace> {
         guard !paths.vertices.isEmpty else { return paths }
         let sight = view.sightLine
         let march = SightMarch(self, view: view, margin: margin)
@@ -508,12 +537,12 @@ public struct Heightfield: Sendable {
         /// Whether the point is judged by the march at all: on the crest, in
         /// a wall that faces the eye, or in no wall. Ink that stands in no
         /// wall is left to the march alone.
-        @Sendable func onCrest(_ p: P3<WorldSpace>) -> Bool {
-            let h = self.surfaceHeight(at: P2(p.x, p.y))
+        @Sendable func onCrest(_ hf: Heightfield, _ p: P3<WorldSpace>) -> Bool {
+            let h = hf.surfaceHeight(at: P2(p.x, p.y))
             return p.z >= h - 1e-9 * max(cell, abs(h))
         }
-        @Sendable func admitted(_ p: P3<WorldSpace>) -> Bool {
-            let onCrest = onCrest(p)
+        @Sendable func admitted(_ hf: Heightfield, _ p: P3<WorldSpace>) -> Bool {
+            let onCrest = onCrest(hf, p)
             var onAnyWall = false, facesEye = false
             for box in boxes {
                 let walls: [(on: Bool, outward: SIMD3<Double>)] = [
@@ -537,9 +566,12 @@ public struct Heightfield: Sendable {
         // came out from behind a tower with a stub missing beside the
         // silhouette's cusp. Judged on the surface, the chord's points are
         // crest points.
-        return Self.runs(of: paths, keep: { p in admitted(p) && march.unoccluded(p) },
-                         bisectable: { a, b in admitted(a) && admitted(b) },
-                         lift: { a, b, q in onCrest(a) && onCrest(b) ? self.onSurface(q) : q })
+        return Self.runs(of: paths, worker: {
+            let m = march.forked(), h = m.heightfield
+            return (keep: { p in admitted(h, p) && m.unoccluded(p) },
+                    lift: { a, b, q in onCrest(h, a) && onCrest(h, b) ? h.onSurface(q) : q })
+        }, bisectable: { a, b in admitted(self, a) && admitted(self, b) },
+           stop: Self.stop(resolution, view))
     }
 
     /// Ink that lies on the surface itself -- the contours of |f| and arg f,
@@ -645,7 +677,10 @@ public struct Heightfield: Sendable {
                            margin: Double) -> PolylineSet<WorldSpace> {
         guard !paths.vertices.isEmpty else { return paths }
         let march = SightMarch(self, view: view, margin: margin)
-        return Self.runs(of: paths) { march.unoccluded($0) }
+        return Self.runs(of: paths, worker: {
+            let m = march.forked()
+            return (keep: { m.unoccluded($0) }, lift: { _, _, q in q })
+        })
     }
 
     /// The runs of each path whose vertices pass `keep`, split where one
@@ -663,14 +698,22 @@ public struct Heightfield: Sendable {
     /// between the crest as drawn and f.
     /// `lift` places a point of the chord `a -> b` where the ink between
     /// the two vertices actually runs, for the bisection of a run's end:
-    /// the chord itself by default.
+    /// for most ink the chord itself. `stop` is the fraction of the segment
+    /// the bisection may stop at (`stop(_:_:)`): none, by default.
+    ///
+    /// `keep` and `lift` are each worker thread's own, made by `worker` once
+    /// a thread (`parallelMap(_:chunk:worker:_:)`): a march forked for the
+    /// thread shares nothing of f with the others.
     static func runs(of paths: PolylineSet<WorldSpace>,
-                     keep: @Sendable (P3<WorldSpace>) -> Bool,
+                     worker: @Sendable () -> (keep: Keep, lift: Lift),
                      bisectable: @Sendable (P3<WorldSpace>, P3<WorldSpace>) -> Bool = { _, _ in true },
-                     lift: @Sendable (P3<WorldSpace>, P3<WorldSpace>, P3<WorldSpace>) -> P3<WorldSpace> = { _, _, q in q })
+                     stop: @Sendable (P3<WorldSpace>, P3<WorldSpace>) -> Double = { _, _ in 0 })
         -> PolylineSet<WorldSpace>
     {
-        let kept = parallelMap(paths.vertices, keep)
+        // A few vertices to a thread at a time, and one crossing: a keep that
+        // marches a sight line on f is milliseconds a vertex, and at the
+        // default chunk a fold of a thousand vertices was four threads' work.
+        let kept = parallelMap(paths.vertices, chunk: 4, worker: worker) { w, v in w.keep(v) }
         let vertices = paths.vertices
         var crossings: [Int] = []
         for path in 0..<paths.count {
@@ -679,9 +722,11 @@ public struct Heightfield: Sendable {
                 crossings.append(k)
             }
         }
-        let turned = parallelMap(crossings) { k -> P3<WorldSpace>? in
+        let turned = parallelMap(crossings, chunk: 1, worker: worker) { w, k -> P3<WorldSpace>? in
             let a = vertices[k - 1], b = vertices[k]
-            return Self.turning(from: a, kept[k - 1], to: b, keep: keep) { lift(a, b, $0) }
+            return Self.turning(from: a, kept[k - 1], to: b, keep: w.keep, until: stop(a, b)) {
+                w.lift(a, b, $0)
+            }
         }
         var turn = [P3<WorldSpace>?](repeating: nil, count: vertices.count)
         for (i, k) in crossings.enumerated() { turn[k] = turned[i] }
@@ -703,14 +748,18 @@ public struct Heightfield: Sendable {
         return PolylineSet(paths: out)
     }
 
+    typealias Keep = @Sendable (P3<WorldSpace>) -> Bool
+    typealias Lift = @Sendable (P3<WorldSpace>, P3<WorldSpace>, P3<WorldSpace>) -> P3<WorldSpace>
+
     /// Where `keep` turns on the segment from `a` to `b`, given it holds at
-    /// `a` iff `keptA`: bisection to the last bit of the fraction, returning
-    /// the last point at which it still holds on the kept side.
+    /// `a` iff `keptA`: bisection to the last bit of the fraction, or to
+    /// `until` of it, returning the last point at which it still holds on
+    /// the kept side.
     static func turning(from a: P3<WorldSpace>, _ keptA: Bool, to b: P3<WorldSpace>,
-                        keep: @Sendable (P3<WorldSpace>) -> Bool,
+                        keep: @Sendable (P3<WorldSpace>) -> Bool, until: Double = 0,
                         lift: (P3<WorldSpace>) -> P3<WorldSpace> = { $0 }) -> P3<WorldSpace>? {
         var lo = 0.0, hi = 1.0
-        while hi - lo > 1e-13 {
+        while hi - lo > max(until, 1e-13) {
             let mid = 0.5 * (lo + hi)
             if keep(lift(P3(a.v + (b.v - a.v) * mid))) == keptA { lo = mid } else { hi = mid }
         }
@@ -734,6 +783,35 @@ public struct Heightfield: Sendable {
             DispatchQueue.concurrentPerform(iterations: (n + chunk - 1) / chunk) { c in
                 for k in (c * chunk)..<min((c + 1) * chunk, n) {
                     (base + k).initialize(to: body(items[k]))
+                }
+            }
+            initialized = n
+        }
+    }
+
+    /// `items.map(body)` in parallel, each worker thread with a state of its
+    /// own, made by `worker` once a thread rather than once a chunk: a
+    /// thread's forked march (`Heightfield.forked`). Chunks are handed out
+    /// as threads come free, so a slow vertex holds up only its own chunk.
+    public static func parallelMap<T: Sendable, R: Sendable, W>(
+        _ items: [T], chunk: Int, worker: @Sendable () -> W, _ body: @Sendable (W, T) -> R
+    ) -> [R] {
+        let n = items.count
+        guard n > 0 else { return [] }
+        let chunks = (n + chunk - 1) / chunk
+        let workers = min(chunks, ProcessInfo.processInfo.activeProcessorCount)
+        let next = Atomic<Int>(0)
+        return [R](unsafeUninitializedCapacity: n) { buffer, initialized in
+            // Each chunk writes only its own slots, so sharing is safe.
+            nonisolated(unsafe) let base = buffer.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: workers) { _ in
+                let state = worker()
+                while true {
+                    let c = next.wrappingAdd(1, ordering: .relaxed).oldValue
+                    guard c < chunks else { break }
+                    for k in (c * chunk)..<min((c + 1) * chunk, n) {
+                        (base + k).initialize(to: body(state, items[k]))
+                    }
                 }
             }
             initialized = n
@@ -782,7 +860,15 @@ public struct Heightfield: Sendable {
 /// Built once per camera, since it scans the samples for the solid's extent
 /// and inverts the tiles.
 struct SightMarch: Sendable {
-    let heightfield: Heightfield
+    private(set) var heightfield: Heightfield
+
+    /// The same march for one thread: its heightfield's function forked.
+    func forked() -> SightMarch {
+        var m = self
+        m.heightfield = heightfield.forked()
+        return m
+    }
+
     let toward: SIMD3<Double>
     /// The hidden-line margin, in view depth. Infinite disarms the march.
     let margin: Double
@@ -1194,6 +1280,11 @@ public struct Scene: Sendable {
     public var mode: PreviewMode
     /// Hidden-line margin, in world units of depth, for ink judged by depth.
     public var margin: Double
+    /// How finely the ends of judged ink are placed, as a length in the view
+    /// plane: a window sets a fraction of its pixel, since ink placed more
+    /// finely than a pixel looks the same and costs a march per halving.
+    /// Zero, the default and a bake's, places them to the last bit.
+    public var resolution: Double = 0
 
     /// A heightfield scene.
     public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],

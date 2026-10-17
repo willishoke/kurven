@@ -148,6 +148,13 @@ usage: kurven-cli <command> [options]
         as the window would pay for them -- at full resolution, and at the
         draft lattice a drag uses. The numbers SurfaceSection's doc records.
 
+  landscape-costs [--only NAME] [--resolution N]
+        Time what each of the window's landscape controls costs, per catalog
+        preset, as the window pays for it off the main actor: a resample in
+        full and as a drag's draft, a cap step and the step after it, a hatch
+        step, a layer's levels placed on f and as a drag's draft, and turning
+        refinement on. The numbers Landscape.swift's doc records.
+
   depth <bundle> [--preset NAME] [--resolution N] -o depth.npy
         Dump the depth buffer as float32 .npy, for comparison against a
         reference. This is what stands in for a GPU frame capture.
@@ -664,11 +671,17 @@ func bench(_ args: Args) throws {
               + "\(ms(ts[ts.count / 2]).padding(toLength: 12, withPad: " ", startingAt: 0))"
               + "\(count) vertices")
     }
+    // What the window judges its ink to (`Document.framedScene`).
+    let pixel = 0.25 * navigator.framing.unitsPerPixel
     print("judging, per camera change (median of 5)")
     if h.refine != nil {
         time("folds traced on f") { h.foldLines(view: view, refined: false).vertices.count }
         time("folds traced and judged on f") {
             h.visibleFolds(view: view, margin: base.margin, refined: false).vertices.count
+        }
+        time("folds judged on f, ends to a quarter pixel") {
+            h.visibleFolds(view: view, margin: base.margin, refined: false,
+                           resolution: pixel).vertices.count
         }
     }
     time("folds traced on the lattice") { lattice.foldLines(view: view, refined: false).vertices.count }
@@ -679,6 +692,10 @@ func bench(_ args: Args) throws {
         if h.refine != nil {
             time("\(layer.spec.name) judged on f") {
                 h.visibleWallInk(layer.paths, view: view, margin: base.margin).vertices.count
+            }
+            time("\(layer.spec.name) judged on f, to a quarter pixel") {
+                h.visibleWallInk(layer.paths, view: view, margin: base.margin,
+                                 resolution: pixel).vertices.count
             }
         }
         time("\(layer.spec.name) judged on the lattice") {
@@ -899,6 +916,94 @@ func surfaceCosts(_ args: Args) throws {
     try measure("revolution radius, released", forced.drafted(), { r in
         var target = forced; forcedShape(&target, radius: 3); r = target
     }, from: dragged)
+}
+
+func landscapeCosts(_ args: Args) throws {
+    let resolution = try args.int("resolution", NativeLandscape.defaultResolution)
+    let draftResolution = 240
+    let clock = ContinuousClock()
+    func ms(_ d: Duration) -> String {
+        let x = Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
+        return x < 1 ? String(format: "%.0f ms", x * 1e3) : String(format: "%.2f s", x)
+    }
+    func column(_ s: String, _ width: Int = 11) -> String {
+        s.padding(toLength: width, withPad: " ", startingAt: 0)
+    }
+    /// `Document.setCaps`: the cap, and the magnitude levels chosen under it.
+    func capped(_ manifest: Manifest, _ caps: Caps) -> Manifest {
+        var m = manifest
+        m.caps = caps
+        let levels = LandscapeStyle.levels(under: caps)
+        for i in m.layers.indices {
+            guard case .contour(let field, _, let keep, let tiled) = m.layers[i].source else { continue }
+            switch m.layers[i].name {
+            case "mag_major": m.layers[i].source = .contour(field: field, levels: levels.major,
+                                                            keep: keep, tiled: tiled)
+            case "mag_minor": m.layers[i].source = .contour(field: field, levels: levels.minor,
+                                                            keep: keep, tiled: tiled)
+            default: break
+            }
+        }
+        return m
+    }
+
+    print(column("preset", 10) + column("sample") + column("dragging") + column("cap")
+          + column("next cap") + column("hatch") + column("levels") + column("dragging")
+          + "refine on")
+    for preset in Catalog.native.presets where args.flags["only"].map({ $0 == preset.name }) ?? true {
+        var request = LandscapeRequest(preset: preset, resolution: resolution)
+        request.spacing = nil
+        var draft = request
+        draft.resolution = min(resolution, draftResolution)
+        var bundle: KurvenBundle!
+        let sample = clock.measure { bundle = try? NativeLandscape.build(request) }
+        let dragging = clock.measure { _ = try? NativeLandscape.build(draft, refine: false) }
+        guard let bundle else { throw CLIError("\(preset.name): did not build") }
+
+        var cells = [column(preset.name, 10), column(ms(sample)), column(ms(dragging))]
+        if let ceiling = LandscapeStyle.ceiling(of: bundle.manifest.caps) {
+            var once: KurvenBundle!
+            let cap = clock.measure { once = bundle.restyled(capped(bundle.manifest, .uniform(ceiling * 0.9))) }
+            let next = clock.measure { _ = once.restyled(capped(once.manifest, .uniform(ceiling * 0.85))) }
+            cells += [column(ms(cap)), column(ms(next))]
+        } else {
+            cells += [column("-"), column("-")]
+        }
+        if let i = bundle.manifest.layers.firstIndex(where: {
+            if case .capHatch = $0.source { true } else if case .wallHatch = $0.source { true } else { false }
+        }) {
+            var m = bundle.manifest
+            switch m.layers[i].source {
+            case .capHatch(let axis, let spacing, let tiled):
+                m.layers[i].source = .capHatch(axis: axis, spacing: spacing * 1.1, tiled: tiled)
+            case .wallHatch(let edges, let spacing, let pitch, let trim, let base, let top):
+                m.layers[i].source = .wallHatch(edges: edges, spacing: spacing * 1.1, pitch: pitch,
+                                                trim: trim, base: base, topOffset: top)
+            default: break
+            }
+            cells.append(column(ms(clock.measure { _ = bundle.restyled(m) })))
+        } else {
+            cells.append(column("-"))
+        }
+        // The level slider on the layer it costs most on: the finer phase.
+        if let spec = bundle.manifest.layers.first(where: { $0.name == "ang_minor" })
+            ?? bundle.manifest.layers.first(where: { KurvenBundle.levels(of: $0) != nil }),
+           let base = KurvenBundle.levels(of: spec), base.count >= 2 {
+            let n = base.count + 1, lo = base.min()!, hi = base.max()!
+            let levels = (0..<n).map { lo + (hi - lo) * Double($0) / Double(n - 1) }
+            let grid = KurvenBundle(url: bundle.url, manifest: bundle.manifest, surface: bundle.surface,
+                                    layers: bundle.layers, wallMesh: bundle.wallMesh, refine: nil)
+            cells.append(column(ms(clock.measure { _ = bundle.layer(spec, levels: levels) })))
+            cells.append(column(ms(clock.measure { _ = grid.layer(spec, levels: levels) })))
+        } else {
+            cells += [column("-"), column("-")]
+        }
+        let plain = try NativeLandscape.build(request, refine: false)
+        cells.append(ms(clock.measure {
+            _ = plain.refined(by: NativeLandscape.refiner(for: plain)?.refine)
+        }))
+        print(cells.joined())
+    }
 }
 
 func previewMode(_ args: Args) throws -> PreviewMode {
@@ -1302,6 +1407,7 @@ do {
     case "depth": try depth(args)
     case "surface": try surfaceCommand(args)
     case "surface-costs": try surfaceCosts(args)
+    case "landscape-costs": try landscapeCosts(args)
     case "bench": try bench(args)
     case "preview": try preview(args)
     case "flicker": try flicker(args)

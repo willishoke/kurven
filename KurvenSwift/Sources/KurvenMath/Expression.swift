@@ -410,15 +410,16 @@ public enum Expression {
         Compiled(node: try parse(text))
     }
 
+    /// An expression ready to evaluate by the million, through its `Tape`.
     public struct Compiled: Sendable {
         public let node: Node
-        private let body: @Sendable (Complex) -> Complex
+        private let tape: Tape
         public init(node: Node) {
             self.node = node
-            self.body = node.compiled()
+            self.tape = Tape(node)
         }
         public var expression: String { node.format() }
-        public func callAsFunction(_ z: Complex) -> Complex { body(z) }
+        public func callAsFunction(_ z: Complex) -> Complex { tape(z) }
     }
 }
 

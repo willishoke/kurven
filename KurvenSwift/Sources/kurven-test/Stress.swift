@@ -563,7 +563,7 @@ func stressTests() {
                         z(P2<DomainSpace>(p.x / s, p.y / s)).map { P2<DomainSpace>($0.x * s, $0.y * s) }
                     }
                 }
-                return ContourRefine(contours: { _, _, lines in lines }, magnitude: magnitude, zero: zero)
+                return ContourRefine(contours: { _, _, lines, _ in lines }, magnitude: magnitude, zero: zero)
             }
             let scaled = Scene(surface: surface, occluder: occluder, tiles: h.tiles, region: h.region,
                                step: h.step, layers: layers, camera: scene.camera, margin: scene.margin * s,
