@@ -495,7 +495,11 @@ func refinementTests() {
         Check.expect(lost == 0 && added == 0,
                      "under the cap, the lines placed under a ceiling are the lines placed everywhere",
                      "\(lost) drawn vertices lost, \(added) added")
-        Check.expect(under * 3 < everywhere, "and most of the placing was over the cap",
+        // Once the lines over the poles' spires were most of the placing:
+        // 1272 vertices under the ceiling of 18354 everywhere. Then every
+        // stretch came to be placed once (`ContourRefiner.drawnOnce`) and
+        // the rest fell to 2117, so the ceiling now saves the spires alone.
+        Check.expect(under * 3 < everywhere * 2, "and a good part of the placing was over the cap",
                      "\(under) vertices placed, of \(everywhere)")
     }
 
