@@ -633,6 +633,55 @@ func periodicTorusTests() {
                      String(format: "%.4f vs %.4f, %.3f%% off", baked.strokes.inkLength, truth,
                             100 * error))
     }
+
+    // The torus has no seam; the rectangle it is drawn from has one, and sn
+    // puts both its zeros and one pole on it. Every line is computed on the
+    // plane and cut to the rectangle, so a line may end in only three places:
+    // on a zero, on a pole, or on the rectangle's edge, where its
+    // continuation begins at the same point of the torus.
+    Check.suite("surfaces: every line on the sn torus ends on a zero, a pole, or its continuation across the seam") {
+        let m = 0.64
+        let plate = try PeriodicTorus.jacobiSN(modulus: m)
+        let u = plate.surface.u.range, v = plate.surface.v.range
+        let onEdge = 1e-7
+        var loose: [String] = []
+        var seam: [(text: String, at: SIMD3<Double>)] = []
+        var zeros = 0, poles = 0
+        for layer in plate.layers {
+            guard case .contour = layer.spec.source, let coords = layer.paths.coords else { continue }
+            let offsets = layer.paths.offsets
+            for i in 0..<(offsets.count - 1) {
+                let run = coords[offsets[i]..<offsets[i + 1]]
+                guard let a = run.first, let b = run.last, a != b else { continue }
+                for c in [a, b] {
+                    let f = Jacobi.complex(Complex(c.x, c.y), m).sn
+                    if f.magnitude < 1e-6 { zeros += 1; continue }
+                    if !f.isFinite || f.magnitude > 1e6 { poles += 1; continue }
+                    let text = String(format: "%@ (%.5f, %.5f) |f| %.3g",
+                                      layer.spec.name as NSString, c.x, c.y, f.magnitude)
+                    if abs(c.x - u.lo) < onEdge || abs(c.x - u.hi) < onEdge
+                        || abs(c.y - v.lo) < onEdge || abs(c.y - v.hi) < onEdge {
+                        seam.append((text, plate.surface.map(c).position))
+                    } else {
+                        loose.append(text)
+                    }
+                }
+            }
+        }
+        var unmatched: [String] = []
+        for (k, end) in seam.enumerated()
+        where !seam.indices.contains(where: { $0 != k && simd_length(seam[$0].at - end.at) < 1e-8 }) {
+            unmatched.append(end.text)
+        }
+        Check.expect(zeros > 0 && poles > 0, "phase lines end on the zeros and on the poles",
+                     "\(zeros) ends on zeros, \(poles) on poles")
+        Check.expect(loose.isEmpty, "no line ends in the open",
+                     "\(loose.count) do: \(loose.prefix(6).joined(separator: "; "))")
+        Check.expect(!seam.isEmpty && unmatched.isEmpty,
+                     "every end on the seam meets its continuation on the torus, to 1e-8",
+                     "\(seam.count) ends on the seam, \(unmatched.count) unmatched"
+                     + (unmatched.isEmpty ? "" : ": " + unmatched.prefix(6).joined(separator: "; ")))
+    }
 }
 
 func surfacePreviewTests() {
