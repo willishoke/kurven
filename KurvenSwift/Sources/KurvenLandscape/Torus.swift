@@ -278,11 +278,17 @@ public enum PeriodicTorus {
     }
 
     /// sn(z, m) on its fundamental rectangle, [0, 4K) × [0, 2K').
+    /// `turn`: the rectangle begins `turn` imaginary periods up the plane,
+    /// which turns the function that fraction round the tube: at 0 the
+    /// real axis, with sn's zeros, lies on the outer equator and the poles
+    /// on the inner; at 1/4 the poles sit on top of the tube; at 1/2 they
+    /// are on the outer equator.
     public static func jacobiSN(modulus m: Double, major R: Double = 2, minor r: Double = 1,
                                 resolution: Int = 600, lattice: Int = 1024,
-                                capped: Bool = false) throws -> Plate {
+                                capped: Bool = false, turn: Double = 0) throws -> Plate {
         let K = Jacobi.quarterPeriod(m), Kp = Jacobi.quarterPeriod(1 - m)
-        return try plate("sn(z, \(m))", periods: (4 * K, 2 * Kp), major: R, minor: r,
+        return try plate("sn(z, \(m))", origin: Complex(0, turn * 2 * Kp),
+                         periods: (4 * K, 2 * Kp), major: R, minor: r,
                          resolution: resolution, lattice: lattice, capped: capped)
     }
 }
