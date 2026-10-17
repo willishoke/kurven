@@ -153,99 +153,17 @@ public struct Heightfield: Sendable {
     /// at |f|'s own height there -- the floor -- as the phase lines are.
     public func foldLines(view: Transform<WorldSpace, ViewSpace>,
                           refined: Bool = true) -> PolylineSet<WorldSpace> {
-        let sight = view.sightLine
         let g = surface.height
         let nx = g.width, ny = g.height
         guard nx >= 2, ny >= 2 else { return .empty }
-        // With the function at hand the facing is the flank's, uncapped:
-        // the fold is a property of the one surface the flank is, and
-        // runs on under the cap, where the cap cuts it at the rim. The
-        // capped facing jumps at the crease, and its zero there is the
-        // crease, not the fold.
-        let onF = refine?.magnitude != nil
-        @Sendable func facing(_ p: P2<WorldSpace>) -> Double { facing(self, p) }
-        @Sendable func facing(_ hf: Heightfield, _ p: P2<WorldSpace>) -> Double {
-            let n = onF ? hf.flankNormal(at: p) : hf.normal(at: p)
-            let len = simd_length(n)
-            return len > 0 ? -simd_dot(n, sight) / len : 0
-        }
         let cell = max(abs(g.domain.real.length) / Double(nx - 1),
                        abs(g.domain.imag.length) / Double(ny - 1))
-        let h = 0.25 * cell
-        /// |f| over a world point, uncapped, through its tile; the lattice's
-        /// height without the function.
-        func flankHeight(_ p: P2<WorldSpace>) -> Double {
-            guard let magnitude = refine?.magnitude else { return surfaceHeight(at: p) }
-            let u = magnitude(surface.inTile(P2<DomainSpace>(p.x, p.y), tiles: tiles))
-            return u.isNaN ? .infinity : u
+        /// A thread's placer: its own fork of this heightfield, on the
+        /// tile's lattice.
+        @Sendable func placer(lo: SIMD2<Double>, sx: Double, sy: Double) -> FoldPlacer {
+            FoldPlacer(heightfield: forked(), sight: view.sightLine, cell: cell, refined: refined,
+                       lo: lo, sx: sx, sy: sy)
         }
-        /// The surface's height over a fold vertex: f's, capped, with the
-        /// function at hand, so the fold is drawn at the height the rings
-        /// that end on it are drawn at; the lattice's otherwise.
-        func height(_ p: P2<WorldSpace>) -> Double { surfaceHeight(at: p) }
-        /// Between two vertices on the fold, the fold itself: the chord's
-        /// midpoint moved onto the fold along the chord's normal, kept when
-        /// it moved further than the refiner's tolerance, and the two halves
-        /// likewise -- the contour refiner's rule, so a fold is a curve to
-        /// the same tolerance the rings that end on it are.
-        func subdivide(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>, tolerance: Double, depth: Int,
-                       into out: inout [P3<WorldSpace>]) {
-            guard depth < 5 else { return }
-            let chord = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
-            guard chord > 1e-9 * cell else { return }
-            let mid = SIMD2(0.5 * (a.x + b.x), 0.5 * (a.y + b.y))
-            let n = SIMD2(-(b.y - a.y), b.x - a.x) / chord
-            var lo = mid - 0.5 * chord * n, hi = mid + 0.5 * chord * n
-            var flo = facing(P2(lo.x, lo.y))
-            guard (flo > 0) != (facing(P2(hi.x, hi.y)) > 0) else { return }
-            for _ in 0..<60 {
-                let m = 0.5 * (lo + hi)
-                let fm = facing(P2(m.x, m.y))
-                if (fm > 0) == (flo > 0) { lo = m; flo = fm } else { hi = m }
-            }
-            let q = 0.5 * (lo + hi)
-            let p = P2<WorldSpace>(q.x, q.y)
-            guard region.contains(p) else { return }
-            let z = height(p)
-            guard z.isFinite, z < surface.caps.height(atX: p.x) - 1e-9 else { return }
-            let v = P3<WorldSpace>(p.x, p.y, z)
-            // The fold is a curve in space: its departure from the chord is
-            // measured there, across and up.
-            guard simd_length(v.v - 0.5 * (a.v + b.v)) > tolerance * cell else { return }
-            subdivide(a, v, tolerance: tolerance, depth: depth + 1, into: &out)
-            out.append(v)
-            subdivide(v, b, tolerance: tolerance, depth: depth + 1, into: &out)
-        }
-        func subdivided(_ run: [P3<WorldSpace>]) -> [P3<WorldSpace>] {
-            guard refined, let tolerance = refine?.tolerance, run.count >= 2 else { return run }
-            var out: [P3<WorldSpace>] = [run[0]]
-            for (a, b) in zip(run, run.dropFirst()) {
-                subdivide(a, b, tolerance: tolerance, depth: 0, into: &out)
-                out.append(b)
-            }
-            return out
-        }
-        /// Onto the fold, along the gradient: bracket a sign change within a
-        /// cell either way, then bisect it to the last bit. The fallback,
-        /// for a vertex that lies on no lattice edge.
-        func onto(_ c: P2<WorldSpace>) -> P2<WorldSpace> {
-            let gx = facing(P2(c.x + h, c.y)) - facing(P2(c.x - h, c.y))
-            let gy = facing(P2(c.x, c.y + h)) - facing(P2(c.x, c.y - h))
-            let len = (gx * gx + gy * gy).squareRoot()
-            guard len > 0 else { return c }
-            let d = SIMD2(gx, gy) / len * cell
-            var a = SIMD2(c.x, c.y) - d, b = SIMD2(c.x, c.y) + d
-            var fa = facing(P2(a.x, a.y))
-            guard (fa > 0) != (facing(P2(b.x, b.y)) > 0) else { return c }
-            for _ in 0..<60 {
-                let m = 0.5 * (a + b)
-                let fm = facing(P2(m.x, m.y))
-                if (fm > 0) == (fa > 0) { a = m; fa = fm } else { b = m }
-            }
-            let m = 0.5 * (a + b)
-            return P2(m.x, m.y)
-        }
-
         var paths: [[P3<WorldSpace>]] = []
         let d = g.domain
         for tile in tiles {
@@ -257,11 +175,12 @@ public struct Heightfield: Sendable {
             let lo = SIMD2(corners.map(\.x).min()!, corners.map(\.y).min()!)
             let hi = SIMD2(corners.map(\.x).max()!, corners.map(\.y).max()!)
             let sx = (hi.x - lo.x) / Double(nx - 1), sy = (hi.y - lo.y) / Double(ny - 1)
+            let worker: @Sendable () -> FoldPlacer = { placer(lo: lo, sx: sx, sy: sy) }
             // A row at a time, each worker with its own f (`forked`): every
             // node's facing is three evaluations of f.
-            let rows = Self.parallelMap(Array(0..<ny), chunk: 1, worker: { self.forked() }) { hf, j in
+            let rows = Self.parallelMap(Array(0..<ny), chunk: 1, worker: worker) { w, j in
                 (0..<nx).map { i in
-                    Float(facing(hf, P2(lo.x + Double(i) * sx, lo.y + Double(j) * sy)))
+                    Float(w.facing(P2(lo.x + Double(i) * sx, lo.y + Double(j) * sy)))
                 }
             }
             let values = Array(rows.joined())
@@ -272,117 +191,8 @@ public struct Heightfield: Sendable {
             // Only on the fundamental tile: the zero is found on the
             // function, which is sampled there.
             let fundamental = tile == .identity
-            /// Onto the fold, along the lattice edge the vertex lies on: a
-            /// marching-squares vertex is the chord's crossing of an edge
-            /// whose two nodes face opposite ways, so the edge brackets the
-            /// fold by construction, and bisecting it to the last bit lands
-            /// on the fold, as the contour refiner lands on f along the same
-            /// edges. Bracketing along the gradient instead can miss where
-            /// the facing is sharp -- a pit one cell wide -- and leave the
-            /// vertex on the chord.
-            /// The lattice edges a marching-squares vertex lies on: one, or
-            /// two for a vertex on a node.
-            func latticeEdges(through c: P2<WorldSpace>) -> [(SIMD2<Double>, SIMD2<Double>)] {
-                let fx = (c.x - lo.x) / sx, fy = (c.y - lo.y) / sy
-                let onColumn = abs(fx - fx.rounded()) < 1e-6, onRow = abs(fy - fy.rounded()) < 1e-6
-                var ends: [(SIMD2<Double>, SIMD2<Double>)] = []
-                if onColumn, fy < Double(ny - 1) {
-                    let i = Int(fx.rounded()), j = Int(fy.rounded(.down))
-                    ends.append((SIMD2(lo.x + Double(i) * sx, lo.y + Double(j) * sy),
-                                 SIMD2(lo.x + Double(i) * sx, lo.y + Double(j + 1) * sy)))
-                }
-                if onRow, fx < Double(nx - 1) {
-                    let i = Int(fx.rounded(.down)), j = Int(fy.rounded())
-                    ends.append((SIMD2(lo.x + Double(i) * sx, lo.y + Double(j) * sy),
-                                 SIMD2(lo.x + Double(i + 1) * sx, lo.y + Double(j) * sy)))
-                }
-                return ends
-            }
-            /// Where the fold crosses the rim, between a vertex on the flank
-            /// and one under the cap: the chord's points moved onto the fold
-            /// along the chord's normal, as `subdivide` moves a midpoint, and
-            /// the one where |f| reaches the cap found by bisection to the
-            /// last bit. The lattice's crossing of the crease is where a
-            /// lattice edge meets the rim, which is not where the fold does:
-            /// joined to the flank by one straight chord a cell long, the
-            /// fold cut across the cap's projection on its way to the rim.
-            func ontoRim(from a: P2<WorldSpace>, to b: P2<WorldSpace>) -> P3<WorldSpace>? {
-                let chord = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
-                guard chord > 1e-9 * cell else { return nil }
-                let n = SIMD2(-(b.y - a.y), b.x - a.x) / chord
-                func onFold(_ t: Double) -> P2<WorldSpace> {
-                    let m = SIMD2(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y))
-                    var lo = m - 0.5 * chord * n, hi = m + 0.5 * chord * n
-                    var flo = facing(P2(lo.x, lo.y))
-                    guard (flo > 0) != (facing(P2(hi.x, hi.y)) > 0) else { return P2(m.x, m.y) }
-                    for _ in 0..<60 {
-                        let c = 0.5 * (lo + hi)
-                        let fc = facing(P2(c.x, c.y))
-                        if (fc > 0) == (flo > 0) { lo = c; flo = fc } else { hi = c }
-                    }
-                    let c = 0.5 * (lo + hi)
-                    return P2(c.x, c.y)
-                }
-                func excess(_ t: Double) -> Double {
-                    let q = onFold(t)
-                    return flankHeight(q) - surface.caps.height(atX: q.x)
-                }
-                var lo = 0.0, hi = 1.0
-                guard excess(lo) < 0, excess(hi) >= 0 else { return nil }
-                for _ in 0..<60 {
-                    let m = 0.5 * (lo + hi)
-                    if excess(m) < 0 { lo = m } else { hi = m }
-                }
-                let q = onFold(0.5 * (lo + hi))
-                let cap = surface.caps.height(atX: q.x)
-                guard region.contains(q), cap.isFinite else { return nil }
-                return P3(q.x, q.y, cap)
-            }
-            func ontoEdge(_ c: P2<WorldSpace>) -> P2<WorldSpace> {
-                for (a0, b0) in latticeEdges(through: c) {
-                    var a = a0, b = b0
-                    var fa = facing(P2(a.x, a.y))
-                    let fb = facing(P2(b.x, b.y))
-                    guard (fa > 0) != (fb > 0) else { continue }
-                    for _ in 0..<60 {
-                        let m = 0.5 * (a + b)
-                        let fm = facing(P2(m.x, m.y))
-                        if (fm > 0) == (fa > 0) { a = m; fa = fm } else { b = m }
-                    }
-                    let m = 0.5 * (a + b)
-                    return P2(m.x, m.y)
-                }
-                return onto(c)
-            }
-            // Nothing on a cap, which faces up and has a rim of its own.
-            // With the function at hand the fold is traced on the flank
-            // alone and runs on under the cap: where a run passes under the
-            // rim it ends on the rim, at the fold's own crossing of |f| =
-            // cap, so a tower's silhouette reaches the cap and arrives
-            // along the fold.
-            for line in Contour.lines(of: field, level: 0) {
-                var run: [P3<WorldSpace>] = []
-                var previous: (p: P2<WorldSpace>, inRegion: Bool, onFlank: Bool)?
-                func close() {
-                    if run.count >= 2 { paths.append(fundamental ? endedAtZeros(subdivided(run), cell: cell) : run) }
-                    run = []
-                }
-                for v in line {
-                    var p = P2<WorldSpace>(v.x, v.y)
-                    if refined { p = ontoEdge(p) }
-                    let z = height(p)
-                    let cap = surface.caps.height(atX: p.x)
-                    let inRegion = region.contains(p)
-                    let onFlank = inRegion && z.isFinite && z < cap
-                    if onF, let last = previous, last.inRegion, inRegion, last.onFlank != onFlank, cap.isFinite,
-                       let r = onFlank ? ontoRim(from: p, to: last.p) : ontoRim(from: last.p, to: p) {
-                        run.append(r)
-                    }
-                    if onFlank { run.append(P3(p.x, p.y, z)) } else { close() }
-                    previous = (p, inRegion, onFlank)
-                }
-                close()
-            }
+            paths += worker().place(Contour.lines(of: field, level: 0), fundamental: fundamental,
+                                    worker: worker)
         }
         return PolylineSet(paths: paths)
     }
@@ -1524,5 +1334,299 @@ public struct Lighting: Sendable, Equatable {
     public var ambient: Float
     public init(direction: SIMD3<Float> = SIMD3(0.4, -0.6, 0.7), ambient: Float = 0.25) {
         self.direction = simd_normalize(direction); self.ambient = ambient
+    }
+}
+
+/// A heightfield's fold lines placed on f, for one thread: a fork of the
+/// heightfield, and the lattice of the tile the lines were traced on.
+///
+/// Placing a vertex on the fold is sixty bisections of four evaluations of
+/// f each, the chord between two vertices as many again, and a crossing of
+/// the rim sixty of sixty. Each is independent of every other, so `place`
+/// takes the lines in stages -- every vertex, then every rim crossing, then
+/// every chord, then every run's ends -- and runs each stage in parallel
+/// over its pieces, each thread with a placer of its own. The pieces come
+/// back in the order they went in, so the fold is the same whatever the
+/// thread count: a line placed on one core and a line placed on eight are
+/// the same vertices.
+struct FoldPlacer: Sendable {
+    let heightfield: Heightfield
+    /// The direction sight lines travel, in world space.
+    let sight: SIMD3<Double>
+    /// The lattice spacing, the larger of the two directions.
+    let cell: Double
+    /// Whether vertices are moved onto the exact fold, or left where the
+    /// lattice's chords put them.
+    let refined: Bool
+    /// The tile's lattice: its corner and spacing.
+    let lo: SIMD2<Double>
+    let sx: Double, sy: Double
+
+    var surface: Surface { heightfield.surface }
+    var region: Region { heightfield.region }
+    /// With the function at hand the facing is the flank's, uncapped: the
+    /// fold is a property of the one surface the flank is, and runs on
+    /// under the cap, where the cap cuts it at the rim. The capped facing
+    /// jumps at the crease, and its zero there is the crease, not the fold.
+    var onF: Bool { heightfield.refine?.magnitude != nil }
+
+    /// How squarely the surface faces the viewer over `p`: positive facing,
+    /// negative facing away, zero on the fold.
+    func facing(_ p: P2<WorldSpace>) -> Double {
+        let n = onF ? heightfield.flankNormal(at: p) : heightfield.normal(at: p)
+        let len = simd_length(n)
+        return len > 0 ? -simd_dot(n, sight) / len : 0
+    }
+
+    /// |f| over a world point, uncapped, through its tile; the lattice's
+    /// height without the function.
+    func flankHeight(_ p: P2<WorldSpace>) -> Double {
+        guard let magnitude = heightfield.refine?.magnitude else { return heightfield.surfaceHeight(at: p) }
+        let u = magnitude(surface.inTile(P2<DomainSpace>(p.x, p.y), tiles: heightfield.tiles))
+        return u.isNaN ? .infinity : u
+    }
+
+    /// The surface's height over a fold vertex: f's, capped, with the
+    /// function at hand, so the fold is drawn at the height the rings that
+    /// end on it are drawn at; the lattice's otherwise.
+    func height(_ p: P2<WorldSpace>) -> Double { heightfield.surfaceHeight(at: p) }
+
+    /// A traced vertex placed: moved onto the fold, at the surface's
+    /// height, and whether it lies in the region and on the flank rather
+    /// than under the cap.
+    struct Vertex: Sendable {
+        let p: P2<WorldSpace>
+        let z: Double
+        let inRegion: Bool
+        let onFlank: Bool
+    }
+
+    func vertex(_ v: P2<DomainSpace>) -> Vertex {
+        var p = P2<WorldSpace>(v.x, v.y)
+        if refined { p = ontoEdge(p) }
+        let z = height(p)
+        let cap = surface.caps.height(atX: p.x)
+        let inRegion = region.contains(p)
+        return Vertex(p: p, z: z, inRegion: inRegion, onFlank: inRegion && z.isFinite && z < cap)
+    }
+
+    /// The traced lines placed on the fold, in stages, each in parallel.
+    /// Nothing on a cap, which faces up and has a rim of its own. With the
+    /// function at hand the fold is traced on the flank alone and runs on
+    /// under the cap: where a run passes under the rim it ends on the rim,
+    /// at the fold's own crossing of |f| = cap, so a tower's silhouette
+    /// reaches the cap and arrives along the fold. On the fundamental
+    /// tile, where the function is sampled, each run is then subdivided to
+    /// the refiner's tolerance and carried to the zero it was going to.
+    func place(_ lines: [[P2<DomainSpace>]], fundamental: Bool,
+               worker: @Sendable () -> FoldPlacer) -> [[P3<WorldSpace>]] {
+        // Every vertex of every line onto the fold.
+        var offsets = [0]
+        var flat: [P2<DomainSpace>] = []
+        for line in lines { flat += line; offsets.append(flat.count) }
+        let vertices = Heightfield.parallelMap(flat, chunk: 8, worker: worker) { w, v in w.vertex(v) }
+        // Between a vertex on the flank and the next under the cap, the
+        // fold's crossing of the rim.
+        var pairs: [Int] = []
+        for i in lines.indices {
+            for k in (offsets[i] + 1)..<offsets[i + 1] {
+                let a = vertices[k - 1], b = vertices[k]
+                if onF, a.inRegion, b.inRegion, a.onFlank != b.onFlank,
+                   surface.caps.height(atX: b.p.x).isFinite { pairs.append(k) }
+            }
+        }
+        let crossings = Heightfield.parallelMap(pairs, chunk: 1, worker: worker) { w, k -> P3<WorldSpace>? in
+            let a = vertices[k - 1], b = vertices[k]
+            return b.onFlank ? w.ontoRim(from: b.p, to: a.p) : w.ontoRim(from: a.p, to: b.p)
+        }
+        var rim = [P3<WorldSpace>?](repeating: nil, count: flat.count)
+        for (i, k) in pairs.enumerated() { rim[k] = crossings[i] }
+        // The runs: a line cut where it leaves the flank, each piece
+        // ending on the rim it passed under.
+        var runs: [[P3<WorldSpace>]] = []
+        for i in lines.indices {
+            var run: [P3<WorldSpace>] = []
+            func close() {
+                if run.count >= 2 { runs.append(run) }
+                run = []
+            }
+            for k in offsets[i]..<offsets[i + 1] {
+                let v = vertices[k]
+                if let r = rim[k] { run.append(r) }
+                if v.onFlank { run.append(P3(v.p.x, v.p.y, v.z)) } else { close() }
+            }
+            close()
+        }
+        guard fundamental else { return runs }
+        // Every chord of every run subdivided, then each run's ends carried
+        // to their zeros.
+        if refined, let tolerance = heightfield.refine?.tolerance {
+            var chords: [SIMD2<Int>] = []
+            for (r, run) in runs.enumerated() {
+                for k in 0..<(run.count - 1) { chords.append(SIMD2(r, k)) }
+            }
+            let whole = runs
+            let between = Heightfield.parallelMap(chords, chunk: 4, worker: worker) { w, c -> [P3<WorldSpace>] in
+                var out: [P3<WorldSpace>] = []
+                w.subdivide(whole[c.x][c.y], whole[c.x][c.y + 1], tolerance: tolerance, depth: 0, into: &out)
+                return out
+            }
+            var next = 0
+            for r in runs.indices {
+                var out = [whole[r][0]]
+                for k in 0..<(whole[r].count - 1) {
+                    out += between[next]
+                    next += 1
+                    out.append(whole[r][k + 1])
+                }
+                runs[r] = out
+            }
+        }
+        let subdivided = runs
+        return Heightfield.parallelMap(subdivided, chunk: 1, worker: worker) { w, run in
+            w.heightfield.endedAtZeros(run, cell: w.cell)
+        }
+    }
+
+    /// Between two vertices on the fold, the fold itself: the chord's
+    /// midpoint moved onto the fold along the chord's normal, kept when it
+    /// moved further than the refiner's tolerance, and the two halves
+    /// likewise -- the contour refiner's rule, so a fold is a curve to the
+    /// same tolerance the rings that end on it are.
+    func subdivide(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>, tolerance: Double, depth: Int,
+                   into out: inout [P3<WorldSpace>]) {
+        guard depth < 5 else { return }
+        let chord = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
+        guard chord > 1e-9 * cell else { return }
+        let mid = SIMD2(0.5 * (a.x + b.x), 0.5 * (a.y + b.y))
+        let n = SIMD2(-(b.y - a.y), b.x - a.x) / chord
+        var lo = mid - 0.5 * chord * n, hi = mid + 0.5 * chord * n
+        var flo = facing(P2(lo.x, lo.y))
+        guard (flo > 0) != (facing(P2(hi.x, hi.y)) > 0) else { return }
+        for _ in 0..<60 {
+            let m = 0.5 * (lo + hi)
+            let fm = facing(P2(m.x, m.y))
+            if (fm > 0) == (flo > 0) { lo = m; flo = fm } else { hi = m }
+        }
+        let q = 0.5 * (lo + hi)
+        let p = P2<WorldSpace>(q.x, q.y)
+        guard region.contains(p) else { return }
+        let z = height(p)
+        guard z.isFinite, z < surface.caps.height(atX: p.x) - 1e-9 else { return }
+        let v = P3<WorldSpace>(p.x, p.y, z)
+        // The fold is a curve in space: its departure from the chord is
+        // measured there, across and up.
+        guard simd_length(v.v - 0.5 * (a.v + b.v)) > tolerance * cell else { return }
+        subdivide(a, v, tolerance: tolerance, depth: depth + 1, into: &out)
+        out.append(v)
+        subdivide(v, b, tolerance: tolerance, depth: depth + 1, into: &out)
+    }
+
+    /// Onto the fold, along the gradient: bracket a sign change within a
+    /// cell either way, then bisect it to the last bit. The fallback, for a
+    /// vertex that lies on no lattice edge.
+    func onto(_ c: P2<WorldSpace>) -> P2<WorldSpace> {
+        let h = 0.25 * cell
+        let gx = facing(P2(c.x + h, c.y)) - facing(P2(c.x - h, c.y))
+        let gy = facing(P2(c.x, c.y + h)) - facing(P2(c.x, c.y - h))
+        let len = (gx * gx + gy * gy).squareRoot()
+        guard len > 0 else { return c }
+        let d = SIMD2(gx, gy) / len * cell
+        var a = SIMD2(c.x, c.y) - d, b = SIMD2(c.x, c.y) + d
+        var fa = facing(P2(a.x, a.y))
+        guard (fa > 0) != (facing(P2(b.x, b.y)) > 0) else { return c }
+        for _ in 0..<60 {
+            let m = 0.5 * (a + b)
+            let fm = facing(P2(m.x, m.y))
+            if (fm > 0) == (fa > 0) { a = m; fa = fm } else { b = m }
+        }
+        let m = 0.5 * (a + b)
+        return P2(m.x, m.y)
+    }
+
+    /// The lattice edges a marching-squares vertex lies on: one, or two for
+    /// a vertex on a node.
+    func latticeEdges(through c: P2<WorldSpace>) -> [(SIMD2<Double>, SIMD2<Double>)] {
+        let g = surface.height
+        let nx = g.width, ny = g.height
+        let fx = (c.x - lo.x) / sx, fy = (c.y - lo.y) / sy
+        let onColumn = abs(fx - fx.rounded()) < 1e-6, onRow = abs(fy - fy.rounded()) < 1e-6
+        var ends: [(SIMD2<Double>, SIMD2<Double>)] = []
+        if onColumn, fy < Double(ny - 1) {
+            let i = Int(fx.rounded()), j = Int(fy.rounded(.down))
+            ends.append((SIMD2(lo.x + Double(i) * sx, lo.y + Double(j) * sy),
+                         SIMD2(lo.x + Double(i) * sx, lo.y + Double(j + 1) * sy)))
+        }
+        if onRow, fx < Double(nx - 1) {
+            let i = Int(fx.rounded(.down)), j = Int(fy.rounded())
+            ends.append((SIMD2(lo.x + Double(i) * sx, lo.y + Double(j) * sy),
+                         SIMD2(lo.x + Double(i + 1) * sx, lo.y + Double(j) * sy)))
+        }
+        return ends
+    }
+
+    /// Onto the fold, along the lattice edge the vertex lies on: a
+    /// marching-squares vertex is the chord's crossing of an edge whose two
+    /// nodes face opposite ways, so the edge brackets the fold by
+    /// construction, and bisecting it to the last bit lands on the fold, as
+    /// the contour refiner lands on f along the same edges. Bracketing
+    /// along the gradient instead can miss where the facing is sharp -- a
+    /// pit one cell wide -- and leave the vertex on the chord.
+    func ontoEdge(_ c: P2<WorldSpace>) -> P2<WorldSpace> {
+        for (a0, b0) in latticeEdges(through: c) {
+            var a = a0, b = b0
+            var fa = facing(P2(a.x, a.y))
+            let fb = facing(P2(b.x, b.y))
+            guard (fa > 0) != (fb > 0) else { continue }
+            for _ in 0..<60 {
+                let m = 0.5 * (a + b)
+                let fm = facing(P2(m.x, m.y))
+                if (fm > 0) == (fa > 0) { a = m; fa = fm } else { b = m }
+            }
+            let m = 0.5 * (a + b)
+            return P2(m.x, m.y)
+        }
+        return onto(c)
+    }
+
+    /// Where the fold crosses the rim, between a vertex on the flank and
+    /// one under the cap: the chord's points moved onto the fold along the
+    /// chord's normal, as `subdivide` moves a midpoint, and the one where
+    /// |f| reaches the cap found by bisection to the last bit. The
+    /// lattice's crossing of the crease is where a lattice edge meets the
+    /// rim, which is not where the fold does: joined to the flank by one
+    /// straight chord a cell long, the fold cut across the cap's projection
+    /// on its way to the rim.
+    func ontoRim(from a: P2<WorldSpace>, to b: P2<WorldSpace>) -> P3<WorldSpace>? {
+        let chord = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
+        guard chord > 1e-9 * cell else { return nil }
+        let n = SIMD2(-(b.y - a.y), b.x - a.x) / chord
+        func onFold(_ t: Double) -> P2<WorldSpace> {
+            let m = SIMD2(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y))
+            var lo = m - 0.5 * chord * n, hi = m + 0.5 * chord * n
+            var flo = facing(P2(lo.x, lo.y))
+            guard (flo > 0) != (facing(P2(hi.x, hi.y)) > 0) else { return P2(m.x, m.y) }
+            for _ in 0..<60 {
+                let c = 0.5 * (lo + hi)
+                let fc = facing(P2(c.x, c.y))
+                if (fc > 0) == (flo > 0) { lo = c; flo = fc } else { hi = c }
+            }
+            let c = 0.5 * (lo + hi)
+            return P2(c.x, c.y)
+        }
+        func excess(_ t: Double) -> Double {
+            let q = onFold(t)
+            return flankHeight(q) - surface.caps.height(atX: q.x)
+        }
+        var lo = 0.0, hi = 1.0
+        guard excess(lo) < 0, excess(hi) >= 0 else { return nil }
+        for _ in 0..<60 {
+            let m = 0.5 * (lo + hi)
+            if excess(m) < 0 { lo = m } else { hi = m }
+        }
+        let q = onFold(0.5 * (lo + hi))
+        let cap = surface.caps.height(atX: q.x)
+        guard region.contains(q), cap.isFinite else { return nil }
+        return P3(q.x, q.y, cap)
     }
 }
