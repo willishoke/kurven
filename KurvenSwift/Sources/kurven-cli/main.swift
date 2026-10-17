@@ -327,6 +327,42 @@ func surfaceCommand(_ args: Args) throws {
     let R = try args.double("major") ?? 2
     let r = try args.double("minor") ?? 1
     let width = try args.double("width") ?? 0.3
+    // `surface sn --relief A`: the sn landscape in relief on its torus, the
+    // surface displaced along its normal by A times |f| truncated at the
+    // cap, baked straight to SVG. A proof of concept: no window, no preview.
+    if shape == "sn", let amplitude = try args.double("relief") {
+        let m = try args.double("modulus") ?? 0.64
+        let clock = ContinuousClock()
+        var plate: PeriodicTorus.Plate!
+        let built = try clock.measure {
+            plate = try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r,
+                                               resolution: try args.int("grid", 600),
+                                               lattice: try args.int("samples", 1024), capped: true)
+                .relief(amplitude: amplitude, reach: min(r, R - r))
+        }
+        var projection = SurfaceRequest.projection
+        projection.shear = try args.double("shear") ?? projection.shear
+        projection.xAngle = try args.double("x-angle") ?? projection.xAngle
+        projection.zAngle = try args.double("z-angle") ?? projection.zAngle
+        let scene = Scene(surface: plate.surface, layers: plate.layers,
+                          camera: Camera.plate(projection), margin: 0)
+        let output = URL(fileURLWithPath: try args.string("output"))
+        let renderer = try MetalRenderer()
+        var result: Bake!
+        let baked = try clock.measure {
+            result = try renderer.bake(scene, options: BakeOptions(resolution: try args.int("resolution", 3000),
+                                                                   tiles: args.flags["tiles"].flatMap(Int.init)))
+        }
+        try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
+        print("""
+            sn in relief, amplitude \(fmt(amplitude)) on R=\(fmt(R)) r=\(fmt(r)) -> \(output.lastPathComponent)
+              reach      \(fmt(min(r, R - r))); displacement up to \(fmt(amplitude * plate.ceiling))\
+            \(plate.surface.outward == nil ? ", NOT embedded: back faces kept" : ", embedded")
+              strokes    \(result.strokes.pathCount) paths, ink \(String(format: "%.1f", result.strokes.inkLength))
+              took       \(built) to build, \(baked) to bake
+            """)
+        return
+    }
     func counts(_ text: String) throws -> SIMD2<Int> {
         let n = text.split(separator: ",").compactMap { Int($0) }
         guard n.count == 2 else { throw CLIError("--lines wants U,V, as in 36,18") }
