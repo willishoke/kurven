@@ -260,7 +260,73 @@ func surfaceTests() {
                              "\(label): every disagreement is within two pixels of a visibility edge",
                              "\(wrong) of \(n) disagree, \(unexplained) unexplained \(example)"
                              + " (depth test: \(depthWrong))")
+                // The round torus bounds a solid the march can ask directly,
+                // and then there is no pixel to be within.
+                Check.expect(vis.marches && wrong == 0,
+                             "\(label): by the march, no disagreement at all",
+                             "\(wrong) of \(n) disagree")
             }
+        }
+    }
+
+    Check.suite("surfaces: the march on a displaced torus agrees with a fine walk up the sight line") {
+        // The torus in relief under a smooth bump field, capped at 1: the
+        // solid the march is held to is the enclosure's own point test,
+        // walked up the sight line in steps of a ten-thousandth of the
+        // solid, which is as fine as the oracle gets without being the
+        // march. A disagreement is excused where the walk's least gap is
+        // within rounding of zero: a line grazing the surface, which no
+        // test with a tolerance decides the same way twice.
+        let R = 2.0, r = 1.0
+        let base = ParametricSurface.torus(major: R, minor: r, samples: (256, 128))
+        let relief = base.displaced(by: { c in min(0.5 * (1 + cos(3 * c.x) * cos(2 * c.y)) + 0.3, 1) },
+                                    amplitude: 0.4, ceiling: 1, encloses: true)
+        Check.expect(relief.enclosure != nil, "the displaced torus keeps the torus's foot")
+        for (name, view) in [("elevation 60°", testCamera(elevation: -60, azimuth: 30)),
+                             ("low, over the far wall", testCamera(elevation: -80, azimuth: 40)),
+                             ("sheared", testCamera(elevation: -35, azimuth: -20, shear: 0.5))] {
+            let frame = DepthFrame(covering: viewBounds(relief, view), resolution: 64)
+            let vis = SurfaceVisibility(surface: relief,
+                                        image: SurfaceImage.rasterize(relief, view: view, frame: frame),
+                                        view: view)
+            let e = relief.enclosure!
+            let d = -view.sightLine
+            let rng = SplitMix(seed: 0xC0FFEE)
+            var wrong = 0, unexplained = 0, tested = 0, seen = 0
+            var example = ""
+            while tested < 1500 {
+                let c = P2<ParamSpace>(rng.next(0, 2 * .pi), rng.next(0, 2 * .pi))
+                guard let f = vis.facing(c), f > 0 else { continue }
+                tested += 1
+                let q = relief.map(c).position
+                let march = vis.isClear(q)
+                if march { seen += 1 }
+                // The walk: every sample from just off the surface to past
+                // the ball, and the least gap it saw.
+                let step = 1e-4 * e.radius
+                var t = 1e-5 * e.radius, least = Double.infinity, clear = true
+                while t < 2 * e.radius + simd_length(q) {
+                    let (coord, distance) = e.foot(q + t * d)
+                    let gap = distance - e.standoff(coord)
+                    least = min(least, gap)
+                    if gap < -1e-9 * e.radius { clear = false; break }
+                    t += step
+                }
+                guard march != clear else { continue }
+                wrong += 1
+                if abs(least) > 1e-6 * e.radius {
+                    unexplained += 1
+                    if example.isEmpty {
+                        example = String(format: "e.g. (%.4f, %.4f) march %@, walk %@, least gap %.2e",
+                                         c.x, c.y, march ? "clear" : "hidden", clear ? "clear" : "hidden", least)
+                    }
+                }
+            }
+            Check.expect(seen > tested / 4 && seen < tested,
+                         "\(name): the sample has both seen and hidden points", "\(seen) of \(tested) seen")
+            Check.expect(unexplained == 0,
+                         "\(name): the march and the walk agree except where the line grazes",
+                         "\(wrong) of \(tested) disagree, \(unexplained) unexplained \(example)")
         }
     }
 
