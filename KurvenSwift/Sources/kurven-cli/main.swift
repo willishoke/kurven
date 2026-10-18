@@ -103,6 +103,7 @@ usage: kurven-cli <command> [options]
 
   surface torus [--lines U,V] [--samples N]
   surface sn [--modulus M] [--grid N]
+  surface sn --relief A [--repeat N[,M]] [--turn T] [--floor B] [--soft] [--samples S]
   surface periodic --expression E --periods P1,P2 [--grid N]
   surface forced [--system jerk] [--turns N] [--ink W]
           [--harmonics M] [--fit T] [--radial I] [--axial J] [--lines U,V]
@@ -115,6 +116,15 @@ usage: kurven-cli <command> [options]
         lines. sn and periodic draw a doubly periodic function's |f| and
         arg f contours on the torus its period rectangle glues into: sn(z, M)
         on [0, 4K) x [0, 2K'), or any expression over [0, P1) x [0, P2).
+        sn --relief A puts the landscape in relief: the torus displaced
+        along its normal by A times |f| truncated at the cap, over --repeat
+        N periods round the ring and M round the tube (N near M keeps the
+        tiling isotropic; a pole's cap is a round disc only then). --turn
+        starts the rectangle T imaginary periods up the plane, turning the
+        function round the tube: 0 puts the zeros on the outer equator,
+        1/4 the poles on top. --floor B displaces only |f| above B, so each
+        pole stands alone on the bare torus; --soft caps as c tanh(|f|/c)
+        instead of a crease. --samples is the lattice round the ring in all.
         forced finds a forced system's invariant torus in the spectrum of a
         long run, fits it as a Fourier series in the forcing phase and the
         system's own, and draws --turns turns of the trajectory on it, the
@@ -327,6 +337,67 @@ func surfaceCommand(_ args: Args) throws {
     let R = try args.double("major") ?? 2
     let r = try args.double("minor") ?? 1
     let width = try args.double("width") ?? 0.3
+    // `surface sn --relief A`: the sn landscape in relief on its torus, the
+    // surface displaced along its normal by A times |f| truncated at the
+    // cap, baked straight to SVG. A proof of concept: no window, no preview.
+    if shape == "sn", let amplitude = try args.double("relief") {
+        let m = try args.double("modulus") ?? 0.64
+        // `--repeat N[,M]`: N periods round the ring and M round the tube,
+        // the ink computed once and carried round by the periods.
+        let repeats = (args.flags["repeat"] ?? "1").split(separator: ",").compactMap { Int($0) }
+        guard (1...2).contains(repeats.count), repeats.allSatisfy({ $0 >= 1 }) else {
+            throw CLIError("--repeat wants N or N,M whole periods, as in 8 or 8,2")
+        }
+        // `--samples`: the lattice round the ring in all, 1024 a period at most.
+        let lattice = try args.int("samples", 8192)
+        let clock = ContinuousClock()
+        var plate: PeriodicTorus.Plate!
+        let built = try clock.measure {
+            var base = try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r,
+                                                  resolution: try args.int("grid", 600),
+                                                  lattice: min(lattice, 1024), capped: true,
+                                                  turn: try args.double("turn") ?? 0)
+                .repeated(real: repeats[0], imag: repeats.count > 1 ? repeats[1] : 1, lattice: lattice)
+            // `--soft`: the cap as a smooth saturation rather than a crease,
+            // c · tanh(|f| / c), an experiment on what the crease costs.
+            if args.switches.contains("soft"), let height = base.height {
+                let c = base.ceiling
+                base = PeriodicTorus.Plate(surface: base.surface, layers: base.layers,
+                                           height: { p in c * tanh(height(p) / c) },
+                                           ceiling: c, radii: base.radii)
+            }
+            // `--floor b`: only |f| above b displaces, so each pole stands
+            // alone on the bare torus instead of on a raised ground.
+            if let floor = try args.double("floor"), let height = base.height {
+                base = PeriodicTorus.Plate(surface: base.surface, layers: base.layers,
+                                           height: { p in max(height(p) - floor, 0) },
+                                           ceiling: base.ceiling - floor, radii: base.radii)
+            }
+            plate = base.relief(amplitude: amplitude, reach: min(r, R - r))
+        }
+        var projection = SurfaceRequest.projection
+        projection.shear = try args.double("shear") ?? projection.shear
+        projection.xAngle = try args.double("x-angle") ?? projection.xAngle
+        projection.zAngle = try args.double("z-angle") ?? projection.zAngle
+        let scene = Scene(surface: plate.surface, layers: plate.layers,
+                          camera: Camera.plate(projection), margin: 0)
+        let output = URL(fileURLWithPath: try args.string("output"))
+        let renderer = try MetalRenderer()
+        var result: Bake!
+        let baked = try clock.measure {
+            result = try renderer.bake(scene, options: BakeOptions(resolution: try args.int("resolution", 3000),
+                                                                   tiles: args.flags["tiles"].flatMap(Int.init)))
+        }
+        try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
+        print("""
+            sn in relief, amplitude \(fmt(amplitude)) on R=\(fmt(R)) r=\(fmt(r)) -> \(output.lastPathComponent)
+              reach      \(fmt(min(r, R - r))); displacement up to \(fmt(amplitude * plate.ceiling))\
+            \(plate.surface.outward == nil ? ", NOT embedded: back faces kept" : ", embedded")
+              strokes    \(result.strokes.pathCount) paths, ink \(String(format: "%.1f", result.strokes.inkLength))
+              took       \(built) to build, \(baked) to bake
+            """)
+        return
+    }
     func counts(_ text: String) throws -> SIMD2<Int> {
         let n = text.split(separator: ",").compactMap { Int($0) }
         guard n.count == 2 else { throw CLIError("--lines wants U,V, as in 36,18") }

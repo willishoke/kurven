@@ -509,3 +509,38 @@ public extension Transform where A == WorldSpace, B == ViewSpace {
         return d
     }
 }
+
+public extension ParametricSurface {
+    /// This surface displaced along its normal: p ↦ p + amplitude · height(p) · n(p).
+    ///
+    /// A landscape is the plane displaced along its normal by |f|; the same
+    /// sentence over any base surface puts the landscape on it. The result
+    /// is the image of a section of the base's normal bundle under its
+    /// normal exponential map, which is an embedding as long as the
+    /// displacement stays under the base's reach -- for a round torus,
+    /// min(r, R − r) -- and `encloses` is the caller's statement that it
+    /// does. The jet is the chain rule, d(p + h n) = dp + dh ⊗ n + h dn,
+    /// with dh and dn, the shape operator of the base, by central
+    /// differences on the base's map.
+    func displaced(by height: @escaping @Sendable (P2<ParamSpace>) -> Double,
+                   amplitude: Double, encloses: Bool) -> ParametricSurface {
+        let base = map, sign = outward ?? 1
+        let eu = 1e-5 * u.spacing, ev = 1e-5 * v.spacing
+        @Sendable func unitNormal(_ c: P2<ParamSpace>) -> SIMD3<Double> {
+            let n = base(c).normal
+            return sign * n / max(simd_length(n), .leastNormalMagnitude)
+        }
+        @Sendable func h(_ c: P2<ParamSpace>) -> Double { amplitude * height(c) }
+        return ParametricSurface(u: u, v: v, encloses: encloses) { c in
+            let jet = base(c), n = unitNormal(c), hc = h(c)
+            let cu1 = P2<ParamSpace>(c.x + eu, c.y), cu0 = P2<ParamSpace>(c.x - eu, c.y)
+            let cv1 = P2<ParamSpace>(c.x, c.y + ev), cv0 = P2<ParamSpace>(c.x, c.y - ev)
+            let dnu = (unitNormal(cu1) - unitNormal(cu0)) / (2 * eu)
+            let dnv = (unitNormal(cv1) - unitNormal(cv0)) / (2 * ev)
+            let dhu = (h(cu1) - h(cu0)) / (2 * eu), dhv = (h(cv1) - h(cv0)) / (2 * ev)
+            return SurfaceJet(position: jet.position + hc * n,
+                              du: jet.du + dhu * n + hc * dnu,
+                              dv: jet.dv + dhv * n + hc * dnv)
+        }
+    }
+}
