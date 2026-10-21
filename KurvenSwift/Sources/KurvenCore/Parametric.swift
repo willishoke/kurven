@@ -303,6 +303,10 @@ public extension ParametricSurface {
         // span across it; at a crease it changes all at once, even where a
         // differenced normal smooths the jump over a hair, so a span a
         // hundredth of the size holds most of it. That is no fold: nil.
+        // Nor is a vertex the map finds no zero beside, within a cell
+        // either way: the lattice saw a sign change the map does not have,
+        // as across a crease, where a lattice cell holds the cap and the
+        // wall.
         let h = 0.25 * min(du, dv)
         func refine(_ c: P2<ParamSpace>) -> P2<ParamSpace>? {
             let g = SIMD2(edgeOn(P2(c.x + h, c.y)) - edgeOn(P2(c.x - h, c.y)),
@@ -312,7 +316,7 @@ public extension ParametricSurface {
             let d = g / len * max(du, dv)
             var a = c.v - d, b = c.v + d
             var fa = edgeOn(P2(a))
-            guard (fa > 0) != (edgeOn(P2(b)) > 0) else { return c }
+            guard (fa > 0) != (edgeOn(P2(b)) > 0) else { return nil }
             for _ in 0..<60 {
                 let m = 0.5 * (a + b)
                 let fm = edgeOn(P2(m))

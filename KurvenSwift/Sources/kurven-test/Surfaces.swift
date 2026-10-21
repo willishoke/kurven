@@ -662,6 +662,12 @@ func creaseTests() {
         }.count
         Check.expect(folds.count > 0 && onRim == 0, "no fold is drawn along a crease",
                      "\(onRim) of \(folds.coords!.count) fold vertices on a rim")
+        // Nor beside one: where the lattice saw the sign change across a
+        // crease and the map finds no zero within a cell, there is no fold
+        // to move the vertex onto, and it is not drawn where it was.
+        let worst = folds.coords!.map { abs(surface.facing($0, sight: sight) ?? 0) }.max() ?? 0
+        Check.expect(worst < 1e-6, "every fold vertex on the relief is edge-on",
+                     String(format: "max |cos| %.1e", worst))
 
         // The rim is a convex edge: seen where the cap or the wall beside
         // it faces the eye and nothing stands in front. The normal on the
