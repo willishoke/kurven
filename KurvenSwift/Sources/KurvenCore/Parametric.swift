@@ -270,7 +270,7 @@ public extension ParametricSurface {
     /// moved onto the exact fold by bisection along the product's gradient.
     /// The grid decides which folds exist; the map decides where they run.
     /// They depend on the camera, so they are derived for one, never stored.
-    public func foldLines(sight: SIMD3<Double>, grid: (u: Int, v: Int)? = nil) -> PolylineSet<WorldSpace> {
+    func foldLines(sight: SIMD3<Double>, grid: (u: Int, v: Int)? = nil) -> PolylineSet<WorldSpace> {
         let nu = grid?.u ?? u.cells, nv = grid?.v ?? v.cells
         @Sendable func edgeOn(_ c: P2<ParamSpace>) -> Double {
             let n = map(c).normal
