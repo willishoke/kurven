@@ -269,6 +269,9 @@ public extension ParametricSurface {
     /// crosses the seam instead of stopping at it -- and every vertex then
     /// moved onto the exact fold by bisection along the product's gradient.
     /// The grid decides which folds exist; the map decides where they run.
+    /// Where the sign changes across a crease rather than through a zero
+    /// -- a cap's rim, which the rim's own ink draws -- the vertex is
+    /// dropped and the line cut there.
     /// They depend on the camera, so they are derived for one, never stored.
     func foldLines(sight: SIMD3<Double>, grid: (u: Int, v: Int)? = nil) -> PolylineSet<WorldSpace> {
         let nu = grid?.u ?? u.cells, nv = grid?.v ?? v.cells
@@ -295,9 +298,13 @@ public extension ParametricSurface {
                            domain: Domain(real: u.range, imag: v.range), values: values)
 
         // Onto the fold: bracket a sign change along the gradient within a
-        // cell either way, then bisect it to the last bit.
+        // cell either way, then bisect it to the last bit. A fold is a
+        // zero the product passes through, changing in proportion to the
+        // span across it; at a crease it changes all at once, even where a
+        // differenced normal smooths the jump over a hair, so a span a
+        // hundredth of the size holds most of it. That is no fold: nil.
         let h = 0.25 * min(du, dv)
-        func refine(_ c: P2<ParamSpace>) -> P2<ParamSpace> {
+        func refine(_ c: P2<ParamSpace>) -> P2<ParamSpace>? {
             let g = SIMD2(edgeOn(P2(c.x + h, c.y)) - edgeOn(P2(c.x - h, c.y)),
                           edgeOn(P2(c.x, c.y + h)) - edgeOn(P2(c.x, c.y - h)))
             let len = simd_length(g)
@@ -311,15 +318,22 @@ public extension ParametricSurface {
                 let fm = edgeOn(P2(m))
                 if (fm > 0) == (fa > 0) { a = m; fa = fm } else { b = m }
             }
-            return P2(0.5 * (a + b))
+            let m = 0.5 * (a + b)
+            func across(_ t: Double) -> Double { abs(edgeOn(P2(m + t * d)) - edgeOn(P2(m - t * d))) }
+            return across(1e-3) > 0.5 * across(1e-1) ? nil : P2(m)
         }
 
         var paths: [[P3<WorldSpace>]] = [], coords: [[P2<ParamSpace>]] = []
         for line in Contour.lines(of: field, level: 0) {
-            let c = line.map { refine(P2<ParamSpace>($0.x, $0.y)) }
-            coords.append(c)
-            paths.append(c.map { P3(map($0).position) })
+            var run: [P2<ParamSpace>] = []
+            for v in line {
+                if let c = refine(P2<ParamSpace>(v.x, v.y)) { run.append(c); continue }
+                if run.count >= 2 { coords.append(run) }
+                run = []
+            }
+            if run.count >= 2 { coords.append(run) }
         }
+        for c in coords { paths.append(c.map { P3(map($0).position) }) }
         return PolylineSet(paths: paths, coords: coords)
     }
 
