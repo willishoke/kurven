@@ -85,7 +85,7 @@ struct LineGeometry {
                 // which at a fold is everywhere. The draft is drawn from the
                 // surface ink, not from here.
                 paths = draft ? PolylineSet(paths: [])
-                    : Self.marched(layer, on: s, view: scene.camera.view)
+                    : Self.marched(layer, on: s, view: scene.camera.view, creases: scene.creases)
             } else if case .foldLines = layer.spec.source, let h = scene.heightfield {
                 // At rest the folds are the bake's: every vertex moved onto
                 // the exact fold of f before the march judges it against f.
@@ -148,10 +148,11 @@ struct LineGeometry {
     /// A layer of a marched surface's ink, as the bake judges it: what of it
     /// the solid leaves in sight, in world space for the stroke shader.
     static func marched(_ layer: Layer, on surface: ParametricSurface,
-                        view: Transform<WorldSpace, ViewSpace>) -> PolylineSet<WorldSpace> {
+                        view: Transform<WorldSpace, ViewSpace>,
+                        creases: [[P2<ParamSpace>]] = []) -> PolylineSet<WorldSpace> {
         let paths: PolylineSet<WorldSpace>
         if case .foldLines = layer.spec.source {
-            paths = surface.foldLines(sight: view.sightLine)
+            paths = surface.foldLines(sight: view.sightLine, creases: creases)
         } else {
             paths = layer.paths
         }

@@ -271,9 +271,17 @@ public extension ParametricSurface {
     /// The grid decides which folds exist; the map decides where they run.
     /// Where the sign changes across a crease rather than through a zero
     /// -- a cap's rim, which the rim's own ink draws -- the vertex is
-    /// dropped and the line cut there.
+    /// dropped and the line cut there. From a cut the fold is traced on in
+    /// steps a sixteenth of a cell, each set onto the fold by the map, to
+    /// where it meets the crease or another cut: a fold down a steep wall
+    /// can run its whole visible length inside one cell, where the lattice
+    /// has no vertex for it. Where the lattice has none of a fold at all,
+    /// `creases` -- the rims, in surface coordinates -- seed it: a fold
+    /// meets a crease where the facing a hair to one side of it changes
+    /// sign along it, and is traced from there both ways.
     /// They depend on the camera, so they are derived for one, never stored.
-    func foldLines(sight: SIMD3<Double>, grid: (u: Int, v: Int)? = nil) -> PolylineSet<WorldSpace> {
+    func foldLines(sight: SIMD3<Double>, grid: (u: Int, v: Int)? = nil,
+                   creases: [[P2<ParamSpace>]] = []) -> PolylineSet<WorldSpace> {
         let nu = grid?.u ?? u.cells, nv = grid?.v ?? v.cells
         @Sendable func edgeOn(_ c: P2<ParamSpace>) -> Double {
             let n = map(c).normal
@@ -308,13 +316,14 @@ public extension ParametricSurface {
         // as across a crease, where a lattice cell holds the cap and the
         // wall.
         let h = 0.25 * min(du, dv)
-        func refine(_ c: P2<ParamSpace>) -> P2<ParamSpace>? {
-            let g = SIMD2(edgeOn(P2(c.x + h, c.y)) - edgeOn(P2(c.x - h, c.y)),
-                          edgeOn(P2(c.x, c.y + h)) - edgeOn(P2(c.x, c.y - h)))
-            let len = simd_length(g)
-            guard len > 0 else { return c }
-            let d = g / len * max(du, dv)
-            var a = c.v - d, b = c.v + d
+        @Sendable func gradient(_ c: SIMD2<Double>, _ h: Double) -> SIMD2<Double> {
+            SIMD2(edgeOn(P2(c.x + h, c.y)) - edgeOn(P2(c.x - h, c.y)),
+                  edgeOn(P2(c.x, c.y + h)) - edgeOn(P2(c.x, c.y - h)))
+        }
+        // The zero within `r` either way along the unit `e`, or nil.
+        @Sendable func onto(_ c: SIMD2<Double>, along e: SIMD2<Double>, within r: Double) -> SIMD2<Double>? {
+            let d = e * r
+            var a = c - d, b = c + d
             var fa = edgeOn(P2(a))
             guard (fa > 0) != (edgeOn(P2(b)) > 0) else { return nil }
             for _ in 0..<60 {
@@ -324,19 +333,166 @@ public extension ParametricSurface {
             }
             let m = 0.5 * (a + b)
             func across(_ t: Double) -> Double { abs(edgeOn(P2(m + t * d)) - edgeOn(P2(m - t * d))) }
-            return across(1e-3) > 0.5 * across(1e-1) ? nil : P2(m)
+            return across(1e-3) > 0.5 * across(1e-1) ? nil : m
+        }
+        func refine(_ c: P2<ParamSpace>) -> P2<ParamSpace>? {
+            let g = gradient(c.v, h)
+            let len = simd_length(g)
+            guard len > 0 else { return c }
+            return onto(c.v, along: g / len, within: max(du, dv)).map { P2($0) }
         }
 
-        var paths: [[P3<WorldSpace>]] = [], coords: [[P2<ParamSpace>]] = []
+        // The runs, and which of their ends a dropped vertex cut.
+        var runs: [(c: [P2<ParamSpace>], cutStart: Bool, cutEnd: Bool)] = []
         for line in Contour.lines(of: field, level: 0) {
-            var run: [P2<ParamSpace>] = []
+            var run: [P2<ParamSpace>] = [], cut = false
             for v in line {
                 if let c = refine(P2<ParamSpace>(v.x, v.y)) { run.append(c); continue }
-                if run.count >= 2 { coords.append(run) }
+                if run.count >= 2 { runs.append((run, cut, true)) }
                 run = []
+                cut = true
             }
-            if run.count >= 2 { coords.append(run) }
+            if run.count >= 2 { runs.append((run, cut, false)) }
         }
+
+        // On from each cut, a step at a time: along the fold's tangent, then
+        // onto the fold along the gradient within a step either way. Where
+        // the step no longer finds the fold it has met a crease, and the
+        // last step is cut back by bisection to just short of it. It ends
+        // at another cut it comes within a step and a half of, and where it
+        // comes back onto fold the lattice already has.
+        let step = min(du, dv) / 16
+        let lo = SIMD2(u.range.lo - du, v.range.lo - dv), hi = SIMD2(u.range.hi + du, v.range.hi + dv)
+        let scale = SIMD2(du, dv)
+        var cuts: [(run: Int, atEnd: Bool)] = []
+        for (i, r) in runs.enumerated() {
+            if r.cutStart { cuts.append((i, false)) }
+            if r.cutEnd { cuts.append((i, true)) }
+        }
+        let ends = cuts, lines = runs.map { $0.c }
+        let endPoint = ends.map { e in lines[e.run][e.atEnd ? lines[e.run].count - 1 : 0].v }
+        @Sendable func cell(_ c: SIMD2<Double>) -> SIMD2<Int> {
+            SIMD2(Int((c.x / du).rounded(.down)), Int((c.y / dv).rounded(.down)))
+        }
+        var byCell: [SIMD2<Int>: [(run: Int, at: SIMD2<Double>)]] = [:]
+        for (i, r) in lines.enumerated() { for c in r { byCell[cell(c.v), default: []].append((i, c.v)) } }
+        let lattice = byCell
+        // Fold the lattice has, within a quarter cell: any run's but this
+        // one's own about where the trace set out.
+        @Sendable func covered(_ z: SIMD2<Double>, from run: Int, _ p0: SIMD2<Double>) -> Bool {
+            let o = cell(z)
+            for a in -1...1 { for b in -1...1 {
+                for q in lattice[o &+ SIMD2(a, b)] ?? [] where simd_length((q.at - z) / scale) < 0.25 {
+                    if q.run != run || simd_length((q.at - p0) / scale) > 0.5 { return true }
+                }
+            } }
+            return false
+        }
+        // From `p0` on the fold, setting out along `heading`; `run` is the
+        // run it leaves, -1 for none, and `k` the cut it leaves, -1 for none.
+        @Sendable func trace(from p0: SIMD2<Double>, heading h0: SIMD2<Double>,
+                             run: Int, cut k: Int) -> (points: [SIMD2<Double>], meets: Int?) {
+            var heading = h0
+            var p = p0, out: [SIMD2<Double>] = []
+            func next(_ t: SIMD2<Double>, _ tau: Double) -> SIMD2<Double>? {
+                let q = p + tau * step * t
+                guard all(q .> lo), all(q .< hi) else { return nil }
+                let g = gradient(q, 0.25 * step)
+                let len = simd_length(g)
+                return len > 0 ? onto(q, along: g / len, within: step) : nil
+            }
+            for _ in 0..<128 {
+                let g = gradient(p, 0.25 * step)
+                let len = simd_length(g)
+                guard len > 0 else { break }
+                var t = SIMD2(-g.y, g.x) / len
+                if simd_dot(t, heading) < 0 { t = -t }
+                guard let z = next(t, 1) else {
+                    var a = 0.0, b = 1.0, last: SIMD2<Double>?
+                    for _ in 0..<30 {
+                        let mid = 0.5 * (a + b)
+                        if let z = next(t, mid) { a = mid; last = z } else { b = mid }
+                    }
+                    if let last { out.append(last) }
+                    break
+                }
+                if let j = endPoint.indices.first(where: { $0 != k && simd_length(endPoint[$0] - z) < 1.5 * step }) {
+                    return (out + [z, endPoint[j]], j)
+                }
+                if covered(z, from: run, p0) { break }
+                out.append(z)
+                heading = z - p
+                p = z
+            }
+            return (out, nil)
+        }
+        var traced = [(points: [SIMD2<Double>], meets: Int?)](repeating: ([], nil), count: ends.count)
+        traced.withUnsafeMutableBufferPointer { out in
+            nonisolated(unsafe) let base = out.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: ends.count) { k in
+                // The heading from a vertex half a cell back: two lattice
+                // vertices in one cell can come out of refinement reversed.
+                let r = lines[ends[k].run], p0 = endPoint[k]
+                let back = ends[k].atEnd ? Array(r.reversed().dropFirst()) : Array(r.dropFirst())
+                let behind = back.first { simd_length((p0 - $0.v) / scale) > 0.5 } ?? back[0]
+                base[k] = trace(from: p0, heading: p0 - behind.v, run: ends[k].run, cut: k)
+            }
+        }
+        // Two cuts traced to each other are one piece of fold: keep one.
+        for k in ends.indices where !traced[k].points.isEmpty {
+            if let j = traced[k].meets, traced[j].meets == k, j < k { continue }
+            let pts = traced[k].points.map { P2<ParamSpace>($0) }
+            let i = ends[k].run
+            runs[i].c = ends[k].atEnd ? runs[i].c + pts : pts.reversed() + runs[i].c
+        }
+        var paths: [[P3<WorldSpace>]] = [], coords: [[P2<ParamSpace>]] = []
+        for r in runs { coords.append(r.c) }
+
+        // From the creases: wherever the facing a fiftieth of a cell to one
+        // side of a crease changes sign between two of its vertices, a fold
+        // meets it there. One already ended within a tenth of a cell is
+        // drawn; any other is found on that line beside the crease and
+        // traced both ways, to the crease and away from it.
+        var drawn: [SIMD2<Int>: [SIMD2<Double>]] = [:]
+        for r in coords { for c in r { drawn[cell(c.v), default: []].append(c.v) } }
+        func reached(_ j: SIMD2<Double>) -> Bool {
+            let o = cell(j)
+            for a in -1...1 { for b in -1...1 {
+                if (drawn[o &+ SIMD2(a, b)] ?? []).contains(where: { simd_length(($0 - j) / scale) < 0.1 }) { return true }
+            } }
+            return false
+        }
+        var seeds: [(a: SIMD2<Double>, b: SIMD2<Double>, off: SIMD2<Double>)] = []
+        for line in creases where line.count >= 2 {
+            for i in 0..<(line.count - 1) {
+                let a = line[i].v, b = line[i + 1].v
+                let along = (b - a) / scale
+                guard simd_length(along) > 0 else { continue }
+                let off = 0.02 * SIMD2(-along.y, along.x) / simd_length(along) * scale
+                for side in [1.0, -1.0] {
+                    let fa = edgeOn(P2(a + side * off)), fb = edgeOn(P2(b + side * off))
+                    guard (fa > 0) != (fb > 0) else { continue }
+                    if !reached(a + fa / (fa - fb) * (b - a)) { seeds.append((a + side * off, b + side * off, side * off)) }
+                }
+            }
+        }
+        let starts = seeds
+        var seeded = [[P2<ParamSpace>]](repeating: [], count: starts.count)
+        seeded.withUnsafeMutableBufferPointer { out in
+            nonisolated(unsafe) let base = out.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: starts.count) { k in
+                // Onto the fold along the line beside the crease, which
+                // brackets it and never crosses the crease.
+                let (a, b) = (starts[k].a, starts[k].b)
+                guard let p0 = onto(0.5 * (a + b), along: simd_normalize(b - a), within: 0.5 * simd_length(b - a))
+                else { return }
+                let toward = trace(from: p0, heading: -starts[k].off, run: -1, cut: -1).points
+                let away = trace(from: p0, heading: starts[k].off, run: -1, cut: -1).points
+                base[k] = (toward.reversed() + [p0] + away).map { P2($0) }
+            }
+        }
+        for c in seeded where c.count >= 2 { coords.append(c) }
+
         for c in coords { paths.append(c.map { P3(map($0).position) }) }
         return PolylineSet(paths: paths, coords: coords)
     }

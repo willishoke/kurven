@@ -653,21 +653,59 @@ func creaseTests() {
         }
 
         // The facing changes sign across the rim as well as through a fold,
-        // and only the second is a fold: none of the folds' vertices is on
-        // the plateau's edge, capped one side and not the other.
-        let folds = surface.foldLines(sight: sight)
-        let onRim = folds.coords!.filter { c in
+        // and only the second is a fold: no piece of fold runs along the
+        // plateau's edge, capped one side and not the other at both its
+        // ends. A fold that meets the rim ends on it, below.
+        let rimLayer = plate.layers.first { $0.spec.name == "rim" }!
+        let folds = surface.foldLines(sight: sight, creases: Scene(surface: surface, layers: [rimLayer], camera: camera, margin: 0).creases)
+        func onRim(_ c: P2<ParamSpace>) -> Bool {
             let hs = beside(c, 1e-4 * cell).map(h)
             return hs.contains { $0 >= ceiling } && hs.contains { $0 < ceiling }
-        }.count
-        Check.expect(folds.count > 0 && onRim == 0, "no fold is drawn along a crease",
-                     "\(onRim) of \(folds.coords!.count) fold vertices on a rim")
+        }
+        var along = 0
+        for path in 0..<folds.count {
+            let fc = folds.coords!
+            for i in folds.offsets[path]..<(folds.offsets[path + 1] - 1) where onRim(fc[i]) && onRim(fc[i + 1]) {
+                along += 1
+            }
+        }
+        Check.expect(folds.count > 0 && along == 0, "no fold is drawn along a crease",
+                     "\(along) of \(folds.coords!.count - folds.count) fold segments along a rim")
         // Nor beside one: where the lattice saw the sign change across a
         // crease and the map finds no zero within a cell, there is no fold
         // to move the vertex onto, and it is not drawn where it was.
         let worst = folds.coords!.map { abs(surface.facing($0, sight: sight) ?? 0) }.max() ?? 0
         Check.expect(worst < 1e-6, "every fold vertex on the relief is edge-on",
                      String(format: "max |cos| %.1e", worst))
+
+        // Where a fold meets a rim, it ends on the rim. The wall or the cap
+        // turns edge-on between two rim vertices where its facing a hair
+        // off the rim changes sign, and the fold starts there; on a steep
+        // wall its whole visible length can lie within a lattice cell.
+        let rimCoords = plate.layers.first { $0.spec.name == "rim" }!.paths
+        func side(_ c: P2<ParamSpace>, cap: Bool) -> Double {
+            let e = 1e-3 * cell
+            let g = SIMD2(h(P2(c.x + e, c.y)) - h(P2(c.x - e, c.y)), h(P2(c.x, c.y + e)) - h(P2(c.x, c.y - e)))
+            let n = simd_length(g) > 0 ? g / simd_length(g) : SIMD2(1, 0)
+            return surface.facing(P2(c.v + (cap ? 0.02 : -0.02) * cell * n), sight: sight) ?? 0
+        }
+        var farthest = 0.0, junctions = 0
+        for path in 0..<rimCoords.count {
+            let rc = rimCoords.coords!
+            for i in rimCoords.offsets[path]..<(rimCoords.offsets[path + 1] - 1) {
+                for cap in [false, true] {
+                    let fa = side(rc[i], cap: cap), fb = side(rc[i + 1], cap: cap)
+                    guard (fa > 0) != (fb > 0) else { continue }
+                    let t = fa / (fa - fb)
+                    let j = P2<ParamSpace>(rc[i].v + t * (rc[i + 1].v - rc[i].v))
+                    let nearest = folds.coords!.map { simd_length($0.v - j.v) / cell }.min() ?? .infinity
+                    farthest = max(farthest, nearest)
+                    junctions += 1
+                }
+            }
+        }
+        Check.expect(junctions > 0 && farthest < 0.1, "a fold that meets a rim ends on it",
+                     String(format: "%d junctions, farthest fold end %.3f cells off", junctions, farthest))
 
         // The rim is a convex edge: seen where the cap or the wall beside
         // it faces the eye and nothing stands in front. The normal on the
