@@ -628,6 +628,73 @@ func foldTests() {
     }
 }
 
+func creaseTests() {
+    Check.suite("surfaces: a cap's rim is a crease, drawn once and seen where either face is") {
+        // sn in relief, capped and floored, so that each pole is a chimney
+        // whose flat top meets its wall in a crease: the plate the gaps
+        // were found on, two periods each way.
+        let base = try PeriodicTorus.jacobiSN(modulus: 0.64, resolution: 300, lattice: 512,
+                                              capped: true, turn: 0.125)
+            .repeated(real: 2, imag: 2, lattice: 1024)
+        let height = base.height!, floor = 1.5
+        let plate = PeriodicTorus.Plate(surface: base.surface, layers: base.layers,
+                                        height: { max(height($0) - floor, 0) },
+                                        ceiling: base.ceiling - floor, radii: base.radii)
+            .relief(amplitude: 0.45, reach: 1)
+        let surface = plate.surface, ceiling = plate.ceiling
+        let camera = Camera.plate(PlateProjection(shear: 0, xAngle: -55, zAngle: 30,
+                                                  flipX: false, yScale: nil))
+        let sight = camera.view.sightLine
+        let h = { (c: P2<ParamSpace>) in max(height(c) - floor, 0) }
+        let cell = min(surface.u.spacing, surface.v.spacing)
+        // The four points a hair either way along each axis.
+        func beside(_ c: P2<ParamSpace>, _ t: Double) -> [P2<ParamSpace>] {
+            [P2(c.x + t, c.y), P2(c.x - t, c.y), P2(c.x, c.y + t), P2(c.x, c.y - t)]
+        }
+
+        // The facing changes sign across the rim as well as through a fold,
+        // and only the second is a fold: none of the folds' vertices is on
+        // the plateau's edge, capped one side and not the other.
+        let folds = surface.foldLines(sight: sight)
+        let onRim = folds.coords!.filter { c in
+            let hs = beside(c, 1e-4 * cell).map(h)
+            return hs.contains { $0 >= ceiling } && hs.contains { $0 < ceiling }
+        }.count
+        Check.expect(folds.count > 0 && onRim == 0, "no fold is drawn along a crease",
+                     "\(onRim) of \(folds.coords!.count) fold vertices on a rim")
+
+        // The rim is a convex edge: seen where the cap or the wall beside
+        // it faces the eye and nothing stands in front. The normal on the
+        // crease itself is half of each, and says nothing.
+        let rim = plate.layers.first { $0.spec.name == "rim" }!
+        let marching = SurfaceVisibility(marching: surface, view: camera.view)
+        // Asked at the rim's vertices, which are on the crease: a chord's
+        // midpoint is inside the plateau, where only the cap is beside it.
+        let coords = rim.paths.coords!
+        let seen = coords.map { c in
+            beside(c, 1e-3 * cell).contains { (surface.facing($0, sight: sight) ?? 0) > 0 }
+                && marching.isClear(surface.map(c).position)
+        }
+        // A chord whose ends disagree counts half, and is the reference's
+        // own uncertainty: the bake finds where along it the verdict turns.
+        var truth = 0.0, slack = 0.0
+        for path in 0..<rim.paths.count {
+            for i in rim.paths.offsets[path]..<(rim.paths.offsets[path + 1] - 1) where seen[i] || seen[i + 1] {
+                let a = camera.view(rim.paths.vertices[i]), b = camera.view(rim.paths.vertices[i + 1])
+                let length = simd_length(SIMD2(b.x - a.x, b.y - a.y))
+                if seen[i] && seen[i + 1] { truth += length } else { truth += 0.5 * length; slack += 0.5 * length }
+            }
+        }
+        let scene = Scene(surface: surface, layers: [rim], camera: camera, margin: 0)
+        let baked = try MetalRenderer().bake(scene, options: BakeOptions(resolution: 2000))
+        let px = baked.depth.frame.unitsPerPixel.max()
+        let excess = baked.strokes.inkLength - truth
+        Check.expect(truth > 0 && abs(excess) < slack + 2 * px,
+                     "the baked rim is the convex edge's visible length, to its turning chords",
+                     String(format: "%.4f vs %.4f, %+.1f px of %.1f", baked.strokes.inkLength, truth,
+                            excess / px, slack / px + 2))
+    }
+}
 
 func periodicTorusTests() {
     Check.suite("math: the quarter periods are the complete elliptic integral") {
