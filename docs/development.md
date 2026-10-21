@@ -74,10 +74,10 @@ swift run -c release --package-path KurvenSwift kurven-cli fixtures tests/fixtur
 uv run tests/oracles.py                                            # the oracle sets
 ```
 
-Run `kurven-test` with no argument; it finds the fixtures itself. `uv` makes
-the oracles' environment (numpy, scipy, mpmath, contourpy) from the lockfile on
-first use; `uv sync --extra figures` adds matplotlib for the scripts that draw
-figures for notes.
+Run `kurven-test` with no argument; it finds the fixtures itself. The oracles'
+dependencies (numpy, scipy, mpmath, contourpy) are declared inline at the top
+of `tests/oracles.py` and pinned in `tests/oracles.py.lock`; `uv` makes the
+environment from that lock on first use.
 
 **CI** (`.github/workflows/check.yml`) runs `scripts/check.sh` on every push
 to main and every pull request, on an Apple Silicon runner so the Swift lane
@@ -108,7 +108,7 @@ KurvenSwift/Sources/
   kurven-cli/      landscape, bake, surface, preview, bench, refine, catalog,
                    inspect, contract, fixtures, ...
   kurven-test/     the test suite
-tests/             oracles.py and the fixtures
+tests/             oracles.py, its lock, and the fixtures
 scripts/           check.sh, bundle-app.sh
 docs/gallery/      the README's figures and the script that bakes them
 ```

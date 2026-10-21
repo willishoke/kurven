@@ -1,3 +1,12 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "numpy>=1.24",
+#     "scipy>=1.10",
+#     "mpmath>=1.3",
+#     "contourpy>=1.2",
+# ]
+# ///
 """Write the oracle fixtures: answers kurven did not compute.
 
 Python is in this repository for one purpose. Where the Swift package
@@ -25,6 +34,10 @@ The files are committed and CI never runs this. Run it by hand when an oracle
 or a case changes, and commit what it writes as its own change:
 
     uv run tests/oracles.py
+
+The dependencies are declared in the block above (PEP 723) and pinned in
+`tests/oracles.py.lock`, next to this file; `uv lock --script
+tests/oracles.py` rewrites the lock after a bump.
 
 Determinism: contouring runs single-chunk, the point sets come from a seeded
 generator, and the contoured grids are float32 because that is what the
