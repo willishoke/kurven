@@ -26,7 +26,9 @@ import simd
 /// bisection on the exact test, and the pixel grid has no say in where.
 public struct SurfaceVisibility: Sendable {
     public let surface: ParametricSurface
-    public let image: SurfaceImage
+    /// The coordinate image, which the front-most test reads; nil when the
+    /// march judges alone, since it asks nothing of a raster.
+    public let image: SurfaceImage?
     public let view: Transform<WorldSpace, ViewSpace>
     /// The direction sight lines travel, in world space.
     public let sight: SIMD3<Double>
@@ -34,6 +36,14 @@ public struct SurfaceVisibility: Sendable {
     public init(surface: ParametricSurface, image: SurfaceImage,
                 view: Transform<WorldSpace, ViewSpace>) {
         self.surface = surface; self.image = image; self.view = view
+        self.sight = view.sightLine
+    }
+
+    /// Visibility by the march alone, with no image: for a surface with an
+    /// `Enclosure`, judged anywhere without rendering anything first.
+    public init(marching surface: ParametricSurface, view: Transform<WorldSpace, ViewSpace>) {
+        precondition(surface.enclosure != nil, "only a surface with an enclosure is judged by the march alone")
+        self.surface = surface; self.image = nil; self.view = view
         self.sight = view.sightLine
     }
 
@@ -56,7 +66,7 @@ public struct SurfaceVisibility: Sendable {
     /// has one neighbour on another sheet, and counting that jump as the
     /// surface's own rate would make the tolerance swallow the other sheet.
     public func footprint(row: Int, col: Int) -> SIMD2<Double> {
-        guard let here = image.coordinate(row: row, col: col) else { return .zero }
+        guard let image, let here = image.coordinate(row: row, col: col) else { return .zero }
         let frame = image.frame
         func rate(_ dr: Int, _ dc: Int) -> SIMD2<Double> {
             var best: SIMD2<Double>?
@@ -85,6 +95,7 @@ public struct SurfaceVisibility: Sendable {
     /// front. Outside the frame: occluded, as `DepthImage.depth(under:)` has
     /// it.
     public func isFrontMost(_ c: P2<ParamSpace>, at p: P2<ViewSpace>) -> Bool {
+        guard let image else { preconditionFailure("the front-most test needs the coordinate image") }
         let frame = image.frame
         let i = frame.index(of: p)
         guard i.x >= 0, i.x < frame.rows, i.y >= 0, i.y < frame.cols else { return false }
