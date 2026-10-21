@@ -149,17 +149,17 @@ struct LineGeometry {
     /// the solid leaves in sight, in world space for the stroke shader.
     static func marched(_ layer: Layer, on surface: ParametricSurface,
                         view: Transform<WorldSpace, ViewSpace>) -> PolylineSet<WorldSpace> {
-        let onFolds: Bool
         let paths: PolylineSet<WorldSpace>
         if case .foldLines = layer.spec.source {
-            onFolds = true
             paths = surface.foldLines(sight: view.sightLine)
         } else {
-            onFolds = false
             paths = layer.paths
         }
+        // An outline lies on a fold or a crease, where the normal says
+        // nothing: the march alone judges it, as the bake does.
         let visibility = SurfaceVisibility(marching: surface, view: view)
-        let seen = HiddenLine.clip(paths.mapped(view), on: visibility, onFolds: onFolds)
+        let seen = HiddenLine.clip(paths.mapped(view), on: visibility,
+                                   onFolds: layer.spec.role == .outline)
         return PolylineSet(vertices: seen.vertices.map { view.inverse(P3<ViewSpace>($0.v)) },
                            offsets: seen.offsets)
     }
