@@ -21,16 +21,25 @@ struct LineGeometry {
     }
 
     /// Whether a layer's line geometry is the camera's: a heightfield's fold
-    /// lines, or the ink in its walls.
+    /// lines, or the ink in its walls; or, on a parametric surface that
+    /// carries its solid, its fold lines and every clipped layer that knows
+    /// where on the surface it lies. The march sights along parallel lines,
+    /// so under perspective a surface's ink stays with the stroke shader.
     static func isJudged(_ layer: Layer, in scene: Scene) -> Bool {
+        if let s = scene.parametric {
+            guard s.enclosure != nil, !scene.camera.isPerspective else { return false }
+            if case .foldLines = layer.spec.source { return true }
+            return layer.spec.clipped && layer.paths.coords != nil
+        }
         guard scene.heightfield != nil else { return false }
         if case .foldLines = layer.spec.source { return true }
         return layer.spec.source.isWallInk && layer.spec.clipped
     }
 
     /// Whether the scene has ink that is judged for the camera: a
-    /// heightfield's fold lines and the ink in its walls. Such a scene's
-    /// line geometry is the camera's, and is laid out again when it moves.
+    /// heightfield's fold lines and the ink in its walls, or a marched
+    /// surface's ink. Such a scene's line geometry is the camera's, and is
+    /// laid out again when it moves.
     static func isJudged(_ scene: Scene) -> Bool {
         scene.layers.contains { isJudged($0, in: scene) }
     }
@@ -66,7 +75,18 @@ struct LineGeometry {
             }
             var vertices: [KVLineVertex] = []
             var paths = layer.paths
-            if case .foldLines = layer.spec.source, let h = scene.heightfield {
+            if let s = scene.parametric, isJudged(layer, in: scene) {
+                // A marched surface's ink at rest is the bake's: the folds
+                // on the exact fold, and every vertex judged by the march
+                // against the solid. Per fragment against the coordinate
+                // image, the folds and the ink running along them drew as
+                // dashes wherever the front-most coordinate at a pixel
+                // flipped between the near sheet and the one behind it,
+                // which at a fold is everywhere. The draft is drawn from the
+                // surface ink, not from here.
+                paths = draft ? PolylineSet(paths: [])
+                    : Self.marched(layer, on: s, view: scene.camera.view)
+            } else if case .foldLines = layer.spec.source, let h = scene.heightfield {
                 // At rest the folds are the bake's: every vertex moved onto
                 // the exact fold of f before the march judges it against f.
                 // Traced on the lattice and left there, a vertex lies up to
@@ -119,7 +139,29 @@ struct LineGeometry {
             }
             layers.append(vertices)
         }
-        return JudgedLines(layers: layers, resolution: draft ? .infinity : scene.resolution)
+        // The march has no pixel in it, so a marched surface's layout serves
+        // every zoom.
+        let resolution = draft ? .infinity : scene.parametric != nil ? 0 : scene.resolution
+        return JudgedLines(layers: layers, resolution: resolution)
+    }
+
+    /// A layer of a marched surface's ink, as the bake judges it: what of it
+    /// the solid leaves in sight, in world space for the stroke shader.
+    static func marched(_ layer: Layer, on surface: ParametricSurface,
+                        view: Transform<WorldSpace, ViewSpace>) -> PolylineSet<WorldSpace> {
+        let onFolds: Bool
+        let paths: PolylineSet<WorldSpace>
+        if case .foldLines = layer.spec.source {
+            onFolds = true
+            paths = surface.foldLines(sight: view.sightLine)
+        } else {
+            onFolds = false
+            paths = layer.paths
+        }
+        let visibility = SurfaceVisibility(marching: surface, view: view)
+        let seen = HiddenLine.clip(paths.mapped(view), on: visibility, onFolds: onFolds)
+        return PolylineSet(vertices: seen.vertices.map { view.inverse(P3<ViewSpace>($0.v)) },
+                           offsets: seen.offsets)
     }
 
     /// `layOut`'s result, uploaded: every layer's segments end to end.
@@ -686,7 +728,11 @@ extension MetalRenderer {
                 shading.strokeWidth = options.inkWidth
                     * Float(widest > 0 ? layer.spec.width / widest : 1)
                 shading.margin = layer.spec.clipped ? Float(scene.margin) : .infinity
-                if layer.spec.clipped, let (buffer, judged) = ink.draw(i) {
+                // At rest a marched surface's ink comes judged by the solid,
+                // and is drawn as it comes.
+                let marched = !options.draft && LineGeometry.isJudged(layer, in: scene)
+                if marched { shading.margin = .infinity }
+                if layer.spec.clipped, !marched, let (buffer, judged) = ink.draw(i) {
                     var camera = KVInk(sight: SIMD3<Float>(scene.camera.view.sightLine),
                                        eye: SIMD3<Float>(eye.v),
                                        perspective: isPerspective ? 1 : 0,
@@ -702,7 +748,8 @@ extension MetalRenderer {
                     e2.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
                                       instanceCount: judged.count / 2)
                 } else if let buffer = lines.buffer, lines.ranges[i].count > 0 {
-                    // Ink without coordinates, judged by depth as anywhere else.
+                    // Ink without coordinates, judged by depth as anywhere
+                    // else; or judged already.
                     let range = lines.ranges[i]
                     e2.setRenderPipelineState(strokePipeline)
                     e2.setVertexBuffer(buffer, offset: 0, index: 4)
