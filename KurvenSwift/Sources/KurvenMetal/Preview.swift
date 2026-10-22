@@ -150,17 +150,20 @@ struct LineGeometry {
     static func marched(_ layer: Layer, on surface: ParametricSurface,
                         view: Transform<WorldSpace, ViewSpace>,
                         creases: [[P2<ParamSpace>]] = []) -> PolylineSet<WorldSpace> {
-        let paths: PolylineSet<WorldSpace>
+        let paths: PolylineSet<WorldSpace>, folds: Bool
         if case .foldLines = layer.spec.source {
             paths = surface.foldLines(sight: view.sightLine, creases: creases)
+            folds = true
         } else {
             paths = layer.paths
+            folds = false
         }
         // An outline lies on a fold or a crease, where the normal says
         // nothing: the march alone judges it, as the bake does.
         let visibility = SurfaceVisibility(marching: surface, view: view)
         let seen = HiddenLine.clip(paths.mapped(view), on: visibility,
-                                   onFolds: layer.spec.role == .outline)
+                                   onFolds: layer.spec.role == .outline,
+                                   onCrease: layer.spec.role == .outline && !folds)
         return PolylineSet(vertices: seen.vertices.map { view.inverse(P3<ViewSpace>($0.v)) },
                            offsets: seen.offsets)
     }

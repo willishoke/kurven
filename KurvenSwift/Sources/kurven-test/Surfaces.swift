@@ -707,6 +707,24 @@ func creaseTests() {
         Check.expect(junctions > 0 && farthest < 0.1, "a fold that meets a rim ends on it",
                      String(format: "%d junctions, farthest fold end %.3f cells off", junctions, farthest))
 
+        // And where it meets it in sight, the rim's seen piece ends where the
+        // fold's does: a cut in the rim is bisected on the rim, not on the
+        // chord between two of its vertices, which crosses the cap.
+        let marchingJudge = SurfaceVisibility(marching: surface, view: camera.view)
+        let seenRim = HiddenLine.clip(rimLayer.paths.mapped(camera.view), on: marchingJudge,
+                                      onFolds: true, onCrease: true)
+        let seenFolds = HiddenLine.clip(folds.mapped(camera.view), on: marchingJudge, onFolds: true)
+        func ends(_ p: PolylineSet<PlateSpace>) -> [SIMD2<Double>] {
+            (0..<p.count).flatMap { i in
+                [p.vertices[p.offsets[i]], p.vertices[p.offsets[i + 1] - 1]].map { SIMD2($0.x, $0.y) }
+            }
+        }
+        let foldEnds = ends(seenFolds)
+        let meetings = ends(seenRim).compactMap { e in foldEnds.map { simd_length($0 - e) }.min().flatMap { $0 < 0.01 ? $0 : nil } }
+        Check.expect(!meetings.isEmpty && meetings.max()! < 0.001,
+                     "where a fold meets the rim in sight, the two seen pieces meet",
+                     String(format: "%d meetings, widest %.5f", meetings.count, meetings.max() ?? .nan))
+
         // The rim is a convex edge: seen where the cap or the wall beside
         // it faces the eye and nothing stands in front. The normal on the
         // crease itself is half of each, and says nothing.
