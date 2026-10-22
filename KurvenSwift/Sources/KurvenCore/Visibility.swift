@@ -176,6 +176,33 @@ public struct SurfaceVisibility: Sendable {
         return (marches ? isClear(world) : isFrontMost(c, at: p.xy), p)
     }
 
+    /// The point of a crease beside `c`, a point of the chord between two of
+    /// its vertices: where the facing jumps, across the chord within half
+    /// its length either way; `c` where no jump is in reach. The vertices
+    /// are on the crease but the chord between them crosses a face, which
+    /// can face away where the crease is seen: a convex rim is seen where
+    /// either of its faces is.
+    public func ontoCrease(_ c: P2<ParamSpace>, chord: SIMD2<Double>) -> P2<ParamSpace> {
+        let scale = SIMD2(surface.u.spacing, surface.v.spacing)
+        let along = chord / scale
+        let cells = simd_length(along)
+        guard cells > 0 else { return c }
+        let n = SIMD2(-along.y, along.x) / cells * scale
+        var a = c.v - 0.5 * cells * n, b = c.v + 0.5 * cells * n
+        guard let fa = facing(P2(a)), let fb = facing(P2(b)) else { return c }
+        for _ in 0..<60 {
+            let m = 0.5 * (a + b)
+            guard let fm = facing(P2(m)) else { return c }
+            if abs(fm - fa) < abs(fm - fb) { a = m } else { b = m }
+        }
+        // A jump, not a slope: a hundredth of the span holds most of the change.
+        let m = 0.5 * (a + b)
+        func across(_ t: Double) -> Double {
+            abs((facing(P2(m + t * n)) ?? 0) - (facing(P2(m - t * n)) ?? 0))
+        }
+        return across(1e-3) > 0.5 * across(1e-1) ? P2(m) : c
+    }
+
     /// Where along the straight segment `a -> b` in coordinates the surface
     /// turns edge-on, as a fraction of the way; nil when both ends face the
     /// same way, or the surface has no outside.
@@ -220,12 +247,14 @@ public extension HiddenLine {
     /// Ink that lies on the folds themselves -- `ParametricSurface.foldLines`
     /// -- is edge-on everywhere by construction, so its facing is noise about
     /// zero and must not be asked: pass `onFolds` and it is judged by the
-    /// march or the front-most test alone.
+    /// march or the front-most test alone. Ink on a crease -- a cap's rim --
+    /// is judged so too, and `onCrease` says so: there a cut is bisected on
+    /// the crease itself, each point moved onto it from the chord.
     ///
     /// Every vertex is judged in parallel, and so is every cut: a march is
     /// hundreds of evaluations of the standoff, and a cut is forty marches.
     static func clip(_ paths: PolylineSet<ViewSpace>, on visibility: SurfaceVisibility,
-                     onFolds: Bool = false) -> PolylineSet<PlateSpace> {
+                     onFolds: Bool = false, onCrease: Bool = false) -> PolylineSet<PlateSpace> {
         guard let coords = paths.coords else {
             preconditionFailure("clipping on a surface needs the ink's surface coordinates")
         }
@@ -256,7 +285,9 @@ public extension HiddenLine {
                     var at = kept[k - 1] ? paths.vertices[k - 1] : paths.vertices[k]
                     while hi - lo > 1e-13 {
                         let mid = 0.5 * (lo + hi)
-                        let j = visibility.judge(P2(a.v + (b.v - a.v) * mid), onFolds: onFolds)
+                        let c = P2<ParamSpace>(a.v + (b.v - a.v) * mid)
+                        let j = visibility.judge(onCrease ? visibility.ontoCrease(c, chord: b.v - a.v) : c,
+                                                 onFolds: onFolds)
                         if j.seen == kept[k - 1] { lo = mid } else { hi = mid }
                         if j.seen { at = j.at }
                     }

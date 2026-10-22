@@ -1176,6 +1176,19 @@ public struct Scene: Sendable {
         self.layers = layers; self.camera = camera; self.mode = mode; self.margin = margin
     }
 
+    /// The creases of the surface's ink, in its coordinates: every outline
+    /// that is not the folds -- a cap's rim. A fold that meets one is traced
+    /// from it, where the lattice may hold none of the fold.
+    public var creases: [[P2<ParamSpace>]] {
+        layers.flatMap { layer -> [[P2<ParamSpace>]] in
+            if case .foldLines = layer.spec.source { return [] }
+            guard layer.spec.role == .outline, let coords = layer.paths.coords else { return [] }
+            return (0..<layer.paths.count).map {
+                Array(coords[layer.paths.offsets[$0]..<layer.paths.offsets[$0 + 1]])
+            }
+        }
+    }
+
     /// Every layer's ink in view space, in declaration (draw) order, judged
     /// for this camera wherever the geometry can judge it exactly.
     ///
@@ -1197,7 +1210,7 @@ public struct Scene: Sendable {
             switch geometry {
             case .parametric(let s):
                 if case .foldLines = layer.spec.source {
-                    return (layer, s.foldLines(sight: view.sightLine).mapped(view))
+                    return (layer, s.foldLines(sight: view.sightLine, creases: creases).mapped(view))
                 }
                 return (layer, layer.paths.mapped(view))
             case .heightfield(let h):
@@ -1271,7 +1284,7 @@ public struct Scene: Sendable {
             if case .foldLines = layer.spec.source { return true }
             return false
         }) {
-            for v in s.foldLines(sight: camera.view.sightLine).vertices { add(camera.view(v)) }
+            for v in s.foldLines(sight: camera.view.sightLine, creases: creases).vertices { add(camera.view(v)) }
         }
         return any ? AABB(lo: lo, hi: hi) : nil
     }
