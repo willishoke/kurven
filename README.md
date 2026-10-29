@@ -39,10 +39,10 @@ kurven needs macOS 15 or later and the Swift toolchain (the Command Line Tools
 are enough; no Xcode, no other dependencies).
 
 ```bash
-swift build -c release --package-path KurvenSwift
-KurvenSwift/.build/release/kurven-cli landscape "1/(z^3 - 1)" \
+swift build -c release
+.build/release/kurven-cli landscape "1/(z^3 - 1)" \
     --re -1.3,1.6 --im -1.2,1.5 --cap 5 -o cubic.kurven
-KurvenSwift/.build/release/kurven-cli bake cubic.kurven -o cubic.svg
+.build/release/kurven-cli bake cubic.kurven -o cubic.svg
 ```
 
 Or the app, with a picker of fourteen functions drawn as pictures, sliders for

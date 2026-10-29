@@ -27,7 +27,7 @@ while [ $# -gt 0 ]; do
 done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PACKAGE="$ROOT/KurvenSwift"
+PACKAGE="$ROOT"
 APP="$ROOT/$OUTPUT/Kurven.app"
 VERSION="0.1.0"
 

@@ -9,7 +9,7 @@ rather than a `.testTarget` (the Command Line Tools ship `Testing.framework`
 without a `.swiftmodule`).
 
 ```bash
-swift build -c release --package-path KurvenSwift
+swift build -c release
 scripts/bundle-app.sh                     # assembles build/Kurven.app
 ```
 
@@ -69,15 +69,15 @@ Python implementation of the language reported them, and edited by hand.
 Or a piece at a time:
 
 ```bash
-swift run -c release --package-path KurvenSwift kurven-test        # the Swift lane
-swift run -c release --package-path KurvenSwift kurven-cli fixtures tests/fixtures
+swift run -c release kurven-test                                   # the Swift lane
+swift run -c release kurven-cli fixtures tests/fixtures
 uv run tests/oracles.py                                            # the oracle sets
 ```
 
-Run `kurven-test` with no argument; it finds the fixtures itself. `uv` makes
-the oracles' environment (numpy, scipy, mpmath, contourpy) from the lockfile on
-first use; `uv sync --extra figures` adds matplotlib for the scripts that draw
-figures for notes.
+Run `kurven-test` with no argument; it finds the fixtures itself. The oracles'
+dependencies (numpy, scipy, mpmath, contourpy) are declared inline at the top
+of `tests/oracles.py` and pinned in `tests/oracles.py.lock`; `uv` makes the
+environment from that lock on first use.
 
 **CI** (`.github/workflows/check.yml`) runs `scripts/check.sh` on every push
 to main and every pull request, on an Apple Silicon runner so the Swift lane
@@ -93,7 +93,8 @@ device fails the run, because the GPU suites are the ones that draw.
 ## Project structure
 
 ```
-KurvenSwift/Sources/
+Package.swift      the package: targets, products, and why there are no others
+Sources/
   KurvenMath/      complex arithmetic, the special functions, the expression
                    language; depends on nothing
   KurvenCore/      pure values: spaces, camera, navigation, contours, the
@@ -108,7 +109,7 @@ KurvenSwift/Sources/
   kurven-cli/      landscape, bake, surface, preview, bench, refine, catalog,
                    inspect, contract, fixtures, ...
   kurven-test/     the test suite
-tests/             oracles.py and the fixtures
+tests/             oracles.py, its lock, and the fixtures
 scripts/           check.sh, bundle-app.sh
 docs/gallery/      the README's figures and the script that bakes them
 ```

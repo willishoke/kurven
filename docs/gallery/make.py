@@ -1,6 +1,6 @@
 """The README's figures, baked from the formula by the Swift CLI.
 
-    swift build -c release --package-path KurvenSwift
+    swift build -c release
     python3 docs/gallery/make.py
 
 Each figure is a native landscape (`kurven-cli landscape`) given a camera and,
@@ -18,7 +18,7 @@ import json, math, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CLI = ROOT / "KurvenSwift/.build/release/kurven-cli"
+CLI = ROOT / ".build/release/kurven-cli"
 OUT = Path(__file__).resolve().parent
 PAPER = "#ffffff"
 # The bake's widths are for a sixteen-inch page; a README column is 880 px.
@@ -159,7 +159,7 @@ def agm(a, b):
 
 def main():
     if not CLI.exists():
-        sys.exit(f"build the CLI first: swift build -c release --package-path KurvenSwift")
+        sys.exit(f"build the CLI first: swift build -c release")
     work = Path(tempfile.mkdtemp(prefix="kurven-gallery-"))
     try:
         # Γ, as the published plate frames it: the strip |Im z| ≤ 2.5, a cap
