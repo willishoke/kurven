@@ -85,7 +85,7 @@ struct LineGeometry {
                 // which at a fold is everywhere. The draft is drawn from the
                 // surface ink, not from here.
                 paths = draft ? PolylineSet(paths: [])
-                    : Self.marched(layer, on: s, view: scene.camera.view)
+                    : Self.marched(layer, on: s, view: scene.camera.view, creases: scene.creases)
             } else if case .foldLines = layer.spec.source, let h = scene.heightfield {
                 // At rest the folds are the bake's: every vertex moved onto
                 // the exact fold of f before the march judges it against f.
@@ -148,18 +148,22 @@ struct LineGeometry {
     /// A layer of a marched surface's ink, as the bake judges it: what of it
     /// the solid leaves in sight, in world space for the stroke shader.
     static func marched(_ layer: Layer, on surface: ParametricSurface,
-                        view: Transform<WorldSpace, ViewSpace>) -> PolylineSet<WorldSpace> {
-        let onFolds: Bool
-        let paths: PolylineSet<WorldSpace>
+                        view: Transform<WorldSpace, ViewSpace>,
+                        creases: [[P2<ParamSpace>]] = []) -> PolylineSet<WorldSpace> {
+        let paths: PolylineSet<WorldSpace>, folds: Bool
         if case .foldLines = layer.spec.source {
-            onFolds = true
-            paths = surface.foldLines(sight: view.sightLine)
+            paths = surface.foldLines(sight: view.sightLine, creases: creases)
+            folds = true
         } else {
-            onFolds = false
             paths = layer.paths
+            folds = false
         }
+        // An outline lies on a fold or a crease, where the normal says
+        // nothing: the march alone judges it, as the bake does.
         let visibility = SurfaceVisibility(marching: surface, view: view)
-        let seen = HiddenLine.clip(paths.mapped(view), on: visibility, onFolds: onFolds)
+        let seen = HiddenLine.clip(paths.mapped(view), on: visibility,
+                                   onFolds: layer.spec.role == .outline,
+                                   onCrease: layer.spec.role == .outline && !folds)
         return PolylineSet(vertices: seen.vertices.map { view.inverse(P3<ViewSpace>($0.v)) },
                            offsets: seen.offsets)
     }

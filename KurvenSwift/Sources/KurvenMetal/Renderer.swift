@@ -269,7 +269,10 @@ public final class MetalRenderer {
                 if let previous, i < previous.sources.count, previous.sources[i] == paths {
                     return previous.geometry.layers[i]
                 }
-                return paths.map { SurfaceInkGeometry.layout($0, surface: surface, onFolds: false,
+                // An outline -- a cap's rim -- lies on a crease, where the
+                // normal says nothing: laid out as fold ink, with no facing.
+                let crease = scene.layers[i].spec.role == .outline
+                return paths.map { SurfaceInkGeometry.layout($0, surface: surface, onFolds: crease,
                                                              lattice: lattice) } ?? []
             }
             statics = try SurfaceInkGeometry(layers: layers, device: device)

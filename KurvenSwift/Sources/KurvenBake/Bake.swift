@@ -155,10 +155,13 @@ public extension MetalRenderer {
                 clipped = HiddenLine.pass(projected)
             } else if let visibility, projected.coords != nil {
                 // Ink that knows where on the surface it lies is judged by
-                // that, with no margin in it.
-                let onFolds: Bool
-                if case .foldLines = layer.spec.source { onFolds = true } else { onFolds = false }
-                clipped = HiddenLine.clip(projected, on: visibility, onFolds: onFolds)
+                // that, with no margin in it. An outline lies on a fold or
+                // a crease, where the normal says nothing.
+                let outline = layer.spec.role == .outline
+                let folds: Bool
+                if case .foldLines = layer.spec.source { folds = true } else { folds = false }
+                clipped = HiddenLine.clip(projected, on: visibility, onFolds: outline,
+                                          onCrease: outline && !folds)
             } else if visibility != nil {
                 // Ink on a parametric surface that carries no coordinates
                 // falls back to depth, at the margin.
