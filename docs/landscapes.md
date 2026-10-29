@@ -32,7 +32,7 @@ Implicit multiplication (`2z`, `(z-1)(z+1)`), `^` for powers, postfix `!` for
 at, which is what lets the app's expression field say where.
 
 The language and its functions are implemented in Swift with no library behind
-them (`KurvenSwift/Sources/KurvenMath`): complex arithmetic on numpy's
+them (`Sources/KurvenMath`): complex arithmetic on numpy's
 branches, scipy's own algorithms where scipy has one (Hare's log-gamma,
 cephes' `ellpj`, the Lambert W iteration), Weideman's Faddeeva function for
 the error functions, and for the Bessel and Airy families two engines, the

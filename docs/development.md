@@ -9,7 +9,7 @@ rather than a `.testTarget` (the Command Line Tools ship `Testing.framework`
 without a `.swiftmodule`).
 
 ```bash
-swift build -c release --package-path KurvenSwift
+swift build -c release
 scripts/bundle-app.sh                     # assembles build/Kurven.app
 ```
 
@@ -69,8 +69,8 @@ Python implementation of the language reported them, and edited by hand.
 Or a piece at a time:
 
 ```bash
-swift run -c release --package-path KurvenSwift kurven-test        # the Swift lane
-swift run -c release --package-path KurvenSwift kurven-cli fixtures tests/fixtures
+swift run -c release kurven-test                                   # the Swift lane
+swift run -c release kurven-cli fixtures tests/fixtures
 uv run tests/oracles.py                                            # the oracle sets
 ```
 
@@ -93,7 +93,8 @@ device fails the run, because the GPU suites are the ones that draw.
 ## Project structure
 
 ```
-KurvenSwift/Sources/
+Package.swift      the package: targets, products, and why there are no others
+Sources/
   KurvenMath/      complex arithmetic, the special functions, the expression
                    language; depends on nothing
   KurvenCore/      pure values: spaces, camera, navigation, contours, the

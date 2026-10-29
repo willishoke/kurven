@@ -25,7 +25,6 @@ enum Fixtures {
     nonisolated(unsafe) static var dir: URL = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()   // kurven-test
         .deletingLastPathComponent()   // Sources
-        .deletingLastPathComponent()   // KurvenSwift
         .deletingLastPathComponent()   // repo root
         .appendingPathComponent("tests/fixtures")
 

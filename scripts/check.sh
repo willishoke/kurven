@@ -24,7 +24,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PACKAGE="$ROOT/KurvenSwift"
+PACKAGE="$ROOT"
 
 CLEAN=0
 for arg in "$@"; do

@@ -8,7 +8,7 @@ import PackageDescription
 // Shaders compile at runtime from a string, and a test compiles them, which is
 // the check a `metal` build step would otherwise provide.
 let package = Package(
-    name: "KurvenSwift",
+    name: "Kurven",
     platforms: [.macOS(.v15)],
     products: [
         .library(name: "KurvenMath", targets: ["KurvenMath"]),
