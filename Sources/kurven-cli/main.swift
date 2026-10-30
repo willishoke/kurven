@@ -141,16 +141,27 @@ usage: kurven-cli <command> [options]
         renders one frame of the realtime preview instead of baking.
 
   surface solid [--kind K] [--size R] [--width W] [--x-angle DEG] [--z-angle DEG]
-          [--shear S] [--resolution N] -o out.svg
+          [--shear S] [--resolution N] [--color C] [--fill solid|turing|shade [--angle DEG]
+          [--spacing S] [--levels N] [--seed N] [--scale S] [--fill-width W]
+          [--fill-color C]] -o out.svg
         Bake a polyhedron to SVG, its edges as the ink. K is one of
         tetrahedron, cube, octahedron, dodecahedron, icosahedron -- built
         from their vertex coordinates by a convex hull, set down on a face --
-        or csaszar, the seven-vertex torus. An edge shows where one of its
-        two faces faces the eye and no other face stands in front, and the
-        second half is a cast of the edge against every face, solved in
-        closed form: no margin, no pixel, the same drawing at any
+        csaszar, the seven-vertex torus, or frame, a picture frame (2R
+        across, a hole --hole wide, --depth thick). An edge shows where one
+        of its two faces faces the eye and no other face stands in front,
+        and the second half is a cast of the edge against every face, solved
+        in closed form: no margin, no pixel, the same drawing at any
         --resolution, which only the depth output sees. --size is the
-        circumradius (2 by default).
+        circumradius (2 by default). A --fill rules every flat facet with
+        strokes at --angle (45°) every --spacing, weighted by a field: solid
+        is the whole facet, turing is Turing's dappling at --scale under
+        --seed, shade is flat shading by a light. With --levels 1 the
+        strokes are clipped to where the field is positive; with more the
+        stroke width follows the field in that many steps, up to
+        --fill-width. The strokes are judged as ink in a face, exactly.
+        --color is the edges' stroke colour and --fill-color the fill's (any
+        SVG colour; black by default).
 
   surface-costs [--repeat N] [--only torus|sn|forced]
         Time what each of the window's surface controls costs: the plate
@@ -536,22 +547,45 @@ func solidCommand(_ args: Args) throws {
         let c = Solid.csaszar
         let r = c.vertices.map { simd_length(SIMD2($0.x, $0.y)) }.max() ?? 1
         solid = c.transformed(rotation: matrix_identity_double3x3 * (size / r))
+    } else if kind == "frame" {
+        solid = Solid.frame(outer: 2 * size, inner: try args.double("hole") ?? size,
+                            depth: try args.double("depth") ?? size / 2)
     } else if let platonic = Solid.Platonic(rawValue: kind) {
         solid = Solid.platonic(platonic, circumradius: size).resting(on: 0)
     } else {
         throw CLIError("unknown solid '\(kind)'; the table has: "
                        + Solid.Platonic.allCases.map(\.rawValue).joined(separator: ", ")
-                       + ", csaszar")
+                       + ", csaszar, frame")
     }
     var projection = SurfaceRequest.projection
     projection.shear = try args.double("shear") ?? projection.shear
     projection.xAngle = try args.double("x-angle") ?? projection.xAngle
     projection.zAngle = try args.double("z-angle") ?? projection.zAngle
     let camera = Camera.plate(projection)
-    let layer = Layer(spec: LayerSpec(name: "edges", role: .outline, source: .edges,
-                                      width: width, heightPolicy: .surface),
-                      paths: solid.edgePaths)
-    let scene = Scene(solid: solid, layers: [layer], camera: camera)
+    var layers = [Layer(spec: LayerSpec(name: "edges", role: .outline, source: .edges,
+                                        width: width, heightPolicy: .surface,
+                                        color: args.flags["color"] ?? "#000000"),
+                        paths: solid.edgePaths)]
+    if let pattern = args.flags["fill"] {
+        let field: FillField
+        switch pattern {
+        case "solid": field = .solid
+        case "turing": field = .turing(scale: try args.double("scale") ?? size / 4,
+                                       seed: UInt64(try args.int("seed", 1)))
+        case "shade": field = .shade(light: SIMD3(-0.4, -0.6, 0.7))
+        case let other: throw CLIError("unknown fill '\(other)'; the fields are solid, turing, shade")
+        }
+        let fill = Fill(angle: (try args.double("angle") ?? 45) * .pi / 180,
+                        spacing: try args.double("spacing") ?? size / 25,
+                        pitch: try args.double("pitch"),
+                        field: field, levels: try args.int("levels", 1))
+        layers.append(Layer(spec: LayerSpec(name: "fill", role: .scaffold, source: .fill(fill),
+                                            width: try args.double("fill-width") ?? width / 2,
+                                            heightPolicy: .surface,
+                                            color: args.flags["fill-color"] ?? args.flags["color"] ?? "#000000"),
+                            paths: solid.fillPaths(fill)))
+    }
+    let scene = Scene(solid: solid, layers: layers, camera: camera)
     let output = URL(fileURLWithPath: try args.string("output"))
     let options = BakeOptions(resolution: try args.int("resolution", 3000),
                               tiles: args.flags["tiles"].flatMap(Int.init))
@@ -569,13 +603,18 @@ func solidCommand(_ args: Args) throws {
                 && simd_length(p.last!.v - corners[e.b]) < 1e-9
         }
     }.count
+    let soft = solid.crease.filter { !$0 }.count
+    let fillInk = result.strokes.layers.dropFirst().reduce(0.0) { $0 + $1.paths.inkLength }
+    let fillPaths = result.strokes.layers.dropFirst().reduce(0) { $0 + $1.paths.count }
     print("""
         \(kind) -> \(output.lastPathComponent)
-          solid      \(solid.vertices.count) vertices, \(solid.edges.count) edges, \
-        \(solid.faces.count) faces, χ = \(solid.eulerCharacteristic), \
+          solid      \(solid.vertices.count) vertices, \(solid.edges.count) edges\
+        \(soft > 0 ? " (\(soft) soft)" : ""), \(solid.faces.count) faces in \(solid.facets.count) facets, \
+        χ = \(solid.eulerCharacteristic), \
         \(solid.isConvex ? "convex: the sign test alone decides" : "not convex: edges are cast against the faces")
           edges      \(drawn.count) pieces drawn, \(whole) of them whole edges, \
-        ink \(String(format: "%.2f", result.strokes.inkLength))
+        ink \(String(format: "%.2f", drawn.inkLength))
+          fill       \(layers.count > 1 ? "\(fillPaths) strokes in \(result.strokes.layers.count - 1) weight\(result.strokes.layers.count == 2 ? "" : "s"), ink \(String(format: "%.2f", fillInk))" : "none")
           depth      \(result.depth.frame.rows)x\(result.depth.frame.cols), \
         which the ink does not consult
           took       \(elapsed)
@@ -1392,6 +1431,9 @@ func sourceName(_ source: LayerSource) -> String {
     case .foldLines: "fold lines"
     case .trajectory: "a trajectory"
     case .edges: "the edges of a solid"
+    case .fill(let fill):
+        "a fill every \(fmt(fill.spacing)) at \(fmt(fill.angle * 180 / .pi))°, "
+            + "\(fill.levels) level\(fill.levels == 1 ? "" : "s")"
     }
 }
 

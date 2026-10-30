@@ -1206,13 +1206,13 @@ public struct Scene: Sendable {
     public func judgedLayers(margin: Double? = nil) -> [(Layer, PolylineSet<ViewSpace>)] {
         let view = camera.view
         let margin = margin ?? self.margin
-        return layers.map { layer in
+        return layers.flatMap { layer -> [(Layer, PolylineSet<ViewSpace>)] in
             switch geometry {
             case .parametric(let s):
                 if case .foldLines = layer.spec.source {
-                    return (layer, s.foldLines(sight: view.sightLine, creases: creases).mapped(view))
+                    return [(layer, s.foldLines(sight: view.sightLine, creases: creases).mapped(view))]
                 }
-                return (layer, layer.paths.mapped(view))
+                return [(layer, layer.paths.mapped(view))]
             case .heightfield(let h):
                 let judged: PolylineSet<WorldSpace>
                 if case .foldLines = layer.spec.source {
@@ -1226,12 +1226,23 @@ public struct Scene: Sendable {
                 } else {
                     judged = h.visibleInk(layer.paths, view: view, margin: margin)
                 }
-                return (layer, judged.mapped(view))
+                return [(layer, judged.mapped(view))]
             case .solid(let s):
                 if case .edges = layer.spec.source, layer.spec.clipped {
-                    return (layer, s.visibleEdges(view: view).mapped(view))
+                    return [(layer, s.visibleEdges(view: view).mapped(view))]
                 }
-                return (layer, layer.paths.mapped(view))
+                if case .fill(let fill) = layer.spec.source {
+                    // One layer per weight, at that fraction of the width:
+                    // the ruling as carried when unclipped, as seen otherwise.
+                    return s.visibleFill(fill, view: view).map { level, unjudged, judged in
+                        var spec = layer.spec
+                        spec.width = layer.spec.width * Double(level) / Double(fill.levels)
+                        if fill.levels > 1 { spec.name = "\(layer.spec.name) \(level)/\(fill.levels)" }
+                        let ink = layer.spec.clipped ? judged : unjudged
+                        return (Layer(spec: spec, paths: unjudged), ink.mapped(view))
+                    }
+                }
+                return [(layer, layer.paths.mapped(view))]
             }
         }
     }
