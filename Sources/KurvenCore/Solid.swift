@@ -2,24 +2,34 @@ import Foundation
 import simd
 
 /// A polyhedron bounding a solid: flat faces, sharp edges, and its ink is
-/// its edges.
+/// its edges and whatever is ruled on its faces.
 ///
 /// The third kind of geometry a plate can draw, beside a heightfield and a
 /// parametric surface, and the one whose visibility is exact in the plainest
 /// sense. A point of an edge is seen when some face at that edge faces the
-/// eye and no other face stands between the point and the eye. Both halves
-/// are decided in closed form: the first by two signs, the second by casting
-/// the edge against every face -- the edge and the face are both flat, so
-/// where one passes behind the other is an interval, solved, not searched.
-/// No margin, no pixel, no lattice: the drawing is the same at any
-/// resolution, which is the property every other visibility rule here is
+/// eye and no other face stands between the point and the eye; a point of
+/// ink in a face is seen when that face faces the eye and nothing stands in
+/// front. Both halves are decided in closed form: the first by signs, the
+/// second by casting the ink against every face -- the ink and the face are
+/// both flat, so where one passes behind the other is an interval, solved,
+/// not searched. No margin, no pixel, no lattice: the drawing is the same at
+/// any resolution, which is the property every other visibility rule here is
 /// held to and this one has by construction.
 ///
 /// Faces are convex polygons, listed counter-clockwise seen from outside, so
 /// a face's normal by the right-hand rule points out of the solid. That is
-/// checked, not trusted: a solid whose faces do not close consistently is
-/// refused, and the tables below are built from vertex coordinates alone by
-/// a convex hull, so no face is ever typed in by hand.
+/// checked, not trusted: a solid whose faces do not close consistently, or
+/// whose faces are not convex, is refused, and the Platonic tables are built
+/// from vertex coordinates alone by a convex hull, so no face is typed in by
+/// hand.
+///
+/// A flat face that is not convex -- the front of a picture frame, a square
+/// with a square hole, which no polygon can be -- is several convex faces in
+/// one plane. The edges between them are *soft*: seams of the face list, not
+/// creases of the solid. They are not ink, and a coplanar face hides nothing
+/// of its neighbour. The faces of one plane joined across soft edges are a
+/// *facet*, and ink ruled on a face is ruled over its whole facet, so a
+/// hatch runs unbroken across the seams and breaks only at the hole.
 public struct Solid: Sendable, Equatable {
     public let vertices: [P3<WorldSpace>]
     /// Each face as its vertex indices in order, counter-clockwise from
@@ -29,6 +39,12 @@ public struct Solid: Sendable, Equatable {
     public let edges: [Edge]
     /// Unit outward normals, one per face.
     public let normals: [SIMD3<Double>]
+    /// Per edge, whether it is a crease: its two faces lie in different
+    /// planes. The rest are soft, seams between coplanar faces.
+    public let crease: [Bool]
+    /// The facets: the faces of one plane joined across soft edges, each as
+    /// its face indices. A face with no soft edge is a facet of one.
+    public let facets: [[Int]]
 
     public struct Edge: Sendable, Equatable, Hashable {
         public let a: Int, b: Int
@@ -39,8 +55,8 @@ public struct Solid: Sendable, Equatable {
 
     /// - Precondition: every edge lies in exactly two faces, traversed in
     ///   opposite directions -- the surface is closed and consistently
-    ///   oriented -- and the orientation is outward: the signed volume is
-    ///   positive.
+    ///   oriented -- the orientation is outward (the signed volume is
+    ///   positive), and every face is convex.
     public init(vertices: [P3<WorldSpace>], faces: [[Int]]) {
         precondition(faces.allSatisfy { $0.count >= 3 }, "a face has at least three vertices")
         self.vertices = vertices
@@ -65,6 +81,7 @@ public struct Solid: Sendable, Equatable {
         self.edges = edges.sorted { ($0.a, $0.b) < ($1.a, $1.b) }
         // Newell's normal: exact for a planar polygon however many vertices
         // it has, and the sum it is is the one the divergence theorem wants.
+        let scale = vertices.map { simd_length($0.v) }.max() ?? 1
         var normals: [SIMD3<Double>] = []
         var volume = 0.0
         for face in faces {
@@ -76,12 +93,40 @@ public struct Solid: Sendable, Equatable {
             }
             let len = simd_length(n)
             precondition(len > 0, "a face is degenerate")
-            normals.append(n / len)
+            n /= len
+            normals.append(n)
+            // Convex: every corner turns the same way about the normal.
+            for k in 0..<face.count {
+                let p = vertices[face[k]].v, q = vertices[face[(k + 1) % face.count]].v,
+                    r = vertices[face[(k + 2) % face.count]].v
+                precondition(simd_dot(simd_cross(q - p, r - q), n) >= -1e-9 * scale * scale,
+                             "face \(face) is not convex at vertex \(face[(k + 1) % face.count])")
+            }
             // (n is twice the area vector; p · n / 6 is the cone's volume.)
-            volume += simd_dot(vertices[face[0]].v, n) / 6
+            volume += simd_dot(vertices[face[0]].v, n * len) / 6
         }
         precondition(volume > 0, "the faces are oriented inward (signed volume \(volume))")
         self.normals = normals
+        let crease = self.edges.map { simd_dot(normals[$0.left], normals[$0.right]) < 1 - 1e-9 }
+        self.crease = crease
+        // Facets: the faces, joined across soft edges.
+        var parent = Array(0..<faces.count)
+        func root(_ i: Int) -> Int {
+            var i = i
+            while parent[i] != i { parent[i] = parent[parent[i]]; i = parent[i] }
+            return i
+        }
+        for (k, e) in self.edges.enumerated() where !crease[k] {
+            parent[root(e.left)] = root(e.right)
+        }
+        var byRoot: [Int: [Int]] = [:]
+        var order: [Int] = []
+        for f in 0..<faces.count {
+            let r = root(f)
+            if byRoot[r] == nil { order.append(r) }
+            byRoot[r, default: []].append(f)
+        }
+        self.facets = order.map { byRoot[$0]! }
     }
 
     public var eulerCharacteristic: Int { vertices.count - edges.count + faces.count }
@@ -108,9 +153,10 @@ public struct Solid: Sendable, Equatable {
         return Mesh(vertices: vertices, triangles: tris)
     }
 
-    /// Every edge as a two-vertex path, unjudged: the ink a solid carries.
+    /// Every crease as a two-vertex path, unjudged: the edge ink a solid
+    /// carries. Soft edges are seams, not ink.
     public var edgePaths: PolylineSet<WorldSpace> {
-        PolylineSet(paths: edges.map { [vertices[$0.a], vertices[$0.b]] })
+        PolylineSet(paths: zip(edges, crease).filter { $1 }.map { [vertices[$0.0.a], vertices[$0.0.b]] })
     }
 
     /// The solid moved rigidly: rotated about the origin, then translated.
@@ -139,51 +185,97 @@ public struct Solid: Sendable, Equatable {
         return transformed(rotation: r, translation: SIMD3(-centre.x, -centre.y, -low))
     }
 
+    // MARK: - facets
+
+    /// A facet with a frame in its plane: an origin and two unit axes `u`,
+    /// `v` with `u × v` the outward normal, so a polygon counter-clockwise
+    /// from outside is counter-clockwise in `(u, v)`. Ink ruled on the
+    /// facet is ruled in these coordinates.
+    public struct Facet: Sendable {
+        public let faces: [Int]
+        public let normal: SIMD3<Double>
+        public let origin: SIMD3<Double>
+        public let u: SIMD3<Double>, v: SIMD3<Double>
+
+        public func coordinates(_ p: SIMD3<Double>) -> SIMD2<Double> {
+            SIMD2(simd_dot(p - origin, u), simd_dot(p - origin, v))
+        }
+        public func point(_ c: SIMD2<Double>) -> SIMD3<Double> {
+            origin + c.x * u + c.y * v
+        }
+    }
+
+    /// Facet `i`, framed: the origin is the centroid of its vertices and
+    /// `u` runs along the first edge of its first face.
+    public func facet(_ i: Int) -> Facet {
+        let members = facets[i]
+        let n = normals[members[0]]
+        var ids = Set<Int>()
+        for f in members { for k in faces[f] { ids.insert(k) } }
+        let centroid = ids.reduce(SIMD3<Double>.zero) { $0 + vertices[$1].v } / Double(ids.count)
+        let first = faces[members[0]]
+        let along = vertices[first[1]].v - vertices[first[0]].v
+        let u = simd_normalize(along - simd_dot(along, n) * n)
+        return Facet(faces: members, normal: n, origin: centroid, u: u, v: simd_cross(n, u))
+    }
+
+    /// The facet face `f` belongs to.
+    public func facetIndex(of f: Int) -> Int {
+        facets.firstIndex { $0.contains(f) }!
+    }
+
     // MARK: - visibility
 
-    /// The edges as seen along `view`'s sight line, each cut to the pieces
-    /// that can be seen.
+    /// The faces projected to the picture plane, ready to be cast against:
+    /// built once per camera, then asked about any flat segment.
     ///
-    /// Per edge: with `d` the direction back toward the eye and `n₁`, `n₂`
-    /// the outward normals of its two faces, nothing of the edge shows unless
-    /// `n₁ · d > 0 ∨ n₂ · d > 0` -- both faces turned away means the edge is
-    /// on the back of the solid, behind the solid itself. On a convex solid
-    /// that is the whole test, and an edge is whole or absent. On any other
-    /// solid an edge that passes the sign test can still run behind a face
-    /// elsewhere on the body -- the far rim of a torus's tunnel seen through
-    /// the near one -- so every other face is cast against it. Under an
-    /// orthographic camera the edge and a face both project to the picture
-    /// plane, their overlap along the edge is an interval, and over it the
-    /// difference of their view depths is linear: where that difference says
-    /// the face is nearer, the edge is hidden. The hidden intervals are
-    /// subtracted from the edge, exactly.
-    public func visibleEdges(view: Transform<WorldSpace, ViewSpace>) -> PolylineSet<WorldSpace> {
-        let d = -view.sightLine
-        let projected = vertices.map { view($0) }
-        let scale = projected.map { simd_length($0.v) }.max() ?? 1
-        let eps = 1e-9 * max(scale, 1)
-        // Faces that cannot hide anything: edge-on in projection.
-        let area2: [Double] = faces.map { face in
-            var a = 0.0
-            for k in 0..<face.count {
-                let p = projected[face[k]], q = projected[face[(k + 1) % face.count]]
-                a += p.x * q.y - q.x * p.y
+    /// Under an orthographic camera a segment and a face both project to
+    /// the picture plane, their overlap along the segment is an interval,
+    /// and over it the difference of their view depths is linear: where that
+    /// difference says the face is nearer, the segment is hidden. The hidden
+    /// intervals are subtracted from the segment, exactly.
+    public struct Cast: Sendable {
+        let solid: Solid
+        public let view: Transform<WorldSpace, ViewSpace>
+        let projected: [P3<ViewSpace>]
+        /// Twice each face's signed area in projection; zero when seen
+        /// edge-on, where it hides nothing.
+        let area2: [Double]
+        let scale: Double
+        let eps: Double
+        /// The direction back toward the eye, in world space.
+        public let toEye: SIMD3<Double>
+
+        init(_ solid: Solid, view: Transform<WorldSpace, ViewSpace>) {
+            self.solid = solid
+            self.view = view
+            toEye = -view.sightLine
+            let projected = solid.vertices.map { view($0) }
+            self.projected = projected
+            scale = max(projected.map { simd_length($0.v) }.max() ?? 1, 1)
+            eps = 1e-9 * scale
+            area2 = solid.faces.map { face in
+                var a = 0.0
+                for k in 0..<face.count {
+                    let p = projected[face[k]], q = projected[face[(k + 1) % face.count]]
+                    a += p.x * q.y - q.x * p.y
+                }
+                return a
             }
-            return a
         }
-        var paths: [[P3<WorldSpace>]] = []
-        for e in edges {
-            guard simd_dot(normals[e.left], d) > 0 || simd_dot(normals[e.right], d) > 0 else { continue }
-            let pa = projected[e.a], pb = projected[e.b]
-            let dir = SIMD2(pb.x - pa.x, pb.y - pa.y)
-            guard simd_length(dir) > eps else { continue }   // seen end-on: a point
+
+        /// The sub-intervals of `[0, 1]` along the segment `pa -> pb` (in
+        /// view space) over which a face not `excluded` stands in front:
+        /// sorted and disjoint.
+        public func hidden(from pa: P3<ViewSpace>, to pb: P3<ViewSpace>,
+                           excluding: (Int) -> Bool) -> [(Double, Double)] {
             var hidden: [(Double, Double)] = []
-            for (f, face) in faces.enumerated() where f != e.left && f != e.right {
+            for (f, face) in solid.faces.enumerated() where !excluding(f) {
                 // A face seen edge-on projects to nothing and hides nothing.
                 guard abs(area2[f]) > 1e-9 * scale * scale else { continue }
                 let sign: Double = area2[f] > 0 ? 1 : -1
-                // The edge's overlap with the face's projection: the segment
-                // clipped against each side's half-plane.
+                // The segment's overlap with the face's projection: clipped
+                // against each side's half-plane.
                 var lo = 0.0, hi = 1.0
                 for k in 0..<face.count {
                     let p = projected[face[k]], q = projected[face[(k + 1) % face.count]]
@@ -217,21 +309,107 @@ public struct Solid: Sendable, Equatable {
                 if g1 <= eps { b = lo + (hi - lo) * (eps - g0) / (g1 - g0) }
                 if a < b { hidden.append((a, b)) }
             }
-            // Subtract the union of hidden intervals from [0, 1].
             hidden.sort { $0.0 < $1.0 }
+            var merged: [(Double, Double)] = []
+            for (a, b) in hidden {
+                if let last = merged.last, a <= last.1 {
+                    merged[merged.count - 1].1 = max(last.1, b)
+                } else {
+                    merged.append((a, b))
+                }
+            }
+            return merged
+        }
+
+        /// The complement: the pieces of the segment that can be seen, as
+        /// fractions of the way along it.
+        public func visible(from pa: P3<ViewSpace>, to pb: P3<ViewSpace>,
+                            excluding: (Int) -> Bool) -> [(Double, Double)] {
             var t = 0.0
             var pieces: [(Double, Double)] = []
-            for (a, b) in hidden {
+            for (a, b) in hidden(from: pa, to: pb, excluding: excluding) {
                 if a > t { pieces.append((t, a)) }
                 t = max(t, b)
             }
             if t < 1 { pieces.append((t, 1)) }
+            return pieces
+        }
+    }
+
+    public func cast(view: Transform<WorldSpace, ViewSpace>) -> Cast { Cast(self, view: view) }
+
+    /// The creases as seen along `view`'s sight line, each cut to the pieces
+    /// that can be seen.
+    ///
+    /// Per edge: with `d` the direction back toward the eye and `n₁`, `n₂`
+    /// the outward normals of its two faces, nothing of the edge shows unless
+    /// `n₁ · d > 0 ∨ n₂ · d > 0` -- both faces turned away means the edge is
+    /// on the back of the solid, behind the solid itself. On a convex solid
+    /// that is the whole test, and an edge is whole or absent. On any other
+    /// solid an edge that passes the sign test can still run behind a face
+    /// elsewhere on the body -- the far rim of a torus's tunnel seen through
+    /// the near one -- so every other face is cast against it (`Cast`).
+    public func visibleEdges(view: Transform<WorldSpace, ViewSpace>) -> PolylineSet<WorldSpace> {
+        let cast = self.cast(view: view)
+        let d = cast.toEye
+        var paths: [[P3<WorldSpace>]] = []
+        for (k, e) in edges.enumerated() where crease[k] {
+            guard simd_dot(normals[e.left], d) > 0 || simd_dot(normals[e.right], d) > 0 else { continue }
+            let pa = cast.projected[e.a], pb = cast.projected[e.b]
+            let dir = SIMD2(pb.x - pa.x, pb.y - pa.y)
+            guard simd_length(dir) > cast.eps else { continue }   // seen end-on: a point
             let wa = vertices[e.a].v, wb = vertices[e.b].v
-            for (a, b) in pieces where b - a > 1e-12 {
-                paths.append([P3(wa + a * (wb - wa)), P3(wa + b * (wb - wa))])
+            for (a, b) in cast.visible(from: pa, to: pb, excluding: { $0 == e.left || $0 == e.right })
+                where b - a > 1e-12 {
+                paths.append([Solid.along(wa, wb, a), Solid.along(wa, wb, b)])
             }
         }
         return PolylineSet(paths: paths)
+    }
+
+    /// Ink lying in facet `facet`, cut to the pieces that can be seen.
+    ///
+    /// Nothing of it shows unless the facet faces the eye: ink in a back
+    /// face is behind the solid itself. What remains is cast against every
+    /// face outside the facet -- a face in the facet's own plane stands in
+    /// front of nothing in it -- and a path is kept as one run wherever its
+    /// consecutive pieces meet, so a stroke breaks only where something
+    /// hides it.
+    public func visibleInk(_ paths: [[P3<WorldSpace>]], inFacet facet: Int,
+                           cast: Cast) -> [[P3<WorldSpace>]] {
+        let members = Set(facets[facet])
+        guard simd_dot(normals[facets[facet][0]], cast.toEye) > 0 else { return [] }
+        var out: [[P3<WorldSpace>]] = []
+        for path in paths {
+            var run: [P3<WorldSpace>] = []
+            var openAtEnd = false
+            for (wa, wb) in zip(path, path.dropFirst()) {
+                let pa = cast.view(wa), pb = cast.view(wb)
+                for (a, b) in cast.visible(from: pa, to: pb, excluding: { members.contains($0) })
+                    where b - a > 1e-12 {
+                    let start = Solid.along(wa.v, wb.v, a), end = Solid.along(wa.v, wb.v, b)
+                    if openAtEnd, a == 0, !run.isEmpty {
+                        run.append(end)
+                    } else {
+                        if run.count >= 2 { out.append(run) }
+                        run = [start, end]
+                    }
+                    openAtEnd = b == 1
+                }
+                if !openAtEnd {
+                    if run.count >= 2 { out.append(run) }
+                    run = []
+                }
+            }
+            if run.count >= 2 { out.append(run) }
+        }
+        return out
+    }
+
+    /// The point `t` of the way from `a` to `b`: the ends themselves at 0
+    /// and 1, to the bit, so a segment seen whole is the segment it was.
+    static func along(_ a: SIMD3<Double>, _ b: SIMD3<Double>, _ t: Double) -> P3<WorldSpace> {
+        t == 0 ? P3(a) : (t == 1 ? P3(b) : P3(a + t * (b - a)))
     }
 
     // MARK: - construction
@@ -345,5 +523,43 @@ public struct Solid: Sendable, Equatable {
                       [6, 5, 1], [6, 3, 5], [2, 4, 5], [3, 6, 4], [5, 7, 1], [4, 7, 5], [6, 7, 4]]
         return Solid(vertices: v.map { P3($0) },
                      faces: listed.map { $0.reversed().map { $0 - 1 } })
+    }
+
+    /// A picture frame: a square `outer` across with a square hole `inner`
+    /// across, `depth` thick, lying flat on `z = 0` and centred.
+    ///
+    /// The other torus on the table, and the plainer trial of everything a
+    /// convex solid never asks. Its front and back are annuli, which no
+    /// convex polygon is, so each is four trapezoids with four soft edges
+    /// between them: seams that must not be drawn and must hide nothing.
+    /// Its hole is a window: the far inner wall and the far rim of the back
+    /// are seen through it, cut by the near part of the front, so an edge's
+    /// visible pieces are decided by the cast and not by the signs. And its
+    /// rims lie in the planes of the faces beside them, where the gap
+    /// between ink and face is exactly zero.
+    public static func frame(outer: Double, inner: Double, depth: Double) -> Solid {
+        precondition(inner > 0 && inner < outer && depth > 0, "a frame has a hole smaller than itself and some thickness")
+        let a = outer / 2, b = inner / 2
+        let corners = [SIMD2(-1.0, -1.0), SIMD2(1.0, -1.0), SIMD2(1.0, 1.0), SIMD2(-1.0, 1.0)]
+        var v: [P3<WorldSpace>] = []
+        for z in [0.0, depth] {
+            for r in [a, b] {
+                for c in corners { v.append(P3(c.x * r, c.y * r, z)) }
+            }
+        }
+        // Outer bottom 0-3, inner bottom 4-7, outer top 8-11, inner top 12-15,
+        // each ring counter-clockwise seen from above.
+        func ob(_ k: Int) -> Int { k % 4 }
+        func ib(_ k: Int) -> Int { 4 + k % 4 }
+        func ot(_ k: Int) -> Int { 8 + k % 4 }
+        func it(_ k: Int) -> Int { 12 + k % 4 }
+        var faces: [[Int]] = []
+        for k in 0..<4 {
+            faces.append([ot(k), ot(k + 1), it(k + 1), it(k)])     // top, outward up
+            faces.append([ob(k + 1), ob(k), ib(k), ib(k + 1)])     // bottom, outward down
+            faces.append([ob(k), ob(k + 1), ot(k + 1), ot(k)])     // outer wall
+            faces.append([ib(k + 1), ib(k), it(k), it(k + 1)])     // inner wall, facing the hole
+        }
+        return Solid(vertices: v, faces: faces)
     }
 }

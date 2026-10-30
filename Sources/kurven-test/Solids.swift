@@ -236,4 +236,160 @@ func solidTests() {
                      "and every piece agrees with a point-by-point ray cast against the faces",
                      "\(wrong) of \(compared) sampled points disagree \(example)")
     }
+
+    Check.suite("solids: the picture frame is a torus of sixteen convex faces with eight soft edges") {
+        let s = Solid.frame(outer: 4, inner: 2, depth: 1)
+        let soft = s.crease.filter { !$0 }.count
+        Check.expect(s.vertices.count == 16 && s.edges.count == 32 && s.faces.count == 16
+                     && s.eulerCharacteristic == 0,
+                     "16 vertices, 32 edges, 16 faces, χ = 0",
+                     "\(s.vertices.count) vertices, \(s.edges.count) edges, \(s.faces.count) faces, χ = \(s.eulerCharacteristic)")
+        Check.expect(soft == 8 && s.edgePaths.count == 24,
+                     "8 of the edges are soft -- seams between the trapezoids of an annulus -- and 24 are ink",
+                     "\(soft) soft, \(s.edgePaths.count) drawn")
+        Check.expect(!s.isConvex, "it is not convex")
+        // Ten facets: the front and back annuli, four outer walls, four inner.
+        var planar = true
+        for i in s.facets.indices {
+            let f = s.facet(i)
+            for face in f.faces { for k in s.faces[face] {
+                if abs(simd_dot(s.vertices[k].v - f.origin, f.normal)) > 1e-12 { planar = false }
+            } }
+        }
+        let sizes = s.facets.map(\.count).sorted()
+        Check.expect(s.facets.count == 10 && sizes == [1, 1, 1, 1, 1, 1, 1, 1, 4, 4] && planar,
+                     "its faces join across the soft edges into 10 flat facets: two of four, eight of one",
+                     "\(s.facets.count) facets of sizes \(sizes)")
+        // Every soft edge joins two faces of one facet, and every crease two
+        // faces of different facets.
+        var sorted = true
+        for (k, e) in s.edges.enumerated() {
+            let same = s.facetIndex(of: e.left) == s.facetIndex(of: e.right)
+            if same == s.crease[k] { sorted = false }
+        }
+        Check.expect(sorted, "a soft edge lies within a facet and a crease between two")
+    }
+
+    Check.suite("solids: on the frame no seam is drawn, and the far rim is seen through the hole in pieces") {
+        let s = Solid.frame(outer: 4, inner: 2, depth: 1)
+        var onSeam = 0, cameras = 0, compared = 0, wrong = 0, throughHole = 0
+        var example = ""
+        for (name, view) in stressCameras() {
+            cameras += 1
+            let d = -view.sightLine
+            let drawn = s.visibleEdges(view: view)
+            var pieces: [Solid.Edge: [(Double, Double)]] = [:]
+            for i in 0..<drawn.count {
+                let p = drawn[path: i]
+                guard let (k, e) = edgeUnder(p.first!.v, p.last!.v, of: s) else { onSeam += 1; continue }
+                if !s.crease[k] { onSeam += 1 }
+                pieces[e, default: []].append(edgeFractions(p.first!.v, p.last!.v, e, s))
+            }
+            // The back's inner rim -- edges 4-5, 5-6, 6-7, 4-7 -- lies at the
+            // bottom of the hole; from above it shows only through the hole,
+            // and only in part: the near side of the front cuts it.
+            for e in s.edges where e.a >= 4 && e.a < 8 && e.b >= 4 && e.b < 8 {
+                for (t0, t1) in pieces[e] ?? [] where t0 > 1e-9 || t1 < 1 - 1e-9 { throughHole += 1 }
+            }
+            // An edge with a face exactly edge-on -- a wall of the frame
+            // square to the camera -- lies on the silhouette, and whether it
+            // is drawn is decided by rounding: set aside, as for the Platonic
+            // solids.
+            for (k, e) in s.edges.enumerated() where s.crease[k]
+                && abs(simd_dot(s.normals[e.left], d)) > 1e-9 && abs(simd_dot(s.normals[e.right], d)) > 1e-9 {
+                let (w, c, ex) = castAgreement(s, edge: e, pieces: pieces[e] ?? [], toEye: d, camera: name)
+                wrong += w; compared += c
+                if example.isEmpty { example = ex }
+            }
+        }
+        Check.expect(onSeam == 0, "under \(cameras) cameras nothing drawn lies on a soft edge")
+        Check.expect(throughHole > 0, "the back's inner rim is drawn in pieces: seen through the hole, cut by the front",
+                     "\(throughHole) pieces")
+        Check.expect(wrong == 0 && compared > 10_000,
+                     "and every piece agrees with a point-by-point ray cast against the faces",
+                     "\(wrong) of \(compared) sampled points disagree \(example)")
+    }
+}
+
+// MARK: - oracles
+
+/// The edge of `s` that the segment `a -> b` lies along, with its index.
+func edgeUnder(_ a: SIMD3<Double>, _ b: SIMD3<Double>, of s: Solid) -> (Int, Solid.Edge)? {
+    for (k, e) in s.edges.enumerated() {
+        let p = s.vertices[e.a].v, q = s.vertices[e.b].v
+        let len2 = simd_length_squared(q - p)
+        let t0 = simd_dot(a - p, q - p) / len2, t1 = simd_dot(b - p, q - p) / len2
+        if simd_length(a - (p + t0 * (q - p))) < 1e-9, simd_length(b - (p + t1 * (q - p))) < 1e-9,
+           t0 >= -1e-9, t1 <= 1 + 1e-9 {
+            return (k, e)
+        }
+    }
+    return nil
+}
+
+func edgeFractions(_ a: SIMD3<Double>, _ b: SIMD3<Double>, _ e: Solid.Edge, _ s: Solid) -> (Double, Double) {
+    let p = s.vertices[e.a].v, q = s.vertices[e.b].v
+    let len2 = simd_length_squared(q - p)
+    return (simd_dot(a - p, q - p) / len2, simd_dot(b - p, q - p) / len2)
+}
+
+/// A face as triangles, fanned, for the brute-force ray cast.
+func faceMesh(_ s: Solid, _ f: Int) -> Mesh<WorldSpace> {
+    let face = s.faces[f]
+    return Mesh(vertices: face.map { s.vertices[$0] },
+                triangles: (1..<(face.count - 1)).map { SIMD3(0, Int32($0), Int32($0 + 1)) })
+}
+
+/// Whether a point of the solid's surface, lying in the faces `own`, is seen
+/// along `toEye`: some face of its own faces the eye and no other face is
+/// hit by the ray from it. The brute force every cast is held to.
+func rayVisible(_ s: Solid, at p: SIMD3<Double>, own: Set<Int>, toEye d: SIMD3<Double>) -> Bool {
+    guard own.contains(where: { simd_dot(s.normals[$0], d) > 0 }) else { return false }
+    for f in s.faces.indices where !own.contains(f) {
+        if firstHit(faceMesh(s, f), from: p, along: d, after: 1e-9) != nil { return false }
+    }
+    return true
+}
+
+/// Point-by-point agreement of an edge's drawn pieces with the ray cast:
+/// disagreements, comparisons, and an example of the first disagreement.
+func castAgreement(_ s: Solid, edge e: Solid.Edge, pieces: [(Double, Double)],
+                   toEye d: SIMD3<Double>, camera: String) -> (Int, Int, String) {
+    let a = s.vertices[e.a].v, b = s.vertices[e.b].v
+    var wrong = 0, compared = 0
+    var example = ""
+    for k in 0..<200 {
+        let t = (Double(k) + 0.5) / 200
+        // Within a hair of a piece's end the truth is at a boundary;
+        // elsewhere it is decided.
+        if pieces.contains(where: { abs(t - $0.0) < 1e-6 || abs(t - $0.1) < 1e-6 }) { continue }
+        let p = a + t * (b - a)
+        let seenByCast = pieces.contains { t > $0.0 && t < $0.1 }
+        let truth = rayVisible(s, at: p, own: [e.left, e.right], toEye: d)
+        compared += 1
+        if truth != seenByCast {
+            wrong += 1
+            if example.isEmpty {
+                example = String(format: "e.g. %@ edge %d-%d t=%.3f truth %@", camera, e.a, e.b, t,
+                                 truth ? "seen" : "hidden")
+                    + " " + rayReport(s, at: p, own: [e.left, e.right], toEye: d)
+                    + " pieces " + pieces.map { String(format: "[%.4f, %.4f]", $0.0, $0.1) }.joined(separator: " ")
+            }
+        }
+    }
+    return (wrong, compared, example)
+}
+
+/// Why the ray cast says what it says: the facing of the own faces and the
+/// first face hit, with its parameter.
+func rayReport(_ s: Solid, at p: SIMD3<Double>, own: Set<Int>, toEye d: SIMD3<Double>) -> String {
+    let facing = own.sorted().map { String(format: "f%d·d=%.3f", $0, simd_dot(s.normals[$0], d)) }
+    var hits: [String] = []
+    for f in s.faces.indices where !own.contains(f) {
+        if let t = firstHit(faceMesh(s, f), from: p, along: d, after: 1e-9) {
+            hits.append(String(format: "f%d@%.4f", f, t))
+        }
+    }
+    return String(format: "p=(%.4f,%.4f,%.4f) d=(%.3f,%.3f,%.3f) ", p.x, p.y, p.z, d.x, d.y, d.z)
+        + facing.joined(separator: " ") + " hits " + hits.joined(separator: " ")
 }
