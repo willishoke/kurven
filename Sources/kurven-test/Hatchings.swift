@@ -66,10 +66,11 @@ func hatchingTests() {
         let plain = Hatching(angle: 0.6, spacing: 0.07)
         let lines = s.hatchLines(plain)
         var inPlane = true, crossDiagonal = 0, endsOnDiagonal = 0
-        // The front annulus: the face of piece 0, a front trapezoid. Its
-        // diagonals run from each outer top corner to the inner one.
-        let front = s.faceIndex(ofPiece: 0)
-        let diagonals: [(SIMD3<Double>, SIMD3<Double>)] = (0..<4).map { (s.vertices[8 + $0].v, s.vertices[12 + $0].v) }
+        // The front annulus, face 0, and the diagonals of its partition.
+        let front = 0
+        let diagonals: [(SIMD3<Double>, SIMD3<Double>)] = s.edges.indices
+            .filter { s.isDiagonal[$0] && s.faceIndex(ofPiece: s.edges[$0].left) == front }
+            .map { (s.vertices[s.edges[$0].a].v, s.vertices[s.edges[$0].b].v) }
         func onDiagonal(_ p: SIMD3<Double>) -> Bool {
             diagonals.contains { a, b in
                 let t = simd_dot(p - a, b - a) / simd_length_squared(b - a)
@@ -95,7 +96,7 @@ func hatchingTests() {
         Check.expect(inPlane && lines.count > 100, "every hatch line lies on its face, within its pieces",
                      "\(lines.count) hatch lines")
         Check.expect(crossDiagonal > 0 && endsOnDiagonal == 0,
-                     "on the front annulus hatch lines cross the diagonals between its trapezoids whole, and none ends on one",
+                     "on the front annulus hatch lines cross the diagonals between its pieces whole, and none ends on one",
                      "\(crossDiagonal) crossings, \(endsOnDiagonal) ends on a diagonal")
 
         // With Turing's tone and one width, an end away from the pieces'

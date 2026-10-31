@@ -16,37 +16,44 @@ import simd
 /// tolerances are fractions of the solid's own size, so the drawing is the
 /// same at any resolution.
 ///
-/// The solid is given as a *convex partition* of its boundary: convex
-/// polygons, the *pieces*, listed counter-clockwise seen from outside, so a
-/// piece's normal by the right-hand rule points out of the solid. That is
-/// checked, not trusted: a solid whose pieces do not close consistently, or
-/// whose pieces are not convex, is refused, and the Platonic tables are built
-/// from vertex coordinates alone by a convex hull, so no piece is typed in by
-/// hand.
+/// The solid is given as its faces, in boundary representation: each face
+/// as its *loops*, the outer loop counter-clockwise seen from outside, so the
+/// face's normal by the right-hand rule points out of the solid, and then one
+/// loop per hole, clockwise. A face need not be convex -- the front of a
+/// picture frame is a square with a square hole -- so the solid computes
+/// each face's *convex partition* (`ConvexPartition`) and keeps the
+/// *pieces*: visibility and hatching only ever clip against a convex
+/// polygon. A convex face with no hole is one piece.
 ///
-/// A face is the pieces of one plane that share sides. A convex face is one
-/// piece; a face that is not convex -- the front of a picture frame, a square
-/// with a square hole -- is several. A side shared by two pieces of one face
-/// is a *diagonal* of the partition, not an edge of the solid: it is not
-/// drawn, and a piece hides nothing of another in its own plane. Hatching is
-/// laid over a whole face, so a hatch line runs unbroken across the
-/// diagonals and breaks only at the hole.
+/// A side shared by two pieces of one face is a *diagonal* of the
+/// partition, not an edge of the solid: it is not drawn, and a piece hides
+/// nothing of another in its own plane. Hatching is laid over a whole face,
+/// so a hatch line runs unbroken across the diagonals and breaks only at the
+/// hole.
+///
+/// The input is checked, not trusted: a solid whose faces do not close
+/// consistently, or whose face is not flat, is refused, and the Platonic
+/// tables are built from vertex coordinates alone by a convex hull, so no
+/// face is typed in by hand.
 public struct Solid: Sendable, Equatable {
     public let vertices: [P3<WorldSpace>]
-    /// Each piece as its vertex indices in order, counter-clockwise from
-    /// outside.
+    /// Each face as its loops of vertex indices: the outer loop
+    /// counter-clockwise from outside, then each hole clockwise.
+    public let loops: [[[Int]]]
+    /// The convex pieces of every face, each counter-clockwise from outside.
     public let pieces: [[Int]]
+    /// The faces, each as the indices of its pieces.
+    public let faces: [[Int]]
     /// Every side of every piece once, with the two pieces it bounds: the
     /// solid's edges and the partition's diagonals.
     public let edges: [Edge]
     /// Unit outward normals, one per piece.
     public let normals: [SIMD3<Double>]
-    /// Per entry of `edges`, whether it is a diagonal: its two pieces lie
-    /// in one plane.
+    /// Per entry of `edges`, whether it is a diagonal: its two pieces are
+    /// pieces of one face.
     public let isDiagonal: [Bool]
-    /// The faces, each as its piece indices: the pieces of one plane joined
-    /// across diagonals. A convex face is a face of one piece.
-    public let faces: [[Int]]
+    /// Per piece, the face it is a piece of.
+    let faceOfPiece: [Int]
 
     public struct Edge: Sendable, Equatable, Hashable {
         public let a: Int, b: Int
@@ -55,14 +62,49 @@ public struct Solid: Sendable, Equatable {
         public let left: Int, right: Int
     }
 
-    /// - Precondition: every edge lies in exactly two pieces, traversed in
+    /// - Precondition: every face is flat and its loops bound a region of
+    ///   its plane; every edge lies in exactly two faces, traversed in
     ///   opposite directions -- the surface is closed and consistently
-    ///   oriented -- the orientation is outward (the signed volume is
-    ///   positive), and every piece is convex.
-    public init(vertices: [P3<WorldSpace>], pieces: [[Int]]) {
-        precondition(pieces.allSatisfy { $0.count >= 3 }, "a piece has at least three vertices")
+    ///   oriented -- and the orientation is outward (the signed volume is
+    ///   positive); no two faces that share an edge lie in one plane, since
+    ///   then they are one face.
+    public init(vertices: [P3<WorldSpace>], faces loops: [[[Int]]]) {
+        precondition(loops.allSatisfy { !$0.isEmpty && $0.allSatisfy { $0.count >= 3 } },
+                     "a face has an outer loop, and every loop at least three vertices")
         self.vertices = vertices
+        self.loops = loops
+        let scale = vertices.map { simd_length($0.v) }.max() ?? 1
+        // Each face cut into convex pieces in its own frame.
+        var pieces: [[Int]] = [], faces: [[Int]] = [], faceOfPiece: [Int] = []
+        for (i, face) in loops.enumerated() {
+            let frame = Solid.frame(of: face, vertices: vertices)
+            for loop in face {
+                for k in loop {
+                    precondition(abs(simd_dot(vertices[k].v - frame.origin, frame.normal)) <= 1e-9 * max(scale, 1),
+                                 "face \(i) is not flat at vertex \(k)")
+                }
+            }
+            // The frame's normal is the loops' own, so the outer loop runs
+            // counter-clockwise in it whichever way it was given; a face
+            // turned inside out is caught where its edges meet its
+            // neighbours'. A hole has to run the other way.
+            for (l, hole) in face.enumerated().dropFirst() {
+                let area = (0..<hole.count).reduce(0.0) { a, k in
+                    let p = frame.coordinates(vertices[hole[k]].v)
+                    let q = frame.coordinates(vertices[hole[(k + 1) % hole.count]].v)
+                    return a + p.x * q.y - q.x * p.y
+                }
+                precondition(area < 0, "face \(i): hole \(l) runs the same way as the outer loop")
+            }
+            let cut = ConvexPartition.pieces(face, point: { frame.coordinates(vertices[$0].v) },
+                                             tolerance: 1e-9 * scale * scale)
+            faces.append(Array(pieces.count..<(pieces.count + cut.count)))
+            faceOfPiece += Array(repeating: i, count: cut.count)
+            pieces += cut
+        }
         self.pieces = pieces
+        self.faces = faces
+        self.faceOfPiece = faceOfPiece
         var directed: [SIMD2<Int>: Int] = [:]
         for (f, piece) in pieces.enumerated() {
             for k in 0..<piece.count {
@@ -74,16 +116,15 @@ public struct Solid: Sendable, Equatable {
         var edges: [Edge] = []
         for (e, left) in directed where e.x < e.y {
             guard let right = directed[SIMD2(e.y, e.x)] else {
-                preconditionFailure("edge \(e) bounds only one piece: the surface is not closed")
+                preconditionFailure("edge \(e) bounds only one face: the surface is not closed")
             }
             edges.append(Edge(a: e.x, b: e.y, left: left, right: right))
         }
         precondition(directed.count == 2 * edges.count,
-                     "an edge bounds one piece only: the surface is not closed")
+                     "an edge bounds one face only: the surface is not closed")
         self.edges = edges.sorted { ($0.a, $0.b) < ($1.a, $1.b) }
         // Newell's normal: exact for a planar polygon however many vertices
         // it has, and the sum it is is the one the divergence theorem wants.
-        let scale = vertices.map { simd_length($0.v) }.max() ?? 1
         var normals: [SIMD3<Double>] = []
         var volume = 0.0
         for piece in pieces {
@@ -97,48 +138,28 @@ public struct Solid: Sendable, Equatable {
             precondition(len > 0, "a piece is degenerate")
             n /= len
             normals.append(n)
-            // Convex: every corner turns the same way about the normal.
-            for k in 0..<piece.count {
-                let p = vertices[piece[k]].v, q = vertices[piece[(k + 1) % piece.count]].v,
-                    r = vertices[piece[(k + 2) % piece.count]].v
-                precondition(simd_dot(simd_cross(q - p, r - q), n) >= -1e-9 * scale * scale,
-                             "piece \(piece) is not convex at vertex \(piece[(k + 1) % piece.count])")
-            }
             // (n is twice the area vector; p · n / 6 is the cone's volume.)
             volume += simd_dot(vertices[piece[0]].v, n * len) / 6
         }
-        precondition(volume > 0, "the pieces are oriented inward (signed volume \(volume))")
+        precondition(volume > 0, "the faces are oriented inward (signed volume \(volume))")
         self.normals = normals
-        let isDiagonal = self.edges.map { simd_dot(normals[$0.left], normals[$0.right]) >= 1 - 1e-9 }
-        self.isDiagonal = isDiagonal
-        // Faces: the pieces, joined across diagonals.
-        var parent = Array(0..<pieces.count)
-        func root(_ i: Int) -> Int {
-            var i = i
-            while parent[i] != i { parent[i] = parent[parent[i]]; i = parent[i] }
-            return i
+        self.isDiagonal = self.edges.map { faceOfPiece[$0.left] == faceOfPiece[$0.right] }
+        for (k, e) in self.edges.enumerated() where !isDiagonal[k] {
+            precondition(simd_dot(normals[e.left], normals[e.right]) < 1 - 1e-9,
+                         "faces \(faceOfPiece[e.left]) and \(faceOfPiece[e.right]) meet at edge \(e.a)-\(e.b) "
+                         + "in one plane: they are one face")
         }
-        for (k, e) in self.edges.enumerated() where isDiagonal[k] {
-            parent[root(e.left)] = root(e.right)
-        }
-        var byRoot: [Int: [Int]] = [:]
-        var order: [Int] = []
-        for f in 0..<pieces.count {
-            let r = root(f)
-            if byRoot[r] == nil { order.append(r) }
-            byRoot[r, default: []].append(f)
-        }
-        self.faces = order.map { byRoot[$0]! }
     }
 
-    /// The boundary's Euler characteristic, 2 − 2g for genus g. Counted over
-    /// the partition, where every piece is a disc: V − E + F with the pieces
-    /// for faces and all their sides, diagonals included, for edges. (Over
-    /// the faces themselves a face with a hole needs the Euler–Poincaré
-    /// term for it: 16 − 24 + 10 − 2 = 0 for the picture frame.)
-    public var eulerCharacteristic: Int { vertices.count - edges.count + pieces.count }
+    /// The boundary's Euler characteristic, 2 − 2g for genus g, by
+    /// Euler–Poincaré: V − E + F − H, with a hole of a face counted in H.
+    /// 16 − 24 + 10 − 2 = 0 for the picture frame. Over the partition, where
+    /// every piece is a disc, V − E + F counts the same.
+    public var eulerCharacteristic: Int {
+        vertices.count - isDiagonal.filter { !$0 }.count + loops.count - loops.reduce(0) { $0 + $1.count - 1 }
+    }
 
-    /// Whether every vertex lies on or behind every piece's plane.
+    /// Whether every vertex lies on or behind every face's plane.
     public var isConvex: Bool {
         let scale = vertices.map { simd_length($0.v) }.max() ?? 1
         for (f, piece) in pieces.enumerated() {
@@ -168,7 +189,7 @@ public struct Solid: Sendable, Equatable {
 
     /// The solid moved rigidly: rotated about the origin, then translated.
     public func transformed(rotation: simd_double3x3, translation: SIMD3<Double> = .zero) -> Solid {
-        Solid(vertices: vertices.map { P3(rotation * $0.v + translation) }, pieces: pieces)
+        Solid(vertices: vertices.map { P3(rotation * $0.v + translation) }, faces: loops)
     }
 
     /// The solid set down on a face: rotated so that face's outward normal
@@ -195,7 +216,7 @@ public struct Solid: Sendable, Equatable {
     // MARK: - faces
 
     /// A face with a frame in its plane: an origin and two unit axes `u`,
-    /// `v` with `u × v` the outward normal, so a polygon counter-clockwise
+    /// `v` with `u × v` the outward normal, so a loop counter-clockwise
     /// from outside is counter-clockwise in `(u, v)`. Hatching on the face
     /// is laid out in these coordinates.
     public struct Face: Sendable {
@@ -213,24 +234,37 @@ public struct Solid: Sendable, Equatable {
     }
 
     /// Face `i`, framed: the origin is the centroid of its vertices and
-    /// `u` runs along the first edge of its first piece.
+    /// `u` runs along the first side of its outer loop. Both are read off
+    /// the loops, so the frame, and the hatching laid out in it, does not
+    /// depend on the partition.
     public func face(_ i: Int) -> Face {
-        let members = faces[i]
-        let n = normals[members[0]]
+        let frame = Solid.frame(of: loops[i], vertices: vertices)
+        return Face(pieces: faces[i], normal: frame.normal, origin: frame.origin, u: frame.u, v: frame.v)
+    }
+
+    static func frame(of loops: [[Int]], vertices: [P3<WorldSpace>]) -> Face {
+        // Newell's normal over every loop: the holes, running the other
+        // way, take their area off the outer loop's.
+        var n = SIMD3<Double>.zero
+        for loop in loops {
+            for k in 0..<loop.count {
+                let p = vertices[loop[k]].v, q = vertices[loop[(k + 1) % loop.count]].v
+                n += SIMD3((p.y - q.y) * (p.z + q.z), (p.z - q.z) * (p.x + q.x), (p.x - q.x) * (p.y + q.y))
+            }
+        }
+        precondition(simd_length(n) > 0, "a face is degenerate")
+        n = simd_normalize(n)
         // Summed in index order, not a set's: the frame, and every hatch
         // line laid out in it, is then the same in every process.
-        let ids = Set(members.flatMap { pieces[$0] }).sorted()
+        let ids = Set(loops.joined()).sorted()
         let centroid = ids.reduce(SIMD3<Double>.zero) { $0 + vertices[$1].v } / Double(ids.count)
-        let first = pieces[members[0]]
-        let along = vertices[first[1]].v - vertices[first[0]].v
+        let along = vertices[loops[0][1]].v - vertices[loops[0][0]].v
         let u = simd_normalize(along - simd_dot(along, n) * n)
-        return Face(pieces: members, normal: n, origin: centroid, u: u, v: simd_cross(n, u))
+        return Face(pieces: [], normal: n, origin: centroid, u: u, v: simd_cross(n, u))
     }
 
     /// The face piece `p` belongs to.
-    public func faceIndex(ofPiece p: Int) -> Int {
-        faces.firstIndex { $0.contains(p) }!
-    }
+    public func faceIndex(ofPiece p: Int) -> Int { faceOfPiece[p] }
 
     // MARK: - visibility
 
@@ -434,7 +468,8 @@ public struct Solid: Sendable, Equatable {
     /// The convex hull of a few points, as a solid: every supporting plane
     /// through three of them, with every point on it as one face, ordered
     /// round the face's centroid and turned away from the rest. Every face
-    /// of a convex solid is convex, so each is a single piece.
+    /// of a convex solid is convex and has no hole, so each is one loop and
+    /// one piece.
     ///
     /// Cubic in the number of points and meant for the dozen or two a
     /// polyhedron table has, where it is the difference between faces that
@@ -444,7 +479,7 @@ public struct Solid: Sendable, Equatable {
         let scale = points.map { simd_length($0.v) }.max() ?? 1
         let tol = 1e-9 * max(scale, 1)
         var seen = Set<[Int]>()
-        var pieces: [[Int]] = []
+        var faces: [[[Int]]] = []
         let n = points.count
         for i in 0..<n {
             for j in (i + 1)..<n {
@@ -464,14 +499,14 @@ public struct Solid: Sendable, Equatable {
                     let centroid = on.reduce(SIMD3<Double>.zero) { $0 + points[$1].v } / Double(on.count)
                     let u = simd_normalize(points[on[0]].v - centroid)
                     let v = simd_cross(normal, u)
-                    pieces.append(on.sorted {
+                    faces.append([on.sorted {
                         let a = points[$0].v - centroid, b = points[$1].v - centroid
                         return atan2(simd_dot(a, v), simd_dot(a, u)) < atan2(simd_dot(b, v), simd_dot(b, u))
-                    })
+                    }])
                 }
             }
         }
-        return Solid(vertices: points, pieces: pieces)
+        return Solid(vertices: points, faces: faces)
     }
 
     public enum Platonic: String, CaseIterable, Sendable {
@@ -479,7 +514,7 @@ public struct Solid: Sendable, Equatable {
     }
 
     /// One of the five, by its vertex coordinates alone, scaled to the given
-    /// circumradius; the pieces are found by the hull.
+    /// circumradius; the faces are found by the hull.
     public static func platonic(_ kind: Platonic, circumradius: Double = 1) -> Solid {
         let phi = (1 + 5.0.squareRoot()) / 2
         var points: [SIMD3<Double>]
@@ -540,21 +575,21 @@ public struct Solid: Sendable, Equatable {
         let listed = [[1, 2, 6], [1, 4, 2], [5, 3, 2], [4, 1, 3], [2, 7, 6], [3, 7, 2], [1, 7, 3],
                       [6, 5, 1], [6, 3, 5], [2, 4, 5], [3, 6, 4], [5, 7, 1], [4, 7, 5], [6, 7, 4]]
         return Solid(vertices: v.map { P3($0) },
-                     pieces: listed.map { $0.reversed().map { $0 - 1 } })
+                     faces: listed.map { [$0.reversed().map { $0 - 1 }] })
     }
 
     /// A picture frame: a square `outer` across with a square hole `inner`
     /// across, `depth` thick, lying flat on `z = 0` and centred.
     ///
     /// The other torus here, and the plainer test of everything a convex
-    /// solid never asks. Its front and back faces are annuli, which no
-    /// convex polygon is, so each is partitioned into four trapezoids by
-    /// four diagonals, which must not be drawn and must hide nothing. Its
-    /// hole is a window: the far inner wall and the far edges of the back
-    /// are seen through it, cut by the near part of the front, so an edge's
-    /// visible spans are decided by occlusion and not by the signs. And
-    /// every edge lies in the planes of the pieces beside it, where the gap
-    /// between curve and piece is exactly zero.
+    /// solid never asks. Its front and back faces are annuli, each an outer
+    /// loop and a hole, which no convex polygon is: the partition cuts each
+    /// into convex pieces by diagonals, which must not be drawn and must hide
+    /// nothing. Its hole is a window: the far inner wall and the far edges of
+    /// the back are seen through it, cut by the near part of the front, so an
+    /// edge's visible spans are decided by occlusion and not by the signs. And
+    /// every edge lies in the planes of the faces beside it, where the gap
+    /// between curve and face is exactly zero.
     public static func frame(outer: Double, inner: Double, depth: Double) -> Solid {
         precondition(inner > 0 && inner < outer && depth > 0, "a frame has a hole smaller than itself and some thickness")
         let a = outer / 2, b = inner / 2
@@ -571,13 +606,16 @@ public struct Solid: Sendable, Equatable {
         func ib(_ k: Int) -> Int { 4 + k % 4 }
         func ot(_ k: Int) -> Int { 8 + k % 4 }
         func it(_ k: Int) -> Int { 12 + k % 4 }
-        var pieces: [[Int]] = []
+        // The top seen from above, the bottom from below: each outer loop
+        // counter-clockwise from outside and its hole clockwise.
+        var faces: [[[Int]]] = [
+            [[ot(0), ot(1), ot(2), ot(3)], [it(0), it(3), it(2), it(1)]],
+            [[ob(1), ob(0), ob(3), ob(2)], [ib(1), ib(2), ib(3), ib(0)]],
+        ]
         for k in 0..<4 {
-            pieces.append([ot(k), ot(k + 1), it(k + 1), it(k)])     // top, outward up
-            pieces.append([ob(k + 1), ob(k), ib(k), ib(k + 1)])     // bottom, outward down
-            pieces.append([ob(k), ob(k + 1), ot(k + 1), ot(k)])     // outer wall
-            pieces.append([ib(k + 1), ib(k), it(k), it(k + 1)])     // inner wall, facing the hole
+            faces.append([[ob(k), ob(k + 1), ot(k + 1), ot(k)]])         // outer wall
+            faces.append([[ib(k + 1), ib(k), it(k), it(k + 1)]])         // inner wall, facing the hole
         }
-        return Solid(vertices: v, pieces: pieces)
+        return Solid(vertices: v, faces: faces)
     }
 }

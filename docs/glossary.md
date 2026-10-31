@@ -25,7 +25,8 @@ and Emde, *Funktionentafeln*, 1909).
 | wall | A vertical face along an edge of the window's perimeter, closing the solid. Its *top edge* follows the surface, its *bottom edge* is on the floor, and a *vertical edge* stands at each corner. | crest, foot, post |
 | crease | A curve where a surface is continuous but its normal is not, such as a truncation edge. Standard in line drawing. | |
 | face | A face in the boundary-representation sense: a maximal flat region of a polyhedron's boundary, possibly not convex and possibly with holes. | facet |
-| convex piece | One polygon of a face's convex partition. A solid is given as its pieces (`Solid(vertices:pieces:)`). | face |
+| loop | A closed chain of a face's edges: its *outer loop*, counter-clockwise seen from outside, and one loop per hole, clockwise. A solid is given as its faces' loops (`Solid(vertices:faces:)`). | |
+| convex piece | One polygon of a face's convex partition, which the solid computes from the face's loops (`ConvexPartition`). | face |
 | diagonal | A side shared by two pieces of one face. Not an edge of the solid, and never drawn. | soft edge |
 | edge | A side shared by two pieces of different faces: an edge of the solid. | crease, in the polyhedron code |
 | parametric surface | A map from a parameter rectangle, each axis possibly periodic, into space (`ParametricSurface`). | |

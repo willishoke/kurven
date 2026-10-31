@@ -13,30 +13,42 @@ kurven-cli surface solid --kind dodecahedron --hatching half-lambert --width-ste
 
 ## Faces and their pieces
 
-A `Solid` is given as vertices and a list of convex polygons, each
-counter-clockwise seen from outside (`Solid(vertices:pieces:)`). The
-constructor checks that every side is shared by exactly two polygons in
-opposite directions, that the signed volume is positive, and that every
-polygon is convex; anything else is refused.
+A `Solid` is given as vertices and its faces in boundary representation,
+each face as its loops (`Solid(vertices:faces:)`): the outer loop
+counter-clockwise seen from outside, then one loop per hole, clockwise. The
+constructor checks that every face is flat, that every edge is shared by
+exactly two faces in opposite directions, that the signed volume is
+positive, and that no two faces sharing an edge lie in one plane (they
+would be one face); anything else is refused.
 
-The polygons are the *convex pieces* of the solid's faces. Pieces in one
-plane that share a side make up one face, and the side they share is a
-*diagonal* of that face's partition. A diagonal is not an edge of the solid:
-it is never drawn and never hides anything. A convex face is a single piece.
+Visibility and hatching both reduce to clipping a line against a convex
+polygon, which is an intersection of half-planes, so the solid cuts every
+face into *convex pieces* (`ConvexPartition`):
+
+1. Each hole is joined to the outer loop by a *bridge*, the shortest
+   segment from one of its vertices to one of the outer loop's that stays
+   inside the face. The face becomes one polygon that runs along each
+   bridge twice.
+2. That polygon is cut into triangles by ear clipping.
+3. Hertel and Mehlhorn (1983): every diagonal whose two ends stay convex
+   without it is removed, which merges its two pieces. This gives at most
+   four times the fewest pieces possible.
+
+No vertex is added, so the pieces' sides meet the neighbouring faces' sides
+end to end. Every choice is made in index order, so a face is cut the same
+way in every process. A convex face with no hole is a single piece.
+
+A side shared by two pieces of one face is a *diagonal* of the partition.
+A diagonal is not an edge of the solid: it is never drawn and never hides
+anything.
 
 The picture frame (`Solid.frame`) is the case that needs this. Its front
-and back are square annuli, which no convex polygon is, so each is stored
-as four trapezoids. Counted as boundary representation, the frame has 16
+and back are square annuli, an outer square and a square hole, and each is
+cut into four pieces. Counted as boundary representation, the frame has 16
 vertices, 24 edges and 10 faces, two of them with a hole, and
 Euler–Poincaré gives 16 − 24 + 10 − 2 = 0: one shell of genus one. Counted
 over the partition, it is 16 vertices, 32 sides and 16 pieces, and
 16 − 32 + 16 = 0 as well.
-
-Pieces are the input because both visibility and hatching reduce to clipping
-a line against a convex polygon, which is an intersection of half-planes.
-Taking faces with holes as input and computing the partition inside kurven
-is the obvious next step, and belongs with the face model in the faces and
-fields work.
 
 ## Visibility
 
@@ -64,7 +76,7 @@ draws none: it projects to a line, which is the edges' to draw
 width is set by a tone. On a solid every face is hatched in its own plane:
 
 - The face gets a frame: its origin is the centroid of its vertices and its
-  `u` axis runs along the first side of its first piece (`Solid.Face`).
+  `u` axis runs along the first side of its outer loop (`Solid.Face`).
 - Lines run at the hatching's angle to `u`, through the multiples of the
   spacing, so a face's hatching depends only on the face, not on how it was
   partitioned.
@@ -114,3 +126,11 @@ every edge and every hatch line, under 38 cameras, including through the
 frame's hole. They also check that a hatch line ends on the tone's level set
 to the bisection's resolution, that no hatch line ends on a diagonal, and
 that a bake at 64 pixels is the bake at 2048, layer for layer.
+
+The partition is checked on the frame and on prisms over faces that make it
+work: an L, a comb, a square with two holes, a hole close to the outer loop, a star
+with a triangular hole, and loops with straight corners. On every face the
+pieces are convex and made of the face's own vertices, their areas add up
+to the face's, a grid of sample points lands in exactly one piece inside
+the face and in none outside, and the diagonals number pieces − 1 + holes,
+which is Euler's formula for a disc with holes cut into discs.
