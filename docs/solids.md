@@ -102,8 +102,9 @@ not a simulation of reaction and diffusion.
 
 Hatching on a heightfield's walls and plateaus is the same `Hatching` value
 laid on different faces (`HatchedFaces`). There, lines are vertical on a
-wall and along an axis on a plateau, and a tone other than uniform or more
-than one width is not drawn yet.
+wall and along an axis on a plateau, and a manifest that asks for a tone
+other than uniform, or for more than one width, is refused
+([landscapes.md](landscapes.md)).
 
 ## Tests
 

@@ -76,12 +76,14 @@ public extension Surface {
             return nil
         case .hatching(let hatching, .walls(let edges, let trim, let base, let top)):
             guard let perimeter = context.perimeter else { return .empty }
-            paths = wallHatching(perimeter, edges: edges, spacing: hatching.spacing, step: hatching.step,
-                                 trim: trim, base: base, topOffset: top,
-                                 tiles: context.tiles, refine: refine)
+            paths = wallHatchLines(perimeter, edges: edges, spacing: hatching.spacing,
+                                   step: hatching.step, trim: trim, base: base, topOffset: top,
+                                   tiles: context.tiles, refine: refine)
         case .hatching(let hatching, .plateaus(let tiled)):
-            paths = plateauHatching(axis: hatching.angle == 0 ? .real : .imag, spacing: hatching.spacing,
-                                    refine: refine)
+            // Decoding holds the angle to an axis; one built in code at any
+            // other draws nothing.
+            guard let axis = DomainAxis(angle: hatching.angle) else { return .empty }
+            paths = plateauHatchLines(axis: axis, spacing: hatching.spacing, refine: refine)
             if tiled { paths = Surface.replicate(paths, context.tiles) }
         case .wallEdges(let edges, let step, let base):
             guard let perimeter = context.perimeter else { return .empty }
@@ -385,9 +387,9 @@ extension Surface {
         return nil
     }
 
-    func wallHatching(_ perimeter: BoundaryPerimeter, edges: [Int], spacing: Double,
-                   step: Double, trim: Bool, base: Double, topOffset: Double,
-                   tiles: [Affine2], refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
+    func wallHatchLines(_ perimeter: BoundaryPerimeter, edges: [Int], spacing: Double,
+                        step: Double, trim: Bool, base: Double, topOffset: Double,
+                        tiles: [Affine2], refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         var out: [[P3<WorldSpace>]] = []
         for index in edges where index >= 0 && index < perimeter.edges.count {
             let edge = perimeter.edges[index]
@@ -455,7 +457,8 @@ extension Surface {
         return zip(edges, edges.dropFirst()).filter { $1 > $0 }.map { ($0, $1) }
     }
 
-    func plateauHatching(axis: DomainAxis, spacing: Double, refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
+    func plateauHatchLines(axis: DomainAxis, spacing: Double,
+                           refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         guard spacing.isFinite, spacing > 0 else { return [] }
         let grid = height
         let across = axis == .real ? grid.domain.imag : grid.domain.real
@@ -466,7 +469,7 @@ extension Surface {
         }
 
         var out: [[P3<WorldSpace>]] = []
-        // Divided across the domain the way `wallHatching` divides an edge: the
+        // Divided across the domain the way `wallHatchLines` divides an edge: the
         // spacing asks for a count, and the strokes are spread to fit it. The
         // hatching then meets the plateau's edges with whole gaps, and each stroke
         // stands where the walls that run across it stand theirs, so it turns

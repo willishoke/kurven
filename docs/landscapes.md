@@ -121,7 +121,14 @@ layer kinds:
 | `truncationEdge` | where the graph meets the plateaus: the curve \|f\| = h(x), which under a banded truncation is not a level set of \|f\| at all |
 
 The hatchings are the same `Hatching` value that hatches a polyhedron's faces
-([solids.md](solids.md)), laid on different faces.
+([solids.md](solids.md)), laid on different faces, and a manifest reads them
+by one rule. `step`, the distance between a line's vertices, may be left out
+on any face and is then the spacing; a wall's lines take a vertex every
+`step` of height, and a plateau's take one wherever they cross a grid line,
+so the step is not read there. The angle is π/2 on a wall and 0 or π/2 on a
+plateau, to within a thousandth of a radian, and the tone is uniform at one
+width; anything else is refused, and so is hatching on a solid's faces,
+since a manifest holds a heightfield.
 
 ## Two speeds of edit
 

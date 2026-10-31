@@ -195,9 +195,9 @@ func hatchingTests() {
 
     Check.suite("hatching: a tone or a step that cannot be read is refused at decode") {
         func hatching(tone: String, step: String = "") throws -> Hatching {
-            try Hatching(json: try JSONValue.parse("""
-                {"kind": "hatching", "angle": 0, "spacing": 0.1, "widthSteps": 1\(step), "tone": \(tone)}
-                """))
+            try Hatching(fields: try JSONValue.parse("""
+                {"angle": 0, "spacing": 0.1, "widthSteps": 1\(step), "tone": \(tone)}
+                """).object("hatching"))
         }
         Check.expect((try? hatching(tone: #"{"kind": "turing", "scale": 0.5, "seed": 1}"#)) != nil,
                      "a well-formed hatching decodes")
@@ -334,7 +334,7 @@ func hatchingTests() {
                      "\(drawn) of \(lines.count) lines in \(visible.count) layers")
     }
 
-    Check.suite("hatching: a hatching layer round-trips through the manifest") {
+    Check.suite("hatching: a hatching and a hatching layer round-trip through their fields") {
         let hatchings = [
             Hatching(angle: 0.4, spacing: 0.1),
             Hatching(angle: -1.2, spacing: 0.05, step: 0.01, tone: .turing(scale: 0.7, seed: 0xDEAD_BEEF_0000_0001),
@@ -342,9 +342,41 @@ func hatchingTests() {
             Hatching(angle: 0, spacing: 0.2, tone: .halfLambert(light: SIMD3(0.1, -0.3, 0.9)), widthSteps: 2),
         ]
         for hatching in hatchings {
-            let source = LayerSource.hatching(hatching, faces: .solid)
-            let back = try LayerSource(json: source.json)
-            Check.expect(back == source, "\(source.json.canonical) decodes to itself")
+            let back = try Hatching(fields: hatching.fields)
+            Check.expect(back == hatching, "\(JSONValue.object(hatching.fields).canonical) decodes to itself")
+        }
+        let sources: [LayerSource] = [
+            .wallHatching(edges: [0, 2], spacing: 0.3, step: 0.1, trim: false, base: -0.5, topOffset: 0.02),
+            .plateauHatching(axis: .imag, spacing: 0.4, tiled: true),
+        ]
+        for source in sources {
+            Check.expect(try LayerSource(json: source.json) == source, "\(source.json.canonical) decodes to itself")
+        }
+    }
+
+    Check.suite("hatching: one rule for a manifest's step and angles, on walls as on plateaus") {
+        func source(_ faces: String, angle: String, step: String = "") throws -> LayerSource {
+            try LayerSource(json: try JSONValue.parse("""
+                {"kind": "hatching", "faces": \(faces), "angle": \(angle), "spacing": 0.25\(step),
+                 "widthSteps": 1, "tone": {"kind": "uniform"}}
+                """))
+        }
+        let walls = #"{"kind": "walls", "edges": [0]}"#
+        let plateaus = #"{"kind": "plateaus"}"#
+        for (faces, angle) in [(walls, "1.5707963267948966"), (plateaus, "0")] {
+            guard case .hatching(let h, _) = try source(faces, angle: angle) else { continue }
+            Check.expect(h.step == h.spacing, "a step left out is the spacing on \(faces)", "step \(h.step)")
+        }
+        let written = try source(walls, angle: "1.5708")
+        Check.expect(written.liesOnWall, "π/2 written as 1.5708 decodes as vertical on a wall")
+        Check.expect(try source(plateaus, angle: "1.5708").plateauHatchAxis == .imag
+                        && source(plateaus, angle: "0.0001").plateauHatchAxis == .real,
+                     "and on a plateau it is along the imaginary axis, as a near 0 is along the real")
+        Check.expectThrows("an angle a hundredth off vertical is refused on a wall") {
+            _ = try source(walls, angle: "1.58")
+        }
+        Check.expectThrows("and a hundredth off an axis on a plateau") {
+            _ = try source(plateaus, angle: "0.01")
         }
     }
 }

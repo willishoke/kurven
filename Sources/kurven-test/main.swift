@@ -107,6 +107,9 @@ func contractTests() {
                                                 faces: .plateaus(tiled: false))
             _ = try LayerSource(json: hatching.json)
         }
+        Check.expectThrows("rejects hatching on a solid's faces: a manifest is a heightfield's") {
+            _ = try LayerSource(json: LayerSource.hatching(Hatching(angle: 0.3, spacing: 0.1), faces: .solid).json)
+        }
         Check.expectThrows("rejects a bundle in another axis order") {
             _ = try Manifest(json: mutated {
                 $0["axes"] = .array(["imag", "real", "magnitude"].map(JSONValue.string)) })

@@ -421,7 +421,7 @@ extension Document {
         restyle { manifest in
             for i in manifest.layers.indices {
                 if case .hatching(var hatching, .plateaus(let tiled)) = manifest.layers[i].source {
-                    hatching.angle = axis == .real ? 0 : .pi / 2
+                    hatching.angle = axis.angle
                     manifest.layers[i].source = .hatching(hatching, faces: .plateaus(tiled: tiled))
                 }
             }

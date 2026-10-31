@@ -406,6 +406,18 @@ public enum ContourField: String, Sendable, CaseIterable {
 /// An axis of the domain: the real or the imaginary.
 public enum DomainAxis: String, Sendable, CaseIterable {
     case real, imag
+
+    /// The angle of a line along the axis, in radians from the real axis.
+    public var angle: Double { self == .real ? 0 : .pi / 2 }
+
+    /// The axis a line at `angle` runs along, to within
+    /// `Hatching.angleTolerance`, or nil when it runs along neither.
+    public init?(angle: Double) {
+        guard let axis = DomainAxis.allCases.first(where: {
+            abs(angle - $0.angle) <= Hatching.angleTolerance
+        }) else { return nil }
+        self = axis
+    }
 }
 
 /// The part of the domain a contour is restricted to.
@@ -482,7 +494,8 @@ public enum LayerSource: Sendable, Equatable {
     /// tile when `tiled`.
     case contour(field: ContourField, levels: [Double], restriction: Restriction, tiled: Bool)
     /// Hatching (`Hatching`) laid on `faces`: a heightfield's walls or
-    /// plateaus, or every face of a solid. The heightfield's hatchings are
+    /// plateaus, or every face of a solid, which a scene carries and a
+    /// manifest refuses: a manifest is a heightfield's. The heightfield's hatchings are
     /// descriptions rather than stored curves for the same reason contours
     /// are: dragging the truncation moves every plateau, and a plateau that
     /// moves is a different set of hatch lines. `Hatch.swift` derives them,
@@ -545,8 +558,12 @@ public enum LayerSource: Sendable, Equatable {
                             restriction: try Restriction(json: o.value("restriction", "LayerSource.contour")),
                             tiled: try o.bool("tiled", "LayerSource.contour", default: false))
         case "hatching":
-            let hatching = try Hatching(json: json)
             let faces = try HatchedFaces(json: o.value("faces", "LayerSource.hatching"))
+            if faces == .solid {
+                throw ManifestError.unsupported("hatching on a solid's faces: a manifest holds a heightfield, "
+                                                + "hatched on its walls and plateaus")
+            }
+            let hatching = try Hatching(fields: o)
             if let why = faces.unsupported(hatching) { throw ManifestError.unsupported(why) }
             self = .hatching(hatching, faces: faces)
         case "wallEdges":
@@ -587,7 +604,7 @@ public enum LayerSource: Sendable, Equatable {
                      "levels": .array(levels.map(JSONValue.double)),
                      "restriction": restriction.json, "tiled": .bool(tiled)])
         case .hatching(let hatching, let faces):
-            hatching.json(faces: faces)
+            .object(hatching.fields.merging(["kind": .string("hatching"), "faces": faces.json]) { $1 })
         case .wallEdges(let edges, let step, let base):
             .object(["kind": .string("wallEdges"),
                      "edges": .array(edges.map { .int($0) }),
@@ -612,21 +629,21 @@ public enum LayerSource: Sendable, Equatable {
     /// along each wall with a vertex every `step` of height.
     public static func wallHatching(edges: [Int], spacing: Double, step: Double, trim: Bool = true,
                                     base: Double = 0, topOffset: Double = 0) -> LayerSource {
-        .hatching(Hatching(angle: .pi / 2, spacing: spacing, step: step),
+        .hatching(Hatching(angle: HatchedFaces.wallAngle, spacing: spacing, step: step),
                   faces: .walls(edges: edges, trim: trim, base: base, topOffset: topOffset))
     }
 
     /// Hatching on the plateaus along one axis of the domain, a line every
     /// `spacing` across the other.
     public static func plateauHatching(axis: DomainAxis, spacing: Double, tiled: Bool = false) -> LayerSource {
-        .hatching(Hatching(angle: axis == .real ? 0 : .pi / 2, spacing: spacing),
+        .hatching(Hatching(angle: axis.angle, spacing: spacing),
                   faces: .plateaus(tiled: tiled))
     }
 
     /// The axis plateau hatching runs along, or nil for any other source.
     public var plateauHatchAxis: DomainAxis? {
         guard case .hatching(let h, .plateaus) = self else { return nil }
-        return h.angle == 0 ? .real : .imag
+        return DomainAxis(angle: h.angle)
     }
 
     /// True when the geometry is a rule rather than a file -- the layers whose
