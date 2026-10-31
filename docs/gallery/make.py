@@ -187,9 +187,19 @@ def main():
         cubic = landscape(work, "cubic", "1/(z^3 - 1)", (-1.3, 1.6), (-1.2, 1.5), 300, 5, corners)
         tiles = [bake(cubic, key, work / f"cubic-{key}.svg") for key in corners]
         (OUT / "cubic-corners.svg").write_text(grid(tiles, 2))
+
+        # The picture frame of docs/solids.md: its edges alone, then its ten
+        # faces hatched with Turing's pattern in four widths.
+        frame = ["surface", "solid", "--kind", "frame", "--size", 2, "--hole", 2, "--depth", 0.8,
+                 "--x-angle", -55, "--z-angle", -60, "--shear", 0, "--width", 0.6]
+        run(*frame, "-o", work / "frame-edges.svg")
+        run(*frame, "--hatching", "turing", "--angle", 30, "--spacing", 0.035, "--width-steps", 4,
+            "--scale", 0.18, "--seed", 3, "--hatch-width", 0.5, "-o", work / "frame-turing.svg")
+        tiles = [(work / f"frame-{k}.svg").read_text() for k in ("edges", "turing")]
+        (OUT / "frame.svg").write_text(grid(tiles, 2))
     finally:
         shutil.rmtree(work)
-    for f in ("gamma.svg", "cn.svg", "cubic-corners.svg"):
+    for f in ("gamma.svg", "cn.svg", "cubic-corners.svg", "frame.svg"):
         print(OUT / f, f"{(OUT / f).stat().st_size // 1024} KB")
 
 

@@ -3,9 +3,11 @@
 *A record, moved here from the README on 2026-10-11. It was written while
 visibility was decided by a depth buffer with a margin (June to September
 2026); since then every heightfield line is judged by facing and an exact
-march on f (see [architecture.md](../architecture.md#6-judge)), and several
+march on f (see [architecture.md](../architecture.md#landscapes)), and several
 of the fixes below were replaced by that rule rather than kept. The commits
-are the record of how each case was found.*
+are the record of how each case was found. It keeps the words of its time;
+[the glossary](../glossary.md) gives today's for each (the cap is now the
+truncation, the march grid traversal, the margin the depth tolerance).*
 
 Every hard case in a plate is a boundary condition: a pole, a cap, a cut face,
 a steep flank. Each of these was a visible defect with a commit behind it, and
