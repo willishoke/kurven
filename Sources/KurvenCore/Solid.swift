@@ -99,12 +99,10 @@ public struct Solid: Sendable, Equatable {
             let frame = FaceFrame(face, vertices: vertices)
             // The tolerances scale with the face itself, the diagonal of its
             // bounding box in its plane, so a face is cut the same way
-            // wherever the solid stands.
-            let planar = face.joined().map { frame.coordinates(vertices[$0].v) }
-            let extent = simd_length(planar.reduce(planar[0], simd_max) - planar.reduce(planar[0], simd_min))
+            // wherever the solid stands, down to what its coordinates hold.
             for loop in face {
                 for k in loop {
-                    precondition(abs(simd_dot(vertices[k].v - frame.origin, frame.normal)) <= 1e-9 * extent,
+                    precondition(abs(simd_dot(vertices[k].v - frame.origin, frame.normal)) <= frame.flatnessTolerance,
                                  "face \(i) is not flat at vertex \(k)")
                 }
             }
@@ -117,7 +115,7 @@ public struct Solid: Sendable, Equatable {
                              "face \(i): hole \(l) runs the same way as the outer loop")
             }
             let cut = ConvexPartition.pieces(face, point: { frame.coordinates(vertices[$0].v) },
-                                             tolerance: 1e-9 * extent * extent)
+                                             tolerance: 1e-9 * frame.extent * frame.extent)
             faces.append(Array(pieces.count..<(pieces.count + cut.count)))
             faceOfPiece += Array(repeating: i, count: cut.count)
             pieces += cut
@@ -179,11 +177,22 @@ public struct Solid: Sendable, Equatable {
     }
 
     /// Whether every vertex lies on or behind every face's plane.
+    ///
+    /// A vertex counts as in front when it is further in front than the
+    /// plane tolerance (`planeTolerance`) for the solid's own size: a
+    /// billionth of its bounding box's diagonal, not of its distance from
+    /// the origin, with the same floor for the coordinates' rounding as the
+    /// flatness check. The solid is at least as large as any face, so a
+    /// vertex the flatness check let through is never in front of its own
+    /// face.
     public var isConvex: Bool {
-        let scale = vertices.map { simd_length($0.v) }.max() ?? 1
-        for (f, piece) in pieces.enumerated() {
-            let o = vertices[piece[0]].v
-            for v in vertices where simd_dot(v.v - o, normals[f]) > 1e-9 * scale { return false }
+        let points = vertices.map(\.v)
+        guard let first = points.first else { return true }
+        let size = simd_length(points.reduce(first, simd_max) - points.reduce(first, simd_min))
+        let magnitude = Solid.magnitude(points)
+        for (i, frame) in frames.enumerated() {
+            let tolerance = Solid.planeTolerance(size: size, count: loops[i].joined().count, magnitude: magnitude)
+            for p in points where simd_dot(p - frame.origin, frame.normal) > tolerance { return false }
         }
         return true
     }
@@ -247,6 +256,16 @@ public struct Solid: Sendable, Equatable {
         public let normal: SIMD3<Double>
         public let origin: SIMD3<Double>
         public let u: SIMD3<Double>, v: SIMD3<Double>
+        /// The diagonal of the face's bounding box in `(u, v)`: its size,
+        /// which its tolerances are fractions of.
+        public let extent: Double
+        /// The flatness tolerance: how far a vertex may lie from the face's
+        /// plane and the face still count as flat. A billionth of the
+        /// extent, and never less than the rounding the face's coordinates
+        /// carry into the measurement (`Solid.planeTolerance`), so a small
+        /// face far from the origin is not refused for the last bits of its
+        /// coordinates.
+        public let flatnessTolerance: Double
 
         init(_ loops: [[Int]], vertices: [P3<WorldSpace>]) {
             // Newell's normal over every loop: the holes, running the other
@@ -257,10 +276,16 @@ public struct Solid: Sendable, Equatable {
             // Summed in index order, not a set's: the frame, and every hatch
             // line laid out in it, is then the same in every process.
             let ids = Set(loops.joined()).sorted()
-            origin = ids.reduce(SIMD3<Double>.zero) { $0 + vertices[$1].v } / Double(ids.count)
+            let origin = ids.reduce(SIMD3<Double>.zero) { $0 + vertices[$1].v } / Double(ids.count)
+            self.origin = origin
             let along = vertices[loops[0][1]].v - vertices[loops[0][0]].v
-            u = simd_normalize(along - simd_dot(along, normal) * normal)
-            v = simd_cross(normal, u)
+            let u = simd_normalize(along - simd_dot(along, normal) * normal), v = simd_cross(normal, u)
+            self.u = u; self.v = v
+            let points = loops.joined().map { vertices[$0].v }
+            let planar = points.map { p in SIMD2(simd_dot(p - origin, u), simd_dot(p - origin, v)) }
+            extent = simd_length(planar.reduce(planar[0], simd_max) - planar.reduce(planar[0], simd_min))
+            flatnessTolerance = Solid.planeTolerance(size: extent, count: points.count,
+                                                     magnitude: Solid.magnitude(points))
         }
 
         public func coordinates(_ p: SIMD3<Double>) -> SIMD2<Double> {
@@ -279,6 +304,26 @@ public struct Solid: Sendable, Equatable {
                 return a + p.x * q.y - q.x * p.y
             } / 2
         }
+    }
+
+    /// How far from a plane fitted to `count` points a point may lie and
+    /// still count as on it, when the region measured is `size` across and
+    /// no coordinate exceeds `magnitude`: a billionth of the size, and never
+    /// less than the rounding in the coordinates. A coordinate is held to
+    /// half a unit in the last place of its magnitude, and the plane's
+    /// normal and origin are sums over the points, each adding about as
+    /// much, so the floor is `4 count ε magnitude`: a few units in the last
+    /// place of the largest coordinate per point. At the origin's scale the
+    /// floor is a millionth of the billionth and changes nothing; a
+    /// millimetre face a million out is held to its coordinates' 1e-10, not
+    /// to 1e-12.
+    static func planeTolerance(size: Double, count: Int, magnitude: Double) -> Double {
+        1e-9 * size + 4 * Double(count) * Double.ulpOfOne * magnitude
+    }
+
+    /// The largest magnitude of any coordinate of `points`.
+    static func magnitude(_ points: [SIMD3<Double>]) -> Double {
+        points.map { simd_reduce_max(simd_abs($0)) }.max() ?? 0
     }
 
     /// Newell's sum over closed loops: twice the area vector of the region

@@ -317,6 +317,54 @@ func solidTests() {
         }
     }
 
+    Check.suite("solids: a small solid far from the origin is held to what its coordinates hold") {
+        // A millimetre across and millions out, tilted so that no face lies
+        // along an axis. A coordinate there is rounded to about 2e-10, a
+        // hundred times a billionth of a millimetre face, so a face held to
+        // the billionth alone is bent by rounding and refused.
+        let tilt = simd_double3x3(simd_quatd(angle: 0.7, axis: simd_normalize(SIMD3(1, 2, 3))))
+        let far = SIMD3(1e6, -2e6, 3e6)
+        let cube = Solid.platonic(.cube, circumradius: 1e-3).transformed(rotation: tilt, translation: far)
+        Check.expect(cube.eulerCharacteristic == 2 && cube.isConvex, "a cube is a convex sphere there")
+        let frame = Solid.frame(outer: 2e-3, inner: 1e-3, depth: 5e-4).transformed(rotation: tilt, translation: far)
+        let partition = partitionReport(frame)
+        Check.expect(frame.eulerCharacteristic == 0 && !frame.isConvex && frame.faces.prefix(2).allSatisfy { $0.count == 4 },
+                     "a picture frame is a torus there, not convex, its annuli four pieces each",
+                     "χ = \(frame.eulerCharacteristic), pieces per face \(frame.faces.map(\.count))")
+        Check.expect(partition.isEmpty, "and its pieces tile their faces", partition)
+        // Rounding alone takes the cube's vertices further off their faces'
+        // planes than a billionth of a face, the tolerance without a floor.
+        var bent = 0.0
+        for (i, f) in cube.frames.enumerated() {
+            for k in cube.loops[i].joined() {
+                bent = max(bent, abs(simd_dot(cube.vertices[k].v - f.origin, f.normal)) / f.extent)
+            }
+        }
+        Check.expect(bent > 1e-9, "rounding alone bends the cube's faces by more than a billionth",
+                     "\(bent) of a face")
+        // Refusal traps, so a bent face is not built here; what can be held
+        // is the tolerance a bend would be measured against.
+        let loosest = (cube.frames + frame.frames).map { $0.flatnessTolerance / $0.extent }.max() ?? 0
+        Check.expect(loosest < 1e-4, "a face bent by a ten-thousandth of its size there is still refused",
+                     "the loosest flatness tolerance is \(loosest) of its face")
+    }
+
+    Check.suite("solids: convexity is decided at the solid's own size, wherever it stands") {
+        // A prism over a pentagon whose fourth corner is pushed in by 1e-4,
+        // two faces of 1.5 meeting at a turn of 1e-4: not convex, by a
+        // margin a billionth of the distance from the origin a million out
+        // would swallow.
+        let dent = [SIMD2(0.0, 0.0), SIMD2(3, 0), SIMD2(3, 1), SIMD2(1.5, 1 - 1e-4), SIMD2(0, 1)]
+        let unit = Solid.platonic(.cube)
+        let tilt = simd_double3x3(simd_quatd(angle: 0.7, axis: simd_normalize(SIMD3(1, 2, 3))))
+        for far in [SIMD3(0.0, 0, 0), SIMD3(1e6, -2e6, 3e6)] {
+            let dented = prism([dent], depth: 1).transformed(rotation: tilt, translation: far)
+            let cube = unit.transformed(rotation: tilt, translation: far)
+            Check.expect(cube.isConvex && !dented.isConvex,
+                         "\(simd_length(far)) from the origin, a cube is convex and a prism dented by 1e-4 is not")
+        }
+    }
+
     Check.suite("solids: a face with thousands of corners is cut in reasonable time") {
         // Ear clipping that went back to the first corner after every ear,
         // and merging that went back to the first side after every merge,

@@ -27,6 +27,7 @@ and Emde, *Funktionentafeln*, 1909).
 | face | A face in the boundary-representation sense: a maximal flat region of a polyhedron's boundary, possibly not convex and possibly with holes. | facet |
 | loop | A closed chain of a face's edges, one per component of its boundary: its *outer loop*, counter-clockwise seen from outside, and one loop per hole, clockwise. Where a face touches itself at a vertex, the loop there passes the vertex twice: a hole touching the outer loop is part of it, and two holes touching are one. A solid is given as its faces' loops (`Solid(vertices:faces:)`). | |
 | convex piece | One polygon of a face's convex partition, which the solid computes from the face's loops (`ConvexPartition`). | face |
+| flatness tolerance | How far a vertex may lie from its face's plane and the face still count as flat: a billionth of the face's *extent*, the diagonal of its bounding box in its plane, and never less than the rounding its coordinates carry (`Solid.FaceFrame.flatnessTolerance`). Standard in geometric tolerancing. | |
 | diagonal | A side shared by two pieces of one face. Not an edge of the solid, and never drawn. | soft edge |
 | edge | A side shared by two pieces of different faces: an edge of the solid. | crease, in the polyhedron code |
 | parametric surface | A map from a parameter rectangle, each axis possibly periodic, into space (`ParametricSurface`). | |

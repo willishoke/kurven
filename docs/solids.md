@@ -22,6 +22,16 @@ directions, that the signed volume is positive, and that no two faces
 sharing an edge lie in one plane (they would be one face); anything else is
 refused.
 
+A face is flat when every vertex lies within its *flatness tolerance* of
+the face's plane: a billionth of the face's extent, the diagonal of its
+bounding box in its plane, so the check is the same wherever the solid
+stands. A coordinate holds only half a unit in its last place, though, so
+the tolerance never falls below a few units in the last place of the face's
+largest coordinate per vertex: a millimetre face a million units out is
+held to the 1e-10 its coordinates carry, not to 1e-12. `isConvex` measures
+every vertex against every face's plane the same way, at the size of the
+whole solid.
+
 A loop is one component of the face's boundary. Where a face touches
 itself at a vertex, the loop there passes the vertex twice: a hole that
 touches the outer loop is part of the outer loop, and two holes that touch
@@ -151,3 +161,9 @@ with pits sunk in their tops test faces that touch themselves: one pit
 touches the top face's outer loop at a corner, and two pits touch each
 other at a corner of their mouths. Both are spheres, χ = 2, and their edges
 agree with the ray cast.
+
+A millimetre cube and picture frame, tilted and millions of units out,
+where rounding alone bends a face by more than a billionth of it, are
+accepted and partitioned as at the origin; and a prism whose side is dented
+by 1e-4 is not convex there, though a billionth of its distance from the
+origin is more than ten times the dent.
