@@ -316,6 +316,42 @@ func solidTests() {
         }
     }
 
+    Check.suite("solids: a face with thousands of corners is cut in reasonable time") {
+        // Ear clipping that went back to the first corner after every ear,
+        // and merging that went back to the first side after every merge,
+        // took seconds on these. A star, every other corner reflex: the
+        // pieces inside merge into one polygon a triangle at a time.
+        let star = (0..<2000).map { k -> SIMD2<Double> in
+            let r = k % 2 == 0 ? 10.0 : 7.0, a = Double(k) * .pi / 1000
+            return SIMD2(r * cos(a), r * sin(a))
+        }
+        // A comb of 1,000 teeth, as the comb above: its back merges a tooth
+        // at a time.
+        var comb = [SIMD2(0.0, 0.0), SIMD2(1999.0, 0.0), SIMD2(1999.0, 3.0)]
+        for x in stride(from: 1998.0, through: 2, by: -2) {
+            comb += [SIMD2(x, 3), SIMD2(x, 1), SIMD2(x - 1, 1), SIMD2(x - 1, 3)]
+        }
+        comb.append(SIMD2(0, 3))
+        // A strip wound into a spiral of some fifty turns: out along its
+        // outer side, back along its inner. Its ears lie far round the ring.
+        let turns = (0..<2000).map { k -> (SIMD2<Double>, Double) in
+            let t = Double(k) * 0.05
+            return (SIMD2(cos(3 * t), sin(3 * t)), 1 + t)
+        }
+        let spiral = turns.map { $0.0 * ($0.1 + 0.4) } + turns.reversed().map { $0.0 * $0.1 }
+        for (name, face) in [("a star of 2,000 corners", star), ("a comb of 1,000 teeth", comb),
+                             ("a spiral strip of 4,000 corners", spiral)] {
+            var s: Solid?
+            let elapsed = ContinuousClock().measure { s = prism([face], depth: 1) }
+            let top = s!.faces[0].map { s!.pieces[$0] }
+            let area = top.reduce(0) { $0 + s!.frames[0].area($1.map { s!.vertices[$0].v }) }
+            let faceArea = s!.frames[0].area(s!.loops[0][0].map { s!.vertices[$0].v })
+            Check.expect(elapsed < .seconds(1) && abs(area - faceArea) <= 1e-9 * faceArea,
+                         "\(name): a prism over it is built, its top cut into \(top.count) pieces that cover it",
+                         "\(elapsed), area \(area) of \(faceArea)")
+        }
+    }
+
     Check.suite("solids: a face that touches itself at a vertex is one loop through it twice") {
         // A box 4 by 4 by 2 with pits sunk in its top. Where a pit's mouth
         // meets the top face's outer loop, or another pit's mouth, the top

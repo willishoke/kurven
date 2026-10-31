@@ -141,30 +141,38 @@ enum ConvexPartition {
 
     /// The ring cut into counter-clockwise triangles by clipping ears: a
     /// convex corner whose triangle holds no other vertex, closed, is cut
-    /// off, the first such in ring order each time.
+    /// off, the first such in ring order from where the last ear was.
+    ///
+    /// Clipping an ear changes only its two neighbours' corners, so the
+    /// scan resumes at the one before it rather than at the start: the
+    /// corners before that were not ears and, short of the clipped vertex
+    /// having been all that blocked one, are still not. That makes the cut
+    /// quadratic in the ring's length, not cubic, and it is the cut a scan
+    /// from the start would make whenever no such corner is freed.
     static func triangles(_ ring: [Int], point: (Int) -> SIMD2<Double>, tolerance: Double) -> [[Int]] {
         var ring = ring
         var out: [[Int]] = []
+        func isEar(_ k: Int) -> Bool {
+            let n = ring.count
+            let a = ring[(k + n - 1) % n], c = ring[k], b = ring[(k + 1) % n]
+            let pa = point(a), pc = point(c), pb = point(b)
+            guard cross(pc - pa, pb - pc) > tolerance else { return false }
+            return !ring.contains { v in
+                guard v != a, v != b, v != c else { return false }
+                let p = point(v)
+                return cross(pc - pa, p - pa) >= -tolerance && cross(pb - pc, p - pc) >= -tolerance
+                    && cross(pa - pb, p - pb) >= -tolerance
+            }
+        }
+        var start = 0
         while ring.count > 3 {
             let n = ring.count
-            var clipped = false
-            for k in 0..<n {
-                let a = ring[(k + n - 1) % n], c = ring[k], b = ring[(k + 1) % n]
-                let pa = point(a), pc = point(c), pb = point(b)
-                guard cross(pc - pa, pb - pc) > tolerance else { continue }
-                let holds = ring.contains { v in
-                    guard v != a, v != b, v != c else { return false }
-                    let p = point(v)
-                    return cross(pc - pa, p - pa) >= -tolerance && cross(pb - pc, p - pc) >= -tolerance
-                        && cross(pa - pb, p - pb) >= -tolerance
-                }
-                guard !holds else { continue }
-                out.append([a, c, b])
-                ring.remove(at: k)
-                clipped = true
-                break
+            guard let k = (0..<n).lazy.map({ (start + $0) % n }).first(where: isEar) else {
+                preconditionFailure("a face has no ear: its loops cross, or a hole is not inside it")
             }
-            precondition(clipped, "a face has no ear: its loops cross, or a hole is not inside it")
+            out.append([ring[(k + n - 1) % n], ring[k], ring[(k + 1) % n]])
+            ring.remove(at: k)
+            start = max(k - 1, 0)
         }
         let pa = point(ring[0]), pb = point(ring[1]), pc = point(ring[2])
         precondition(cross(pb - pa, pc - pb) > tolerance, "a face leaves a degenerate triangle: its loops overlap")
@@ -176,6 +184,12 @@ enum ConvexPartition {
 
     /// The triangles joined across every diagonal whose removal keeps both
     /// of its ends convex, each diagonal tried in turn, until none can go.
+    ///
+    /// Every corner of a join but the diagonal's two ends is a corner of a
+    /// convex piece, so a diagonal is first tried at its ends alone, the
+    /// same two cross products the whole join's test would compute. Only
+    /// one that passes is joined and tested whole, so the many diagonals
+    /// tried again after each merge cost little.
     static func merged(_ triangles: [[Int]], point: (Int) -> SIMD2<Double>, tolerance: Double) -> [[Int]] {
         var pieces: [[Int]?] = triangles
         var owner: [SIMD2<Int>: Int] = [:]
@@ -191,6 +205,7 @@ enum ConvexPartition {
                 while k < piece.count {
                     let a = piece[k], b = piece[(k + 1) % piece.count]
                     guard let g = owner[SIMD2(b, a)], g != f, let other = pieces[g],
+                          endsStayConvex(piece, k, other, point: point, tolerance: tolerance),
                           let joined = join(piece, other, a, b), isConvex(joined, point: point, tolerance: tolerance)
                     else { k += 1; continue }
                     piece = joined
@@ -205,6 +220,22 @@ enum ConvexPartition {
             }
         }
         return pieces.compactMap { $0 }
+    }
+
+    /// Whether `p` and `q` joined across the side `k` of `p`, `a -> b`,
+    /// which `q` runs `b -> a`, would turn left or run straight at `a` and
+    /// at `b`: from the vertex before `a` in `p` to the one after it in
+    /// `q`, and from the vertex before `b` in `q` to the one after it in `p`.
+    static func endsStayConvex(_ p: [Int], _ k: Int, _ q: [Int], point: (Int) -> SIMD2<Double>,
+                               tolerance: Double) -> Bool {
+        let n = p.count, m = q.count
+        let a = p[k], b = p[(k + 1) % n]
+        let j = q.firstIndex(of: b)!
+        func turnsLeft(_ x: Int, _ y: Int, _ z: Int) -> Bool {
+            let px = point(x), py = point(y), pz = point(z)
+            return cross(py - px, pz - py) >= -tolerance
+        }
+        return turnsLeft(p[(k + n - 1) % n], a, q[(j + 2) % m]) && turnsLeft(q[(j + m - 1) % m], b, p[(k + 2) % n])
     }
 
     /// `p` and `q` joined across the side `a -> b` of `p`, which `q` runs
