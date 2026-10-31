@@ -80,6 +80,9 @@ struct Args {
         guard let n = Int(v) else { throw CLIError("--\(name) wants an integer, got '\(v)'") }
         return n
     }
+    func int(_ name: String) throws -> Int? {
+        flags[name] == nil ? nil : try int(name, 0)
+    }
     func double(_ name: String) throws -> Double? {
         guard let v = flags[name] else { return nil }
         guard let d = Double(v) else { throw CLIError("--\(name) wants a number, got '\(v)'") }
@@ -91,6 +94,27 @@ struct Args {
         guard d > 0, d.isFinite else { throw CLIError("--\(name) wants a positive number, got '\(flags[name]!)'") }
         return d
     }
+
+    /// Refuses every option `command` does not take. Without this a flag
+    /// that was renamed or misspelt was read by nothing, and the command ran
+    /// on its default: `landscape --cap 4` sampled gamma untruncated.
+    func only(_ command: String, _ accepted: [String]) throws {
+        let unknown = Set(flags.keys).union(switches).subtracting(accepted)
+        guard !unknown.isEmpty else { return }
+        func spelled(_ name: String) -> String { name == "output" ? "-o" : "--\(name)" }
+        throw CLIError("\(command) takes no \(unknown.sorted().map(spelled).joined(separator: ", "))"
+                       + (accepted.isEmpty ? "; it takes no options"
+                          : "; it takes \(accepted.map(spelled).joined(separator: " "))"))
+    }
+
+    /// The options `loadScene` reads.
+    static let scene = ["preset", "no-refine"]
+    /// The options `previewView` reads, the scene's among them.
+    static let view = scene + ["levels", "orbit", "fov", "center", "zoom", "depth-tolerance"]
+    /// The options `previewOptions` reads.
+    static let previewOptions = ["draft", "slope", "stroke-width"]
+    /// The options an oblique camera is set by.
+    static let projection = ["shear", "x-angle", "z-angle"]
 }
 
 let usage = """
@@ -188,7 +212,8 @@ usage: kurven-cli <command> [options]
         Dump the depth buffer as float32 .npy, for comparison against a
         reference. This is what stands in for a GPU frame capture.
 
-  bench <bundle> [--preset NAME] [--resolution N] [--frames N] [--visibility]
+  bench <bundle> [--preset NAME] [--resolution N] [--frames N] [--mode M] [--editing]
+        [--visibility]
         Render the depth pass repeatedly from a moving camera and report the
         frame time. This is the Phase 2 question -- whether navigation can hold
         60 fps -- asked without a window: the preview does exactly this work
@@ -235,7 +260,7 @@ usage: kurven-cli <command> [options]
             [--spacing S] -o out.kurven
         Sample a function over a rectangle and write its bundle. Every layer
         is a description, so the result's truncation, levels and hatch spacing are
-        editable afterwards -- in the app, or by `bake --levels`.
+        editable afterwards -- in the app, or by `preview --levels`.
         --bands truncates at a height per band of Re z, as the gamma drawing
         does: each BELOW:HEIGHT is the height where Re z < BELOW, the first band
         that matches wins, and --beyond is the height past the last. The
@@ -243,7 +268,7 @@ usage: kurven-cli <command> [options]
         truncation here rather than in the manifest afterwards.
 
   refine [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI] [--res N]
-         [--tolerance CELLS] [--depth N]
+         [--truncation H] [--tolerance CELLS] [--depth N]
         Benchmark the contour refinement: each contour layer derived from the
         grid, then placed by f, with both timed and both measured against f.
 
@@ -284,11 +309,12 @@ func loadScene(_ args: Args) throws -> (KurvenBundle, CameraPreset, Scene) {
 }
 
 func bake(_ args: Args) throws {
+    try args.only("bake", Args.scene + ["resolution", "tiles", "depth-tolerance", "outline", "dump", "output"])
     let (bundle, preset, scene) = try loadScene(args)
     let output = URL(fileURLWithPath: try args.string("output"))
     let options = BakeOptions(
         resolution: try args.int("resolution", preset.buffer),
-        tiles: args.flags["tiles"].flatMap(Int.init),
+        tiles: try args.int("tiles"),
         depthTolerance: try args.double("depth-tolerance") ?? preset.depthTolerance,
         outline: try args.double("outline"))
 
@@ -354,13 +380,34 @@ func bake(_ args: Args) throws {
 func surfaceCommand(_ args: Args) throws {
     let shape = args.positional.dropFirst().first ?? "torus"
     if shape == "solid" { return try solidCommand(args) }
+    let relief = shape == "sn" && args.flags["relief"] != nil
+    if relief {
+        try args.only("surface sn --relief", Args.projection
+                      + ["relief", "modulus", "major", "minor", "repeat", "samples", "grid", "turn",
+                         "soft", "floor", "resolution", "tiles", "output"])
+    } else {
+        let own: [String]? = switch shape {
+        case "torus": ["coordinate-curves"]
+        case "sn": ["modulus", "grid"]
+        case "periodic": ["expression", "periods", "grid"]
+        case "forced": ["system", "fit", "harmonics", "radial", "axial", "radius", "turns",
+                        "coordinate-curves"]
+        default: nil
+        }
+        if let own {
+            try args.only("surface \(shape)", own + Args.projection + Args.previewOptions
+                          + ["major", "minor", "width", "samples", "linear-curves", "trajectory-width",
+                             "folds", "resolution", "tiles", "output", "preview", "width-px",
+                             "height-px", "mode"])
+        }
+    }
     let R = try args.double("major") ?? 2
     let r = try args.double("minor") ?? 1
     let width = try args.double("width") ?? 0.3
     // `surface sn --relief A`: the sn landscape in relief on its torus, the
     // surface displaced along its normal by A times |f| truncated at the
     // truncation, baked straight to SVG. A proof of concept: no window, no preview.
-    if shape == "sn", let amplitude = try args.double("relief") {
+    if relief, let amplitude = try args.double("relief") {
         let m = try args.double("modulus") ?? 0.64
         // `--repeat N[,M]`: N periods round the ring and M round the tube,
         // the curves computed once and carried round by the periods.
@@ -406,7 +453,7 @@ func surfaceCommand(_ args: Args) throws {
         var result: Bake!
         let baked = try clock.measure {
             result = try renderer.bake(scene, options: BakeOptions(resolution: try args.int("resolution", 3000),
-                                                                   tiles: args.flags["tiles"].flatMap(Int.init)))
+                                                                   tiles: try args.int("tiles")))
         }
         try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
         print("""
@@ -420,7 +467,7 @@ func surfaceCommand(_ args: Args) throws {
     }
     func counts(_ text: String) throws -> SIMD2<Int> {
         let n = text.split(separator: ",").compactMap { Int($0) }
-        guard n.count == 2 else { throw CLIError("--lines wants U,V, as in 36,18") }
+        guard n.count == 2 else { throw CLIError("--coordinate-curves wants U,V, as in 36,18") }
         return SIMD2(n[0], n[1])
     }
     // The flags, parsed into the request the window keeps; the drawing is
@@ -453,7 +500,7 @@ func surfaceCommand(_ args: Args) throws {
                                          turns: try args.int("turns", 344)),
                                  lines: try args.flags["coordinate-curves"].map(counts))
     default:
-        throw CLIError("unknown surface '\(shape)'; the catalog has: torus, sn, periodic, forced")
+        throw CLIError("unknown surface '\(shape)'; the catalog has: torus, sn, periodic, forced, solid")
     }
     request.grid = try args.int("samples", 1024)
     // A linear curve: `--linear-curves 2/5`, `--linear-curves 0.618,24` for that many turns,
@@ -467,7 +514,7 @@ func surfaceCommand(_ args: Args) throws {
         guard (1...3).contains(parts.count), let slope = slope(parts[0]),
               let turns = parts.count > 1 ? Int(parts[1]) : 24,
               let count = parts.count > 2 ? Int(parts[2]) : 1, turns >= 1, count >= 1 else {
-            throw CLIError("--linear curve wants SLOPE[,TURNS[,COUNT]], as in 2/5 or 0.618,24,3")
+            throw CLIError("--linear-curves wants SLOPE[,TURNS[,COUNT]], as in 2/5 or 0.618,24,3")
         }
         request.linearCurves = SurfaceRequest.LinearCurves(slope: slope, turns: turns, count: count)
     }
@@ -525,7 +572,7 @@ func surfaceCommand(_ args: Args) throws {
         return
     }
     let options = BakeOptions(resolution: try args.int("resolution", 3000),
-                              tiles: args.flags["tiles"].flatMap(Int.init))
+                              tiles: try args.int("tiles"))
 
     let renderer = try MetalRenderer()
     var result: Bake!
@@ -546,6 +593,10 @@ func surfaceCommand(_ args: Args) throws {
 /// `surface solid`: a polyhedron, baked straight to SVG. No bundle: a
 /// solid is a table and a rule, and the rule is exact.
 func solidCommand(_ args: Args) throws {
+    try args.only("surface solid", Args.projection
+                  + ["kind", "size", "hole", "depth", "width", "color", "resolution", "tiles", "output",
+                     "hatching", "angle", "spacing", "step", "width-steps", "seed", "scale",
+                     "hatch-width", "hatch-color"])
     let kind = args.flags["kind"] ?? "dodecahedron"
     let size = try args.positive("size") ?? 2
     let width = try args.double("width") ?? 0.6
@@ -607,7 +658,7 @@ func solidCommand(_ args: Args) throws {
     let scene = Scene(solid: solid, layers: layers, camera: camera)
     let output = URL(fileURLWithPath: try args.string("output"))
     let options = BakeOptions(resolution: try args.int("resolution", 3000),
-                              tiles: args.flags["tiles"].flatMap(Int.init))
+                              tiles: try args.int("tiles"))
     let renderer = try MetalRenderer()
     let clock = ContinuousClock()
     var result: Bake!
@@ -642,6 +693,7 @@ func solidCommand(_ args: Args) throws {
 }
 
 func depth(_ args: Args) throws {
+    try args.only("depth", Args.scene + ["resolution", "output"])
     let (_, preset, scene) = try loadScene(args)
     let output = URL(fileURLWithPath: try args.string("output"))
     let resolution = try args.int("resolution", preset.buffer)
@@ -662,6 +714,7 @@ func depth(_ args: Args) throws {
 }
 
 func bench(_ args: Args) throws {
+    try args.only("bench", Args.scene + ["resolution", "frames", "mode", "editing", "visibility"])
     let (bundle, preset, base) = try loadScene(args)
     let resolution = try args.int("resolution", 1024)
     let frames = try args.int("frames", 60)
@@ -870,7 +923,7 @@ func previewView(_ args: Args, viewport: Viewport) throws
 {
     let (bundle, preset, loaded) = try loadScene(args)
     var base = loaded
-    if let n = args.flags["levels"].flatMap({ Int($0) }) {
+    if let n = try args.int("levels") {
         base = base.drawing(relaid(bundle, levelCount: n))
         if !bundle.manifest.layers.contains(where: { KurvenBundle.levels(of: $0) != nil }) {
             FileHandle.standardError.write(Data(
@@ -923,6 +976,7 @@ func previewView(_ args: Args, viewport: Viewport) throws
 /// `Scene.drawing` when the edit kept the surface, as the document does, so
 /// a curve edit re-uploads nothing.
 func surfaceCosts(_ args: Args) throws {
+    try args.only("surface-costs", ["repeat", "only"])
     let repeats = try args.int("repeat", 3)
     let renderer = try MetalRenderer()
     let viewport = Viewport(width: 1600, height: 1200)
@@ -1053,6 +1107,7 @@ func surfaceCosts(_ args: Args) throws {
 }
 
 func landscapeCosts(_ args: Args) throws {
+    try args.only("landscape-costs", ["resolution", "only"])
     let resolution = try args.int("resolution", NativeLandscape.defaultResolution)
     let draftResolution = 240
     let clock = ContinuousClock()
@@ -1157,6 +1212,7 @@ func previewOptions(_ args: Args, mode: PreviewMode) throws -> PreviewOptions {
 }
 
 func preview(_ args: Args) throws {
+    try args.only("preview", Args.view + Args.previewOptions + ["width", "height", "mode", "output"])
     let output = URL(fileURLWithPath: try args.string("output"))
     let viewport = Viewport(width: try args.int("width", 1600),
                             height: try args.int("height", 1000))
@@ -1220,6 +1276,8 @@ func preview(_ args: Args) throws {
 /// Both are fractions of the mean curves per frame, so a picture with more curves are
 /// not counted as flickering more for it.
 func flicker(_ args: Args) throws {
+    try args.only("flicker", Args.view + Args.previewOptions
+                  + ["width", "height", "frames", "step", "dump", "max-flip"])
     let viewport = Viewport(width: try args.int("width", 1200),
                             height: try args.int("height", 800))
     let (bundle, preset, base, start) = try previewView(args, viewport: viewport)
@@ -1292,6 +1350,7 @@ func flicker(_ args: Args) throws {
 }
 
 func catalogCommand(_ args: Args) throws {
+    try args.only("catalog", [])
     let catalog = Catalog.native
     print("  \(catalog.presets.count) presets, default resolution \(catalog.defaultResolution)")
     for preset in catalog.presets {
@@ -1338,6 +1397,8 @@ func realBands(_ text: String, beyond: String?) throws -> Truncation {
 }
 
 func landscapeCommand(_ args: Args) throws {
+    try args.only("landscape", ["function", "re", "im", "res", "truncation", "bands", "beyond",
+                                "no-truncation", "spacing", "repeat", "output"])
     let output = URL(fileURLWithPath: try args.string("output"))
     let catalog = Catalog.native
 
@@ -1358,11 +1419,11 @@ func landscapeCommand(_ args: Args) throws {
     }
     if let re = args.flags["re"] { request.domain.real = try interval(re, "re") }
     if let im = args.flags["im"] { request.domain.imag = try interval(im, "im") }
-    if let res = args.flags["res"], let n = Int(res) { request.resolution = n }
-    if let truncationHeight = args.flags["truncation"], let z = Double(truncationHeight) { request.truncation = .uniform(z) }
+    request.resolution = try args.int("res", request.resolution)
+    if let z = try args.positive("truncation") { request.truncation = .uniform(z) }
     if let bands = args.flags["bands"] { request.truncation = try realBands(bands, beyond: args.flags["beyond"]) }
     if args.switches.contains("no-truncation") { request.truncation = Truncation.none }
-    if let s = args.flags["spacing"], let v = Double(s) { request.spacing = v }
+    if let v = try args.positive("spacing") { request.spacing = v }
 
     let clock = ContinuousClock()
     var bundle: KurvenBundle!
@@ -1386,6 +1447,7 @@ func landscapeCommand(_ args: Args) throws {
 /// are timed and measured against f -- the residual over the gradient, in
 /// cells, at every vertex and at every chord's midpoint.
 func refineCommand(_ args: Args) throws {
+    try args.only("refine", ["function", "re", "im", "res", "truncation", "tolerance", "depth"])
     let catalog = Catalog.native
     let name = args.flags["function"] ?? (args.positional.count > 1 ? "" : "gamma")
     var request: LandscapeRequest
@@ -1401,10 +1463,10 @@ func refineCommand(_ args: Args) throws {
     }
     if let re = args.flags["re"] { request.domain.real = try interval(re, "re") }
     if let im = args.flags["im"] { request.domain.imag = try interval(im, "im") }
-    if let res = args.flags["res"], let n = Int(res) { request.resolution = n }
-    if let truncationHeight = args.flags["truncation"], let z = Double(truncationHeight) { request.truncation = .uniform(z) }
-    let tolerance = args.flags["tolerance"].flatMap(Double.init) ?? 0.02
-    let depth = args.flags["depth"].flatMap(Int.init) ?? 5
+    request.resolution = try args.int("res", request.resolution)
+    if let z = try args.positive("truncation") { request.truncation = .uniform(z) }
+    let tolerance = try args.positive("tolerance") ?? 0.02
+    let depth = try args.int("depth", 5)
 
     let (bundle, reports) = try NativeLandscape.benchmarkRefinement(
         request, tolerance: tolerance, maxDepth: depth)
@@ -1454,6 +1516,7 @@ func sourceName(_ source: LayerSource) -> String {
 }
 
 func inspect(_ args: Args) throws {
+    try args.only("inspect", Args.scene)
     let (bundle, _, _) = try loadScene(args)
     let m = bundle.manifest
     print("\(bundle.url.lastPathComponent)  schema \(m.schema)  axes \(m.axes.joined(separator: ", "))")
@@ -1481,6 +1544,7 @@ func inspect(_ args: Args) throws {
 }
 
 func contract(_ args: Args) throws {
+    try args.only("contract", [])
     guard let dir = args.positional.dropFirst().first else { throw CLIError("which directory?") }
     let url = URL(fileURLWithPath: dir)
     let bundles = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)

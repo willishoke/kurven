@@ -413,6 +413,7 @@ enum GoldenFixtures {
 }
 
 func fixturesCommand(_ args: Args) throws {
+    try args.only("fixtures", [])
     guard let dir = args.positional.dropFirst().first else {
         throw CLIError("which directory? (tests/fixtures)")
     }
