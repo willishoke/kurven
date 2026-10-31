@@ -1,24 +1,24 @@
 import Foundation
 import simd
 
-/// Deriving the hatching: the ink that shades a cut face and a truncated top.
+/// Deriving the hatching: the curves that shade a wall and a plateau.
 ///
 /// `kurven/hatch.py` is the definition of all four kinds and this is the
 /// consumer's implementation of it; `tests/fixtures/hatch` holds the two to each
-/// other on the same grid, the same perimeter and the same caps. Where they
+/// other on the same grid, the same perimeter and the same truncations. Where they
 /// necessarily differ is the *height*: Python has f and evaluates it, this has
-/// the grid and interpolates it, so a stroke's top sits at the grid's crest
+/// the grid and interpolates it, so a stroke's top sits at the grid's top edge
 /// rather than the function's. That difference is the grid's interpolation
 /// error, half a cell's rise at most -- and a whole cell's rise where a zero of
 /// f lies between two samples, since the grid's chord over a pit bottoms out at
-/// the nearer sample. So with a refiner in play the crest gains a vertex at
+/// the nearer sample. So with a refiner in play the top edge gains a vertex at
 /// every minimum of |f| between two nodes, solved on f, and the hatch stands
-/// under it (`crest(of:tiles:refine:)`). The fixtures compare the grid's
+/// under it (`topEdge(of:tiles:refine:)`). The fixtures compare the grid's
 /// answer, with no refiner.
 ///
-/// Why this is here at all, rather than a list of strokes in the bundle: the cap
-/// is a slider. Moving it moves every plateau, which moves every cap stroke and
-/// every rim and re-cuts every wall stroke at the new crest. Shipping the answer
+/// Why this is here at all, rather than a list of strokes in the bundle: the truncation
+/// is a slider. Moving it moves every plateau, which moves every plateau hatch line and
+/// every truncation edge and re-cuts every wall stroke at the new top edge. Shipping the answer
 /// would make the slider a round trip to Python; shipping the question makes it
 /// a few milliseconds of this.
 public extension Surface {
@@ -49,13 +49,13 @@ public extension Surface {
         }
     }
 
-    /// Any described layer's ink: a contour family, or a hatching.
+    /// Any described layer's curves: a contour family, or a hatching.
     ///
     /// The one place that knows which kinds of description exist, so a reader,
     /// a re-derivation after an edit and a bake all produce the same strokes
     /// for the same spec.
-    func ink(_ spec: LayerSpec, occluder: Occluder,
-             refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
+    func curves(_ spec: LayerSpec, occluder: Occluder,
+                refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
         if let hatched = hatch(spec.source, in: HatchContext(occluder), refine: refine) {
             return hatched
         }
@@ -63,29 +63,34 @@ public extension Surface {
                       region: occluder.region, tiles: occluder.tiles, refine: refine)
     }
 
-    /// Any of the four hatching sources, as world-space polylines. `nil` for a
-    /// source this does not own, so a caller can use it as the test as well as
-    /// the derivation. With a refiner, the cut faces take their heights from f.
+    /// The heightfield's hatchings and the edges of its walls and plateaus,
+    /// as world-space polylines. `nil` for a source this does not own, so a
+    /// caller can use it as the test as well as the derivation. With a
+    /// refiner, the walls take their heights from f.
     func hatch(_ source: LayerSource, in context: HatchContext,
                refine: ContourRefine? = nil) -> PolylineSet<WorldSpace>? {
         var paths: [[P3<WorldSpace>]]
         switch source {
-        case .file, .contour, .parameterLines, .winding, .foldLines, .trajectory, .edges, .hatching:
+        case .file, .contour, .coordinateCurves, .linearCurves, .foldCurves, .trajectory, .edges,
+             .hatching(_, .solid):
             return nil
-        case .wallHatch(let edges, let spacing, let pitch, let trim, let base, let top):
+        case .hatching(let hatching, .walls(let edges, let trim, let base, let top)):
             guard let perimeter = context.perimeter else { return .empty }
-            paths = wallHatch(perimeter, edges: edges, spacing: spacing, pitch: pitch,
-                              trim: trim, base: base, topOffset: top,
-                              tiles: context.tiles, refine: refine)
-        case .wallOutline(let edges, let pitch, let base):
-            guard let perimeter = context.perimeter else { return .empty }
-            paths = wallOutline(perimeter, edges: edges, pitch: pitch, base: base,
-                                tiles: context.tiles, refine: refine)
-        case .capHatch(let axis, let spacing, let tiled):
-            paths = capHatch(axis: axis, spacing: spacing, refine: refine)
+            paths = wallHatchLines(perimeter, edges: edges, spacing: hatching.spacing,
+                                   step: hatching.step, trim: trim, base: base, topOffset: top,
+                                   tiles: context.tiles, refine: refine)
+        case .hatching(let hatching, .plateaus(let tiled)):
+            // Decoding holds the angle to an axis; one built in code at any
+            // other draws nothing.
+            guard let axis = DomainAxis(angle: hatching.angle) else { return .empty }
+            paths = plateauHatchLines(axis: axis, spacing: hatching.spacing, refine: refine)
             if tiled { paths = Surface.replicate(paths, context.tiles) }
-        case .capOutline(let tiled):
-            paths = capOutline(tiles: context.tiles, refine: refine)
+        case .wallEdges(let edges, let step, let base):
+            guard let perimeter = context.perimeter else { return .empty }
+            paths = wallEdges(perimeter, edges: edges, step: step, base: base,
+                              tiles: context.tiles, refine: refine)
+        case .truncationEdge(let tiled):
+            paths = truncationEdge(tiles: context.tiles, refine: refine)
             if tiled { paths = Surface.replicate(paths, context.tiles) }
         }
         return PolylineSet(paths: Surface.clip(paths, to: context.region))
@@ -114,17 +119,17 @@ extension Surface {
            edge.start.y * (1 - t) + edge.end.y * t)
     }
 
-    /// One vertical stroke, subdivided every `pitch`.
+    /// One vertical stroke, subdivided every `step`.
     ///
     /// Not a two-point segment. The bake clips per vertex, so a stroke whose
     /// middle is behind a ridge and whose ends are not would be drawn straight
     /// through it.
     static func vertical(x: Double, y: Double, base: Double, top: Double,
-                         pitch: Double) -> [P3<WorldSpace>]? {
+                         step: Double) -> [P3<WorldSpace>]? {
         guard top > base else { return nil }
         var steps = 1
-        if pitch.isFinite, pitch > 0 {
-            steps = max(1, Int(((top - base) / pitch).rounded(.up)))
+        if step.isFinite, step > 0 {
+            steps = max(1, Int(((top - base) / step).rounded(.up)))
         }
         return (0...steps).map { j in
             P3(x, y, base + (top - base) * Double(j) / Double(steps))
@@ -163,41 +168,41 @@ extension Surface {
 // MARK: - cut faces
 
 extension Surface {
-    /// The crest of one wall: the surface's profile along the edge, sampled
-    /// once per cell at the grid's nodes and capped, with a vertex wherever it
-    /// reaches the cap between two nodes and, with a refiner, wherever it has
+    /// The top edge of one wall: the surface's profile along the edge, sampled
+    /// once per cell at the grid's nodes and truncated, with a vertex wherever it
+    /// reaches the truncation between two nodes and, with a refiner, wherever it has
     /// a minimum between two nodes.
     ///
-    /// Without a refiner the cap crossing is solved on the grid's heights
-    /// linearly, as the rim is contoured (`kurven.hatch._cap_crossing`,
-    /// operation for operation), so the crest meets the rim where the rim
+    /// Without a refiner the truncation crossing is solved on the grid's heights
+    /// linearly, as the truncation edge is contoured (as the Python original
+    /// solved it, operation for operation), so the top edge meets the truncation edge where the truncation edge
     /// ends rather than a sample later, and everything else is the grid's.
     ///
-    /// With one, the crest is f's own profile along the edge: the nodes at
-    /// f's height, the cap crossing bisected on f along the edge (the rim,
-    /// refined, ends on the same bisection: `capOutline`), a vertex at each
+    /// With one, the top edge is f's own profile along the edge: the nodes at
+    /// f's height, the truncation crossing bisected on f along the edge (the truncation edge,
+    /// refined, ends on the same bisection: `truncationEdge`), a vertex at each
     /// minimum of |f| between two nodes (`withMinima`: the grid has no
     /// sample at a zero of f, so its chord across a pit bottoms out at the
     /// nearer node, a whole cell's rise above the floor the phase lines fan
     /// down to), and between any two of these the profile subdivided until
     /// no chord departs from f by more than the refiner's tolerance
-    /// (`subdividedProfile`). The rings are placed on f, the fold lines are
-    /// traced on f and the ink is judged against f, so the crest has to be
-    /// f's too, or the rings end on a fold the crest parts from.
-    func crest(of edge: PerimeterEdge, tiles: [Affine2],
-               refine: ContourRefine?) -> [P3<WorldSpace>] {
+    /// (`subdividedProfile`). The rings are placed on f, the fold curves are
+    /// traced on f and the curves are tested against f, so the top edge has to be
+    /// f's too, or the rings end on a fold the top edge parts from.
+    func topEdge(of edge: PerimeterEdge, tiles: [Affine2],
+                 refine: ContourRefine?) -> [P3<WorldSpace>] {
         let n = max(edge.density, 2)
         let magnitudeOfF = refine?.magnitude
-        var crest: [P3<WorldSpace>] = []
-        crest.reserveCapacity(n)
+        var topEdge: [P3<WorldSpace>] = []
+        topEdge.reserveCapacity(n)
         var previous: (p: P2<DomainSpace>, excess: Double)?
-        // The nodes along the edge; with the function, where a banded cap
+        // The nodes along the edge; with the function, where a banded truncation
         // steps between two nodes, the step's two vertices as well, on
         // either side of the boundary at its own band's height -- the
         // boundary itself belongs to the band beyond it, so the near side
         // is a rounding step short of it.
         var stations: [P2<DomainSpace>] = (0..<n).map { Surface.point(on: edge, at: Double($0) / Double(n - 1)) }
-        if magnitudeOfF != nil, case .realBands(let bands, _) = caps {
+        if magnitudeOfF != nil, case .realBands(let bands, _) = truncation {
             var withSteps: [P2<DomainSpace>] = []
             for (a, b) in zip(stations, stations.dropFirst()) {
                 withSteps.append(a)
@@ -215,8 +220,8 @@ extension Surface {
         }
         for p in stations {
             let u = magnitudeOfF.map { $0(inTile(p, tiles: tiles)) } ?? magnitude(at: p, tiles: tiles)
-            let cap = caps.height(atX: p.x)
-            let excess = u - cap
+            let truncationHeight = truncation.height(atX: p.x)
+            let excess = u - truncationHeight
             if let a = previous, excess.isFinite, a.excess.isFinite, a.p.x != p.x || a.p.y != p.y {
                 let here: (p: P2<DomainSpace>, excess: Double) = (p, excess)
                 var under: (p: P2<DomainSpace>, excess: Double)?
@@ -225,25 +230,25 @@ extension Surface {
                 if excess <= 0 && a.excess > 0 { under = here; over = a }
                 if let under, let over {
                     if let magnitudeOfF {
-                        if let q = capCrossing(from: under.p, under.excess, to: over.p, over.excess,
-                                               tiles: tiles, magnitude: magnitudeOfF) {
-                            crest.append(P3(q.x, q.y, caps.height(atX: q.x)))
+                        if let q = truncationCrossing(from: under.p, under.excess, to: over.p, over.excess,
+                                                      tiles: tiles, magnitude: magnitudeOfF) {
+                            topEdge.append(P3(q.x, q.y, truncation.height(atX: q.x)))
                         }
                     } else {
                         let t = under.excess / (under.excess - over.excess)
                         if t > 0, t < 1 {
                             let x = under.p.x + (over.p.x - under.p.x) * t
                             let y = under.p.y + (over.p.y - under.p.y) * t
-                            crest.append(P3(x, y, caps.height(atX: x)))
+                            topEdge.append(P3(x, y, truncation.height(atX: x)))
                         }
                     }
                 }
             }
-            crest.append(P3(p.x, p.y, min(u, cap)))
+            topEdge.append(P3(p.x, p.y, min(u, truncationHeight)))
             previous = (p, excess)
         }
-        guard let refine, let magnitude = refine.magnitude else { return crest }
-        return subdividedProfile(withMinima(crest, tiles: tiles, magnitude: magnitude),
+        guard let refine, let magnitude = refine.magnitude else { return topEdge }
+        return subdividedProfile(withMinima(topEdge, tiles: tiles, magnitude: magnitude),
                                  tiles: tiles, magnitude: magnitude, tolerance: refine.tolerance)
     }
 
@@ -254,15 +259,15 @@ extension Surface {
             abs(height.domain.imag.length) / Double(max(height.height - 1, 1)))
     }
 
-    /// Where |f| crosses the cap on the straight segment from `a` to `b`,
-    /// given the excess over the cap at each end: bisection on f to the last
-    /// bit, nil when both ends lie on one side. One routine for the crest
-    /// and the rim's ends, so the two meet to rounding.
-    func capCrossing(from a: P2<DomainSpace>, _ ea: Double, to b: P2<DomainSpace>, _ eb: Double,
-                     tiles: [Affine2], magnitude: ContourRefine.Magnitude) -> P2<DomainSpace>? {
+    /// Where |f| crosses the truncation on the straight segment from `a` to `b`,
+    /// given the excess over the truncation at each end: bisection on f to the last
+    /// bit, nil when both ends lie on one side. One routine for the top edge
+    /// and the truncation edge's ends, so the two meet to rounding.
+    func truncationCrossing(from a: P2<DomainSpace>, _ ea: Double, to b: P2<DomainSpace>, _ eb: Double,
+                            tiles: [Affine2], magnitude: ContourRefine.Magnitude) -> P2<DomainSpace>? {
         guard ea.isFinite, eb.isFinite, (ea > 0) != (eb > 0) else { return nil }
         func excess(_ p: P2<DomainSpace>) -> Double {
-            magnitude(inTile(p, tiles: tiles)) - caps.height(atX: p.x)
+            magnitude(inTile(p, tiles: tiles)) - truncation.height(atX: p.x)
         }
         var lo = SIMD2(a.x, a.y), hi = SIMD2(b.x, b.y)
         var elo = ea
@@ -276,22 +281,22 @@ extension Surface {
         return P2(m.x, m.y)
     }
 
-    /// The crest with f's profile between its vertices: each chord's
+    /// The top edge with f's profile between its vertices: each chord's
     /// midpoint is taken onto the profile where the chord departs from it
     /// by more than `tolerance` cells, and the halves likewise, five deep.
-    /// The crest is a function of the distance along its straight edge, so
+    /// The top edge is a function of the distance along its straight edge, so
     /// the vertices keep their order.
-    func subdividedProfile(_ crest: [P3<WorldSpace>], tiles: [Affine2],
+    func subdividedProfile(_ topEdge: [P3<WorldSpace>], tiles: [Affine2],
                            magnitude: ContourRefine.Magnitude, tolerance: Double) -> [P3<WorldSpace>] {
-        guard crest.count >= 2 else { return crest }
+        guard topEdge.count >= 2 else { return topEdge }
         let cell = self.cell
         func profile(_ p: P2<DomainSpace>) -> Double {
-            min(magnitude(inTile(p, tiles: tiles)), caps.height(atX: p.x))
+            min(magnitude(inTile(p, tiles: tiles)), truncation.height(atX: p.x))
         }
         func subdivide(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>, depth: Int,
                        into out: inout [P3<WorldSpace>]) {
             guard depth < 5, a.z.isFinite, b.z.isFinite else { return }
-            // The two vertices of a banded cap's step stand at one point.
+            // The two vertices of a banded truncation's step stand at one point.
             guard abs(a.x - b.x) + abs(a.y - b.y) > 1e-9 * cell else { return }
             let mid = P2<DomainSpace>(0.5 * (a.x + b.x), 0.5 * (a.y + b.y))
             let z = profile(mid)
@@ -301,24 +306,24 @@ extension Surface {
             out.append(v)
             subdivide(v, b, depth: depth + 1, into: &out)
         }
-        var out: [P3<WorldSpace>] = [crest[0]]
-        for (a, b) in zip(crest, crest.dropFirst()) {
+        var out: [P3<WorldSpace>] = [topEdge[0]]
+        for (a, b) in zip(topEdge, topEdge.dropFirst()) {
             subdivide(a, b, depth: 0, into: &out)
             out.append(b)
         }
         return out
     }
 
-    /// The crest with a vertex at every minimum of |f| that falls between two
-    /// of its vertices. The edge is straight, so the crest is a function of
+    /// The top edge with a vertex at every minimum of |f| that falls between two
+    /// of its vertices. The edge is straight, so the top edge is a function of
     /// the distance along it and the new vertices keep that order.
-    func withMinima(_ crest: [P3<WorldSpace>], tiles: [Affine2],
+    func withMinima(_ topEdge: [P3<WorldSpace>], tiles: [Affine2],
                     magnitude: ContourRefine.Magnitude) -> [P3<WorldSpace>] {
-        guard crest.count >= 3 else { return crest }
+        guard topEdge.count >= 3 else { return topEdge }
         // The edge lies in the domain: world x, y are domain x, y here.
         func dom(_ v: P3<WorldSpace>) -> P2<DomainSpace> { P2(v.x, v.y) }
         func profile(_ p: P2<DomainSpace>) -> Double {
-            min(magnitude(inTile(p, tiles: tiles)), caps.height(atX: p.x))
+            min(magnitude(inTile(p, tiles: tiles)), truncation.height(atX: p.x))
         }
         func between(_ a: P2<DomainSpace>, _ b: P2<DomainSpace>, _ t: Double) -> P2<DomainSpace> {
             P2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
@@ -326,13 +331,13 @@ extension Surface {
         func apart(_ a: P2<DomainSpace>, _ b: P2<DomainSpace>) -> Double {
             ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
         }
-        var out: [P3<WorldSpace>] = [crest[0]]
-        for i in 1..<(crest.count - 1) {
-            let v = crest[i]
+        var out: [P3<WorldSpace>] = [topEdge[0]]
+        for i in 1..<(topEdge.count - 1) {
+            let v = topEdge[i]
             out.append(v)
-            guard v.z.isFinite, v.z <= crest[i - 1].z, v.z <= crest[i + 1].z,
-                  v.z < crest[i - 1].z || v.z < crest[i + 1].z else { continue }
-            let a = dom(crest[i - 1]), b = dom(crest[i + 1])
+            guard v.z.isFinite, v.z <= topEdge[i - 1].z, v.z <= topEdge[i + 1].z,
+                  v.z < topEdge[i - 1].z || v.z < topEdge[i + 1].z else { continue }
+            let a = dom(topEdge[i - 1]), b = dom(topEdge[i + 1])
             var lo = 0.0, hi = 1.0
             let phi = (5.0.squareRoot() - 1) / 2
             var c = hi - phi * (hi - lo), d = lo + phi * (hi - lo)
@@ -356,24 +361,24 @@ extension Surface {
                        < (v.x - a.x) * (b.x - a.x) + (v.y - a.y) * (b.y - a.y)
             if before { out.insert(vertex, at: out.count - 1) } else { out.append(vertex) }
         }
-        out.append(crest[crest.count - 1])
+        out.append(topEdge[topEdge.count - 1])
         return out
     }
 
-    /// The crest's height at a point of its edge, by linear interpolation
+    /// The top edge's height at a point of its edge, by linear interpolation
     /// between its vertices: what a hatch stroke rises to. Without a refiner
     /// that is the grid's own interpolation along the edge, which
     /// `height(at:tiles:)` computes bit for bit as `kurven.hatch` does and the
-    /// fixtures hold it to; with one, the crest has vertices the grid does
+    /// fixtures hold it to; with one, the top edge has vertices the grid does
     /// not, and the strokes stand under them.
-    func crestHeight(of crest: [P3<WorldSpace>], at p: P2<DomainSpace>) -> Double? {
-        guard let a0 = crest.first, let b0 = crest.last, crest.count >= 2 else { return nil }
+    func topEdgeHeight(of topEdge: [P3<WorldSpace>], at p: P2<DomainSpace>) -> Double? {
+        guard let a0 = topEdge.first, let b0 = topEdge.last, topEdge.count >= 2 else { return nil }
         let dx = b0.x - a0.x, dy = b0.y - a0.y
         let length = dx * dx + dy * dy
         guard length > 0 else { return nil }
         func along(_ x: Double, _ y: Double) -> Double { ((x - a0.x) * dx + (y - a0.y) * dy) / length }
         let s = along(p.x, p.y)
-        for (a, b) in zip(crest, crest.dropFirst()) {
+        for (a, b) in zip(topEdge, topEdge.dropFirst()) {
             let sa = along(a.x, a.y), sb = along(b.x, b.y)
             guard sa <= s, s <= sb else { continue }
             let t = sb > sa ? (s - sa) / (sb - sa) : 0
@@ -382,22 +387,22 @@ extension Surface {
         return nil
     }
 
-    func wallHatch(_ perimeter: BoundaryPerimeter, edges: [Int], spacing: Double,
-                   pitch: Double, trim: Bool, base: Double, topOffset: Double,
-                   tiles: [Affine2], refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
+    func wallHatchLines(_ perimeter: BoundaryPerimeter, edges: [Int], spacing: Double,
+                        step: Double, trim: Bool, base: Double, topOffset: Double,
+                        tiles: [Affine2], refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         var out: [[P3<WorldSpace>]] = []
         for index in edges where index >= 0 && index < perimeter.edges.count {
             let edge = perimeter.edges[index]
             let length = simd_length(edge.end.v - edge.start.v)
             let n = Surface.strokeCount(length: length, spacing: spacing)
             let range = trim ? Array(1..<max(n - 1, 1)) : Array(0..<n)
-            let crest = refine?.magnitude == nil ? nil : crest(of: edge, tiles: tiles, refine: refine)
+            let topEdge = refine?.magnitude == nil ? nil : topEdge(of: edge, tiles: tiles, refine: refine)
             for k in range {
                 let p = Surface.point(on: edge, at: Double(k) / Double(max(n - 1, 1)))
-                let top = (crest.flatMap { crestHeight(of: $0, at: p) }
+                let top = (topEdge.flatMap { topEdgeHeight(of: $0, at: p) }
                            ?? height(at: p, tiles: tiles)) + topOffset
                 if let stroke = Surface.vertical(x: p.x, y: p.y, base: base,
-                                                 top: top, pitch: pitch) {
+                                                 top: top, step: step) {
                     out.append(stroke)
                 }
             }
@@ -405,45 +410,45 @@ extension Surface {
         return out
     }
 
-    /// The crest and foot of every wall, and a post at every corner.
-    func wallOutline(_ perimeter: BoundaryPerimeter, edges: [Int], pitch: Double,
-                     base: Double, tiles: [Affine2],
-                     refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
+    /// The top and bottom edges of every wall, and a vertical edge at every corner.
+    func wallEdges(_ perimeter: BoundaryPerimeter, edges: [Int], step: Double,
+                   base: Double, tiles: [Affine2],
+                   refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         var out: [[P3<WorldSpace>]] = []
         var corners: [P2<WorldSpace>] = []
         for index in edges where index >= 0 && index < perimeter.edges.count {
             let edge = perimeter.edges[index]
             let n = max(edge.density, 2)
-            out.append(crest(of: edge, tiles: tiles, refine: refine))
+            out.append(topEdge(of: edge, tiles: tiles, refine: refine))
             out.append((0..<n).map { k in
                 let p = Surface.point(on: edge, at: Double(k) / Double(n - 1))
                 return P3(p.x, p.y, base)
             })
             // Deduplicated by exact coordinate, so a closed traversal stands one
-            // post at each corner rather than two.
+            // vertical edge at each corner rather than two.
             for corner in [edge.start, edge.end] where !corners.contains(corner) {
                 corners.append(corner)
             }
         }
         for corner in corners {
             let top = height(at: P2<DomainSpace>(corner.x, corner.y), tiles: tiles)
-            if let post = Surface.vertical(x: corner.x, y: corner.y, base: base,
-                                           top: top, pitch: pitch) {
-                out.append(post)
+            if let verticalEdge = Surface.vertical(x: corner.x, y: corner.y, base: base,
+                                                   top: top, step: step) {
+                out.append(verticalEdge)
             }
         }
         return out
     }
 }
 
-// MARK: - truncated tops
+// MARK: - plateaus
 
 extension Surface {
-    /// Where the cap changes across `[lo, hi]`, as the intervals it makes. The
-    /// cap is constant on each `[a, b)`.
-    func capIntervals(lo: Double, hi: Double) -> [(Double, Double)] {
+    /// Where the truncation changes across `[lo, hi]`, as the intervals it makes. The
+    /// truncation is constant on each `[a, b)`.
+    func truncationIntervals(lo: Double, hi: Double) -> [(Double, Double)] {
         var edges = [lo]
-        if case .realBands(let bands, _) = caps {
+        if case .realBands(let bands, _) = truncation {
             for band in bands where band.below > lo && band.below < hi {
                 edges.append(band.below)
             }
@@ -452,7 +457,8 @@ extension Surface {
         return zip(edges, edges.dropFirst()).filter { $1 > $0 }.map { ($0, $1) }
     }
 
-    func capHatch(axis: KeepAxis, spacing: Double, refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
+    func plateauHatchLines(axis: DomainAxis, spacing: Double,
+                           refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         guard spacing.isFinite, spacing > 0 else { return [] }
         let grid = height
         let across = axis == .real ? grid.domain.imag : grid.domain.real
@@ -463,38 +469,38 @@ extension Surface {
         }
 
         var out: [[P3<WorldSpace>]] = []
-        // Divided across the domain the way `wallHatch` divides an edge: the
+        // Divided across the domain the way `wallHatchLines` divides an edge: the
         // spacing asks for a count, and the strokes are spread to fit it. The
-        // ruling then meets the top's edges with whole gaps, and each stroke
+        // hatching then meets the plateau's edges with whole gaps, and each stroke
         // stands where the walls that run across it stand theirs, so it turns
         // the corner down the wall instead of missing it.
         let n = Surface.strokeCount(length: across.hi - across.lo, spacing: spacing)
         for k in 1..<max(n - 1, 1) {
             let c = across.lo + (across.hi - across.lo) * Double(k) / Double(n - 1)
-            // The cap varies with Re and with nothing else: a line along the
+            // The truncation varies with Re and with nothing else: a line along the
             // real axis crosses the bands and is solved piece by piece, and one
             // along the imaginary axis stays in a single band for its length.
             let intervals = axis == .real
-                ? capIntervals(lo: alongInterval.lo, hi: alongInterval.hi)
+                ? truncationIntervals(lo: alongInterval.lo, hi: alongInterval.hi)
                 : [(alongInterval.lo, alongInterval.hi)]
             for (a, b) in intervals {
-                let cap = caps.height(atX: axis == .real ? a : c)
-                guard cap.isFinite else { continue }
+                let truncationHeight = truncation.height(atX: axis == .real ? a : c)
+                guard truncationHeight.isFinite else { continue }
                 var coord = [a]
                 coord.append(contentsOf: samples.filter { $0 > a && $0 < b })
                 coord.append(b)
                 // With the function at hand the strokes are ruled on f and
-                // end where |f| reaches the cap along them, bisected: the
-                // lattice's chords lie above f on a convex flank, so its cap
-                // region reaches past the rim drawn on f by a fraction of a
-                // cell, and a stroke ruled on it poked out past the rim.
+                // end where |f| reaches the truncation along them, bisected: the
+                // grid's chords lie above f on a convex graph, so its truncation
+                // region reaches past the truncation edge drawn on f by a fraction of a
+                // cell, and a stroke ruled on it poked out past the truncation edge.
                 func excessAt(_ t: Double) -> Double {
                     let p = axis == .real ? P2<DomainSpace>(t, c) : P2<DomainSpace>(c, t)
                     if let f = refine?.magnitude {
                         let u = f(p)
-                        return (u.isNaN ? .infinity : u) - cap
+                        return (u.isNaN ? .infinity : u) - truncationHeight
                     }
-                    return magnitude(at: p) - cap
+                    return magnitude(at: p) - truncationHeight
                 }
                 let excess = coord.map(excessAt)
                 let runs = refine?.magnitude == nil
@@ -502,8 +508,8 @@ extension Surface {
                     : Surface.runsAtOrAbove(coord, excess) { lo, hi in Surface.bisected(lo, hi, excessAt) }
                 for run in runs {
                     out.append(run.map { t in
-                        axis == .real ? P3<WorldSpace>(t, c, cap)
-                                      : P3<WorldSpace>(c, t, cap)
+                        axis == .real ? P3<WorldSpace>(t, c, truncationHeight)
+                                      : P3<WorldSpace>(c, t, truncationHeight)
                     })
                 }
             }
@@ -513,8 +519,8 @@ extension Surface {
 
     /// The stretches where `excess >= 0`, with their ends solved linearly.
     ///
-    /// `t = e0 / (e0 - e1)` is where the same linear interpolation puts the rim
-    /// contour, so a stroke ends exactly on the rim rather than at the last
+    /// `t = e0 / (e0 - e1)` is where the same linear interpolation puts the truncation edge
+    /// contour, so a stroke ends exactly on the truncation edge rather than at the last
     /// sample inside it.
     static func runsAtOrAbove(_ coord: [Double], _ excess: [Double],
                               crossing: ((Double, Double) -> Double)? = nil) -> [[Double]] {
@@ -565,22 +571,22 @@ extension Surface {
         return 0.5 * (a + b)
     }
 
-    /// |f| - cap, as a grid, in float32 -- the same subtraction the Python side
-    /// performs, on the same float32 samples, so the rim lands in the same
-    /// place. The rim is this grid's zero contour.
-    func capExcess() -> Grid2D<Float>? {
+    /// |f| - truncation, as a grid, in float32 -- the same subtraction the Python side
+    /// performs, on the same float32 samples, so the truncation edge lands in the same
+    /// place. The truncation edge is this grid's zero contour.
+    func truncationExcess() -> Grid2D<Float>? {
         let grid = height
         var values = grid.values
         var anyFinite = false
         for x in 0..<grid.width {
-            let cap = Float(caps.height(atX: grid.position(x: x, y: 0).x))
-            guard cap.isFinite else {
+            let truncationHeight = Float(truncation.height(atX: grid.position(x: x, y: 0).x))
+            guard truncationHeight.isFinite else {
                 for y in 0..<grid.height { values[y * grid.width + x] = -.infinity }
                 continue
             }
             anyFinite = true
             for y in 0..<grid.height {
-                values[y * grid.width + x] = grid[x, y] - cap
+                values[y * grid.width + x] = grid[x, y] - truncationHeight
             }
         }
         guard anyFinite else { return nil }
@@ -588,58 +594,58 @@ extension Surface {
                       values: values)
     }
 
-    /// The rim of the cap: the zero level of the grid's excess over the cap,
-    /// at the cap's height. With a refiner it is the contour |f| = cap
+    /// The truncation edge: the zero level of the grid's excess over the truncation,
+    /// at the truncation height. With a refiner it is the contour |f| = h(x)
     /// placed on f, as the rings are, and an end of it on the domain's edge
-    /// is re-solved by the crest's own bisection along that edge
-    /// (`capCrossing`), so the crest meets the rim to rounding. A banded
-    /// cap's rim is placed band by band at each band's own level
-    /// (`bandedRim`), with the top of the wall where the cap steps.
-    func capOutline(tiles: [Affine2] = [.identity], refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
-        guard let excess = capExcess() else { return [] }
+    /// is re-solved by the top edge's own bisection along that edge
+    /// (`truncationCrossing`), so the top edge meets the truncation edge to rounding. A banded
+    /// truncation edge is placed band by band at each band's own level
+    /// (`bandedTruncationEdge`), with the top of the wall where the truncation steps.
+    func truncationEdge(tiles: [Affine2] = [.identity], refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
+        guard let excess = truncationExcess() else { return [] }
         var out: [[P3<WorldSpace>]] = []
         for (_, lines) in Contour.levels(of: excess, [0.0]) {
             if let refine, let magnitude = refine.magnitude {
-                switch caps {
-                case .uniform(let cap) where cap.isFinite:
-                    for line in refine.contours(.magnitude, cap, lines, .infinity) {
+                switch truncation {
+                case .uniform(let truncationHeight) where truncationHeight.isFinite:
+                    for line in refine.contours(.magnitude, truncationHeight, lines, .infinity) {
                         var line = line
                         for i in Set([0, line.count - 1]) where line.count >= 2 {
-                            if let q = onEdgeCapCrossing(near: line[i], tiles: tiles, magnitude: magnitude) {
+                            if let q = onBoundaryTruncationCrossing(near: line[i], tiles: tiles, magnitude: magnitude) {
                                 line[i] = q
                             }
                         }
-                        out.append(line.map { P3($0.x, $0.y, cap) })
+                        out.append(line.map { P3($0.x, $0.y, truncationHeight) })
                     }
                     continue
                 case .realBands(let bands, let beyond):
-                    out += bandedRim(lines, bands: bands, beyond: beyond, tiles: tiles,
-                                     refine: refine, magnitude: magnitude)
+                    out += bandedTruncationEdge(lines, bands: bands, beyond: beyond, tiles: tiles,
+                                                refine: refine, magnitude: magnitude)
                     continue
                 default:
                     break
                 }
             }
             for line in lines {
-                out.append(line.map { P3($0.x, $0.y, caps.height(atX: $0.x)) })
+                out.append(line.map { P3($0.x, $0.y, truncation.height(atX: $0.x)) })
             }
         }
         return out
     }
 
-    /// The rim of a banded cap, on f. Within a band the rim is the contour
-    /// |f| = that band's cap: the grid's rim lines are split by band, each
+    /// The truncation edge of a banded truncation, on f. Within a band the truncation edge is the contour
+    /// |f| = that band's truncation: the grid's truncation edge lines are split by band, each
     /// run placed by the refiner at its own level, and a run's end beside a
     /// band's boundary is solved onto the boundary, where |f| reaches the
-    /// cap along it. Where the cap steps the surface has a wall, and its
-    /// top is the rim there: along the boundary, at the lesser cap where
-    /// |f| is below it and at f's own height up to the greater cap, from
-    /// one end of the lesser band's rim to the other. The grid's vertices
+    /// truncation along it. Where the truncation steps the surface has a wall, and its
+    /// top is the truncation edge there: along the boundary, at the lesser truncation where
+    /// |f| is below it and at f's own height up to the greater truncation, from
+    /// one end of the lesser band's truncation edge to the other. The grid's vertices
     /// in the cells that straddle a boundary are interpolated between two
-    /// caps and mean nothing; they are dropped, and the boundary's own
+    /// truncation heights and mean nothing; they are dropped, and the boundary's own
     /// pieces take their place.
-    func bandedRim(_ lines: [[P2<DomainSpace>]], bands: [RealBand], beyond: Double, tiles: [Affine2],
-                   refine: ContourRefine, magnitude: ContourRefine.Magnitude) -> [[P3<WorldSpace>]] {
+    func bandedTruncationEdge(_ lines: [[P2<DomainSpace>]], bands: [RealBand], beyond: Double, tiles: [Affine2],
+                              refine: ContourRefine, magnitude: ContourRefine.Magnitude) -> [[P3<WorldSpace>]] {
         let boundaries = bands.map(\.below).sorted()
         let g = height
         let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1))
@@ -651,10 +657,10 @@ extension Surface {
         func boundary(beside x: Double) -> Double? {
             boundaries.first { abs(x - $0) <= 1.0001 * dx }
         }
-        /// The point on the boundary x = b where |f| = cap, nearest in y to
+        /// The point on the boundary x = b where |f| = h(x), nearest in y to
         /// `near`: bracketed by walking out from it, then bisected.
-        func ontoBoundary(_ b: Double, cap: Double, near: P2<DomainSpace>) -> P2<DomainSpace>? {
-            func excess(_ y: Double) -> Double { mag(P2(b, y)) - cap }
+        func ontoBoundary(_ b: Double, truncationHeight: Double, near: P2<DomainSpace>) -> P2<DomainSpace>? {
+            func excess(_ y: Double) -> Double { mag(P2(b, y)) - truncationHeight }
             let step = dy / 8
             var lo = near.y, hi = near.y
             var elo = excess(lo), ehi = elo
@@ -677,16 +683,16 @@ extension Surface {
 
         var out: [[P3<WorldSpace>]] = []
         /// The ends of refined runs that lie on a boundary, by boundary:
-        /// the cap they belong to and the point.
-        var endsOnBoundary: [Double: [(cap: Double, point: P2<DomainSpace>)]] = [:]
+        /// the truncation they belong to and the point.
+        var endsOnBoundary: [Double: [(truncationHeight: Double, point: P2<DomainSpace>)]] = [:]
         for line in lines {
             // Runs of one band's vertices, the straddling cells' dropped.
-            var runs: [(cap: Double, points: [P2<DomainSpace>])] = []
+            var runs: [(truncationHeight: Double, points: [P2<DomainSpace>])] = []
             var broken = true
             for v in line {
                 if boundary(beside: v.x) != nil { broken = true; continue }
-                let c = caps.height(atX: v.x)
-                if !broken, let last = runs.last, last.cap == c {
+                let c = truncation.height(atX: v.x)
+                if !broken, let last = runs.last, last.truncationHeight == c {
                     runs[runs.count - 1].points.append(v)
                 } else {
                     runs.append((c, [v]))
@@ -695,35 +701,35 @@ extension Surface {
             }
             // A closed line whose first and last runs are the same band and
             // unbroken between is one run.
-            if line.first == line.last, runs.count >= 2, runs[0].cap == runs[runs.count - 1].cap,
+            if line.first == line.last, runs.count >= 2, runs[0].truncationHeight == runs[runs.count - 1].truncationHeight,
                boundary(beside: line[0].x) == nil {
                 let last = runs.removeLast()
                 runs[0].points = last.points.dropLast() + runs[0].points
             }
-            for run in runs where run.points.count >= 2 && run.cap.isFinite {
-                for piece in refine.contours(.magnitude, run.cap, [run.points], .infinity) where piece.count >= 2 {
+            for run in runs where run.points.count >= 2 && run.truncationHeight.isFinite {
+                for piece in refine.contours(.magnitude, run.truncationHeight, [run.points], .infinity) where piece.count >= 2 {
                     var piece = piece
                     for i in [0, piece.count - 1] {
-                        if let q = onEdgeCapCrossing(near: piece[i], tiles: tiles, magnitude: magnitude) {
+                        if let q = onBoundaryTruncationCrossing(near: piece[i], tiles: tiles, magnitude: magnitude) {
                             piece[i] = q
                         } else if let b = boundary(beside: piece[i].x) ?? boundaries.first(where: { abs(piece[i].x - $0) <= 2 * dx }),
-                                  let q = ontoBoundary(b, cap: run.cap, near: piece[i]) {
+                                  let q = ontoBoundary(b, truncationHeight: run.truncationHeight, near: piece[i]) {
                             if i == 0 { piece.insert(q, at: 0) } else { piece.append(q) }
-                            endsOnBoundary[b, default: []].append((run.cap, q))
+                            endsOnBoundary[b, default: []].append((run.truncationHeight, q))
                         }
                     }
-                    out.append(piece.map { P3($0.x, $0.y, run.cap) })
+                    out.append(piece.map { P3($0.x, $0.y, run.truncationHeight) })
                 }
             }
         }
         // The top of each step wall: between the two ends of the lesser
-        // band's rim on the boundary, nearest each other in y, at f's
-        // height capped by the greater band.
+        // band's truncation edge on the boundary, nearest each other in y, at f's
+        // height truncated by the greater band.
         for (b, ends) in endsOnBoundary {
-            let left = caps.height(atX: b.nextDown), right = caps.height(atX: b)
+            let left = truncation.height(atX: b.nextDown), right = truncation.height(atX: b)
             let lesser = min(left, right), greater = max(left, right)
             guard lesser.isFinite, lesser < greater else { continue }
-            let lows = ends.filter { $0.cap == lesser }.map(\.point).sorted { $0.y < $1.y }
+            let lows = ends.filter { $0.truncationHeight == lesser }.map(\.point).sorted { $0.y < $1.y }
             var k = 0
             while k + 1 < lows.count {
                 let a = lows[k], c = lows[k + 1]
@@ -746,11 +752,11 @@ extension Surface {
         return out
     }
 
-    /// For a rim vertex on the domain's edge, the cap crossing between the
-    /// two grid nodes beside it on that edge, by the crest's bisection; nil
+    /// For a truncation edge vertex on the domain's edge, the truncation crossing between the
+    /// two grid nodes beside it on that edge, by the top edge's bisection; nil
     /// for a vertex off the edge or with no crossing beside it.
-    func onEdgeCapCrossing(near p: P2<DomainSpace>, tiles: [Affine2],
-                           magnitude: ContourRefine.Magnitude) -> P2<DomainSpace>? {
+    func onBoundaryTruncationCrossing(near p: P2<DomainSpace>, tiles: [Affine2],
+                                      magnitude: ContourRefine.Magnitude) -> P2<DomainSpace>? {
         let g = height
         let eps = 1e-9 * cell
         let f = g.index(of: p)
@@ -758,7 +764,7 @@ extension Surface {
         let onColumn = abs(p.x - g.domain.real.lo) <= eps || abs(p.x - g.domain.real.hi) <= eps
         guard onRow || onColumn else { return nil }
         func excess(_ q: P2<DomainSpace>) -> Double {
-            magnitude(inTile(q, tiles: tiles)) - caps.height(atX: q.x)
+            magnitude(inTile(q, tiles: tiles)) - truncation.height(atX: q.x)
         }
         let a: P2<DomainSpace>, b: P2<DomainSpace>
         if onRow {
@@ -770,6 +776,6 @@ extension Surface {
             let j = min(max(Int(f.y.rounded(.down)), 0), g.height - 2)
             a = g.position(x: i, y: j); b = g.position(x: i, y: j + 1)
         }
-        return capCrossing(from: a, excess(a), to: b, excess(b), tiles: tiles, magnitude: magnitude)
+        return truncationCrossing(from: a, excess(a), to: b, excess(b), tiles: tiles, magnitude: magnitude)
     }
 }

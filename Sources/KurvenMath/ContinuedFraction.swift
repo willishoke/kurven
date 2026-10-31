@@ -2,11 +2,11 @@ import Foundation
 
 /// The continued fraction of a number, and the fractions it is nearly.
 ///
-/// A winding at an irrational slope never closes, but it nearly closes at
+/// A linear curve at an irrational slope never closes, but it nearly closes at
 /// every convergent `p/q` of the slope's continued fraction: after `q` turns
 /// it is back within `1/q` of a turn of where it began. Those denominators
 /// are where a trajectory drawn for `q` turns cuts its torus most evenly
-/// (the three-gap theorem), and those fractions are the windings a
+/// (the three-gap theorem), and those fractions are the linear curves a
 /// quasi-periodic orbit would lock to. Both are what a slider should rest on.
 public enum ContinuedFraction {
     /// A fraction `p/q` in lowest terms.

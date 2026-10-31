@@ -12,9 +12,9 @@ import KurvenLandscape
 ///   - **the function, the window, the resolution** need f evaluated again, so
 ///     they are a new landscape (`NativeLandscape.build`) and a new bundle --
 ///     sampled in this process, since the evaluator is native.
-///   - **the cap, the contour levels, the hatch spacing** need nothing but the
+///   - **the truncation, the contour levels, the hatch spacing** need nothing but the
 ///     grids that are already here, because every layer of a landscape's bundle
-///     is a description rather than dumped ink. They are `restyle`, which
+///     is a description rather than dumped curves. They are `restyle`, which
 ///     re-derives from the grids and never leaves the process.
 ///
 /// Neither runs on the main actor. Both coalesce -- one job in flight, the
@@ -22,22 +22,22 @@ import KurvenLandscape
 /// never stops the window. A resample drops to a draft resolution, with the
 /// grid's contours, until the drag ends. A restyle is fast because the
 /// refiner remembers the curves it has placed (`ContourRefine.remembering`):
-/// moving the cap places the rim and the rings at the new levels, and every
+/// moving the truncation places the truncation edge and the rings at the new levels, and every
 /// phase line is the one already drawn.
 ///
 /// What each costs, measured by `kurven-cli landscape-costs` on an Apple M5
-/// Max at 600², off the main actor; `KurvenApp --landscape NAME --drag cap 30`
+/// Max at 600², off the main actor; `KurvenApp --landscape NAME --drag truncation 30`
 /// measures the main actor's longest stall during a drag, 22 ms or less on
 /// every preset:
 ///
-///                   sample    dragging   cap step   hatch   levels    dragging
+///                   sample    dragging   truncation step   hatch   levels    dragging
 ///     zeta           50 ms      3 ms      22 ms      9 ms    14 ms     2 ms
 ///     cn             70 ms      4 ms      44 ms      9 ms    14 ms     2 ms
 ///     exp_inv        52 ms      3 ms      14 ms      1 ms    27 ms     2 ms
 ///
 /// Every preset samples in 70 ms or less. zeta took 4.5 s, on the main actor
-/// for a cap step: the refiner placed every phase line over the cap, where
-/// its ink is cut away (`ContourRefine.Contours`' ceiling), and every
+/// for a truncation step: the refiner placed every phase line over the truncation, where
+/// its curves are cut away (`ContourRefine.Contours`' ceiling), and every
 /// evaluation of ζ queued for one lock (`Zeta.weights`).
 @MainActor
 extension Document {
@@ -55,7 +55,7 @@ extension Document {
         surfaceWanted = nil
         // A different function is a different landscape, not an edit of this
         // one: its styling is the new function's defaults, so nothing of the
-        // old plate's cap or levels is carried across.
+        // old drawing's truncation or levels is carried across.
         send(request, framing: true, draft: false)
     }
 
@@ -70,7 +70,7 @@ extension Document {
         // them for the new rectangle -- the styling asked for, which may not
         // be drawn yet.
         if let styling, isLandscape {
-            request.caps = styling.caps
+            request.truncation = styling.truncation
             request.layers = styling.layers
         }
         send(request, framing: false, draft: draft)
@@ -128,17 +128,11 @@ extension Document {
     /// it is rather than where the catalog's defaults are. A bundle written by
     /// `landscape` records its own request in `provenance.params`.
     ///
-    /// A bundle from one of the retired Python plates records the plate's
-    /// arguments instead, under the function it sampled. When that function is
-    /// a catalog preset, the controls start from those arguments
-    /// (`request(fromPlate:)`), and the first edit -- or Rebuild -- is a native
-    /// landscape over the same window. A bundle whose provenance names nothing
-    /// in the catalog opens read-only.
+    /// Any other bundle -- a fixture, or one written by hand -- records no
+    /// request, and opens read-only.
     func adoptLandscape(_ bundle: KurvenBundle) {
         guard bundle.manifest.provenance.example == "function" else {
-            landscape = Self.request(fromPlate: bundle.manifest, catalog: catalog)
-            // Nothing on screen came from this request, so even an unchanged
-            // one is a landscape to build rather than one already shown.
+            landscape = nil
             shown = nil
             return
         }
@@ -157,7 +151,7 @@ extension Document {
             }(),
             domain: bundle.manifest.domain,
             resolution: Int(number("resolution") ?? 600),
-            caps: bundle.manifest.caps,
+            truncation: bundle.manifest.truncation,
             layers: bundle.manifest.layers,
             name: {
                 if case .some(.string(let s)) = params["name"] { return s }
@@ -168,38 +162,17 @@ extension Document {
         shown = request
     }
 
-    /// The request a plate bundle's provenance describes: the catalog preset it
-    /// names, over the window and at the resolution and truncation its
-    /// arguments record (`plateArguments`). Missing arguments fall back to the
-    /// manifest, which records the same window and caps. Nil when the function
-    /// is not in the catalog: then there is no native landscape to rebuild.
-    static func request(fromPlate manifest: Manifest, catalog: Catalog) -> LandscapeRequest? {
-        guard let preset = catalog.preset(manifest.provenance.function) else { return nil }
-        var request = LandscapeRequest(preset: preset, resolution: catalog.defaultResolution)
-        request.domain = manifest.domain
-        request.caps = manifest.caps
-        var arguments: [String: Double] = [:]
-        for (key, value) in manifest.provenance.params {
-            switch value {
-            case .double(let d): arguments[key] = d
-            case .int(let i): arguments[key] = Double(i)
-            default: break
-            }
-        }
-        return request.applying(plateArguments: arguments)
-    }
-
     // MARK: - restyling
 
     /// The styling the controls show: the latest asked for, else the bundle's.
     var styling: Styling? { styled ?? bundle.map { Styling($0.manifest) } }
 
-    /// Edit the styling and re-derive the ink from the grids already in
+    /// Edit the styling and re-derive the curves from the grids already in
     /// memory. The landscape is unchanged -- the samples are the samples -- so
     /// the camera, the framing and the window all stay exactly as they are.
     ///
     /// The edit lands in `styled` at once, where the controls read it, and
-    /// the ink follows from another thread (`redraw`).
+    /// the curves follow from another thread (`redraw`).
     func restyle(_ change: (inout Manifest) -> Void) {
         guard let bundle, navigator != nil, let before = styling else { return }
         var manifest = bundle.manifest
@@ -208,21 +181,21 @@ extension Document {
         let after = Styling(manifest)
         guard after != before else { return }
         styled = after
-        // A plate bundle being rebuilt keeps the cap it was given here, too.
-        if landscape != nil { landscape?.caps = after.caps }
+        // The next resample keeps the truncation given here.
+        if landscape != nil { landscape?.truncation = after.truncation }
         redraw()
     }
 
-    var caps: Caps { styling?.caps ?? .none }
+    var truncation: Truncation { styling?.truncation ?? .none }
 
     /// Switch the contour refinement on or off for the open landscape: the
-    /// same grids, the ink derived again, the camera where it was.
+    /// same grids, the curves derived again, the camera where it was.
     func setRefinement(_ on: Bool) {
         refineContours = on
         redraw()
     }
 
-    /// The one job that derives ink off the main actor, coalesced like the
+    /// The one job that derives curves off the main actor, coalesced like the
     /// resample: one in flight, and when it lands, whatever was asked for
     /// meanwhile. A restyle or a change of refinement comes first, since it
     /// draws every layer; a layer's levels after, on the bundle that results.
@@ -241,17 +214,17 @@ extension Document {
         let job: Job
         if target != current || refinementMoves {
             job = .restyle(target, refine: refinementMoves ? refine : nil)
-        } else if let draft = inkWanted, scene != nil {
+        } else if let draft = curvesWanted, scene != nil {
             job = .levels(draft: draft)
         } else {
             return
         }
-        inkWanted = job.isLevels ? nil : inkWanted
+        curvesWanted = job.isLevels ? nil : curvesWanted
         drawing = true
         let asked = version
         let levelSets = bundle.manifest.layers.indices.map { levels(forLayer: $0) }
-        let cached = derivedInk
-        // Said only when it is long enough to see: a cap that redraws within
+        let cached = derivedCurves
+        // Said only when it is long enough to see: a truncation that redraws within
         // a frame should not flicker the status line on every step.
         let slow = Task {
             try? await Task.sleep(for: .milliseconds(150))
@@ -273,9 +246,9 @@ extension Document {
                     styling.apply(to: &manifest)
                     return .restyled(b.restyled(manifest))
                 case .levels(let draft):
-                    let (layers, derived) = Document.inked(bundle, levels: levelSets,
-                                                           cached: cached, draft: draft)
-                    return .inked(layers, derived)
+                    let (layers, derived) = Document.stroked(bundle, levels: levelSets,
+                                                             cached: cached, draft: draft)
+                    return .stroked(layers, derived)
                 }
             }.value
             slow.cancel()
@@ -301,16 +274,16 @@ extension Document {
         switch drawn {
         case .restyled(let restyled):
             replace(bundle: restyled)
-            derivedInk = [:]
+            derivedCurves = [:]
             if styled == Styling(restyled.manifest) { styled = nil }
             guard let navigator, let preset = restyled.manifest.presets.first else { return }
             var scene = Scene(bundle: restyled, preset: preset)
             scene.camera = navigator.camera
             self.scene = scene
             // A layer drawn at levels of its own is drawn at them again.
-            if !levelCounts.isEmpty { inkWanted = inkWanted ?? false }
-        case .inked(let layers, let derived):
-            derivedInk = derived
+            if !levelCounts.isEmpty { curvesWanted = curvesWanted ?? false }
+        case .stroked(let layers, let derived):
+            derivedCurves = derived
             if let scene { self.scene = scene.drawing(layers) }
         }
     }
@@ -333,29 +306,29 @@ extension Document {
 
     private enum Drawn: Sendable {
         case restyled(KurvenBundle)
-        case inked([Layer], [Int: DerivedInk])
+        case stroked([Layer], [Int: DerivedCurves])
     }
 
     /// Truncate the landscape differently.
     ///
-    /// Everything follows: the heightfield the occluder meshes, the crest each
-    /// wall stroke rises to, where the plateaus are and therefore every cap
-    /// stroke and rim, and which contours are cut off by `Keep.belowCap`.
+    /// Everything follows: the heightfield the occluder meshes, the top edge each
+    /// wall stroke rises to, where the plateaus are and therefore every truncation
+    /// stroke and truncation edge, and which contours are cut off by `Restriction.belowTruncation`.
     /// All of it is derived, so all of it is this one assignment.
-    func setCaps(_ caps: Caps) {
-        // Overrides are of the levels the cap chose; a new cap chooses again.
+    func setTruncation(_ truncation: Truncation) {
+        // Overrides are of the levels the truncation chose; a new truncation chooses again.
         levelCounts = [:]
         restyle { manifest in
-            manifest.caps = caps
-            // The levels are absolute, so a cap raised past them would leave the
+            manifest.truncation = truncation
+            // The levels are absolute, so a truncation raised past them would leave the
             // top of the landscape blank. `LandscapeStyle` is the rule the
             // build used to choose them in the first place, applied again to the new
             // ceiling -- by name, because in a landscape's bundle those two
             // names are what the two magnitude families are called.
-            guard isLandscape, LandscapeStyle.ceiling(of: caps) != nil else { return }
-            let levels = LandscapeStyle.levels(under: caps)
+            guard isLandscape, LandscapeStyle.ceiling(of: truncation) != nil else { return }
+            let levels = LandscapeStyle.levels(under: truncation)
             for i in manifest.layers.indices {
-                guard case .contour(let field, _, let keep, let tiled)
+                guard case .contour(let field, _, let restriction, let tiled)
                         = manifest.layers[i].source else { continue }
                 let chosen: [Double]
                 switch manifest.layers[i].name {
@@ -364,7 +337,7 @@ extension Document {
                 default: continue
                 }
                 manifest.layers[i].source = .contour(field: field, levels: chosen,
-                                                     keep: keep, tiled: tiled)
+                                                     restriction: restriction, tiled: tiled)
             }
         }
     }
@@ -372,18 +345,15 @@ extension Document {
     /// The hatch spacing of one described hatching layer, in world units.
     func spacing(ofLayer index: Int) -> Double? {
         guard let spec = styling?.layers[safe: index] else { return nil }
-        switch spec.source {
-        case .wallHatch(_, let spacing, _, _, _, _): return spacing
-        case .capHatch(_, let spacing, _): return spacing
-        default: return nil
-        }
+        guard case .hatching(let hatching, _) = spec.source else { return nil }
+        return hatching.spacing
     }
 
     /// How many gaps a hatching layer rules along the domain's longer side,
     /// the side `LandscapeStyle.hatchSpacing` counts its seventy strokes on.
     ///
     /// Every face rounds its own count from the spacing and spreads its strokes
-    /// to fit, so the ruling a person sees is a count, not a length. Setting
+    /// to fit, so the hatching a person sees is a count, not a length. Setting
     /// the spacing from a whole count makes that count exact on the longer
     /// faces and the nearest whole one on the others.
     func hatchCount(ofLayer index: Int) -> Int? {
@@ -406,33 +376,26 @@ extension Document {
     func setSpacing(_ value: Double, ofLayer index: Int) {
         restyle { manifest in
             guard index < manifest.layers.count else { return }
-            switch manifest.layers[index].source {
-            case .wallHatch(let edges, _, let pitch, let trim, let base, let top):
-                manifest.layers[index].source = .wallHatch(
-                    edges: edges, spacing: value, pitch: pitch, trim: trim,
-                    base: base, topOffset: top)
-            case .capHatch(let axis, _, let tiled):
-                manifest.layers[index].source = .capHatch(axis: axis, spacing: value,
-                                                          tiled: tiled)
-            default: break
-            }
+            guard case .hatching(var hatching, let faces) = manifest.layers[index].source else { return }
+            hatching.spacing = value
+            manifest.layers[index].source = .hatching(hatching, faces: faces)
         }
     }
 
-    /// Which way the strokes on the truncated tops run.
-    func capHatchAxis() -> KeepAxis? {
+    /// Which way the strokes on the plateaus run.
+    func plateauHatchAxis() -> DomainAxis? {
         for spec in styling?.layers ?? [] {
-            if case .capHatch(let axis, _, _) = spec.source { return axis }
+            if let axis = spec.source.plateauHatchAxis { return axis }
         }
         return nil
     }
 
-    func setCapHatchAxis(_ axis: KeepAxis) {
+    func setPlateauHatchAxis(_ axis: DomainAxis) {
         restyle { manifest in
             for i in manifest.layers.indices {
-                if case .capHatch(_, let spacing, let tiled) = manifest.layers[i].source {
-                    manifest.layers[i].source = .capHatch(axis: axis, spacing: spacing,
-                                                          tiled: tiled)
+                if case .hatching(var hatching, .plateaus(let tiled)) = manifest.layers[i].source {
+                    hatching.angle = axis.angle
+                    manifest.layers[i].source = .hatching(hatching, faces: .plateaus(tiled: tiled))
                 }
             }
         }
@@ -443,7 +406,7 @@ extension Document {
     /// Write the landscape as a `.kurven` bundle.
     ///
     /// Everything that would go in it is already in memory, and half of it --
-    /// the cap, the levels, the spacing -- exists only here. A described bundle
+    /// the truncation, the levels, the spacing -- exists only here. A described bundle
     /// is a manifest and two grids, which is why this is short.
     func saveBundle(to url: URL) {
         guard let bundle else { return }
@@ -456,19 +419,19 @@ extension Document {
     }
 }
 
-/// What a restyle changes: the cap and the layers' descriptions. Everything
+/// What a restyle changes: the truncation and the layers' descriptions. Everything
 /// else in a manifest is the landscape's, and a restyle keeps it.
 struct Styling: Equatable, Sendable {
-    var caps: Caps
+    var truncation: Truncation
     var layers: [LayerSpec]
 
     init(_ manifest: Manifest) {
-        caps = manifest.caps
+        truncation = manifest.truncation
         layers = manifest.layers
     }
 
     func apply(to manifest: inout Manifest) {
-        manifest.caps = caps
+        manifest.truncation = truncation
         manifest.layers = layers
     }
 }
@@ -480,17 +443,17 @@ extension Array {
 }
 
 extension LandscapeRequest {
-    /// This request under a Python plate's arguments, as its provenance
-    /// recorded them: `rMin`, `rMax`, `iMin`, `iMax` the window, `res` the
-    /// resolution, `zLimit` a uniform cap. Other keys are not the landscape's
-    /// business (the plate's camera, its buffer) and are ignored.
-    func applying(plateArguments a: [String: Double]) -> LandscapeRequest {
+    /// This request with `KurvenApp --resample`'s overrides: `rMin`, `rMax`,
+    /// `iMin`, `iMax` the window, as a bundle's provenance records it, `res`
+    /// the resolution and `truncation` a uniform truncation height, as
+    /// `kurven-cli landscape` spells them. Other keys are ignored.
+    func applying(overrides a: [String: Double]) -> LandscapeRequest {
         var request = self
         request.domain = Domain(
             real: Interval(lo: a["rMin"] ?? domain.real.lo, hi: a["rMax"] ?? domain.real.hi),
             imag: Interval(lo: a["iMin"] ?? domain.imag.lo, hi: a["iMax"] ?? domain.imag.hi))
         if let res = a["res"] { request.resolution = Int(res.rounded()) }
-        if let z = a["zLimit"] { request.caps = .uniform(z) }
+        if let z = a["truncation"] { request.truncation = .uniform(z) }
         return request
     }
 }

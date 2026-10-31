@@ -11,7 +11,7 @@ truncated where, sampled how finely**) are a value, and everything else is
 derived from them by rules stated once.
 
 ```bash
-kurven-cli landscape "exp(1/z)" --re -1.2,1.2 --im -1.2,1.2 --cap 5 -o mine.kurven
+kurven-cli landscape "exp(1/z)" --re -1.2,1.2 --im -1.2,1.2 --truncation 5 -o mine.kurven
 kurven-cli landscape --function zeta --res 800 -o zeta.kurven     # a catalog preset
 kurven-cli bake mine.kurven -o mine.svg
 ```
@@ -81,10 +81,10 @@ contours exist; evaluations of f decide where they run.
 
 Near a zero, three more rules apply:
 
-- **Rings the lattice cannot see.** A zero found from a lattice minimum seeds
-  the rings around it when no lattice node falls inside them.
+- **Rings the grid cannot see.** A zero found from a grid minimum seeds
+  the rings around it when no grid node falls inside them.
 - **Phase lines past the bracket.** Every phase line meets at a zero, and the
-  lattice loses them a cell or two short. An open end inside the window is
+  grid loses them a cell or two short. An open end inside the window is
   followed by evaluating f: a step along the tangent, Newton back onto the level curve,
   until the line reaches the window's edge, the zero, or a point where the
   phase is undefined (f underflowed or is not finite).
@@ -93,7 +93,7 @@ Near a zero, three more rules apply:
   branch, the depth limit) breaks the run instead of being drawn across.
 
 `kurven-cli refine --function gamma` benchmarks it: for each contour layer,
-the grid's ink and the refined ink, timed, and the distance of each from
+the grid's curves and the refined curves, timed, and the distance of each from
 the true level curve (the residual over the gradient, in cells). At 600 samples across, gamma's
 magnitude vertices go from a worst error of 0.58 cells to zero and its chords
 from 0.16 to 0.02. The bake, the preview and the app refine whenever the
@@ -103,34 +103,46 @@ the stage the fixtures pin.
 ## Truncation, and the hatching that goes with it
 
 A pole makes a landscape unboundedly tall, and a picture of one is a needle and
-a floor. So the surface is truncated at a height h(x), which the code calls
-the cap. `Caps` sets it: no truncation, one height, or (gamma's case) a
-different height per band of Re z, so each spire's plateau reads from above.
+a floor. So the surface is truncated: the drawn surface is min(|f|, h(x)) for
+a truncation height h. `Truncation` sets it: none, one height, or (gamma's
+case) a different height per band of Re z, so each spire's plateau reads from
+above.
 
-The walls and the truncated tops are then hatched, which is the part every
+The walls and the plateaus are then hatched, which is the part every
 published plate wrote by hand, with hand-found spire radii and `while` loops
-stepping outward until |f| fell under the limit. Here it is four described
+stepping outward until |f| fell under the limit. Here it is three described
 layer kinds:
 
 | kind | what it draws |
 |---|---|
-| `wallHatch` | vertical strokes up the walls, every `spacing` along each perimeter edge, from the ground to the truncated surface |
-| `wallOutline` | each wall's crest and foot, and a post at each corner |
-| `capHatch` | parallel strokes across each plateau, at height h(x), ending exactly on the rim |
-| `capOutline` | the rim itself: the curve \|f\| = h(x), which under band caps is not a level curve of \|f\| at all |
+| `hatching` on `walls` | vertical hatch lines up the walls, every `spacing` along each perimeter edge, from the ground to the truncated surface |
+| `hatching` on `plateaus` | hatch lines along an axis across each plateau, at height h(x), ending exactly on the truncation edge |
+| `wallEdges` | each wall's top and bottom edges, and a vertical edge at each corner |
+| `truncationEdge` | where the graph meets the plateaus: the curve \|f\| = h(x), which under a banded truncation is not a level set of \|f\| at all |
+
+The hatchings are the same `Hatching` value that hatches a polyhedron's faces
+([solids.md](solids.md)), laid on different faces, and a manifest reads them
+by one rule. `step`, the distance between a line's vertices, may be left out
+on any face and is then the spacing; a wall's lines take a vertex every
+`step` of height, and a plateau's take one wherever they cross a grid line,
+so the step is not read there. The angle is π/2 on a wall and 0 or π/2 on a
+plateau, to within a thousandth of a radian, and the tone is uniform at one
+width; anything else is refused, and so is hatching on a solid's faces,
+since a manifest holds a heightfield.
 
 ## Two speeds of edit
 
-Because those layers are *descriptions* rather than dumped strokes, changing
+Because those layers are *descriptions* rather than stored curves, changing
 your mind costs one of two very different things:
 
 - **The function, the window, the resolution** need f evaluated again. That is a
   new landscape (`NativeLandscape.build`, sampled across the cores) and a new
   bundle: about 10 ms at 600², 70 ms for ζ.
 - **The truncation height, the contour levels, the hatch spacing** need nothing but the grids
-  already in memory. `KurvenBundle.restyled` re-derives the ink, the wall
+  already in memory. `KurvenBundle.restyled` re-derives the curves, the wall
   curtains and the plateaus, and the picture follows within a frame.
 
-Moving the truncation slider therefore moves the heightfield, the crest every
-wall stroke rises to, every plateau and rim stroke, and which
+Moving the truncation slider therefore moves the heightfield, the top edge
+every wall's hatch line rises to, every plateau hatch line and the truncation
+edge, and which
 contours are truncated, all from one assignment.

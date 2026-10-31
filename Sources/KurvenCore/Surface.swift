@@ -3,40 +3,40 @@ import simd
 
 /// The landscape: |f| on a grid, plus how it is truncated.
 ///
-/// `height` is unclamped, and the cap is a separate value. That separation is
-/// what lets a consumer change the cap without resampling -- the cap is a
+/// `height` is unclamped, and the truncation is a separate value. That separation is
+/// what lets a consumer change the truncation without resampling -- the truncation is a
 /// drawing decision about how much of a pole to show, and the samples do not
 /// depend on it.
 public struct Surface: Sendable {
     public let height: Grid2D<Float>
     public let phase: Grid2D<Float>?
-    public let caps: Caps
+    public let truncation: Truncation
     /// True when the samples came from a cache rather than an evaluator, in
     /// which case the Python side looks heights up by nearest pixel and this
-    /// side must too, or the walls sit at a different crest than the plate's.
+    /// side must too, or the walls sit at a different top edge than the drawing's.
     public let cached: Bool
 
-    public init(height: Grid2D<Float>, phase: Grid2D<Float>?, caps: Caps,
+    public init(height: Grid2D<Float>, phase: Grid2D<Float>?, truncation: Truncation,
                 cached: Bool = false) {
-        self.height = height; self.phase = phase; self.caps = caps; self.cached = cached
+        self.height = height; self.phase = phase; self.truncation = truncation; self.cached = cached
     }
 
     public var domain: Domain { height.domain }
 
     /// The clamped heightfield -- the surface the occluder is meshed from.
     public func clamped() -> Grid2D<Float> {
-        switch caps {
+        switch truncation {
         case .none:
             return height
         case .uniform(let z):
-            let cap = Float(z)
+            let truncationHeight = Float(z)
             return Grid2D(width: height.width, height: height.height,
-                          domain: height.domain, values: height.values.map { min($0, cap) })
+                          domain: height.domain, values: height.values.map { min($0, truncationHeight) })
         case .realBands:
             var out = height.values
             for x in 0..<height.width {
-                let cap = Float(caps.height(atX: height.position(x: x, y: 0).x))
-                for y in 0..<height.height { out[y * height.width + x] = min(out[y * height.width + x], cap) }
+                let truncationHeight = Float(truncation.height(atX: height.position(x: x, y: 0).x))
+                for y in 0..<height.height { out[y * height.width + x] = min(out[y * height.width + x], truncationHeight) }
             }
             return Grid2D(width: height.width, height: height.height,
                           domain: height.domain, values: out)
@@ -48,12 +48,12 @@ public struct Surface: Sendable {
         cached ? height.nearest(p) : height.sample(p)
     }
 
-    /// The height a wall rises to: `magnitude`, capped. `Surface.height_at`.
+    /// The height a wall rises to: `magnitude`, truncated. `Surface.height_at`.
     public func height(at p: P2<DomainSpace>) -> Double {
-        min(magnitude(at: p), caps.height(atX: p.x))
+        min(magnitude(at: p), truncation.height(atX: p.x))
     }
 
-    /// Every `step`-th sample, capped and lifted, without materializing a grid.
+    /// Every `step`-th sample, truncated and lifted, without materializing a grid.
     ///
     /// The bounds pass folds over three million points on elliptic and six
     /// million on zeta; it wants none of them kept. `clamped().decimated()`
@@ -61,22 +61,22 @@ public struct Surface: Sendable {
     public func forEachSample(step: Int, _ body: (P3<WorldSpace>) -> Void) {
         let g = height
         let columns = Array(stride(from: 0, to: g.width, by: max(step, 1)))
-        // The cap depends only on x, so it is one lookup per sampled column
+        // The truncation depends only on x, so it is one lookup per sampled column
         // rather than one per sample -- which is the whole difference between
-        // `Caps.realBands` costing nothing and costing a branch per point.
-        let columnCap = columns.map { caps.height(atX: g.position(x: $0, y: 0).x) }
+        // `Truncation.realBands` costing nothing and costing a branch per point.
+        let columnTruncation = columns.map { truncation.height(atX: g.position(x: $0, y: 0).x) }
         for y in stride(from: 0, to: g.height, by: max(step, 1)) {
             for (i, x) in columns.enumerated() {
                 let p = g.position(x: x, y: y)
-                body(P3(p.x, p.y, min(Double(g[x, y]), columnCap[i])))
+                body(P3(p.x, p.y, min(Double(g[x, y]), columnTruncation[i])))
             }
         }
     }
 
     /// The height of a *tiled* landscape at a world point.
     ///
-    /// The grid covers one fundamental tile; the plate covers its images under
-    /// the occluder's affine maps. A point out on the plate is therefore not in
+    /// The grid covers one fundamental tile; the drawing covers its images under
+    /// the occluder's affine maps. A point out on the drawing is therefore not in
     /// the grid, and asking the grid about it returns whatever is nearest the
     /// edge -- which for elliptic, whose cutout runs across all nineteen tiles
     /// and whose tile edge is a pole, is a spire-high wall standing along the
@@ -92,8 +92,8 @@ public struct Surface: Sendable {
         height(at: inTile(p, tiles: tiles))
     }
 
-    /// |f| at a world point of a tiled landscape, uncapped: `height(at:tiles:)`
-    /// before the cap.
+    /// |f| at a world point of a tiled landscape, untruncated: `height(at:tiles:)`
+    /// before the truncation.
     func magnitude(at p: P2<DomainSpace>, tiles: [Affine2]) -> Double {
         magnitude(at: inTile(p, tiles: tiles))
     }
@@ -126,27 +126,27 @@ public struct Surface: Sendable {
 
     /// The height as the depth pass draws it over a domain point: the grid
     /// decimated by `step`, each cell as the two triangles the rasterizer
-    /// splits it into -- from corner (1, 0) to corner (0, 1) -- then capped.
+    /// splits it into -- from corner (1, 0) to corner (0, 1) -- then truncated.
     /// `height(at:)` interpolates bilinearly, which is what the Python plate
-    /// placed its ink by and the fixtures pin; this is what the ink is drawn
+    /// placed its curves by and the fixtures pin; this is what the curves are drawn
     /// against, and the two differ within a cell by its twist.
     func drawnHeight(at p: P2<DomainSpace>, step: Int) -> Double {
         let drawn = drawnSurface(at: p, step: step)
-        return min(drawn.interpolated, drawn.cap)
+        return min(drawn.interpolated, drawn.truncationHeight)
     }
 
-    /// `drawnHeight` as the two numbers it is the lesser of -- the lattice's
-    /// interpolated height and the cap over the point -- with the cosine of
-    /// the interpolating facet's tilt, `1 / sqrt(1 + |∇h|²)`, which turns a
-    /// vertical gap to that facet into a perpendicular distance.
+    /// `drawnHeight` as the two numbers it is the lesser of -- the grid's
+    /// interpolated height and the truncation over the point -- with the cosine of
+    /// the interpolating triangle's tilt, `1 / sqrt(1 + |∇h|²)`, which turns a
+    /// vertical gap to that triangle into a perpendicular distance.
     func drawnSurface(at p: P2<DomainSpace>, step: Int)
-        -> (interpolated: Double, cap: Double, cosine: Double)
+        -> (interpolated: Double, truncationHeight: Double, cosine: Double)
     {
         let g = height
         let step = max(step, 1)
         let nx = (g.width + step - 1) / step, ny = (g.height + step - 1) / step
-        let cap = caps.height(atX: p.x)
-        guard nx >= 2, ny >= 2 else { return (Double(g[0, 0]), cap, 1) }
+        let truncationHeight = truncation.height(atX: p.x)
+        guard nx >= 2, ny >= 2 else { return (Double(g[0, 0]), truncationHeight, 1) }
         let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1)) * Double(step)
         let dy = abs(g.domain.imag.length) / Double(max(g.height - 1, 1)) * Double(step)
         let f = g.index(of: p) / Double(step)
@@ -162,53 +162,53 @@ public struct Surface: Sendable {
         let hx = (lower ? h10 - h00 : h11 - h01) / dx
         let hy = (lower ? h01 - h00 : h11 - h10) / dy
         let cosine = 1 / (1 + hx * hx + hy * hy).squareRoot()
-        return (h.isNaN ? .infinity : h, cap, cosine.isNaN ? 0 : cosine)
+        return (h.isNaN ? .infinity : h, truncationHeight, cosine.isNaN ? 0 : cosine)
     }
 
-    /// Lift a domain point onto the (capped) surface.
+    /// Lift a domain point onto the (truncated) surface.
     public func lift(_ p: P2<DomainSpace>) -> P3<WorldSpace> {
         P3(p.x, p.y, height(at: p))
     }
 }
 
-// MARK: - deriving ink from the grids
+// MARK: - deriving curves from the grids
 
-/// What a consumer that has the function supplies, so the ink can be placed by
+/// What a consumer that has the function supplies, so the curves can be placed by
 /// f rather than by the grid. Core has the grids and not the function;
 /// `KurvenLandscape`'s `ContourRefiner` builds one of these.
 public struct ContourRefine: Sendable {
     /// Moves the paths of one level of one field onto the function's own
     /// level set, given the field, the level, the marching-squares paths in
-    /// domain space, and the ceiling: the height above which the ink is cut
-    /// away (`Keep.belowCap`), so a stretch of a phase line wholly above it
+    /// domain space, and the ceiling: the height above which the curves are cut
+    /// away (`Restriction.belowTruncation`), so a stretch of a phase line wholly above it
     /// need not be placed. `.infinity` places all of it.
     public typealias Contours = @Sendable (ContourField, Double, [[P2<DomainSpace>]], Double)
         -> [[P2<DomainSpace>]]
-    /// |f| at a domain point, uncapped, as the grid would hold it.
+    /// |f| at a domain point, untruncated, as the grid would hold it.
     public typealias Magnitude = @Sendable (P2<DomainSpace>) -> Double
     /// A zero of f within a few cells of a domain point, or nil.
     public typealias Zero = @Sendable (P2<DomainSpace>) -> P2<DomainSpace>?
 
     public let contours: Contours
-    /// With it, the crest of a cut face gains a vertex at each minimum of |f|
-    /// between two grid nodes (`Surface.crest`), and a contour that ends on a
+    /// With it, the top edge of a cut face gains a vertex at each minimum of |f|
+    /// between two grid nodes (`Surface.topEdge`), and a contour that ends on a
     /// zero of f ends at the zero's height (`Surface.derive`). Nil for a
     /// consumer that can place contours and not heights.
     public let magnitude: Magnitude?
-    /// With it, a fold line that ends beside a zero of f is carried to the
-    /// zero (`Heightfield.foldLines`), as the refiner carries the phase lines.
+    /// With it, a fold curve that ends beside a zero of f is carried to the
+    /// zero (`Heightfield.foldCurves`), as the refiner carries the phase lines.
     public let zero: Zero?
     /// How far a chord may depart from the curve it stands for, in cells:
-    /// the refiner's own tolerance, which the crest of a cut face and the
-    /// fold lines are subdivided to as well, so every curve of the drawing
+    /// the refiner's own tolerance, which the top edge of a cut face and the
+    /// fold curves are subdivided to as well, so every curve of the drawing
     /// is a curve to the same tolerance.
     public let tolerance: Double
     /// The same refiner with nothing shared: f compiled again, into closures
-    /// of its own. Each thread of a parallel judgement takes one
+    /// of its own. Each thread of a parallel visibility test takes one
     /// (`Heightfield.parallelMap(_:chunk:worker:_:)`): a closure's context is
     /// a reference-counted object, and with every core calling the same one
     /// the counts were the cores writing one cache line in turn -- at
-    /// eighteen threads a march cost twice its single-threaded time, and
+    /// eighteen threads a traversal cost twice its single-threaded time, and
     /// forked, a third more. Nil, a refiner that cannot be forked, is shared.
     public let fork: (@Sendable () -> ContourRefine)?
 
@@ -243,34 +243,34 @@ public extension Surface {
         }
     }
 
-    /// Whether a lifted vertex survives a `Keep`.
-    func admits(_ p: P3<WorldSpace>, _ keep: Keep, region: Region) -> Bool {
-        switch keep {
+    /// Whether a lifted vertex survives a `Restriction`.
+    func admits(_ p: P3<WorldSpace>, _ restriction: Restriction, region: Region) -> Bool {
+        switch restriction {
         case .all: true
-        case .region: region.contains(p.xy)
-        case .belowCap: p.z <= caps.height(atX: p.x)
+        case .footprint: region.contains(p.xy)
+        case .belowTruncation: p.z <= truncation.height(atX: p.x)
         case .band(let axis, let lo, let hi):
             switch axis {
             case .real: p.x > lo && p.x < hi
             case .imag: p.y > lo && p.y < hi
             }
-        case .every(let all): all.allSatisfy { admits(p, $0, region: region) }
+        case .intersection(let all): all.allSatisfy { admits(p, $0, region: region) }
         }
     }
 
-    /// Where the segment from `a`, under the cap, to `b`, over it, reaches the
-    /// cap -- on the rim, at exactly the cap's height. Nil when it does not,
-    /// or when there is no cap.
+    /// Where the segment from `a`, below the truncation, to `b`, over it, reaches the
+    /// truncation -- on the truncation edge, at exactly the truncation height. Nil when it does not,
+    /// or when there is no truncation.
     ///
     /// Solved on the lifted heights, linearly: that is the same interpolation
-    /// the rim is contoured by, so the crossing lands on the drawn rim to
+    /// the truncation edge is contoured by, so the crossing lands on the drawn truncation edge to
     /// within a cell's bend.
-    func capCrossing(from a: P3<WorldSpace>, to b: P3<WorldSpace>) -> P3<WorldSpace>? {
-        let ea = a.z - caps.height(atX: a.x), eb = b.z - caps.height(atX: b.x)
+    func truncationCrossing(from a: P3<WorldSpace>, to b: P3<WorldSpace>) -> P3<WorldSpace>? {
+        let ea = a.z - truncation.height(atX: a.x), eb = b.z - truncation.height(atX: b.x)
         guard ea.isFinite, eb.isFinite, ea <= 0, eb > 0 else { return nil }
         let t = ea / (ea - eb)
         let x = a.x + (b.x - a.x) * t
-        return P3(x, a.y + (b.y - a.y) * t, caps.height(atX: x))
+        return P3(x, a.y + (b.y - a.y) * t, truncation.height(atX: x))
     }
 
     /// Every level of a described layer, contoured, lifted, filtered and tiled.
@@ -281,20 +281,20 @@ public extension Surface {
     /// zeta plate that drew straight chords up to half the width of the domain
     /// across ground the cutout had deliberately removed.
     ///
-    /// Where a path leaves by going *over the cap*, the split is at the cap
-    /// itself: the run gains a vertex on the rim (`capCrossing`) rather than
-    /// ending at its last vertex under it, which on a pole's flank is up to
-    /// half a world unit short. Only with a refiner: without one the ink is
+    /// Where a path leaves by going *over the truncation*, the split is at the truncation
+    /// itself: the run gains a vertex on the truncation edge (`truncationCrossing`) rather than
+    /// ending at its last vertex under it, which on a pole's graph is up to
+    /// half a world unit short. Only with a refiner: without one the curves are
     /// exactly what Python derives from the same grids, which ends at the
     /// last sample, and the fixtures hold it to that.
     ///
     /// A phase level of ±π is the cut, where arg f jumps, and the grid has no
-    /// contour at it. With a refiner it is drawn once, as one line of ink the
+    /// contour at it. With a refiner it is drawn once, as one line of curves the
     /// way the Jahnke-Emde plates draw it (`Contour.cut`), under the level π
     /// so the refiner knows to place it on arg(-f) = 0.
     func derive(_ source: LayerSource, policy: HeightPolicy, region: Region,
                 tiles: [Affine2], refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
-        guard case .contour(let field, let levels, let keep, let tiled) = source else {
+        guard case .contour(let field, let levels, let restriction, let tiled) = source else {
             return .empty
         }
         let grid: Grid2D<Float>
@@ -312,14 +312,14 @@ public extension Surface {
                 contoured.append((.pi, Contour.cut(of: grid)))
             }
         }
-        let carry = refine != nil && keep.keepsBelowCap
-        // Ink lifted to |f| and kept below the cap is cut away wherever |f|
+        let carry = refine != nil && restriction.requiresBelowTruncation
+        // Curves lifted to |f| and kept below the truncation are cut away wherever |f|
         // is above it, so the refiner need not place it there: on zeta and
         // 1/Γ that was nineteen phase vertices of every twenty. A tenth over
-        // the cap is room for a chord whose ends lie above it and whose middle
-        // dips under. Ink lifted to the capped surface is drawn on the cap's
+        // the truncation is room for a chord whose ends lie above it and whose middle
+        // dips under. Curves lifted to the truncated surface are drawn on the plateau's
         // top, and placed all over.
-        let ceiling = keep.keepsBelowCap && policy == .magnitude ? 1.1 * caps.highest : .infinity
+        let ceiling = restriction.requiresBelowTruncation && policy == .magnitude ? 1.1 * truncation.highest : .infinity
 
         // A refiner has the function the grid was sampled from and moves
         // the vertices onto its true level set, in domain space, before
@@ -337,15 +337,15 @@ public extension Surface {
         for ((level, _), refined) in zip(contoured, refinedLevels) {
             for line in refined {
                 // Lifted onto f where the function is at hand: a phase line
-                // lifted to the lattice's height stands a chord's error off
-                // the surface the rings, the folds and the crest are drawn
-                // on, and the judge hides it there or shows it floating.
+                // lifted to the grid's height stands a chord's error off
+                // the surface the rings, the folds and the top edge are drawn
+                // on, and the test hides it there or shows it floating.
                 var lifted: [P3<WorldSpace>]
                 if policy != .level, let magnitude = refine?.magnitude {
                     lifted = line.map { p in
                         let u = magnitude(p)
                         guard u.isFinite else { return lift([p], policy: policy, level: level)[0] }
-                        return P3(p.x, p.y, policy == .surface ? min(u, caps.height(atX: p.x)) : u)
+                        return P3(p.x, p.y, policy == .surface ? min(u, truncation.height(atX: p.x)) : u)
                     }
                 } else {
                     lifted = lift(line, policy: policy, level: level)
@@ -355,7 +355,7 @@ public extension Surface {
                 // pit's floor bottoms out at the nearest sample's height, a
                 // cell's rise above the zero, and lifting the end to the
                 // chord would hang the fan of phase lines that far above the
-                // crest that f draws under them. Only an end that *is* a zero,
+                // top edge that f draws under them. Only an end that *is* a zero,
                 // to rounding against the grid's own height, so a vertex the
                 // grid places a hair under f is left on the drawn surface.
                 if policy != .level, let magnitude = refine?.magnitude, !lifted.isEmpty {
@@ -369,19 +369,19 @@ public extension Surface {
                 var run: [P3<WorldSpace>] = []
                 var previous: (vertex: P3<WorldSpace>, admitted: Bool)?
                 for v in lifted {
-                    let admitted = admits(v, keep, region: region)
+                    let admitted = admits(v, restriction, region: region)
                     if admitted {
                         if carry, let p = previous, !p.admitted,
-                           let rim = capCrossing(from: v, to: p.vertex),
-                           admits(rim, keep, region: region) {
-                            run.append(rim)
+                           let truncationEdge = truncationCrossing(from: v, to: p.vertex),
+                           admits(truncationEdge, restriction, region: region) {
+                            run.append(truncationEdge)
                         }
                         run.append(v)
                     } else {
                         if carry, let p = previous, p.admitted,
-                           let rim = capCrossing(from: p.vertex, to: v),
-                           admits(rim, keep, region: region) {
-                            run.append(rim)
+                           let truncationEdge = truncationCrossing(from: p.vertex, to: v),
+                           admits(truncationEdge, restriction, region: region) {
+                            run.append(truncationEdge)
                         }
                         if run.count >= 2 { paths.append(run) }
                         run = []

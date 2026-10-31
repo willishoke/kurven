@@ -11,22 +11,22 @@ import KurvenMetal
 /// construction rather than by resemblance, and the bake is exact because the
 /// stage that decides visibility is a pure function of a `DepthImage`.
 public struct BakeOptions: Sendable {
-    /// Depth resolution, in pixels along each axis of the whole plate.
+    /// Depth resolution, in pixels along each axis of the whole drawing.
     public var resolution: Int
     /// How many tiles to split the depth *pass* into per axis. `nil` picks the
     /// smallest number that fits Metal's texture limit.
     public var tiles: Int?
-    /// Hidden-line margin; `nil` takes the scene's.
-    public var margin: Double?
+    /// Hidden-line depth tolerance; `nil` takes the scene's.
+    public var depthTolerance: Double?
     /// Trace the outline of the drawn region and add it as a final stroke
-    /// layer. Off by default: the plates are bounded by their own wall ink, and
+    /// layer. Off by default: the plates are bounded by their own wall strokes, and
     /// an outline on top of that is a second edge.
-    public var silhouette: Double?
+    public var outline: Double?
 
-    public init(resolution: Int, tiles: Int? = nil, margin: Double? = nil,
-                silhouette: Double? = nil) {
-        self.resolution = resolution; self.tiles = tiles; self.margin = margin
-        self.silhouette = silhouette
+    public init(resolution: Int, tiles: Int? = nil, depthTolerance: Double? = nil,
+                outline: Double? = nil) {
+        self.resolution = resolution; self.tiles = tiles; self.depthTolerance = depthTolerance
+        self.outline = outline
     }
 
     func tileCount(for resolution: Int) -> Int {
@@ -41,7 +41,7 @@ public enum BakeError: Error, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case .emptyScene: "bake: the scene projects to nothing (no geometry, no ink)"
+        case .emptyScene: "bake: the scene projects to nothing (no geometry, no strokes)"
         case .perspective:
             """
             bake: this camera is perspective, and only orthographic cameras bake.
@@ -53,9 +53,9 @@ public enum BakeError: Error, CustomStringConvertible {
 
 public struct Bake: Sendable {
     public let strokes: Strokes
-    /// The whole plate's depth, stitched from however many passes it took.
+    /// The whole drawing's depth, stitched from however many passes it took.
     public let depth: DepthImage
-    /// The whole plate's front-most surface coordinates, for a parametric
+    /// The whole drawing's front-most surface coordinates, for a parametric
     /// scene; nil for a heightfield.
     public let surface: SurfaceImage?
     /// How many passes that was, per axis.
@@ -67,18 +67,18 @@ public extension MetalRenderer {
     ///
     /// Tiling splits the *render*, never the clip. A path that crosses a tile
     /// boundary has vertices decided by two different passes, and clipping each
-    /// pass separately breaks the path at the seam: the segment joining the last
+    /// pass separately breaks the path at the tile boundary: the segment joining the last
     /// vertex on one side to the first on the other is drawn by neither, and a
     /// single stranded vertex is dropped as a run shorter than two. So the
     /// passes are stitched into one `DepthImage` first and the clip runs once
-    /// over the whole plate. That costs the full buffer in memory -- 1.6 GB for
+    /// over the whole drawing. That costs the full buffer in memory -- 1.6 GB for
     /// gamma's 20000-square bake, held while the tiles are still being drawn --
     /// and buys a bake that does not depend on how it was split. A single pass
     /// skips the stitch entirely and is handed straight to the clip.
     ///
-    /// Tiles meet on pixel boundaries -- `DepthFrame.tile` splits the lattice,
+    /// Tiles meet on pixel boundaries -- `DepthFrame.tile` splits the grid,
     /// not the coordinate range -- so a coordinate lands on the same pixel
-    /// however the pass was divided, and the stitched buffer has no seam.
+    /// however the pass was divided, and the stitched buffer has no gap.
     ///
     /// It is not bit-identical to a single pass, and cannot be: each pass
     /// derives its NDC mapping from its own sub-frame in float32, so a triangle
@@ -93,7 +93,7 @@ public extension MetalRenderer {
         guard let bounds = scene.viewBounds() else { throw BakeError.emptyScene }
         let frame = DepthFrame(covering: bounds, resolution: options.resolution)
         let n = options.tileCount(for: options.resolution)
-        let margin = options.margin ?? scene.margin
+        let depthTolerance = options.depthTolerance ?? scene.depthTolerance
 
         let depth: DepthImage
         let image: SurfaceImage?
@@ -101,7 +101,7 @@ public extension MetalRenderer {
         case .heightfield, .solid:
             image = nil
             if n == 1 {
-                // One pass is the whole plate. Copying it into a second buffer
+                // One pass is the whole drawing. Copying it into a second buffer
                 // of the same size to call it "stitched" was 390 ms of a 1.6 s
                 // bake at 16000 square, to produce a bit-identical array.
                 depth = try renderDepth(scene, frame: frame)
@@ -117,7 +117,7 @@ public extension MetalRenderer {
         case .parametric:
             // Depth and coordinates are stitched by the same code over the
             // same sub-frames, so a coordinate sits on the pixel its depth does
-            // however the plate was split.
+            // however the drawing was split.
             let whole: SurfaceImage
             if n == 1 {
                 whole = try renderSurface(scene, frame: frame)
@@ -148,47 +148,47 @@ public extension MetalRenderer {
         let visibility = scene.parametric.flatMap { s in
             image.map { SurfaceVisibility(surface: s, image: $0, view: scene.camera.view) }
         }
-        var layers: [(style: Style, paths: PolylineSet<PlateSpace>)] = []
-        for (layer, projected) in scene.judgedLayers(margin: margin) {
-            let clipped: PolylineSet<PlateSpace>
+        var layers: [(style: Style, paths: PolylineSet<PageSpace>)] = []
+        for (layer, projected) in scene.visibleLayers(depthTolerance: depthTolerance) {
+            let clipped: PolylineSet<PageSpace>
             if !layer.spec.clipped {
                 clipped = HiddenLine.pass(projected)
             } else if let visibility, projected.coords != nil {
-                // Ink that knows where on the surface it lies is judged by
-                // that, with no margin in it. An outline lies on a fold or
+                // Curves that know where on the surface they lie are tested by
+                // that, with no depth tolerance in it. An outline lies on a fold or
                 // a crease, where the normal says nothing.
                 let outline = layer.spec.role == .outline
                 let folds: Bool
-                if case .foldLines = layer.spec.source { folds = true } else { folds = false }
+                if case .foldCurves = layer.spec.source { folds = true } else { folds = false }
                 clipped = HiddenLine.clip(projected, on: visibility, onFolds: outline,
                                           onCrease: outline && !folds)
             } else if visibility != nil {
-                // Ink on a parametric surface that carries no coordinates
-                // falls back to depth, at the margin.
-                clipped = HiddenLine.clip(projected, against: depth, margin: margin)
+                // Curves on a parametric surface that carry no coordinates
+                // fall back to depth, at the depth tolerance.
+                clipped = HiddenLine.clip(projected, against: depth, depthTolerance: depthTolerance)
             } else {
-                // A heightfield's ink comes judged by the facing of what it
-                // lies on and by the solid (`SightMarch`); a solid's edges by
+                // A heightfield's curves come tested by the facing of what they
+                // lie on and by the solid (`GridTraversal`); a solid's edges by
                 // their faces (`Solid.visibleEdges`). Neither consults the
                 // depth buffer, which is why the drawing is the same at every
                 // resolution: the buffer is rendered for the `depth` output
-                // and the silhouette, and for nothing the ink depends on.
+                // and the outline, and for nothing the drawing depends on.
                 clipped = HiddenLine.pass(projected)
             }
             layers.append((Style(layer.spec), clipped))
         }
-        if let width = options.silhouette {
-            layers.append((Style(color: "#000000", width: width), depth.silhouette()))
+        if let width = options.outline {
+            layers.append((Style(color: "#000000", width: width), depth.outline()))
         }
         return Bake(strokes: Strokes(layers: layers), depth: depth, surface: image, tiles: n)
     }
 
-    /// Render the plate as `n x n` sub-frames and copy each into its place in
+    /// Render the drawing as `n x n` sub-frames and copy each into its place in
     /// one row-major array.
     ///
-    /// Tiles meet on pixel boundaries -- `DepthFrame.tile` splits the lattice,
+    /// Tiles meet on pixel boundaries -- `DepthFrame.tile` splits the grid,
     /// not the coordinate range -- so a pixel lands in the same place however
-    /// the plate was divided.
+    /// the drawing was divided.
     private func stitch<T>(_ frame: DepthFrame, _ n: Int,
                            _ render: (DepthFrame) throws -> [T]) throws -> [T] {
         var out: [T]?

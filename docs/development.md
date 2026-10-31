@@ -14,7 +14,7 @@ scripts/bundle-app.sh                     # assembles build/Kurven.app
 ```
 
 Build release for anything larger than a smoke test: the readback and the
-judge are tight scalar loops, and unoptimized Swift bounds-checks every element
+visibility tests are tight scalar loops, and unoptimized Swift bounds-checks every element
 of a several-hundred-megabyte buffer.
 
 Swift is the only implementation. Python is in the repository for one
@@ -33,7 +33,7 @@ scripts/check.sh --clean    # the same, rebuilding the package from scratch
 The Swift lane is the one that draws, and it is held to analytic references
 rather than to a second implementation: the depth pass to an exact ray cast of
 the heightfield, the refined contours to the function they were placed by,
-every judged line to a brute-force cast through the drawn solid (the stress
+every visible curve to a brute-force ray cast through the drawn solid (the stress
 suite, which also demands the drawing not change with resolution), and a
 surface's visibility to its analytic answer. The end-to-end comparisons that
 drew every plate in both languages were the cutover's test and are gone: they
@@ -52,7 +52,7 @@ The fixtures in `tests/fixtures` are in git and are of two kinds.
   when an oracle or a case changes, and commit the result on its own.
 - **Golden** sets are kurven's own answers, written by
   `kurven-cli fixtures tests/fixtures`: the schema round-trip bundles
-  (`contract/`), the plate cameras (`camera/`), the hidden-line clip
+  (`contract/`), the plates' cameras (`camera/`), the hidden-line clip
   (`clip/`), every hatching kind (`hatch/`), and three native landscapes with
   their specs (`expr/landscape_*`, `expr/landscapes.json`). A golden file proves
   nothing about correctness; it proves that a change to the output was made on
@@ -98,7 +98,7 @@ Sources/
   KurvenMath/      complex arithmetic, the special functions, the expression
                    language; depends on nothing
   KurvenCore/      pure values: spaces, camera, navigation, contours, the
-                   heightfield and its judge, hatching, solids, npy, SVG
+                   heightfield and its visibility, hatching, solids, npy, SVG
   KurvenLandscape/ a landscape sampled here: the catalog, the refiner, the
                    derived styling, the bundle
   KurvenDynamics/  parametric surfaces: tori, doubly periodic functions,
@@ -114,19 +114,22 @@ scripts/           check.sh, bundle-app.sh
 docs/gallery/      the README's figures and the script that bakes them
 ```
 
-## Bundles from the Python plates
+## Resampling a bundle without the window
 
-The four plates of the original atlas were Python programs, retired with the
-rest of the Python package; their bundles still open, since reading is native.
-A plate bundle records the plate's arguments in `provenance.params`, and when
-its `provenance.function` is a catalog preset the app fills the landscape
-controls from them (`rMin`, `rMax`, `iMin`, `iMax` the window, `res` the
-resolution, `zLimit` the cap) and Rebuild samples it natively. One whose
-function is not in the catalog opens read-only.
+A bundle `kurven-cli landscape` or the app wrote records its request in
+`provenance.params`, and the app can sample it again headlessly, through
+the same path an edit in the window takes, with overrides for the window
+(`rMin`, `rMax`, `iMin`, `iMax`), the resolution (`res`) and a uniform
+truncation height (`truncation`):
 
 ```bash
-KurvenApp --open recip.kurven --resample res=800 --screenshot recip.png
+KurvenApp --open gamma.kurven --resample res=800 --screenshot gamma.png
 ```
+
+Any other bundle, such as a golden fixture, records no request and opens
+read-only. The bundles of the original atlas's Python plates were written
+in schema 1, which kurven no longer reads; the catalog draws the same
+functions natively.
 
 ## Things worth knowing
 
@@ -141,4 +144,4 @@ KurvenApp --open recip.kurven --resample res=800 --screenshot recip.png
   its default window. Use `--open PATH`. The Finder and `open -a` were never
   affected.
 - **The README's figures** are baked by `python3 docs/gallery/make.py` from a
-  release build of the CLI. Rerun it after a change to how plates are drawn.
+  release build of the CLI. Rerun it after a change to how anything is drawn.

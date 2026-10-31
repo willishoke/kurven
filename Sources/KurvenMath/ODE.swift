@@ -19,7 +19,7 @@ public enum ODE {
     public struct Tolerance: Sendable, Equatable {
         public var relative: Double
         public var absolute: Double
-        /// A cap on the step, or nil for none. A system with a discontinuous
+        /// A truncation on the step, or nil for none. A system with a discontinuous
         /// right-hand side wants one, so a step cannot stride over the
         /// discontinuity and accept an error estimate that never saw it.
         public var maxStep: Double?

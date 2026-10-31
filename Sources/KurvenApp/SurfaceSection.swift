@@ -8,36 +8,36 @@ import KurvenDynamics
 /// Laid out as `LandscapeSection`'s literal rows are -- label, slider, field,
 /// stepper -- and like them, one undo step per drag, named for the control.
 /// Every control writes one field of the document's `SurfaceRequest` and the
-/// plate is built again from the one on screen (`SurfacePlate.build`), which
-/// redoes only what the edit touches. While a slider is dragged the plate is
+/// drawing is built again from the one on screen (`SurfaceDrawing.build`), which
+/// redoes only what the edit touches. While a slider is dragged the drawing is
 /// built from `SurfaceRequest.drafted()`; the full request follows the release.
 ///
 /// What each costs, measured by `kurven-cli surface-costs` on an Apple M5
-/// Max at 1600×1200: the build from the plate before, plus the first preview
-/// frame after it -- which lays out the ink, and uploads a surface only when
+/// Max at 1600×1200: the build from the drawing before, plus the first preview
+/// frame after it -- which lays out the curves, and uploads a surface only when
 /// the surface moved.
 ///
 ///     torus    radii                    13 ms      new surface
-///              line counts              11 ms      ink only
-///              winding slope            11 ms      ink only
+///              line counts              11 ms      curves only
+///              linear curve slope       11 ms      curves only
 ///     sn       radii                     6 ms      contours re-placed, not resampled
 ///              modulus                 115 ms      resampled; 65 ms while dragging
-///              samples                 100 ms      resampled; ink only
-///     forced   ring radius              39 ms      lattice re-placed from state space;
+///              samples                 100 ms      resampled; curves only
+///     forced   ring radius              39 ms      grid re-placed from state space;
 ///                                                  7 ms while dragging
 ///              radius from, height from 32 ms      re-placed
-///              turns                 17–36 ms      the trajectory is a winding, placed
-///                                                  from the lattice; no draft needed
-///              parameter lines          38 ms      the map at every line vertex
-///              winding slope            15 ms      ink only; the trajectory's layout
+///              turns                 17–36 ms      the trajectory is a linear curve, placed
+///                                                  from the grid; no draft needed
+///              coordinate curves        38 ms      the map at every line vertex
+///              linear curve slope       15 ms      curves only; the trajectory's layout
 ///                                                  is kept
 ///              harmonics, fit length   390 ms      fitted again
 ///
 /// So the forced torus's fit is the one control that is not interactive, and
-/// it gets a stepper and a field rather than a slider. An ink edit lays out
+/// it gets a stepper and a field rather than a slider. A curve edit lays out
 /// only the layer it touched -- the preview keeps every other layer's
-/// vertices from the frame before -- and ink normals are read off the
-/// lattice, not asked of the map, so a new surface costs its lattice and
+/// vertices from the frame before -- and curve normals are read off the
+/// grid, not asked of the map, so a new surface costs its grid and
 /// little else.
 struct SurfaceSection: View {
     @Bindable var document: Document
@@ -57,7 +57,7 @@ struct SurfaceSection: View {
                 row(field, request)
             }
             lines(request)
-            winding(request)
+            linearCurves(request)
         }
         HStack {
             Button("Browse…") { document.browsing = true }.controlSize(.small)
@@ -104,7 +104,7 @@ struct SurfaceSection: View {
         case .trajectoryTurns:
             Control(label: "Turns", range: 1...600, step: 1, digits: 0,
                     help: "Turns of the forcing the trajectory is drawn for. The trajectory is "
-                        + "the winding at Ω/ω, and the slider rests at the denominators of "
+                        + "the linear curve at Ω/ω, and the slider rests at the denominators of "
                         + "Ω/ω's convergents, where it cuts the torus most evenly; between "
                         + "them it bands.")
         case .harmonics:
@@ -120,23 +120,23 @@ struct SurfaceSection: View {
         case .slope:
             Control(label: "Slope", range: 0...2, step: 0.001,
                     help: "Turns through the tube per turn round the ring. The slider rests "
-                        + "at fractions, where the winding closes, and on the forced torus at "
+                        + "at fractions, where the linear curve closes, and on the forced torus at "
                         + "the trajectory's own Ω/ω.")
         case .turns:
             Control(label: "Turns", range: 1...64, step: 1, digits: 0,
                     help: "How many turns round the ring a strand runs, unless it closes first.")
         case .strands:
             Control(label: "Strands", range: 1...12, step: 1, digits: 0,
-                    help: "Parallel windings, evenly spaced through the tube.")
+                    help: "Parallel linear curves, evenly spaced through the tube.")
         }
     }
 
-    /// Whether a drag of this control builds drafts. A winding, and the
-    /// trajectory, are ink alone, placed from the lattice, so their drags
-    /// build the full plate each step: the surface is kept and only their
+    /// Whether a drag of this control builds drafts. A linear curve, and the
+    /// trajectory, are curves alone, placed from the grid, so their drags
+    /// build the full drawing each step: the surface is kept and only their
     /// vertices are made again.
     private func drafts(_ field: SurfaceRequest.Field) -> Bool {
-        !SurfaceRequest.inkFields.contains(field)
+        !SurfaceRequest.curveFields.contains(field)
     }
 
     @ViewBuilder
@@ -151,7 +151,7 @@ struct SurfaceSection: View {
                            draft: false, label: c.label) })
             // A slider with detents rests at them: a value within a detent's
             // reach lands on it exactly, so a fraction is a fraction and the
-            // winding closes, and a convergent's turns are those turns.
+            // linear curve closes, and a convergent's turns are those turns.
             let detents = self.detents(field)
             LabeledContent(c.label) {
                 HStack(spacing: 8) {
@@ -212,12 +212,12 @@ struct SurfaceSection: View {
     private func lines(_ request: SurfaceRequest) -> some View {
         let isTorus = { if case .torus = request.shape { true } else { false } }()
         if !isTorus {
-            Toggle("Parameter lines", isOn: Binding(
+            Toggle("Coordinate curves", isOn: Binding(
                 get: { request.lines != nil },
                 set: { on in
                     var next = request
                     next.lines = on ? SIMD2(36, 18) : nil
-                    commit(next, label: "Parameter Lines")
+                    commit(next, label: "Coordinate Curves")
                 }))
                 .help("Lines of constant forcing phase and constant internal phase: the "
                       + "invariant circles and the curves across them.")
@@ -246,28 +246,28 @@ struct SurfaceSection: View {
         Stepper("", value: binding, in: 1...200, step: 2).labelsHidden()
     }
 
-    // MARK: - the winding
+    // MARK: - the linear curve
 
-    /// A winding: a straight line on the flat torus, drawn on this one. Its
+    /// A linear curve: a straight line on the flat torus, drawn on this one. Its
     /// slope is the control that moves in real time -- the surface never
-    /// sees the winding, so a new slope is its own vertices and nothing else.
+    /// sees the linear curve, so a new slope is its own vertices and nothing else.
     @ViewBuilder
-    private func winding(_ request: SurfaceRequest) -> some View {
-        Toggle("Winding", isOn: Binding(
-            get: { request.winding != nil },
+    private func linearCurves(_ request: SurfaceRequest) -> some View {
+        Toggle("Linear curve", isOn: Binding(
+            get: { request.linearCurves != nil },
             set: { on in
                 var next = request
-                // On, it starts at the trajectory's own winding when there is
+                // On, it starts at the trajectory's own linear curve when there is
                 // one to match, else at 2/5, which closes.
-                next.winding = on ? SurfaceRequest.Winding(slope: ownSlope ?? 0.4) : nil
-                commit(next, label: "Winding")
+                next.linearCurves = on ? SurfaceRequest.LinearCurves(slope: ownSlope ?? 0.4) : nil
+                commit(next, label: "Linear curve")
             }))
             .help("A straight line through the parameter rectangle, so many turns through "
                   + "the tube per turn round the ring, drawn on the torus. A fraction closes; "
-                  + "anything else winds on. On the forced torus the trajectory is the winding "
+                  + "anything else winds on. On the forced torus the trajectory is the linear curve "
                   + "at the system's own Ω/ω.")
-        if let w = request.winding {
-            ForEach(SurfaceRequest.windingFields, id: \.self) { field in
+        if let w = request.linearCurves {
+            ForEach(SurfaceRequest.linearCurveFields, id: \.self) { field in
                 row(field, request)
             }
             Text(describe(w)).font(.caption).foregroundStyle(.secondary)
@@ -291,7 +291,7 @@ struct SurfaceSection: View {
     /// Where a slider rests.
     ///
     /// The slope's: on a forced torus, the rotation number Ω/ω and its
-    /// convergents -- the closed windings the trajectory is nearly, which
+    /// convergents -- the closed linear curves the trajectory is nearly, which
     /// dragging to from Ω/ω shows the orbit locking to; on any other torus,
     /// every fraction with a denominator up to eight. The trajectory's turns:
     /// the convergents' denominators, where the trajectory cuts the torus
@@ -317,16 +317,16 @@ struct SurfaceSection: View {
         }
     }
 
-    /// The trajectory's own winding, when the plate on screen is a fitted
+    /// The trajectory's own linear curve, when the drawing on screen is a fitted
     /// torus: its rotation number, Ω/ω.
-    private var ownSlope: Double? { document.plate?.torus?.rotationNumber }
+    private var ownSlope: Double? { document.surfaceDrawing?.torus?.rotationNumber }
 
     /// The rotation number's convergents within the turns slider's range.
     private var convergents: [ContinuedFraction.Convergent] {
         ownSlope.map { ContinuedFraction.convergents(of: $0, maxDenominator: 600) } ?? []
     }
 
-    private func describe(_ w: SurfaceRequest.Winding) -> String {
+    private func describe(_ w: SurfaceRequest.LinearCurves) -> String {
         let strands = w.count == 1 ? "One strand" : "\(w.count) strands"
         if let own = ownSlope, abs(w.slope - own) < 1e-12 {
             return "\(strands) at the trajectory's own Ω/ω, "

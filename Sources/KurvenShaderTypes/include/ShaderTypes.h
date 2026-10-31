@@ -26,19 +26,19 @@ typedef struct {
     // one matrix covers both. Which view component drives which screen axis is
     // folded in here too: the bake rasterizes in ZBuffer's order (rows index
     // view x) so it can be compared against Python, the preview in screen
-    // order (view x across) so it looks like the plate.
+    // order (view x across) so it looks like the drawing.
     simd_float4x4 clip;
 
-    // The heightfield's domain rectangle and its lattice size after decimation.
+    // The heightfield's domain rectangle and its grid size after decimation.
     simd_float2 domainLo;      // (real.lo, imag.lo)
     simd_float2 domainSize;    // (real.length, imag.length)
-    simd_uint2  lattice;       // samples along (real, imag)
+    simd_uint2  grid;          // samples along (real, imag)
     simd_uint2  gridSize;      // the full texture size, before decimation
-    uint32_t    step;          // texel stride: lattice sample i reads texel i*step
+    uint32_t    step;          // texel stride: grid sample i reads texel i*step
 
-    // A uniform cap stays a live knob (min() in the shader). Band caps are
+    // A uniform truncation stays a live knob (min() in the shader). Band truncations are
     // baked into the texture before upload, and this is +INFINITY for them.
-    float cap;
+    float truncationHeight;
 
     // Number of polygon corners bounding the rasterized region; 0 means the
     // whole rectangle.
@@ -60,9 +60,9 @@ typedef struct {
     simd_float3 position;
 } KVVertex;
 
-// A vertex of depth-tested ink: where it is and, for ink lying on a
+// A vertex of depth-tested strokes: where it is and, for strokes lying on a
 // heightfield, the surface's outward normal there, not normalized -- zero for
-// ink that is judged by depth alone.
+// strokes tested by depth alone.
 typedef struct {
     simd_float3 position;
     simd_float3 normal;
@@ -73,23 +73,23 @@ typedef struct {
 typedef struct {
     simd_float4 color;
     // Added to a line's view depth before it is compared with the surface --
-    // `outline.clip_hidden_lines`' margin, applied per fragment instead of per
+    // `outline.clip_hidden_lines`' depth tolerance, applied per fragment instead of per
     // vertex. That, and `slopeScale` below, are the whole gap between preview
     // and bake.
-    float margin;
+    float depthTolerance;
     // The value the depth texture holds where nothing was drawn.
     float empty;
     // How many pixels' worth of the surface's own depth change to add to the
-    // margin, per fragment. Preview only, and not in the bake: the preview
+    // depth tolerance, per fragment. Preview only, and not in the bake: the preview
     // compares a line's depth where it crosses a pixel with the surface's depth
     // at the pixel's centre, and on a surface that is steep in view those
-    // differ by more than any constant margin. Zero is the bake's predicate.
+    // differ by more than any constant depth tolerance. Zero is the bake's predicate.
     float slopeScale;
     // Key light direction in view space, and how much light reaches the parts
     // it does not.
     simd_float3 lightDirection;
     float ambient;
-    // The stroke's width in pixels. Ink is drawn as screen-space quads this
+    // The stroke's width in pixels. Strokes are drawn as screen-space quads this
     // wide, plus a pixel for the edge to fall off in.
     float strokeWidth;
     // View-depth range for the `.depth` inspection mode: what to map to black
@@ -100,7 +100,7 @@ typedef struct {
     simd_float2 viewport;
 } KVShading;
 
-// A parametric surface's lattice: how a vertex id becomes a texel of the
+// A parametric surface's grid: how a vertex id becomes a texel of the
 // position texture and a surface coordinate.
 typedef struct {
     // Texels along (u, v).
@@ -108,7 +108,7 @@ typedef struct {
     // Cells along (u, v): `samples` on a periodic axis, whose last cell closes
     // back onto texel 0, and `samples - 1` on a bounded one.
     simd_uint2 cells;
-    // The coordinate of lattice index 0, and the coordinate per index. Index
+    // The coordinate of grid index 0, and the coordinate per index. Index
     // `samples` on a periodic axis is one period past index 0, so a cell that
     // closes the seam interpolates across it rather than back through the
     // whole range.
@@ -120,26 +120,26 @@ typedef struct {
     simd_float2 depthRange;
 } KVSurface;
 
-// A vertex of ink drawn on a parametric surface: where it is, which way the
+// A vertex of strokes drawn on a parametric surface: where it is, which way the
 // surface faces there, and where on the surface it lies.
 typedef struct {
     simd_float3 position;
     // The *outward* normal, not normalized: the parametrization's normal times
     // the surface's orientation. Zero for a surface that bounds no solid, and
-    // for ink on the folds themselves, where facing is not asked.
+    // for strokes on the folds themselves, where facing is not asked.
     simd_float3 normal;
     simd_float2 coord;
-} KVInkVertex;
+} KVStrokeVertex;
 
-// What the ink test needs of the camera to ask which way a surface faces.
+// What the visibility test needs of the camera to ask which way a surface faces.
 typedef struct {
-    // World direction sight lines travel, for an orthographic camera.
+    // World direction lines of sight travel, for an orthographic camera.
     simd_float3 sight;
     // World position of the eye, for a perspective one.
     simd_float3 eye;
     uint32_t perspective;
-    // Nonzero for fold ink: judged by the front-most test alone.
+    // Nonzero for fold strokes: tested by the front-most test alone.
     uint32_t onFolds;
-} KVInk;
+} KVStroke;
 
 #endif /* KurvenShaderTypes_h */

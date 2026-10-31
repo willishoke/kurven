@@ -1,25 +1,25 @@
 import Foundation
 import simd
 
-/// Hidden lines for ink drawn on a parametric surface, decided by *where on
-/// the surface* the ink is rather than by how deep it is.
+/// Hidden lines for curves drawn on a parametric surface, decided by *where on
+/// the surface* the curves are rather than by how deep it is.
 ///
 /// Two tests, and each covers the other's blind spot:
 ///
-/// - **Facing.** On a surface that bounds a solid, ink whose outward normal
+/// - **Facing.** On a surface that bounds a solid, curves whose outward normal
 ///   faces away from the eye is hidden, full stop. This is the test the
 ///   second cannot make: across a fold the front and the back of the surface
 ///   are neighbours in coordinates, so "front-most is my neighbourhood" holds
 ///   on both sides of it.
-/// - **Nothing in front.** With the solid as a point test (`Enclosure`), the
-///   sight line from the ink is marched against it, stepping by the gap
+/// - **Nothing in front.** With the solid as a point test (`TubularNeighbourhood`), the
+///   line of sight from the curves are sphere-traced against it, stepping by the gap
 ///   over its Lipschitz constant so that no step can pass through the
 ///   solid: exact, with no pixel in it. Without one, the surface in front of
-///   the ink, at the ink's pixel or one beside it, must be the ink's own
+///   the curve, at the curve's pixel or one beside it, must be the curve's own
 ///   neighbourhood of the surface. A second sheet in front is far away in
-///   coordinates however close it is in depth, which is where a depth margin
+///   coordinates however close it is in depth, which is where a depth depth tolerance
 ///   fails; but a raster is right only to its resolution, and relief puts
-///   the ink where that runs out.
+///   the curves where that runs out.
 ///
 /// Where visibility changes along a segment -- at a fold, or where the
 /// segment passes behind something -- the segment is cut exactly there, by
@@ -27,29 +27,29 @@ import simd
 public struct SurfaceVisibility: Sendable {
     public let surface: ParametricSurface
     /// The coordinate image, which the front-most test reads; nil when the
-    /// march judges alone, since it asks nothing of a raster.
+    /// sphere tracing tests alone, since it asks nothing of a raster.
     public let image: SurfaceImage?
     public let view: Transform<WorldSpace, ViewSpace>
-    /// The direction sight lines travel, in world space.
+    /// The direction lines of sight travel, in world space.
     public let sight: SIMD3<Double>
 
     public init(surface: ParametricSurface, image: SurfaceImage,
                 view: Transform<WorldSpace, ViewSpace>) {
         self.surface = surface; self.image = image; self.view = view
-        self.sight = view.sightLine
+        self.sight = view.projectionDirection
     }
 
-    /// Visibility by the march alone, with no image: for a surface with an
-    /// `Enclosure`, judged anywhere without rendering anything first.
-    public init(marching surface: ParametricSurface, view: Transform<WorldSpace, ViewSpace>) {
-        precondition(surface.enclosure != nil, "only a surface with an enclosure is judged by the march alone")
+    /// Visibility by sphere tracing alone, with no image: for a surface with an
+    /// `TubularNeighbourhood`, tested anywhere without rendering anything first.
+    public init(sphereTracing surface: ParametricSurface, view: Transform<WorldSpace, ViewSpace>) {
+        precondition(surface.neighbourhood != nil, "only a surface with a tubular neighbourhood is tested by sphere tracing alone")
         self.surface = surface; self.image = nil; self.view = view
-        self.sight = view.sightLine
+        self.sight = view.projectionDirection
     }
 
-    /// Whether the ink is judged by the march against the solid, or by the
+    /// Whether the curves are tested by sphere tracing against the solid, or by the
     /// coordinate image.
-    public var marches: Bool { surface.enclosure != nil }
+    public var tracesSpheres: Bool { surface.neighbourhood != nil }
 
     /// Positive facing the eye, negative facing away, nil on a surface that
     /// bounds no solid.
@@ -86,9 +86,9 @@ public struct SurfaceVisibility: Sendable {
     /// Whether the front-most surface beside view point `p` is the surface at
     /// `c`.
     ///
-    /// The ink is within about a pixel of the nearest pixel's sample point,
+    /// The curves are within about a pixel of the nearest pixel's sample point,
     /// so on its own sheet the coordinates there differ from `c` by at most
-    /// about one footprint. Two footprints, plus one lattice cell for the
+    /// about one footprint. Two footprints, plus one grid cell for the
     /// sheet's own piecewise-linear rasterization, is the tolerance; another
     /// sheet is not within it except where the two meet, which is a fold and
     /// `facing` decides it. Nothing drawn in all nine pixels: nothing in
@@ -117,13 +117,13 @@ public struct SurfaceVisibility: Sendable {
     }
 
     /// Whether nothing of the solid stands between the surface point `q` and
-    /// the eye: the march.
+    /// the eye: sphere tracing.
     ///
-    /// Up the sight line from `q`, stepping by the gap over the solid's
+    /// Up the line of sight from `q`, stepping by the gap over the solid's
     /// Lipschitz constant, which cannot reach the solid, until the line has
     /// left the ball that holds it. Above the shell the gap is at least the
-    /// height over it, and that is the step, with no standoff asked. The
-    /// first step is a small fraction of the solid's size: the ink lies on
+    /// height over it, and that is the step, with no normal offset asked. The
+    /// first step is a small fraction of the solid's size: the curves lie on
     /// the surface to rounding, where the gap is zero and says nothing, and
     /// from a point facing the eye the line is outside from there on. On a
     /// fold the line is tangent, and the gap grows or shrinks with the
@@ -133,7 +133,7 @@ public struct SurfaceVisibility: Sendable {
     /// occluder thinner than it along the line can be stepped over; it is a
     /// hundred-thousandth of the solid, under any pixel.
     public func isClear(_ q: SIMD3<Double>) -> Bool {
-        guard let e = surface.enclosure else { return true }
+        guard let e = surface.neighbourhood else { return true }
         let d = -sight
         let o = q - e.centre
         let b = simd_dot(o, d), c = simd_dot(o, o) - e.radius * e.radius
@@ -148,39 +148,39 @@ public struct SurfaceVisibility: Sendable {
             let over = distance - e.above
             if over > least { t += over; continue }
             if distance < -e.below - eps { return false }
-            let gap = distance - e.standoff(coord)
+            let gap = distance - e.normalOffset(coord)
             if gap < -eps { return false }
             t += max(gap / e.lipschitz, least)
         }
         return true
     }
 
-    /// Ink at view point `p`, lying on the surface at `c`.
+    /// Curves at view point `p`, lying on the surface at `c`.
     public func isVisible(_ p: P3<ViewSpace>, at c: P2<ParamSpace>) -> Bool {
         isVisible(p, at: c, facing: facing(c))
     }
 
     func isVisible(_ p: P3<ViewSpace>, at c: P2<ParamSpace>, facing f: Double?) -> Bool {
         if let f, f <= 0 { return false }
-        if marches { return isClear(surface.map(c).position) }
+        if tracesSpheres { return isClear(surface.map(c).position) }
         return isFrontMost(c, at: p.xy)
     }
 
-    /// Ink at surface coordinate `c`, placed by the map: whether it is seen,
-    /// and where it is in the view. `facing` nil asks only the march, for
-    /// ink on the folds, where the facing is zero by construction.
-    func judge(_ c: P2<ParamSpace>, onFolds: Bool) -> (seen: Bool, at: P3<ViewSpace>) {
+    /// Curves at surface coordinate `c`, placed by the map: whether it is seen,
+    /// and where it is in the view. `facing` nil asks only sphere tracing, for
+    /// curves on the folds, where the facing is zero by construction.
+    func test(_ c: P2<ParamSpace>, onFolds: Bool) -> (seen: Bool, at: P3<ViewSpace>) {
         let world = surface.map(c).position
         let p = view(P3<WorldSpace>(world))
         if !onFolds, let f = facing(c), f <= 0 { return (false, p) }
-        return (marches ? isClear(world) : isFrontMost(c, at: p.xy), p)
+        return (tracesSpheres ? isClear(world) : isFrontMost(c, at: p.xy), p)
     }
 
     /// The point of a crease beside `c`, a point of the chord between two of
     /// its vertices: where the facing jumps, across the chord within half
     /// its length either way; `c` where no jump is in reach. The vertices
     /// are on the crease but the chord between them crosses a face, which
-    /// can face away where the crease is seen: a convex rim is seen where
+    /// can face away where the crease is seen: a convex truncation edge is seen where
     /// either of its faces is.
     public func ontoCrease(_ c: P2<ParamSpace>, chord: SIMD2<Double>) -> P2<ParamSpace> {
         let scale = SIMD2(surface.u.spacing, surface.v.spacing)
@@ -230,33 +230,33 @@ public struct SurfaceVisibility: Sendable {
 }
 
 public extension HiddenLine {
-    /// Hidden-line removal for ink that lies on a parametric surface and
+    /// Hidden-line removal for curves that lie on a parametric surface and
     /// carries its coordinates on it.
     ///
     /// The runs are `clip`'s -- hidden vertices split a path, and runs of
     /// fewer than two vertices draw nothing -- with one difference: a segment
     /// along which the verdict changes gains a vertex where it changes,
-    /// which belongs to the run on its visible side. Judged by the march,
+    /// which belongs to the run on its visible side. Visible by sphere tracing,
     /// that vertex is found by bisection on the whole test, so it lies on
-    /// the fold or on the silhouette of whatever came in front, whichever
-    /// cut the ink. Judged by the coordinate image, a segment that crosses a
+    /// the fold or on the outline of whatever came in front, whichever
+    /// cut the curves. Visible by the coordinate image, a segment that crosses a
     /// fold is cut at the fold, found on the exact normal, and that vertex is
-    /// judged by the front-most test alone, since on the fold the facing is
+    /// tested by the front-most test alone, since on the fold the facing is
     /// zero by construction.
     ///
-    /// Ink that lies on the folds themselves -- `ParametricSurface.foldLines`
+    /// Curves that lie on the folds themselves -- `ParametricSurface.foldCurves`
     /// -- is edge-on everywhere by construction, so its facing is noise about
-    /// zero and must not be asked: pass `onFolds` and it is judged by the
-    /// march or the front-most test alone. Ink on a crease -- a cap's rim --
-    /// is judged so too, and `onCrease` says so: there a cut is bisected on
+    /// zero and must not be asked: pass `onFolds` and it is tested by the
+    /// sphere tracing or the front-most test alone. Curves on a crease -- a truncation edge --
+    /// is tested so too, and `onCrease` says so: there a cut is bisected on
     /// the crease itself, each point moved onto it from the chord.
     ///
-    /// Every vertex is judged in parallel, and so is every cut: a march is
-    /// hundreds of evaluations of the standoff, and a cut is forty marches.
+    /// Every vertex is tested in parallel, and so is every cut: sphere tracing is
+    /// hundreds of evaluations of the normal offset, and a cut is forty sphere-traces.
     static func clip(_ paths: PolylineSet<ViewSpace>, on visibility: SurfaceVisibility,
-                     onFolds: Bool = false, onCrease: Bool = false) -> PolylineSet<PlateSpace> {
+                     onFolds: Bool = false, onCrease: Bool = false) -> PolylineSet<PageSpace> {
         guard let coords = paths.coords else {
-            preconditionFailure("clipping on a surface needs the ink's surface coordinates")
+            preconditionFailure("clipping on a surface needs the curves' surface coordinates")
         }
         let n = coords.count
         let facing: [Double?] = onFolds ? [Double?](repeating: nil, count: n)
@@ -265,13 +265,13 @@ public extension HiddenLine {
             visibility.isVisible(paths.vertices[k], at: coords[k], facing: facing[k])
         }
         // Every segment along which the verdict changes, and the vertex
-        // that goes in at the change. By the march, bisection on the test
+        // that goes in at the change. By sphere tracing, bisection on the test
         // itself; by the image, the fold crossing if there is one.
         var changes: [Int] = []
         for path in 0..<paths.count {
             let lo = paths.offsets[path], hi = paths.offsets[path + 1]
             for k in (lo + 1)..<hi where kept[k - 1] != kept[k]
-                || (!visibility.marches && facing[k - 1] != nil && facing[k] != nil
+                || (!visibility.tracesSpheres && facing[k - 1] != nil && facing[k] != nil
                     && (facing[k - 1]! > 0) != (facing[k]! > 0)) {
                 changes.append(k)
             }
@@ -279,15 +279,15 @@ public extension HiddenLine {
         let cuts: [(at: P3<ViewSpace>, seen: Bool)?] =
             Heightfield.parallelMap(changes, chunk: 1) { k -> (at: P3<ViewSpace>, seen: Bool)? in
                 let a = coords[k - 1], b = coords[k]
-                if visibility.marches {
+                if visibility.tracesSpheres {
                     guard kept[k - 1] != kept[k] else { return nil }
                     var lo = 0.0, hi = 1.0
                     var at = kept[k - 1] ? paths.vertices[k - 1] : paths.vertices[k]
                     while hi - lo > 1e-13 {
                         let mid = 0.5 * (lo + hi)
                         let c = P2<ParamSpace>(a.v + (b.v - a.v) * mid)
-                        let j = visibility.judge(onCrease ? visibility.ontoCrease(c, chord: b.v - a.v) : c,
-                                                 onFolds: onFolds)
+                        let j = visibility.test(onCrease ? visibility.ontoCrease(c, chord: b.v - a.v) : c,
+                                                onFolds: onFolds)
                         if j.seen == kept[k - 1] { lo = mid } else { hi = mid }
                         if j.seen { at = j.at }
                     }
@@ -303,8 +303,8 @@ public extension HiddenLine {
         var cut = [(at: P3<ViewSpace>, seen: Bool)?](repeating: nil, count: n)
         for (i, k) in changes.enumerated() { cut[k] = cuts[i] }
 
-        var out: [[P3<PlateSpace>]] = []
-        var run: [P3<PlateSpace>] = []
+        var out: [[P3<PageSpace>]] = []
+        var run: [P3<PageSpace>] = []
         func take(_ v: P3<ViewSpace>, _ visible: Bool) {
             if visible {
                 run.append(P3(v.v))

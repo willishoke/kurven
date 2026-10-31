@@ -7,8 +7,8 @@ import KurvenMath
 ///
 /// The Python module's contract is that a landscape is *derived* -- an
 /// expression, a rectangle, a resolution and a truncation are the whole of
-/// what it is, and every layer of its bundle is a description of ink rather
-/// than the ink. That is what let the frontend restyle without asking Python.
+/// what it is, and every layer of its bundle is a description of curves rather
+/// than the curves. That is what let the frontend restyle without asking Python.
 /// This is the other half of the same idea: with the evaluator in
 /// `KurvenMath`, the sampling does not need Python either, so a landscape is a
 /// value this process builds from a `LandscapeRequest` in the time it takes to
@@ -24,13 +24,13 @@ public enum NativeLandscape {
     public static let defaultResolution = 600
     /// The occluder's heightfield is decimated to about this many samples a side.
     public static let occluderResolution = 800
-    /// Where a non-finite sample is put instead: past any cap, and still a number.
+    /// Where a non-finite sample is put instead: past any truncation, and still a number.
     public static let huge = 1e12
 
-    public static let plate = PlateProjection(shear: 0.5, xAngle: -55.0, zAngle: -90.0,
-                                              flipX: true, yScale: nil)
-    public static let plateMargin = 0.02
-    public static let plateBuffer = 4000
+    public static let projection = ObliqueProjection(shear: 0.5, xAngle: -55.0, zAngle: -90.0,
+                                                     flipX: true, yScale: nil)
+    public static let defaultDepthTolerance = 0.02
+    public static let defaultBuffer = 4000
 
     /// Phase contours: every 90 degrees major, every 30 minor.
     public static let phaseMajor: [Double] = linspace(-.pi, .pi, 5)
@@ -78,7 +78,7 @@ public enum NativeLandscape {
 
     /// How far up to cut, read off the samples: a spire is a top more than
     /// three times the 99th percentile, cut at a round number near it.
-    public static func defaultCaps(_ magnitudes: [Double]) -> Caps {
+    public static func defaultTruncation(_ magnitudes: [Double]) -> Truncation {
         let finite = magnitudes.filter(\.isFinite).sorted()
         guard let top = finite.last else { return .none }
         let q = quantile(finite, 0.99)
@@ -86,13 +86,13 @@ public enum NativeLandscape {
         return .uniform(LandscapeStyle.nice(q))
     }
 
-    /// The highest |f| worth a contour: the cap when there is one, else a
+    /// The highest |f| worth a contour: the truncation when there is one, else a
     /// robust maximum of the samples.
-    public static func ceiling(of caps: Caps, magnitudes: [Double]) -> Double {
-        switch caps {
+    public static func ceiling(of truncation: Truncation, magnitudes: [Double]) -> Double {
+        switch truncation {
         case .uniform(let z): return z
         case .realBands(let bands, let beyond):
-            let tops = bands.map(\.cap) + (beyond.isFinite ? [beyond] : [])
+            let tops = bands.map(\.height) + (beyond.isFinite ? [beyond] : [])
             return tops.max() ?? 1
         case .none:
             let finite = magnitudes.filter(\.isFinite).sorted()
@@ -122,57 +122,57 @@ public enum NativeLandscape {
         return [min(alongReal, 4096), min(alongImag, 4096), min(alongReal, 4096), min(alongImag, 4096)]
     }
 
-    /// The whole plate, as descriptions: `kurven.landscape.default_layers`.
+    /// The whole drawing, as descriptions: `kurven.landscape.default_layers`.
     public static func defaultLayers(_ domain: Domain, shape: (nReal: Int, nImag: Int),
-                                     caps: Caps, ceiling: Double, spacing: Double?,
+                                     truncation: Truncation, ceiling: Double, spacing: Double?,
                                      phase: Bool = true) -> [LayerSpec] {
         let spacing = spacing ?? LandscapeStyle.hatchSpacing(domain)
         let (dx, dy) = cellSize(domain, shape)
-        let pitch = max(dx, dy)
+        let step = max(dx, dy)
         var (major, minor) = LandscapeStyle.magnitudeLevels(upTo: ceiling)
-        if case .none = caps {} else {
+        if case .none = truncation {} else {
             major = major.filter { $0 < ceiling - 1e-9 }
             minor = minor.filter { $0 < ceiling - 1e-9 }
         }
         let edges = [0, 1, 2, 3]
         var layers = [
             LayerSpec(name: "mag_major", role: .magnitude,
-                      source: .contour(field: .magnitude, levels: major, keep: .belowCap, tiled: false),
+                      source: .contour(field: .magnitude, levels: major, restriction: .belowTruncation, tiled: false),
                       width: 0.4, heightPolicy: .level),
         ]
         if phase {
             layers.append(LayerSpec(name: "ang_major", role: .phase,
                                     source: .contour(field: .phase, levels: phaseMajor,
-                                                     keep: .belowCap, tiled: false),
+                                                     restriction: .belowTruncation, tiled: false),
                                     width: 0.4, heightPolicy: .magnitude))
         }
         layers.append(LayerSpec(name: "mag_minor", role: .magnitude,
                                 source: .contour(field: .magnitude, levels: minor,
-                                                 keep: .belowCap, tiled: false),
+                                                 restriction: .belowTruncation, tiled: false),
                                 width: 0.15, heightPolicy: .level))
         if phase {
             layers.append(LayerSpec(name: "ang_minor", role: .phase,
                                     source: .contour(field: .phase, levels: phaseMinor,
-                                                     keep: .belowCap, tiled: false),
+                                                     restriction: .belowTruncation, tiled: false),
                                     width: 0.15, heightPolicy: .magnitude))
         }
         layers += [
-            LayerSpec(name: "cap_outline", role: .scaffold, source: .capOutline(tiled: false),
+            LayerSpec(name: "truncation_edge", role: .scaffold, source: .truncationEdge(tiled: false),
                       width: 0.4, heightPolicy: .level),
-            LayerSpec(name: "cap_hatch", role: .scaffold,
-                      source: .capHatch(axis: .real, spacing: spacing, tiled: false),
+            LayerSpec(name: "plateau_hatch", role: .scaffold,
+                      source: .plateauHatching(axis: .real, spacing: spacing, tiled: false),
                       width: 0.2, heightPolicy: .level),
-            LayerSpec(name: "wall_outline", role: .scaffold,
-                      source: .wallOutline(edges: edges, pitch: pitch, base: 0),
+            LayerSpec(name: "wall_edges", role: .scaffold,
+                      source: .wallEdges(edges: edges, step: step, base: 0),
                       width: 0.3, heightPolicy: .surface),
             LayerSpec(name: "wall_hatch", role: .scaffold,
-                      source: .wallHatch(edges: edges, spacing: spacing, pitch: pitch,
-                                         trim: true, base: 0, topOffset: 0),
+                      source: .wallHatching(edges: edges, spacing: spacing, step: step,
+                                            trim: true, base: 0, topOffset: 0),
                       width: 0.25, heightPolicy: .surface),
-            // The outline and inner silhouettes, derived per camera: the
-            // bounding curves along the curved edges, as the wall outline is
+            // The outline and inner fold curves, derived per camera: the
+            // bounding curves along the curved edges, as the walls' edges are
             // along the straight ones.
-            LayerSpec(name: "folds", role: .outline, source: .foldLines,
+            LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                       width: 0.4, heightPolicy: .surface),
         ]
         return layers
@@ -195,9 +195,9 @@ public enum NativeLandscape {
     }
 
     /// The same at a shape given outright, for a window that must line up
-    /// sample for sample with another: `PeriodicTorus.plate` samples the
+    /// sample for sample with another: `PeriodicTorus.drawing` samples the
     /// plane a few cells past a period rectangle on every side, on the
-    /// rectangle's own lattice extended.
+    /// rectangle's own grid extended.
     public static func sample(_ compiled: KurvenMath.Expression.Compiled, domain: Domain,
                               shape: (nReal: Int, nImag: Int)) -> Samples {
         let real = linspace(domain.real.lo, domain.real.hi, shape.nReal)
@@ -231,7 +231,7 @@ public enum NativeLandscape {
 
     /// `kurven.export.quantize`: to float32, clamped into the float64 range so
     /// rounding never invents a value the samples did not have -- a phase grid
-    /// with a value above π would contour at π where the plate has nothing.
+    /// with a value above π would contour at π where the drawing has nothing.
     public static func quantize(_ values: [Double]) -> [Float] {
         var lo = Double.infinity, hi = -Double.infinity
         for v in values where !v.isNaN { lo = min(lo, v); hi = max(hi, v) }
@@ -250,7 +250,7 @@ public enum NativeLandscape {
     ///
     /// With `refine`, the contour layers are placed by the function rather
     /// than by the grid (`ContourRefiner`), and the bundle carries the refiner
-    /// so every restyle keeps doing so. Off, the ink is exactly what the
+    /// so every restyle keeps doing so. Off, the curves are exactly what the
     /// Python side derives from the same grids, which is what the fixtures
     /// compare.
     public static func build(_ request: LandscapeRequest, gitSha: String = "native",
@@ -260,12 +260,12 @@ public enum NativeLandscape {
         let samples = sample(compiled, domain: request.domain, resolution: request.resolution)
         let shape = samples.shape
         let domain = request.domain
-        let caps = request.caps ?? defaultCaps(samples.magnitude)
+        let truncation = request.truncation ?? defaultTruncation(samples.magnitude)
         let density = wallDensity(domain, shape)
         let perimeter = rectangle(domain, density: density)
         let layers = request.layers ?? defaultLayers(
-            domain, shape: shape, caps: caps,
-            ceiling: ceiling(of: caps, magnitudes: samples.magnitude),
+            domain, shape: shape, truncation: truncation,
+            ceiling: ceiling(of: truncation, magnitudes: samples.magnitude),
             spacing: request.spacing)
         let step = max(1, max(shape.nReal, shape.nImag) / occluderResolution)
         let gridShape = (ny: shape.nImag, nx: shape.nReal)
@@ -273,12 +273,12 @@ public enum NativeLandscape {
             domain: domain,
             height: GridRef(file: "height.npy", shape: gridShape, dtype: .float32),
             phase: GridRef(file: "phase.npy", shape: gridShape, dtype: .float32),
-            caps: caps,
+            truncation: truncation,
             occluder: Occluder(step: step, tiles: [.identity],
                                walls: .perimeter(perimeter, base: 0), region: .full, base: 0),
             layers: layers,
-            presets: [CameraPreset(name: "plate", plate: plate, margin: plateMargin,
-                                   buffer: plateBuffer)],
+            presets: [CameraPreset(name: "oblique", projection: projection, depthTolerance: defaultDepthTolerance,
+                                   buffer: defaultBuffer)],
             provenance: Provenance(
                 function: canonical, example: "function",
                 params: ["expression": .string(canonical), "name": .string(request.name),
@@ -291,7 +291,7 @@ public enum NativeLandscape {
                             values: quantize(samples.magnitude))
         let phase = Grid2D(width: shape.nReal, height: shape.nImag, domain: domain,
                            values: quantize(samples.phase))
-        let surface = Surface(height: height, phase: phase, caps: caps, cached: false)
+        let surface = Surface(height: height, phase: phase, truncation: truncation, cached: false)
         let name = request.name.isEmpty ? "landscape" : request.name
         let refiner = refine ? ContourRefiner(compiled, domain: domain,
                                               width: shape.nReal, height: shape.nImag) : nil
@@ -301,11 +301,11 @@ public enum NativeLandscape {
 }
 
 /// The rules `kurven.landscape` derives a landscape's styling by, as far as
-/// the consumer needs them when the *cap* moves: pure arithmetic over one
+/// the consumer needs them when the *truncation* moves: pure arithmetic over one
 /// number, pinned against the Python answers in `kurven-test`.
 public enum LandscapeStyle {
     /// `x` rounded to a number a person would have chosen: 1, 2, 2.5 or 5 times
-    /// a power of ten. Down, for a spacing, where rounding up thins the ruling.
+    /// a power of ten. Down, for a spacing, where rounding up thins the hatching.
     public static func nice(_ x: Double, down: Bool = false) -> Double {
         guard x.isFinite, x > 0 else { return 1 }
         let scale = pow(10, (log10(x)).rounded(.down))
@@ -333,23 +333,23 @@ public enum LandscapeStyle {
         return (major, minor)
     }
 
-    /// The levels a landscape is actually given under these caps: the rule
-    /// above, less any level sitting exactly on the cap, which is the rim.
-    public static func levels(under caps: Caps)
+    /// The levels a landscape is actually given under these truncations: the rule
+    /// above, less any level sitting exactly on the plateau, which is the truncation edge.
+    public static func levels(under truncation: Truncation)
         -> (major: [Double], minor: [Double]) {
-        guard let ceiling = ceiling(of: caps) else { return ([], []) }
+        guard let ceiling = ceiling(of: truncation) else { return ([], []) }
         let all = magnitudeLevels(upTo: ceiling)
         return (all.major.filter { $0 < ceiling - 1e-9 },
                 all.minor.filter { $0 < ceiling - 1e-9 })
     }
 
-    /// The highest |f| worth a contour: the cap, when there is one.
-    public static func ceiling(of caps: Caps) -> Double? {
-        switch caps {
+    /// The highest |f| worth a contour: the truncation, when there is one.
+    public static func ceiling(of truncation: Truncation) -> Double? {
+        switch truncation {
         case .none: return nil
         case .uniform(let z): return z
         case .realBands(let bands, let beyond):
-            let tops = bands.map(\.cap) + (beyond.isFinite ? [beyond] : [])
+            let tops = bands.map(\.height) + (beyond.isFinite ? [beyond] : [])
             return tops.max()
         }
     }

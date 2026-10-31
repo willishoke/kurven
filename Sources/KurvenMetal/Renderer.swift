@@ -61,8 +61,8 @@ public final class MetalRenderer {
     let shadedSurfacePipeline: MTLRenderPipelineState
     let shadedWallPipeline: MTLRenderPipelineState
     let strokePipeline: MTLRenderPipelineState
-    // A parametric surface in the preview: as paper, shaded, and the ink on
-    // it, which is judged by surface coordinate rather than by depth.
+    // A parametric surface in the preview: as paper, shaded, and the strokes on
+    // it, which is tested by surface coordinate rather than by depth.
     let paramPaperPipeline: MTLRenderPipelineState
     let paramShadedPipeline: MTLRenderPipelineState
     let surfaceStrokePipeline: MTLRenderPipelineState
@@ -141,7 +141,7 @@ public final class MetalRenderer {
 
         // The colour pass has no depth attachment. It does not need one: pass 1
         // already holds the front-most view depth at every pixel, and both the
-        // shaded surface and the ink decide visibility by reading it. That is
+        // shaded surface and the strokes decide visibility by reading it. That is
         // one depth semantic in the program rather than two, and it is the same
         // one `clip_hidden_lines` uses.
         func colorPipeline(_ vertex: String, _ fragment: String,
@@ -199,9 +199,9 @@ public final class MetalRenderer {
     /// different places, which is exactly the shape a single entry serves. Two
     /// bundles means two renderers.
     private var cachedResources: SceneResources?
-    /// Keyed by the camera too when the scene has fold lines on a
+    /// Keyed by the camera too when the scene has fold curves on a
     /// heightfield, which are the camera's and are traced again when it moves.
-    var cachedLines: (ink: ContentID, camera: Camera?, draft: Bool, laid: JudgedLines,
+    var cachedLines: (curves: ContentID, camera: Camera?, draft: Bool, laid: VisibleLines,
                       geometry: LineGeometry)?
     private var target: DepthTarget?
     private var previewDepth: MTLTexture?
@@ -222,77 +222,77 @@ public final class MetalRenderer {
     /// heightfield's is: a tiled bake draws it once per tile.
     private var cachedSurface: (content: ContentID, resources: SurfaceResources)?
 
-    /// The static ink as last laid out, with the paths each layer was laid
-    /// out from: a new ink reuses every layer whose paths are the ones it
-    /// had -- the plate builder hands an unchanged layer's paths on as they
+    /// The static strokes as last laid out, with the paths each layer was laid
+    /// out from: a new strokes reuse every layer whose paths are the ones it
+    /// had -- the drawing builder hands an unchanged layer's paths on as they
     /// are, so the comparison is a storage identity, not a walk.
-    private var cachedSurfaceInk: (content: ContentID, ink: ContentID,
-                                   sources: [PolylineSet<WorldSpace>?],
-                                   geometry: SurfaceInkGeometry)?
-    private var cachedFolds: (content: ContentID, ink: ContentID, view: simd_double4x4,
-                              geometry: SurfaceInkGeometry)?
-    /// The lattice's normals, which the preview's folds are read from and
-    /// its ink's normals interpolated from: fixed for a surface, so a camera
-    /// move costs a dot product per lattice point and an ink edit four reads
+    private var cachedSurfaceStrokes: (content: ContentID, curves: ContentID,
+                                       sources: [PolylineSet<WorldSpace>?],
+                                       geometry: SurfaceStrokeGeometry)?
+    private var cachedFolds: (content: ContentID, curves: ContentID, view: simd_double4x4,
+                              geometry: SurfaceStrokeGeometry)?
+    /// The grid's normals, which the preview's folds are read from and
+    /// its strokes' normals interpolated from: fixed for a surface, so a camera
+    /// move costs a dot product per grid point and a curve edit four reads
     /// per vertex.
     private var cachedNormals: (content: ContentID, normals: [SIMD3<Float>])?
 
-    private func latticeNormals(for scene: Scene, surface: ParametricSurface) -> [SIMD3<Float>] {
+    private func gridNormals(for scene: Scene, surface: ParametricSurface) -> [SIMD3<Float>] {
         if let c = cachedNormals, c.content == scene.content { return c.normals }
-        let normals = surface.latticeNormals()
+        let normals = surface.gridNormals()
         cachedNormals = (scene.content, normals)
         return normals
     }
     private var cachedCoordinates: (texture: MTLTexture, depth: MTLTexture)?
 
-    /// Ink with coordinates, for the surface stroke shader. The fold lines
+    /// Strokes with coordinates, for the surface stroke shader. The fold curves
     /// are rebuilt when the camera does anything but stand still -- read off
-    /// the lattice, `latticeFoldLines`, not refined onto the exact fold as
-    /// the bake's are -- and everything else when the ink changes.
-    func surfaceInk(for scene: Scene, surface: ParametricSurface) throws -> SurfaceInk {
+    /// the grid, `gridFoldCurves`, not refined onto the exact fold as
+    /// the bake's are -- and everything else when the strokes changes.
+    func surfaceStrokes(for scene: Scene, surface: ParametricSurface) throws -> SurfaceStrokes {
         let onFolds = scene.layers.map { layer -> Bool in
-            if case .foldLines = layer.spec.source { return true }
+            if case .foldCurves = layer.spec.source { return true }
             return false
         }
-        let statics: SurfaceInkGeometry
-        if let c = cachedSurfaceInk, c.content == scene.content, c.ink == scene.ink {
+        let statics: SurfaceStrokeGeometry
+        if let c = cachedSurfaceStrokes, c.content == scene.content, c.curves == scene.curves {
             statics = c.geometry
         } else {
             // Layer by layer: the one the edit touched is laid out, and the
             // rest -- a trajectory's quarter-million normals -- are taken
             // from the last layout, when the surface is the same one.
             let sources = zip(scene.layers, onFolds).map { $1 ? nil : $0.paths }
-            let previous = cachedSurfaceInk.flatMap { $0.content == scene.content ? $0 : nil }
-            let lattice = sources.contains { $0?.coords != nil } && surface.outward != nil
-                ? latticeNormals(for: scene, surface: surface) : nil
-            let layers = sources.enumerated().map { i, paths -> [KVInkVertex] in
+            let previous = cachedSurfaceStrokes.flatMap { $0.content == scene.content ? $0 : nil }
+            let grid = sources.contains { $0?.coords != nil } && surface.outward != nil
+                ? gridNormals(for: scene, surface: surface) : nil
+            let layers = sources.enumerated().map { i, paths -> [KVStrokeVertex] in
                 if let previous, i < previous.sources.count, previous.sources[i] == paths {
                     return previous.geometry.layers[i]
                 }
-                // An outline -- a cap's rim -- lies on a crease, where the
-                // normal says nothing: laid out as fold ink, with no facing.
+                // An outline -- a truncation edge -- lies on a crease, where the
+                // normal says nothing: laid out as fold strokes, with no facing.
                 let crease = scene.layers[i].spec.role == .outline
-                return paths.map { SurfaceInkGeometry.layout($0, surface: surface, onFolds: crease,
-                                                             lattice: lattice) } ?? []
+                return paths.map { SurfaceStrokeGeometry.layout($0, surface: surface, onFolds: crease,
+                                                             grid: grid) } ?? []
             }
-            statics = try SurfaceInkGeometry(layers: layers, device: device)
-            cachedSurfaceInk = (scene.content, scene.ink, sources, statics)
+            statics = try SurfaceStrokeGeometry(layers: layers, device: device)
+            cachedSurfaceStrokes = (scene.content, scene.curves, sources, statics)
         }
         let view = scene.camera.view.m
-        let folds: SurfaceInkGeometry
-        if let c = cachedFolds, c.content == scene.content, c.ink == scene.ink, c.view == view {
+        let folds: SurfaceStrokeGeometry
+        if let c = cachedFolds, c.content == scene.content, c.curves == scene.curves, c.view == view {
             folds = c.geometry
         } else {
             var derived: PolylineSet<WorldSpace>?
             if onFolds.contains(true) {
-                derived = surface.latticeFoldLines(normals: latticeNormals(for: scene, surface: surface),
-                                                   sight: scene.camera.view.sightLine)
+                derived = surface.gridFoldCurves(normals: gridNormals(for: scene, surface: surface),
+                                                   sight: scene.camera.view.projectionDirection)
             }
-            folds = try SurfaceInkGeometry(onFolds.map { $0 ? derived : nil },
-                                           surface: surface, onFolds: onFolds, device: device)
-            cachedFolds = (scene.content, scene.ink, view, folds)
+            folds = try SurfaceStrokeGeometry(onFolds.map { $0 ? derived : nil },
+                                              surface: surface, onFolds: onFolds, device: device)
+            cachedFolds = (scene.content, scene.curves, view, folds)
         }
-        return SurfaceInk(statics: statics, folds: folds, onFolds: onFolds)
+        return SurfaceStrokes(statics: statics, folds: folds, onFolds: onFolds)
     }
 
     /// The preview's coordinate target and the depth attachment its pass
@@ -327,25 +327,25 @@ public final class MetalRenderer {
         return r
     }
 
-    /// Line geometry, cached on the scene's *ink* identity rather than its
+    /// Line geometry, cached on the scene's *strokes* identity rather than its
     /// content, so moving a level set rebuilds the strokes and leaves the
     /// heightfield texture alone.
     ///
-    /// Fold lines and wall ink on a heightfield are judged for the camera,
+    /// Fold curves and wall strokes on a heightfield are tested for the camera,
     /// so the geometry is the camera's too, and a draft of it is not the
-    /// judged one: a judged layout in hand serves a draft frame, since it is
-    /// the better picture, but a draft never serves a judged frame.
+    /// tested one: a tested layout in hand serves a draft frame, since it is
+    /// the better picture, but a draft never serves a tested frame.
     func lineGeometry(for scene: Scene, draft: Bool = false) throws -> LineGeometry {
-        let judged = LineGeometry.isJudged(scene)
-        let key: Camera? = judged ? scene.camera : nil
-        if let c = cachedLines, c.ink == scene.ink, c.camera == key,
-           !judged || (!c.draft && c.laid.serves(scene)) || draft {
+        let visible = LineGeometry.isTestedExactly(scene)
+        let key: Camera? = visible ? scene.camera : nil
+        if let c = cachedLines, c.curves == scene.curves, c.camera == key,
+           !visible || (!c.draft && c.laid.serves(scene)) || draft {
             return c.geometry
         }
-        let laid = LineGeometry.layOut(scene: scene, draft: judged && draft,
+        let laid = LineGeometry.layOut(scene: scene, draft: visible && draft,
                                        reusing: laidLines(for: scene))
         let g = try LineGeometry(laid, device: device)
-        cachedLines = (scene.ink, key, judged && draft, laid, g)
+        cachedLines = (scene.curves, key, visible && draft, laid, g)
         return g
     }
 
@@ -476,8 +476,8 @@ public final class MetalRenderer {
         let out = try target(rows: frame.rows, cols: frame.cols)
         var uniforms = KVUniforms(
             view: scene.camera.view.float4x4, clip: clipMatrix(scene, frame: frame),
-            domainLo: .zero, domainSize: .zero, lattice: SIMD2(0, 0), gridSize: SIMD2(0, 0),
-            step: 1, cap: .infinity, regionCount: 0, empty: Self.emptySentinel)
+            domainLo: .zero, domainSize: .zero, grid: SIMD2(0, 0), gridSize: SIMD2(0, 0),
+            step: 1, truncationHeight: .infinity, regionCount: 0, empty: Self.emptySentinel)
 
         let descriptor = MTLRenderPassDescriptor()
         descriptor.colorAttachments[0].texture = out.texture
@@ -524,17 +524,17 @@ public final class MetalRenderer {
     func uniforms(_ scene: Scene, frame: DepthFrame,
                   resources res: SceneResources) -> KVUniforms {
         let clip = clipMatrix(scene, frame: frame)
-        let d = res.latticeDomain
+        let d = res.decimatedDomain
         return KVUniforms(
             view: scene.camera.view.float4x4,
             clip: clip,
             domainLo: SIMD2<Float>(Float(d.real.lo), Float(d.imag.lo)),
             domainSize: SIMD2<Float>(Float(d.real.length), Float(d.imag.length)),
-            lattice: SIMD2<UInt32>(UInt32(res.latticeWidth), UInt32(res.latticeHeight)),
+            grid: SIMD2<UInt32>(UInt32(res.decimatedWidth), UInt32(res.decimatedHeight)),
             gridSize: SIMD2<UInt32>(UInt32(res.gridWidth), UInt32(res.gridHeight)),
             step: UInt32(scene.heightfield?.step ?? 1),
-            cap: res.capBaked ? .infinity
-                : Float(scene.heightfield?.surface.caps.height(atX: 0) ?? .infinity),
+            truncationHeight: res.truncationBaked ? .infinity
+                : Float(scene.heightfield?.surface.truncation.height(atX: 0) ?? .infinity),
             regionCount: UInt32(res.regionCount),
             empty: Self.emptySentinel)
     }
@@ -554,7 +554,7 @@ public extension MetalRenderer {
     /// error. Asking the GPU what it sees turns that into a test.
     static func probeUniformLayout(device: MTLDevice, sending uniforms: KVUniforms,
                                    and shading: KVShading, and surface: KVSurface,
-                                   and ink: (vertex: KVInkVertex, camera: KVInk))
+                                   and curves: (vertex: KVStrokeVertex, camera: KVStroke))
         throws -> (fields: [Float], sizes: [Int])
     {
         let library = try makeLibrary(device: device)
@@ -573,15 +573,15 @@ public extension MetalRenderer {
         var u = uniforms
         var sh = shading
         var sf = surface
-        var iv = ink.vertex
-        var ik = ink.camera
+        var iv = curves.vertex
+        var ik = curves.camera
         encoder.setComputePipelineState(pipeline)
         encoder.setBytes(&u, length: MemoryLayout<KVUniforms>.stride, index: 0)
         encoder.setBuffer(out, offset: 0, index: 1)
         encoder.setBytes(&sh, length: MemoryLayout<KVShading>.stride, index: 2)
         encoder.setBytes(&sf, length: MemoryLayout<KVSurface>.stride, index: 3)
-        encoder.setBytes(&iv, length: MemoryLayout<KVInkVertex>.stride, index: 4)
-        encoder.setBytes(&ik, length: MemoryLayout<KVInk>.stride, index: 5)
+        encoder.setBytes(&iv, length: MemoryLayout<KVStrokeVertex>.stride, index: 4)
+        encoder.setBytes(&ik, length: MemoryLayout<KVStroke>.stride, index: 5)
         encoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
         encoder.endEncoding()

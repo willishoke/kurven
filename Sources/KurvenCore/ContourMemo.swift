@@ -3,7 +3,7 @@ import Synchronization
 
 public extension ContourRefine {
     /// The ceiling a remembering refiner is asked about for `height`: the
-    /// next power of 2^(1/4) at or above it, so a cap dragged through a fifth
+    /// next power of 2^(1/4) at or above it, so a truncation dragged through a fifth
     /// of its height asks one question. A rung is its own rung, so one
     /// remembering refiner wrapped in another asks what it was asked.
     static func rung(above height: Double) -> Double {
@@ -14,21 +14,21 @@ public extension ContourRefine {
     /// The same refiner, remembering what it placed.
     ///
     /// Placing a contour on f is a function of the field, the level and the
-    /// grid's paths and of nothing else -- not the cap, not the hatching, not
+    /// grid's paths and of nothing else -- not the truncation, not the hatching, not
     /// which other layers there are. A restyle derives every layer again from
-    /// the same grids, so without this a cap slider re-solved every phase line
+    /// the same grids, so without this a truncation slider re-solved every phase line
     /// of the landscape on each step to clip them at a new height: 4.5 s on
     /// zeta, of which 5 ms was the clipping. With it, a restyle places only
-    /// the curves it has not placed before -- the rim at the new cap, the
+    /// the curves it has not placed before -- the truncation edge at the new truncation, the
     /// magnitude rings at the new levels -- and the rest is a lookup.
     ///
-    /// The answer for a key is the answer the refiner gives, so the ink is
+    /// The answer for a key is the answer the refiner gives, so the curves are
     /// the same with or without it, to the bit. What it costs is memory:
     /// every placed curve and the grid paths it came from, up to `budget`
     /// points, past which the least recently asked are forgotten.
     ///
     /// A ceiling is rounded up to a rung of `ContourRefine.rung`'s ladder
-    /// before it is asked about, so on one rung a cap slider's steps are the
+    /// before it is asked about, so on one rung a truncation slider's steps are the
     /// same question.
     func remembering(budget: Int = 4_000_000) -> ContourRefine {
         remembering(in: ContourMemo(budget: budget))

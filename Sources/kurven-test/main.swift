@@ -94,12 +94,28 @@ func contractTests() {
         Check.expectThrows("rejects an unsupported schema") {
             _ = try Manifest(json: mutated { $0["schema"] = .int(999) })
         }
+        Check.expectThrows("rejects schema 1, whose names schema 2 replaced") {
+            _ = try Manifest(json: mutated { $0["schema"] = .int(1) })
+        }
+        Check.expectThrows("rejects hatching on walls that is not vertical") {
+            let hatching = LayerSource.hatching(Hatching(angle: 0.3, spacing: 0.1),
+                                                faces: .walls(edges: [0], trim: true, base: 0, topOffset: 0))
+            _ = try LayerSource(json: hatching.json)
+        }
+        Check.expectThrows("rejects a tone other than uniform on plateaus") {
+            let hatching = LayerSource.hatching(Hatching(angle: 0, spacing: 0.1, tone: .turing(scale: 1, seed: 1)),
+                                                faces: .plateaus(tiled: false))
+            _ = try LayerSource(json: hatching.json)
+        }
+        Check.expectThrows("rejects hatching on a solid's faces: a manifest is a heightfield's") {
+            _ = try LayerSource(json: LayerSource.hatching(Hatching(angle: 0.3, spacing: 0.1), faces: .solid).json)
+        }
         Check.expectThrows("rejects a bundle in another axis order") {
             _ = try Manifest(json: mutated {
                 $0["axes"] = .array(["imag", "real", "magnitude"].map(JSONValue.string)) })
         }
-        Check.expectThrows("rejects an unknown cap kind") {
-            _ = try Manifest(json: mutated { $0["caps"] = .object(["kind": .string("logarithmic")]) })
+        Check.expectThrows("rejects an unknown truncation kind") {
+            _ = try Manifest(json: mutated { $0["truncation"] = .object(["kind": .string("logarithmic")]) })
         }
         Check.expectThrows("rejects an unknown wall kind") {
             _ = try Manifest(json: occluder("walls", .object(["kind": .string("spline")])))
@@ -174,14 +190,14 @@ func npyTests() {
 func cameraTests() {
     // The camera the published plates were drawn with. The projections were
     // scipy's Rotation composed as the Python plates composed it until the
-    // golden set was regenerated from Camera.plate (within 7.1e-15 of them).
-    Check.suite("camera: each plate preset lands on the committed projection") {
+    // golden set was regenerated from Camera.drawing (within 7.1e-15 of them).
+    Check.suite("camera: each projection preset lands on the committed projection") {
         for name in ["recip", "elliptic", "zeta"] {
             let spec = try Fixtures.json("camera/\(name).json")
-            let plate = try PlateProjection(json: spec.value("plate", "fixture"))
+            let projection = try ObliqueProjection(json: spec.value("projection", "fixture"))
             let world = try NPY.read(contentsOf: Fixtures.url("camera/\(name).points.npy")).rows3()
             let want = try NPY.read(contentsOf: Fixtures.url("camera/\(name).projected.npy")).rows3()
-            let camera = Camera.plate(plate)
+            let camera = Camera.oblique(projection)
             var worst = 0.0
             for (w, expected) in zip(world, want) {
                 worst = max(worst, simd_reduce_max(abs(camera.view(P3<WorldSpace>(w)).v - expected)))
@@ -192,10 +208,10 @@ func cameraTests() {
         }
     }
 
-    Check.suite("camera: the plate matrix is the composition it claims to be") {
-        let plate = PlateProjection(shear: 0.5, xAngle: -55, zAngle: -90,
-                                    flipX: true, yScale: 0.75)
-        let camera = Camera.plate(plate)
+    Check.suite("camera: the projection matrix is the composition it claims to be") {
+        let projection = ObliqueProjection(shear: 0.5, xAngle: -55, zAngle: -90,
+                                           flipX: true, yScale: 0.75)
+        let camera = Camera.oblique(projection)
         let p = P3<WorldSpace>(1.5, -2.25, 3)
         // The same thing spelled out in the library's own column order.
         var legacy = SIMD3(p.y, p.x, p.z)      // (imag, real, z)
@@ -207,7 +223,7 @@ func cameraTests() {
                      "folding the axis exchange into one matrix changes nothing")
 
         guard case .orthographic(let oblique) = camera.projection else {
-            Check.expect(false, "a plate camera is orthographic"); return
+            Check.expect(false, "an oblique camera is orthographic"); return
         }
         Check.expect(oblique?.shear == 0.5, "the oblique shear survives as a camera property")
     }
@@ -225,7 +241,7 @@ func clipTests() {
         let axis0 = try meta.doubles("axis0", "clip meta")
         let axis1 = try meta.doubles("axis1", "clip meta")
         let shape = try meta.ints("shape", "clip meta")
-        let margin = try meta.double("margin", "clip meta")
+        let depthTolerance = try meta.double("depthTolerance", "clip meta")
         let frame = DepthFrame(axis0: Interval(lo: axis0[0], hi: axis0[1]),
                                axis1: Interval(lo: axis1[0], hi: axis1[1]),
                                rows: shape[0], cols: shape[1],
@@ -238,7 +254,7 @@ func clipTests() {
             .map { P3<ViewSpace>($0) }
         let offsets = try NPY.read(contentsOf: Fixtures.url("clip/view.idx.npy")).ints()
         let got = HiddenLine.clip(PolylineSet(vertices: view, offsets: offsets),
-                                  against: depth, margin: margin)
+                                  against: depth, depthTolerance: depthTolerance)
 
         let wantVerts = try NPY.read(contentsOf: Fixtures.url("clip/expected.npy"))
         let wantOffsets = try NPY.read(contentsOf: Fixtures.url("clip/expected.idx.npy")).ints()
@@ -270,9 +286,9 @@ func clipTests() {
                                empty: sentinel)
         var alike = true
         for z in heights.map(Double.init) {
-            for margin in [0.0, 0.02, 0.2] {
-                let a = z + margin > python.depth(under: P2(0.25, 0.25))
-                let b = z + margin > metal.depth(under: P2(0.25, 0.25))
+            for depthTolerance in [0.0, 0.02, 0.2] {
+                let a = z + depthTolerance > python.depth(under: P2(0.25, 0.25))
+                let b = z + depthTolerance > metal.depth(under: P2(0.25, 0.25))
                 if a != b { alike = false }
             }
         }
@@ -302,15 +318,15 @@ func coreTests() {
             for c in 0..<frame.cols
             where frame.index(of: frame.coordinate(row: r, col: c)) != SIMD2(r, c) { ok = false }
         }
-        Check.expect(ok, "every lattice vertex round trips to its own pixel")
+        Check.expect(ok, "every grid vertex round trips to its own pixel")
         Check.expect(frame.index(of: P2(-2, 10)) == SIMD2(0, 0),
                      "the low corner lands on pixel 0, not -1 (the 0.01 nudge)")
     }
 
-    Check.suite("core: the NDC transform puts each sample point on its lattice vertex") {
+    Check.suite("core: the NDC transform puts each sample point on its grid vertex") {
         // Both raster orders, and the screen order's descending row axis, have
-        // to land on the same lattice the clipper indexes -- a half-pixel shift
-        // here shows up as ink leaking through the surface along silhouettes
+        // to land on the same grid the clipper indexes -- a half-pixel shift
+        // here shows up as curves leaking through the surface along outlines
         // and nowhere else.
         for (name, frame) in [
             ("buffer order", DepthFrame(axis0: Interval(lo: -2, hi: 3),
@@ -334,12 +350,12 @@ func coreTests() {
                     worst = max(worst, abs(h.y / h.w - (1 - Double(2 * r + 1) / Double(frame.rows))))
                 }
             }
-            Check.expect(roundTrips, "\(name): every lattice vertex indexes its own pixel")
+            Check.expect(roundTrips, "\(name): every grid vertex indexes its own pixel")
             Check.expect(worst < 1e-12, "\(name): no half-pixel shift", "worst |Δ| = \(worst)")
         }
     }
 
-    Check.suite("core: bake tiles partition the plate's lattice exactly") {
+    Check.suite("core: bake tiles partition the drawing's grid exactly") {
         let frame = DepthFrame(axis0: Interval(lo: -3, hi: 5), axis1: Interval(lo: 0, hi: 7),
                                rows: 240, cols: 240)
         for n in [1, 2, 3, 7] {
@@ -375,21 +391,21 @@ func coreTests() {
         Check.expect(!pointInPolygon(P2(0, 40), corners), "past the top")
     }
 
-    Check.suite("core: caps are a property of the model, and bands read in order") {
-        Check.expect(Caps.none.height(atX: 3) == .infinity, "no cap is no cap")
-        Check.expect(Caps.uniform(5).height(atX: -100) == 5, "a uniform cap ignores x")
-        let bands = Caps.realBands([RealBand(below: -3.5, cap: 8),
-                                    RealBand(below: -2.5, cap: 6),
-                                    RealBand(below: -1.5, cap: 4)], beyond: .infinity)
+    Check.suite("core: truncations are a property of the model, and bands read in order") {
+        Check.expect(Truncation.none.height(atX: 3) == .infinity, "no truncation is no truncation")
+        Check.expect(Truncation.uniform(5).height(atX: -100) == 5, "a uniform truncation ignores x")
+        let bands = Truncation.realBands([RealBand(below: -3.5, height: 8),
+                                    RealBand(below: -2.5, height: 6),
+                                    RealBand(below: -1.5, height: 4)], beyond: .infinity)
         Check.expect(bands.height(atX: -4) == 8 && bands.height(atX: -3) == 6
                      && bands.height(atX: -2) == 4 && bands.height(atX: 0) == .infinity,
                      "the first matching band wins, and past the last there is none")
-        // Gamma's calm region: past the spires there is still a cap.
-        let calm = Caps.realBands([RealBand(below: -3.5, cap: 2.5),
-                                   RealBand(below: 0.5, cap: 5.5)], beyond: 3.0)
+        // Gamma's calm region: past the spires there is still a truncation.
+        let calm = Truncation.realBands([RealBand(below: -3.5, height: 2.5),
+                                   RealBand(below: 0.5, height: 5.5)], beyond: 3.0)
         Check.expect(calm.height(atX: -4) == 2.5 && calm.height(atX: 0) == 5.5
                      && calm.height(atX: 2) == 3.0,
-                     "and `beyond` is the cap where no band matches")
+                     "and `beyond` is the truncation where no band matches")
     }
 
     Check.suite("core: CSR path identity cannot weld unrelated runs") {
@@ -404,10 +420,10 @@ func coreTests() {
         let a = Transform<WorldSpace, ViewSpace>(
             rows: (SIMD3(2, 0, 0), SIMD3(0, 1, 0), SIMD3(0, 0, 1)),
             translation: SIMD3(1, 0, 0))
-        let b = Transform<ViewSpace, PlateSpace>(
+        let b = Transform<ViewSpace, PageSpace>(
             rows: (SIMD3(1, 0, 0), SIMD3(0, 3, 0), SIMD3(0, 0, 1)))
         let p = P3<WorldSpace>(1, 2, 3)
-        Check.expect((a >>> b)(p) == b(a(p)) && (a >>> b)(p) == P3<PlateSpace>(3, 6, 3),
+        Check.expect((a >>> b)(p) == b(a(p)) && (a >>> b)(p) == P3<PageSpace>(3, 6, 3),
                      "a >>> b is 'apply a, then b'")
     }
 
@@ -462,10 +478,10 @@ func shaderTests() {
             clip: clipProbe,
             domainLo: SIMD2(301, 302),
             domainSize: SIMD2(401, 402),
-            lattice: SIMD2(501, 502),
+            grid: SIMD2(501, 502),
             gridSize: SIMD2(601, 602),
             step: 701,
-            cap: 801,
+            truncationHeight: 801,
             regionCount: 901,
             empty: -1001)
         // KVShading too. Its `simd_float3` is sixteen bytes with three used;
@@ -474,7 +490,7 @@ func shaderTests() {
         // black landscape, and is the reason this struct is probed as well.
         let shading = KVShading(
             color: SIMD4(11, 12, 13, 14),
-            margin: 21,
+            depthTolerance: 21,
             empty: 22,
             slopeScale: 23,
             lightDirection: SIMD3(31, 32, 33),
@@ -485,10 +501,10 @@ func shaderTests() {
         let surface = KVSurface(samples: SIMD2(71, 72), cells: SIMD2(73, 74),
                                 lo: SIMD2(75, 76), spacing: SIMD2(77, 78),
                                 depthRange: SIMD2(79, 80))
-        let inkVertex = KVInkVertex(position: SIMD3(81, 82, 83), normal: SIMD3(84, 85, 86),
-                                    coord: SIMD2(87, 88))
-        let inkCamera = KVInk(sight: SIMD3(89, 90, 91), eye: SIMD3(92, 93, 94),
-                              perspective: 95, onFolds: 96)
+        let strokeVertex = KVStrokeVertex(position: SIMD3(81, 82, 83), normal: SIMD3(84, 85, 86),
+                                          coord: SIMD2(87, 88))
+        let curveCamera = KVStroke(sight: SIMD3(89, 90, 91), eye: SIMD3(92, 93, 94),
+                                   perspective: 95, onFolds: 96)
 
         var want: [Float] = []
         for c in 0..<4 { for r in 0..<4 { want.append(v[c][r]) } }
@@ -501,7 +517,7 @@ func shaderTests() {
         let probe = try MetalRenderer.probeUniformLayout(device: device,
                                                          sending: sent, and: shading,
                                                          and: surface,
-                                                         and: (inkVertex, inkCamera))
+                                                         and: (strokeVertex, curveCamera))
         var mismatch: Int?
         for i in want.indices where i < probe.fields.count && probe.fields[i] != want[i] {
             mismatch = i; break
@@ -510,8 +526,8 @@ func shaderTests() {
                      "every field of all five structs arrives with the value it was given",
                      mismatch.map { "field \($0): sent \(want[$0]), saw \(probe.fields[$0])" } ?? "")
         let cpu = [MemoryLayout<KVUniforms>.size, MemoryLayout<KVShading>.size,
-                   MemoryLayout<KVSurface>.size, MemoryLayout<KVInkVertex>.size,
-                   MemoryLayout<KVInk>.size]
+                   MemoryLayout<KVSurface>.size, MemoryLayout<KVStrokeVertex>.size,
+                   MemoryLayout<KVStroke>.size]
         Check.expect(probe.sizes == cpu, "and the two agree on all five sizes",
                      "GPU \(probe.sizes), CPU \(cpu)")
     }
@@ -676,14 +692,14 @@ func hatchTests() {
     }
 
     Check.suite("hatch: every source reproduces the committed strokes") {
-        let caps = try index.value("caps", "hatch").object("hatch.caps")
+        let truncation = try index.value("truncation", "hatch").object("hatch.truncations")
         for case .object(let c) in try index.array("cases", "hatch") {
             let name = try c.string("name", "hatch.case")
             let source = try LayerSource(json: c.value("source", "hatch.case"))
             let surface = Surface(
                 height: grid, phase: nil,
-                caps: try Caps(json: caps.value(try c.string("caps", "hatch.case"),
-                                                "hatch.caps")))
+                truncation: try Truncation(json: truncation.value(try c.string("truncation", "hatch.case"),
+                                                "hatch.truncations")))
             let context = Surface.HatchContext(perimeter: perimeter)
             guard let derived = surface.hatch(source, in: context) else {
                 Check.expect(false, "\(name) is a hatching", "\(source)")
@@ -701,12 +717,12 @@ func hatchTests() {
                 continue
             }
             // A stroke is a stroke, vertex for vertex -- both sides walked the
-            // same samples in the same order. A *rim* is a marching-squares
+            // same samples in the same order. A *truncation edge* is a marching-squares
             // contour, and a closed loop has no first vertex: contourpy and
             // this walk can start the same curve at different points on it. So
-            // the rim is compared the way `contourTests` compares a contour, as
+            // the truncation edge is compared the way `contourTests` compares a contour, as
             // the set of segments it draws.
-            if case .capOutline = source {
+            if case .truncationEdge = source {
                 let a = segmentMidpoints(derived), b = segmentMidpoints(expected)
                 let (unmatched, worst) = strayed(a, b)
                 Check.expect(a.count == b.count && unmatched == 0,
@@ -731,23 +747,23 @@ func hatchTests() {
         }
     }
 
-    // What the ruling is for, held to arithmetic rather than to Python: the
+    // What the hatching is for, held to arithmetic rather than to Python: the
     // top's strokes split its width into equal whole gaps, and every one of
-    // them stands where a wall across it stands a stroke, so the ruling turns
+    // them stands where a wall across it stands a stroke, so the hatching turns
     // the corner instead of missing it. 0.3 does not divide the fixture's
     // width, which is the case the rule exists for.
-    Check.suite("hatch: a top's ruling divides its width and meets the walls") {
-        let caps = try index.value("caps", "hatch").object("hatch.caps")
+    Check.suite("hatch: a plateau's hatching divides its width and meets the walls") {
+        let truncation = try index.value("truncation", "hatch").object("hatch.truncations")
         let surface = Surface(height: grid, phase: nil,
-                              caps: try Caps(json: caps.value("uniform", "hatch.caps")))
+                              truncation: try Truncation(json: truncation.value("uniform", "hatch.truncations")))
         let context = Surface.HatchContext(perimeter: perimeter)
         let spacing = 0.3
         let across = grid.domain.imag
         let width = across.hi - across.lo
         let gaps = Double(Int((width / spacing + 0.5).rounded(.down)))
-        guard let top = surface.hatch(.capHatch(axis: .real, spacing: spacing, tiled: false),
+        guard let top = surface.hatch(.plateauHatching(axis: .real, spacing: spacing, tiled: false),
                                       in: context) else {
-            Check.expect(false, "the cap hatch derives")
+            Check.expect(false, "the plateau hatching derives")
             return
         }
         let rows = Set(top.paths.compactMap { $0.first?.y })
@@ -765,8 +781,8 @@ func hatchTests() {
             perimeter.edges[$0].start.x == perimeter.edges[$0].end.x
         }
         for i in crossing {
-            guard let wall = surface.hatch(.wallHatch(edges: [i], spacing: spacing, pitch: 0.5,
-                                                      trim: true, base: 0, topOffset: 0),
+            guard let wall = surface.hatch(.wallHatching(edges: [i], spacing: spacing, step: 0.5,
+                                                         trim: true, base: 0, topOffset: 0),
                                            in: context) else {
                 Check.expect(false, "the wall on edge \(i) derives")
                 continue
@@ -779,10 +795,10 @@ func hatchTests() {
         }
     }
 
-    // The rule for choosing contour levels under a cap runs twice: when a
-    // landscape is built, and again whenever the cap slider moves, because a
-    // level list is absolute and a raised cap would otherwise leave the top of
-    // the plate blank. Pinned to the numbers the Python rule chose, which the
+    // The rule for choosing contour levels under a truncation runs twice: when a
+    // landscape is built, and again whenever the truncation slider moves, because a
+    // level list is absolute and a raised truncation would otherwise leave the top of
+    // the drawing blank. Pinned to the numbers the Python rule chose, which the
     // golden index has carried unchanged since.
     Check.suite("landscape: the derived numbers are the committed ones") {
         let style = try index.value("style", "hatch").object("hatch.style")
@@ -845,29 +861,29 @@ func strayed(_ a: [SIMD3<Double>], _ b: [SIMD3<Double>]) -> (unmatched: Int, wor
     return (ca + cb, max(wa, wb))
 }
 
-/// Restyling: the edit path a cap slider takes.
+/// Restyling: the edit path a truncation slider takes.
 func restyleTests() {
-    Check.suite("restyle: a new cap re-derives the ink and keeps the landscape") {
+    Check.suite("restyle: a new truncation re-derives the curves and keeps the landscape") {
         let url = Fixtures.url("contract/landscape.kurven")
         guard FileManager.default.fileExists(atPath: url.path) else {
             Check.expect(false, "the landscape fixture bundle is present"); return
         }
         let bundle = try KurvenBundle.read(at: url)
         var manifest = bundle.manifest
-        manifest.caps = .uniform(0.9)
+        manifest.truncation = .uniform(0.9)
         let restyled = bundle.restyled(manifest)
 
         Check.expect(restyled.surface.height.values == bundle.surface.height.values,
                      "the samples are untouched -- this is a restyling, not a resampling")
-        Check.expect(restyled.surface.caps == .uniform(0.9),
-                     "the cap is the new one")
-        // Lowering the cap lowers every wall crest, so the wall hatch is
-        // strictly shorter; the rim moves outward, so the cap layers change too.
+        Check.expect(restyled.surface.truncation == .uniform(0.9),
+                     "the truncation is the new one")
+        // Lowering the truncation lowers every wall top edge, so the wall hatch is
+        // strictly shorter; the truncation edge moves outward, so the truncation layers change too.
         func height(_ b: KurvenBundle, _ name: String) -> Double {
             ((try? b.layer(name))?.paths.vertices.map(\.z).max()) ?? 0
         }
         Check.expect(height(restyled, "wall_hatch") <= 0.9 + 1e-9,
-                     "the wall hatch stops at the new cap",
+                     "the wall hatch stops at the new truncation",
                      "\(height(restyled, "wall_hatch"))")
         Check.expect(height(bundle, "wall_hatch") > 0.9,
                      "and reached higher before it",
@@ -879,7 +895,7 @@ func restyleTests() {
         // rather than quietly emptying it.
         let dumped = try KurvenBundle.read(at: Fixtures.url("contract/uniform_mesh.kurven"))
         var other = dumped.manifest
-        other.caps = .uniform(1.0)
+        other.truncation = .uniform(1.0)
         let keptA = try dumped.layer("mag").paths.count
         let keptB = try dumped.restyled(other).layer("mag").paths.count
         Check.expect(keptA == keptB && keptA > 0,
@@ -890,19 +906,19 @@ func restyleTests() {
 // MARK: - 7. navigation
 
 func navigationTests() {
-    let plates: [(String, PlateProjection)] = [
-        ("recip", PlateProjection(shear: 0.5, xAngle: -55, zAngle: -90, flipX: true, yScale: nil)),
-        ("elliptic", PlateProjection(shear: 0.51, xAngle: -63, zAngle: -90, flipX: true, yScale: nil)),
-        ("zeta", PlateProjection(shear: -0.18, xAngle: -79.5, zAngle: -90, flipX: true, yScale: 0.75)),
+    let projections: [(String, ObliqueProjection)] = [
+        ("recip", ObliqueProjection(shear: 0.5, xAngle: -55, zAngle: -90, flipX: true, yScale: nil)),
+        ("elliptic", ObliqueProjection(shear: 0.51, xAngle: -63, zAngle: -90, flipX: true, yScale: nil)),
+        ("zeta", ObliqueProjection(shear: -0.18, xAngle: -79.5, zAngle: -90, flipX: true, yScale: 0.75)),
     ]
 
-    // The bridge between "a plate" and "a thing you can orbit". If this fails,
-    // loading a preset jumps rather than starting where the plate is.
-    Check.suite("navigation: an orbit matching a preset IS the plate camera") {
+    // The bridge between "a drawing" and "a thing you can orbit". If this fails,
+    // loading a preset jumps rather than starting where the drawing is.
+    Check.suite("navigation: an orbit matching a preset IS the oblique camera") {
         let rng = SplitMix(seed: 4)
-        for (name, plate) in plates {
-            let a = Camera.plate(plate).view
-            let b = Orbit(matching: plate).camera.view
+        for (name, projection) in projections {
+            let a = Camera.oblique(projection).view
+            let b = Orbit(matching: projection).camera.view
             var worst = 0.0
             for _ in 0..<200 {
                 let p = P3<WorldSpace>(rng.next(-8, 8), rng.next(-30, 30), rng.next(0, 6))
@@ -916,8 +932,8 @@ func navigationTests() {
         let v = Viewport(width: 1200, height: 800)
         let rng = SplitMix(seed: 9)
         var worst = 0.0
-        for (_, plate) in plates {
-            var n = Navigator(orbit: Orbit(matching: plate),
+        for (_, projection) in projections {
+            var n = Navigator(orbit: Orbit(matching: projection),
                               framing: Framing(center: P2(0, 0), unitsPerPixel: 0.01))
             let start = n
             var back: [Gesture] = []
@@ -941,7 +957,7 @@ func navigationTests() {
         let rng = SplitMix(seed: 17)
         var worst = 0.0
         for _ in 0..<200 {
-            let n = Navigator(orbit: Orbit(matching: plates[0].1),
+            let n = Navigator(orbit: Orbit(matching: projections[0].1),
                               framing: Framing(center: P2(rng.next(-5, 5), rng.next(-5, 5)),
                                                unitsPerPixel: rng.next(0.001, 0.05)))
             let at = SIMD2(rng.next(0, 1440), rng.next(0, 900))
@@ -955,7 +971,7 @@ func navigationTests() {
 
     Check.suite("navigation: pan is invertible and zoom-independent") {
         let v = Viewport(width: 800, height: 600)
-        let n = Navigator(orbit: Orbit(matching: plates[1].1),
+        let n = Navigator(orbit: Orbit(matching: projections[1].1),
                           framing: Framing(center: P2(1.5, -2), unitsPerPixel: 0.02))
         let d = SIMD2(37.0, -19.0)
         let there = n.applying(.pan(d), in: v).applying(.pan(-d), in: v)
@@ -999,7 +1015,7 @@ func navigationTests() {
 
     Check.suite("navigation: re-targeting turns about a new point without moving it") {
         let v = Viewport(width: 1000, height: 700)
-        let n = Navigator(orbit: Orbit(matching: plates[2].1),
+        let n = Navigator(orbit: Orbit(matching: projections[2].1),
                           framing: Framing(center: P2(0.4, -1.1), unitsPerPixel: 0.03))
         let p = P3<WorldSpace>(2.5, -7, 3.25)
         let before = n.framing.pixel(of: n.camera.view(p).xy, in: v)
@@ -1016,11 +1032,11 @@ func navigationTests() {
                      "and stays put through a turn", "moved \(simd_reduce_max(abs(still - before))) px")
     }
 
-    Check.suite("navigation: perspective is a way of looking, not a plate style") {
+    Check.suite("navigation: perspective is a way of looking, not a projection convention") {
         let v = Viewport(width: 1200, height: 800)
-        let plate = plates[1].1
+        let projection = projections[1].1
         let bounds = AABB<ViewSpace>(lo: SIMD3(-4, -2, 0), hi: SIMD3(6, 3, 4))
-        let ortho = Navigator(orbit: Orbit(matching: plate),
+        let ortho = Navigator(orbit: Orbit(matching: projection),
                               framing: Framing(center: P2(0, 0), unitsPerPixel: 0.01))
         Check.expect(!ortho.orbit.isPerspective && !ortho.camera.isPerspective,
                      "a preset camera is orthographic")
@@ -1107,7 +1123,7 @@ final class SplitMix {
 
 func bakeTests() {
     // Tiling splits the render, never the clip. Clipping each pass separately
-    // breaks a path at the seam -- the segment joining the last vertex on one
+    // breaks a path at the tile boundary -- the segment joining the last vertex on one
     // side to the first on the other is drawn by neither -- so the passes are
     // stitched into one depth image and the clip runs once. The property that
     // buys is this one: however the pass was divided, the drawing is the same.
@@ -1127,7 +1143,7 @@ func bakeTests() {
         _ = try renderer.bake(scene, options: BakeOptions(resolution: 64))
         Check.expect(true, "an orthographic scene bakes")
 
-        var orbit = Orbit(matching: try bundle.manifest.preset("recip").plate)
+        var orbit = Orbit(matching: try bundle.manifest.preset("recip").projection)
         orbit.distance = 10
         scene.camera = orbit.camera
         do {
@@ -1192,19 +1208,19 @@ func bakeTests() {
 // MARK: - the preview
 
 func previewTests() {
-    // A plane seen nearly edge-on: z = -x from forty degrees below the plate's
+    // A plane seen nearly edge-on: z = -x from forty degrees below the drawing's
     // horizon, so its view depth changes by about eleven units per unit of
     // screen height. The triangulation of a plane is the plane, so the answer
-    // is known at every pixel -- ink drawn on it is visible, ink a little under
+    // is known at every pixel -- curves drawn on it are visible, curves a little under
     // it is hidden -- which is what a real landscape cannot offer.
     //
     // The preview compares a line's depth where it crosses a pixel with the
     // surface's depth at the pixel's centre. Here half a pixel of that is
-    // several times the margin, so the bake's predicate alone discards much of
-    // the ink on the plane, and while orbiting what it discards crawls. With
+    // several times the depth tolerance, so the bake's predicate alone discards much of
+    // the curves on the plane, and while orbiting what it discards crawls. With
     // the slope allowance all of it must survive, and the allowance must still
-    // fall far short of hiding depth: the ink under the plane stays hidden.
-    Check.suite("preview: ink on a surface steep in view is kept, and ink under it is not") {
+    // fall far short of hiding depth: the curves under the plane stay hidden.
+    Check.suite("preview: curves on a surface steep in view is kept, and curves under it is not") {
         let n = 65
         let domain = Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: -1, hi: 1))
         var heights: [Float] = []
@@ -1213,64 +1229,64 @@ func previewTests() {
         }
         let surface = Surface(
             height: Grid2D(width: n, height: n, domain: domain, values: heights),
-            phase: nil, caps: .none)
+            phase: nil, truncation: .none)
         // Slightly slanted on screen, so each stroke crosses a few rows and is
         // tested at every sub-pixel offset rather than at one.
         func strokes(under depth: Double) -> Layer {
             let paths = stride(from: -0.6, through: 0.45, by: 0.15).map { x0 -> [P3<WorldSpace>] in
                 [P3(x0, -0.9, -x0 - depth), P3(x0 + 0.1, 0.9, -(x0 + 0.1) - depth)]
             }
-            return Layer(spec: LayerSpec(name: "ink", role: .magnitude,
+            return Layer(spec: LayerSpec(name: "stroke", role: .magnitude,
                                          source: .file(vertices: "", offsets: ""),
                                          width: 0.4, heightPolicy: .surface),
                          paths: PolylineSet(paths: paths))
         }
-        let style = PlateStyle(shear: 0, flipX: false, yScale: nil)
+        let style = DrawingConvention(shear: 0, flipX: false, yScale: nil)
         let orbit = Orbit(target: P3(0, 0, 0), azimuth: Angle(degrees: 0),
                           elevation: Angle(degrees: -40), style: style)
         let viewport = Viewport(width: 512, height: 128)
-        func scene(_ layer: Layer, margin: Double) -> Scene {
+        func scene(_ layer: Layer, depthTolerance: Double) -> Scene {
             Scene(surface: surface, occluder: Mesh(vertices: [], triangles: []),
                   tiles: [.identity], step: 1, layers: [layer], camera: orbit.camera,
-                  margin: margin)
+                  depthTolerance: depthTolerance)
         }
-        guard let bounds = scene(strokes(under: 0), margin: 0).quickBounds() else {
+        guard let bounds = scene(strokes(under: 0), depthTolerance: 0).quickBounds() else {
             Check.expect(false, "the plane has bounds"); return
         }
         let navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
 
         let renderer = try MetalRenderer()
         let target = try renderer.makePreviewTarget(viewport)
-        func ink(_ layer: Layer, margin: Double, slope: Float) throws -> Int {
-            try renderer.renderPreview(scene(layer, margin: margin), navigator: navigator,
+        func curves(_ layer: Layer, depthTolerance: Double, slope: Float) throws -> Int {
+            try renderer.renderPreview(scene(layer, depthTolerance: depthTolerance), navigator: navigator,
                                        viewport: viewport,
                                        options: PreviewOptions(slopeScale: slope),
                                        into: target)
             let bgra = try PNG.bgra(target)
             return stride(from: 0, to: bgra.count, by: 4).reduce(0) { count, k in
                 let luma = 299 * Int(bgra[k + 2]) + 587 * Int(bgra[k + 1]) + 114 * Int(bgra[k])
-                // Any visible mark counts as ink: a stroke narrower than a
+                // Any visible mark counts as curves: a stroke narrower than a
                 // pixel is drawn lighter, not narrower.
                 return count + (luma < 224 * 1000 ? 1 : 0)
             }
         }
 
-        let margin = 0.005
+        let depthTolerance = 0.005
         let on = strokes(under: 0), under = strokes(under: 0.05)
-        let drawn = try ink(on, margin: .infinity, slope: 0)
-        let bake = try ink(on, margin: margin, slope: 0)
-        let kept = try ink(on, margin: margin, slope: PreviewOptions.defaultSlopeScale)
+        let drawn = try curves(on, depthTolerance: .infinity, slope: 0)
+        let bake = try curves(on, depthTolerance: depthTolerance, slope: 0)
+        let kept = try curves(on, depthTolerance: depthTolerance, slope: PreviewOptions.defaultSlopeScale)
         Check.expect(drawn > 1000 && Double(bake) < 0.9 * Double(drawn),
-                     "the plane is steep enough that the bake's predicate loses ink on it",
+                     "the plane is steep enough that the bake's predicate loses curves on it",
                      "\(bake) of \(drawn) px")
         Check.expect(Double(kept) >= 0.99 * Double(drawn),
-                     "with the slope allowance, the ink on it is kept",
+                     "with the slope allowance, the curves on it is kept",
                      "\(kept) of \(drawn) px")
 
-        let behind = try ink(under, margin: .infinity, slope: 0)
-        let shown = try ink(under, margin: margin, slope: PreviewOptions.defaultSlopeScale)
+        let behind = try curves(under, depthTolerance: .infinity, slope: 0)
+        let shown = try curves(under, depthTolerance: depthTolerance, slope: PreviewOptions.defaultSlopeScale)
         Check.expect(behind > 1000 && Double(shown) <= 0.01 * Double(behind),
-                     "and ink just under it is still hidden",
+                     "and curves just under it is still hidden",
                      "\(shown) of \(behind) px show")
     }
 }
@@ -1294,14 +1310,14 @@ navigationTests()
 contourTests()
 hatchTests()
 restyleTests()
-capTests()
-crestTests()
+truncationTests()
+topEdgeTests()
 shaderTests()
 previewTests()
 bakeTests()
 facingTests()
-foldLineTests()
-wallInkTests()
+foldCurveTests()
+wallCurveTests()
 stressTests()
 solidTests()
 hatchingTests()
@@ -1318,10 +1334,10 @@ surfacePreviewTests()
 edgeOnPreviewTests()
 foldTests()
 creaseTests()
-windingTests()
+linearCurveTests()
 odeTests()
 frequencyTests()
 continuedFractionTests()
 forcedTorusTests()
-surfacePlateTests()
+surfaceDrawingTests()
 exit(Check.summary())

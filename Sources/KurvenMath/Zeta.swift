@@ -4,7 +4,7 @@ import Foundation
 /// point by point.
 ///
 /// Borwein's alternating series on Re s >= 1/2, with the order chosen from
-/// |Im s| so a disc around the origin does not pay the ζ plate's price; the
+/// |Im s| so a disc around the origin does not pay the ζ drawing's price; the
 /// functional equation below the critical line; and Euler-Maclaurin at the
 /// points where Borwein's own factor `1 - 2^(1-s)` vanishes (σ = 1,
 /// t = 2πk/ln 2), where the quotient would otherwise be 0/0.

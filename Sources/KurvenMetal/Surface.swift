@@ -4,16 +4,16 @@ import simd
 import KurvenCore
 import KurvenShaderTypes
 
-/// A parametric surface on the GPU: its lattice as a position texture.
+/// A parametric surface on the GPU: its grid as a position texture.
 ///
 /// Like the heightfield, no mesh: `kv_param_vertex` turns a vertex id into a
 /// cell, a corner and a texel. The texel holds the whole point rather than a
 /// height, which is the one thing a torus needs that a landscape did not.
 final class SurfaceResources {
     let positions: MTLTexture
-    let lattice: KVSurface
+    let grid: KVSurface
     let cells: Int
-    /// The view-z range, per camera; the lattice is fixed.
+    /// The view-z range, per camera; the grid is fixed.
     let viewDepth: @Sendable (Transform<WorldSpace, ViewSpace>) -> (lo: Double, hi: Double)
 
     init(_ s: ParametricSurface, device: MTLDevice) throws {
@@ -32,7 +32,7 @@ final class SurfaceResources {
                       bytesPerRow: s.u.samples * MemoryLayout<SIMD4<Float>>.stride)
         }
         positions = t
-        lattice = KVSurface(
+        grid = KVSurface(
             samples: SIMD2(UInt32(s.u.samples), UInt32(s.v.samples)),
             cells: SIMD2(UInt32(s.u.cells), UInt32(s.v.cells)),
             lo: SIMD2(Float(s.u.range.lo), Float(s.v.range.lo)),
@@ -60,7 +60,7 @@ public extension MetalRenderer {
     /// within float precision of each other in depth the two passes may name
     /// different winners; both are then front-most to that precision.
     ///
-    /// Orthographic cameras only, as the bake is; the frame is the lattice
+    /// Orthographic cameras only, as the bake is; the frame is the grid
     /// the image is sampled on.
     func renderSurface(_ surface: ParametricSurface, view: Transform<WorldSpace, ViewSpace>,
                        frame: DepthFrame) throws -> SurfaceImage {
@@ -90,14 +90,14 @@ public extension MetalRenderer {
             view: view.float4x4,
             clip: simd_float4x4(SIMD4<Float>(m.columns.0), SIMD4<Float>(m.columns.1),
                                 SIMD4<Float>(m.columns.2), SIMD4<Float>(m.columns.3)),
-            domainLo: .zero, domainSize: .zero, lattice: .zero, gridSize: .zero,
-            step: 1, cap: .infinity, regionCount: 0, empty: sentinel)
+            domainLo: .zero, domainSize: .zero, grid: .zero, gridSize: .zero,
+            step: 1, truncationHeight: .infinity, regionCount: 0, empty: sentinel)
         // Padded, so the farthest point lands short of the cleared 1.0 and the
         // LESS test admits it.
         let (lo, hi) = res.viewDepth(view)
         let pad = 1e-3 * (hi - lo) + 1e-6
-        var lattice = res.lattice
-        lattice.depthRange = SIMD2(Float(lo - pad), Float(hi + pad))
+        var grid = res.grid
+        grid.depthRange = SIMD2(Float(lo - pad), Float(hi + pad))
 
         let depthTarget = try DepthTarget(rows: frame.rows, cols: frame.cols, device: device)
         let coordTarget = try DepthTarget(rows: frame.rows, cols: frame.cols, device: device,
@@ -116,7 +116,7 @@ public extension MetalRenderer {
         func draw(_ encoder: MTLRenderCommandEncoder, _ pipeline: MTLRenderPipelineState) {
             encoder.setRenderPipelineState(pipeline)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<KVUniforms>.stride, index: 0)
-            encoder.setVertexBytes(&lattice, length: MemoryLayout<KVSurface>.stride, index: 6)
+            encoder.setVertexBytes(&grid, length: MemoryLayout<KVSurface>.stride, index: 6)
             encoder.setVertexTexture(res.positions, index: 0)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: res.cells * 6)
             encoder.endEncoding()

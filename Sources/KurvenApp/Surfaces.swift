@@ -9,9 +9,9 @@ import KurvenDynamics
 /// into, or a forced system's invariant torus.
 ///
 /// Built as a landscape is sampled -- one build in flight on a detached task,
-/// the latest edit queued behind it -- through `SurfacePlate.build`, the
+/// the latest edit queued behind it -- through `SurfaceDrawing.build`, the
 /// function `kurven-cli surface` calls, so the window and the CLI draw the
-/// same plate. A surface is not a bundle: `bundle` is nil for one, so the
+/// same drawing. A surface is not a bundle: `bundle` is nil for one, so the
 /// controls that restyle, resample or save a bundle stay away from it.
 @MainActor
 extension Document {
@@ -32,7 +32,7 @@ extension Document {
     }
 
     /// The controls changed `surface`. `draft` is true while one is being
-    /// dragged: the plate is built from `SurfaceRequest.drafted()` until the
+    /// dragged: the drawing is built from `SurfaceRequest.drafted()` until the
     /// drag ends, and at full resolution after.
     func surfaceEdited(draft: Bool) {
         guard let request = surface else { return }
@@ -48,10 +48,10 @@ extension Document {
         guard !building, let (request, framing, draft) = surfaceWanted else { return }
         surfaceWanted = nil
         if !framing, request == surfaceShown { return }
-        // Whatever the plate on screen can lend the next one -- a fitted
-        // torus, its values on the lattice, the trajectory's run, the
+        // Whatever the drawing on screen can lend the next one -- a fitted
+        // torus, its values on the grid, the trajectory's run, the
         // contours -- goes with the request.
-        let previous = framing ? nil : plate
+        let previous = framing ? nil : surfaceDrawing
         building = true
         surfaceStatus = (previous?.refits(for: request) ?? true)
             && { if case .forced = request.shape { true } else { false } }()
@@ -62,7 +62,7 @@ extension Document {
             let started = clock.now
             do {
                 let built = try await Task.detached(priority: .userInitiated) {
-                    try SurfacePlate.build(request, reusing: previous, draft: draft)
+                    try SurfaceDrawing.build(request, reusing: previous, draft: draft)
                 }.value
                 // A landscape or another surface chosen meanwhile is the
                 // document now.
@@ -80,13 +80,13 @@ extension Document {
         }
     }
 
-    /// What the section's status line says about a plate: how long it took,
+    /// What the section's status line says about a drawing: how long it took,
     /// and anything about it that changes what the drawing means.
-    private func status(of plate: SurfacePlate, took: Duration) -> String {
+    private func status(of surfaceDrawing: SurfaceDrawing, took: Duration) -> String {
         let seconds = Double(took.components.seconds)
             + Double(took.components.attoseconds) / 1e18
         var text = String(format: "built in %.2f s", seconds)
-        if let torus = plate.torus {
+        if let torus = surfaceDrawing.torus {
             text += String(format: "; misses its trajectory by %.1e of its size",
                            torus.residual / torus.extent)
             let rho = torus.rotationNumber
@@ -96,9 +96,9 @@ extension Document {
                            rho, ContinuedFraction.describe(ContinuedFraction.quotients(of: rho, count: 7),
                                                            ellipsis: true), nearly)
         }
-        if !plate.embedded {
+        if !surfaceDrawing.embedded {
             text += " — the revolution passes through itself, so back faces are kept"
-        } else if plate.surface.outward == nil {
+        } else if surfaceDrawing.surface.outward == nil {
             text += " — the torus reaches its axis and bounds nothing, so back faces are kept"
         }
         return text

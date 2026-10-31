@@ -4,12 +4,12 @@ import simd
 /// The mapping between view coordinates and depth-buffer pixels.
 ///
 /// This is `kurven.zbuffer.ZBuffer`'s mapping, verbatim, including the `0.01`
-/// nudge: samples are at lattice *vertices*, so the coordinate `axis0.lo` lands
+/// nudge: samples are at grid *vertices*, so the coordinate `axis0.lo` lands
 /// at pixel 0 and `axis0.hi` at pixel `rows - 1`, and the nudge keeps a
 /// coordinate exactly on `lo` from flooring to -1 under float jitter. Anything
 /// else here is a half-pixel shift between what the renderer drew and what the
-/// clipper reads, which shows up as ink leaking through the surface along
-/// silhouettes and nowhere else.
+/// clipper reads, which shows up as curves leaking through the surface along
+/// outlines and nowhere else.
 ///
 /// `axis0` is the first view component and indexes *rows*; `axis1` is the second
 /// and indexes columns. That is the Python convention and the reason `ZBuffer`
@@ -17,7 +17,7 @@ import simd
 /// space says which is which.
 public enum RasterOrder: Sendable, Equatable {
     /// Rows index view x and columns index view y -- `kurven.zbuffer.ZBuffer`'s
-    /// convention. The bake must use this: it is the lattice the Python oracle
+    /// convention. The bake must use this: it is the grid the Python oracle
     /// describes, and a buffer is a lookup table, never something anyone looks
     /// at, so its orientation is free to be inconvenient.
     case buffer
@@ -75,7 +75,7 @@ public struct DepthFrame: Sendable, Equatable {
               abs(axis0.length) / Double(max(rows - 1, 1)))
     }
 
-    /// Whether this frame's lattice contains a view point.
+    /// Whether this frame's grid contains a view point.
     public func contains(_ p: P2<ViewSpace>) -> Bool {
         let i = index(of: p)
         return i.x >= 0 && i.x < rows && i.y >= 0 && i.y < cols
@@ -84,10 +84,10 @@ public struct DepthFrame: Sendable, Equatable {
     /// The sub-frame covering tile `(i, j)` of an `n x n` split.
     ///
     /// Split on *pixel* boundaries, not coordinate boundaries: the tile's
-    /// lattice is a contiguous slice of the whole plate's lattice, so a
+    /// grid is a contiguous slice of the whole drawing's grid, so a
     /// coordinate lands on the same pixel whether it was rendered whole or in
     /// pieces. Splitting the coordinate range instead would give each tile its
-    /// own lattice and leave seams wherever two disagreed by a fraction of a
+    /// own grid and leave gaps wherever two disagreed by a fraction of a
     /// pixel.
     public func tile(_ i: Int, _ j: Int, of n: Int) -> DepthFrame {
         guard n > 1 else { return self }
@@ -113,24 +113,24 @@ public struct DepthFrame: Sendable, Equatable {
     }
 
     /// The affine map from a view coordinate to Metal's normalized device
-    /// coordinates that puts each pixel's *sample point* exactly on the lattice
+    /// coordinates that puts each pixel's *sample point* exactly on the grid
     /// vertex `coordinate(row:col:)` names.
     ///
     /// Metal samples pixel `i` at its center, `(2i + 1) / N - 1` in NDC. Solving
     /// for the coordinate that lands there gives the scale and offset below.
     /// The Python GPU path does not do this -- it maps the coordinate range
     /// straight onto [-1, 1], which puts every sample half a pixel off the
-    /// lattice its own `index_to_coord` describes. Matching the lattice instead
+    /// grid its own `index_to_coord` describes. Matching the grid instead
     /// is what makes the rendered depth image and the clipper's lookups the
     /// same numbers rather than nearly the same.
     /// The view-to-clip matrix for this frame, under an orthographic camera.
     ///
-    /// Places each pixel's *sample point* exactly on the lattice vertex
+    /// Places each pixel's *sample point* exactly on the grid vertex
     /// `coordinate(row:col:)` names. Metal samples pixel `i` at its centre,
     /// `(2i + 1) / N - 1` in NDC; solving for the coordinate that lands there
     /// gives the scale and offset below. The Python GPU path does not do this --
     /// it maps the coordinate range straight onto [-1, 1], half a pixel off the
-    /// lattice its own `index_to_coord` describes -- so this is half a pixel
+    /// grid its own `index_to_coord` describes -- so this is half a pixel
     /// closer to the CPU oracle than Python's own GPU path is.
     ///
     /// The y row is negated because Metal puts NDC +1 at the *top* of the render
@@ -138,7 +138,7 @@ public struct DepthFrame: Sendable, Equatable {
     /// it at the bottom. Which view component drives which screen axis is the
     /// frame's business too, and folded in here: the bake rasterizes in
     /// ZBuffer's order so it can be compared against Python, the preview in
-    /// screen order so it looks like the plate.
+    /// screen order so it looks like the drawing.
     ///
     /// A 4x4, so it can stand where a perspective matrix stands; its `w` row is
     /// constant, because an orthographic map has no divide.
@@ -169,7 +169,7 @@ public struct DepthFrame: Sendable, Equatable {
 /// `empty` is the value stored where nothing was drawn -- `-.infinity` for a
 /// buffer built the way Python builds one, and a large negative sentinel for one
 /// that came off the GPU, because Metal cannot clear a float attachment to
-/// infinity. The two are interchangeable for the visibility test (`z + margin`
+/// infinity. The two are interchangeable for the visibility test (`z + depthTolerance`
 /// beats either for any real depth), so carrying the sentinel rather than
 /// rewriting it costs nothing and saves a pass over the whole buffer: on a
 /// 16000-square bake that pass was 400 ms of the 1600 the bake took.

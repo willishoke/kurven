@@ -195,9 +195,9 @@ func hatchingTests() {
 
     Check.suite("hatching: a tone or a step that cannot be read is refused at decode") {
         func hatching(tone: String, step: String = "") throws -> Hatching {
-            try Hatching(json: try JSONValue.parse("""
-                {"kind": "hatching", "angle": 0, "spacing": 0.1, "widthSteps": 1\(step), "tone": \(tone)}
-                """))
+            try Hatching(fields: try JSONValue.parse("""
+                {"angle": 0, "spacing": 0.1, "widthSteps": 1\(step), "tone": \(tone)}
+                """).object("hatching"))
         }
         Check.expect((try? hatching(tone: #"{"kind": "turing", "scale": 0.5, "seed": 1}"#)) != nil,
                      "a well-formed hatching decodes")
@@ -223,7 +223,7 @@ func hatchingTests() {
         var example = ""
         for (name, view) in stressCameras() {
             cameras += 1
-            let d = -view.sightLine
+            let d = -view.projectionDirection
             let seen = s.visibleHatching(hatching, view: view)
             guard seen.count == 1 else { Check.expect(false, "one width"); return }
             let visible = seen[0].visible
@@ -240,7 +240,7 @@ func hatchingTests() {
             }
             for line in s.hatchLines(hatching) {
                 // A face seen exactly edge-on projects to a line, which the
-                // ray cast cannot judge; it draws no hatching (tested above).
+                // ray cast cannot decide; it draws no hatching (tested above).
                 guard abs(simd_dot(s.normals[s.faces[line.face][0]], d)) > 1e-9 else { continue }
                 let a = line.path[0].v, b = line.path[1].v
                 let own = Set(s.faces[line.face])
@@ -281,11 +281,11 @@ func hatchingTests() {
     Check.suite("hatching: on a convex solid facing is the whole test, and the bake is the same at every resolution") {
         let s = Solid.platonic(.dodecahedron, circumradius: 2).resting(onFace: 0)
         // A face is about 1.4 across; at this scale that is a dozen Turing
-        // lattice spacings, enough spots for every width to occur on it. At
+        // grid spacings, enough spots for every width to occur on it. At
         // half a unit a face sits inside a single spot.
         let hatching = Hatching(angle: 1.1, spacing: 0.05, tone: .turing(scale: 0.12, seed: 5), widthSteps: 3)
-        let camera = Camera.plate(PlateProjection(shear: 0.3, xAngle: -55, zAngle: -70, flipX: false, yScale: nil))
-        let d = -camera.view.sightLine
+        let camera = Camera.oblique(ObliqueProjection(shear: 0.3, xAngle: -55, zAngle: -70, flipX: false, yScale: nil))
+        let d = -camera.view.projectionDirection
         var wholeOrAbsent = true, widthsSeen = Set<Int>()
         let lines = s.hatchLines(hatching)
         for (w, all, visible) in s.visibleHatching(hatching, view: camera.view) {
@@ -305,7 +305,7 @@ func hatchingTests() {
         let layers = [
             Layer(spec: LayerSpec(name: "edges", role: .outline, source: .edges, width: 0.5, heightPolicy: .surface),
                   paths: s.edgePaths),
-            Layer(spec: LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching), width: 0.3,
+            Layer(spec: LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching, faces: .solid), width: 0.3,
                                   heightPolicy: .surface),
                   paths: s.hatchPaths(hatching)),
         ]
@@ -326,15 +326,15 @@ func hatchingTests() {
                      "\(coarse.strokes.layers.count) layers, widths \(widths)")
         var unclipped = layers[1].spec
         unclipped.clipped = false
-        let judged = Scene(solid: s, layers: [Layer(spec: unclipped, paths: s.hatchPaths(hatching))], camera: camera)
-            .judgedLayers()
-        let drawn = judged.reduce(0) { $0 + $1.1.count }
-        Check.expect(judged.count == 3 && drawn == lines.count,
+        let visible = Scene(solid: s, layers: [Layer(spec: unclipped, paths: s.hatchPaths(hatching))], camera: camera)
+            .visibleLayers()
+        let drawn = visible.reduce(0) { $0 + $1.1.count }
+        Check.expect(visible.count == 3 && drawn == lines.count,
                      "unclipped, every hatch line is drawn, in a layer per width step",
-                     "\(drawn) of \(lines.count) lines in \(judged.count) layers")
+                     "\(drawn) of \(lines.count) lines in \(visible.count) layers")
     }
 
-    Check.suite("hatching: a hatching layer round-trips through the manifest") {
+    Check.suite("hatching: a hatching and a hatching layer round-trip through their fields") {
         let hatchings = [
             Hatching(angle: 0.4, spacing: 0.1),
             Hatching(angle: -1.2, spacing: 0.05, step: 0.01, tone: .turing(scale: 0.7, seed: 0xDEAD_BEEF_0000_0001),
@@ -342,9 +342,41 @@ func hatchingTests() {
             Hatching(angle: 0, spacing: 0.2, tone: .halfLambert(light: SIMD3(0.1, -0.3, 0.9)), widthSteps: 2),
         ]
         for hatching in hatchings {
-            let source = LayerSource.hatching(hatching)
-            let back = try LayerSource(json: source.json)
-            Check.expect(back == source, "\(source.json.canonical) decodes to itself")
+            let back = try Hatching(fields: hatching.fields)
+            Check.expect(back == hatching, "\(JSONValue.object(hatching.fields).canonical) decodes to itself")
+        }
+        let sources: [LayerSource] = [
+            .wallHatching(edges: [0, 2], spacing: 0.3, step: 0.1, trim: false, base: -0.5, topOffset: 0.02),
+            .plateauHatching(axis: .imag, spacing: 0.4, tiled: true),
+        ]
+        for source in sources {
+            Check.expect(try LayerSource(json: source.json) == source, "\(source.json.canonical) decodes to itself")
+        }
+    }
+
+    Check.suite("hatching: one rule for a manifest's step and angles, on walls as on plateaus") {
+        func source(_ faces: String, angle: String, step: String = "") throws -> LayerSource {
+            try LayerSource(json: try JSONValue.parse("""
+                {"kind": "hatching", "faces": \(faces), "angle": \(angle), "spacing": 0.25\(step),
+                 "widthSteps": 1, "tone": {"kind": "uniform"}}
+                """))
+        }
+        let walls = #"{"kind": "walls", "edges": [0]}"#
+        let plateaus = #"{"kind": "plateaus"}"#
+        for (faces, angle) in [(walls, "1.5707963267948966"), (plateaus, "0")] {
+            guard case .hatching(let h, _) = try source(faces, angle: angle) else { continue }
+            Check.expect(h.step == h.spacing, "a step left out is the spacing on \(faces)", "step \(h.step)")
+        }
+        let written = try source(walls, angle: "1.5708")
+        Check.expect(written.liesOnWall, "π/2 written as 1.5708 decodes as vertical on a wall")
+        Check.expect(try source(plateaus, angle: "1.5708").plateauHatchAxis == .imag
+                        && source(plateaus, angle: "0.0001").plateauHatchAxis == .real,
+                     "and on a plateau it is along the imaginary axis, as a near 0 is along the real")
+        Check.expectThrows("an angle a hundredth off vertical is refused on a wall") {
+            _ = try source(walls, angle: "1.58")
+        }
+        Check.expectThrows("and a hundredth off an axis on a plateau") {
+            _ = try source(plateaus, angle: "0.01")
         }
     }
 }

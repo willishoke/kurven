@@ -8,30 +8,30 @@ import KurvenLandscape
 // MARK: - the depth pass against an exact ray cast
 
 /// What the depth buffer records at a pixel is the nearest point of the drawn
-/// solid along that pixel's sight line: the heightfield's triangles, capped,
+/// solid along that pixel's line of sight: the heightfield's triangles, truncated,
 /// and the wall curtains that close it at the domain's edge. All of that is
 /// one solid with a predicate -- a world point is inside when it lies over the
-/// domain, above the walls' base and under the capped surface -- and a sight
+/// domain, above the walls' base and under the truncated surface -- and a sight
 /// line's first point inside it is the depth, to whatever precision one cares
 /// to bisect. Casting that ray through every pixel is the reference the Metal
 /// pass is held to here, with no second rasterizer anywhere in the loop.
 ///
 /// The surface is interpolated the way the pass draws it: each cell as two
-/// triangles split from (1,0) to (0,1), and the rim pieces making the result
-/// min(interpolated, cap) exactly (Caps.swift holds them to that). What is
+/// triangles split from (1,0) to (0,1), and the truncation edge pieces making the result
+/// min(interpolated, h) exactly (Truncation.swift holds them to that). What is
 /// left to differ is float32 rounding, the side of a triangle edge a pixel
-/// centre rounds to, and a sliver thinner than the march step. The
+/// centre rounds to, and a sliver thinner than the walk's step. The
 /// tolerances are the parametric surfaces' (Surfaces.swift).
 struct HeightfieldSolid {
     let grid: Grid2D<Float>
-    let caps: Caps
+    let truncation: Truncation
     let base: Double
     let origin: SIMD2<Double>
     let step: SIMD2<Double>
 
     init(surface: Surface, base: Double) {
         grid = surface.height
-        caps = surface.caps
+        truncation = surface.truncation
         self.base = base
         let d = grid.domain
         origin = SIMD2(d.real.lo, d.imag.lo)
@@ -45,7 +45,7 @@ struct HeightfieldSolid {
         var top = -Double.infinity
         for y in 0..<grid.height {
             for x in 0..<grid.width {
-                top = max(top, min(Double(grid[x, y]), caps.height(atX: origin.x + Double(x) * step.x)))
+                top = max(top, min(Double(grid[x, y]), truncation.height(atX: origin.x + Double(x) * step.x)))
             }
         }
         return AABB(lo: SIMD3(min(d.real.lo, d.real.hi), min(d.imag.lo, d.imag.hi), base),
@@ -65,7 +65,7 @@ struct HeightfieldSolid {
         let h = fu + fv <= 1
             ? h00 + fu * (h10 - h00) + fv * (h01 - h00)
             : h11 + (1 - fu) * (h01 - h11) + (1 - fv) * (h10 - h11)
-        return min(h, caps.height(atX: x))
+        return min(h, truncation.height(atX: x))
     }
 
     func contains(_ p: SIMD3<Double>) -> Bool {
@@ -74,11 +74,11 @@ struct HeightfieldSolid {
     }
 
     /// The view depth of the solid under a pixel: the largest view z along
-    /// the sight line at which the line is inside the solid, or nil when the
+    /// the line of sight at which the line is inside the solid, or nil when the
     /// line misses it. `at` is the world point at view depth zero and
     /// `direction` the world step per unit of view depth.
     func depth(at w0: SIMD3<Double>, direction d: SIMD3<Double>, cell: Double) -> Double? {
-        // Clip the line to the solid's box, so the march starts where there
+        // Clip the line to the solid's box, so the walk starts where there
         // could be anything to hit.
         let box = box
         var sLo = -Double.infinity, sHi = Double.infinity
@@ -91,7 +91,7 @@ struct HeightfieldSolid {
             sLo = max(sLo, min(a, b)); sHi = min(sHi, max(a, b))
         }
         guard sLo <= sHi, sHi.isFinite, sLo.isFinite else { return nil }
-        // March down from the near end in steps that move a quarter of a
+        // Step down from the near end in steps that move a quarter of a
         // cell over the plane, or a quarter of the height span down it.
         let planar = (d.x * d.x + d.y * d.y).squareRoot()
         let vertical = abs(d.z)
@@ -122,7 +122,7 @@ struct HeightfieldSolid {
 func depthTests() {
     Check.suite("depth: the Metal pass agrees with an exact ray cast of the heightfield") {
         // A landscape with every kind of feature the pass draws: a plateau
-        // under the cap, cut faces along the edges, pits down to the floor at
+        // below the truncation, cut faces along the edges, pits down to the floor at
         // the zeros, and a long slope.
         let request = LandscapeRequest(preset: Catalog.native.preset("rgamma")!, resolution: 240)
         let bundle = try NativeLandscape.build(request)

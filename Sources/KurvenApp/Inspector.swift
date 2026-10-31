@@ -11,7 +11,7 @@ import KurvenDynamics
 /// second copy of the camera to keep in step with the first.
 struct Inspector: View {
     @Bindable var document: Document
-    /// The layer whose level slider is being dragged: its ink is the grid's
+    /// The layer whose level slider is being dragged: its curves are the grid's
     /// until the drag ends, and placed on f when it does.
     @State private var draggingLevels: Int?
 
@@ -22,17 +22,17 @@ struct Inspector: View {
             // can be handed.
             // A surface has its own section and a way back to the gallery;
             // the function picker would only say "—" beside it.
-            if document.plate == nil && !document.building {
+            if document.surfaceDrawing == nil && !document.building {
                 Section("Landscape") {
                     LandscapeSection(document: document)
                 }
             }
-            if document.plate != nil || document.building {
+            if document.surfaceDrawing != nil || document.building {
                 Section("Surface") { SurfaceSection(document: document) }
             }
-            if document.plate != nil {
-                // A surface is not a bundle: no truncation, margin
-                // or provenance. Its camera has the one plate projection it
+            if document.surfaceDrawing != nil {
+                // A surface is not a bundle: no truncation, depth tolerance
+                // or provenance. Its camera has the one oblique projection it
                 // opened at, so "reset" still has somewhere to go.
                 Section("Camera") {
                     CameraSection(document: document, presets: [SurfaceRequest.preset])
@@ -49,7 +49,7 @@ struct Inspector: View {
                     TruncationSection(document: document)
                 }
                 Section("Layers") { layerList }
-                Section("Ink") { marginField }
+                Section("Visibility") { depthToleranceField }
                 Section("Bake") { BakeSection(document: document) }
                 Section("Bundle") { provenance(bundle) }
             } else {
@@ -68,7 +68,7 @@ struct Inspector: View {
         Picker("Preview", selection: Binding(
             get: { ModeChoice(document.mode) },
             set: { document.mode = $0.mode })) {
-            Text("Plate").tag(ModeChoice.plate)
+            Text("Drawing").tag(ModeChoice.drawing)
             Text("Shaded").tag(ModeChoice.shaded)
             Text("Depth").tag(ModeChoice.depth)
         }
@@ -107,7 +107,7 @@ struct Inspector: View {
                 if let count = document.hatchCount(ofLayer: index) {
                     strokeSlider(index: index, count: count)
                 }
-                if case .capHatch(let axis, _, _) = layer.spec.source {
+                if let axis = layer.spec.source.plateauHatchAxis {
                     axisPicker(axis)
                 }
             }
@@ -124,7 +124,7 @@ struct Inspector: View {
             Text("levels").font(.caption).foregroundStyle(.secondary)
             Slider(value: count, in: 1...80, step: 1, onEditingChanged: { editing in
                 draggingLevels = editing ? index : nil
-                if !editing { document.rebuildInk() }
+                if !editing { document.rebuildCurves() }
             })
             Text("\(levels.count)")
                 .font(.caption).monospacedDigit().frame(width: 24, alignment: .trailing)
@@ -137,8 +137,8 @@ struct Inspector: View {
     }
 
     /// Hatch strokes along the domain's longer side, in whole steps: each face
-    /// divides itself evenly, so a ruling is a count, and a drag steps through
-    /// counts rather than sliding a ruling past the edges. Restyling, not
+    /// divides itself evenly, so a hatching is a count, and a drag steps through
+    /// counts rather than sliding a hatching past the edges. Restyling, not
     /// resampling: the strokes are re-derived from grids that are already
     /// here, so this redraws within a frame however large the landscape is.
     @ViewBuilder
@@ -155,29 +155,29 @@ struct Inspector: View {
         .padding(.leading, 20)
     }
 
-    /// Which way the strokes on the truncated tops run. The plates rule them
+    /// Which way the strokes on the plateaus run. The plates rule them
     /// along the real axis; a landscape whose plateaus are long in the other
     /// direction reads better ruled the other way.
     @ViewBuilder
-    private func axisPicker(_ axis: KeepAxis) -> some View {
+    private func axisPicker(_ axis: DomainAxis) -> some View {
         Picker("", selection: Binding(get: { axis }, set: {
-            document.setCapHatchAxis($0)
+            document.setPlateauHatchAxis($0)
         })) {
-            Text("along Re").tag(KeepAxis.real)
-            Text("along Im").tag(KeepAxis.imag)
+            Text("along Re").tag(DomainAxis.real)
+            Text("along Im").tag(DomainAxis.imag)
         }
         .pickerStyle(.segmented).labelsHidden().controlSize(.small)
         .padding(.leading, 20)
     }
 
-    // MARK: - ink
+    // MARK: - curves
 
     @ViewBuilder
-    private var marginField: some View {
-        let live = Binding(get: { document.margin }, set: {
-            document.margin = $0
+    private var depthToleranceField: some View {
+        let live = Binding(get: { document.depthTolerance }, set: {
+            document.depthTolerance = $0
         })
-        LabeledContent("Margin") {
+        LabeledContent("Depth tolerance") {
             HStack {
                 TextField("", value: live, format: .number.precision(.fractionLength(3)))
                     .labelsHidden().monospacedDigit().frame(width: 70)
@@ -196,7 +196,7 @@ struct Inspector: View {
         LabeledContent("Occluder", value: "step \(m.occluder.step), "
                        + "\(m.occluder.tiles.count) tile\(m.occluder.tiles.count == 1 ? "" : "s")")
         if !m.provenance.isReproducible {
-            // Contoured with more than one chunk means the seams were stitched
+            // Contoured with more than one chunk means the chunk boundaries were stitched
             // in thread-completion order. Worth saying before anyone blames a
             // difference on anything else.
             Label("contoured with \(m.provenance.cpuCount) chunks — not reproducible",
@@ -255,7 +255,7 @@ struct CameraSection: View {
         }
     }
 
-    /// Perspective is a way of navigating, not a plate style: the bake refuses
+    /// Perspective is a way of navigating, not a drawing convention: the bake refuses
     /// it, and says so. Offering it next to the presets is the honest placement
     /// -- it belongs with "where am I looking from", not with "what kind of
     /// drawing is this".
@@ -274,7 +274,7 @@ struct CameraSection: View {
 
     @ViewBuilder
     private var orbitFields: some View {
-        // Degrees, because that is what the plate parameters are stated in and
+        // Degrees, because that is what the drawing parameters are stated in and
         // every conversion is a chance to lose a factor of pi.
         degreeField("Azimuth", value: Binding(
             get: { document.navigator?.orbit.azimuth.degrees ?? 0 },
@@ -354,11 +354,11 @@ struct BakeSection: View {
 /// `PreviewMode` carries a `Lighting` payload, which a `Picker` cannot select
 /// on. This is the selectable shadow of it.
 enum ModeChoice: Hashable {
-    case plate, shaded, depth
+    case drawing, shaded, depth
 
     init(_ mode: PreviewMode) {
         switch mode {
-        case .plate: self = .plate
+        case .drawing: self = .drawing
         case .shaded: self = .shaded
         case .depth: self = .depth
         }
@@ -366,7 +366,7 @@ enum ModeChoice: Hashable {
 
     var mode: PreviewMode {
         switch self {
-        case .plate: .plate
+        case .drawing: .drawing
         case .shaded: .shaded(Lighting())
         case .depth: .depth
         }

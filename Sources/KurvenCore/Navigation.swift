@@ -1,14 +1,14 @@
 import Foundation
 import simd
 
-/// Everything in a plate projection that is not a rotation.
+/// Everything in an oblique projection that is not a rotation.
 ///
-/// `PlateProjection` mixes two unrelated things: where the camera is (`zAngle`,
+/// `ObliqueProjection` mixes two unrelated things: where the camera is (`zAngle`,
 /// `xAngle`) and what kind of drawing this is (the axis convention, the x flip,
 /// the y scale, the Jahnke-Emde oblique shear). Only the first pair should move
 /// when you orbit. Separating them is what lets a preset be a starting point for
 /// navigation rather than a fixed picture.
-public struct PlateStyle: Sendable, Equatable {
+public struct DrawingConvention: Sendable, Equatable {
     public var shear: Double
     public var flipX: Bool
     public var yScale: Double?
@@ -17,8 +17,8 @@ public struct PlateStyle: Sendable, Equatable {
         self.shear = shear; self.flipX = flipX; self.yScale = yScale
     }
 
-    public init(_ plate: PlateProjection) {
-        self.init(shear: plate.shear, flipX: plate.flipX, yScale: plate.yScale)
+    public init(_ projection: ObliqueProjection) {
+        self.init(shear: projection.shear, flipX: projection.flipX, yScale: projection.yScale)
     }
 
     /// The world-to-pre-rotation matrix: the axis exchange, the flip, the y
@@ -42,9 +42,9 @@ public struct PlateStyle: Sendable, Equatable {
 ///
 /// Orbiting a landscape means turning about the world's vertical axis and
 /// tilting toward it, which is exactly the `Rz` then `Rx` the plates already
-/// apply. So an orbit camera is not a new kind of camera -- it is the plate
+/// apply. So an orbit camera is not a new kind of camera -- it is the drawing
 /// camera with its two angles made adjustable and a target subtracted first,
-/// and `Orbit(matching:)` followed by `.camera` reproduces `Camera.plate`
+/// and `Orbit(matching:)` followed by `.camera` reproduces `Camera.oblique`
 /// exactly. That identity is what makes "load a preset, then navigate away from
 /// it" a continuous motion rather than a jump.
 public struct Orbit: Sendable, Equatable {
@@ -54,14 +54,14 @@ public struct Orbit: Sendable, Equatable {
     public var azimuth: Angle
     /// Tilt toward the viewer.
     public var elevation: Angle
-    public var style: PlateStyle
+    public var style: DrawingConvention
     /// How far back the eye sits, under perspective. `nil` is orthographic,
     /// where there is no eye position -- only a direction and a rectangle.
     public var distance: Double?
     public var fieldOfView: Angle
 
     public init(target: P3<WorldSpace>, azimuth: Angle, elevation: Angle,
-                style: PlateStyle, distance: Double? = nil,
+                style: DrawingConvention, distance: Double? = nil,
                 fieldOfView: Angle = Angle(degrees: 45)) {
         self.target = target; self.azimuth = azimuth
         self.elevation = elevation; self.style = style
@@ -70,19 +70,19 @@ public struct Orbit: Sendable, Equatable {
 
     public var isPerspective: Bool { distance != nil }
 
-    /// The orbit that reproduces a plate preset. With the default target this
-    /// gives back exactly `Camera.plate(plate)`.
-    public init(matching plate: PlateProjection,
+    /// The orbit that reproduces a drawing preset. With the default target this
+    /// gives back exactly `Camera.oblique(projection)`.
+    public init(matching projection: ObliqueProjection,
                 target: P3<WorldSpace> = P3(0, 0, 0)) {
         self.init(target: target,
-                  azimuth: Angle(degrees: plate.zAngle),
-                  elevation: Angle(degrees: plate.xAngle),
-                  style: PlateStyle(plate))
+                  azimuth: Angle(degrees: projection.zAngle),
+                  elevation: Angle(degrees: projection.xAngle),
+                  style: DrawingConvention(projection))
     }
 
     public var camera: Camera {
         let m = rotationX(elevation) * rotationZ(azimuth) * style.matrix
-        // The target is subtracted in world space, before the plate transform,
+        // The target is subtracted in world space, before the drawing transform,
         // so it lands on the view origin whatever the style does to the axes.
         var t = m * (-target.v)
         guard let distance else {
@@ -216,11 +216,11 @@ public enum Gesture: Sendable, Equatable {
     /// Look at a world point, keeping its position on screen.
     case retarget(P3<WorldSpace>)
     /// Jump to a preset, refit to the scene.
-    case preset(PlateProjection, AABB<ViewSpace>)
+    case preset(ObliqueProjection, AABB<ViewSpace>)
     /// Show all of it.
     case fit(AABB<ViewSpace>)
     /// Switch projection. `nil` is orthographic; a field of view is
-    /// perspective, which is a way of navigating rather than a plate style --
+    /// perspective, which is a way of navigating rather than a drawing convention --
     /// the plates are orthographic and oblique, and a perspective bake would be
     /// the one artifact with no Python oracle to check it against.
     case project(fieldOfView: Angle?, AABB<ViewSpace>)
@@ -292,8 +292,8 @@ public struct Navigator: Sendable, Equatable {
                 center: P2(framing.center.x + after.x - before.x,
                            framing.center.y + after.y - before.y),
                 unitsPerPixel: framing.unitsPerPixel)
-        case .preset(let plate, let bounds):
-            out.orbit = Orbit(matching: plate, target: orbit.target)
+        case .preset(let projection, let bounds):
+            out.orbit = Orbit(matching: projection, target: orbit.target)
             out.framing = .fitting(bounds, in: v)
         case .fit(let bounds):
             out.framing = .fitting(bounds, in: v)

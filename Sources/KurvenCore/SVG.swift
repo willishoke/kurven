@@ -10,22 +10,22 @@ public struct Style: Sendable, Equatable {
     public init(_ spec: LayerSpec) { self.init(color: spec.color, width: spec.width) }
 }
 
-/// The finished drawing: strokes in plate coordinates, in draw order.
+/// The finished drawing: strokes in page coordinates, in draw order.
 public struct Strokes: Sendable {
-    public var layers: [(style: Style, paths: PolylineSet<PlateSpace>)]
+    public var layers: [(style: Style, paths: PolylineSet<PageSpace>)]
 
-    public init(layers: [(style: Style, paths: PolylineSet<PlateSpace>)]) {
+    public init(layers: [(style: Style, paths: PolylineSet<PageSpace>)]) {
         self.layers = layers
     }
 
-    public var bounds: AABB<PlateSpace>? {
+    public var bounds: AABB<PageSpace>? {
         layers.compactMap(\.paths.bounds).reduce(nil) { acc, b in
             acc.map { $0.union(b) } ?? b
         }
     }
 
     public var pathCount: Int { layers.reduce(0) { $0 + $1.paths.count } }
-    public var inkLength: Double { layers.reduce(0) { $0 + $1.paths.inkLength } }
+    public var totalLength: Double { layers.reduce(0) { $0 + $1.paths.totalLength } }
 }
 
 /// `Strokes` as an SVG document.
@@ -46,8 +46,8 @@ public enum SVG {
     /// in *points*, and points are only a size once you know how big the drawing
     /// is. matplotlib resolves this with the figure size; the examples use 16
     /// inches, so that is the default here and a stroke comes out the same
-    /// physical thickness it does on the plate. Changing `figureWidth` scales
-    /// the paper, not the ink -- exactly as re-saving a matplotlib figure at a
+    /// physical thickness it does on the drawing. Changing `figureWidth` scales
+    /// the paper, not the strokes -- exactly as re-saving a matplotlib figure at a
     /// different `figsize` would.
     public static func render(_ strokes: Strokes, figureWidth: Double = 16,
                               margin: Double = 0.02, decimals: Int = 4) -> String {
@@ -57,7 +57,7 @@ public enum SVG {
         let pad = max(b.size.x, b.size.y) * margin
         let x0 = b.lo.x - pad, y0 = b.lo.y - pad
         let w = b.size.x + 2 * pad, h = b.size.y + 2 * pad
-        // Plate units per point at this figure width.
+        // Drawing units per point at this figure width.
         let unitsPerPoint = w / (figureWidth * pointsPerInch)
 
         var out = """
@@ -70,8 +70,8 @@ public enum SVG {
         transform="translate(0,\(fmt(2 * y0 + h, decimals))) scale(1,-1)">
 
         """
-        // The y flip: SVG's y grows downward, the plate's grows upward. Doing it
-        // once on the outer group means every coordinate below is a plate
+        // The y flip: SVG's y grows downward, the drawing's grows upward. Doing it
+        // once on the outer group means every coordinate below is a drawing
         // coordinate, unnegated, so a stroke list can be read against the
         // Python arrays directly.
         for (style, paths) in strokes.layers where !paths.isEmpty {

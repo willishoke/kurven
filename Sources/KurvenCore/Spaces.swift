@@ -5,13 +5,13 @@ import simd
 /// The dominant historical bug class in kurven is the `(imag, real)` column
 /// order: every Python module documents it and several commits exist only to
 /// fix having forgotten it. Here the convention is a type. A point in the
-/// complex plane and a point on the plate are different types, a transform
+/// complex plane and a point on the drawing are different types, a transform
 /// between them is a `Transform<A, B>`, and composing them in the wrong order
 /// does not compile. The docstring is replaced by the compiler.
 public enum DomainSpace: Sendable {}   // (real, imag) in the complex plane
 public enum WorldSpace: Sendable {}    // (x = real, y = imag, z = |f|)
 public enum ViewSpace: Sendable {}     // after the camera; z increases toward the viewer
-public enum PlateSpace: Sendable {}    // 2D output, SVG units
+public enum PageSpace: Sendable {}    // 2D output, SVG units
 public enum ParamSpace: Sendable {}    // (u, v) on a surface's parameter rectangle
 
 /// A point in `S`.
@@ -104,7 +104,7 @@ public struct AABB<S>: Sendable, Equatable {
     public var center: SIMD3<Double> { (lo + hi) / 2 }
 }
 
-/// Degrees, kept distinct from radians because the plate parameters are stated
+/// Degrees, kept distinct from radians because the drawing parameters are stated
 /// in degrees and every conversion is a chance to lose a factor of pi.
 public struct Angle: Sendable, Equatable, Hashable {
     public var radians: Double

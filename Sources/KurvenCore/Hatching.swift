@@ -18,10 +18,14 @@ public struct Hatching: Sendable, Equatable {
     public var angle: Double
     /// Between neighbouring lines, in world units.
     public var spacing: Double
-    /// How often the tone is read along a line, in world units. A change of
-    /// width narrower than this can fall between two readings. The spacing
-    /// by default, so the tone is read as finely as it is drawn, and no finer
-    /// than `finestStep` of it.
+    /// The distance between successive vertices along a line, or readings
+    /// of its tone, in world units. On a solid the tone is read every
+    /// `step`, and a change of width narrower than this can fall between two
+    /// readings; on a wall a line has a vertex every `step` of height; on a
+    /// plateau a line has a vertex wherever it crosses a grid line and the
+    /// step is not read. The spacing by default, on every face, so the tone
+    /// is read as finely as it is drawn, and no finer than `finestStep` of
+    /// it.
     public var step: Double
     public var tone: Tone
     /// How many widths a line can have. One: a line is drawn at the layer's
@@ -33,6 +37,10 @@ public struct Hatching: Sendable, Equatable {
     /// The finest `step`, as a fraction of the spacing: a line is read at
     /// most a million times per spacing of its length.
     public static let finestStep = 1e-6
+
+    /// How far, in radians, an angle a face requires may be from the one
+    /// written: a thousandth, so π/2 written as 1.571 is π/2.
+    public static let angleTolerance = 1e-3
 
     public init(angle: Double, spacing: Double, step: Double? = nil,
                 tone: Tone = .uniform, widthSteps: Int = 1) {
@@ -60,8 +68,11 @@ public struct Hatching: Sendable, Equatable {
 
     // MARK: manifest
 
-    public init(json: JSONValue) throws {
-        let o = try json.object("LayerSource.hatching")
+    /// Read from its fields, `fields` encoded: `angle`, `spacing`, `step`
+    /// (the spacing when absent), `widthSteps` and `tone`. A `hatching`
+    /// layer source holds them beside its `kind` and `faces` (`LayerSource`),
+    /// so anything else in `o` is ignored.
+    public init(fields o: [String: JSONValue]) throws {
         let tone: Tone
         let t = try o.value("tone", "LayerSource.hatching").object("LayerSource.hatching.tone")
         switch try t.string("kind", "LayerSource.hatching.tone") {
@@ -101,7 +112,8 @@ public struct Hatching: Sendable, Equatable {
                   step: step, tone: tone, widthSteps: widthSteps)
     }
 
-    public var json: JSONValue {
+    /// The fields `init(fields:)` reads.
+    public var fields: [String: JSONValue] {
         let tone: JSONValue
         switch self.tone {
         case .uniform:
@@ -113,8 +125,91 @@ public struct Hatching: Sendable, Equatable {
             tone = .object(["kind": .string("halfLambert"),
                             "light": .array([.double(light.x), .double(light.y), .double(light.z)])])
         }
-        return .object(["kind": .string("hatching"), "angle": .double(angle), "spacing": .double(spacing),
-                        "step": .double(step), "widthSteps": .int(widthSteps), "tone": tone])
+        return ["angle": .double(angle), "spacing": .double(spacing),
+                "step": .double(step), "widthSteps": .int(widthSteps), "tone": tone]
+    }
+}
+
+/// The faces a hatching is laid on, and how its lines are placed there.
+///
+/// One `Hatching` serves every face; what differs is the face's coordinates
+/// and where the first line falls. On a heightfield's walls and plateaus the
+/// spacing is rounded to a whole number of gaps, so that a plateau's lines
+/// meet the walls' at a corner; on a solid the lines run through the
+/// multiples of the spacing in each face's own frame, so that a face's
+/// hatching does not depend on how it is partitioned.
+public enum HatchedFaces: Sendable, Equatable {
+    /// A heightfield's walls along the listed perimeter edges. In a wall's
+    /// coordinates (distance along its edge, height) the lines are vertical,
+    /// `wallAngle`, from `base` to the top edge plus `topOffset`, with a
+    /// vertex every `step` of height. A line stands at each end of a wall; `trim`
+    /// leaves those two out.
+    case walls(edges: [Int], trim: Bool, base: Double, topOffset: Double)
+    /// A truncated heightfield's plateaus. In domain coordinates the lines
+    /// run along the real axis (angle 0) or the imaginary axis (angle π/2,
+    /// `DomainAxis.angle`), with a vertex at every grid line they cross, and each ends where it
+    /// reaches the truncation edge, by bisection on f. Copied to every tile
+    /// when `tiled`.
+    case plateaus(tiled: Bool)
+    /// Every face of a solid, at any angle. A scene can carry it; a
+    /// manifest, which is a heightfield's, refuses it (`LayerSource`).
+    case solid
+
+    /// The angle of hatching on a wall, in the wall's coordinates: vertical.
+    public static let wallAngle = Double.pi / 2
+
+    /// Why `hatching` cannot be laid on these faces, or nil when it can.
+    /// A tone other than uniform, or more than one width, is drawn on a
+    /// solid only: a heightfield's layers are one width each.
+    public func unsupported(_ hatching: Hatching) -> String? {
+        let heightfield: String
+        switch self {
+        case .solid:
+            return nil
+        case .walls:
+            guard abs(hatching.angle - HatchedFaces.wallAngle) <= Hatching.angleTolerance else {
+                return "hatching on walls is vertical, angle π/2, not \(hatching.angle)"
+            }
+            heightfield = "walls"
+        case .plateaus:
+            guard DomainAxis(angle: hatching.angle) != nil else {
+                return "hatching on plateaus runs along an axis, angle 0 or π/2, not \(hatching.angle)"
+            }
+            heightfield = "plateaus"
+        }
+        guard hatching.tone == .uniform, hatching.widthSteps == 1 else {
+            return "hatching on \(heightfield) has a uniform tone and one width"
+        }
+        return nil
+    }
+
+    public init(json: JSONValue) throws {
+        let o = try json.object("HatchedFaces")
+        switch try o.string("kind", "HatchedFaces") {
+        case "walls":
+            self = .walls(edges: try o.ints("edges", "HatchedFaces.walls"),
+                          trim: try o.bool("trim", "HatchedFaces.walls", default: true),
+                          base: o.optionalDouble("base") ?? 0,
+                          topOffset: o.optionalDouble("topOffset") ?? 0)
+        case "plateaus":
+            self = .plateaus(tiled: try o.bool("tiled", "HatchedFaces.plateaus", default: false))
+        case "solid":
+            self = .solid
+        case let other:
+            throw ManifestError.unknownKind(other, of: "HatchedFaces", known: ["walls", "plateaus", "solid"])
+        }
+    }
+
+    public var json: JSONValue {
+        switch self {
+        case .walls(let edges, let trim, let base, let top):
+            .object(["kind": .string("walls"), "edges": .array(edges.map { .int($0) }),
+                     "trim": .bool(trim), "base": .double(base), "topOffset": .double(top)])
+        case .plateaus(let tiled):
+            .object(["kind": .string("plateaus"), "tiled": .bool(tiled)])
+        case .solid:
+            .object(["kind": .string("solid")])
+        }
     }
 }
 

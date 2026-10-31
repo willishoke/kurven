@@ -2,7 +2,7 @@ import Foundation
 
 /// Frequency analysis of a quasi-periodic signal.
 ///
-/// A trajectory winding round an invariant torus is a sum of sinusoids at
+/// A trajectory linear curve round an invariant torus is a sum of sinusoids at
 /// the integer combinations `m ω₁ + n ω₂` of two basic frequencies. The FFT
 /// finds each peak to within a bin; refining it -- maximizing the windowed
 /// amplitude `|⟨w x e^{-iνt}⟩|` over ν, Laskar's NAFF -- finds it to many

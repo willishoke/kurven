@@ -6,33 +6,33 @@ import KurvenMath
 ///
 /// A function with periods ω₁ and ω₂ lives on the rectangle they span with
 /// opposite edges identified, and that rectangle, rolled up both ways, is a
-/// torus. The elliptic plate reflects one tile across a lattice to show the
+/// torus. The elliptic plate reflects one tile across a grid to show the
 /// same thing flat; here the contours close up on themselves instead.
 ///
 /// The contours are the landscape's own: the function sampled over the
 /// plane, marching squares on |f| and arg f, the phase wraps dropped, every
 /// vertex placed on the function's level set by `ContourRefiner` and every
 /// phase line carried to the zero or pole it ends at. The window sampled is
-/// the period rectangle and a margin of cells past it on every side: the
+/// the period rectangle and a padding of cells past it on every side: the
 /// torus is the plane modulo the periods (`PeriodLattice`), the rectangle one
 /// fundamental domain of it, and a zero on the rectangle's edge -- sn has two
 /// on the real axis and a pole on the imaginary one -- is a point of the
 /// plane's interior like any other, with the whole fan of lines round it to
 /// be placed. Each curve is then cut to the rectangle and carried into it by
 /// whole periods, and that point of the rectangle is each vertex's surface
-/// coordinate: where it lies on the torus and what its visibility is judged
+/// coordinate: where it lies on the torus and what its visibility is tested
 /// by. Where a curve crosses the rectangle's edge it ends on the edge, and
 /// its continuation, a copy of the same curve one period over, begins on the
 /// opposite edge at the same point of the torus.
 public enum PeriodicTorus {
-    public struct Plate: Sendable {
+    public struct Drawing: Sendable {
         public let surface: ParametricSurface
         public let layers: [Layer]
         /// The landscape's height at a point of the rectangle, |f| truncated
-        /// at the ceiling, for `relief`; nil for a plate built without f.
+        /// at the ceiling, for `relief`; nil for a drawing built without f.
         public let height: (@Sendable (P2<ParamSpace>) -> Double)?
         public let ceiling: Double
-        /// The torus's radii, for a plate to be re-placed on the same torus.
+        /// The torus's radii, for a drawing to be re-placed on the same torus.
         public let radii: (major: Double, minor: Double)
 
         public init(surface: ParametricSurface, layers: [Layer],
@@ -44,18 +44,18 @@ public enum PeriodicTorus {
 
         /// The same function over several periods: a torus whose rectangle
         /// is `real` periods long and `imag` periods high, carrying `real`
-        /// × `imag` copies of the ink. The ink is periodic, so each copy is
+        /// × `imag` copies of the curves. The curves are periodic, so each copy is
         /// a translation of the one computed; the bigger torus is the
         /// quotient of the plane by the sublattice, and this is the
-        /// pullback along the covering. The lattice keeps the base's
-        /// samples per period around the ring, up to `lattice` in all.
-        public func repeated(real: Int, imag: Int = 1, lattice: Int) -> Plate {
+        /// pullback along the covering. The grid keeps the base's
+        /// samples per period around the ring, up to `grid` in all.
+        public func repeated(real: Int, imag: Int = 1, grid: Int) -> Drawing {
             guard real >= 1, imag >= 1, real * imag > 1 else { return self }
             let pu = surface.u.range.length, pv = surface.v.range.length
             let domain = Domain(real: Interval(lo: surface.u.range.lo, hi: surface.u.range.lo + Double(real) * pu),
                                 imag: Interval(lo: surface.v.range.lo, hi: surface.v.range.lo + Double(imag) * pv))
             let torus = PeriodicTorus.torus(over: domain, major: radii.major, minor: radii.minor,
-                                            samples: (u: min(surface.u.samples * real, lattice),
+                                            samples: (u: min(surface.u.samples * real, grid),
                                                       v: max(surface.v.samples * imag, 32)))
             let layers = self.layers.map { layer -> Layer in
                 guard let coords = layer.paths.coords else { return layer }
@@ -73,17 +73,17 @@ public enum PeriodicTorus {
                              paths: PolylineSet(paths: all.map { $0.map { P3(torus.map($0).position) } },
                                                 coords: all))
             }
-            return Plate(surface: torus, layers: layers, height: height, ceiling: ceiling, radii: radii)
+            return Drawing(surface: torus, layers: layers, height: height, ceiling: ceiling, radii: radii)
         }
 
         /// The landscape in relief on the torus: the surface displaced along
         /// its normal by `amplitude` times the truncated |f|, and every
-        /// layer placed again through the displaced map, since the ink's
+        /// layer placed again through the displaced map, since the curves'
         /// coordinates are the rectangle's whatever the embedding. The
         /// relief bounds a solid while the displacement stays under the
         /// torus's reach, `reach`; past it the surface passes through itself
         /// and its back faces are kept.
-        public func relief(amplitude: Double, reach: Double) -> Plate {
+        public func relief(amplitude: Double, reach: Double) -> Drawing {
             guard let height, amplitude != 0 else { return self }
             let encloses = surface.outward != nil && amplitude * ceiling < reach
             let displaced = surface.displaced(by: height, amplitude: amplitude, ceiling: ceiling,
@@ -94,22 +94,22 @@ public enum PeriodicTorus {
                              paths: PolylineSet(vertices: coords.map { P3(displaced.map($0).position) },
                                                 offsets: layer.paths.offsets, coords: coords))
             }
-            return Plate(surface: displaced, layers: layers, height: height, ceiling: ceiling, radii: radii)
+            return Drawing(surface: displaced, layers: layers, height: height, ceiling: ceiling, radii: radii)
         }
 
         /// The same function on a torus of other radii. The contours are the
         /// function's, which the radii do not touch: only where each vertex
         /// sits in space moves, read from its coordinate on the new torus.
-        public func placed(major R: Double, minor r: Double, lattice: Int) -> Plate {
+        public func placed(major R: Double, minor r: Double, grid: Int) -> Drawing {
             let domain = Domain(real: surface.u.range, imag: surface.v.range)
-            let torus = PeriodicTorus.torus(over: domain, major: R, minor: r, lattice: lattice)
+            let torus = PeriodicTorus.torus(over: domain, major: R, minor: r, grid: grid)
             let layers = self.layers.map { layer -> Layer in
                 guard let coords = layer.paths.coords else { return layer }
                 return Layer(spec: layer.spec,
                              paths: PolylineSet(vertices: coords.map { P3(torus.map($0).position) },
                                                 offsets: layer.paths.offsets, coords: coords))
             }
-            return Plate(surface: torus, layers: layers, height: height, ceiling: ceiling, radii: (R, r))
+            return Drawing(surface: torus, layers: layers, height: height, ceiling: ceiling, radii: (R, r))
         }
     }
 
@@ -117,27 +117,27 @@ public enum PeriodicTorus {
     /// the refiner looks for a zero or pole from a run's end
     /// (`ContourRefiner.reach`) and the two cells it carries one over, so a
     /// singular point on the rectangle's edge wants nothing outside the window.
-    public static let margin = 8
+    public static let padding = 8
 
     /// Only rectangular period lattices: a real period along `real` and an
     /// imaginary one along `imag`, which is what sn, and cn and dn on
     /// suitable rectangles, have.
-    /// `capped`: the phase lines are cut at the ceiling, as a landscape's
-    /// are at its cap, and the rim |f| = ceiling is drawn; for a plate to be
-    /// put in relief, where the cap is a plateau. Otherwise every phase line
+    /// `truncated`: the phase lines are cut at the ceiling, as a landscape's
+    /// are at its truncation, and the truncation edge |f| = ceiling is drawn; for a drawing to be
+    /// put in relief, where the truncation is a plateau. Otherwise every phase line
     /// runs through its pole.
-    public static func plate(_ expression: String, origin: Complex = Complex(0),
-                             periods: (real: Double, imag: Double),
-                             major R: Double = 2, minor r: Double = 1,
-                             resolution: Int = 600, ceiling: Double = 3,
-                             lattice: Int = 1024, capped: Bool = false) throws -> Plate {
+    public static func drawing(_ expression: String, origin: Complex = Complex(0),
+                               periods: (real: Double, imag: Double),
+                               major R: Double = 2, minor r: Double = 1,
+                               resolution: Int = 600, ceiling: Double = 3,
+                               grid: Int = 1024, truncated: Bool = false) throws -> Drawing {
         let compiled = try KurvenMath.Expression.compile(expression)
         let domain = Domain(real: Interval(lo: origin.re, hi: origin.re + periods.real),
                             imag: Interval(lo: origin.im, hi: origin.im + periods.imag))
-        let surface = torus(over: domain, major: R, minor: r, lattice: lattice)
+        let surface = torus(over: domain, major: R, minor: r, grid: grid)
         let group = PeriodLattice(cell: domain)
 
-        // The window: the rectangle's lattice, extended `margin` cells each
+        // The window: the rectangle's grid, extended `padding` cells each
         // way and shifted by half a cell on both axes. The samples past the
         // edge are the function's own, since it is periodic, and a curve and
         // its copy one period over are computed from the same sample
@@ -152,20 +152,20 @@ public enum PeriodicTorus {
         let shape = NativeLandscape.gridShape(domain, resolution: resolution)
         let dx = domain.real.length / Double(shape.nReal - 1)
         let dy = domain.imag.length / Double(shape.nImag - 1)
-        let m = Double(margin)
+        let m = Double(padding)
         let cover = Domain(real: Interval(lo: domain.real.lo - (m + 0.5) * dx,
                                           hi: domain.real.hi + (m - 0.5) * dx),
                            imag: Interval(lo: domain.imag.lo - (m + 0.5) * dy,
                                           hi: domain.imag.hi + (m - 0.5) * dy))
-        let coverShape = (nReal: shape.nReal + 2 * margin, nImag: shape.nImag + 2 * margin)
+        let coverShape = (nReal: shape.nReal + 2 * padding, nImag: shape.nImag + 2 * padding)
 
         let samples = NativeLandscape.sample(compiled, domain: cover, shape: coverShape)
         let height = Grid2D(width: coverShape.nReal, height: coverShape.nImag, domain: cover,
                             values: NativeLandscape.quantize(samples.magnitude))
         let phase = Grid2D(width: coverShape.nReal, height: coverShape.nImag, domain: cover,
                            values: NativeLandscape.quantize(samples.phase))
-        let field = Surface(height: height, phase: phase, caps: .uniform(ceiling))
-        // Not lifted: the ink lies on the torus, placed by its coordinate,
+        let field = Surface(height: height, phase: phase, truncation: .uniform(ceiling))
+        // Not lifted: the curves lie on the torus, placed by its coordinate,
         // and |f| is no height of it.
         let refiner = ContourRefiner(compiled, domain: cover,
                                      width: coverShape.nReal, height: coverShape.nImag,
@@ -184,13 +184,13 @@ public enum PeriodicTorus {
             ("ang_major", .phase, .phase, NativeLandscape.phaseMajor, 0.35),
             ("ang_minor", .phase, .phase, NativeLandscape.phaseMinor, 0.15),
         ]
-        if capped { families.append(("rim", .outline, .magnitude, [ceiling], 0.6)) }
+        if truncated { families.append(("truncation edge", .outline, .magnitude, [ceiling], 0.6)) }
         var layers: [Layer] = families.map { name, role, kind, levels, width in
-            // Capped, a phase line is lifted to |f| and kept under the
-            // ceiling, ending on the rim where it crosses it.
-            let cut = capped && kind == .phase
+            // Truncated, a phase line is lifted to |f| and kept under the
+            // ceiling, ending on the truncation edge where it crosses it.
+            let cut = truncated && kind == .phase
             let source = LayerSource.contour(field: kind, levels: levels,
-                                             keep: cut ? .belowCap : .all, tiled: false)
+                                             restriction: cut ? .belowTruncation : .all, tiled: false)
             let flat = field.derive(source, policy: cut ? .magnitude : .surface, region: .full,
                                     tiles: [.identity], refine: refiner.refine)
             // Where a curve crosses the rectangle's edge, the crossing is
@@ -249,7 +249,7 @@ public enum PeriodicTorus {
                                          heightPolicy: .surface),
                          paths: PolylineSet(paths: placed, coords: coords))
         }
-        layers.append(Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldLines,
+        layers.append(Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                                             width: 0.6, heightPolicy: .surface),
                             paths: .empty))
         // The landscape's height over the rectangle, for a relief.
@@ -257,20 +257,20 @@ public enum PeriodicTorus {
             let v = compiled(Complex(c.x, c.y))
             return v.isFinite ? min(v.magnitude, ceiling) : ceiling
         }
-        return Plate(surface: surface, layers: layers, height: relief, ceiling: ceiling, radii: (R, r))
+        return Drawing(surface: surface, layers: layers, height: relief, ceiling: ceiling, radii: (R, r))
     }
 
-    /// The torus a rectangle of periods glues into, its lattice `lattice`
+    /// The torus a rectangle of periods glues into, its grid `grid`
     /// points around the real period and enough around the imaginary one to
     /// keep the cells square on the tube.
     static func torus(over domain: Domain, major R: Double, minor r: Double,
-                      lattice: Int) -> ParametricSurface {
+                      grid: Int) -> ParametricSurface {
         let aspect = domain.imag.length / domain.real.length
         return torus(over: domain, major: R, minor: r,
-                     samples: (lattice, max(Int(Double(lattice) * min(aspect, 1) * r / R), 32)))
+                     samples: (grid, max(Int(Double(grid) * min(aspect, 1) * r / R), 32)))
     }
 
-    /// The same torus with the lattice's samples given outright.
+    /// The same torus with the grid's samples given outright.
     static func torus(over domain: Domain, major R: Double, minor r: Double,
                       samples: (u: Int, v: Int)) -> ParametricSurface {
         ParametricSurface.torus(major: R, minor: r,
@@ -285,11 +285,11 @@ public enum PeriodicTorus {
     /// on the inner; at 1/4 the poles sit on top of the tube; at 1/2 they
     /// are on the outer equator.
     public static func jacobiSN(modulus m: Double, major R: Double = 2, minor r: Double = 1,
-                                resolution: Int = 600, lattice: Int = 1024,
-                                capped: Bool = false, turn: Double = 0) throws -> Plate {
+                                resolution: Int = 600, grid: Int = 1024,
+                                truncated: Bool = false, turn: Double = 0) throws -> Drawing {
         let K = Jacobi.quarterPeriod(m), Kp = Jacobi.quarterPeriod(1 - m)
-        return try plate("sn(z, \(m))", origin: Complex(0, turn * 2 * Kp),
-                         periods: (4 * K, 2 * Kp), major: R, minor: r,
-                         resolution: resolution, lattice: lattice, capped: capped)
+        return try drawing("sn(z, \(m))", origin: Complex(0, turn * 2 * Kp),
+                           periods: (4 * K, 2 * Kp), major: R, minor: r,
+                           resolution: resolution, grid: grid, truncated: truncated)
     }
 }

@@ -23,7 +23,7 @@ import KurvenDynamics
 ///     an edge, which is right for a four-thousand-pixel bake and solid black
 ///     at this size. A thumbnail asks for about twenty.
 ///   - **a disk cache.** The second look at the picker costs nothing, and the
-///     key includes the expression, the window and the cap, so a catalog that
+///     key includes the expression, the window and the truncation, so a catalog that
 ///     changes redraws itself rather than going stale.
 @MainActor
 @Observable
@@ -34,14 +34,14 @@ final class Thumbnails {
     private var failed: Set<String> = []
     private var running = false
 
-    /// The size they are drawn at. Twice what the grid shows, so the ink is
+    /// The size they are drawn at. Twice what the grid shows, so the curves are
     /// halved rather than aliased -- the preview draws one-pixel lines, and a
     /// one-pixel line shown at half scale is what a thumbnail is allowed to do
     /// about antialiasing without touching the renderer.
     nonisolated static let size = Viewport(width: 440, height: 300)
     static let samples = 220
     /// Bumped when the *styling* a landscape is given by default changes --
-    /// which levels, what is drawn on a truncated top -- since that changes the
+    /// which levels, what is drawn on a plateau -- since that changes the
     /// picture without changing anything else the key is made of.
     static let style = 2
 
@@ -65,7 +65,7 @@ final class Thumbnails {
                     case .surface(let preset): images[entry.id] = try await draw(preset)
                     }
                 } catch {
-                    // A plate that will not build is not worth a retry loop on
+                    // A drawing that will not build is not worth a retry loop on
                     // every appearance of the picker; the cell says so.
                     failed.insert(entry.id)
                 }
@@ -77,7 +77,7 @@ final class Thumbnails {
 
     func isFailed(_ entry: GalleryEntry) -> Bool { failed.contains(entry.id) }
 
-    /// A surface, built from its own request at a coarser lattice -- a
+    /// A surface, built from its own request at a coarser grid -- a
     /// thumbnail is a tenth the width of the window -- and drawn from the
     /// camera it opens at. The forced torus is still fitted in full, which
     /// is most of its half second; that is why this stays off the main actor.
@@ -86,9 +86,9 @@ final class Thumbnails {
         let destination = Thumbnails.cache(for: .surface(preset))
         let viewport = Thumbnails.size
         try await Task.detached(priority: .utility) {
-            let plate = try SurfacePlate.build(request)
+            let surfaceDrawing = try SurfaceDrawing.build(request)
             let orbit = Orbit(matching: SurfaceRequest.projection)
-            let scene = plate.scene(camera: orbit.camera)
+            let scene = surfaceDrawing.scene(camera: orbit.camera)
             guard let bounds = scene.quickBounds() else { return }
             let navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
             try Thumbnails.render(scene, navigator: navigator, to: destination)
@@ -99,9 +99,9 @@ final class Thumbnails {
     /// What a surface's thumbnail is built from: its own request, coarser.
     nonisolated static func request(for preset: SurfacePreset) -> SurfaceRequest {
         var request = preset.request
-        request.lattice = Thumbnails.lattice
+        request.grid = Thumbnails.grid
         // A trajectory as long as the window's, at a quarter the width, is
-        // grey moiré: a quarter of it keeps its windings as far apart.
+        // grey moiré: a quarter of it keeps its linear curves as far apart.
         if case .forced(let system, let fit, let harmonics, let radial, let axial, let radius,
                         let turns) = request.shape {
             request.shape = .forced(system: system, fit: fit, harmonics: harmonics,
@@ -111,8 +111,8 @@ final class Thumbnails {
         return request
     }
 
-    /// Lattice points around a surface's `u` for its thumbnail.
-    nonisolated static let lattice = 256
+    /// Grid points around a surface's `u` for its thumbnail.
+    nonisolated static let grid = 256
 
     /// One preview frame of `scene`, written where the cache keeps it.
     nonisolated private static func render(_ scene: Scene, navigator: Navigator,
@@ -121,7 +121,7 @@ final class Thumbnails {
         let target = try renderer.makePreviewTarget(size)
         try renderer.renderPreview(scene, navigator: navigator, viewport: size,
                                    options: PreviewOptions(
-                                    mode: .plate, visibleLayers: Set(scene.layers.indices)),
+                                    mode: .drawing, visibleLayers: Set(scene.layers.indices)),
                                    into: target)
         try FileManager.default.createDirectory(
             at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -138,9 +138,9 @@ final class Thumbnails {
         let viewport = Thumbnails.size
         try await Task.detached(priority: .utility) {
             let bundle = try NativeLandscape.build(request)
-            guard let plate = bundle.manifest.presets.first else { return }
-            var scene = Scene(bundle: bundle, preset: plate)
-            var navigator = Navigator(orbit: Orbit(matching: plate.plate),
+            guard let preset = bundle.manifest.presets.first else { return }
+            var scene = Scene(bundle: bundle, preset: preset)
+            var navigator = Navigator(orbit: Orbit(matching: preset.projection),
                                       framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
             scene.camera = navigator.camera
             // The exact bounds, not the subsampled ones the window fits with:
@@ -165,13 +165,13 @@ final class Thumbnails {
         switch entry {
         case .function(let preset):
             let d = preset.domain
-            let cap: String = preset.cap.map { "\($0)" } ?? "none"
+            let truncationHeight: String = preset.truncationHeight.map { "\($0)" } ?? "none"
             let window = "\(d.real.lo),\(d.real.hi),\(d.imag.lo),\(d.imag.hi)"
             let shape = "\(size.width)x\(size.height)@\(samples)"
-            key = preset.expression + "|" + window + "|" + cap + "|" + shape
+            key = preset.expression + "|" + window + "|" + truncationHeight + "|" + shape
                 + "|style\(style)"
         case .surface(let preset):
-            // The request spelled out is every number the plate is built from.
+            // The request spelled out is every number the drawing is built from.
             key = "surface|\(request(for: preset))|\(size.width)x\(size.height)|style\(style)"
         }
         var hash: UInt64 = 0xcbf29ce484222325

@@ -21,11 +21,11 @@ import KurvenMath
 ///     gradient there, estimates how far off the chord is; where that exceeds
 ///     a fraction of a cell, a new vertex is solved for along the normal and
 ///     the two halves are checked in turn. Density ends up proportional to
-///     curvature, continuously, and with no seams to stitch because there is
+///     curvature, continuously, and with no chunk boundaries to stitch because there is
 ///     only one contour pass.
 ///
 /// The grid still decides which contours exist and roughly where; f decides
-/// exactly where. The lift stays the grid's, so the ink stays on the drawn
+/// exactly where. The lift stays the grid's, so the curves stay on the drawn
 /// surface -- see `Surface.derive`.
 ///
 /// Phase contours wrap. Where arg f passes from π to -π, marching squares on
@@ -62,11 +62,11 @@ public struct ContourRefiner: Sendable {
     public var tolerance: Double
     /// How many times one grid-level segment may be halved.
     public var maxDepth: Int
-    /// Whether the ink is drawn at height |f|, as a landscape's is, so that a
+    /// Whether the curves are drawn at height |f|, as a landscape's is, so that a
     /// phase chord is also split where its height sags from the chord's
-    /// (`subdivide`). Ink on a parametric surface has no height to sag in.
+    /// (`subdivide`). Curves on a parametric surface have no height to sag in.
     public var lifted: Bool
-    /// The height above which the ink is cut away, past which no line is
+    /// The height above which the curves are cut away, past which no line is
     /// followed or seeded: set for the duration of a
     /// `refine(field:level:_:points:ceiling:)` call from its ceiling.
     var ceiling: Double = .infinity
@@ -135,9 +135,9 @@ public struct ContourRefiner: Sendable {
         return (field(f), level)
     }
 
-    /// `Surface.derive`'s hook, and `Surface.crest`'s and
-    /// `Heightfield.foldLines`'s: the contours placed, |f| for the crest's
-    /// minima and the zeros' heights, and the zeros the fold lines are
+    /// `Surface.derive`'s hook, and `Surface.topEdge`'s and
+    /// `Heightfield.foldCurves`'s: the contours placed, |f| for the top edge's
+    /// minima and the zeros' heights, and the zeros the fold curves are
     /// carried to. The magnitude is the one the grid was sampled with,
     /// clamped at `NativeLandscape.huge` beside a pole.
     ///
@@ -174,8 +174,8 @@ public struct ContourRefiner: Sendable {
     ///
     /// A phase path is placed only where it can be drawn: along the
     /// stretches with a vertex at or under `ceiling`, the height above which
-    /// its ink is cut away (`ContourRefine.Contours`). A magnitude line is
-    /// level, and wholly under the cap or wholly over it.
+    /// its curves are cut away (`ContourRefine.Contours`). A magnitude line is
+    /// level, and wholly below the truncation or wholly over it.
     public func refine(field: ContourField, level theta: Double,
                        _ paths: [[P2<DomainSpace>]], points: [SingularPoint] = [],
                        ceiling: Double = .infinity) -> [[P2<DomainSpace>]] {
@@ -210,9 +210,9 @@ public struct ContourRefiner: Sendable {
         // The fan at each zero and pole, from the point's normal form: its
         // rays at this level, each followed from the point out to the
         // handoff radius. The grid's pieces are cut back from those discs
-        // and the rays spliced on, so the ink nearest a singular point is
+        // and the rays spliced on, so the curves nearest a singular point are
         // f's, with as many rays as the point's order says, whatever the
-        // lattice resolved there.
+        // grid resolved there.
         let rays = points.indices.flatMap { seededRays(from: $0, of: points, theta: theta,
                                                        level: level, g: g, ceiling: ceiling) }
         let seeded = Set(rays.filter(\.handoff).map(\.point))
@@ -331,11 +331,11 @@ public struct ContourRefiner: Sendable {
     /// A zero or pole of f with its normal form there: f(z) ≈ coefficient ·
     /// (z − point)^order, the order negative at a pole.
     ///
-    /// This is the chart in which the ink round the point is trivial. In
+    /// This is the chart in which the curves round the point are trivial. In
     /// w = f(z) a line of constant phase θ is the ray arg w = θ and a line
     /// of constant magnitude is a circle, so near the point the drawing is
     /// read off the normal form and carried back by Newton on f, and the
-    /// lattice, which cannot see inside the cell the point lies in, is not
+    /// grid, which cannot see inside the cell the point lies in, is not
     /// consulted there. For order k there are k rays at every level,
     /// leaving at the angles (θ − arg coefficient + 2πj) / k, and the same
     /// formula with k negative gives a pole's.
@@ -346,10 +346,10 @@ public struct ContourRefiner: Sendable {
     }
 
     /// The zeros and poles of f in the window, each with its order and
-    /// leading coefficient. The order is the winding of arg f round a
+    /// leading coefficient. The order is the linear curve of arg f round a
     /// small circle about the point, small against the distance to any
     /// other; the coefficient is the mean of f(z) / (z − point)^order round
-    /// a smaller one. A point whose winding does not agree with the way it
+    /// a smaller one. A point whose linear curve does not agree with the way it
     /// was found, or round which f is not finite and nonzero, is left out,
     /// and its lines are then carried onto it as before (`ended`).
     public func singularPoints() -> [SingularPoint] {
@@ -452,7 +452,7 @@ public struct ContourRefiner: Sendable {
     }
 
     /// How far from a singular point its rays are followed before the
-    /// grid's ink takes over, in cells: the handoff radius. The same
+    /// grid's curves take over, in cells: the handoff radius. The same
     /// distance a run's end is looked for a zero or pole from, so a piece
     /// cut back from the disc is never also carried onto its point.
     static let handoff = reach
@@ -472,7 +472,7 @@ public struct ContourRefiner: Sendable {
     /// direction, moved onto the level set, joined to the point by a chord
     /// placed like any other, and followed on f to the handoff radius.
     /// Under a finite ceiling a pole has no rays, its fan being cut away
-    /// with everything over the cap, and a zero's ray ends where it climbs
+    /// with everything over the truncation, and a zero's ray ends where it climbs
     /// over the ceiling, complete as it stands.
     func seededRays(from index: Int, of points: [SingularPoint], theta: Double, level: Double,
                     g: @Sendable (Complex) -> Double, ceiling: Double) -> [Ray] {
@@ -501,7 +501,7 @@ public struct ContourRefiner: Sendable {
 
     /// The piece cut back from the handoff discs: its vertices inside one
     /// are dropped, and an end so made is marked with the point it meets,
-    /// for that point's ray to be spliced on. A piece that marching
+    /// for that point's ray to be spliced on. A piece that traversing
     /// squares led through a singular point's cell, from one ray onto
     /// another, comes apart there into the two.
     func trimmed(_ piece: Piece, awayFrom discs: [(index: Int, center: P2<DomainSpace>)]) -> [Piece] {
@@ -530,9 +530,9 @@ public struct ContourRefiner: Sendable {
     ///
     /// A run's end inside a point's disc lies on one of the point's rays,
     /// the one leaving at the nearest angle; the two are joined by a chord
-    /// placed like any other, so the ink is one curve from the point out.
+    /// placed like any other, so the curves are one curve from the point out.
     /// A ray no run meets -- the grid drew nothing along it, as it may on a
-    /// coarse lattice -- is followed on f to wherever it ends, and if that
+    /// coarse grid -- is followed on f to wherever it ends, and if that
     /// is another point's disc it is spliced there in turn. An end that no
     /// ray fits is carried onto the point as before.
     func spliced(_ rays: [Ray], onto runs: [Piece], points: [SingularPoint], level: Double,
@@ -593,7 +593,7 @@ public struct ContourRefiner: Sendable {
     }
 
     /// How far round `z` the path turns, in radians: ±2π for a loop round it.
-    static func winding(_ path: [P2<DomainSpace>], around z: P2<DomainSpace>) -> Double {
+    static func linearCurves(_ path: [P2<DomainSpace>], around z: P2<DomainSpace>) -> Double {
         var total = 0.0
         for (a, b) in zip(path, path.dropFirst()) {
             let ta = atan2(a.y - z.y, a.x - z.x), tb = atan2(b.y - z.y, b.x - z.x)
@@ -626,7 +626,7 @@ public struct ContourRefiner: Sendable {
                 lowest = min(lowest, magnitude(Complex(grid.real.lo + Double(ci) * dx, grid.imag.lo + Double(cj) * dy)))
             }
             guard level < lowest else { continue }
-            guard !existing.contains(where: { abs(Self.winding($0, around: z0)) > .pi / 2 }) else { continue }
+            guard !existing.contains(where: { abs(Self.linearCurves($0, around: z0)) > .pi / 2 }) else { continue }
             let c = Complex(z0.x, z0.y)
             let h = 1e-6 * cell
             let d = (value(c + h) - value(c - h)) / (2 * h)
@@ -734,9 +734,9 @@ public struct ContourRefiner: Sendable {
     /// that reach under `ceiling`.
     ///
     /// A segment is placed when either of its grid vertices has |f| at or
-    /// under the ceiling, so the vertex just over the cap is placed too and
-    /// the cut at the rim (`Surface.capCrossing`) is the one it always was.
-    /// A stretch of segments wholly over it is left out: its ink is cut away
+    /// under the ceiling, so the vertex just over the truncation is placed too and
+    /// the cut at the truncation edge (`Surface.truncationCrossing`) is the one it always was.
+    /// A stretch of segments wholly over it is left out: its curves are cut away
     /// whatever its vertices are. The ends this makes are not ends of the
     /// curve, so they are not followed on f (`traced`) or carried to a zero.
     func pieces(of path: [P2<DomainSpace>], level: Double,
@@ -745,7 +745,7 @@ public struct ContourRefiner: Sendable {
         guard path.count >= 2 else { return [] }
         guard ceiling.isFinite else { return placed(path, level: level, g: g, cut: cut) }
         let n = path.count - 1
-        // Not over: a vertex where |f| is not a number is the snap's to judge.
+        // Not over: a vertex where |f| is not a number is the snap's to test.
         let low = path.map { p in !(magnitude(Complex(p.x, p.y)) > ceiling) }
         let wanted = (0..<n).map { low[$0] || low[$0 + 1] }
         if !wanted.contains(false) { return placed(path, level: level, g: g, cut: cut) }
@@ -812,10 +812,10 @@ public struct ContourRefiner: Sendable {
 
     /// A phase run followed on f beyond either end that lies inside the
     /// window and on no zero. Marching squares ends a run where it cannot
-    /// bracket the level on a lattice edge: beside an essential singularity
+    /// bracket the level on a grid edge: beside an essential singularity
     /// the phase turns many times within a cell, and the lines stopped a
     /// cell short of the origin they run into. From the last vertex the
-    /// lattice placed, the curve is followed on f: a step along the
+    /// grid placed, the curve is followed on f: a step along the
     /// tangent, corrected onto the level set along the gradient, kept only
     /// when the chord to it can be placed (`subdivide`) and halved
     /// otherwise, until the curve leaves the window, where it ends on the
@@ -883,8 +883,8 @@ public struct ContourRefiner: Sendable {
             // Into the handoff disc of a singular point, where its ray takes
             // over (`spliced`).
             if let stopping, let k = stopping(p) { met = k; ended = true; break }
-            // Over the ceiling, where the ink is cut away: the vertex just
-            // over it is kept, for the cut at the rim to be solved on.
+            // Over the ceiling, where the curves are cut away: the vertex just
+            // over it is kept, for the cut at the truncation edge to be solved on.
             if magnitude(Complex(p.x, p.y)) > ceiling { ended = true; break }
             // Approaching a zero or a pole, the line ends on it rather than
             // stepping through it onto another ray, and rather than creeping
@@ -947,7 +947,7 @@ public struct ContourRefiner: Sendable {
                 // at, reached by a chord that can be placed: a line that
                 // meets the edge where the level is not crossed along it,
                 // or runs into a singularity on the edge, stops at its last
-                // vertex rather than ending off the level or jumping to the cap.
+                // vertex rather than ending off the level or jumping to the truncation.
                 if let end {
                     var runs: [[P2<DomainSpace>]] = [[]]
                     subdivide(p, end, level: level, g: g, cut: true, depth: 0, into: &runs)
@@ -1149,7 +1149,7 @@ public struct ContourRefiner: Sendable {
         } else if onColumn && onRow {
             // On a node. Marching squares puts a vertex there when the sample
             // equals the level, which is right, and also when the far sample
-            // is the cap: exp(1/z) beside its essential singularity has a
+            // is the truncation: exp(1/z) beside its essential singularity has a
             // node at 1e-109 next to one at 1e12, and the interpolated
             // crossing is 1e-12 of the way along the edge, which rounds onto
             // the node where f is flat and nowhere near the level. The edge is
@@ -1192,7 +1192,7 @@ public struct ContourRefiner: Sendable {
         let (a1, b1) = (edge.a, edge.b)
         // Brent's method on t in [0, 1] along the edge. A bracket like
         // exp(1/z)'s beside its essential singularity, 1e-109 at one end and
-        // the 1e12 cap at the other, defeats interpolation -- every step lands
+        // the 1e12 truncation at the other, defeats interpolation -- every step lands
         // beside the small end -- and there it bisects.
         func at(_ t: Double) -> P2<DomainSpace> {
             P2(a1.x + t * (b1.x - a1.x), a1.y + t * (b1.y - a1.y))
@@ -1282,13 +1282,13 @@ public struct ContourRefiner: Sendable {
             }
         }
         // A phase line is a curve in space: across the plane it is placed to
-        // the tolerance, but on a steep flank its height between two
+        // the tolerance, but on a steep graph its height between two
         // vertices is not the chord's, and in projection the chords kink.
         // So a chord is also split where |f| at its midpoint departs from
         // the mean of |f| at its ends by more than the tolerance. A
         // magnitude line is level and has no height to depart in. Nor has a
         // chord with a pole at its end: the height there is whatever the
-        // cap's is, and no halving brings the midpoint's height to the mean
+        // truncation's is, and no halving brings the midpoint's height to the mean
         // of a finite one and `huge`, so the test would refuse every chord
         // that carries a line onto its pole.
         var sag = 0.0
@@ -1394,7 +1394,7 @@ public struct ContourRefiner: Sendable {
 
     /// The distance of each vertex from the level set, in cells: the residual
     /// over the gradient, first order. What the refinement is trying to make
-    /// small, measured against f rather than against a finer grid. Capped at
+    /// small, measured against f rather than against a finer grid. Truncated at
     /// a cell: the estimate is first order, and where f is flat (a grid
     /// vertex left on a node beside exp(1/z)'s essential singularity, where
     /// |f| is 1e-109) it runs to 1e106 and says only "far".

@@ -55,8 +55,8 @@ struct Args {
     /// Whether a token is a value rather than the next option.
     ///
     /// Anything beginning with `-` is an option, *except* a negative number:
-    /// `--margin -0.5` means a margin and `--derived -o out.svg` does not mean
-    /// a derived called "-o". Getting this wrong let a switch swallow the flag
+    /// `--shear -0.5` means a shear and `--soft -o out.svg` does not mean
+    /// a soft called "-o". Getting this wrong let a switch swallow the flag
     /// after it, which showed up as "missing --output" three arguments later.
     static func isValue(_ token: String) -> Bool {
         if !token.hasPrefix("-") { return true }
@@ -80,6 +80,9 @@ struct Args {
         guard let n = Int(v) else { throw CLIError("--\(name) wants an integer, got '\(v)'") }
         return n
     }
+    func int(_ name: String) throws -> Int? {
+        flags[name] == nil ? nil : try int(name, 0)
+    }
     func double(_ name: String) throws -> Double? {
         guard let v = flags[name] else { return nil }
         guard let d = Double(v) else { throw CLIError("--\(name) wants a number, got '\(v)'") }
@@ -91,58 +94,80 @@ struct Args {
         guard d > 0, d.isFinite else { throw CLIError("--\(name) wants a positive number, got '\(flags[name]!)'") }
         return d
     }
+
+    /// Refuses every option `command` does not take. Without this a flag
+    /// that was renamed or misspelt was read by nothing, and the command ran
+    /// on its default: gamma given the old name of `--truncation` was
+    /// sampled untruncated.
+    func only(_ command: String, _ accepted: [String]) throws {
+        let unknown = Set(flags.keys).union(switches).subtracting(accepted)
+        guard !unknown.isEmpty else { return }
+        func spelled(_ name: String) -> String { name == "output" ? "-o" : "--\(name)" }
+        throw CLIError("\(command) takes no \(unknown.sorted().map(spelled).joined(separator: ", "))"
+                       + (accepted.isEmpty ? "; it takes no options"
+                          : "; it takes \(accepted.map(spelled).joined(separator: " "))"))
+    }
+
+    /// The options `loadScene` reads.
+    static let scene = ["preset", "no-refine"]
+    /// The options `previewView` reads, the scene's among them.
+    static let view = scene + ["levels", "orbit", "fov", "center", "zoom", "depth-tolerance"]
+    /// The options `previewOptions` reads.
+    static let previewOptions = ["draft", "slope", "stroke-width"]
+    /// The options an oblique camera is set by.
+    static let projection = ["shear", "x-angle", "z-angle"]
 }
 
 let usage = """
 usage: kurven-cli <command> [options]
 
-  bake <bundle> [--preset NAME] [--resolution N] [--tiles N] [--margin M]
-       [--silhouette W] [--dump PREFIX] -o out.svg
-        Render a bundle's plate to SVG through the depth-tested hidden-line
+  bake <bundle> [--preset NAME] [--resolution N] [--tiles N] [--depth-tolerance T]
+       [--outline W] [--dump PREFIX] -o out.svg
+        Render a bundle's drawing to SVG through the depth-tested hidden-line
         pipeline. Defaults to the bundle's first preset and that preset's own
-        depth resolution and clip margin -- the settings the published plate
-        was made with. --silhouette traces the outline of the drawn region off
+        depth resolution and depth tolerance -- the settings the published drawing
+        was made with. --outline traces the outline of the drawn region off
         the depth buffer and adds it as a stroke of that width. --dump also
         writes each layer's strokes as PREFIX.<layer>.npy plus CSR offsets,
         and the frame as PREFIX.frame.json, for checking a bake stroke for
         stroke outside this program.
 
-  surface torus [--lines U,V] [--samples N]
+  surface torus [--coordinate-curves U,V] [--samples N]
   surface sn [--modulus M] [--grid N]
   surface sn --relief A [--repeat N[,M]] [--turn T] [--floor B] [--soft] [--samples S]
   surface periodic --expression E --periods P1,P2 [--grid N]
-  surface forced [--system jerk] [--turns N] [--ink W]
-          [--harmonics M] [--fit T] [--radial I] [--axial J] [--lines U,V]
-          [--major R] [--minor r] [--winding SLOPE[,TURNS[,COUNT]]]
+  surface forced [--system jerk] [--turns N] [--trajectory-width W]
+          [--harmonics M] [--fit T] [--radial I] [--axial J] [--coordinate-curves U,V]
+          [--major R] [--minor r] [--linear-curves SLOPE[,TURNS[,COUNT]]]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N]
           [--tiles N] [--width W] [--folds W] -o out.svg
           [--mode M] [--width-px N] [--height-px N] -o out.png
         Bake a surface to SVG, hidden lines decided by where on the surface
-        each vertex lies rather than by depth. torus draws its parameter
-        lines. sn and periodic draw a doubly periodic function's |f| and
+        each vertex lies rather than by depth. torus draws its coordinate
+        curves. sn and periodic draw a doubly periodic function's |f| and
         arg f contours on the torus its period rectangle glues into: sn(z, M)
         on [0, 4K) x [0, 2K'), or any expression over [0, P1) x [0, P2).
         sn --relief A puts the landscape in relief: the torus displaced
-        along its normal by A times |f| truncated at the cap, over --repeat
+        along its normal by A times the truncated |f|, over --repeat
         N periods round the ring and M round the tube (N near M keeps the
-        tiling isotropic; a pole's cap is a round disc only then). --turn
+        tiling isotropic; a pole's plateau is a round disc only then). --turn
         starts the rectangle T imaginary periods up the plane, turning the
         function round the tube: 0 puts the zeros on the outer equator,
         1/4 the poles on top. --floor B displaces only |f| above B, so each
-        pole stands alone on the bare torus; --soft caps as c tanh(|f|/c)
-        instead of a crease. --samples is the lattice round the ring in all.
+        pole stands alone on the bare torus; --soft truncates smoothly, as
+        c tanh(|f|/c), instead of with a crease. --samples is the grid round the ring in all.
         forced finds a forced system's invariant torus in the spectrum of a
         long run, fits it as a Fourier series in the forcing phase and the
         system's own, and draws --turns turns of the trajectory on it, the
         forcing phase as the angle of revolution: the trajectory is the
-        winding at the rotation number Ω/ω, and it cuts the torus most
+        linear curve at the rotation number Ω/ω, and it cuts the torus most
         evenly at the denominators of that number's convergents, which are
-        printed. Any surface draws a --winding: COUNT straight lines through
+        printed. Any surface draws --linear-curves: COUNT straight lines through
         the parameter rectangle at SLOPE turns of v per turn of u (2/5, or a
         decimal), TURNS turns long, or closed when the slope is a fraction.
-        The camera is a plate camera: --x-angle tilts, --z-angle turns, --shear
+        The camera is an oblique camera: --x-angle tilts, --z-angle turns, --shear
         is the oblique foreshortening the published plates use. The fold
-        lines -- outline and inner silhouettes -- are drawn at --folds (twice
+        curves -- the outline and inner fold curves -- are drawn at --folds (twice
         --width by default; 0 leaves them out). An output ending in .png
         renders one frame of the realtime preview instead of baking.
 
@@ -172,23 +197,24 @@ usage: kurven-cli <command> [options]
         hatching's (any SVG colour; black by default).
 
   surface-costs [--repeat N] [--only torus|sn|forced]
-        Time what each of the window's surface controls costs: the plate
+        Time what each of the window's surface controls costs: the drawing
         rebuilt from the one before it, and the first preview frame after,
         as the window would pay for them -- at full resolution, and at the
-        draft lattice a drag uses. The numbers SurfaceSection's doc records.
+        draft grid a drag uses. The numbers SurfaceSection's doc records.
 
   landscape-costs [--only NAME] [--resolution N]
         Time what each of the window's landscape controls costs, per catalog
         preset, as the window pays for it off the main actor: a resample in
-        full and as a drag's draft, a cap step and the step after it, a hatch
-        step, a layer's levels placed on f and as a drag's draft, and turning
+        full and as a drag's draft, a truncation step and the step after it, a hatch
+        spacing step, a layer's levels placed on f and as a drag's draft, and turning
         refinement on. The numbers Landscape.swift's doc records.
 
   depth <bundle> [--preset NAME] [--resolution N] -o depth.npy
         Dump the depth buffer as float32 .npy, for comparison against a
         reference. This is what stands in for a GPU frame capture.
 
-  bench <bundle> [--preset NAME] [--resolution N] [--frames N] [--judging]
+  bench <bundle> [--preset NAME] [--resolution N] [--frames N] [--mode M] [--editing]
+        [--visibility]
         Render the depth pass repeatedly from a moving camera and report the
         frame time. This is the Phase 2 question -- whether navigation can hold
         60 fps -- asked without a window: the preview does exactly this work
@@ -196,53 +222,54 @@ usage: kurven-cli <command> [options]
 
   preview <bundle> [--preset NAME] [--width N] [--height N] [--mode M]
           [--orbit "AZ,EL"] [--center RE,IM,Z] [--zoom F] [--levels N] [--fov DEGREES]
-          [--margin M] [--slope K] [--ink-width W] [--no-refine] [--draft] -o out.png
+          [--depth-tolerance T] [--slope K] [--stroke-width W] [--no-refine] [--draft] -o out.png
         Render one preview frame offscreen and write it as a PNG. Modes:
-        plate (the default), shaded, depth. --orbit turns the preset camera by
+        drawing (the default), shaded, depth. --orbit turns the preset camera by
         that many degrees before drawing; --center puts that world point at
-        the middle of the picture, and --zoom then zooms about it. --levels redraws every *described*
-        layer at N evenly spaced levels over its own range, which only a
-        bundle exported with --derived can do. --fov switches to a perspective
-        camera, which previews but does not bake. --margin and --slope set the
-        ink test: the hidden-line margin, and how many pixels' worth of the
-        surface's depth change it also allows (0 is the bake's predicate).
-        --ink-width is the widest layer's stroke in pixels (default 1.5); the
-        others are drawn in proportion to their plate widths. A bundle that
+        the middle of the picture, and --zoom then zooms about it. --levels
+        redraws every *described* layer at N evenly spaced levels over its own
+        range; a layer stored as arrays stays as it is. --fov switches to a
+        perspective camera, which previews but does not bake. --depth-tolerance and --slope
+        set the visibility test: the hidden-line depth tolerance, and how many
+        pixels' worth of the surface's depth change it also allows (0 is the
+        bake's predicate).
+        --stroke-width is the widest layer's stroke in pixels (default 1.5); the
+        others are drawn in proportion to their widths in the bake. A bundle that
         names its function has its contours placed by it, as the window does;
         --no-refine draws the grid's contours instead, and bake, depth and
         flicker take it too. This is how the preview is checked against the
-        plate without a window in the way.
+        drawing without a window in the way.
 
   flicker <bundle> [preview's view options] [--frames N] [--step DEGREES]
-          [--margin M] [--slope K] [--ink-width W] [--dump DIR] [--max-flip F]
+          [--depth-tolerance T] [--slope K] [--stroke-width W] [--dump DIR] [--max-flip F]
         Turn the preview camera --step degrees a frame (default 0.02) for
-        --frames frames (default 24), and report the ink that comes and goes:
+        --frames frames (default 24), and report the marks that come and go:
         toggled (changed between frames, motion included) and flipped (a
         stroke that stayed put while the depth test changed its mind about
         it). Flicker is a motion artifact; this is it as a number. --max-flip
         fails the command when the flip rate is over F.
 
   inspect <bundle>
-        Print the manifest: domain, caps, occluder, layers, presets, provenance.
+        Print the manifest: domain, truncation, occluder, layers, presets, provenance.
 
   catalog
         Print the functions this program can sample and the language they are
         written in. This is the menu the app's function picker is built from.
 
   landscape [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI]
-            [--res N] [--cap Z | --bands BELOW:CAP,... --beyond Z]
+            [--res N] [--truncation H | --bands BELOW:HEIGHT,... --beyond H]
             [--spacing S] -o out.kurven
         Sample a function over a rectangle and write its bundle. Every layer
-        is a description, so the result's cap, levels and hatch spacing are
-        editable afterwards -- in the app, or by `bake --levels`.
-        --bands truncates at a height per band of Re z, as the gamma plate
-        does: each BELOW:CAP is the height where Re z < BELOW, the first band
+        is a description, so the result's truncation, levels and hatch spacing are
+        editable afterwards -- in the app, or by `preview --levels`.
+        --bands truncates at a height per band of Re z, as the gamma drawing
+        does: each BELOW:HEIGHT is the height where Re z < BELOW, the first band
         that matches wins, and --beyond is the height past the last. The
         contour levels are chosen up to the highest of them, so set the
         truncation here rather than in the manifest afterwards.
 
   refine [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI] [--res N]
-         [--tolerance CELLS] [--depth N]
+         [--truncation H] [--tolerance CELLS] [--depth N]
         Benchmark the contour refinement: each contour layer derived from the
         grid, then placed by f, with both timed and both measured against f.
 
@@ -283,13 +310,14 @@ func loadScene(_ args: Args) throws -> (KurvenBundle, CameraPreset, Scene) {
 }
 
 func bake(_ args: Args) throws {
+    try args.only("bake", Args.scene + ["resolution", "tiles", "depth-tolerance", "outline", "dump", "output"])
     let (bundle, preset, scene) = try loadScene(args)
     let output = URL(fileURLWithPath: try args.string("output"))
     let options = BakeOptions(
         resolution: try args.int("resolution", preset.buffer),
-        tiles: args.flags["tiles"].flatMap(Int.init),
-        margin: try args.double("margin") ?? preset.margin,
-        silhouette: try args.double("silhouette"))
+        tiles: try args.int("tiles"),
+        depthTolerance: try args.double("depth-tolerance") ?? preset.depthTolerance,
+        outline: try args.double("outline"))
 
     if !bundle.manifest.provenance.isReproducible {
         FileHandle.standardError.write(Data("""
@@ -323,7 +351,7 @@ func bake(_ args: Args) throws {
             "axis0": .array([.double(f.axis0.lo), .double(f.axis0.hi)]),
             "axis1": .array([.double(f.axis1.lo), .double(f.axis1.hi)]),
             "shape": .array([.int(f.rows), .int(f.cols)]),
-            "margin": .double(options.margin ?? scene.margin),
+            "depthTolerance": .double(options.depthTolerance ?? scene.depthTolerance),
             "layers": .array(scene.layers.map { .string($0.spec.name) }),
         ])
         try (meta.canonical + "\n").write(to: URL(fileURLWithPath: "\(prefix).frame.json"),
@@ -335,15 +363,15 @@ func bake(_ args: Args) throws {
           depth      \(result.depth.frame.rows)x\(result.depth.frame.cols) \
         in \(result.tiles * result.tiles) pass\(result.tiles == 1 ? "" : "es")
           strokes    \(result.strokes.pathCount) paths, \
-        ink \(String(format: "%.1f", result.strokes.inkLength))
+        length \(String(format: "%.1f", result.strokes.totalLength))
           took       \(elapsed)
         """)
     for (index, entry) in result.strokes.layers.enumerated() {
-        // The silhouette, when asked for, is one more stroke layer than the
-        // scene has ink layers -- it is traced from the depth buffer, not
+        // The outline, when asked for, is one more stroke layer than the
+        // scene has layers -- it is traced from the depth buffer, not
         // carried by the bundle.
         let spec = index < scene.layers.count ? scene.layers[index].spec : nil
-        print("    \(pad(spec?.name ?? "silhouette", 14)) "
+        print("    \(pad(spec?.name ?? "outline", 14)) "
               + "\(pad(String(entry.paths.count), 7)) paths"
               + "  lw \(entry.style.width)"
               + (spec.map { $0.clipped ? "" : "  unclipped" } ?? "  from the depth buffer"))
@@ -353,82 +381,103 @@ func bake(_ args: Args) throws {
 func surfaceCommand(_ args: Args) throws {
     let shape = args.positional.dropFirst().first ?? "torus"
     if shape == "solid" { return try solidCommand(args) }
+    let relief = shape == "sn" && args.flags["relief"] != nil
+    if relief {
+        try args.only("surface sn --relief", Args.projection
+                      + ["relief", "modulus", "major", "minor", "repeat", "samples", "grid", "turn",
+                         "soft", "floor", "resolution", "tiles", "output"])
+    } else {
+        let own: [String]? = switch shape {
+        case "torus": ["coordinate-curves"]
+        case "sn": ["modulus", "grid"]
+        case "periodic": ["expression", "periods", "grid"]
+        case "forced": ["system", "fit", "harmonics", "radial", "axial", "radius", "turns",
+                        "coordinate-curves"]
+        default: nil
+        }
+        if let own {
+            try args.only("surface \(shape)", own + Args.projection + Args.previewOptions
+                          + ["major", "minor", "width", "samples", "linear-curves", "trajectory-width",
+                             "folds", "resolution", "tiles", "output", "preview", "width-px",
+                             "height-px", "mode"])
+        }
+    }
     let R = try args.double("major") ?? 2
     let r = try args.double("minor") ?? 1
     let width = try args.double("width") ?? 0.3
     // `surface sn --relief A`: the sn landscape in relief on its torus, the
     // surface displaced along its normal by A times |f| truncated at the
-    // cap, baked straight to SVG. A proof of concept: no window, no preview.
-    if shape == "sn", let amplitude = try args.double("relief") {
+    // truncation, baked straight to SVG. A proof of concept: no window, no preview.
+    if relief, let amplitude = try args.double("relief") {
         let m = try args.double("modulus") ?? 0.64
         // `--repeat N[,M]`: N periods round the ring and M round the tube,
-        // the ink computed once and carried round by the periods.
+        // the curves computed once and carried round by the periods.
         let repeats = (args.flags["repeat"] ?? "1").split(separator: ",").compactMap { Int($0) }
         guard (1...2).contains(repeats.count), repeats.allSatisfy({ $0 >= 1 }) else {
             throw CLIError("--repeat wants N or N,M whole periods, as in 8 or 8,2")
         }
-        // `--samples`: the lattice round the ring in all, 1024 a period at most.
-        let lattice = try args.int("samples", 8192)
+        // `--samples`: the grid round the ring in all, 1024 a period at most.
+        let grid = try args.int("samples", 8192)
         let clock = ContinuousClock()
-        var plate: PeriodicTorus.Plate!
+        var drawing: PeriodicTorus.Drawing!
         let built = try clock.measure {
             var base = try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r,
                                                   resolution: try args.int("grid", 600),
-                                                  lattice: min(lattice, 1024), capped: true,
+                                                  grid: min(grid, 1024), truncated: true,
                                                   turn: try args.double("turn") ?? 0)
-                .repeated(real: repeats[0], imag: repeats.count > 1 ? repeats[1] : 1, lattice: lattice)
-            // `--soft`: the cap as a smooth saturation rather than a crease,
+                .repeated(real: repeats[0], imag: repeats.count > 1 ? repeats[1] : 1, grid: grid)
+            // `--soft`: the truncation as a smooth saturation rather than a crease,
             // c · tanh(|f| / c), an experiment on what the crease costs.
             if args.switches.contains("soft"), let height = base.height {
                 let c = base.ceiling
-                base = PeriodicTorus.Plate(surface: base.surface, layers: base.layers,
-                                           height: { p in c * tanh(height(p) / c) },
-                                           ceiling: c, radii: base.radii)
+                base = PeriodicTorus.Drawing(surface: base.surface, layers: base.layers,
+                                             height: { p in c * tanh(height(p) / c) },
+                                             ceiling: c, radii: base.radii)
             }
             // `--floor b`: only |f| above b displaces, so each pole stands
             // alone on the bare torus instead of on a raised ground.
             if let floor = try args.double("floor"), let height = base.height {
-                base = PeriodicTorus.Plate(surface: base.surface, layers: base.layers,
-                                           height: { p in max(height(p) - floor, 0) },
-                                           ceiling: base.ceiling - floor, radii: base.radii)
+                base = PeriodicTorus.Drawing(surface: base.surface, layers: base.layers,
+                                             height: { p in max(height(p) - floor, 0) },
+                                             ceiling: base.ceiling - floor, radii: base.radii)
             }
-            plate = base.relief(amplitude: amplitude, reach: min(r, R - r))
+            drawing = base.relief(amplitude: amplitude, reach: min(r, R - r))
         }
         var projection = SurfaceRequest.projection
         projection.shear = try args.double("shear") ?? projection.shear
         projection.xAngle = try args.double("x-angle") ?? projection.xAngle
         projection.zAngle = try args.double("z-angle") ?? projection.zAngle
-        let scene = Scene(surface: plate.surface, layers: plate.layers,
-                          camera: Camera.plate(projection), margin: 0)
+        let scene = Scene(surface: drawing.surface, layers: drawing.layers,
+                          camera: Camera.oblique(projection), depthTolerance: 0)
         let output = URL(fileURLWithPath: try args.string("output"))
         let renderer = try MetalRenderer()
         var result: Bake!
         let baked = try clock.measure {
             result = try renderer.bake(scene, options: BakeOptions(resolution: try args.int("resolution", 3000),
-                                                                   tiles: args.flags["tiles"].flatMap(Int.init)))
+                                                                   tiles: try args.int("tiles")))
         }
         try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
         print("""
             sn in relief, amplitude \(fmt(amplitude)) on R=\(fmt(R)) r=\(fmt(r)) -> \(output.lastPathComponent)
-              reach      \(fmt(min(r, R - r))); displacement up to \(fmt(amplitude * plate.ceiling))\
-            \(plate.surface.outward == nil ? ", NOT embedded: back faces kept" : ", embedded")
-              strokes    \(result.strokes.pathCount) paths, ink \(String(format: "%.1f", result.strokes.inkLength))
+              reach      \(fmt(min(r, R - r))); displacement up to \(fmt(amplitude * drawing.ceiling))\
+            \(drawing.surface.outward == nil ? ", NOT embedded: back faces kept" : ", embedded")
+              strokes    \(result.strokes.pathCount) paths, length \(String(format: "%.1f", result.strokes.totalLength))
               took       \(built) to build, \(baked) to bake
             """)
         return
     }
     func counts(_ text: String) throws -> SIMD2<Int> {
         let n = text.split(separator: ",").compactMap { Int($0) }
-        guard n.count == 2 else { throw CLIError("--lines wants U,V, as in 36,18") }
+        guard n.count == 2 else { throw CLIError("--coordinate-curves wants U,V, as in 36,18") }
         return SIMD2(n[0], n[1])
     }
-    // The flags, parsed into the request the window keeps; the plate is
+    // The flags, parsed into the request the window keeps; the drawing is
     // built from it by the same function either way.
     var request: SurfaceRequest
     switch shape {
     case "torus":
         request = SurfaceRequest(.torus(major: R, minor: r),
-                                 lines: try counts(args.flags["lines"] ?? "36,18"))
+                                 lines: try counts(args.flags["coordinate-curves"] ?? "36,18"))
     case "sn":
         request = SurfaceRequest(.sn(modulus: try args.double("modulus") ?? 0.64, major: R, minor: r,
                                      grid: try args.int("grid", 600)))
@@ -450,14 +499,14 @@ func surfaceCommand(_ args: Args) throws {
                                          axial: try args.int("axial", 1),
                                          radius: try args.double("radius") ?? 2.5,
                                          turns: try args.int("turns", 344)),
-                                 lines: try args.flags["lines"].map(counts))
+                                 lines: try args.flags["coordinate-curves"].map(counts))
     default:
-        throw CLIError("unknown surface '\(shape)'; the catalog has: torus, sn, periodic, forced")
+        throw CLIError("unknown surface '\(shape)'; the catalog has: torus, sn, periodic, forced, solid")
     }
-    request.lattice = try args.int("samples", 1024)
-    // A winding: `--winding 2/5`, `--winding 0.618,24` for that many turns,
-    // `--winding 1/3,3,4` for four strands of it.
-    if let text = args.flags["winding"] {
+    request.grid = try args.int("samples", 1024)
+    // A linear curve: `--linear-curves 2/5`, `--linear-curves 0.618,24` for that many turns,
+    // `--linear-curves 1/3,3,4` for four strands of it.
+    if let text = args.flags["linear-curves"] {
         let parts = text.split(separator: ",").map(String.init)
         func slope(_ s: String) -> Double? {
             let f = s.split(separator: "/").compactMap { Double($0) }
@@ -466,20 +515,20 @@ func surfaceCommand(_ args: Args) throws {
         guard (1...3).contains(parts.count), let slope = slope(parts[0]),
               let turns = parts.count > 1 ? Int(parts[1]) : 24,
               let count = parts.count > 2 ? Int(parts[2]) : 1, turns >= 1, count >= 1 else {
-            throw CLIError("--winding wants SLOPE[,TURNS[,COUNT]], as in 2/5 or 0.618,24,3")
+            throw CLIError("--linear-curves wants SLOPE[,TURNS[,COUNT]], as in 2/5 or 0.618,24,3")
         }
-        request.winding = SurfaceRequest.Winding(slope: slope, turns: turns, count: count)
+        request.linearCurves = SurfaceRequest.LinearCurves(slope: slope, turns: turns, count: count)
     }
-    // The outline and inner silhouettes, derived for the camera; --folds 0
+    // The outline and inner fold curves, derived for the camera; --folds 0
     // leaves them out.
-    request.style = SurfaceRequest.Style(lines: width, trajectory: try args.double("ink") ?? 0.08,
+    request.style = SurfaceRequest.Style(lines: width, trajectory: try args.double("trajectory-width") ?? 0.08,
                                          folds: try args.double("folds") ?? 2 * width,
-                                         winding: width)
+                                         linearCurves: width)
     let clock = ContinuousClock()
-    var plate: SurfacePlate!
-    let built = try clock.measure { plate = try SurfacePlate.build(request) }
-    let surface = plate.surface
-    if let torus = plate.torus {
+    var drawing: SurfaceDrawing!
+    let built = try clock.measure { drawing = try SurfaceDrawing.build(request) }
+    let surface = drawing.surface
+    if let torus = drawing.torus {
         let rho = torus.rotationNumber
         let convergents = ContinuedFraction.convergents(of: rho, maxDenominator: 2000)
             .dropFirst().map { "\($0.p)/\($0.q)" }.joined(separator: ", ")
@@ -493,15 +542,15 @@ func surfaceCommand(_ args: Args) throws {
             torus.residual, torus.residual / torus.extent, rho,
             ContinuedFraction.describe(ContinuedFraction.quotients(of: rho, count: 8), ellipsis: true),
             convergents,
-            plate.embedded ? "embedded: back faces are hidden"
+            drawing.embedded ? "embedded: back faces are hidden"
                            : "NOT embedded -- a slice crosses itself; back faces are kept"))
     }
     var projection = SurfaceRequest.projection
     projection.shear = try args.double("shear") ?? projection.shear
     projection.xAngle = try args.double("x-angle") ?? projection.xAngle
     projection.zAngle = try args.double("z-angle") ?? projection.zAngle
-    let camera = Camera.plate(projection)
-    let scene = plate.scene(camera: camera)
+    let camera = Camera.oblique(projection)
+    let scene = drawing.scene(camera: camera)
     let output = URL(fileURLWithPath: try args.string("output"))
 
     if args.switches.contains("preview") || output.pathExtension.lowercased() == "png" {
@@ -524,7 +573,7 @@ func surfaceCommand(_ args: Args) throws {
         return
     }
     let options = BakeOptions(resolution: try args.int("resolution", 3000),
-                              tiles: args.flags["tiles"].flatMap(Int.init))
+                              tiles: try args.int("tiles"))
 
     let renderer = try MetalRenderer()
     var result: Bake!
@@ -532,12 +581,12 @@ func surfaceCommand(_ args: Args) throws {
     try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
     print("""
         \(shape)\(shape == "forced" ? "" : " R=\(fmt(R)) r=\(fmt(r))") -> \(output.lastPathComponent)
-          lattice    \(surface.u.samples)x\(surface.v.samples)\
+          grid    \(surface.u.samples)x\(surface.v.samples)\
         \(surface.outward == nil ? ", bounds no solid, back faces kept" : ", closed")
           depth      \(result.depth.frame.rows)x\(result.depth.frame.cols) \
         in \(result.tiles * result.tiles) pass\(result.tiles == 1 ? "" : "es")
           strokes    \(result.strokes.pathCount) paths, \
-        ink \(String(format: "%.1f", result.strokes.inkLength))
+        length \(String(format: "%.1f", result.strokes.totalLength))
           took       \(elapsed)
         """)
 }
@@ -545,6 +594,10 @@ func surfaceCommand(_ args: Args) throws {
 /// `surface solid`: a polyhedron, baked straight to SVG. No bundle: a
 /// solid is a table and a rule, and the rule is exact.
 func solidCommand(_ args: Args) throws {
+    try args.only("surface solid", Args.projection
+                  + ["kind", "size", "hole", "depth", "width", "color", "resolution", "tiles", "output",
+                     "hatching", "angle", "spacing", "step", "width-steps", "seed", "scale",
+                     "hatch-width", "hatch-color"])
     let kind = args.flags["kind"] ?? "dodecahedron"
     let size = try args.positive("size") ?? 2
     let width = try args.double("width") ?? 0.6
@@ -572,7 +625,7 @@ func solidCommand(_ args: Args) throws {
     projection.shear = try args.double("shear") ?? projection.shear
     projection.xAngle = try args.double("x-angle") ?? projection.xAngle
     projection.zAngle = try args.double("z-angle") ?? projection.zAngle
-    let camera = Camera.plate(projection)
+    let camera = Camera.oblique(projection)
     var layers = [Layer(spec: LayerSpec(name: "edges", role: .outline, source: .edges,
                                         width: width, heightPolicy: .surface,
                                         color: args.flags["color"] ?? "#000000"),
@@ -597,7 +650,7 @@ func solidCommand(_ args: Args) throws {
         guard widthSteps >= 1 else { throw CLIError("--width-steps wants 1 or more, got \(widthSteps)") }
         let hatching = Hatching(angle: (try args.double("angle") ?? 45) * .pi / 180, spacing: spacing,
                                 step: step, tone: tone, widthSteps: widthSteps)
-        layers.append(Layer(spec: LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching),
+        layers.append(Layer(spec: LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching, faces: .solid),
                                             width: try args.double("hatch-width") ?? width / 2,
                                             heightPolicy: .surface,
                                             color: args.flags["hatch-color"] ?? args.flags["color"] ?? "#000000"),
@@ -606,7 +659,7 @@ func solidCommand(_ args: Args) throws {
     let scene = Scene(solid: solid, layers: layers, camera: camera)
     let output = URL(fileURLWithPath: try args.string("output"))
     let options = BakeOptions(resolution: try args.int("resolution", 3000),
-                              tiles: args.flags["tiles"].flatMap(Int.init))
+                              tiles: try args.int("tiles"))
     let renderer = try MetalRenderer()
     let clock = ContinuousClock()
     var result: Bake!
@@ -622,7 +675,7 @@ func solidCommand(_ args: Args) throws {
         }
     }.count
     let diagonals = solid.isDiagonal.filter { $0 }.count
-    let hatchLength = result.strokes.layers.dropFirst().reduce(0.0) { $0 + $1.paths.inkLength }
+    let hatchLength = result.strokes.layers.dropFirst().reduce(0.0) { $0 + $1.paths.totalLength }
     let hatchLines = result.strokes.layers.dropFirst().reduce(0) { $0 + $1.paths.count }
     let widths = result.strokes.layers.count - 1
     print("""
@@ -632,7 +685,7 @@ func solidCommand(_ args: Args) throws {
         genus \(1 - solid.eulerCharacteristic / 2), \
         \(solid.isConvex ? "convex: the sign test alone decides" : "not convex: edges are tested for occlusion")
           edges      \(drawn.count) spans drawn, \(whole) of them whole edges, \
-        length \(String(format: "%.2f", drawn.inkLength))
+        length \(String(format: "%.2f", drawn.totalLength))
           hatching   \(layers.count > 1 ? "\(hatchLines) lines at \(widths) width\(widths == 1 ? "" : "s"), length \(String(format: "%.2f", hatchLength))" : "none")
           depth      \(result.depth.frame.rows)x\(result.depth.frame.cols), \
         which visibility does not consult
@@ -641,6 +694,7 @@ func solidCommand(_ args: Args) throws {
 }
 
 func depth(_ args: Args) throws {
+    try args.only("depth", Args.scene + ["resolution", "output"])
     let (_, preset, scene) = try loadScene(args)
     let output = URL(fileURLWithPath: try args.string("output"))
     let resolution = try args.int("resolution", preset.buffer)
@@ -661,6 +715,7 @@ func depth(_ args: Args) throws {
 }
 
 func bench(_ args: Args) throws {
+    try args.only("bench", Args.scene + ["resolution", "frames", "mode", "editing", "visibility"])
     let (bundle, preset, base) = try loadScene(args)
     let resolution = try args.int("resolution", 1024)
     let frames = try args.int("frames", 60)
@@ -670,24 +725,24 @@ func bench(_ args: Args) throws {
     let renderer = try MetalRenderer()
     let clock = ContinuousClock()
 
-    // A camera that moves: the plate's own projection, orbited. Every frame
+    // A camera that moves: the drawing's own projection, orbited. Every frame
     // shares the scene's `content`, so this measures what navigation costs
     // once the resources are built -- which is the whole reason they are
     // separated from the camera.
     func camera(_ i: Int) -> Camera {
-        var plate = preset.plate
-        plate.zAngle = preset.plate.zAngle + Double(i) * 0.25
-        return .plate(plate)
+        var projection = preset.projection
+        projection.zAngle = preset.projection.zAngle + Double(i) * 0.25
+        return .oblique(projection)
     }
 
     // Two things are worth timing separately: the depth pass alone, which is
     // what a bake pays per tile, and the whole preview, which is what a drag
     // pays per frame. Reporting only the first would flatter the app.
-    let modeName = args.flags["mode"] ?? "plate"
+    let modeName = args.flags["mode"] ?? "drawing"
     let mode: PreviewMode = modeName == "shaded" ? .shaded(Lighting())
-        : modeName == "depth" ? .depth : .plate
+        : modeName == "depth" ? .depth : .drawing
     let target = try renderer.makePreviewTarget(viewport)
-    var navigator = Navigator(orbit: Orbit(matching: preset.plate),
+    var navigator = Navigator(orbit: Orbit(matching: preset.projection),
                               framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
     if let bounds = base.looking(camera(0)).quickBounds() {
         navigator.framing = .fitting(bounds, in: viewport)
@@ -712,14 +767,14 @@ func bench(_ args: Args) throws {
     }
 
     // Dragging a level slider: re-derive the described layers, rebuild the line
-    // buffer, redraw. The whole point of keeping the ink's identity separate
+    // buffer, redraw. The whole point of keeping the curves' identity separate
     // from the geometry's is that this does not touch the height texture.
     if args.switches.contains("editing") {
         // One slider, one layer: dragging a level control changes one level set
         // and the others are reused, which is what the app does.
         guard let edited = bundle.manifest.layers.enumerated().first(where: {
             KurvenBundle.levels(of: $0.element) != nil
-        }) else { throw CLIError("this bundle has no described layers; export with --derived") }
+        }) else { throw CLIError("this bundle has no described layers to edit") }
         var current = bundle.layers
         let counts = (0..<frames).map { 4 + ($0 % 40) }
         var editTimes: [Double] = []
@@ -749,8 +804,8 @@ func bench(_ args: Args) throws {
         _ = try renderer.renderDepth(base.looking(camera(i)), frame: frame)
     }
     var times = try measure { i in
-        navigator.orbit = Orbit(matching: preset.plate)
-        navigator.orbit.azimuth = Angle(degrees: preset.plate.zAngle + Double(i) * 0.25)
+        navigator.orbit = Orbit(matching: preset.projection)
+        navigator.orbit.azimuth = Angle(degrees: preset.projection.zAngle + Double(i) * 0.25)
         try renderer.renderPreview(base, navigator: navigator, viewport: viewport,
                                    options: PreviewOptions(mode: mode), into: target)
     }
@@ -759,8 +814,8 @@ func bench(_ args: Args) throws {
     let p95 = times[min(times.count - 1, Int(Double(times.count) * 0.95))]
     // The draft: what a frame costs while the camera is moving.
     let drafts = try measure { i in
-        navigator.orbit = Orbit(matching: preset.plate)
-        navigator.orbit.azimuth = Angle(degrees: preset.plate.zAngle + Double(i) * 0.25)
+        navigator.orbit = Orbit(matching: preset.projection)
+        navigator.orbit.azimuth = Angle(degrees: preset.projection.zAngle + Double(i) * 0.25)
         try renderer.renderPreview(base, navigator: navigator, viewport: viewport,
                                    options: PreviewOptions(mode: mode, draft: true), into: target)
     }
@@ -780,14 +835,14 @@ func bench(_ args: Args) throws {
           + "\(String(format: "%.0f", 1 / drafts[drafts.count / 2])) fps moving"
           + (renderer.hasLinearReadback ? "" : "   (readback is NOT linear here)"))
 
-    // --judging: where a heightfield frame's CPU time goes. Fold lines and
-    // wall ink are the camera's, so the preview derives and judges them per
+    // --visibility: where a heightfield frame's CPU time goes. Fold curves and
+    // wall curves are the camera's, so the preview derives and tests them per
     // camera change; each step is timed on its own, on f (what the preview
-    // does) and on the lattice without the function (what a draft could do).
-    guard args.switches.contains("judging"), let h = base.heightfield else { return }
+    // does) and on the grid without the function (what a draft could do).
+    guard args.switches.contains("visibility"), let h = base.heightfield else { return }
     let view = camera(1).view
-    let lattice = Heightfield(surface: h.surface, occluder: h.occluder, tiles: h.tiles,
-                              region: h.region, step: h.step, refine: nil)
+    let grid = Heightfield(surface: h.surface, occluder: h.occluder, tiles: h.tiles,
+                           region: h.region, step: h.step, refine: nil)
     func seconds(_ d: Duration) -> Double {
         Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
     }
@@ -800,47 +855,47 @@ func bench(_ args: Args) throws {
               + "\(ms(ts[ts.count / 2]).padding(toLength: 12, withPad: " ", startingAt: 0))"
               + "\(count) vertices")
     }
-    // What the window judges its ink to (`Document.framedScene`).
+    // What the window tests its curves to (`Document.framedScene`).
     let pixel = 0.25 * navigator.framing.unitsPerPixel
-    print("judging, per camera change (median of 5)")
+    print("visibility, per camera change (median of 5)")
     if h.refine != nil {
-        time("folds traced on f") { h.foldLines(view: view, refined: false).vertices.count }
-        time("folds traced and judged on f") {
-            h.visibleFolds(view: view, margin: base.margin, refined: false).vertices.count
+        time("folds traced on f") { h.foldCurves(view: view, refined: false).vertices.count }
+        time("folds traced and tested on f") {
+            h.visibleFolds(view: view, depthTolerance: base.depthTolerance, refined: false).vertices.count
         }
-        time("folds judged on f, ends to a quarter pixel") {
-            h.visibleFolds(view: view, margin: base.margin, refined: false,
+        time("folds tested on f, ends to a quarter pixel") {
+            h.visibleFolds(view: view, depthTolerance: base.depthTolerance, refined: false,
                            resolution: pixel).vertices.count
         }
-        time("folds refined onto f") { h.foldLines(view: view).vertices.count }
-        time("folds refined and judged, ends to a quarter pixel") {
-            h.visibleFolds(view: view, margin: base.margin, resolution: pixel).vertices.count
+        time("folds refined onto f") { h.foldCurves(view: view).vertices.count }
+        time("folds refined and tested, ends to a quarter pixel") {
+            h.visibleFolds(view: view, depthTolerance: base.depthTolerance, resolution: pixel).vertices.count
         }
     }
-    time("folds traced on the lattice") { lattice.foldLines(view: view, refined: false).vertices.count }
-    time("folds traced and judged on the lattice") {
-        lattice.visibleFolds(view: view, margin: base.margin, refined: false).vertices.count
+    time("folds traced on the grid") { grid.foldCurves(view: view, refined: false).vertices.count }
+    time("folds traced and tested on the grid") {
+        grid.visibleFolds(view: view, depthTolerance: base.depthTolerance, refined: false).vertices.count
     }
-    for layer in base.layers where layer.spec.source.isWallInk && layer.spec.clipped {
+    for layer in base.layers where layer.spec.source.liesOnWall && layer.spec.clipped {
         if h.refine != nil {
-            time("\(layer.spec.name) judged on f") {
-                h.visibleWallInk(layer.paths, view: view, margin: base.margin).vertices.count
+            time("\(layer.spec.name) tested on f") {
+                h.visibleWallCurves(layer.paths, view: view, depthTolerance: base.depthTolerance).vertices.count
             }
-            time("\(layer.spec.name) judged on f, to a quarter pixel") {
-                h.visibleWallInk(layer.paths, view: view, margin: base.margin,
-                                 resolution: pixel).vertices.count
+            time("\(layer.spec.name) tested on f, to a quarter pixel") {
+                h.visibleWallCurves(layer.paths, view: view, depthTolerance: base.depthTolerance,
+                                    resolution: pixel).vertices.count
             }
         }
-        time("\(layer.spec.name) judged on the lattice") {
-            lattice.visibleWallInk(layer.paths, view: view, margin: base.margin).vertices.count
+        time("\(layer.spec.name) tested on the grid") {
+            grid.visibleWallCurves(layer.paths, view: view, depthTolerance: base.depthTolerance).vertices.count
         }
     }
 }
 
 /// Every layer, with the described ones re-derived at `count` evenly spaced
 /// levels over their own range. A dumped layer has no question behind it and
-/// comes back unchanged, which is the difference `--derived` makes, in one
-/// function.
+/// comes back unchanged, which is the difference a description makes, in
+/// one function.
 func relaid(_ bundle: KurvenBundle, levelCount count: Int) -> [Layer] {
     bundle.manifest.layers.map { relaid(bundle, $0, levelCount: count) }
 }
@@ -869,16 +924,15 @@ func previewView(_ args: Args, viewport: Viewport) throws
 {
     let (bundle, preset, loaded) = try loadScene(args)
     var base = loaded
-    if let n = args.flags["levels"].flatMap({ Int($0) }) {
+    if let n = try args.int("levels") {
         base = base.drawing(relaid(bundle, levelCount: n))
         if !bundle.manifest.layers.contains(where: { KurvenBundle.levels(of: $0) != nil }) {
             FileHandle.standardError.write(Data(
-                ("note: no described layers here, so --levels changes nothing; "
-                 + "export the bundle with --derived\n").utf8))
+                ("note: no described layers here, so --levels changes nothing\n").utf8))
         }
     }
 
-    var navigator = Navigator(orbit: Orbit(matching: preset.plate),
+    var navigator = Navigator(orbit: Orbit(matching: preset.projection),
                               framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
     var scene = base
     scene.camera = navigator.camera
@@ -912,16 +966,17 @@ func previewView(_ args: Args, viewport: Viewport) throws
                                           Double(viewport.height) / 2)),
             in: viewport)
     }
-    // The inspector's Margin slider, from the command line.
-    if let margin = try args.double("margin") { base.margin = margin }
+    // The inspector's Depth tolerance slider, from the command line.
+    if let depthTolerance = try args.double("depth-tolerance") { base.depthTolerance = depthTolerance }
     return (bundle, preset, base, navigator)
 }
 
-/// The surface controls' costs, as the window pays them: `SurfacePlate.build`
-/// from the plate before, then one preview frame of the result -- through
+/// The surface controls' costs, as the window pays them: `SurfaceDrawing.build`
+/// from the drawing before, then one preview frame of the result -- through
 /// `Scene.drawing` when the edit kept the surface, as the document does, so
-/// an ink edit re-uploads nothing.
+/// a curve edit re-uploads nothing.
 func surfaceCosts(_ args: Args) throws {
+    try args.only("surface-costs", ["repeat", "only"])
     let repeats = try args.int("repeat", 3)
     let renderer = try MetalRenderer()
     let viewport = Viewport(width: 1600, height: 1200)
@@ -933,8 +988,8 @@ func surfaceCosts(_ args: Args) throws {
     func ms(_ x: Double) -> String { x < 1 ? String(format: "%.1f ms", x * 1e3) : String(format: "%.2f s", x) }
 
     func measure(_ label: String, _ base: SurfaceRequest, _ edit: (inout SurfaceRequest) -> Void,
-                 draft: Bool = false, from start: SurfacePlate? = nil) throws {
-        let before = try start ?? SurfacePlate.build(base)
+                 draft: Bool = false, from start: SurfaceDrawing? = nil) throws {
+        let before = try start ?? SurfaceDrawing.build(base)
         let scene = before.scene(camera: orbit.camera)
         guard let bounds = scene.quickBounds() else { throw CLIError("\(label): empty") }
         let navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
@@ -945,13 +1000,13 @@ func surfaceCosts(_ args: Args) throws {
         var kept = false
         for _ in 0..<repeats {
             // The window as it stands before the edit: its textures, its
-            // ink and its normals already made.
+            // curves and its normals already made.
             try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
                                        options: options, into: target)
             let clock = ContinuousClock()
-            var after: SurfacePlate!
+            var after: SurfaceDrawing!
             builds.append(seconds(try clock.measure {
-                after = try SurfacePlate.build(request, reusing: before, draft: draft)
+                after = try SurfaceDrawing.build(request, reusing: before, draft: draft)
             }))
             kept = after.content == before.content
             let next = kept ? scene.drawing(after.layers) : after.scene(camera: orbit.camera)
@@ -965,14 +1020,14 @@ func surfaceCosts(_ args: Args) throws {
               + "\(ms(b).padding(toLength: 10, withPad: " ", startingAt: 0))"
               + "\(ms(f).padding(toLength: 10, withPad: " ", startingAt: 0))"
               + "\(ms(b + f).padding(toLength: 10, withPad: " ", startingAt: 0))"
-              + (kept ? "ink only" : "new surface"))
+              + (kept ? "curves only" : "new surface"))
     }
-    /// A step of a drag: the plate a drag's first step built, from the full
+    /// A step of a drag: the drawing a drag's first step built, from the full
     /// one, edited again at the draft -- what each frame of a drag costs.
     func drag(_ label: String, _ base: SurfaceRequest,
               _ edit: @escaping (inout SurfaceRequest) -> Void) throws {
-        let full = try SurfacePlate.build(base)
-        let first = try SurfacePlate.build(base.drafted(), reusing: full, draft: true)
+        let full = try SurfaceDrawing.build(base)
+        let first = try SurfaceDrawing.build(base.drafted(), reusing: full, draft: true)
         try measure(label + ", dragging", base.drafted(), { r in
             var target = base; edit(&target); r = target.drafted()
         }, draft: true, from: first)
@@ -990,9 +1045,9 @@ func surfaceCosts(_ args: Args) throws {
     try measure("radii", torus) { $0.shape = .torus(major: 2.3, minor: 0.9) }
     try measure("line counts", torus) { $0.lines = SIMD2(48, 24) }
     try measure("line width", torus) { $0.style.lines = 0.5 }
-    var wound = torus; wound.winding = SurfaceRequest.Winding(slope: 0.4, turns: 24, count: 3)
-    try measure("winding on", torus) { $0.winding = wound.winding }
-    try measure("winding slope", wound) { $0.winding?.slope = 0.618 }
+    var wound = torus; wound.linearCurves = SurfaceRequest.LinearCurves(slope: 0.4, turns: 24, count: 3)
+    try measure("linear curve on", torus) { $0.linearCurves = wound.linearCurves }
+    try measure("linear curve slope", wound) { $0.linearCurves?.slope = 0.618 }
     }
 
     if wanted("sn") {
@@ -1009,13 +1064,13 @@ func surfaceCosts(_ args: Args) throws {
     guard wanted("forced") else { return }
     print("forced")
     let forced = presets["forced"]!
-    let base = try SurfacePlate.build(forced)
-    func forcedEdit(_ label: String, draft: Bool = false, lattice: Int? = nil,
-                    from start: SurfacePlate? = nil,
+    let base = try SurfaceDrawing.build(forced)
+    func forcedEdit(_ label: String, draft: Bool = false, grid: Int? = nil,
+                    from start: SurfaceDrawing? = nil,
                     _ change: @escaping (inout String, inout Double, inout Int, inout Int, inout Int,
                                          inout Double, inout Int) -> Void) throws {
         try measure(label, forced, { r in
-            if let lattice { r.lattice = lattice }
+            if let grid { r.grid = grid }
             guard case .forced(var s, var f, var h, var ra, var ax, var rad, var t) = r.shape
             else { return }
             change(&s, &f, &h, &ra, &ax, &rad, &t)
@@ -1027,13 +1082,13 @@ func surfaceCosts(_ args: Args) throws {
     try forcedEdit("axial component") { _, _, _, _, ax, _, _ in ax = 2 }
     try forcedEdit("turns, fewer") { _, _, _, _, _, _, t in t = 223 }
     try forcedEdit("turns, more") { _, _, _, _, _, _, t in t = 567 }
-    try measure("parameter lines on", forced, { $0.lines = SIMD2(36, 18) }, from: base)
-    try measure("winding on", forced, {
-        $0.winding = SurfaceRequest.Winding(slope: 0.4, turns: 24, count: 3)
+    try measure("coordinate curves on", forced, { $0.lines = SIMD2(36, 18) }, from: base)
+    try measure("linear curve on", forced, {
+        $0.linearCurves = SurfaceRequest.LinearCurves(slope: 0.4, turns: 24, count: 3)
     }, from: base)
     var forcedWound = forced
-    forcedWound.winding = SurfaceRequest.Winding(slope: 0.4, turns: 24, count: 3)
-    try measure("winding slope", forcedWound) { $0.winding?.slope = 0.618 }
+    forcedWound.linearCurves = SurfaceRequest.LinearCurves(slope: 0.4, turns: 24, count: 3)
+    try measure("linear curve slope", forcedWound) { $0.linearCurves?.slope = 0.618 }
     try forcedEdit("harmonics") { _, _, h, _, _, _, _ in h = 20 }
     try forcedEdit("fit length") { _, f, _, _, _, _, _ in f = 6000 }
     func forcedShape(_ r: inout SurfaceRequest, radius: Double? = nil) {
@@ -1044,14 +1099,15 @@ func surfaceCosts(_ args: Args) throws {
     }
     try drag("revolution radius", forced) { forcedShape(&$0, radius: 3) }
     // The release: the full request, from the last draft, with the full
-    // lattice's values and the full run still kept.
-    let dragged = try SurfacePlate.build(forced.drafted(), reusing: base, draft: true)
+    // grid's values and the full run still kept.
+    let dragged = try SurfaceDrawing.build(forced.drafted(), reusing: base, draft: true)
     try measure("revolution radius, released", forced.drafted(), { r in
         var target = forced; forcedShape(&target, radius: 3); r = target
     }, from: dragged)
 }
 
 func landscapeCosts(_ args: Args) throws {
+    try args.only("landscape-costs", ["resolution", "only"])
     let resolution = try args.int("resolution", NativeLandscape.defaultResolution)
     let draftResolution = 240
     let clock = ContinuousClock()
@@ -1062,26 +1118,26 @@ func landscapeCosts(_ args: Args) throws {
     func column(_ s: String, _ width: Int = 11) -> String {
         s.padding(toLength: width, withPad: " ", startingAt: 0)
     }
-    /// `Document.setCaps`: the cap, and the magnitude levels chosen under it.
-    func capped(_ manifest: Manifest, _ caps: Caps) -> Manifest {
+    /// `Document.setTruncation`: the truncation, and the magnitude levels chosen under it.
+    func truncated(_ manifest: Manifest, _ truncation: Truncation) -> Manifest {
         var m = manifest
-        m.caps = caps
-        let levels = LandscapeStyle.levels(under: caps)
+        m.truncation = truncation
+        let levels = LandscapeStyle.levels(under: truncation)
         for i in m.layers.indices {
-            guard case .contour(let field, _, let keep, let tiled) = m.layers[i].source else { continue }
+            guard case .contour(let field, _, let restriction, let tiled) = m.layers[i].source else { continue }
             switch m.layers[i].name {
             case "mag_major": m.layers[i].source = .contour(field: field, levels: levels.major,
-                                                            keep: keep, tiled: tiled)
+                                                            restriction: restriction, tiled: tiled)
             case "mag_minor": m.layers[i].source = .contour(field: field, levels: levels.minor,
-                                                            keep: keep, tiled: tiled)
+                                                            restriction: restriction, tiled: tiled)
             default: break
             }
         }
         return m
     }
 
-    print(column("preset", 10) + column("sample") + column("dragging") + column("cap")
-          + column("next cap") + column("hatch") + column("levels") + column("dragging")
+    print(column("preset", 10) + column("sample") + column("dragging") + column("truncation")
+          + column("next truncation") + column("hatch") + column("levels") + column("dragging")
           + "refine on")
     for preset in Catalog.native.presets where args.flags["only"].map({ $0 == preset.name }) ?? true {
         var request = LandscapeRequest(preset: preset, resolution: resolution)
@@ -1094,25 +1150,21 @@ func landscapeCosts(_ args: Args) throws {
         guard let bundle else { throw CLIError("\(preset.name): did not build") }
 
         var cells = [column(preset.name, 10), column(ms(sample)), column(ms(dragging))]
-        if let ceiling = LandscapeStyle.ceiling(of: bundle.manifest.caps) {
+        if let ceiling = LandscapeStyle.ceiling(of: bundle.manifest.truncation) {
             var once: KurvenBundle!
-            let cap = clock.measure { once = bundle.restyled(capped(bundle.manifest, .uniform(ceiling * 0.9))) }
-            let next = clock.measure { _ = once.restyled(capped(once.manifest, .uniform(ceiling * 0.85))) }
-            cells += [column(ms(cap)), column(ms(next))]
+            let truncationHeight = clock.measure { once = bundle.restyled(truncated(bundle.manifest, .uniform(ceiling * 0.9))) }
+            let next = clock.measure { _ = once.restyled(truncated(once.manifest, .uniform(ceiling * 0.85))) }
+            cells += [column(ms(truncationHeight)), column(ms(next))]
         } else {
             cells += [column("-"), column("-")]
         }
         if let i = bundle.manifest.layers.firstIndex(where: {
-            if case .capHatch = $0.source { true } else if case .wallHatch = $0.source { true } else { false }
+            if case .hatching(_, .solid) = $0.source { false } else if case .hatching = $0.source { true } else { false }
         }) {
             var m = bundle.manifest
-            switch m.layers[i].source {
-            case .capHatch(let axis, let spacing, let tiled):
-                m.layers[i].source = .capHatch(axis: axis, spacing: spacing * 1.1, tiled: tiled)
-            case .wallHatch(let edges, let spacing, let pitch, let trim, let base, let top):
-                m.layers[i].source = .wallHatch(edges: edges, spacing: spacing * 1.1, pitch: pitch,
-                                                trim: trim, base: base, topOffset: top)
-            default: break
+            if case .hatching(var hatching, let faces) = m.layers[i].source {
+                hatching.spacing *= 1.1
+                m.layers[i].source = .hatching(hatching, faces: faces)
             }
             cells.append(column(ms(clock.measure { _ = bundle.restyled(m) })))
         } else {
@@ -1140,26 +1192,27 @@ func landscapeCosts(_ args: Args) throws {
 }
 
 func previewMode(_ args: Args) throws -> PreviewMode {
-    switch args.flags["mode"] ?? "plate" {
-    case "plate": .plate
+    switch args.flags["mode"] ?? "drawing" {
+    case "drawing": .drawing
     case "shaded": .shaded(Lighting())
     case "depth": .depth
-    case let other: throw CLIError("unknown --mode '\(other)'; try plate, shaded or depth")
+    case let other: throw CLIError("unknown --mode '\(other)'; try drawing, shaded or depth")
     }
 }
 
-/// `--slope K`: the ink test's slope allowance, so a run can be compared with
-/// the bake's predicate (`--slope 0`) at the same camera. `--ink-width W`: the
+/// `--slope K`: the visibility test's slope allowance, so a run can be compared with
+/// the bake's predicate (`--slope 0`) at the same camera. `--stroke-width W`: the
 /// widest stroke in pixels, which is what a Retina window doubles.
 func previewOptions(_ args: Args, mode: PreviewMode) throws -> PreviewOptions {
     var options = PreviewOptions(mode: mode)
     options.draft = args.switches.contains("draft")
     if let k = try args.double("slope") { options.slopeScale = Float(k) }
-    if let w = try args.double("ink-width") { options.inkWidth = Float(w) }
+    if let w = try args.double("stroke-width") { options.strokeWidth = Float(w) }
     return options
 }
 
 func preview(_ args: Args) throws {
+    try args.only("preview", Args.view + Args.previewOptions + ["width", "height", "mode", "output"])
     let output = URL(fileURLWithPath: try args.string("output"))
     let viewport = Viewport(width: try args.int("width", 1600),
                             height: try args.int("height", 1000))
@@ -1179,7 +1232,7 @@ func preview(_ args: Args) throws {
 
     // The view-space rectangle the picture covers, so another renderer can draw
     // the same strokes into the same frame and the two can be compared as
-    // images. Without it "the preview looks like the plate" is an impression.
+    // images. Without it "the preview looks like the drawing" is an impression.
     let f = navigator.framing.frame(viewport)
     let meta = JSONValue.object([
         // In screen order axis0 runs down the image (view y) and axis1 across
@@ -1189,40 +1242,42 @@ func preview(_ args: Args) throws {
         "width": .int(viewport.width), "height": .int(viewport.height),
         "azimuth": .double(navigator.orbit.azimuth.degrees),
         "elevation": .double(navigator.orbit.elevation.degrees),
-        "margin": .double(base.margin),
-        "plate": preset.plate.json,
+        "depthTolerance": .double(base.depthTolerance),
+        "projection": preset.projection.json,
     ])
     try (meta.canonical + "\n").write(
         to: output.deletingPathExtension().appendingPathExtension("frame.json"),
         atomically: true, encoding: .utf8)
 
     print("""
-        \(bundle.url.lastPathComponent) -> \(output.lastPathComponent)          [\(preset.name), \(args.flags["mode"] ?? "plate")]
+        \(bundle.url.lastPathComponent) -> \(output.lastPathComponent)          [\(preset.name), \(args.flags["mode"] ?? "drawing")]
           \(viewport.width)x\(viewport.height)          azimuth \(String(format: "%.1f", navigator.orbit.azimuth.degrees))          elevation \(String(format: "%.1f", navigator.orbit.elevation.degrees))
           took \(elapsed)
           frame \(output.deletingPathExtension().lastPathComponent).frame.json
         """)
 }
 
-/// Ink that comes and goes while the camera turns, as a number.
+/// Strokes that come and go while the camera turns, as a number.
 ///
 /// Flicker is a motion artifact, so no single frame shows it. This renders a
 /// short orbit -- the camera turning `--step` degrees a frame about its target,
 /// the framing held still -- and draws every frame twice: once as the preview
 /// does, and once with the depth test switched off. A pixel that has a stroke
-/// in both frames of a pair *without* the test, but ink in only one of them
+/// in both frames of a pair *without* the test, but in only one of them
 /// *with* it, is a pixel where nothing moved and the visibility test changed
 /// its mind. That is the flicker, and it is counted apart from the motion:
 ///
-/// - *toggled*: ink in one frame and not the next. Honest motion contributes,
+/// - *toggled*: marked in one frame and not the next. Honest motion contributes,
 ///   so this only compares runs at the same step.
 /// - *flipped*: the test changing its mind under a stroke that stayed put.
 ///   Some of it is honest too -- a stroke sliding behind a ridge flips at the
 ///   ridge -- but that is a pixel or so per stroke, not a dash pattern.
 ///
-/// Both are fractions of the mean ink per frame, so a picture with more ink is
-/// not counted as flickering more for it.
+/// Both are fractions of the mean marked pixels per frame, so a picture with
+/// more strokes is not counted as flickering more for it.
 func flicker(_ args: Args) throws {
+    try args.only("flicker", Args.view + Args.previewOptions
+                  + ["width", "height", "frames", "step", "dump", "max-flip"])
     let viewport = Viewport(width: try args.int("width", 1200),
                             height: try args.int("height", 800))
     let (bundle, preset, base, start) = try previewView(args, viewport: viewport)
@@ -1233,16 +1288,16 @@ func flicker(_ args: Args) throws {
         try FileManager.default.createDirectory(at: dump, withIntermediateDirectories: true)
     }
     var unclipped = base
-    unclipped.margin = .infinity
-    let options = try previewOptions(args, mode: .plate)
+    unclipped.depthTolerance = .infinity
+    let options = try previewOptions(args, mode: .drawing)
 
     let renderer = try MetalRenderer()
     let target = try renderer.makePreviewTarget(viewport)
     let pixels = viewport.width * viewport.height
-    // Ink is any visible mark: a stroke narrower than a pixel is drawn
-    // lighter, not narrower, so mid-grey would miss the plate's thinnest
+    // A mark is anything visible: a stroke narrower than a pixel is drawn
+    // lighter, not narrower, so mid-grey would miss the drawing's thinnest
     // layers.
-    func ink(_ scene: Scene, _ navigator: Navigator) throws -> [Bool] {
+    func marked(_ scene: Scene, _ navigator: Navigator) throws -> [Bool] {
         try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
                                    options: options, into: target)
         let bgra = try PNG.bgra(target)
@@ -1253,27 +1308,27 @@ func flicker(_ args: Args) throws {
     }
 
     var kept: [Bool] = [], everything: [Bool] = []
-    var inkTotal = 0, toggled = 0, flipped = 0
+    var strokedTotal = 0, toggled = 0, flipped = 0
     for i in 0..<frames {
         var navigator = start
         navigator.orbit.azimuth = Angle(degrees: start.orbit.azimuth.degrees
                                         + Double(i) * step)
-        let k = try ink(base, navigator)
+        let k = try marked(base, navigator)
         if let dump {
             try PNG.write(target, to: dump.appendingPathComponent(
                 String(format: "frame%03d.png", i)))
         }
-        let e = try ink(unclipped, navigator)
+        let e = try marked(unclipped, navigator)
         if i > 0 {
             for p in 0..<pixels where k[p] != kept[p] {
                 toggled += 1
                 if e[p] && everything[p] { flipped += 1 }
             }
         }
-        inkTotal += k.reduce(0) { $0 + ($1 ? 1 : 0) }
+        strokedTotal += k.reduce(0) { $0 + ($1 ? 1 : 0) }
         kept = k; everything = e
     }
-    let perFrame = max(Double(inkTotal) / Double(frames), 1)
+    let perFrame = max(Double(strokedTotal) / Double(frames), 1)
     let toggledRate = Double(toggled) / Double(frames - 1) / perFrame
     let flippedRate = Double(flipped) / Double(frames - 1) / perFrame
 
@@ -1281,11 +1336,11 @@ func flicker(_ args: Args) throws {
     let from = start.orbit.azimuth.degrees
     print("""
         \(bundle.url.lastPathComponent)  [\(preset.name)]  \(frames) frames \
-        \(step)° apart, margin \(base.margin), slope \(options.slopeScale)
+        \(step)° apart, depth tolerance \(base.depthTolerance), slope \(options.slopeScale)
           \(viewport.width)x\(viewport.height)  azimuth \(String(format: "%.2f", from)) \
         to \(String(format: "%.2f", from + Double(frames - 1) * step))  \
         elevation \(String(format: "%.1f", start.orbit.elevation.degrees))
-          ink      \(Int(perFrame.rounded())) px a frame
+          marked      \(Int(perFrame.rounded())) px a frame
           toggled  \(percent(toggledRate)) of it a frame   (motion included)
           flipped  \(percent(flippedRate)) of it a frame   (the stroke stayed; the test changed its mind)
         """)
@@ -1295,6 +1350,7 @@ func flicker(_ args: Args) throws {
 }
 
 func catalogCommand(_ args: Args) throws {
+    try args.only("catalog", [])
     let catalog = Catalog.native
     print("  \(catalog.presets.count) presets, default resolution \(catalog.defaultResolution)")
     for preset in catalog.presets {
@@ -1303,7 +1359,7 @@ func catalogCommand(_ args: Args) throws {
               \(pad(preset.name, 10)) \(pad(preset.expression, 22)) \
             re [\(fmt(d.real.lo)), \(fmt(d.real.hi))]  \
             im [\(fmt(d.imag.lo)), \(fmt(d.imag.hi))]  \
-            cap \(preset.cap.map(fmt) ?? "none")
+            truncation \(preset.truncationHeight.map(fmt) ?? "none")
             """)
     }
     print("  language: \(catalog.functions.count) functions, "
@@ -1321,15 +1377,15 @@ func interval(_ text: String, _ what: String) throws -> Interval {
     return Interval(lo: lo, hi: hi)
 }
 
-/// `--bands BELOW:CAP,... --beyond Z` as caps: a height per band of Re z.
-func realBands(_ text: String, beyond: String?) throws -> Caps {
+/// `--bands BELOW:HEIGHT,... --beyond H` as a truncation: a height per band of Re z.
+func realBands(_ text: String, beyond: String?) throws -> Truncation {
     var bands: [RealBand] = []
     for part in text.split(separator: ",") {
         let pair = part.split(separator: ":").map { Double($0.trimmingCharacters(in: .whitespaces)) }
-        guard pair.count == 2, let below = pair[0], let cap = pair[1], cap > 0 else {
-            throw CLIError("--bands wants BELOW:CAP,... with each CAP > 0, got '\(part)'")
+        guard pair.count == 2, let below = pair[0], let truncationHeight = pair[1], truncationHeight > 0 else {
+            throw CLIError("--bands wants BELOW:HEIGHT,... with each HEIGHT > 0, got '\(part)'")
         }
-        bands.append(RealBand(below: below, cap: cap))
+        bands.append(RealBand(below: below, height: truncationHeight))
     }
     guard !bands.isEmpty, zip(bands, bands.dropFirst()).allSatisfy({ $0.below < $1.below }) else {
         throw CLIError("--bands wants its bands in increasing BELOW, got '\(text)'")
@@ -1341,6 +1397,8 @@ func realBands(_ text: String, beyond: String?) throws -> Caps {
 }
 
 func landscapeCommand(_ args: Args) throws {
+    try args.only("landscape", ["function", "re", "im", "res", "truncation", "bands", "beyond",
+                                "no-truncation", "spacing", "repeat", "output"])
     let output = URL(fileURLWithPath: try args.string("output"))
     let catalog = Catalog.native
 
@@ -1361,11 +1419,11 @@ func landscapeCommand(_ args: Args) throws {
     }
     if let re = args.flags["re"] { request.domain.real = try interval(re, "re") }
     if let im = args.flags["im"] { request.domain.imag = try interval(im, "im") }
-    if let res = args.flags["res"], let n = Int(res) { request.resolution = n }
-    if let cap = args.flags["cap"], let z = Double(cap) { request.caps = .uniform(z) }
-    if let bands = args.flags["bands"] { request.caps = try realBands(bands, beyond: args.flags["beyond"]) }
-    if args.switches.contains("no-cap") { request.caps = Caps.none }
-    if let s = args.flags["spacing"], let v = Double(s) { request.spacing = v }
+    request.resolution = try args.int("res", request.resolution)
+    if let z = try args.positive("truncation") { request.truncation = .uniform(z) }
+    if let bands = args.flags["bands"] { request.truncation = try realBands(bands, beyond: args.flags["beyond"]) }
+    if args.switches.contains("no-truncation") { request.truncation = Truncation.none }
+    if let v = try args.positive("spacing") { request.spacing = v }
 
     let clock = ContinuousClock()
     var bundle: KurvenBundle!
@@ -1377,7 +1435,7 @@ func landscapeCommand(_ args: Args) throws {
     let m = bundle.manifest
     print("""
         \(m.provenance.function) -> \(output.lastPathComponent) (in \(sampled))
-          \(m.height.shape.nx)x\(m.height.shape.ny) samples, caps \(m.caps)
+          \(m.height.shape.nx)x\(m.height.shape.ny) samples, truncation \(m.truncation)
         """)
     for spec in m.layers {
         print("    \(pad(spec.name, 14)) \(sourceName(spec.source))")
@@ -1389,6 +1447,7 @@ func landscapeCommand(_ args: Args) throws {
 /// are timed and measured against f -- the residual over the gradient, in
 /// cells, at every vertex and at every chord's midpoint.
 func refineCommand(_ args: Args) throws {
+    try args.only("refine", ["function", "re", "im", "res", "truncation", "tolerance", "depth"])
     let catalog = Catalog.native
     let name = args.flags["function"] ?? (args.positional.count > 1 ? "" : "gamma")
     var request: LandscapeRequest
@@ -1404,10 +1463,10 @@ func refineCommand(_ args: Args) throws {
     }
     if let re = args.flags["re"] { request.domain.real = try interval(re, "re") }
     if let im = args.flags["im"] { request.domain.imag = try interval(im, "im") }
-    if let res = args.flags["res"], let n = Int(res) { request.resolution = n }
-    if let cap = args.flags["cap"], let z = Double(cap) { request.caps = .uniform(z) }
-    let tolerance = args.flags["tolerance"].flatMap(Double.init) ?? 0.02
-    let depth = args.flags["depth"].flatMap(Int.init) ?? 5
+    request.resolution = try args.int("res", request.resolution)
+    if let z = try args.positive("truncation") { request.truncation = .uniform(z) }
+    let tolerance = try args.positive("tolerance") ?? 0.02
+    let depth = try args.int("depth", 5)
 
     let (bundle, reports) = try NativeLandscape.benchmarkRefinement(
         request, tolerance: tolerance, maxDepth: depth)
@@ -1438,25 +1497,26 @@ func sourceName(_ source: LayerSource) -> String {
     switch source {
     case .file: "dumped"
     case .contour(let field, let levels, _, _): "\(levels.count) levels of \(field.rawValue)"
-    case .wallHatch(let edges, let spacing, _, _, _, _):
-        "wall hatch, \(edges.count) edges every \(fmt(spacing))"
-    case .wallOutline(let edges, _, _): "wall outline, \(edges.count) edges"
-    case .capHatch(let axis, let spacing, _):
-        "cap hatch along \(axis.rawValue) every \(fmt(spacing))"
-    case .capOutline: "cap outline"
-    case .parameterLines(let u, let v): "\(u) + \(v) parameter lines"
-    case .winding(let slope, let turns, let count):
-        "\(count) winding\(count == 1 ? "" : "s") at slope \(fmt(slope)), \(turns) turns"
-    case .foldLines: "fold lines"
-    case .trajectory: "a trajectory"
-    case .edges: "the edges of a solid"
-    case .hatching(let h):
+    case .hatching(let h, .walls(let edges, _, _, _)):
+        "wall hatching, \(edges.count) walls every \(fmt(h.spacing))"
+    case .hatching(let h, .plateaus):
+        "plateau hatching at \(fmt(h.angle * 180 / .pi))° every \(fmt(h.spacing))"
+    case .hatching(let h, .solid):
         "hatching every \(fmt(h.spacing)) at \(fmt(h.angle * 180 / .pi))°, "
             + "\(h.widthSteps) width\(h.widthSteps == 1 ? "" : "s")"
+    case .wallEdges(let edges, _, _): "edges of \(edges.count) walls"
+    case .truncationEdge: "truncation edge"
+    case .coordinateCurves(let u, let v): "\(u) + \(v) coordinate curves"
+    case .linearCurves(let slope, let turns, let count):
+        "\(count) linear curve\(count == 1 ? "" : "s") at slope \(fmt(slope)), \(turns) turns"
+    case .foldCurves: "fold curves"
+    case .trajectory: "a trajectory"
+    case .edges: "the edges of a solid"
     }
 }
 
 func inspect(_ args: Args) throws {
+    try args.only("inspect", Args.scene)
     let (bundle, _, _) = try loadScene(args)
     let m = bundle.manifest
     print("\(bundle.url.lastPathComponent)  schema \(m.schema)  axes \(m.axes.joined(separator: ", "))")
@@ -1466,7 +1526,7 @@ func inspect(_ args: Args) throws {
           + "imag [\(m.domain.imag.lo), \(m.domain.imag.hi)]")
     print("  height     \(m.height.shape.ny)x\(m.height.shape.nx) \(m.height.dtype.rawValue)"
           + (m.phase == nil ? "  (no phase)" : "  + phase"))
-    print("  caps       \(m.caps)")
+    print("  truncation        \(m.truncation)")
     print("  occluder   step \(m.occluder.step)  \(m.occluder.tiles.count) tile(s)  "
           + "region \(regionName(m.occluder.region))  walls \(wallsName(m.occluder.walls))")
     for l in m.layers {
@@ -1476,14 +1536,15 @@ func inspect(_ args: Args) throws {
               + (l.clipped ? "" : "  unclipped"))
     }
     for p in m.presets {
-        print("  preset     \(pad(p.name, 10)) shear \(p.plate.shear)  "
-              + "x \(p.plate.xAngle)  z \(p.plate.zAngle)  "
-              + "flipX \(p.plate.flipX)  yScale \(p.plate.yScale.map { String($0) } ?? "-")  "
-              + "margin \(p.margin)  buffer \(p.buffer)")
+        print("  preset     \(pad(p.name, 10)) shear \(p.projection.shear)  "
+              + "x \(p.projection.xAngle)  z \(p.projection.zAngle)  "
+              + "flipX \(p.projection.flipX)  yScale \(p.projection.yScale.map { String($0) } ?? "-")  "
+              + "depth tolerance \(p.depthTolerance)  buffer \(p.buffer)")
     }
 }
 
 func contract(_ args: Args) throws {
+    try args.only("contract", [])
     guard let dir = args.positional.dropFirst().first else { throw CLIError("which directory?") }
     let url = URL(fileURLWithPath: dir)
     let bundles = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)

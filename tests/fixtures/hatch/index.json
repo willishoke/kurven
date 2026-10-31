@@ -1,69 +1,64 @@
 {
- "caps": {
-  "bands": {
-   "bands": [
-    {
-     "below": -1.0,
-     "cap": 1.2
-    },
-    {
-     "below": 0.4,
-     "cap": 2.5
-    }
-   ],
-   "beyond": 1.6,
-   "kind": "realBands"
-  },
-  "uniform": {
-   "kind": "uniform",
-   "z": 2.0
-  }
- },
  "cases": [
   {
-   "caps": "uniform",
    "name": "uniform_wall_hatch",
    "offsets": "uniform_wall_hatch.idx.npy",
    "paths": 36,
    "source": {
-    "base": 0.0,
-    "edges": [
-     0,
-     1,
-     2,
-     3
-    ],
-    "kind": "wallHatch",
-    "pitch": 0.5,
+    "angle": 1.5707963267948966,
+    "faces": {
+     "base": 0.0,
+     "edges": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "kind": "walls",
+     "topOffset": 0.0,
+     "trim": true
+    },
+    "kind": "hatching",
     "spacing": 0.35,
-    "topOffset": 0.0,
-    "trim": true
+    "step": 0.5,
+    "tone": {
+     "kind": "uniform"
+    },
+    "widthSteps": 1
    },
+   "truncation": "uniform",
    "vertices": "uniform_wall_hatch.npy"
   },
   {
-   "caps": "uniform",
    "name": "uniform_wall_hatch_untrimmed",
    "offsets": "uniform_wall_hatch_untrimmed.idx.npy",
    "paths": 15,
    "source": {
-    "base": 0.1,
-    "edges": [
-     0,
-     2
-    ],
-    "kind": "wallHatch",
-    "pitch": 0.25,
+    "angle": 1.5707963267948966,
+    "faces": {
+     "base": 0.1,
+     "edges": [
+      0,
+      2
+     ],
+     "kind": "walls",
+     "topOffset": -0.05,
+     "trim": false
+    },
+    "kind": "hatching",
     "spacing": 0.6,
-    "topOffset": -0.05,
-    "trim": false
+    "step": 0.25,
+    "tone": {
+     "kind": "uniform"
+    },
+    "widthSteps": 1
    },
+   "truncation": "uniform",
    "vertices": "uniform_wall_hatch_untrimmed.npy"
   },
   {
-   "caps": "uniform",
-   "name": "uniform_wall_outline",
-   "offsets": "uniform_wall_outline.idx.npy",
+   "name": "uniform_wall_edges",
+   "offsets": "uniform_wall_edges.idx.npy",
    "paths": 12,
    "source": {
     "base": 0.0,
@@ -73,92 +68,124 @@
      2,
      3
     ],
-    "kind": "wallOutline",
-    "pitch": 0.4
+    "kind": "wallEdges",
+    "step": 0.4
    },
-   "vertices": "uniform_wall_outline.npy"
+   "truncation": "uniform",
+   "vertices": "uniform_wall_edges.npy"
   },
   {
-   "caps": "uniform",
-   "name": "uniform_cap_hatch_real",
-   "offsets": "uniform_cap_hatch_real.idx.npy",
+   "name": "uniform_plateau_hatch_real",
+   "offsets": "uniform_plateau_hatch_real.idx.npy",
    "paths": 3,
    "source": {
-    "axis": "real",
-    "kind": "capHatch",
+    "angle": 0.0,
+    "faces": {
+     "kind": "plateaus",
+     "tiled": false
+    },
+    "kind": "hatching",
     "spacing": 0.25,
-    "tiled": false
+    "step": 0.25,
+    "tone": {
+     "kind": "uniform"
+    },
+    "widthSteps": 1
    },
-   "vertices": "uniform_cap_hatch_real.npy"
+   "truncation": "uniform",
+   "vertices": "uniform_plateau_hatch_real.npy"
   },
   {
-   "caps": "uniform",
-   "name": "uniform_cap_hatch_imag",
-   "offsets": "uniform_cap_hatch_imag.idx.npy",
+   "name": "uniform_plateau_hatch_imag",
+   "offsets": "uniform_plateau_hatch_imag.idx.npy",
    "paths": 3,
    "source": {
-    "axis": "imag",
-    "kind": "capHatch",
+    "angle": 1.5707963267948966,
+    "faces": {
+     "kind": "plateaus",
+     "tiled": false
+    },
+    "kind": "hatching",
     "spacing": 0.3,
-    "tiled": false
+    "step": 0.3,
+    "tone": {
+     "kind": "uniform"
+    },
+    "widthSteps": 1
    },
-   "vertices": "uniform_cap_hatch_imag.npy"
+   "truncation": "uniform",
+   "vertices": "uniform_plateau_hatch_imag.npy"
   },
   {
-   "caps": "uniform",
-   "name": "uniform_cap_outline",
-   "offsets": "uniform_cap_outline.idx.npy",
+   "name": "uniform_truncation_edge",
+   "offsets": "uniform_truncation_edge.idx.npy",
    "paths": 2,
    "source": {
-    "kind": "capOutline",
+    "kind": "truncationEdge",
     "tiled": false
    },
-   "vertices": "uniform_cap_outline.npy"
+   "truncation": "uniform",
+   "vertices": "uniform_truncation_edge.npy"
   },
   {
-   "caps": "bands",
    "name": "bands_wall_hatch",
    "offsets": "bands_wall_hatch.idx.npy",
    "paths": 36,
    "source": {
-    "base": 0.0,
-    "edges": [
-     0,
-     1,
-     2,
-     3
-    ],
-    "kind": "wallHatch",
-    "pitch": 0.5,
+    "angle": 1.5707963267948966,
+    "faces": {
+     "base": 0.0,
+     "edges": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "kind": "walls",
+     "topOffset": 0.0,
+     "trim": true
+    },
+    "kind": "hatching",
     "spacing": 0.35,
-    "topOffset": 0.0,
-    "trim": true
+    "step": 0.5,
+    "tone": {
+     "kind": "uniform"
+    },
+    "widthSteps": 1
    },
+   "truncation": "bands",
    "vertices": "bands_wall_hatch.npy"
   },
   {
-   "caps": "bands",
    "name": "bands_wall_hatch_untrimmed",
    "offsets": "bands_wall_hatch_untrimmed.idx.npy",
    "paths": 15,
    "source": {
-    "base": 0.1,
-    "edges": [
-     0,
-     2
-    ],
-    "kind": "wallHatch",
-    "pitch": 0.25,
+    "angle": 1.5707963267948966,
+    "faces": {
+     "base": 0.1,
+     "edges": [
+      0,
+      2
+     ],
+     "kind": "walls",
+     "topOffset": -0.05,
+     "trim": false
+    },
+    "kind": "hatching",
     "spacing": 0.6,
-    "topOffset": -0.05,
-    "trim": false
+    "step": 0.25,
+    "tone": {
+     "kind": "uniform"
+    },
+    "widthSteps": 1
    },
+   "truncation": "bands",
    "vertices": "bands_wall_hatch_untrimmed.npy"
   },
   {
-   "caps": "bands",
-   "name": "bands_wall_outline",
-   "offsets": "bands_wall_outline.idx.npy",
+   "name": "bands_wall_edges",
+   "offsets": "bands_wall_edges.idx.npy",
    "paths": 12,
    "source": {
     "base": 0.0,
@@ -168,47 +195,64 @@
      2,
      3
     ],
-    "kind": "wallOutline",
-    "pitch": 0.4
+    "kind": "wallEdges",
+    "step": 0.4
    },
-   "vertices": "bands_wall_outline.npy"
+   "truncation": "bands",
+   "vertices": "bands_wall_edges.npy"
   },
   {
-   "caps": "bands",
-   "name": "bands_cap_hatch_real",
-   "offsets": "bands_cap_hatch_real.idx.npy",
+   "name": "bands_plateau_hatch_real",
+   "offsets": "bands_plateau_hatch_real.idx.npy",
    "paths": 5,
    "source": {
-    "axis": "real",
-    "kind": "capHatch",
+    "angle": 0.0,
+    "faces": {
+     "kind": "plateaus",
+     "tiled": false
+    },
+    "kind": "hatching",
     "spacing": 0.25,
-    "tiled": false
+    "step": 0.25,
+    "tone": {
+     "kind": "uniform"
+    },
+    "widthSteps": 1
    },
-   "vertices": "bands_cap_hatch_real.npy"
+   "truncation": "bands",
+   "vertices": "bands_plateau_hatch_real.npy"
   },
   {
-   "caps": "bands",
-   "name": "bands_cap_hatch_imag",
-   "offsets": "bands_cap_hatch_imag.idx.npy",
+   "name": "bands_plateau_hatch_imag",
+   "offsets": "bands_plateau_hatch_imag.idx.npy",
    "paths": 5,
    "source": {
-    "axis": "imag",
-    "kind": "capHatch",
+    "angle": 1.5707963267948966,
+    "faces": {
+     "kind": "plateaus",
+     "tiled": false
+    },
+    "kind": "hatching",
     "spacing": 0.3,
-    "tiled": false
+    "step": 0.3,
+    "tone": {
+     "kind": "uniform"
+    },
+    "widthSteps": 1
    },
-   "vertices": "bands_cap_hatch_imag.npy"
+   "truncation": "bands",
+   "vertices": "bands_plateau_hatch_imag.npy"
   },
   {
-   "caps": "bands",
-   "name": "bands_cap_outline",
-   "offsets": "bands_cap_outline.idx.npy",
+   "name": "bands_truncation_edge",
+   "offsets": "bands_truncation_edge.idx.npy",
    "paths": 2,
    "source": {
-    "kind": "capOutline",
+    "kind": "truncationEdge",
     "tiled": false
    },
-   "vertices": "bands_cap_outline.npy"
+   "truncation": "bands",
+   "vertices": "bands_truncation_edge.npy"
   }
  ],
  "domain": {
@@ -727,5 +771,25 @@
     "x": 180.0
    }
   ]
+ },
+ "truncation": {
+  "bands": {
+   "bands": [
+    {
+     "below": -1.0,
+     "height": 1.2
+    },
+    {
+     "below": 0.4,
+     "height": 2.5
+    }
+   ],
+   "beyond": 1.6,
+   "kind": "realBands"
+  },
+  "uniform": {
+   "height": 2.0,
+   "kind": "uniform"
+  }
  }
 }

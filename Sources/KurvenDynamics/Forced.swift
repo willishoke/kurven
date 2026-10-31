@@ -86,9 +86,9 @@ public struct InvariantTorus: Sendable {
 
     /// `Ω/ω`: turns of the system's own phase per turn of the forcing. In
     /// the fitted torus's coordinates the flow is a rigid rotation, so the
-    /// trajectory is the straight line of this slope -- the winding at the
+    /// trajectory is the straight line of this slope -- the linear curve at the
     /// rotation number -- and the number's continued fraction says which
-    /// closed windings it is nearly, and after how many turns it cuts the
+    /// closed linear curves it is nearly, and after how many turns it cuts the
     /// torus most evenly.
     public var rotationNumber: Double { internalFrequency / forcing }
 
@@ -206,76 +206,76 @@ public struct Revolution: Sendable, Equatable {
 
 public extension InvariantTorus {
     /// The torus as a parametric surface: `u` the forcing phase, `v` the
-    /// system's own, both whole turns. The lattice is evaluated once, in
+    /// system's own, both whole turns. The grid is evaluated once, in
     /// parallel, and checked slice by slice: the surface is declared to
     /// bound a solid -- and so to hide whatever faces away -- only when it
     /// is embedded.
-    func surface(_ e: Revolution, lattice: (u: Int, v: Int) = (1024, 512))
+    func surface(_ e: Revolution, grid: (u: Int, v: Int) = (1024, 512))
         -> (surface: ParametricSurface, embedded: Bool)
     {
-        surface(e, lattice: lattice, values: values(lattice: lattice))
+        surface(e, grid: grid, values: values(grid: grid))
     }
 
-    /// The fitted torus at every lattice point, in state space, before any
+    /// The fitted torus at every grid point, in state space, before any
     /// embedding: the expensive half of `surface`, a whole Fourier series per
     /// point. Kept, it lets a new revolution be placed without evaluating the
     /// series again.
-    func values(lattice: (u: Int, v: Int)) -> [SIMD3<Double>] {
-        let u = ParamAxis.angle(samples: lattice.u), v = ParamAxis.angle(samples: lattice.v)
+    func values(grid: (u: Int, v: Int)) -> [SIMD3<Double>] {
+        let u = ParamAxis.angle(samples: grid.u), v = ParamAxis.angle(samples: grid.v)
         let fit = self.fit
-        var values = [SIMD3<Double>](repeating: .zero, count: lattice.u * lattice.v)
+        var values = [SIMD3<Double>](repeating: .zero, count: grid.u * grid.v)
         values.withUnsafeMutableBufferPointer { out in
             nonisolated(unsafe) let base = out.baseAddress!
-            DispatchQueue.concurrentPerform(iterations: lattice.v) { j in
+            DispatchQueue.concurrentPerform(iterations: grid.v) { j in
                 let phi = v.coordinate(j)
-                for i in 0..<lattice.u {
-                    base[j * lattice.u + i] = fit.value(u.coordinate(i), phi)
+                for i in 0..<grid.u {
+                    base[j * grid.u + i] = fit.value(u.coordinate(i), phi)
                 }
             }
         }
         return values
     }
 
-    /// The torus placed by `e` from its lattice `values` (`values(lattice:)`):
+    /// The torus placed by `e` from its grid `values` (`values(grid:)`):
     /// the cheap half of `surface`.
-    func surface(_ e: Revolution, lattice: (u: Int, v: Int), values: [SIMD3<Double>])
+    func surface(_ e: Revolution, grid: (u: Int, v: Int), values: [SIMD3<Double>])
         -> (surface: ParametricSurface, embedded: Bool)
     {
-        precondition(values.count == lattice.u * lattice.v,
-                     "\(values.count) values for a \(lattice.u)x\(lattice.v) lattice")
-        let u = ParamAxis.angle(samples: lattice.u), v = ParamAxis.angle(samples: lattice.v)
+        precondition(values.count == grid.u * grid.v,
+                     "\(values.count) values for a \(grid.u)x\(grid.v) grid")
+        let u = ParamAxis.angle(samples: grid.u), v = ParamAxis.angle(samples: grid.v)
         let fit = self.fit
-        var positions = [P3<WorldSpace>](repeating: P3(0, 0, 0), count: lattice.u * lattice.v)
+        var positions = [P3<WorldSpace>](repeating: P3(0, 0, 0), count: grid.u * grid.v)
         positions.withUnsafeMutableBufferPointer { out in
             nonisolated(unsafe) let base = out.baseAddress!
-            DispatchQueue.concurrentPerform(iterations: lattice.v) { j in
-                for i in 0..<lattice.u {
-                    base[j * lattice.u + i] = P3(e.place(values[j * lattice.u + i],
-                                                         u.coordinate(i)))
+            DispatchQueue.concurrentPerform(iterations: grid.v) { j in
+                for i in 0..<grid.u {
+                    base[j * grid.u + i] = P3(e.place(values[j * grid.u + i],
+                                                      u.coordinate(i)))
                 }
             }
         }
-        let embedded = Revolution.slicesAreSimple(positions, lattice)
+        let embedded = Revolution.slicesAreSimple(positions, grid)
         let surface = ParametricSurface(u: u, v: v, encloses: embedded, positions: positions) {
             e.jet(fit, $0.x, $0.y)
         }
         return (surface, embedded)
     }
 
-    /// The trajectory as ink: the winding of `surface` at the rotation
+    /// The trajectory as curves: the linear curve of `surface` at the rotation
     /// number, `turns` turns from the fitted samples' start.
     ///
     /// The fitted torus holds the trajectory to within `residual`, a
     /// fraction of a pixel at any drawing resolution, so nothing is
     /// integrated: the trajectory is the straight line `φ = Ωt, θ = ωt` in
-    /// the torus's own coordinates, placed from the lattice as any winding
+    /// the torus's own coordinates, placed from the grid as any linear curve
     /// is. The integrated one, `trajectory(_:from:duration:every:)`, is the
     /// check that this is so.
     func trajectory(on surface: ParametricSurface, turns: Int) -> PolylineSet<WorldSpace> {
-        surface.winding(slope: rotationNumber, turns: turns, start: startPhase)
+        surface.linearCurves(slope: rotationNumber, turns: turns, start: startPhase)
     }
 
-    /// The integrated trajectory as ink, from `start` for `duration`, every
+    /// The integrated trajectory as curves, from `start` for `duration`, every
     /// `dt`: each vertex the integrated state placed at its own forcing
     /// phase, and its surface coordinate `(ωt, Ωt)`. What the plates draw
     /// is `trajectory(on:turns:)`; this is what it is held to.
@@ -336,7 +336,7 @@ public extension InvariantTorus {
             if path.isEmpty || theta - offset.0 > span {
                 // A new path, its coordinates brought back near zero; after
                 // the first it begins from the previous path's last vertex,
-                // so the ink does not break.
+                // so the curves do not break.
                 offset = (turn * (theta / turn).rounded(.down), turn * (phi / turn).rounded(.down))
                 if let last = path.last {
                     paths.append(path); coords.append(coord)
@@ -354,25 +354,25 @@ public extension InvariantTorus {
 }
 
 extension Revolution {
-    /// Whether every θ-slice of a lattice is a simple closed curve on the
+    /// Whether every θ-slice of a grid is a simple closed curve on the
     /// positive side of the axis: the condition for the revolved torus to be
     /// embedded. Each slice is a closed polygon in its own (radius, height)
     /// half-plane; two of its edges that are not neighbours must not meet.
-    static func slicesAreSimple(_ positions: [P3<WorldSpace>], _ lattice: (u: Int, v: Int)) -> Bool {
-        var ok = [Bool](repeating: true, count: lattice.u)
+    static func slicesAreSimple(_ positions: [P3<WorldSpace>], _ grid: (u: Int, v: Int)) -> Bool {
+        var ok = [Bool](repeating: true, count: grid.u)
         ok.withUnsafeMutableBufferPointer { out in
             nonisolated(unsafe) let base = out.baseAddress!
-            DispatchQueue.concurrentPerform(iterations: lattice.u) { i in
+            DispatchQueue.concurrentPerform(iterations: grid.u) { i in
                 // The radius along the slice's own half-plane, signed: a
                 // point past the axis is at a negative radius, not at the
                 // same distance on the far side, which `hypot` would say and
                 // which would never fail the test below.
-                let theta = ParamAxis.angle(samples: lattice.u).coordinate(i)
+                let theta = ParamAxis.angle(samples: grid.u).coordinate(i)
                 let (c, s) = (cos(theta), sin(theta))
                 var slice: [SIMD2<Double>] = []
-                slice.reserveCapacity(lattice.v)
-                for j in 0..<lattice.v {
-                    let p = positions[j * lattice.u + i]
+                slice.reserveCapacity(grid.v)
+                for j in 0..<grid.v {
+                    let p = positions[j * grid.u + i]
                     slice.append(SIMD2(p.x * c + p.y * s, p.z))
                 }
                 base[i] = slice.allSatisfy { $0.x > 0 } && isSimpleClosed(slice)

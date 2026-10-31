@@ -28,13 +28,13 @@ public struct ParamAxis: Sendable, Equatable {
     public var spacing: Double { range.length / Double(cells) }
     public var period: Double? { periodic ? range.length : nil }
 
-    /// The coordinate of lattice index `i`, *unwrapped*: on a periodic axis
+    /// The coordinate of grid index `i`, *unwrapped*: on a periodic axis
     /// `i == samples` is one period past `i == 0`, which is what lets a cell
     /// that closes the seam interpolate across it rather than back through
     /// the whole range.
     public func coordinate(_ i: Int) -> Double { range.lo + Double(i) * spacing }
 
-    /// The stored sample an unwrapped lattice index refers to.
+    /// The stored sample an unwrapped grid index refers to.
     public func sample(_ i: Int) -> Int {
         periodic ? ((i % samples) + samples) % samples : i
     }
@@ -63,27 +63,27 @@ public struct SurfaceJet: Sendable, Equatable {
     public var normal: SIMD3<Double> { simd_cross(du, dv) }
 }
 
-/// The solid a surface bounds, for a march along a sight line.
+/// The solid a surface bounds, for sphere tracing along a line of sight.
 ///
 /// A point of space is inside the solid exactly when its signed distance
 /// from the base surface, along the base's normal line through its foot, is
-/// under the surface's standoff from the base at that foot. The round torus
+/// under the surface's normal offset from the base at that foot. The round torus
 /// has its foot in closed form, and a surface displaced along the torus's
-/// normal keeps that foot and adds the displacement as its standoff, so
+/// normal keeps that foot and adds the displacement as its normal offset, so
 /// the test is a point test with no raster in it. The gap, distance less
-/// standoff, is positive outside, negative inside and zero on the surface,
+/// normal offset, is positive outside, negative inside and zero on the surface,
 /// and over the points outside the solid and within the shell of the base
-/// it changes by at most `lipschitz` per unit of travel: a march that
+/// it changes by at most `lipschitz` per unit of travel: sphere tracing, which
 /// steps by the gap over that constant cannot step through the solid, and
-/// a sight line is clear exactly when every step along it is.
-public struct Enclosure: Sendable {
+/// a line of sight is clear exactly when every step along it is.
+public struct TubularNeighbourhood: Sendable {
     /// The surface coordinate whose normal line passes through a point,
     /// and the point's signed distance along it, positive outward.
     public let foot: @Sendable (SIMD3<Double>) -> (coordinate: P2<ParamSpace>, distance: Double)
     /// How far the surface stands off the base along the normal at a
     /// coordinate, positive outward.
-    public let standoff: @Sendable (P2<ParamSpace>) -> Double
-    /// The standoff's bounds: it is never more than `above` nor less than
+    public let normalOffset: @Sendable (P2<ParamSpace>) -> Double
+    /// The normal offset's bounds: it is never more than `above` nor less than
     /// `-below`. Beyond `above` a point is outside, under `-below` inside.
     public let above: Double, below: Double
     /// The most the gap changes per unit of travel, over the points outside
@@ -91,17 +91,17 @@ public struct Enclosure: Sendable {
     public let lipschitz: Double
     /// How fast the foot's coordinate moves per unit of travel, per axis,
     /// over the points between `inside` under the base and `outside` over
-    /// it: what a standoff's gradient is multiplied by.
+    /// it: what a normal offset's gradient is multiplied by.
     public let spread: @Sendable (_ outside: Double, _ inside: Double) -> SIMD2<Double>
     /// A ball containing the solid.
     public let centre: SIMD3<Double>, radius: Double
 
     public init(foot: @escaping @Sendable (SIMD3<Double>) -> (coordinate: P2<ParamSpace>, distance: Double),
-                standoff: @escaping @Sendable (P2<ParamSpace>) -> Double,
+                normalOffset: @escaping @Sendable (P2<ParamSpace>) -> Double,
                 above: Double, below: Double, lipschitz: Double,
                 spread: @escaping @Sendable (Double, Double) -> SIMD2<Double>,
                 centre: SIMD3<Double>, radius: Double) {
-        self.foot = foot; self.standoff = standoff
+        self.foot = foot; self.normalOffset = normalOffset
         self.above = above; self.below = below; self.lipschitz = lipschitz
         self.spread = spread; self.centre = centre; self.radius = radius
     }
@@ -111,9 +111,9 @@ public struct Enclosure: Sendable {
 ///
 /// The map is exact and carries its derivatives, because the questions asked
 /// of it -- which way does it face here, and exactly where along this segment
-/// does it turn edge-on -- are asked at the ink's own coordinates, and a normal
-/// read off the nearest lattice point flips sign between neighbours precisely
-/// where the answer matters, at a fold. The lattice is what gets rasterized;
+/// does it turn edge-on -- are asked at the curves' own coordinates, and a normal
+/// read off the nearest grid point flips sign between neighbours precisely
+/// where the answer matters, at a fold. The grid is what gets rasterized;
 /// the map is what gets asked.
 ///
 /// A heightfield is the case `(u, v) -> (u, v, h(u, v))` with neither axis
@@ -122,34 +122,34 @@ public struct ParametricSurface: Sendable {
     public let u: ParamAxis
     public let v: ParamAxis
     public let map: @Sendable (P2<ParamSpace>) -> SurfaceJet
-    /// The lattice, `u` fastest: `positions[j * u.samples + i]`.
+    /// The grid, `u` fastest: `positions[j * u.samples + i]`.
     public let positions: [P3<WorldSpace>]
     /// `+1` when `du × dv` points out of the solid the surface bounds, `-1`
     /// when it points in; `nil` when the surface bounds no solid.
     ///
     /// Only a closed, embedded, orientable surface bounds a solid, and only
     /// for such a surface is "faces away from the viewer" the same as
-    /// "hidden": a sight line that reaches the back of it must first have
+    /// "hidden": a line of sight that reaches the back of it must first have
     /// entered the solid through the front. That is a fact the caller knows
     /// about its geometry -- it cannot be read off samples -- so it is
     /// declared, and the orientation is then computed rather than guessed.
     public let outward: Double?
     /// The solid the surface bounds as a point test, for surfaces that have
-    /// one in closed form; nil otherwise, and the ink is then judged by the
+    /// one in closed form; nil otherwise, and the curves are then tested by the
     /// coordinate image.
-    public let enclosure: Enclosure?
+    public let neighbourhood: TubularNeighbourhood?
 
     /// - Parameter encloses: the surface is closed, embedded and orientable.
     ///   Declaring it for a surface that passes through itself, or has a
-    ///   boundary, culls ink that is in plain view.
-    public init(u: ParamAxis, v: ParamAxis, encloses: Bool, enclosure: Enclosure? = nil,
+    ///   boundary, culls curves that are in plain view.
+    public init(u: ParamAxis, v: ParamAxis, encloses: Bool, neighbourhood: TubularNeighbourhood? = nil,
                 map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet) {
         self.u = u; self.v = v; self.map = map
-        self.enclosure = encloses ? enclosure : nil
+        self.neighbourhood = encloses ? neighbourhood : nil
         var positions: [P3<WorldSpace>] = []
         positions.reserveCapacity(u.samples * v.samples)
         // Six times the enclosed volume, by the divergence theorem over the
-        // lattice: the sum of p · (du × dv) du dv. Only its sign is used, and
+        // grid: the sum of p · (du × dv) du dv. Only its sign is used, and
         // the sign is robust at any resolution that resolves the surface.
         var volume = 0.0
         for j in 0..<v.samples {
@@ -169,21 +169,21 @@ public struct ParametricSurface: Sendable {
         }
     }
 
-    /// A surface whose lattice is already computed -- because evaluating the
-    /// map at every lattice point is the expensive part and the caller did it
+    /// A surface whose grid is already computed -- because evaluating the
+    /// map at every grid point is the expensive part and the caller did it
     /// once already, in parallel or for its own checks. The map still answers
     /// every question asked at an arbitrary point.
     ///
-    /// The orientation comes from the lattice's own central-difference
-    /// normals rather than the map's: only its sign is used, and a lattice
+    /// The orientation comes from the grid's own central-difference
+    /// normals rather than the map's: only its sign is used, and a grid
     /// fine enough to draw is fine enough for the sign of its volume.
-    public init(u: ParamAxis, v: ParamAxis, encloses: Bool, enclosure: Enclosure? = nil,
+    public init(u: ParamAxis, v: ParamAxis, encloses: Bool, neighbourhood: TubularNeighbourhood? = nil,
                 positions: [P3<WorldSpace>],
                 map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet) {
         precondition(positions.count == u.samples * v.samples,
-                     "\(positions.count) positions for a \(u.samples)x\(v.samples) lattice")
+                     "\(positions.count) positions for a \(u.samples)x\(v.samples) grid")
         self.u = u; self.v = v; self.map = map; self.positions = positions
-        self.enclosure = encloses ? enclosure : nil
+        self.neighbourhood = encloses ? neighbourhood : nil
         guard encloses else { outward = nil; return }
         func at(_ i: Int, _ j: Int) -> SIMD3<Double> {
             let ii = u.periodic ? u.sample(i) : min(max(i, 0), u.samples - 1)
@@ -228,8 +228,8 @@ public extension ParametricSurface {
     /// line running along it closes, its last vertex one period past its
     /// first so the coordinates stay continuous; on a bounded axis they
     /// include both ends.
-    func parameterLines(counts lines: (u: Int, v: Int),
-                        resolution: Int) -> PolylineSet<WorldSpace> {
+    func coordinateCurves(counts lines: (u: Int, v: Int),
+                          resolution: Int) -> PolylineSet<WorldSpace> {
         var coords: [[P2<ParamSpace>]] = []
         func place(_ axis: ParamAxis, _ k: Int, of count: Int) -> Double {
             axis.range.lo + axis.range.length * Double(k)
@@ -260,9 +260,9 @@ public extension ParametricSurface {
         return PolylineSet(paths: paths, coords: lines)
     }
 
-    /// The fold lines for sight lines along `sight`: where the surface turns
+    /// The fold curves for lines of sight along `sight`: where the surface turns
     /// edge-on, `n · sight = 0`, which is where its outline and every inner
-    /// silhouette lie.
+    /// outline lie.
     ///
     /// Traced by marching squares on that product over the parameter
     /// rectangle -- sampled one step past a periodic axis's end, so a fold
@@ -270,18 +270,18 @@ public extension ParametricSurface {
     /// moved onto the exact fold by bisection along the product's gradient.
     /// The grid decides which folds exist; the map decides where they run.
     /// Where the sign changes across a crease rather than through a zero
-    /// -- a cap's rim, which the rim's own ink draws -- the vertex is
+    /// -- a truncation edge, which the truncation edge's own layer draws -- the vertex is
     /// dropped and the line cut there. From a cut the fold is traced on in
     /// steps a sixteenth of a cell, each set onto the fold by the map, to
     /// where it meets the crease or another cut: a fold down a steep wall
-    /// can run its whole visible length inside one cell, where the lattice
-    /// has no vertex for it. Where the lattice has none of a fold at all,
-    /// `creases` -- the rims, in surface coordinates -- seed it: a fold
+    /// can run its whole visible length inside one cell, where the grid
+    /// has no vertex for it. Where the grid has none of a fold at all,
+    /// `creases` -- the truncation edges, in surface coordinates -- seed it: a fold
     /// meets a crease where the facing a hair to one side of it changes
     /// sign along it, and is traced from there both ways.
     /// They depend on the camera, so they are derived for one, never stored.
-    func foldLines(sight: SIMD3<Double>, grid: (u: Int, v: Int)? = nil,
-                   creases: [[P2<ParamSpace>]] = []) -> PolylineSet<WorldSpace> {
+    func foldCurves(sight: SIMD3<Double>, grid: (u: Int, v: Int)? = nil,
+                    creases: [[P2<ParamSpace>]] = []) -> PolylineSet<WorldSpace> {
         let nu = grid?.u ?? u.cells, nv = grid?.v ?? v.cells
         @Sendable func edgeOn(_ c: P2<ParamSpace>) -> Double {
             let n = map(c).normal
@@ -312,8 +312,8 @@ public extension ParametricSurface {
         // differenced normal smooths the jump over a hair, so a span a
         // hundredth of the size holds most of it. That is no fold: nil.
         // Nor is a vertex the map finds no zero beside, within a cell
-        // either way: the lattice saw a sign change the map does not have,
-        // as across a crease, where a lattice cell holds the cap and the
+        // either way: the grid saw a sign change the map does not have,
+        // as across a crease, where a grid cell holds the truncation and the
         // wall.
         let h = 0.25 * min(du, dv)
         @Sendable func gradient(_ c: SIMD2<Double>, _ h: Double) -> SIMD2<Double> {
@@ -360,7 +360,7 @@ public extension ParametricSurface {
         // the step no longer finds the fold it has met a crease, and the
         // last step is cut back by bisection to just short of it. It ends
         // at another cut it comes within a step and a half of, and where it
-        // comes back onto fold the lattice already has.
+        // comes back onto fold the grid already has.
         let step = min(du, dv) / 16
         let lo = SIMD2(u.range.lo - du, v.range.lo - dv), hi = SIMD2(u.range.hi + du, v.range.hi + dv)
         let scale = SIMD2(du, dv)
@@ -376,13 +376,13 @@ public extension ParametricSurface {
         }
         var byCell: [SIMD2<Int>: [(run: Int, at: SIMD2<Double>)]] = [:]
         for (i, r) in lines.enumerated() { for c in r { byCell[cell(c.v), default: []].append((i, c.v)) } }
-        let lattice = byCell
-        // Fold the lattice has, within a quarter cell: any run's but this
+        let grid = byCell
+        // Fold the grid has, within a quarter cell: any run's but this
         // one's own about where the trace set out.
         @Sendable func covered(_ z: SIMD2<Double>, from run: Int, _ p0: SIMD2<Double>) -> Bool {
             let o = cell(z)
             for a in -1...1 { for b in -1...1 {
-                for q in lattice[o &+ SIMD2(a, b)] ?? [] where simd_length((q.at - z) / scale) < 0.25 {
+                for q in grid[o &+ SIMD2(a, b)] ?? [] where simd_length((q.at - z) / scale) < 0.25 {
                     if q.run != run || simd_length((q.at - p0) / scale) > 0.5 { return true }
                 }
             } }
@@ -430,7 +430,7 @@ public extension ParametricSurface {
         traced.withUnsafeMutableBufferPointer { out in
             nonisolated(unsafe) let base = out.baseAddress!
             DispatchQueue.concurrentPerform(iterations: ends.count) { k in
-                // The heading from a vertex half a cell back: two lattice
+                // The heading from a vertex half a cell back: two grid
                 // vertices in one cell can come out of refinement reversed.
                 let r = lines[ends[k].run], p0 = endPoint[k]
                 let back = ends[k].atEnd ? Array(r.reversed().dropFirst()) : Array(r.dropFirst())
@@ -497,13 +497,13 @@ public extension ParametricSurface {
         return PolylineSet(paths: paths, coords: coords)
     }
 
-    /// The lattice's unit normals, by central differences on the lattice --
+    /// The grid's unit normals, by central differences on the grid --
     /// one-sided at a bounded axis's ends -- `u` fastest, as `positions`.
     ///
     /// They do not depend on the camera, so they are computed once per
-    /// surface and handed to `latticeFoldLines` for every camera after.
-    /// Where the lattice is degenerate the normal is zero.
-    func latticeNormals() -> [SIMD3<Float>] {
+    /// surface and handed to `gridFoldCurves` for every camera after.
+    /// Where the grid is degenerate the normal is zero.
+    func gridNormals() -> [SIMD3<Float>] {
         let nu = u.samples, nv = v.samples
         @Sendable func at(_ i: Int, _ j: Int) -> SIMD3<Double> {
             let ii = u.periodic ? u.sample(i) : min(max(i, 0), nu - 1)
@@ -524,21 +524,21 @@ public extension ParametricSurface {
         return normals
     }
 
-    /// The fold lines as the lattice sees them: `foldLines` without asking
+    /// The fold curves as the grid sees them: `foldCurves` without asking
     /// the map anything.
     ///
-    /// Marching squares on `n · sight` at the lattice points, from normals
-    /// computed once (`latticeNormals`), and each vertex placed by bilinear
-    /// interpolation of the lattice -- no refinement onto the exact fold. So
-    /// a fold is as accurate as the lattice is fine, which at a drawing
-    /// lattice is well under a pixel, and costs a dot product per lattice
+    /// Marching squares on `n · sight` at the grid points, from normals
+    /// computed once (`gridNormals`), and each vertex placed by bilinear
+    /// interpolation of the grid -- no refinement onto the exact fold. So
+    /// a fold is as accurate as the grid is fine, which at a drawing
+    /// grid is well under a pixel, and costs a dot product per grid
     /// point: fast enough to follow the camera. The preview draws these; the
-    /// bake keeps `foldLines`, whose vertices are exact.
-    func latticeFoldLines(normals: [SIMD3<Float>],
-                          sight: SIMD3<Double>) -> PolylineSet<WorldSpace> {
+    /// bake keeps `foldCurves`, whose vertices are exact.
+    func gridFoldCurves(normals: [SIMD3<Float>],
+                        sight: SIMD3<Double>) -> PolylineSet<WorldSpace> {
         precondition(normals.count == positions.count,
-                     "\(normals.count) normals for \(positions.count) lattice points")
-        // One column and row past a periodic axis's end, as `foldLines`
+                     "\(normals.count) normals for \(positions.count) grid points")
+        // One column and row past a periodic axis's end, as `foldCurves`
         // samples: the seam's cells close on the first samples.
         let nu = u.cells, nv = v.cells, stride = u.samples
         let s = SIMD3<Float>(sight)
@@ -564,11 +564,11 @@ public extension ParametricSurface {
         return PolylineSet(paths: paths, coords: coords)
     }
 
-    /// The lattice's bilinear patch at a coordinate: the surface as it is
+    /// The grid's bilinear patch at a coordinate: the surface as it is
     /// drawn, rather than as the map has it.
     ///
-    /// The lattice is what gets rasterized, so ink placed this way lies on
-    /// the drawn surface to the last bit, and it costs four lattice reads
+    /// The grid is what gets rasterized, so curves placed this way lie on
+    /// the drawn surface to the last bit, and it costs four grid reads
     /// where the map may cost a Fourier series. A coordinate any number of
     /// periods past a periodic axis's range wraps; on a bounded axis it is
     /// clamped to the end cell.
@@ -579,18 +579,18 @@ public extension ParametricSurface {
         return P3((1 - b) * ((1 - a) * p00 + a * p10) + b * ((1 - a) * p01 + a * p11))
     }
 
-    /// The lattice's normals (`latticeNormals`) at a coordinate, by the same
+    /// The grid's normals (`gridNormals`) at a coordinate, by the same
     /// bilinear patch as `interpolate`, unit length; zero where the patch's
     /// corners cancel.
     ///
-    /// Within a lattice cell of the exact normal, and so, like a lattice
+    /// Within a grid cell of the exact normal, and so, like a grid
     /// fold, within a pixel of where the facing changes at any drawing
-    /// lattice: enough for the preview, which asks a normal of every ink
-    /// vertex and asks it again whenever the ink moves. The bake keeps the
+    /// grid: enough for the preview, which asks a normal of every curve
+    /// vertex and asks it again whenever the curves move. The bake keeps the
     /// map's.
     func interpolateNormal(_ c: P2<ParamSpace>, normals: [SIMD3<Float>]) -> SIMD3<Float> {
         precondition(normals.count == positions.count,
-                     "\(normals.count) normals for \(positions.count) lattice points")
+                     "\(normals.count) normals for \(positions.count) grid points")
         let (i, j, a, b) = cell(c)
         func at(_ i: Int, _ j: Int) -> SIMD3<Float> {
             normals[v.sample(j) * u.samples + u.sample(i)]
@@ -602,7 +602,7 @@ public extension ParametricSurface {
         return len > 0 ? n / len : .zero
     }
 
-    /// The lattice cell a coordinate falls in, and where in it: the lower
+    /// The grid cell a coordinate falls in, and where in it: the lower
     /// corner's unwrapped indices and the fractions along each axis. A
     /// periodic axis wraps any number of periods away; a bounded one clamps
     /// to its end cell.
@@ -617,33 +617,33 @@ public extension ParametricSurface {
         return (i, j, a, b)
     }
 
-    /// Windings: straight lines through the parameter rectangle, `slope`
+    /// Linear curves: straight lines through the parameter rectangle, `slope`
     /// turns of `v` per turn of `u`, glued into curves on the torus.
     ///
-    /// A winding is what a torus's coordinates make of a straight line, and
+    /// A linear curve is what a torus's coordinates make of a straight line, and
     /// the same line on every torus with these coordinates: it lives on the
     /// flat torus, and the map -- any map -- is what puts it in space. The
-    /// parameter lines are its two ends, slope zero and slope infinite; the
+    /// coordinate curves are its two ends, slope zero and slope infinite; the
     /// trajectory of a forced system, in the coordinates of its fitted torus,
     /// is the one with the system's own rotation number.
     ///
     /// `count` strands start at `start` -- the rectangle's origin unless
     /// given -- and evenly spaced from it along `v`, and each runs `turns`
     /// turns of `u` -- or, when `slope` is a fraction `p/q` with `q ≤
-    /// turns`, the `q` turns after which it closes, so a rational winding is
+    /// turns`, the `q` turns after which it closes, so a rational linear curve is
     /// one closed (p, q) curve and an irrational one is a stretch of a curve
-    /// that never closes. A vertex per lattice cell along the steeper axis,
-    /// placed by `interpolate`, so the ink lies on the drawn surface; each
+    /// that never closes. A vertex per grid cell along the steeper axis,
+    /// placed by `interpolate`, so the curves lie on the drawn surface; each
     /// vertex carries its coordinate, continuous along a path and never more
     /// than eight turns from zero, so the preview's float32 still resolves a
     /// pixel's worth of it: a path is ended and the next begun from the same
     /// vertex every eight turns.
-    func winding(slope: Double, turns: Int, count: Int = 1,
-                 start: P2<ParamSpace>? = nil) -> PolylineSet<WorldSpace> {
-        precondition(u.periodic && v.periodic, "a winding is a curve on a torus")
+    func linearCurves(slope: Double, turns: Int, count: Int = 1,
+                      start: P2<ParamSpace>? = nil) -> PolylineSet<WorldSpace> {
+        precondition(u.periodic && v.periodic, "a linear curve is a curve on a torus")
         precondition(turns >= 1 && count >= 1 && slope.isFinite,
-                     "a winding wants a finite slope and at least one turn of one strand")
-        let drawn = Self.windingCloses(slope: slope, within: turns) ?? turns
+                     "a linear curve wants a finite slope and at least one turn of one strand")
+        let drawn = Self.linearCurveCloses(slope: slope, within: turns) ?? turns
         let steps = max(u.cells, Int((abs(slope) * Double(v.cells)).rounded(.up)))
         let du = u.range.length / Double(steps), dv = slope * v.range.length / Double(steps)
         let span = 8 * u.range.length
@@ -675,10 +675,10 @@ public extension ParametricSurface {
         return PolylineSet(paths: paths, coords: coords)
     }
 
-    /// The turns after which a winding of `slope` closes -- the denominator
+    /// The turns after which a linear curve of `slope` closes -- the denominator
     /// of a fraction, to within rounding -- when that is within `turns`;
-    /// nil for a winding that runs out its turns open.
-    static func windingCloses(slope: Double, within turns: Int) -> Int? {
+    /// nil for a linear curve that runs out its turns open.
+    static func linearCurveCloses(slope: Double, within turns: Int) -> Int? {
         guard turns >= 1 else { return nil }
         return (1...turns).first { k in
             let w = slope * Double(k)
@@ -708,7 +708,7 @@ public extension ParametricSurface {
         // turned toward it, its distance how far it stands from that circle
         // less the tube's radius. The ring angle moves fastest where the
         // ring is narrowest, the tube angle where the tube is.
-        let enclosure = Enclosure(
+        let neighbourhood = TubularNeighbourhood(
             foot: { q in
                 var a = atan2(q.y, q.x), rho = (q.x * q.x + q.y * q.y).squareRoot()
                 var b = atan2(q.z, rho - R)
@@ -717,12 +717,12 @@ public extension ParametricSurface {
                 let tube = ((rho - R) * (rho - R) + q.z * q.z).squareRoot()
                 return (P2(su0 + a / ku, sv0 + b / kv), tube - r)
             },
-            standoff: { _ in 0 }, above: 0, below: 0, lipschitz: 1,
+            normalOffset: { _ in 0 }, above: 0, below: 0, lipschitz: 1,
             spread: { outside, inside in
                 SIMD2(1 / (ku * max(R - r - outside, 1e-12)), 1 / (kv * max(r - inside, 1e-12)))
             },
             centre: .zero, radius: R + r)
-        return ParametricSurface(u: u, v: v, encloses: R > r, enclosure: enclosure) { c in
+        return ParametricSurface(u: u, v: v, encloses: R > r, neighbourhood: neighbourhood) { c in
             let a = ku * (c.x - su0), b = kv * (c.y - sv0)
             let (ca, sa, cb, sb) = (cos(a), sin(a), cos(b), sin(b))
             let ring = R + r * cb
@@ -734,15 +734,15 @@ public extension ParametricSurface {
 }
 
 public extension Transform where A == WorldSpace, B == ViewSpace {
-    /// The direction a sight line travels through the world, unit length.
+    /// The direction a line of sight travels through the world, unit length.
     ///
     /// Under an affine camera the eye looks along the one direction that
     /// changes neither view x nor view y -- the kernel of the first two rows
     /// -- signed so that travelling it takes view z down, away from the eye.
     /// That is *not* the gradient of view z unless the camera is orthonormal,
-    /// and the plate cameras are not: they shear. Asking the gradient instead
+    /// and the oblique camera are not: they shear. Asking the gradient instead
     /// tilts every fold by the shear.
-    var sightLine: SIMD3<Double> {
+    var projectionDirection: SIMD3<Double> {
         let c = m.columns
         let row0 = SIMD3(c.0.x, c.1.x, c.2.x)
         let row1 = SIMD3(c.0.y, c.1.y, c.2.y)
@@ -788,16 +788,16 @@ public extension ParametricSurface {
                               dv: jet.dv + dhv * n + hc * dnv)
         }
         // The displaced solid, when the base has one: the same foot, the
-        // displacement added to the standoff. The gap's Lipschitz constant
-        // needs the displacement's steepest slope, read off the lattice
-        // just built -- the displacement at a lattice point is what was
+        // displacement added to the normal offset. The gap's Lipschitz constant
+        // needs the displacement's steepest slope, read off the grid
+        // just built -- the displacement at a grid point is what was
         // added to the base there -- in parameter units, times how fast
         // the foot's coordinate can move; with half as much again, for the
-        // slope between lattice points.
-        guard encloses, let e = enclosure else { return displaced }
+        // slope between grid points.
+        guard encloses, let e = neighbourhood else { return displaced }
         let nu = u.samples, nv = v.samples
-        var standoffs = [Double](repeating: 0, count: nu * nv)
-        standoffs.withUnsafeMutableBufferPointer { out in
+        var normalOffsets = [Double](repeating: 0, count: nu * nv)
+        normalOffsets.withUnsafeMutableBufferPointer { out in
             nonisolated(unsafe) let dst = out.baseAddress!
             DispatchQueue.concurrentPerform(iterations: nv) { j in
                 for i in 0..<nu {
@@ -810,25 +810,25 @@ public extension ParametricSurface {
         var su = 0.0, sv = 0.0
         for j in 0..<nv {
             for i in 0..<nu {
-                let t = standoffs[j * nu + i]
+                let t = normalOffsets[j * nu + i]
                 if i + 1 < nu || u.periodic {
-                    su = max(su, abs(standoffs[j * nu + u.sample(i + 1)] - t) / u.spacing)
+                    su = max(su, abs(normalOffsets[j * nu + u.sample(i + 1)] - t) / u.spacing)
                 }
                 if j + 1 < nv || v.periodic {
-                    sv = max(sv, abs(standoffs[v.sample(j + 1) * nu + i] - t) / v.spacing)
+                    sv = max(sv, abs(normalOffsets[v.sample(j + 1) * nu + i] - t) / v.spacing)
                 }
             }
         }
         let above = e.above + max(amplitude, 0) * ceiling
         let below = e.below + max(-amplitude, 0) * ceiling
         let spread = e.spread(above, below)
-        let standoff = e.standoff
-        let lifted = Enclosure(
-            foot: e.foot, standoff: { c in standoff(c) + h(c) },
+        let normalOffset = e.normalOffset
+        let lifted = TubularNeighbourhood(
+            foot: e.foot, normalOffset: { c in normalOffset(c) + h(c) },
             above: above, below: below,
             lipschitz: e.lipschitz + 1.5 * (su * spread.x + sv * spread.y),
             spread: e.spread, centre: e.centre, radius: e.radius + above)
-        return ParametricSurface(u: u, v: v, encloses: true, enclosure: lifted,
+        return ParametricSurface(u: u, v: v, encloses: true, neighbourhood: lifted,
                                  positions: displaced.positions, map: displaced.map)
     }
 }

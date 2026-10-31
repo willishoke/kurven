@@ -14,8 +14,8 @@ left out.
   midpoint is within a fiftieth of a grid cell of it.
 - **Hidden lines are decided exactly.** A point is hidden where the solid
   under the surface lies between it and the viewer. That is tested by
-  marching along the projection direction through the solid, not by a depth
-  buffer, so the drawing is the same at any resolution.
+  a traversal of the grid along the line of sight through the solid, not by
+  a depth buffer, so the drawing is the same at any resolution.
 - **The output is a vector drawing.** SVG polylines, nothing rasterized.
 
 ## Gallery
@@ -41,7 +41,7 @@ are enough; no Xcode, no other dependencies).
 ```bash
 swift build -c release
 .build/release/kurven-cli landscape "1/(z^3 - 1)" \
-    --re -1.3,1.6 --im -1.2,1.5 --cap 5 -o cubic.kurven
+    --re -1.3,1.6 --im -1.2,1.5 --truncation 5 -o cubic.kurven
 .build/release/kurven-cli bake cubic.kurven -o cubic.svg
 ```
 
@@ -77,14 +77,17 @@ curves are lifted onto the modulus surface.
 The solid is the region between the plane and the surface, truncated at a
 height h(x) that is constant on bands in Re z. Let d be the projection
 direction, pointing away from the viewer, and n the surface normal. A point
-is visible when the surface faces the viewer there (n · d < 0) and a march
-from it toward the viewer, along −d, never enters the solid. The fold curve,
+is visible when the surface faces the viewer there (n · d < 0) and its line
+of sight toward the viewer, along −d, never enters the solid. The fold curve,
 where n · d = 0, is where the projection of the surface onto the picture
 folds over; its image is the outline. It is found from the same normal for
 each camera. Finally everything
 is projected obliquely, as the 1909 plates were.
 
-[docs/architecture.md](docs/architecture.md) goes through each stage.
+[docs/architecture.md](docs/architecture.md) goes through each stage, for
+landscapes, parametric surfaces and polyhedra;
+[docs/solids.md](docs/solids.md) covers polyhedra and hatching, and
+[docs/glossary.md](docs/glossary.md) defines the terms.
 [docs/development.md](docs/development.md) covers building, the tests and the
 layout of the code.
 
@@ -119,7 +122,7 @@ on a CPU, with nothing to look at in between. It is now a different program:
   frame.
 - **Exact lines.** Contours are placed on the function itself, not read off a
   grid of samples, and an exact test on the surface replaced the depth buffer
-  as the judge of what is hidden.
+  as the test of what is hidden.
 
 ## References
 

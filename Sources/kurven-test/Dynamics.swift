@@ -105,7 +105,7 @@ func odeTests() {
                      + "\(stats.accepted) steps")
     }
 
-    Check.suite("ode: a discontinuous right-hand side, with a step cap") {
+    Check.suite("ode: a discontinuous right-hand side, with a step truncation") {
         // y' = sign(sin t): a triangle wave, y(t) = 1 − cos-like zigzag. Its
         // corners are where an unbounded step would stride over the change
         // and accept an estimate that never saw it.

@@ -9,7 +9,7 @@ import KurvenCore
 ///
 /// Not a feature of the app -- it is how the preview gets tested. A picture the
 /// GUI draws can only be checked by looking at it; the same picture rendered
-/// offscreen and written to a file can be diffed against the plate, which is
+/// offscreen and written to a file can be diffed against the drawing, which is
 /// what makes "the preview looks like the bake" a claim rather than an
 /// impression.
 public enum PNG {

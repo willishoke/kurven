@@ -257,7 +257,7 @@ public struct Solid: Sendable, Equatable {
         init(_ solid: Solid, view: Transform<WorldSpace, ViewSpace>) {
             self.solid = solid
             self.view = view
-            toEye = -view.sightLine
+            toEye = -view.projectionDirection
             let projected = solid.vertices.map { view($0) }
             self.projected = projected
             scale = max(projected.map { simd_length($0.v) }.max() ?? 1, 1)

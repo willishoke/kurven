@@ -4,10 +4,6 @@
    "bundle": "landscape_gamma.kurven",
    "layers": 9,
    "spec": {
-    "caps": {
-     "kind": "uniform",
-     "z": 5.0
-    },
     "domain": {
      "imag": {
       "hi": 2.5,
@@ -22,17 +18,17 @@
     "layers": null,
     "name": "gamma",
     "resolution": 90,
-    "spacing": null
+    "spacing": null,
+    "truncation": {
+     "height": 5.0,
+     "kind": "uniform"
+    }
    }
   },
   {
    "bundle": "landscape_cubic.kurven",
    "layers": 9,
    "spec": {
-    "caps": {
-     "kind": "uniform",
-     "z": 5.0
-    },
     "domain": {
      "imag": {
       "hi": 2.0,
@@ -47,14 +43,17 @@
     "layers": null,
     "name": "cubic",
     "resolution": 64,
-    "spacing": 0.4
+    "spacing": 0.4,
+    "truncation": {
+     "height": 5.0,
+     "kind": "uniform"
+    }
    }
   },
   {
    "bundle": "landscape_typed.kurven",
    "layers": 9,
    "spec": {
-    "caps": null,
     "domain": {
      "imag": {
       "hi": 1.5,
@@ -69,7 +68,8 @@
     "layers": null,
     "name": "",
     "resolution": 48,
-    "spacing": null
+    "spacing": null,
+    "truncation": null
    }
   }
  ]

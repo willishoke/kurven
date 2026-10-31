@@ -97,15 +97,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let resolution = args.firstIndex(of: "--resolution")
                 .flatMap { $0 + 1 < args.endIndex ? Int(args[$0 + 1]) : nil }
-            let cap = args.firstIndex(of: "--cap")
+            let truncationHeight = args.firstIndex(of: "--truncation")
                 .flatMap { $0 + 1 < args.endIndex ? Double(args[$0 + 1]) : nil }
-            // `--drag cap|levels STEPS`: step that control as a drag does and
+            // `--drag truncation|levels STEPS`: step that control as a drag does and
             // report the main actor's longest stall -- the beachball, measured.
             let drag = args.firstIndex(of: "--drag").flatMap { i -> (String, Int)? in
                 guard i + 2 < args.endIndex, let n = Int(args[i + 2]) else { return nil }
                 return (args[i + 1], n)
             }
-            Task { await headlessLandscape(what, resolution: resolution, cap: cap, drag: drag,
+            Task { await headlessLandscape(what, resolution: resolution, truncationHeight: truncationHeight, drag: drag,
                                            screenshot: shot, save: save) }
             return
         }
@@ -115,7 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the same preview frame, pixel for pixel, and the same bake. With
         // neither output it stays open, on that surface. `--set FIELD=VALUE`,
         // repeated, then edits it as the controls do -- one edit at a time,
-        // each built from the plate before it.
+        // each built from the drawing before it.
         if let i = args.firstIndex(of: "--surface"), i + 1 < args.endIndex {
             let name = args[i + 1]
             func path(_ flag: String) -> URL? {
@@ -193,7 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Open filling the screen.
     ///
     /// A landscape is worth the whole display: the sidebar is fixed at 320
-    /// points, so every point the window gains is a point of plate. Zoomed
+    /// points, so every point the window gains is a point of drawing. Zoomed
     /// rather than fullscreen -- this takes the screen minus the menu bar and
     /// the Dock, and leaves the green button meaning what it usually means.
     ///
@@ -218,7 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Make the landscape and report it. The window is never shown; everything
     /// it would do is done through the same model.
-    private func headlessLandscape(_ what: String, resolution: Int?, cap: Double?,
+    private func headlessLandscape(_ what: String, resolution: Int?, truncationHeight: Double?,
                                    drag: (control: String, steps: Int)? = nil,
                                    screenshot: URL?, save: URL?) async {
         let catalog = document.catalog
@@ -240,9 +240,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         while document.sampling { try? await Task.sleep(for: .milliseconds(25)) }
         // Truncating is the other kind of edit: no request, no sampling, just
-        // the ink derived again from grids that are already here. Driving it
+        // the curves derived again from grids that are already here. Driving it
         // from here is how that path is checked without a pair of hands.
-        if let cap { document.setCaps(.uniform(cap)) }
+        if let truncationHeight { document.setTruncation(.uniform(truncationHeight)) }
         while document.drawing { try? await Task.sleep(for: .milliseconds(25)) }
         if let drag { await headlessDrag(drag.control, steps: drag.steps) }
         guard document.scene != nil else {
@@ -262,7 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Step a control as a drag does, a step a frame, and say how long the
     /// main actor was ever kept from the next one: a slider whose work is on
     /// the main actor stalls by that work, and past a second or two macOS
-    /// shows the beachball. The time the last step's ink took to land is
+    /// shows the beachball. The time the last step's curves took to land is
     /// what the picture lags the hand by.
     private func headlessDrag(_ control: String, steps: Int) async {
         let clock = ContinuousClock()
@@ -273,7 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             longest = max(longest, now - last)
             last = now
         }
-        let ceiling = LandscapeStyle.ceiling(of: document.caps) ?? 5
+        let ceiling = LandscapeStyle.ceiling(of: document.truncation) ?? 5
         let layer = document.layers.firstIndex { $0.spec.name == "ang_minor" }
             ?? document.layers.indices.first { document.isDerived(layer: $0) }
         let base = layer.flatMap { document.levels(forLayer: $0)?.count } ?? 0
@@ -281,8 +281,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? await Task.sleep(for: .milliseconds(16))
             tick()
             switch control {
-            case "cap":
-                document.setCaps(.uniform(ceiling * (1 - 0.3 * Double(k) / Double(steps))))
+            case "truncation":
+                document.setTruncation(.uniform(ceiling * (1 - 0.3 * Double(k) / Double(steps))))
             case "levels":
                 guard let layer else { break }
                 document.setLevelCount(base + k, forLayer: layer, draft: true)
@@ -293,13 +293,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tick()
         }
         let released = clock.now
-        if control == "levels" { document.rebuildInk() }
+        if control == "levels" { document.rebuildCurves() }
         while document.drawing {
             try? await Task.sleep(for: .milliseconds(16))
             tick()
         }
         print("Kurven: dragged \(control) \(steps) steps; the main actor's longest stall "
-              + "\(longest.formatted(.units(allowed: [.milliseconds]))), the ink landed "
+              + "\(longest.formatted(.units(allowed: [.milliseconds]))), the curves landed "
               + "\((clock.now - released).formatted(.units(allowed: [.milliseconds]))) "
               + "after the release")
     }
@@ -328,7 +328,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             while document.building { try? await Task.sleep(for: .milliseconds(25)) }
             print("Kurven: \(name) = \(value) — \(document.surfaceStatus ?? "")")
         }
-        guard document.plate != nil else {
+        guard document.surfaceDrawing != nil else {
             FileHandle.standardError.write(Data(
                 "Kurven: could not build \(name) — \(document.surfaceStatus ?? "no reason given")\n".utf8))
             exit(1)
@@ -382,13 +382,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         document.saveBundle(to: url)
     }
 
-    /// `--resample KEY=VALUE ... --screenshot PATH` drives the window's own
-    /// Rebuild of a plate bundle: the same Document, the same request mapped
-    /// from the bundle's provenance, the same native build. The keys are the
-    /// plate's provenance arguments (`res`, `rMin`, `rMax`, `iMin`, `iMax`,
-    /// `zLimit`; snake_case is accepted, as the Python plates spelled their
-    /// flags). Without it the only way to know the Rebuild button works is to
-    /// press it.
+    /// `--resample KEY=VALUE ... --screenshot PATH` resamples a landscape
+    /// bundle the way an edit in the window does: the same Document, the
+    /// bundle's own request with the overrides applied (`res`, `rMin`,
+    /// `rMax`, `iMin`, `iMax`, `truncation`; `LandscapeRequest.applying`),
+    /// the same native build. Without it the only way to know a resample
+    /// lands is to move a control.
     private func resample(bundle: URL, settings: [String: String],
                           screenshot: URL?) async {
         await document.load(bundle)
@@ -404,17 +403,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 FileHandle.standardError.write(Data("Kurven: \(key)=\(value) is not a number\n".utf8))
                 exit(1)
             }
-            let parts = key.split(separator: "_")
-            let camel = ([String(parts.first ?? "")] + parts.dropFirst().map(\.capitalized)).joined()
-            overrides[camel] = number
+            overrides[key] = number
         }
-        guard let request = (manifest.provenance.example == "function"
-                ? document.landscape
-                : Document.request(fromPlate: manifest, catalog: document.catalog))?
-            .applying(plateArguments: overrides) else {
+        guard let request = document.landscape?.applying(overrides: overrides) else {
             FileHandle.standardError.write(Data(("Kurven: cannot resample — this bundle's "
-                + "provenance names '\(manifest.provenance.function)', which is not a "
-                + "function in the catalog, so it opens read-only\n").utf8))
+                + "provenance is '\(manifest.provenance.example)', not a landscape "
+                + "`kurven-cli landscape` or the window wrote, so it opens read-only\n").utf8))
             exit(1)
         }
         document.landscape = request

@@ -2,14 +2,14 @@ import Foundation
 
 extension Expression {
     /// An expression as a list of instructions, each writing one register
-    /// from the registers before it: the tree in post-order, the last
+    /// from the registers before it: the tree in vertical edge-order, the last
     /// register the value.
     ///
     /// The same operations as `Node.compiled()`'s closures, in the same
     /// order, so the same values to the bit. What differs is what an
     /// evaluation touches. A closure tree calls through every node's context,
     /// and a context is a reference-counted object every thread shares: with
-    /// the sight lines of a landscape marched on every core, most of a core's
+    /// the lines of sight of a landscape traversed on every core, most of a core's
     /// time went to retaining and releasing them -- the cores passing the
     /// same few cache lines back and forth -- rather than to f. The tape is
     /// read through a pointer nothing counts, into registers on the stack.

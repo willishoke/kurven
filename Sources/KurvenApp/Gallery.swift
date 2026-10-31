@@ -52,7 +52,7 @@ enum GalleryEntry: Identifiable, Sendable {
 /// Each cell is the landscape or surface it names, drawn by the renderer that
 /// will draw it full size (`Thumbnails`). Nothing here is an illustration of
 /// the app. The surfaces are a group of their own, after the functions: they
-/// are a different kind of plate, not three more functions.
+/// are a different kind of drawing, not three more functions.
 struct Gallery: View {
     let functions: [FunctionPreset]
     let surfaces: [SurfacePreset]

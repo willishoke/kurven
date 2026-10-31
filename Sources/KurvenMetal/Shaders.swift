@@ -17,10 +17,10 @@ public enum Shaders {
         float4x4 clip;
         float2 domainLo;
         float2 domainSize;
-        uint2  lattice;
+        uint2  grid;
         uint2  gridSize;
         uint   step;
-        float  cap;
+        float  truncationHeight;
         uint   regionCount;
         float  empty;
     } KVUniforms;
@@ -31,7 +31,7 @@ public enum Shaders {
 
     typedef struct {
         float4 color;
-        float  margin;
+        float  depthTolerance;
         float  empty;
         float  slopeScale;
         // float3, not packed_float3: C's simd_float3 is sixteen bytes with
@@ -56,14 +56,14 @@ public enum Shaders {
         float3 position;
         float3 normal;
         float2 coord;
-    } KVInkVertex;
+    } KVStrokeVertex;
 
     typedef struct {
         float3 sight;
         float3 eye;
         uint   perspective;
         uint   onFolds;
-    } KVInk;
+    } KVStroke;
     """
 
     public static let source = """
@@ -113,7 +113,7 @@ public enum Shaders {
     }
 
     // ---------------------------------------------------------------------
-    // heightfield: an implicit mesh, six vertices per lattice cell
+    // heightfield: an implicit mesh, six vertices per grid cell
     // ---------------------------------------------------------------------
     //
     // No vertex buffer and no index buffer exist for the surface. The vertex id
@@ -129,14 +129,14 @@ public enum Shaders {
                                      constant float2 *region [[buffer(2)]],
                                      texture2d<float, access::read> heights [[texture(0)]])
     {
-        uint cells_x = u.lattice.x - 1;
+        uint cells_x = u.grid.x - 1;
         uint cell = vid / 6u;
         uint corner = vid % 6u;
         uint cx = cell % cells_x;
         uint cy = cell / cells_x;
 
         // Two triangles: (00, 01, 10) and (01, 11, 10), matching
-        // `zbuffer.surface_grid_mesh`'s winding.
+        // `zbuffer.surface_grid_mesh`'s linearCurves.
         const uint2 corners[6] = { uint2(0,0), uint2(1,0), uint2(0,1),
                                    uint2(1,0), uint2(1,1), uint2(0,1) };
         uint2 c = corners[corner];
@@ -151,8 +151,8 @@ public enum Shaders {
             for (uint k = 0; k < 4u && kept; ++k) {
                 uint2 q = uint2(k & 1u, k >> 1u);
                 float2 d = u.domainLo + u.domainSize
-                    * float2(float(cx + q.x) / float(u.lattice.x - 1),
-                             float(cy + q.y) / float(u.lattice.y - 1));
+                    * float2(float(cx + q.x) / float(u.grid.x - 1),
+                             float(cy + q.y) / float(u.grid.y - 1));
                 float2 w = float2(t.linear.x * d.x + t.linear.y * d.y + t.offset.x,
                                   t.linear.z * d.x + t.linear.w * d.y + t.offset.y);
                 kept = inside_region(w, region, u.regionCount);
@@ -161,11 +161,11 @@ public enum Shaders {
 
         uint ix = min((cx + c.x) * u.step, u.gridSize.x - 1u);
         uint iy = min((cy + c.y) * u.step, u.gridSize.y - 1u);
-        float h = min(heights.read(uint2(ix, iy)).r, u.cap);
+        float h = min(heights.read(uint2(ix, iy)).r, u.truncationHeight);
 
         float2 d = u.domainLo + u.domainSize
-            * float2(float(cx + c.x) / float(u.lattice.x - 1),
-                     float(cy + c.y) / float(u.lattice.y - 1));
+            * float2(float(cx + c.x) / float(u.grid.x - 1),
+                     float(cy + c.y) / float(u.grid.y - 1));
         float3 world = float3(t.linear.x * d.x + t.linear.y * d.y + t.offset.x,
                               t.linear.z * d.x + t.linear.w * d.y + t.offset.y,
                               h);
@@ -274,7 +274,7 @@ public enum Shaders {
         float3 world;
     };
 
-    // A parametric surface as paper, or shaded: the lattice of `kv_param_vertex`.
+    // A parametric surface as paper, or shaded: the grid of `kv_param_vertex`.
     vertex PreviewOut kv_param_surface_vertex(uint vid [[vertex_id]],
                                               constant KVUniforms &u [[buffer(0)]],
                                               constant KVSurface &s [[buffer(6)]],
@@ -300,7 +300,7 @@ public enum Shaders {
                                         constant float2 *region [[buffer(2)]],
                                         texture2d<float, access::read> heights [[texture(0)]])
     {
-        uint cells_x = u.lattice.x - 1;
+        uint cells_x = u.grid.x - 1;
         uint cell = vid / 6u;
         uint corner = vid % 6u;
         uint cx = cell % cells_x;
@@ -315,8 +315,8 @@ public enum Shaders {
             for (uint k = 0; k < 4u && kept; ++k) {
                 uint2 q = uint2(k & 1u, k >> 1u);
                 float2 d = u.domainLo + u.domainSize
-                    * float2(float(cx + q.x) / float(u.lattice.x - 1),
-                             float(cy + q.y) / float(u.lattice.y - 1));
+                    * float2(float(cx + q.x) / float(u.grid.x - 1),
+                             float(cy + q.y) / float(u.grid.y - 1));
                 float2 w = float2(t.linear.x * d.x + t.linear.y * d.y + t.offset.x,
                                   t.linear.z * d.x + t.linear.w * d.y + t.offset.y);
                 kept = inside_region(w, region, u.regionCount);
@@ -325,10 +325,10 @@ public enum Shaders {
 
         uint ix = min((cx + c.x) * u.step, u.gridSize.x - 1u);
         uint iy = min((cy + c.y) * u.step, u.gridSize.y - 1u);
-        float h = min(heights.read(uint2(ix, iy)).r, u.cap);
+        float h = min(heights.read(uint2(ix, iy)).r, u.truncationHeight);
         float2 d = u.domainLo + u.domainSize
-            * float2(float(cx + c.x) / float(u.lattice.x - 1),
-                     float(cy + c.y) / float(u.lattice.y - 1));
+            * float2(float(cx + c.x) / float(u.grid.x - 1),
+                     float(cy + c.y) / float(u.grid.y - 1));
         float3 world = float3(t.linear.x * d.x + t.linear.y * d.y + t.offset.x,
                               t.linear.z * d.x + t.linear.w * d.y + t.offset.y, h);
 
@@ -351,14 +351,14 @@ public enum Shaders {
         return out;
     }
 
-    // Paper. The plate's surface is not drawn -- it is white, and the page is
-    // white -- but it must still be *opaque*, or the ink behind it shows
-    // through the silhouette. So the plate mode paints it flat.
+    // Paper. The drawing's surface is not drawn -- it is white, and the page is
+    // white -- but it must still be *opaque*, or the strokes behind it show
+    // through the outline. So the drawing mode paints it flat.
     fragment float4 kv_paper_fragment(PreviewOut in [[stage_in]]) {
         return float4(1.0, 1.0, 1.0, 1.0);
     }
 
-    // A lit heightfield, for orientation rather than for the plate. The normal
+    // A lit heightfield, for orientation rather than for the drawing. The normal
     // comes from the screen-space derivatives of the world position, so it needs
     // no normal buffer and no second texture read.
     //
@@ -401,9 +401,9 @@ public enum Shaders {
     // How far the surface's depth moves across one pixel at `p`: per axis, the
     // smaller of the two one-sided differences, and the larger of the two axes.
     //
-    // The smaller, not the larger, so that a silhouette on one side -- a jump
+    // The smaller, not the larger, so that an outline on one side -- a jump
     // to a far surface, or to nothing -- is not mistaken for slope. Were it
-    // counted, ink hidden behind a ridge would show through at the ridge.
+    // counted, curves hidden behind a ridge would show through at the ridge.
     // Neighbours off the texture or holding `empty` do not count at all.
     static float axis_slope(texture2d<float, access::read> depth, int2 p, int2 d,
                             float here, float empty)
@@ -430,31 +430,31 @@ public enum Shaders {
                    axis_slope(depth, int2(p), int2(0, 1), here, empty));
     }
 
-    // Whether ink at view depth `z` is in front of the surface at pixel `p`.
+    // Whether curves at view depth `z` is in front of the surface at pixel `p`.
     //
-    // `z + margin > buffer` is `clip_hidden_lines`' predicate, which the bake
+    // `z + depthTolerance > buffer` is `clip_hidden_lines`' predicate, which the bake
     // applies per vertex. Here it is applied per fragment, and that moves the
     // two things being compared apart: `z` is the line's depth where it crosses
     // the pixel, up to half a pixel from the centre, and `buffer` is the
     // surface's depth *at* the centre. On a surface that is steep in view, half
-    // a pixel is more depth than the margin, and visible ink is discarded in a
+    // a pixel is more depth than the depth tolerance, and visible strokes are discarded in a
     // pattern that moves whenever the camera does -- which is the flicker.
     //
     // So the preview adds `slopeScale` pixels' worth of the surface's own depth
-    // change to the margin: the depth bias shadow maps use, for the same
+    // change to the depthTolerance: the depth bias shadow maps use, for the same
     // reason. It is a preview-only relaxation. The bake does not do this, and
     // with `slopeScale` zero this is the bake's predicate exactly.
-    static bool ink_visible(texture2d<float, access::read> depth, uint2 p, float z,
-                            constant KVShading &s)
+    static bool stroke_visible(texture2d<float, access::read> depth, uint2 p, float z,
+                               constant KVShading &s)
     {
         float behind = depth.read(p).r;
         if (!(behind > s.empty)) { return true; }
-        float slack = s.margin + s.slopeScale * depth_slope(depth, p, behind, s.empty);
+        float slack = s.depthTolerance + s.slopeScale * depth_slope(depth, p, behind, s.empty);
         return z + slack > behind;
     }
 
     // ---------------------------------------------------------------------
-    // ink: every segment its own screen-space quad
+    // curves: every segment its own screen-space quad
     // ---------------------------------------------------------------------
     //
     // `.line` primitives are one pixel wide whatever the stroke, with no
@@ -481,7 +481,7 @@ public enum Shaders {
         // from it. Screen-space quantities, so not perspective-corrected.
         float2 center [[center_no_perspective]];
         float  across [[center_no_perspective]];
-        // How squarely the surface under the ink faces the eye, for ink on a
+        // How squarely the surface under the curves faces the eye, for curves on a
         // heightfield: negative is hidden. Zero where it is not asked.
         float  facing [[center_no_perspective]];
     };
@@ -521,7 +521,7 @@ public enum Shaders {
 
     // Four vertices, as a strip: (a, -), (a, +), (b, -), (b, +).
     // The quad corner `vid` of the segment from world `wa` to world `wb`,
-    // shared by both kinds of ink so they are the same strokes.
+    // shared by both kinds of curves so they are the same strokes.
     static StrokeOut stroke_corner(uint vid, float3 wa, float3 wb,
                                    constant KVUniforms &u, constant KVShading &s)
     {
@@ -559,12 +559,12 @@ public enum Shaders {
         return out;
     }
 
-    static float ink_facing(float3 p, float3 n, constant KVInk &k);
+    static float stroke_facing(float3 p, float3 n, constant KVStroke &k);
 
-    // Ink on a heightfield carries the surface's normal, and is hidden where
+    // Strokes on a heightfield carry the surface's normal, and are hidden where
     // the surface faces away from the eye before the depth test is asked --
-    // the test the depth margin cannot make, where a steep flank turns away
-    // and its back lies within the margin of its front (see
+    // the test the depth depthTolerance cannot make, where a steep graph turns away
+    // and its back lies within the depthTolerance of its front (see
     // `HeightfieldVisibility`). A zero normal asks nothing.
     vertex StrokeOut kv_stroke_vertex(uint vid [[vertex_id]],
                                       uint iid [[instance_id]],
@@ -572,13 +572,13 @@ public enum Shaders {
                                       constant KVShading &s [[buffer(1)]],
                                       constant KVLineVertex *verts [[buffer(4)]],
                                       constant uint &first [[buffer(5)]],
-                                      constant KVInk &k [[buffer(7)]])
+                                      constant KVStroke &k [[buffer(7)]])
     {
         uint segment = first + iid;
         KVLineVertex a = verts[2u * segment], b = verts[2u * segment + 1u];
         StrokeOut out = stroke_corner(vid, a.position, b.position, u, s);
         KVLineVertex end = vid >= 2u ? b : a;
-        out.facing = ink_facing(end.position, end.normal, k);
+        out.facing = stroke_facing(end.position, end.normal, k);
         return out;
     }
 
@@ -599,20 +599,20 @@ public enum Shaders {
 
         float2 last = float2(depth.get_width() - 1u, depth.get_height() - 1u);
         uint2 p = uint2(clamp(in.center, float2(0.0), last));
-        if (!ink_visible(depth, p, in.depth, s)) { discard_fragment(); }
+        if (!stroke_visible(depth, p, in.depth, s)) { discard_fragment(); }
         return float4(s.color.rgb, s.color.a * min(coverage, 1.0));
     }
 
     // ---------------------------------------------------------------------
-    // ink on a parametric surface: judged by where on the surface it lies
+    // curves on a parametric surface: visible by where on the surface it lies
     // ---------------------------------------------------------------------
     //
     // The bake's two tests, per fragment. Facing: on a surface that bounds a
-    // solid, ink whose outward normal faces away from the eye is hidden.
-    // Front-most: the surface in front of the ink's centreline, at its pixel
-    // or one beside it, is the ink's own neighbourhood of the surface -- a
+    // solid, curves whose outward normal faces away from the eye is hidden.
+    // Front-most: the surface in front of the stroke's centreline, at its pixel
+    // or one beside it, is the stroke's own neighbourhood of the surface -- a
     // tolerance of two per-pixel footprints of the coordinate texture plus a
-    // lattice cell, exactly `SurfaceVisibility.isFrontMost`. No margin, and
+    // grid cell, exactly `SurfaceVisibility.isFrontMost`. No depthTolerance, and
     // no slope allowance: neither test is about depth.
 
     struct SurfaceStrokeOut {
@@ -624,7 +624,7 @@ public enum Shaders {
         float  facing [[center_no_perspective]];
     };
 
-    static float ink_facing(float3 p, float3 n, constant KVInk &k) {
+    static float stroke_facing(float3 p, float3 n, constant KVStroke &k) {
         float len = length(n);
         if (len == 0.0) { return 0.0; }
         float3 toward = k.perspective != 0u ? normalize(k.eye - p) : -k.sight;
@@ -635,21 +635,21 @@ public enum Shaders {
                                                      uint iid [[instance_id]],
                                                      constant KVUniforms &u [[buffer(0)]],
                                                      constant KVShading &s [[buffer(1)]],
-                                                     constant KVInkVertex *verts [[buffer(4)]],
+                                                     constant KVStrokeVertex *verts [[buffer(4)]],
                                                      constant uint &first [[buffer(5)]],
-                                                     constant KVInk &k [[buffer(7)]])
+                                                     constant KVStroke &k [[buffer(7)]])
     {
         uint segment = first + iid;
-        KVInkVertex a = verts[2u * segment], b = verts[2u * segment + 1u];
+        KVStrokeVertex a = verts[2u * segment], b = verts[2u * segment + 1u];
         StrokeOut base = stroke_corner(vid, a.position, b.position, u, s);
-        KVInkVertex end = vid >= 2u ? b : a;
+        KVStrokeVertex end = vid >= 2u ? b : a;
         SurfaceStrokeOut out;
         out.position = base.position;
         out.depth = base.depth;
         out.center = base.center;
         out.across = base.across;
         out.coord = end.coord;
-        out.facing = ink_facing(end.position, end.normal, k);
+        out.facing = stroke_facing(end.position, end.normal, k);
         return out;
     }
 
@@ -709,7 +709,7 @@ public enum Shaders {
     fragment float4 kv_surface_stroke_fragment(SurfaceStrokeOut in [[stage_in]],
                                                constant KVShading &s [[buffer(1)]],
                                                constant KVSurface &sf [[buffer(6)]],
-                                               constant KVInk &k [[buffer(7)]],
+                                               constant KVStroke &k [[buffer(7)]],
                                                texture2d<float, access::read> coords [[texture(2)]])
     {
         float d = abs(in.across);
@@ -743,8 +743,8 @@ public enum Shaders {
                                 device float *out [[buffer(1)]],
                                 constant KVShading &sh [[buffer(2)]],
                                 constant KVSurface &sf [[buffer(3)]],
-                                constant KVInkVertex &iv [[buffer(4)]],
-                                constant KVInk &ik [[buffer(5)]],
+                                constant KVStrokeVertex &iv [[buffer(4)]],
+                                constant KVStroke &ik [[buffer(5)]],
                                 uint tid [[thread_position_in_grid]])
     {
         if (tid != 0) { return; }
@@ -759,19 +759,19 @@ public enum Shaders {
         out[k++] = u.domainLo.y;
         out[k++] = u.domainSize.x;
         out[k++] = u.domainSize.y;
-        out[k++] = float(u.lattice.x);
-        out[k++] = float(u.lattice.y);
+        out[k++] = float(u.grid.x);
+        out[k++] = float(u.grid.y);
         out[k++] = float(u.gridSize.x);
         out[k++] = float(u.gridSize.y);
         out[k++] = float(u.step);
-        out[k++] = u.cap;
+        out[k++] = u.truncationHeight;
         out[k++] = float(u.regionCount);
         out[k++] = u.empty;
         out[k++] = sh.color.x;
         out[k++] = sh.color.y;
         out[k++] = sh.color.z;
         out[k++] = sh.color.w;
-        out[k++] = sh.margin;
+        out[k++] = sh.depthTolerance;
         out[k++] = sh.empty;
         out[k++] = sh.slopeScale;
         out[k++] = sh.lightDirection.x;
@@ -812,8 +812,8 @@ public enum Shaders {
         out[k++] = float(sizeof(KVUniforms));
         out[k++] = float(sizeof(KVShading));
         out[k++] = float(sizeof(KVSurface));
-        out[k++] = float(sizeof(KVInkVertex));
-        out[k++] = float(sizeof(KVInk));
+        out[k++] = float(sizeof(KVStrokeVertex));
+        out[k++] = float(sizeof(KVStroke));
     }
     """
 
@@ -822,7 +822,7 @@ public enum Shaders {
     public static let uniformFieldCount = 16 + 16 + 2 + 2 + 2 + 2 + 1 + 1 + 1 + 1
     public static let shadingFieldCount = 4 + 1 + 1 + 1 + 3 + 1 + 1 + 2 + 2
     public static let surfaceFieldCount = 2 + 2 + 2 + 2 + 2
-    public static let inkFieldCount = (3 + 3 + 2) + (3 + 3 + 1 + 1)
+    public static let curveFieldCount = (3 + 3 + 2) + (3 + 3 + 1 + 1)
     public static let layoutProbeCount = uniformFieldCount + shadingFieldCount
-        + surfaceFieldCount + inkFieldCount + 5
+        + surfaceFieldCount + curveFieldCount + 5
 }

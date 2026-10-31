@@ -4,12 +4,12 @@ import simd
 /// A depth image that also records *which* surface point is front-most at each
 /// pixel.
 ///
-/// Depth answers "is anything in front of this ink?" by a margin, and a margin
+/// Depth answers "is anything in front of this curve?" by a depth tolerance, and a depth tolerance
 /// has no right value where two sheets pass within it of each other or where
 /// the surface is steep enough in view that one pixel spans more depth than
-/// the margin allows. The coordinate answers a different question -- "is the
-/// thing in front of this ink the ink's own piece of surface?" -- and that one
-/// has no margin in it.
+/// the depth tolerance allows. The coordinate answers a different question -- "is the
+/// thing in front of this curve the curve's own piece of surface?" -- and that one
+/// has no depth tolerance in it.
 public struct SurfaceImage: Sendable {
     public let depth: DepthImage
     /// The surface coordinates of the front-most point at each pixel, row
@@ -34,11 +34,11 @@ public struct SurfaceImage: Sendable {
 }
 
 public extension SurfaceImage {
-    /// Rasterize a parametric surface's lattice on the CPU.
+    /// Rasterize a parametric surface's grid on the CPU.
     ///
     /// The reference the GPU coordinate pass is held to, as the Python
-    /// Z-buffer is for the depth pass. Two triangles per lattice cell, sampled
-    /// at the frame's lattice points -- the same points `metalClip` puts pixel
+    /// Z-buffer is for the depth pass. Two triangles per grid cell, sampled
+    /// at the frame's grid points -- the same points `metalClip` puts pixel
     /// centres on -- keeping the greatest view z, and carrying the
     /// interpolated surface coordinate of whichever triangle won.
     static func rasterize(_ s: ParametricSurface, view: Transform<WorldSpace, ViewSpace>,
@@ -48,7 +48,7 @@ public extension SurfaceImage {
         let rowScale = Double(rows - 1) / frame.axis0.length
         let colScale = Double(cols - 1) / frame.axis1.length
 
-        // Every lattice vertex once, as (row, col, view z) in continuous pixel
+        // Every grid vertex once, as (row, col, view z) in continuous pixel
         // units, with its unwrapped coordinate beside it.
         var pixel: [SIMD3<Double>] = []
         var param: [SIMD2<Double>] = []

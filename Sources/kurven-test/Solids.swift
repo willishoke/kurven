@@ -67,10 +67,10 @@ func solidTests() {
             var cameras = 0, whole = true, bySigns = true, drawnSome = false, undecided = 0
             for (_, view) in stressCameras() {
                 cameras += 1
-                let d = -view.sightLine
+                let d = -view.projectionDirection
                 let drawn = s.visibleEdges(view: view)
                 // An edge with a face exactly edge-on -- a cube square to the
-                // camera -- lies on the silhouette, and its sign is rounding;
+                // camera -- lies on the outline, and its sign is rounding;
                 // whether it is drawn is not a question with an answer.
                 func decidable(_ e: Solid.Edge) -> Bool {
                     abs(simd_dot(s.normals[e.left], d)) > 1e-9 && abs(simd_dot(s.normals[e.right], d)) > 1e-9
@@ -107,7 +107,7 @@ func solidTests() {
 
     Check.suite("solids: the drawing is the same at every resolution, to the bit") {
         let s = Solid.platonic(.dodecahedron, circumradius: 2).resting(onFace: 0)
-        let camera = Camera.plate(PlateProjection(shear: 0.3, xAngle: -55, zAngle: -70, flipX: false, yScale: nil))
+        let camera = Camera.oblique(ObliqueProjection(shear: 0.3, xAngle: -55, zAngle: -70, flipX: false, yScale: nil))
         let layer = Layer(spec: LayerSpec(name: "edges", role: .outline, source: .edges,
                                           width: 0.5, heightPolicy: .surface), paths: s.edgePaths)
         let scene = Scene(solid: s, layers: [layer], camera: camera)
@@ -180,7 +180,7 @@ func solidTests() {
         var example = ""
         for (name, view) in stressCameras() {
             cameras += 1
-            let d = -view.sightLine
+            let d = -view.projectionDirection
             let drawn = s.visibleEdges(view: view)
             var pieces: [Solid.Edge: [(Double, Double)]] = [:]
             for i in 0..<drawn.count {
@@ -276,7 +276,7 @@ func solidTests() {
         var example = ""
         for (name, view) in stressCameras() {
             cameras += 1
-            let d = -view.sightLine
+            let d = -view.projectionDirection
             let drawn = s.visibleEdges(view: view)
             var spans: [Solid.Edge: [(Double, Double)]] = [:]
             for i in 0..<drawn.count {

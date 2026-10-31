@@ -75,6 +75,35 @@ golden() {
 }
 step "the committed golden fixtures are what kurven-cli fixtures writes" golden
 
+# The vocabulary: a word docs/glossary.md retired, back in the code or the
+# docs, in a file's text or its name. The hits are printed; the fix is the
+# glossary's word for the thing, or a new glossary entry if the old word
+# turns out to be right after all. A word is matched on its own or as one
+# component of a camelCase or snake_case name: it begins after anything but
+# a letter, or at a capital after a lower-case letter or a digit, and ends
+# before anything but a lower-case letter.
+retired() {
+    local words pattern hits names status
+    local where=(Sources README.md docs ':(exclude)docs/glossary.md' ':(exclude)docs/notes')
+    words=$(grep -v -e '^#' -e '^$' "$ROOT/scripts/retired-words.txt" | sed 's/.*/(?:&)/' | paste -sd '|' -)
+    pattern="(?:(?<![A-Za-z])|(?<=[a-z0-9])(?=[A-Z]))(?:$words)(?![a-z])"
+    hits=$(git -C "$ROOT" grep --untracked -n -P -e "$pattern" -- "${where[@]}")
+    status=$?
+    # 1 is no match; more is git grep failing, on a pattern it cannot
+    # compile for one, which must not read as a clean tree.
+    if [ "$status" -gt 1 ]; then
+        echo "git grep failed with status $status"
+        return 1
+    fi
+    names=$(git -C "$ROOT" ls-files --cached --others --exclude-standard -- "${where[@]}" \
+        | PATTERN="$pattern" perl -ne 'print if /$ENV{PATTERN}/') || return 1
+    [ -z "$hits" ] && [ -z "$names" ] && return 0
+    [ -n "$hits" ] && printf '%s\n' "$hits"
+    [ -n "$names" ] && printf '%s\n' "$names"
+    return 1
+}
+step "no retired word is back (docs/glossary.md)" retired
+
 printf '\n'
 if [ "$failures" = 0 ]; then
     printf '\033[32mall green\033[0m\n'

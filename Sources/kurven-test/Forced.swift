@@ -38,41 +38,41 @@ func forcedTorusTests() {
                      "a square is a simple closed curve and a bow tie is not")
 
         let e = Revolution.fitting(found)
-        let (surface, embedded) = found.surface(e, lattice: (512, 256))
+        let (surface, embedded) = found.surface(e, grid: (512, 256))
         Check.expect(embedded && surface.outward != nil,
                      "every slice is a simple closed curve clear of the axis, so it bounds a solid")
 
-        let ink = try found.trajectory(e, duration: 500, every: 0.02)
+        let curves = try found.trajectory(e, duration: 500, every: 0.02)
         // At a fixed forcing phase the embedding is an isometry of (radius,
-        // height), scaled: the ink is at most `scale` times the fit's own
+        // height), scaled: the curves are at most `scale` times the fit's own
         // miss from the surface.
         var worst = 0.0
-        for (k, c) in ink.coords!.enumerated() {
-            worst = max(worst, simd_length(ink.vertices[k].v - surface.map(c).position))
+        for (k, c) in curves.coords!.enumerated() {
+            worst = max(worst, simd_length(curves.vertices[k].v - surface.map(c).position))
         }
         let bound = e.scale * found.residual
-        Check.expect(ink.count > 1 && worst <= bound * (1 + 1e-9) + 1e-12,
+        Check.expect(curves.count > 1 && worst <= bound * (1 + 1e-9) + 1e-12,
                      "the trajectory lies on the drawn torus, within the fit's own miss",
                      String(format: "worst %.2e, bound %.2e, over %d vertices in %d paths",
-                            worst, bound, ink.vertices.count, ink.count))
+                            worst, bound, curves.vertices.count, curves.count))
 
-        // What the plates draw is not this ink but the winding at the
-        // rotation number from the samples' start, placed from the lattice.
+        // What the plates draw is not this curve but the linear curve at the
+        // rotation number from the samples' start, placed from the grid.
         // Held to the integrated trajectory: every integrated vertex's
         // coordinate lies on that leaf -- at its wrapped θ, the leaf passes
-        // at φ = ρ(θ + 2πk) for the k turns it has made -- and the lattice at
+        // at φ = ρ(θ + 2πk) for the k turns it has made -- and the grid at
         // that coordinate is the integrated point, to the fit's miss plus a
         // cell's sag.
         let turn = 2 * Double.pi
         let start = found.startPhase, rho = found.rotationNumber
-        var offLeaf = 0.0, offLattice = 0.0
-        for (k, c) in ink.coords!.enumerated() {
+        var offLeaf = 0.0, offGrid = 0.0
+        for (k, c) in curves.coords!.enumerated() {
             let nearest = (0...200).map { k -> Double in
                 let d = (c.y - rho * (c.x + turn * Double(k))) / turn
                 return abs(d - d.rounded())
             }.min()!
             offLeaf = max(offLeaf, nearest)
-            offLattice = max(offLattice, simd_length(ink.vertices[k].v - surface.interpolate(c).v))
+            offGrid = max(offGrid, simd_length(curves.vertices[k].v - surface.interpolate(c).v))
         }
         let drawn = found.trajectory(on: surface, turns: 12)
         let first = drawn.coords![0]
@@ -80,9 +80,9 @@ func forcedTorusTests() {
         Check.expect(offLeaf < 1e-9 && first == start && min(onLeaf, 1 - onLeaf) < 1e-9,
                      "the integrated trajectory lies on the leaf φ = ρθ the drawn one starts on",
                      String(format: "%.1e of a turn off the leaf", offLeaf))
-        Check.expect(offLattice < bound + 2e-3,
-                     "and the lattice at its coordinates is the integrated point",
-                     String(format: "worst %.2e; the fit's miss %.2e", offLattice, bound))
+        Check.expect(offGrid < bound + 2e-3,
+                     "and the grid at its coordinates is the integrated point",
+                     String(format: "worst %.2e; the fit's miss %.2e", offGrid, bound))
         Check.expect(abs(rho - 0.421_512_051) < 1e-8
                      && ContinuedFraction.convergents(of: rho, maxDenominator: 400)
                          .map { "\($0.p)/\($0.q)" }
@@ -91,25 +91,25 @@ func forcedTorusTests() {
                      String(format: "Ω/ω = %.9f", rho))
     }
 
-    Check.suite("dynamics: the plate bakes, and its front is the torus's outside") {
+    Check.suite("dynamics: the drawing bakes, and its front is the torus's outside") {
         let e = Revolution.fitting(found)
-        let (surface, _) = found.surface(e, lattice: (512, 256))
+        let (surface, _) = found.surface(e, grid: (512, 256))
         let trajectory = Layer(spec: LayerSpec(name: "trajectory", role: .scaffold,
                                                source: .trajectory, width: 0.08,
                                                heightPolicy: .surface),
                                paths: try found.trajectory(e, duration: 500, every: 0.02))
-        let folds = Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldLines,
+        let folds = Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                                           width: 0.5, heightPolicy: .surface),
                           paths: .empty)
-        let camera = Camera.plate(PlateProjection(shear: 0, xAngle: -58, zAngle: 35,
-                                                  flipX: false, yScale: nil))
-        let scene = Scene(surface: surface, layers: [trajectory, folds], camera: camera, margin: 0)
+        let camera = Camera.oblique(ObliqueProjection(shear: 0, xAngle: -58, zAngle: 35,
+                                                      flipX: false, yScale: nil))
+        let scene = Scene(surface: surface, layers: [trajectory, folds], camera: camera, depthTolerance: 0)
         let baked = try MetalRenderer().bake(scene, options: BakeOptions(resolution: 2000))
         // On an embedded surface with its outside computed rightly, what is
         // front-most at any pixel faces the eye; only pixels along the
         // outline, where the surface is edge-on, may not.
         let image = baked.surface!
-        let sight = camera.view.sightLine
+        let sight = camera.view.projectionDirection
         var covered = 0, away = 0
         for k in image.coords.indices where !image.coords[k].x.isNaN {
             covered += 1
@@ -119,20 +119,20 @@ func forcedTorusTests() {
         Check.expect(covered > 100_000 && Double(away) < 0.002 * Double(covered),
                      "every front-most pixel faces the eye, but along the edge",
                      "\(away) of \(covered) face away")
-        Check.expect(baked.strokes.layers[0].paths.inkLength > 0
-                     && baked.strokes.layers[1].paths.inkLength > 0,
+        Check.expect(baked.strokes.layers[0].paths.totalLength > 0
+                     && baked.strokes.layers[1].paths.totalLength > 0,
                      "and it draws both the trajectory and the folds",
                      "\(baked.strokes.layers[0].paths.count) trajectory runs, "
                      + "\(baked.strokes.layers[1].paths.count) fold runs")
     }
 
-    latticeFoldTests(found)
+    gridFoldTests(found)
 }
 
-// MARK: - the preview's folds, read off the lattice
+// MARK: - the preview's folds, read off the grid
 //
 // The preview re-derives the folds whenever the camera moves, so they have to
-// cost a dot product per lattice point and not a map evaluation per lattice
+// cost a dot product per grid point and not a map evaluation per grid
 // point: the forced torus's map is a 1,225-term Fourier series. Held to two
 // things: they are where the exact folds are, to a pixel of the preview, and
 // an orbit frame of the forced torus is fast enough to follow the pointer.
@@ -167,36 +167,36 @@ func hausdorff(_ a: PolylineSet<ViewSpace>, _ b: PolylineSet<ViewSpace>) -> Doub
     return max(directed(a, segments(b)), directed(b, segments(a)))
 }
 
-func latticeFoldTests(_ found: InvariantTorus) {
+func gridFoldTests(_ found: InvariantTorus) {
     let viewport = Viewport(width: 1600, height: 1200)
     let e = Revolution.fitting(found)
-    let forced = found.surface(e, lattice: (1024, 512)).surface
+    let forced = found.surface(e, grid: (1024, 512)).surface
     let sn: ParametricSurface
     do { sn = try PeriodicTorus.jacobiSN(modulus: 0.64).surface } catch {
         Check.expect(false, "the sn torus builds", "\(error)"); return
     }
 
-    Check.suite("surfaces: the preview's lattice folds are the exact folds, to a pixel") {
+    Check.suite("surfaces: the preview's grid folds are the exact folds, to a pixel") {
         for (name, surface) in [("forced", forced), ("sn", sn)] {
-            let normals = surface.latticeNormals()
-            for plate in [PlateProjection(shear: 0, xAngle: -55, zAngle: 30, flipX: false, yScale: nil),
-                          PlateProjection(shear: 0.5, xAngle: -30, zAngle: 110, flipX: false,
-                                          yScale: nil)] {
-                let camera = Camera.plate(plate)
-                let sight = camera.view.sightLine
-                let exact = surface.foldLines(sight: sight)
-                let lattice = surface.latticeFoldLines(normals: normals, sight: sight)
-                let scene = Scene(surface: surface, layers: [], camera: camera, margin: 0)
+            let normals = surface.gridNormals()
+            for projection in [ObliqueProjection(shear: 0, xAngle: -55, zAngle: 30, flipX: false, yScale: nil),
+                          ObliqueProjection(shear: 0.5, xAngle: -30, zAngle: 110, flipX: false,
+                                            yScale: nil)] {
+                let camera = Camera.oblique(projection)
+                let sight = camera.view.projectionDirection
+                let exact = surface.foldCurves(sight: sight)
+                let grid = surface.gridFoldCurves(normals: normals, sight: sight)
+                let scene = Scene(surface: surface, layers: [], camera: camera, depthTolerance: 0)
                 guard let bounds = scene.quickBounds() else {
                     Check.expect(false, "\(name) has bounds"); continue
                 }
                 let px = Framing.fitting(bounds, in: viewport).unitsPerPixel
-                let d = hausdorff(exact.mapped(camera.view), lattice.mapped(camera.view)) / px
-                Check.expect(exact.count > 0 && lattice.count > 0 && d < 1,
-                             "\(name), x \(Int(plate.xAngle))° z \(Int(plate.zAngle))°: "
+                let d = hausdorff(exact.mapped(camera.view), grid.mapped(camera.view)) / px
+                Check.expect(exact.count > 0 && grid.count > 0 && d < 1,
+                             "\(name), x \(Int(projection.xAngle))° z \(Int(projection.zAngle))°: "
                              + "within a pixel at \(viewport.width)x\(viewport.height)",
-                             String(format: "Hausdorff %.3f px; %d exact runs, %d lattice runs",
-                                    d, exact.count, lattice.count))
+                             String(format: "Hausdorff %.3f px; %d exact runs, %d grid runs",
+                                    d, exact.count, grid.count))
             }
         }
     }
@@ -207,20 +207,20 @@ func latticeFoldTests(_ found: InvariantTorus) {
                                                source: .trajectory, width: 0.08,
                                                heightPolicy: .surface),
                                paths: try found.trajectory(e, duration: 500, every: 0.02))
-        let folds = Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldLines,
+        let folds = Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                                           width: 0.6, heightPolicy: .surface),
                           paths: .empty)
-        let orbit = Orbit(matching: PlateProjection(shear: 0, xAngle: -55, zAngle: 30,
-                                                    flipX: false, yScale: nil))
+        let orbit = Orbit(matching: ObliqueProjection(shear: 0, xAngle: -55, zAngle: 30,
+                                                      flipX: false, yScale: nil))
         let scene = Scene(surface: forced, layers: [trajectory, folds], camera: orbit.camera,
-                          margin: 0)
+                          depthTolerance: 0)
         guard let bounds = scene.quickBounds() else {
             Check.expect(false, "the forced torus has bounds"); return
         }
         var navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
         let target = try renderer.makePreviewTarget(viewport)
         let options = PreviewOptions(slopeScale: 0)
-        // The first frame lays out the ink and the normals; the orbit after
+        // The first frame lays out the curves and the normals; the orbit after
         // it pays only for what the camera changes.
         try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
                                    options: options, into: target)
@@ -241,73 +241,73 @@ func latticeFoldTests(_ found: InvariantTorus) {
     }
 }
 
-// MARK: - a surface plate, described and built
+// MARK: - a surface drawing, described and built
 
-func surfacePlateTests() {
-    Check.suite("plates: a surface request builds its plate, and an edit keeps what it can") {
+func surfaceDrawingTests() {
+    Check.suite("drawings: a surface request builds its drawing, and an edit keeps what it can") {
         func forced(radius: Double) -> SurfaceRequest {
             SurfaceRequest(.forced(system: "jerk", fit: 8000, harmonics: 24, radial: 0, axial: 1,
                                    radius: radius, turns: 30),
-                           lattice: 256)
+                           grid: 256)
         }
         let clock = ContinuousClock()
-        var first: SurfacePlate!, second: SurfacePlate!
-        let fitted = try clock.measure { first = try SurfacePlate.build(forced(radius: 2.5)) }
+        var first: SurfaceDrawing!, second: SurfaceDrawing!
+        let fitted = try clock.measure { first = try SurfaceDrawing.build(forced(radius: 2.5)) }
         let kept = try clock.measure {
-            second = try SurfacePlate.build(forced(radius: 3), reusing: first)
+            second = try SurfaceDrawing.build(forced(radius: 3), reusing: first)
         }
         Check.expect(first.torus != nil && first.embedded
                      && first.layers.map(\.spec.name) == ["trajectory", "folds"],
-                     "a forced plate is its trajectory and its folds, on an embedded torus")
-        let tight = try SurfacePlate.build(forced(radius: 0.6), reusing: first)
+                     "a forced drawing is its trajectory and its folds, on an embedded torus")
+        let tight = try SurfaceDrawing.build(forced(radius: 0.6), reusing: first)
         Check.expect(!tight.embedded && tight.surface.outward == nil,
                      "a ring too tight for its slices passes through its axis, and says so")
         Check.expect(second.revolution?.radius == 3 && kept < fitted / 4,
                      "moving the revolution re-places the torus without refitting it",
                      "\(fitted) to fit, \(kept) to re-place")
 
-        let torus = try SurfacePlate.build(SurfaceRequest(.torus(major: 2, minor: 1),
-                                                          lattice: 128, lines: SIMD2(12, 6),
+        let torus = try SurfaceDrawing.build(SurfaceRequest(.torus(major: 2, minor: 1),
+                                                          grid: 128, lines: SIMD2(12, 6),
                                                           style: .init(folds: 0)))
         Check.expect(torus.layers.map(\.spec.name) == ["lines"] && torus.surface.outward != nil,
                      "a fold width of zero leaves the folds out")
-        let spindle = try SurfacePlate.build(SurfaceRequest(.torus(major: 1, minor: 1.2),
-                                                            lattice: 128))
+        let spindle = try SurfaceDrawing.build(SurfaceRequest(.torus(major: 1, minor: 1.2),
+                                                            grid: 128))
         Check.expect(spindle.surface.outward == nil,
                      "a torus with R ≤ r bounds nothing, so hides nothing")
-        // An edit, built from the plate before it, is exactly the plate built
-        // from nothing -- so the window's plate depends on its request alone
+        // An edit, built from the drawing before it, is exactly the drawing built
+        // from nothing -- so the window's drawing depends on its request alone
         // -- and keeps the surface's identity exactly when the surface is
         // unchanged.
-        func same(_ a: SurfacePlate, _ b: SurfacePlate) -> Bool {
+        func same(_ a: SurfaceDrawing, _ b: SurfaceDrawing) -> Bool {
             a.surface.positions == b.surface.positions && a.embedded == b.embedded
                 && a.layers.map(\.spec) == b.layers.map(\.spec)
                 && a.layers.map(\.paths) == b.layers.map(\.paths)
         }
         func edit(_ label: String, _ from: SurfaceRequest, _ to: SurfaceRequest,
                   keepsSurface: Bool) throws {
-            let before = try SurfacePlate.build(from)
-            let edited = try SurfacePlate.build(to, reusing: before)
-            let fresh = try SurfacePlate.build(to)
+            let before = try SurfaceDrawing.build(from)
+            let edited = try SurfaceDrawing.build(to, reusing: before)
+            let fresh = try SurfaceDrawing.build(to)
             Check.expect(same(edited, fresh) && (edited.content == before.content) == keepsSurface,
-                         "\(label): the edit is the plate built afresh, and "
+                         "\(label): the edit is the drawing built afresh, and "
                          + (keepsSurface ? "keeps the surface" : "has a new surface"))
         }
         func forcedRequest(radius: Double = 2.5, turns: Int = 30,
                            lines: SIMD2<Int>? = nil) -> SurfaceRequest {
             SurfaceRequest(.forced(system: "jerk", fit: 8000, harmonics: 24, radial: 0, axial: 1,
                                    radius: radius, turns: turns),
-                           lattice: 256, lines: lines)
+                           grid: 256, lines: lines)
         }
         func sn(m: Double = 0.64, R: Double = 2, r: Double = 1, grid: Int = 200) -> SurfaceRequest {
-            SurfaceRequest(.sn(modulus: m, major: R, minor: r, grid: grid), lattice: 256)
+            SurfaceRequest(.sn(modulus: m, major: R, minor: r, grid: grid), grid: 256)
         }
-        let ring = SurfaceRequest(.torus(major: 2, minor: 1), lattice: 128, lines: SIMD2(12, 6))
+        let ring = SurfaceRequest(.torus(major: 2, minor: 1), grid: 128, lines: SIMD2(12, 6))
         var thicker = ring; thicker.style.lines = 0.5
         var more = ring; more.lines = SIMD2(24, 12)
         try edit("torus, line width", ring, thicker, keepsSurface: true)
         try edit("torus, line counts", ring, more, keepsSurface: true)
-        try edit("torus, radii", ring, SurfaceRequest(.torus(major: 3, minor: 0.5), lattice: 128,
+        try edit("torus, radii", ring, SurfaceRequest(.torus(major: 3, minor: 0.5), grid: 128,
                                                       lines: SIMD2(12, 6)), keepsSurface: false)
         try edit("sn, radii", sn(), sn(R: 2.5, r: 0.8), keepsSurface: false)
         try edit("sn, grid", sn(), sn(grid: 150), keepsSurface: true)
@@ -318,40 +318,40 @@ func surfacePlateTests() {
                  keepsSurface: true)
         try edit("forced, radius", forcedRequest(), forcedRequest(radius: 3), keepsSurface: false)
 
-        // A winding is ink alone, on any torus: turning it on, moving its
+        // A linear curve is curves alone, on any torus: turning it on, moving its
         // slope and adding strands all keep the surface. Its slope moves
         // under a slider, so this is the edit that must cost only its own
         // vertices.
-        var wound = ring; wound.winding = SurfaceRequest.Winding(slope: 0.4, turns: 24, count: 1)
-        var steeper = wound; steeper.winding?.slope = 0.618
-        var braided = wound; braided.winding?.count = 3
-        try edit("torus, winding on", ring, wound, keepsSurface: true)
-        try edit("torus, winding slope", wound, steeper, keepsSurface: true)
-        try edit("torus, winding strands", wound, braided, keepsSurface: true)
+        var wound = ring; wound.linearCurves = SurfaceRequest.LinearCurves(slope: 0.4, turns: 24, count: 1)
+        var steeper = wound; steeper.linearCurves?.slope = 0.618
+        var braided = wound; braided.linearCurves?.count = 3
+        try edit("torus, linear curve on", ring, wound, keepsSurface: true)
+        try edit("torus, linear curve slope", wound, steeper, keepsSurface: true)
+        try edit("torus, linear curve strands", wound, braided, keepsSurface: true)
         var forcedWound = forcedRequest()
-        forcedWound.winding = SurfaceRequest.Winding(slope: 1.0 / 3, turns: 24, count: 2)
-        var forcedSteeper = forcedWound; forcedSteeper.winding?.slope = 0.5
-        try edit("forced, winding on", forcedRequest(), forcedWound, keepsSurface: true)
-        try edit("forced, winding slope", forcedWound, forcedSteeper, keepsSurface: true)
-        let woundPlate = try SurfacePlate.build(forcedWound)
-        Check.expect(woundPlate.layers.map(\.spec.name) == ["trajectory", "winding", "folds"],
-                     "a forced plate's winding is drawn between its trajectory and its folds")
-        // The winding's fields edit the winding and nothing else, and are
+        forcedWound.linearCurves = SurfaceRequest.LinearCurves(slope: 1.0 / 3, turns: 24, count: 2)
+        var forcedSteeper = forcedWound; forcedSteeper.linearCurves?.slope = 0.5
+        try edit("forced, linear curve on", forcedRequest(), forcedWound, keepsSurface: true)
+        try edit("forced, linear curve slope", forcedWound, forcedSteeper, keepsSurface: true)
+        let woundDrawing = try SurfaceDrawing.build(forcedWound)
+        Check.expect(woundDrawing.layers.map(\.spec.name) == ["trajectory", "linearCurves", "folds"],
+                     "a forced drawing's linear curve is drawn between its trajectory and its folds")
+        // The linear curve's fields edit the linear curve and nothing else, and are
         // absent until there is one.
         var byField = forcedRequest()
         byField[.slope] = 0.7
         Check.expect(byField[.slope] == nil && byField == forcedRequest(),
-                     "without a winding, its fields are nil and setting them changes nothing")
+                     "without a linear curve, its fields are nil and setting them changes nothing")
         byField = forcedWound
         byField[.slope] = 0.7; byField[.turns] = 12; byField[.strands] = 4
-        Check.expect(byField.winding == SurfaceRequest.Winding(slope: 0.7, turns: 12, count: 4)
+        Check.expect(byField.linearCurves == SurfaceRequest.LinearCurves(slope: 0.7, turns: 12, count: 4)
                      && byField.shape == forcedWound.shape,
                      "and with one, they are its slope, turns and strands")
 
-        // The trajectory is a winding: its turns are its own, and the whole
+        // The trajectory is a linear curve: its turns are its own, and the whole
         // of it -- turns, coordinates, slope -- comes from the fit, with
         // nothing integrated.
-        let thirty = try SurfacePlate.build(forcedRequest(turns: 30))
+        let thirty = try SurfaceDrawing.build(forcedRequest(turns: 30))
         let trajectory = thirty.layers[0].paths
         let spans = (0..<trajectory.count).map { k -> Double in
             let c = trajectory.coords!
@@ -359,19 +359,19 @@ func surfacePlateTests() {
         }
         Check.expect(abs(spans.reduce(0, +) - 30) < 1e-9 && spans.count == 4
                      && spans.allSatisfy { $0 <= 8 + 1e-9 },
-                     "thirty turns of trajectory are thirty turns of the winding, in four paths",
+                     "thirty turns of trajectory are thirty turns of the linear curve, in four paths",
                      String(format: "%.6f turns in %d paths", spans.reduce(0, +), spans.count))
 
         // What an edit can leave stale is the renderer's: the surface's
-        // textures, its normals and the ink, all cached on identities the
+        // textures, its normals and the curves, all cached on identities the
         // edit keeps or replaces. A preview drawn after each edit, by the
         // renderer that drew the one before, is the preview a fresh renderer
-        // draws of the edited plate.
+        // draws of the edited drawing.
         let warm = try MetalRenderer()
         let viewport = Viewport(width: 480, height: 360)
         let orbit = Orbit(matching: SurfaceRequest.projection)
-        var plate = try SurfacePlate.build(forcedRequest())
-        var scene = plate.scene(camera: orbit.camera)
+        var drawing = try SurfaceDrawing.build(forcedRequest())
+        var scene = drawing.scene(camera: orbit.camera)
         let navigator = Navigator(orbit: orbit, framing: .fitting(scene.quickBounds()!, in: viewport))
         func frame(_ renderer: MetalRenderer, _ scene: Scene) throws -> [UInt8] {
             let target = try renderer.makePreviewTarget(viewport)
@@ -384,11 +384,11 @@ func surfacePlateTests() {
                               ("the lines", forcedRequest(turns: 19, lines: SIMD2(12, 6))),
                               ("the ring radius", forcedRequest(radius: 3, turns: 19,
                                                                 lines: SIMD2(12, 6)))] {
-            let edited = try SurfacePlate.build(next, reusing: plate)
+            let edited = try SurfaceDrawing.build(next, reusing: drawing)
             // As the document adopts it.
-            scene = edited.content == plate.content ? scene.drawing(edited.layers)
+            scene = edited.content == drawing.content ? scene.drawing(edited.layers)
                                                     : edited.scene(camera: orbit.camera)
-            plate = edited
+            drawing = edited
             let after = try frame(warm, scene)
             let fresh = try frame(try MetalRenderer(), edited.scene(camera: orbit.camera))
             Check.expect(after == fresh, "after an edit of \(label), the window's renderer draws "
@@ -396,9 +396,9 @@ func surfacePlateTests() {
         }
 
         Check.expectThrows("an unknown system is refused by name") {
-            _ = try SurfacePlate.build(SurfaceRequest(.forced(system: "lorenz", fit: 100,
-                                                              harmonics: 4, radial: 0, axial: 1,
-                                                              radius: 2.5, turns: 1)))
+            _ = try SurfaceDrawing.build(SurfaceRequest(.forced(system: "lorenz", fit: 100,
+                                                                harmonics: 4, radial: 0, axial: 1,
+                                                                radius: 2.5, turns: 1)))
         }
     }
 }

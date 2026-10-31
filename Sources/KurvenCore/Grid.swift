@@ -5,7 +5,7 @@ import simd
 ///
 /// `values[y * width + x]`, with `x` indexing real and `y` indexing imag, which
 /// is the orientation `height.npy` is written in and the orientation a texture
-/// wants. Sample positions are the *vertices* of the lattice: `x = 0` sits at
+/// wants. Sample positions are the *vertices* of the grid: `x = 0` sits at
 /// `domain.real.lo` and `x = width - 1` at `domain.real.hi`. That is the
 /// convention `Surface` was sampled with, and getting it wrong shifts the whole
 /// landscape by half a cell.
@@ -26,7 +26,7 @@ public struct Grid2D<T>: Sendable where T: Sendable {
 
     /// The *shape* a `decimated(by:)` grid would have, without building it.
     ///
-    /// The renderer needs four numbers from the decimated lattice -- its two
+    /// The renderer needs four numbers from the decimated grid -- its two
     /// dimensions and its domain -- and nothing else, because the heights come
     /// from the texture. Materializing the grid to read them off costs a full
     /// copy of the samples: 43 ms per pass on zeta's 25-million-sample grid, to
