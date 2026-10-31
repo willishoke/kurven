@@ -148,7 +148,7 @@ usage: kurven-cli <command> [options]
 
   surface solid [--kind K] [--size R] [--width W] [--x-angle DEG] [--z-angle DEG]
           [--shear S] [--resolution N] [--color C]
-          [--hatching uniform|turing|lambert [--angle DEG] [--spacing S] [--step S]
+          [--hatching uniform|turing|half-lambert [--angle DEG] [--spacing S] [--step S]
           [--width-steps N] [--seed N] [--scale S] [--hatch-width W]
           [--hatch-color C]] -o out.svg
         Bake a polyhedron to SVG, its edges drawn. K is one of tetrahedron,
@@ -163,10 +163,11 @@ usage: kurven-cli <command> [options]
         default). --hatching hatches every face with lines at --angle (45°)
         every --spacing, their width set by a tone: uniform is the whole
         face, turing is Turing's dappled pattern at --scale under --seed,
-        lambert is Lambert shading by a fixed light. With --width-steps 1 the
-        lines are drawn where the tone is positive; with more their width
-        follows the tone in that many steps, up to --hatch-width. --step is
-        how often the tone is read along a line (the spacing by default).
+        half-lambert is the darkness under half-Lambert shading by a fixed
+        light. With --width-steps 1 the lines are drawn where the tone is
+        positive; with more their width follows the tone in that many steps,
+        up to --hatch-width. --step is how often the tone is read along a
+        line (the spacing by default).
         --color is the edges' stroke colour and --hatch-color the
         hatching's (any SVG colour; black by default).
 
@@ -584,8 +585,8 @@ func solidCommand(_ args: Args) throws {
             let seed = try args.int("seed", 1)
             guard seed >= 0 else { throw CLIError("--seed wants a whole number, 0 or more, got \(seed)") }
             tone = .turing(scale: try args.positive("scale") ?? size / 4, seed: UInt64(seed))
-        case "lambert": tone = .lambert(light: SIMD3(-0.4, -0.6, 0.7))
-        case let other: throw CLIError("unknown tone '\(other)'; the tones are uniform, turing, lambert")
+        case "half-lambert": tone = .halfLambert(light: SIMD3(-0.4, -0.6, 0.7))
+        case let other: throw CLIError("unknown tone '\(other)'; the tones are uniform, turing, half-lambert")
         }
         let spacing = try args.positive("spacing") ?? size / 25
         let step = try args.positive("step")

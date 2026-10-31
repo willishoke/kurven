@@ -207,7 +207,7 @@ func hatchingTests() {
             }
         }
         Check.expectThrows("a light of no direction is refused") {
-            _ = try hatching(tone: #"{"kind": "lambert", "light": [0, 0, 0]}"#)
+            _ = try hatching(tone: #"{"kind": "halfLambert", "light": [0, 0, 0]}"#)
         }
         for step in ["0", "-0.1", "1e-300"] {
             Check.expectThrows("a step of \(step) is refused") {
@@ -331,7 +331,7 @@ func hatchingTests() {
             Hatching(angle: 0.4, spacing: 0.1),
             Hatching(angle: -1.2, spacing: 0.05, step: 0.01, tone: .turing(scale: 0.7, seed: 0xDEAD_BEEF_0000_0001),
                      widthSteps: 5),
-            Hatching(angle: 0, spacing: 0.2, tone: .lambert(light: SIMD3(0.1, -0.3, 0.9)), widthSteps: 2),
+            Hatching(angle: 0, spacing: 0.2, tone: .halfLambert(light: SIMD3(0.1, -0.3, 0.9)), widthSteps: 2),
         ]
         for hatching in hatchings {
             let source = LayerSource.hatching(hatching)

@@ -44,7 +44,7 @@ public struct Hatching: Sendable, Equatable {
         if case .turing(let scale, _) = tone {
             precondition(scale > 0 && scale.isFinite, "Turing's tone has a positive scale")
         }
-        if case .lambert(let light) = tone {
+        if case .halfLambert(let light) = tone {
             precondition(Tone.hasDirection(light), "a light has a direction")
         }
         self.angle = angle; self.spacing = spacing; self.step = step
@@ -74,15 +74,15 @@ public struct Hatching: Sendable, Equatable {
             }
             tone = .turing(scale: scale,
                            seed: UInt64(bitPattern: Int64(try t.int("seed", "LayerSource.hatching.tone"))))
-        case "lambert":
+        case "halfLambert":
             let l = try t.doubles("light", "LayerSource.hatching.tone")
             guard l.count == 3, Tone.hasDirection(SIMD3(l[0], l[1], l[2])) else {
                 throw JSONError.wrongType("light", expected: "three numbers, not all zero",
                                           found: "LayerSource.hatching.tone")
             }
-            tone = .lambert(light: SIMD3(l[0], l[1], l[2]))
+            tone = .halfLambert(light: SIMD3(l[0], l[1], l[2]))
         case let other:
-            throw ManifestError.unknownKind(other, of: "Tone", known: ["uniform", "turing", "lambert"])
+            throw ManifestError.unknownKind(other, of: "Tone", known: ["uniform", "turing", "halfLambert"])
         }
         let spacing = try o.double("spacing", "LayerSource.hatching")
         let widthSteps = try o.int("widthSteps", "LayerSource.hatching")
@@ -109,8 +109,8 @@ public struct Hatching: Sendable, Equatable {
         case .turing(let scale, let seed):
             tone = .object(["kind": .string("turing"), "scale": .double(scale),
                             "seed": .int(Int(Int64(bitPattern: seed)))])
-        case .lambert(let light):
-            tone = .object(["kind": .string("lambert"),
+        case .halfLambert(let light):
+            tone = .object(["kind": .string("halfLambert"),
                             "light": .array([.double(light.x), .double(light.y), .double(light.z)])])
         }
         return .object(["kind": .string("hatching"), "angle": .double(angle), "spacing": .double(spacing),
@@ -126,11 +126,12 @@ public enum Tone: Sendable, Equatable {
     /// Turing's dappled pattern (`Turing`), in face coordinates divided by
     /// `scale`, with signs drawn from `seed`.
     case turing(scale: Double, seed: UInt64)
-    /// Lambert's cosine law, remapped to `[0, 1]`: `(1 - n·l) / 2` for the
-    /// face's outward normal `n` and the unit direction `l` toward the
-    /// light. Nothing on a face square to the light, full width on one
-    /// turned away from it, one value per face.
-    case lambert(light: SIMD3<Double>)
+    /// Darkness under half-Lambert shading: `(1 - n·l) / 2` for the face's
+    /// outward normal `n` and the unit direction `l` toward the light, the
+    /// complement of half-Lambert (wrapped) shading `(1 + n·l) / 2`. Nothing
+    /// on a face square to the light, full width on one turned away from it,
+    /// one value per face.
+    case halfLambert(light: SIMD3<Double>)
 
     /// Whether `light` has a direction to normalize: not zero, not infinite.
     static func hasDirection(_ light: SIMD3<Double>) -> Bool {
@@ -145,7 +146,7 @@ public enum Tone: Sendable, Equatable {
             return { _ in 1 }
         case .turing(let scale, let seed):
             return { c in Turing.value(c / scale, seed: seed) }
-        case .lambert(let light):
+        case .halfLambert(let light):
             let w = (1 - simd_dot(face.normal, simd_normalize(light))) / 2
             return { _ in w }
         }
