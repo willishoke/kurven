@@ -300,6 +300,15 @@ func solidTests() {
             let partition = partitionReport(s)
             Check.expect(partition.isEmpty, "\(name): \(pieces) convex pieces tile the face, no vertex added",
                          partition)
+            // The partition depends on the face, not on where the solid is:
+            // the same face a hundredth the size and 1000 from the origin is
+            // cut into as many pieces.
+            let far = prism(loops.map { $0.map { $0 / 100 } }, depth: 0.005)
+                .transformed(rotation: matrix_identity_double3x3, translation: SIMD3(1000, 0, 0))
+            let farPartition = partitionReport(far)
+            Check.expect(far.faces[0].count == pieces && farPartition.isEmpty,
+                         "\(name), a hundredth the size and 1000 from the origin: \(pieces) pieces as well",
+                         "\(far.faces[0].count) pieces \(farPartition)")
         }
     }
 

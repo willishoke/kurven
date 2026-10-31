@@ -21,7 +21,8 @@ enum ConvexPartition {
     /// counter-clockwise, then each hole clockwise, as vertex indices --
     /// with `point` placing each vertex in the face's plane. Each piece is
     /// counter-clockwise. `tolerance` is the area below which a corner
-    /// counts as straight.
+    /// counts as straight, a small fraction of the face's own: every test
+    /// here is a cross product held to it.
     static func pieces(_ loops: [[Int]], point: (Int) -> SIMD2<Double>, tolerance: Double) -> [[Int]] {
         let outer = loops[0]
         if loops.count == 1, isConvex(outer, point: point, tolerance: tolerance) { return [outer] }
@@ -103,7 +104,6 @@ enum ConvexPartition {
                         tolerance: Double) -> Bool {
         let p = point(i), q = point(j)
         let d = q - p
-        let length = simd_length(d)
         for wall in walls {
             let n = wall.count
             for k in 0..<n {
@@ -111,8 +111,8 @@ enum ConvexPartition {
                 let pa = point(a), pb = point(b)
                 if a != i, a != j {
                     // A vertex lying on the segment.
-                    let t = simd_dot(pa - p, d) / (length * length)
-                    if t > 0, t < 1, abs(cross(d, pa - p)) <= tolerance * max(length, 1) { return false }
+                    let t = simd_dot(pa - p, d) / simd_length_squared(d)
+                    if t > 0, t < 1, abs(cross(d, pa - p)) <= tolerance { return false }
                 }
                 guard a != i, a != j, b != i, b != j else { continue }
                 // A proper crossing: each segment's ends on opposite sides of

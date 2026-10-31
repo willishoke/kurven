@@ -75,15 +75,19 @@ public struct Solid: Sendable, Equatable {
                      "a face has an outer loop, and every loop at least three vertices")
         self.vertices = vertices
         self.loops = loops
-        let scale = vertices.map { simd_length($0.v) }.max() ?? 1
         // Each face cut into convex pieces in its own frame.
         var pieces: [[Int]] = [], faces: [[Int]] = [], faceOfPiece: [Int] = []
         var frames: [FaceFrame] = []
         for (i, face) in loops.enumerated() {
             let frame = FaceFrame(face, vertices: vertices)
+            // The tolerances scale with the face itself, the diagonal of its
+            // bounding box in its plane, so a face is cut the same way
+            // wherever the solid stands.
+            let planar = face.joined().map { frame.coordinates(vertices[$0].v) }
+            let extent = simd_length(planar.reduce(planar[0], simd_max) - planar.reduce(planar[0], simd_min))
             for loop in face {
                 for k in loop {
-                    precondition(abs(simd_dot(vertices[k].v - frame.origin, frame.normal)) <= 1e-9 * max(scale, 1),
+                    precondition(abs(simd_dot(vertices[k].v - frame.origin, frame.normal)) <= 1e-9 * extent,
                                  "face \(i) is not flat at vertex \(k)")
                 }
             }
@@ -96,7 +100,7 @@ public struct Solid: Sendable, Equatable {
                              "face \(i): hole \(l) runs the same way as the outer loop")
             }
             let cut = ConvexPartition.pieces(face, point: { frame.coordinates(vertices[$0].v) },
-                                             tolerance: 1e-9 * scale * scale)
+                                             tolerance: 1e-9 * extent * extent)
             faces.append(Array(pieces.count..<(pieces.count + cut.count)))
             faceOfPiece += Array(repeating: i, count: cut.count)
             pieces += cut
