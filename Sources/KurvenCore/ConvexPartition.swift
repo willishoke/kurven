@@ -5,12 +5,13 @@ import simd
 /// from each face's loops, so that visibility and hatching only ever clip
 /// against convex polygons.
 ///
-/// Three steps, each the textbook one. The holes are joined to the outer
-/// loop by bridges, which makes the face one polygon that runs along each
-/// bridge twice. That polygon is cut into triangles by ear clipping. Then
-/// Hertel and Mehlhorn (1983): every diagonal whose removal leaves both its
-/// ends convex is removed, which merges its two pieces. The result has at
-/// most four times as many pieces as the fewest possible. No vertex is
+/// Three steps, each the textbook one. The holes are joined one at a time to
+/// the outer loop, or to a hole joined before, by bridges, which makes the
+/// face one polygon that runs along each bridge twice. That polygon is cut
+/// into triangles by ear clipping. Then Hertel and Mehlhorn (1983): every
+/// diagonal whose removal leaves both its ends convex is removed, which
+/// merges its two pieces. For a face without holes the result has at most
+/// four times as many pieces as the fewest possible. No vertex is
 /// added: every piece's corners are the face's own vertices, so the
 /// neighbouring faces' sides still meet the pieces' sides end to end.
 ///

@@ -247,8 +247,9 @@ func solidTests() {
         Check.expect(!s.isConvex, "it is not convex")
         // The annuli are cut into convex pieces; the walls are one piece each.
         let sizes = s.faces.map(\.count)
-        Check.expect(sizes.dropFirst(2).allSatisfy { $0 == 1 } && sizes.prefix(2).allSatisfy { $0 >= 4 },
-                     "each wall is one piece, and each annulus at least four: a square hole has four reflex corners",
+        Check.expect(sizes.dropFirst(2).allSatisfy { $0 == 1 } && sizes.prefix(2).allSatisfy { $0 == 4 },
+                     "each wall is one piece, and each annulus four, the fewest: each of the hole's four reflex "
+                     + "corners needs a diagonal of its own, and with one hole there are as many pieces as diagonals",
                      "pieces per face \(sizes)")
         let partition = partitionReport(s)
         Check.expect(partition.isEmpty, "the pieces are convex, tile their faces, and the partition counts close",

@@ -34,14 +34,15 @@ Visibility and hatching both reduce to clipping a line against a convex
 polygon, which is an intersection of half-planes, so the solid cuts every
 face into *convex pieces* (`ConvexPartition`):
 
-1. Each hole is joined to the outer loop by a *bridge*, the shortest
-   segment from one of its vertices to one of the outer loop's that stays
-   inside the face. The face becomes one polygon that runs along each
+1. The holes are joined in one at a time, each by a *bridge*: the
+   shortest segment that stays inside the face from one of its vertices to
+   a vertex of the polygon built so far, which is the outer loop and the
+   holes already joined. The face becomes one polygon that runs along each
    bridge twice.
 2. That polygon is cut into triangles by ear clipping.
 3. Hertel and Mehlhorn (1983): every diagonal whose two ends stay convex
-   without it is removed, which merges its two pieces. This gives at most
-   four times the fewest pieces possible.
+   without it is removed, which merges its two pieces. For a face without
+   holes this gives at most four times the fewest pieces possible.
 
 No vertex is added, so the pieces' sides meet the neighbouring faces' sides
 end to end. Every choice is made in index order, so a face is cut the same
@@ -142,7 +143,10 @@ with a triangular hole, and loops with straight corners. On every face the
 pieces are convex and made of the face's own vertices, their areas add up
 to the face's, a grid of sample points lands in exactly one piece inside
 the face and in none outside, and the diagonals number pieces − 1 + holes,
-which is Euler's formula for a disc with holes cut into discs. Two boxes
+which is Euler's formula for a disc with holes cut into discs. Each prism's
+edges are held to the ray cast, and each face is cut again at a hundredth
+the size, 1000 from the origin, into as many pieces. A star, a comb and a
+spiral strip of thousands of corners are each cut in well under a second. Two boxes
 with pits sunk in their tops test faces that touch themselves: one pit
 touches the top face's outer loop at a corner, and two pits touch each
 other at a corner of their mouths. Both are spheres, χ = 2, and their edges
