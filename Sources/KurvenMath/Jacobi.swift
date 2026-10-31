@@ -49,7 +49,7 @@ public enum Jacobi {
         // The mean's two tables, nine terms each, on the stack: this is
         // called once per evaluation of sn, and an evaluation is the unit
         // the contour refiner and the hidden-line traversal spend by the
-        // million. Two heap arrays here were a third of the sn plate's
+        // million. Two heap arrays here were a third of the sn drawing's
         // build.
         return withUnsafeTemporaryAllocation(of: Double.self, capacity: 18) { table in
             let a = table.baseAddress!, c = a + 9

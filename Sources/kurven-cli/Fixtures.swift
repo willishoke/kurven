@@ -21,7 +21,7 @@ import KurvenMath
 ///     contract/  four tiny bundles that between them use every arm of every
 ///                sum type in the schema; `kurven-cli contract` and kurven-test
 ///                round trip their manifests.
-///     camera/    world points and their projections under each plate preset.
+///     camera/    world points and their projections under each drawing preset.
 ///     clip/      the visible runs `HiddenLine.clip` cuts from view-space
 ///                polylines against a depth buffer.
 ///     hatch/     every hatching source derived from one grid, one perimeter
@@ -53,13 +53,13 @@ enum GoldenFixtures {
 
     // MARK: shared
 
-    /// The three plate cameras, as the published plates set them. Kept here
-    /// rather than read from the catalog, so a change to a plate is a visible
+    /// The three oblique camera, as the published plates set them. Kept here
+    /// rather than read from the catalog, so a change to a drawing is a visible
     /// fixture change.
-    static let presets: [(String, PlateProjection)] = [
-        ("recip", PlateProjection(shear: 0.5, xAngle: -55, zAngle: -90, flipX: true, yScale: nil)),
-        ("elliptic", PlateProjection(shear: 0.51, xAngle: -63, zAngle: -90, flipX: true, yScale: nil)),
-        ("zeta", PlateProjection(shear: -0.18, xAngle: -79.5, zAngle: -90, flipX: true, yScale: 0.75)),
+    static let presets: [(String, ObliqueProjection)] = [
+        ("recip", ObliqueProjection(shear: 0.5, xAngle: -55, zAngle: -90, flipX: true, yScale: nil)),
+        ("elliptic", ObliqueProjection(shear: 0.51, xAngle: -63, zAngle: -90, flipX: true, yScale: nil)),
+        ("zeta", ObliqueProjection(shear: -0.18, xAngle: -79.5, zAngle: -90, flipX: true, yScale: 0.75)),
     ]
 
     static func input(_ url: URL) throws -> URL {
@@ -220,7 +220,7 @@ enum GoldenFixtures {
                 LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                           width: 0.4, heightPolicy: .surface),
             ],
-            presets: [CameraPreset(name: "plate", projection: recip, depthTolerance: 0.02, buffer: 4000)],
+            presets: [CameraPreset(name: "oblique", projection: recip, depthTolerance: 0.02, buffer: 4000)],
             provenance: provenance("1/gamma(z)", ["expression": .string("1/gamma(z)"),
                                                   "resolution": .int(4)])),
             phase: true)
@@ -235,28 +235,28 @@ enum GoldenFixtures {
 
     // MARK: camera
 
-    /// World points (x = real, y = imag, z) and where each plate camera puts
-    /// them. The points are a frozen input; the projections are `Camera.plate`.
+    /// World points (x = real, y = imag, z) and where each oblique camera puts
+    /// them. The points are a frozen input; the projections are `Camera.oblique`.
     static func camera(_ dir: URL) throws {
         try directory(dir)
-        for (name, plate) in presets {
+        for (name, projection) in presets {
             let world = try NPY.read(contentsOf: input(
                 dir.appendingPathComponent("\(name).points.npy"))).rows3()
-            let camera = Camera.plate(plate)
+            let camera = Camera.oblique(projection)
             let projected = world.flatMap { w -> [Double] in
                 let v = camera.view(P3<WorldSpace>(w)).v
                 return [v.x, v.y, v.z]
             }
             try NPY.write(projected, shape: [world.count, 3],
                           to: dir.appendingPathComponent("\(name).projected.npy"))
-            try text(JSONValue.object(["name": .string(name), "plate": plate.json]).canonical + "\n",
+            try text(JSONValue.object(["name": .string(name), "projection": projection.json]).canonical + "\n",
                      to: dir.appendingPathComponent("\(name).json"))
         }
     }
 
     // MARK: clip
 
-    /// The visible runs of sixty straight probes across 1/Γ's plate, against
+    /// The visible runs of sixty straight probes across 1/Γ's drawing, against
     /// a 320² depth buffer of its occluder. The buffer, the probes and the
     /// frame in `meta.json` are frozen inputs; the runs, and their count in
     /// `meta.json`, are `HiddenLine.clip`'s.

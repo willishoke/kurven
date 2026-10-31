@@ -8,7 +8,7 @@ import simd
 /// at pixel 0 and `axis0.hi` at pixel `rows - 1`, and the nudge keeps a
 /// coordinate exactly on `lo` from flooring to -1 under float jitter. Anything
 /// else here is a half-pixel shift between what the renderer drew and what the
-/// clipper reads, which shows up as ink leaking through the surface along
+/// clipper reads, which shows up as curves leaking through the surface along
 /// outlines and nowhere else.
 ///
 /// `axis0` is the first view component and indexes *rows*; `axis1` is the second
@@ -84,7 +84,7 @@ public struct DepthFrame: Sendable, Equatable {
     /// The sub-frame covering tile `(i, j)` of an `n x n` split.
     ///
     /// Split on *pixel* boundaries, not coordinate boundaries: the tile's
-    /// grid is a contiguous slice of the whole plate's grid, so a
+    /// grid is a contiguous slice of the whole drawing's grid, so a
     /// coordinate lands on the same pixel whether it was rendered whole or in
     /// pieces. Splitting the coordinate range instead would give each tile its
     /// own grid and leave seams wherever two disagreed by a fraction of a
@@ -138,7 +138,7 @@ public struct DepthFrame: Sendable, Equatable {
     /// it at the bottom. Which view component drives which screen axis is the
     /// frame's business too, and folded in here: the bake rasterizes in
     /// ZBuffer's order so it can be compared against Python, the preview in
-    /// screen order so it looks like the plate.
+    /// screen order so it looks like the drawing.
     ///
     /// A 4x4, so it can stand where a perspective matrix stands; its `w` row is
     /// constant, because an orthographic map has no divide.

@@ -107,7 +107,7 @@ func solidTests() {
 
     Check.suite("solids: the drawing is the same at every resolution, to the bit") {
         let s = Solid.platonic(.dodecahedron, circumradius: 2).resting(onFace: 0)
-        let camera = Camera.plate(PlateProjection(shear: 0.3, xAngle: -55, zAngle: -70, flipX: false, yScale: nil))
+        let camera = Camera.oblique(ObliqueProjection(shear: 0.3, xAngle: -55, zAngle: -70, flipX: false, yScale: nil))
         let layer = Layer(spec: LayerSpec(name: "edges", role: .outline, source: .edges,
                                           width: 0.5, heightPolicy: .surface), paths: s.edgePaths)
         let scene = Scene(solid: s, layers: [layer], camera: camera)

@@ -34,7 +34,7 @@ final class Thumbnails {
     private var failed: Set<String> = []
     private var running = false
 
-    /// The size they are drawn at. Twice what the grid shows, so the ink is
+    /// The size they are drawn at. Twice what the grid shows, so the curves are
     /// halved rather than aliased -- the preview draws one-pixel lines, and a
     /// one-pixel line shown at half scale is what a thumbnail is allowed to do
     /// about antialiasing without touching the renderer.
@@ -65,7 +65,7 @@ final class Thumbnails {
                     case .surface(let preset): images[entry.id] = try await draw(preset)
                     }
                 } catch {
-                    // A plate that will not build is not worth a retry loop on
+                    // A drawing that will not build is not worth a retry loop on
                     // every appearance of the picker; the cell says so.
                     failed.insert(entry.id)
                 }
@@ -86,9 +86,9 @@ final class Thumbnails {
         let destination = Thumbnails.cache(for: .surface(preset))
         let viewport = Thumbnails.size
         try await Task.detached(priority: .utility) {
-            let plate = try SurfacePlate.build(request)
+            let surfaceDrawing = try SurfaceDrawing.build(request)
             let orbit = Orbit(matching: SurfaceRequest.projection)
-            let scene = plate.scene(camera: orbit.camera)
+            let scene = surfaceDrawing.scene(camera: orbit.camera)
             guard let bounds = scene.quickBounds() else { return }
             let navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
             try Thumbnails.render(scene, navigator: navigator, to: destination)
@@ -121,7 +121,7 @@ final class Thumbnails {
         let target = try renderer.makePreviewTarget(size)
         try renderer.renderPreview(scene, navigator: navigator, viewport: size,
                                    options: PreviewOptions(
-                                    mode: .plate, visibleLayers: Set(scene.layers.indices)),
+                                    mode: .drawing, visibleLayers: Set(scene.layers.indices)),
                                    into: target)
         try FileManager.default.createDirectory(
             at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -171,7 +171,7 @@ final class Thumbnails {
             key = preset.expression + "|" + window + "|" + truncationHeight + "|" + shape
                 + "|style\(style)"
         case .surface(let preset):
-            // The request spelled out is every number the plate is built from.
+            // The request spelled out is every number the drawing is built from.
             key = "surface|\(request(for: preset))|\(size.width)x\(size.height)|style\(style)"
         }
         var hash: UInt64 = 0xcbf29ce484222325

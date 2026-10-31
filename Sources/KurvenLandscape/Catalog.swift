@@ -97,7 +97,7 @@ public struct Catalog: Sendable, Equatable {
         },
         constants: Language.constants.map(\.name),
         defaultResolution: NativeLandscape.defaultResolution,
-        defaultBuffer: NativeLandscape.plateBuffer)
+        defaultBuffer: NativeLandscape.defaultBuffer)
 }
 
 /// What to sample, over what, how finely -- and, once the user has edited it,
@@ -183,7 +183,7 @@ enum NativeCatalog {
             name: "gamma", label: "Γ(z) — gamma", expression: "gamma(z)",
             domain: domain(-4.5, 4.5, 0.0, 2.5), window: domain(-10.0, 10.0, -6.0, 6.0), truncationHeight: 5.0,
             notes: "A pole spire at each non-positive integer. Truncating per band "
-                + "cuts each spire at its own height, as the published plate does."),
+                + "cuts each spire at its own height, as the published drawing does."),
         FunctionPreset(
             name: "zeta", label: "ζ(z) — Riemann zeta", expression: "zeta(z)",
             domain: domain(-6.0, 8.0, 0.0, 30.0), window: domain(-20.0, 20.0, -40.0, 40.0), truncationHeight: 6.0,

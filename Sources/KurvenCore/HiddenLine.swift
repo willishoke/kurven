@@ -8,21 +8,21 @@ import simd
 /// shorter than two vertices draw nothing and are dropped. Because it takes a
 /// `DepthImage` *value*, it is tested against a Python-dumped buffer and
 /// Python-dumped polylines with no GPU anywhere in the loop -- which is what
-/// makes "the bake reproduces the plate" a checkable claim rather than a
+/// makes "the bake reproduces the drawing" a checkable claim rather than a
 /// rendering that looks about right.
 ///
 /// The realtime preview does the same test per *fragment* in a shader, which can
 /// disagree with this on sub-pixel runs. That disagreement is deliberate and
 /// bounded: the preview is for navigating, the bake is the artifact, and the
 /// bake is this.
-/// The two questions asked of ink on a heightfield: does the surface face
-/// the eye where the ink lies, and is anything in front of it.
+/// The two questions asked of curves on a heightfield: does the surface face
+/// the eye where the curves lie, and is anything in front of it.
 ///
 /// The first is what `SurfaceVisibility` asks of a parametric surface, and a
 /// heightfield can answer it too, since it bounds the solid under it: the
 /// normal is the gradient, read off the grid. Without it, where a steep
 /// graph turns away from the eye its back lies within any depth tolerance of its
-/// front for a stretch, and the ink there -- the other family of contours,
+/// front for a stretch, and the curves there -- the other family of contours,
 /// wrapping round the back -- shows through as ticks along the outline.
 /// The second is the traversal up the line of sight (`GridTraversal`): the exact
 /// question the depth buffer approximates per pixel, asked per vertex with
@@ -62,7 +62,7 @@ public struct HeightfieldVisibility: Sendable {
     }
 
     /// The depth tolerance as a distance along the line of sight: an occluder must
-    /// stand in front of the ink by more than this.
+    /// stand in front of the curves by more than this.
     public var toleranceAlongProjection: Double { traversal.reach }
 
     /// Where along the straight segment `a -> b` over the plane the surface
@@ -84,10 +84,10 @@ public struct HeightfieldVisibility: Sendable {
 
 public enum HiddenLine {
     public static func clip(_ paths: PolylineSet<ViewSpace>, against depth: DepthImage,
-                            depthTolerance: Double) -> PolylineSet<PlateSpace> {
-        var out: [[P3<PlateSpace>]] = []
+                            depthTolerance: Double) -> PolylineSet<PageSpace> {
+        var out: [[P3<PageSpace>]] = []
         for i in 0..<paths.count {
-            var run: [P3<PlateSpace>] = []
+            var run: [P3<PageSpace>] = []
             for v in paths[path: i] {
                 if v.z + depthTolerance > depth.depth(under: v.xy) {
                     run.append(P3(v.x, v.y, v.z))
@@ -101,12 +101,12 @@ public enum HiddenLine {
         return PolylineSet(paths: out)
     }
 
-    /// Ink that is not depth-tested: unclipped ink, and every layer of a
+    /// Curves that are not depth-tested: unclipped curves, and every layer of a
     /// heightfield or a solid, which arrives already tested by its geometry
     /// (`Scene.visibleLayers`). Passing it through this rather than casting
     /// keeps "which space am I in" a decision the type system witnesses.
-    public static func pass(_ paths: PolylineSet<ViewSpace>) -> PolylineSet<PlateSpace> {
-        PolylineSet(vertices: paths.vertices.map { P3<PlateSpace>($0.v) },
+    public static func pass(_ paths: PolylineSet<ViewSpace>) -> PolylineSet<PageSpace> {
+        PolylineSet(vertices: paths.vertices.map { P3<PageSpace>($0.v) },
                     offsets: paths.offsets)
     }
 }
@@ -121,8 +121,8 @@ public extension DepthImage {
     /// find the edge of a picture.
     ///
     /// None of the three plates draws one -- they are bounded by their own wall
-    /// ink -- so the bake offers it rather than assuming it.
-    func outline() -> PolylineSet<PlateSpace> {
+    /// curves -- so the bake offers it rather than assuming it.
+    func outline() -> PolylineSet<PageSpace> {
         guard frame.rows >= 2, frame.cols >= 2 else { return .empty }
         let coverage = (0..<(frame.rows * frame.cols)).map { i -> Float in
             values[i] > empty ? 1 : -1
@@ -136,7 +136,7 @@ public extension DepthImage {
             values: coverage)
 
         let paths = Contour.lines(of: grid, level: 0).map { line in
-            line.map { p -> P3<PlateSpace> in
+            line.map { p -> P3<PageSpace> in
                 // `p.x` is the column value and `p.y` the row value; which view
                 // component each is depends on the frame's raster order.
                 switch frame.order {

@@ -3,10 +3,10 @@ import KurvenCore
 import KurvenMath
 import KurvenLandscape
 
-/// A surface plate, described: which surface, at what grid, with what ink.
+/// A surface drawing, described: which surface, at what grid, with what curves.
 ///
 /// The value the CLI parses its flags into and the app keeps in its
-/// document, so both build a plate with one function -- `SurfacePlate.build`
+/// document, so both build a drawing with one function -- `SurfaceDrawing.build`
 /// -- as a bake and a landscape are each built by one function called twice.
 public struct SurfaceRequest: Sendable, Equatable {
     public enum Shape: Sendable, Equatable {
@@ -61,13 +61,13 @@ public struct SurfaceRequest: Sendable, Equatable {
     }
 
     public var shape: Shape
-    /// Grid points around `u`; `v` gets half as many (a periodic plate
+    /// Grid points around `u`; `v` gets half as many (a periodic drawing
     /// sizes `v` to its rectangle instead).
     public var grid: Int
     /// Lines of constant `u` and `v`, when drawn. A plain torus has nothing
     /// else to draw; a forced torus draws them only when asked.
     public var lines: SIMD2<Int>?
-    /// A linear curve, when drawn. Ink alone: the surface does not know it is
+    /// A linear curve, when drawn. Curves alone: the surface does not know it is
     /// there, so its slope can move under a slider.
     public var linearCurves: LinearCurves?
     public var style: Style
@@ -80,8 +80,8 @@ public struct SurfaceRequest: Sendable, Equatable {
         self.linearCurves = linearCurves; self.style = style; self.name = name
     }
 
-    /// The projection a surface plate opens at.
-    public static let projection = PlateProjection(shear: 0, xAngle: -55, zAngle: 30,
+    /// The projection a surface drawing opens at.
+    public static let projection = ObliqueProjection(shear: 0, xAngle: -55, zAngle: 30,
                                                    flipX: false, yScale: nil)
 
     /// The request a drag builds while it lasts: a quarter of the grid
@@ -103,7 +103,7 @@ public struct SurfaceRequest: Sendable, Equatable {
 
     /// The same, as a camera preset: no depth tolerance and the CLI's bake resolution,
     /// so the window and `kurven-cli surface` bake the same picture.
-    public static let preset = CameraPreset(name: "plate", projection: projection, depthTolerance: 0,
+    public static let preset = CameraPreset(name: "oblique", projection: projection, depthTolerance: 0,
                                             buffer: 3000)
 }
 
@@ -131,9 +131,9 @@ public extension SurfaceRequest {
 
     static let linearCurveFields: [Field] = [.slope, .turns, .strands]
 
-    /// The fields that move ink alone -- placed from the grid, nothing of
+    /// The fields that move curves alone -- placed from the grid, nothing of
     /// the surface remade -- and so want no draft while dragged.
-    static let inkFields: [Field] = linearCurveFields + [.trajectoryTurns]
+    static let curveFields: [Field] = linearCurveFields + [.trajectoryTurns]
 
     /// A field's value, or nil where the shape has no such field; setting
     /// one the shape does not have changes nothing.
@@ -205,16 +205,16 @@ public extension SurfaceRequest {
     }
 }
 
-/// A surface plate, built: the surface, its ink, and what is worth keeping
+/// A surface drawing, built: the surface, its curves, and what is worth keeping
 /// between edits.
 ///
 /// What an edit costs is decided here, by comparing the new request with the
-/// plate it replaces, and only what the edit touches is made again:
+/// drawing it replaces, and only what the edit touches is made again:
 ///
-///   - **the ink alone** -- line counts, a linear curve's slope, stroke widths, a
+///   - **the curves alone** -- line counts, a linear curve's slope, stroke widths, a
 ///     forced trajectory's turns, sn's sampling grid -- keeps the surface,
 ///     and with
-///     it `content`, so the window redraws the ink and keeps the surface's
+///     it `content`, so the window redraws the curves and keeps the surface's
 ///     textures;
 ///   - **the radii of a torus** re-place what is drawn on it: a periodic
 ///     function's contours are the function's, and move with the torus from
@@ -225,23 +225,23 @@ public extension SurfaceRequest {
 ///   - **its fit** -- system, fit length, harmonics -- fits again.
 ///
 /// Everything reused is exactly what building from nothing would produce, so
-/// a plate depends on its request alone -- the window's is the CLI's. The one
+/// a drawing depends on its request alone -- the window's is the CLI's. The one
 /// `draft` names a request made while a control is dragged; nothing is
 /// approximated for it now, and it is kept for the drag to say so.
-public struct SurfacePlate: Sendable {
+public struct SurfaceDrawing: Sendable {
     public let request: SurfaceRequest
     public let surface: ParametricSurface
     public let layers: [Layer]
     /// The surface's identity: kept by an edit that leaves the surface alone,
     /// new whenever it moves.
     public let content: ContentID
-    /// A forced plate's fitted torus.
+    /// A forced drawing's fitted torus.
     public var torus: InvariantTorus? { forced?.torus }
     public let revolution: Revolution?
     /// False when a forced torus's revolution passes through itself, so its
     /// back faces are kept rather than hidden.
     public let embedded: Bool
-    /// What a forced plate keeps between edits.
+    /// What a forced drawing keeps between edits.
     let forced: Forced?
 
     /// A fitted torus and what has been worked out from it, in state space:
@@ -253,14 +253,14 @@ public struct SurfacePlate: Sendable {
     }
     struct FitKey: Equatable, Sendable { let system: String; let fit: Double; let harmonics: Int }
 
-    /// Whether building `request` from this plate fits a torus again -- the
+    /// Whether building `request` from this drawing fits a torus again -- the
     /// one edit that takes a noticeable time.
     public func refits(for request: SurfaceRequest) -> Bool {
         guard case .forced(let s, let f, let h, _, _, _, _) = request.shape else { return false }
         return forced?.fit != FitKey(system: s, fit: f, harmonics: h)
     }
 
-    /// The scene this plate draws, from `camera`.
+    /// The scene this drawing draws, from `camera`.
     public func scene(camera: Camera) -> Scene {
         Scene(surface: surface, layers: layers, camera: camera, depthTolerance: 0)
     }
@@ -281,7 +281,7 @@ public struct SurfacePlate: Sendable {
         return g
     }
 
-    /// Everything a periodic plate's contours are built from: the function,
+    /// Everything a periodic drawing's contours are built from: the function,
     /// its periods and its sampling, and not the torus they are drawn on.
     static func contours(_ r: SurfaceRequest) -> SurfaceRequest.Shape? {
         switch r.shape {
@@ -292,10 +292,10 @@ public struct SurfacePlate: Sendable {
         }
     }
 
-    /// Build a plate. `previous`, when given, lends whatever of it the new
+    /// Build a drawing. `previous`, when given, lends whatever of it the new
     /// request has not changed. `draft` says the request is a drag's.
-    public static func build(_ request: SurfaceRequest, reusing previous: SurfacePlate? = nil,
-                             draft: Bool = false) throws -> SurfacePlate {
+    public static func build(_ request: SurfaceRequest, reusing previous: SurfaceDrawing? = nil,
+                             draft: Bool = false) throws -> SurfaceDrawing {
         let style = request.style
         let kept = previous.flatMap { geometry($0.request) == geometry(request) ? $0 : nil }
         func scaffold(_ name: String, _ source: LayerSource, _ width: Double,
@@ -341,22 +341,22 @@ public struct SurfacePlate: Sendable {
             layers = lines(on: surface, resolution: 4 * n).map { [$0] } ?? []
 
         case .sn(_, let R, let r, _), .periodic(_, _, let R, let r, _):
-            let plate: PeriodicTorus.Plate
+            let drawing: PeriodicTorus.Drawing
             if let previous, let key = contours(request), contours(previous.request) == key {
                 // The same contours: as they are, or re-placed on new radii.
-                let old = PeriodicTorus.Plate(surface: previous.surface, layers: previous.layers)
-                plate = kept != nil ? old : old.placed(major: R, minor: r, grid: request.grid)
+                let old = PeriodicTorus.Drawing(surface: previous.surface, layers: previous.layers)
+                drawing = kept != nil ? old : old.placed(major: R, minor: r, grid: request.grid)
             } else if case .sn(let m, _, _, let grid) = request.shape {
-                plate = try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r,
+                drawing = try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r,
                                                    resolution: grid, grid: request.grid)
             } else if case .periodic(let expression, let periods, _, _, let grid) = request.shape {
-                plate = try PeriodicTorus.plate(expression, periods: (periods.x, periods.y),
+                drawing = try PeriodicTorus.drawing(expression, periods: (periods.x, periods.y),
                                                 major: R, minor: r, resolution: grid,
                                                 grid: request.grid)
             } else { fatalError("unreachable") }
-            surface = plate.surface
+            surface = drawing.surface
             // Their own folds come with them; the style's replace them below.
-            layers = plate.layers.filter { if case .contour = $0.spec.source { true } else { false } }
+            layers = drawing.layers.filter { if case .contour = $0.spec.source { true } else { false } }
 
         case .forced(let name, let fit, let harmonics, let radial, let axial, let radius,
                      let turns):
@@ -395,11 +395,11 @@ public struct SurfacePlate: Sendable {
 
             // The trajectory is the linear curve at the rotation number, placed
             // from the grid: kept when the surface and its turns are.
-            var sameInk = false
+            var sameCurves = false
             if kept != nil, case .forced(_, _, _, _, _, _, turns)? = previous?.request.shape {
-                sameInk = true
+                sameCurves = true
             }
-            let old = sameInk ? kept?.layers.first { $0.spec.name == "trajectory" } : nil
+            let old = sameCurves ? kept?.layers.first { $0.spec.name == "trajectory" } : nil
             layers = [scaffold("trajectory", .trajectory, style.trajectory,
                                old?.paths ?? torus.trajectory(on: surface, turns: turns))]
             if let l = lines(on: surface, resolution: 2 * request.grid) { layers.append(l) }
@@ -411,7 +411,7 @@ public struct SurfacePlate: Sendable {
                                                 width: style.folds, heightPolicy: .surface),
                                 paths: .empty))
         }
-        return SurfacePlate(request: request, surface: surface, layers: layers,
+        return SurfaceDrawing(request: request, surface: surface, layers: layers,
                             content: kept?.content ?? ContentID(), revolution: revolution,
                             embedded: embedded, forced: forced)
     }
@@ -438,7 +438,7 @@ public struct SurfacePreset: Sendable, Equatable, Identifiable {
 
 public extension SurfacePreset {
     /// Named as `kurven-cli surface` names them, and built with its defaults,
-    /// so a preset and the CLI's plate of the same name are the same plate.
+    /// so a preset and the CLI's drawing of the same name are the same drawing.
     static let catalog: [SurfacePreset] = [
         SurfacePreset(name: "torus", label: "Torus", formula: "R = 2, r = 1",
                       notes: "The torus of revolution, ruled by its two families of circles.",

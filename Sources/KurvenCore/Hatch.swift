@@ -1,7 +1,7 @@
 import Foundation
 import simd
 
-/// Deriving the hatching: the ink that shades a cut face and a plateau.
+/// Deriving the hatching: the curves that shade a wall and a plateau.
 ///
 /// `kurven/hatch.py` is the definition of all four kinds and this is the
 /// consumer's implementation of it; `tests/fixtures/hatch` holds the two to each
@@ -49,12 +49,12 @@ public extension Surface {
         }
     }
 
-    /// Any described layer's ink: a contour family, or a hatching.
+    /// Any described layer's curves: a contour family, or a hatching.
     ///
     /// The one place that knows which kinds of description exist, so a reader,
     /// a re-derivation after an edit and a bake all produce the same strokes
     /// for the same spec.
-    func ink(_ spec: LayerSpec, occluder: Occluder,
+    func curves(_ spec: LayerSpec, occluder: Occluder,
              refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
         if let hatched = hatch(spec.source, in: HatchContext(occluder), refine: refine) {
             return hatched
@@ -185,7 +185,7 @@ extension Surface {
     /// down to), and between any two of these the profile subdivided until
     /// no chord departs from f by more than the refiner's tolerance
     /// (`subdividedProfile`). The rings are placed on f, the fold curves are
-    /// traced on f and the ink is tested against f, so the top edge has to be
+    /// traced on f and the curves are tested against f, so the top edge has to be
     /// f's too, or the rings end on a fold the top edge parts from.
     func topEdge(of edge: PerimeterEdge, tiles: [Affine2],
                refine: ContourRefine?) -> [P3<WorldSpace>] {

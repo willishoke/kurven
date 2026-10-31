@@ -116,12 +116,12 @@ struct MetalView: NSViewRepresentable {
                 guard let commands = renderer.commandQueue.makeCommandBuffer() else { return }
                 // Stroke widths are pixels; the window is measured in points.
                 var options = document.previewOptions
-                options.inkWidth *= Float(view.drawableSize.width / max(view.bounds.width, 1))
+                options.strokeWidth *= Float(view.drawableSize.width / max(view.bounds.width, 1))
                 // While the camera moves -- the view is on the display's
                 // clock -- every frame is a draft. At rest the frame is
                 // tested once the layout is in hand, and a draft until then,
                 // the layout made meanwhile on another thread: a landscape's
-                // tested ink is hundreds of milliseconds of CPU per camera,
+                // tested curves are hundreds of milliseconds of CPU per camera,
                 // which is a stutter on the main thread and nothing off it.
                 let moving = !view.isPaused
                 if moving {
@@ -147,7 +147,7 @@ struct MetalView: NSViewRepresentable {
             }
         }
 
-        /// Lay out the scene's tested ink on another thread, and redraw when
+        /// Lay out the scene's tested curves on another thread, and redraw when
         /// it is in hand. One at a time: a layout for a camera the user has
         /// since left is installed all the same, and the next frame, finding
         /// it is not the camera's, asks for the current one.
@@ -202,7 +202,7 @@ final class GestureView: MTKView {
     /// Back to on-demand once nothing has happened for a quarter second -- long
     /// enough to ride out the gaps in a drag, short enough that an idle window
     /// costs nothing. One more frame then: the frames on the clock were
-    /// drafts, and the camera at rest gets its tested ink.
+    /// drafts, and the camera at rest gets its tested curves.
     func settleIfIdle() {
         guard !isPaused, CACurrentMediaTime() - lastActivity > 0.25 else { return }
         isPaused = true
@@ -294,7 +294,7 @@ final class GestureView: MTKView {
         MainActor.assumeIsolated {
             switch event.charactersIgnoringModifiers {
             case "f": coordinator?.document.fit(); needsDisplay = true
-            case "1": coordinator?.document.mode = .plate; needsDisplay = true
+            case "1": coordinator?.document.mode = .drawing; needsDisplay = true
             case "2": coordinator?.document.mode = .shaded(Lighting()); needsDisplay = true
             case "3": coordinator?.document.mode = .depth; needsDisplay = true
             default: super.keyDown(with: event)

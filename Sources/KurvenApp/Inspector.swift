@@ -11,7 +11,7 @@ import KurvenDynamics
 /// second copy of the camera to keep in step with the first.
 struct Inspector: View {
     @Bindable var document: Document
-    /// The layer whose level slider is being dragged: its ink is the grid's
+    /// The layer whose level slider is being dragged: its curves are the grid's
     /// until the drag ends, and placed on f when it does.
     @State private var draggingLevels: Int?
 
@@ -22,17 +22,17 @@ struct Inspector: View {
             // can be handed.
             // A surface has its own section and a way back to the gallery;
             // the function picker would only say "—" beside it.
-            if document.plate == nil && !document.building {
+            if document.surfaceDrawing == nil && !document.building {
                 Section("Landscape") {
                     LandscapeSection(document: document)
                 }
             }
-            if document.plate != nil || document.building {
+            if document.surfaceDrawing != nil || document.building {
                 Section("Surface") { SurfaceSection(document: document) }
             }
-            if document.plate != nil {
+            if document.surfaceDrawing != nil {
                 // A surface is not a bundle: no truncation, depth tolerance
-                // or provenance. Its camera has the one plate projection it
+                // or provenance. Its camera has the one oblique projection it
                 // opened at, so "reset" still has somewhere to go.
                 Section("Camera") {
                     CameraSection(document: document, presets: [SurfaceRequest.preset])
@@ -49,7 +49,7 @@ struct Inspector: View {
                     TruncationSection(document: document)
                 }
                 Section("Layers") { layerList }
-                Section("Ink") { depthToleranceField }
+                Section("Visibility") { depthToleranceField }
                 Section("Bake") { BakeSection(document: document) }
                 Section("Bundle") { provenance(bundle) }
             } else {
@@ -68,7 +68,7 @@ struct Inspector: View {
         Picker("Preview", selection: Binding(
             get: { ModeChoice(document.mode) },
             set: { document.mode = $0.mode })) {
-            Text("Plate").tag(ModeChoice.plate)
+            Text("Drawing").tag(ModeChoice.drawing)
             Text("Shaded").tag(ModeChoice.shaded)
             Text("Depth").tag(ModeChoice.depth)
         }
@@ -124,7 +124,7 @@ struct Inspector: View {
             Text("levels").font(.caption).foregroundStyle(.secondary)
             Slider(value: count, in: 1...80, step: 1, onEditingChanged: { editing in
                 draggingLevels = editing ? index : nil
-                if !editing { document.rebuildInk() }
+                if !editing { document.rebuildCurves() }
             })
             Text("\(levels.count)")
                 .font(.caption).monospacedDigit().frame(width: 24, alignment: .trailing)
@@ -170,7 +170,7 @@ struct Inspector: View {
         .padding(.leading, 20)
     }
 
-    // MARK: - ink
+    // MARK: - curves
 
     @ViewBuilder
     private var depthToleranceField: some View {
@@ -255,7 +255,7 @@ struct CameraSection: View {
         }
     }
 
-    /// Perspective is a way of navigating, not a plate style: the bake refuses
+    /// Perspective is a way of navigating, not a drawing convention: the bake refuses
     /// it, and says so. Offering it next to the presets is the honest placement
     /// -- it belongs with "where am I looking from", not with "what kind of
     /// drawing is this".
@@ -274,7 +274,7 @@ struct CameraSection: View {
 
     @ViewBuilder
     private var orbitFields: some View {
-        // Degrees, because that is what the plate parameters are stated in and
+        // Degrees, because that is what the drawing parameters are stated in and
         // every conversion is a chance to lose a factor of pi.
         degreeField("Azimuth", value: Binding(
             get: { document.navigator?.orbit.azimuth.degrees ?? 0 },
@@ -354,11 +354,11 @@ struct BakeSection: View {
 /// `PreviewMode` carries a `Lighting` payload, which a `Picker` cannot select
 /// on. This is the selectable shadow of it.
 enum ModeChoice: Hashable {
-    case plate, shaded, depth
+    case drawing, shaded, depth
 
     init(_ mode: PreviewMode) {
         switch mode {
-        case .plate: self = .plate
+        case .drawing: self = .drawing
         case .shaded: self = .shaded
         case .depth: self = .depth
         }
@@ -366,7 +366,7 @@ enum ModeChoice: Hashable {
 
     var mode: PreviewMode {
         switch self {
-        case .plate: .plate
+        case .drawing: .drawing
         case .shaded: .shaded(Lighting())
         case .depth: .depth
         }

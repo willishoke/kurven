@@ -111,7 +111,7 @@ public struct TubularNeighbourhood: Sendable {
 ///
 /// The map is exact and carries its derivatives, because the questions asked
 /// of it -- which way does it face here, and exactly where along this segment
-/// does it turn edge-on -- are asked at the ink's own coordinates, and a normal
+/// does it turn edge-on -- are asked at the curves' own coordinates, and a normal
 /// read off the nearest grid point flips sign between neighbours precisely
 /// where the answer matters, at a fold. The grid is what gets rasterized;
 /// the map is what gets asked.
@@ -135,13 +135,13 @@ public struct ParametricSurface: Sendable {
     /// declared, and the orientation is then computed rather than guessed.
     public let outward: Double?
     /// The solid the surface bounds as a point test, for surfaces that have
-    /// one in closed form; nil otherwise, and the ink is then tested by the
+    /// one in closed form; nil otherwise, and the curves are then tested by the
     /// coordinate image.
     public let neighbourhood: TubularNeighbourhood?
 
     /// - Parameter encloses: the surface is closed, embedded and orientable.
     ///   Declaring it for a surface that passes through itself, or has a
-    ///   boundary, culls ink that is in plain view.
+    ///   boundary, culls curves that are in plain view.
     public init(u: ParamAxis, v: ParamAxis, encloses: Bool, neighbourhood: TubularNeighbourhood? = nil,
                 map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet) {
         self.u = u; self.v = v; self.map = map
@@ -270,7 +270,7 @@ public extension ParametricSurface {
     /// moved onto the exact fold by bisection along the product's gradient.
     /// The grid decides which folds exist; the map decides where they run.
     /// Where the sign changes across a crease rather than through a zero
-    /// -- a truncation edge, which the truncation edge's own ink draws -- the vertex is
+    /// -- a truncation edge, which the truncation edge's own layer draws -- the vertex is
     /// dropped and the line cut there. From a cut the fold is traced on in
     /// steps a sixteenth of a cell, each set onto the fold by the map, to
     /// where it meets the crease or another cut: a fold down a steep wall
@@ -567,7 +567,7 @@ public extension ParametricSurface {
     /// The grid's bilinear patch at a coordinate: the surface as it is
     /// drawn, rather than as the map has it.
     ///
-    /// The grid is what gets rasterized, so ink placed this way lies on
+    /// The grid is what gets rasterized, so curves placed this way lie on
     /// the drawn surface to the last bit, and it costs four grid reads
     /// where the map may cost a Fourier series. A coordinate any number of
     /// periods past a periodic axis's range wraps; on a bounded axis it is
@@ -585,8 +585,8 @@ public extension ParametricSurface {
     ///
     /// Within a grid cell of the exact normal, and so, like a grid
     /// fold, within a pixel of where the facing changes at any drawing
-    /// grid: enough for the preview, which asks a normal of every ink
-    /// vertex and asks it again whenever the ink moves. The bake keeps the
+    /// grid: enough for the preview, which asks a normal of every curve
+    /// vertex and asks it again whenever the curves move. The bake keeps the
     /// map's.
     func interpolateNormal(_ c: P2<ParamSpace>, normals: [SIMD3<Float>]) -> SIMD3<Float> {
         precondition(normals.count == positions.count,
@@ -633,7 +633,7 @@ public extension ParametricSurface {
     /// turns`, the `q` turns after which it closes, so a rational linear curve is
     /// one closed (p, q) curve and an irrational one is a stretch of a curve
     /// that never closes. A vertex per grid cell along the steeper axis,
-    /// placed by `interpolate`, so the ink lies on the drawn surface; each
+    /// placed by `interpolate`, so the curves lie on the drawn surface; each
     /// vertex carries its coordinate, continuous along a path and never more
     /// than eight turns from zero, so the preview's float32 still resolves a
     /// pixel's worth of it: a path is ended and the next begun from the same
@@ -740,7 +740,7 @@ public extension Transform where A == WorldSpace, B == ViewSpace {
     /// changes neither view x nor view y -- the kernel of the first two rows
     /// -- signed so that travelling it takes view z down, away from the eye.
     /// That is *not* the gradient of view z unless the camera is orthonormal,
-    /// and the plate cameras are not: they shear. Asking the gradient instead
+    /// and the oblique camera are not: they shear. Asking the gradient instead
     /// tilts every fold by the shear.
     var projectionDirection: SIMD3<Double> {
         let c = m.columns

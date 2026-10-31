@@ -1,25 +1,25 @@
 import Foundation
 import simd
 
-/// Hidden lines for ink drawn on a parametric surface, decided by *where on
-/// the surface* the ink is rather than by how deep it is.
+/// Hidden lines for curves drawn on a parametric surface, decided by *where on
+/// the surface* the curves are rather than by how deep it is.
 ///
 /// Two tests, and each covers the other's blind spot:
 ///
-/// - **Facing.** On a surface that bounds a solid, ink whose outward normal
+/// - **Facing.** On a surface that bounds a solid, curves whose outward normal
 ///   faces away from the eye is hidden, full stop. This is the test the
 ///   second cannot make: across a fold the front and the back of the surface
 ///   are neighbours in coordinates, so "front-most is my neighbourhood" holds
 ///   on both sides of it.
 /// - **Nothing in front.** With the solid as a point test (`TubularNeighbourhood`), the
-///   line of sight from the ink is sphere-traced against it, stepping by the gap
+///   line of sight from the curves are sphere-traced against it, stepping by the gap
 ///   over its Lipschitz constant so that no step can pass through the
 ///   solid: exact, with no pixel in it. Without one, the surface in front of
-///   the ink, at the ink's pixel or one beside it, must be the ink's own
+///   the curve, at the curve's pixel or one beside it, must be the curve's own
 ///   neighbourhood of the surface. A second sheet in front is far away in
 ///   coordinates however close it is in depth, which is where a depth depth tolerance
 ///   fails; but a raster is right only to its resolution, and relief puts
-///   the ink where that runs out.
+///   the curves where that runs out.
 ///
 /// Where visibility changes along a segment -- at a fold, or where the
 /// segment passes behind something -- the segment is cut exactly there, by
@@ -47,7 +47,7 @@ public struct SurfaceVisibility: Sendable {
         self.sight = view.projectionDirection
     }
 
-    /// Whether the ink is tested by sphere tracing against the solid, or by the
+    /// Whether the curves are tested by sphere tracing against the solid, or by the
     /// coordinate image.
     public var tracesSpheres: Bool { surface.neighbourhood != nil }
 
@@ -86,7 +86,7 @@ public struct SurfaceVisibility: Sendable {
     /// Whether the front-most surface beside view point `p` is the surface at
     /// `c`.
     ///
-    /// The ink is within about a pixel of the nearest pixel's sample point,
+    /// The curves are within about a pixel of the nearest pixel's sample point,
     /// so on its own sheet the coordinates there differ from `c` by at most
     /// about one footprint. Two footprints, plus one grid cell for the
     /// sheet's own piecewise-linear rasterization, is the tolerance; another
@@ -123,7 +123,7 @@ public struct SurfaceVisibility: Sendable {
     /// Lipschitz constant, which cannot reach the solid, until the line has
     /// left the ball that holds it. Above the shell the gap is at least the
     /// height over it, and that is the step, with no normal offset asked. The
-    /// first step is a small fraction of the solid's size: the ink lies on
+    /// first step is a small fraction of the solid's size: the curves lie on
     /// the surface to rounding, where the gap is zero and says nothing, and
     /// from a point facing the eye the line is outside from there on. On a
     /// fold the line is tangent, and the gap grows or shrinks with the
@@ -155,7 +155,7 @@ public struct SurfaceVisibility: Sendable {
         return true
     }
 
-    /// Ink at view point `p`, lying on the surface at `c`.
+    /// Curves at view point `p`, lying on the surface at `c`.
     public func isVisible(_ p: P3<ViewSpace>, at c: P2<ParamSpace>) -> Bool {
         isVisible(p, at: c, facing: facing(c))
     }
@@ -166,9 +166,9 @@ public struct SurfaceVisibility: Sendable {
         return isFrontMost(c, at: p.xy)
     }
 
-    /// Ink at surface coordinate `c`, placed by the map: whether it is seen,
+    /// Curves at surface coordinate `c`, placed by the map: whether it is seen,
     /// and where it is in the view. `facing` nil asks only sphere tracing, for
-    /// ink on the folds, where the facing is zero by construction.
+    /// curves on the folds, where the facing is zero by construction.
     func test(_ c: P2<ParamSpace>, onFolds: Bool) -> (seen: Bool, at: P3<ViewSpace>) {
         let world = surface.map(c).position
         let p = view(P3<WorldSpace>(world))
@@ -230,7 +230,7 @@ public struct SurfaceVisibility: Sendable {
 }
 
 public extension HiddenLine {
-    /// Hidden-line removal for ink that lies on a parametric surface and
+    /// Hidden-line removal for curves that lie on a parametric surface and
     /// carries its coordinates on it.
     ///
     /// The runs are `clip`'s -- hidden vertices split a path, and runs of
@@ -239,24 +239,24 @@ public extension HiddenLine {
     /// which belongs to the run on its visible side. Visible by sphere tracing,
     /// that vertex is found by bisection on the whole test, so it lies on
     /// the fold or on the outline of whatever came in front, whichever
-    /// cut the ink. Visible by the coordinate image, a segment that crosses a
+    /// cut the curves. Visible by the coordinate image, a segment that crosses a
     /// fold is cut at the fold, found on the exact normal, and that vertex is
     /// tested by the front-most test alone, since on the fold the facing is
     /// zero by construction.
     ///
-    /// Ink that lies on the folds themselves -- `ParametricSurface.foldCurves`
+    /// Curves that lie on the folds themselves -- `ParametricSurface.foldCurves`
     /// -- is edge-on everywhere by construction, so its facing is noise about
     /// zero and must not be asked: pass `onFolds` and it is tested by the
-    /// sphere tracing or the front-most test alone. Ink on a crease -- a truncation edge --
+    /// sphere tracing or the front-most test alone. Curves on a crease -- a truncation edge --
     /// is tested so too, and `onCrease` says so: there a cut is bisected on
     /// the crease itself, each point moved onto it from the chord.
     ///
     /// Every vertex is tested in parallel, and so is every cut: sphere tracing is
     /// hundreds of evaluations of the normal offset, and a cut is forty sphere-traces.
     static func clip(_ paths: PolylineSet<ViewSpace>, on visibility: SurfaceVisibility,
-                     onFolds: Bool = false, onCrease: Bool = false) -> PolylineSet<PlateSpace> {
+                     onFolds: Bool = false, onCrease: Bool = false) -> PolylineSet<PageSpace> {
         guard let coords = paths.coords else {
-            preconditionFailure("clipping on a surface needs the ink's surface coordinates")
+            preconditionFailure("clipping on a surface needs the curves' surface coordinates")
         }
         let n = coords.count
         let facing: [Double?] = onFolds ? [Double?](repeating: nil, count: n)
@@ -303,8 +303,8 @@ public extension HiddenLine {
         var cut = [(at: P3<ViewSpace>, seen: Bool)?](repeating: nil, count: n)
         for (i, k) in changes.enumerated() { cut[k] = cuts[i] }
 
-        var out: [[P3<PlateSpace>]] = []
-        var run: [P3<PlateSpace>] = []
+        var out: [[P3<PageSpace>]] = []
+        var run: [P3<PageSpace>] = []
         func take(_ v: P3<ViewSpace>, _ visible: Bool) {
             if visible {
                 run.append(P3(v.v))

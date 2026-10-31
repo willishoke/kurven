@@ -74,14 +74,14 @@ public struct Heightfield: Sendable {
     /// the depth buffer says to within its depth tolerance. That is the test the
     /// depth tolerance cannot make -- where a steep graph turns away, the back of it
     /// lies within the depth tolerance of the front for a stretch that zoom
-    /// magnifies, and back-face ink shows there as ticks.
+    /// magnifies, and back-face curves show there as ticks.
     ///
     /// Differences in world coordinates, so a tile's reflection is already
     /// in them; on the plateau the differences vanish and the normal is up.
     ///
     /// With the function at hand (`refine`), the slope is f's own, read by
     /// differences a step small against the cell and large against
-    /// rounding, as the refiner reads it: the ink on the surface is placed
+    /// rounding, as the refiner reads it: the curves on the surface are placed
     /// on f to the last bit, and a facing read off the grid a cell wide
     /// tests it with a ruler a cell long -- a ring ends a stencil's width
     /// short of the fold on a convex graph and shows a stencil's width past
@@ -139,7 +139,7 @@ public struct Heightfield: Sendable {
     /// line of sight as the threshold: the facing is sampled on the grid,
     /// its zero level traced by marching squares, and, when `refined`, every
     /// vertex moved onto the exact fold by bisection along the facing's
-    /// gradient -- the same facing `HeightfieldVisibility` cuts ink by, so
+    /// gradient -- the same facing `HeightfieldVisibility` cuts curves by, so
     /// the two agree on where the surface turns. Nothing on a plateau, which is
     /// flat and faces up and has a truncation edge of its own, and nothing outside the
     /// region. They depend on the camera, so they are derived for one, never
@@ -197,7 +197,7 @@ public struct Heightfield: Sendable {
         return PolylineSet(paths: paths)
     }
 
-    /// The height of the surface the ink is tested against, over a world
+    /// The height of the surface the curves are tested against, over a world
     /// point: f's own, truncated, read through the tile the point is in, when
     /// the function is at hand; the grid's interpolated height otherwise.
     public func surfaceHeight(at p: P2<WorldSpace>) -> Double {
@@ -212,7 +212,7 @@ public struct Heightfield: Sendable {
     /// The height of the surface *as the depth pass draws it* over a world
     /// point: the grid decimated by `step`, each cell as the two triangles
     /// the rasterizer splits it into, truncated, through the tile the point is
-    /// in. This is the solid every piece of ink is tested against, so the
+    /// in. This is the solid every curve is tested against, so the
     /// test and the rasterizer cannot disagree about where the surface is.
     public func drawnHeight(at p: P2<WorldSpace>) -> Double {
         surface.drawnHeight(at: surface.inTile(P2<DomainSpace>(p.x, p.y), tiles: tiles), step: step)
@@ -222,7 +222,7 @@ public struct Heightfield: Sendable {
     /// the refiner finds one within reach that the run does not already
     /// touch, inside the region: the new vertex is the zero at |f|'s height.
     /// `cell` is the grid spacing, which is the only length the test of
-    /// "already touches" is measured against, so a scaled plate carries the
+    /// "already touches" is measured against, so a scaled drawing carries the
     /// scaled fold.
     func endedAtZeros(_ run: [P3<WorldSpace>], cell: Double) -> [P3<WorldSpace>] {
         guard let refine, let zero = refine.zero, let magnitude = refine.magnitude,
@@ -248,11 +248,11 @@ public struct Heightfield: Sendable {
     /// pixel, and the pixel's value is the near side's, in front of the fold
     /// by far more than any depth tolerance. It is tested by the solid instead: a fold
     /// vertex is hidden when the line of sight from it to the eye passes under
-    /// the surface (`GridTraversal`). `depthTolerance` is the plate's hidden-line
+    /// the surface (`GridTraversal`). `depthTolerance` is the drawing's hidden-line
     /// depth tolerance, which keeps a vertex on the surface it belongs to from hiding
     /// behind that surface's own rounding.
     ///
-    /// With the function at hand, ink on the surface is tested where the
+    /// With the function at hand, curves on the surface are tested where the
     /// surface is (`onSurface`) and the depth tolerance is rounding: a fold vertex
     /// lies on f to the last bit, and forgiving the tolerance instead draws
     /// a stub of a bowl's fold beside the cut, hidden by less than the
@@ -271,7 +271,7 @@ public struct Heightfield: Sendable {
         }, stop: Self.stop(resolution, view))
     }
 
-    /// The fraction of a segment `a -> b` to which `turning` bisects for ink
+    /// The fraction of a segment `a -> b` to which `turning` bisects for curves
     /// placed to `resolution` in the view plane: the segment's own length on
     /// the screen, in resolutions, inverted. A preview places a run's end to
     /// a fraction of its pixel, and a traversal per halving is milliseconds on
@@ -288,9 +288,9 @@ public struct Heightfield: Sendable {
         }
     }
 
-    /// The depth tolerance ink on the surface is tested with: the plate's against the
+    /// The depth tolerance curves on the surface are tested with: the drawing's against the
     /// grid, whose chords are that far from f; rounding against f, since
-    /// the ink is tested on f itself.
+    /// the curves are tested on f itself.
     func surfaceDepthTolerance(_ depthTolerance: Double) -> Double {
         guard refine?.magnitude != nil else { return depthTolerance }
         let g = surface.height
@@ -299,7 +299,7 @@ public struct Heightfield: Sendable {
         return 1e-9 * cell
     }
 
-    /// A point of ink on the surface, at the surface's own height over it:
+    /// A point of curves on the surface, at the surface's own height over it:
     /// where it is tested. A ring's vertex is on f to a hundredth of the
     /// tolerance and a point of its chord to the tolerance; both are tested
     /// on f, so that a point of a ring at a fold is tested exactly as the
@@ -310,11 +310,11 @@ public struct Heightfield: Sendable {
         return z.isFinite ? P3(p.x, p.y, z) : p
     }
 
-    /// Ink that lies in a cut face -- the wall's hatch and its outline --
-    /// less what cannot be seen. A wall is a plane the plate camera often
-    /// sees nearly edge-on, and the depth buffer cannot test ink on such a
+    /// Curves that lie in a cut face -- the wall's hatch and its outline --
+    /// less what cannot be seen. A wall is a plane the oblique camera often
+    /// sees nearly edge-on, and the depth buffer cannot test curves on such a
     /// face: one pixel spans the whole receding wall, keeps the near side's
-    /// depth, and erases most of the hatch, leaving spots. So wall ink is
+    /// depth, and erases most of the hatch, leaving spots. So wall curves are
     /// tested as the folds are: hidden where the wall it lies in faces away
     /// from the eye -- it is then behind the solid the wall bounds -- and
     /// otherwise hidden only where the line of sight from it passes under the
@@ -324,11 +324,11 @@ public struct Heightfield: Sendable {
     /// stands on a tile's edge.
     ///
     /// The top edge is the exception: it is the surface's own edge as much as
-    /// the wall's top, and the far edge of a plate is in plain view over a
+    /// the wall's top, and the far edge of a drawing is in plain view over a
     /// wall that faces away. A vertex at the surface's height is tested by
     /// the traversal alone, which hides it exactly when the surface in front of
     /// it does.
-    public func visibleWallInk(_ paths: PolylineSet<WorldSpace>,
+    public func visibleWallCurves(_ paths: PolylineSet<WorldSpace>,
                                view: Transform<WorldSpace, ViewSpace>,
                                depthTolerance: Double, resolution: Double = 0) -> PolylineSet<WorldSpace> {
         guard !paths.vertices.isEmpty else { return paths }
@@ -345,7 +345,7 @@ public struct Heightfield: Sendable {
         }
         let cell = traversal.cell
         /// Whether the point is tested by the traversal at all: on the top edge, in
-        /// a wall that faces the eye, or in no wall. Ink that stands in no
+        /// a wall that faces the eye, or in no wall. Curves that stands in no
         /// wall is left to the traversal alone.
         @Sendable func onTopEdge(_ hf: Heightfield, _ p: P3<WorldSpace>) -> Bool {
             let h = hf.surfaceHeight(at: P2(p.x, p.y))
@@ -372,7 +372,7 @@ public struct Heightfield: Sendable {
         // chord between two top edge vertices lies under a concave top edge, and a
         // point under the top edge is in the wall, which, facing away, is
         // never admitted -- so bisected along the chord the run began at
-        // the next vertex, half a cell late, and the far edge of a plate
+        // the next vertex, half a cell late, and the far edge of a drawing
         // came out from behind a tower with a stub missing beside the
         // outline's cusp. Visible on the surface, the chord's points are
         // top edge points.
@@ -384,23 +384,23 @@ public struct Heightfield: Sendable {
            stop: Self.stop(resolution, view))
     }
 
-    /// Ink that lies on the surface itself -- the contours of |f| and arg f,
+    /// Curves that lie on the surface itself -- the contours of |f| and arg f,
     /// lifted onto it -- less what cannot be seen.
     ///
     /// Two tests, as a parametric surface has. The surface bounds the solid
-    /// under it, so where it faces away from the eye the ink on it is hidden,
+    /// under it, so where it faces away from the eye the curves on it are hidden,
     /// full stop, and no depth tolerance has a say: this is the test a depth depth tolerance
     /// cannot make, since where a steep graph turns away its back lies within
     /// the depth tolerance of its front for a stretch, and the other family of
     /// contours would show through there as ticks along the outline.
-    /// Where it faces the eye, the ink is hidden exactly where the sight
+    /// Where it faces the eye, the curves are hidden exactly where the sight
     /// line from it passes under the surface in front (`GridTraversal`). A
     /// segment that crosses a fold is cut on the fold itself, found by
     /// bisection on the normal -- the same facing the fold curves are traced
     /// from, so a contour ends where the outline is drawn -- and the new
     /// vertex belongs to the run on the visible side, tested by the traversal
     /// alone, since on the fold the facing is zero by construction.
-    public func visibleSurfaceInk(_ paths: PolylineSet<WorldSpace>,
+    public func visibleSurfaceCurves(_ paths: PolylineSet<WorldSpace>,
                                   view: Transform<WorldSpace, ViewSpace>,
                                   depthTolerance: Double) -> PolylineSet<WorldSpace> {
         guard !paths.vertices.isEmpty else { return paths }
@@ -478,11 +478,11 @@ public struct Heightfield: Sendable {
         return PolylineSet(paths: out)
     }
 
-    /// Any other ink -- the truncation edge of a truncation, the hatch across it, a dumped
+    /// Any other curves -- the truncation edge of a truncation, the hatch across it, a dumped
     /// scaffold -- less what the solid hides: tested by the traversal alone,
-    /// since such ink lies on a crease or a flat top where the surface's
-    /// facing is not the ink's.
-    public func visibleInk(_ paths: PolylineSet<WorldSpace>,
+    /// since such curves lie on a crease or a flat top where the surface's
+    /// facing is not the curves'.
+    public func visibleCurves(_ paths: PolylineSet<WorldSpace>,
                            view: Transform<WorldSpace, ViewSpace>,
                            depthTolerance: Double) -> PolylineSet<WorldSpace> {
         guard !paths.vertices.isEmpty else { return paths }
@@ -506,9 +506,9 @@ public struct Heightfield: Sendable {
     /// test of where the vertex *is* -- in a wall that faces the eye, on the
     /// top edge -- does not, and bisecting it would draw the sliver of a stroke
     /// between the top edge as drawn and f.
-    /// `lift` places a point of the chord `a -> b` where the ink between
+    /// `lift` places a point of the chord `a -> b` where the curves between
     /// the two vertices actually runs, for the bisection of a run's end:
-    /// for most ink the chord itself. `stop` is the fraction of the segment
+    /// for most curves the chord itself. `stop` is the fraction of the segment
     /// the bisection may stop at (`stop(_:_:)`): none, by default.
     ///
     /// `holds` and `lift` are each worker thread's own, made by `worker` once
@@ -574,7 +574,7 @@ public struct Heightfield: Sendable {
             if holds(lift(P3(a.v + (b.v - a.v) * mid))) == keptA { lo = mid } else { hi = mid }
         }
         // Turned within rounding of the kept end: the kept vertex is where
-        // the ink ends, and a second vertex there would be a run of nothing.
+        // the curve ends, and a second vertex there would be a run of nothing.
         let t = keptA ? lo : 1 - hi
         guard t > 1e-12 else { return nil }
         return lift(P3(a.v + (b.v - a.v) * (keptA ? lo : hi)))
@@ -646,7 +646,7 @@ public struct Heightfield: Sendable {
 /// resolution.
 ///
 /// The depth tolerance means two things, and the traversal keeps them apart. A point of
-/// ink lies on a surface it was placed on by the function or by the grid,
+/// curves lie on a surface it was placed on by the function or by the grid,
 /// and the drawn surface -- the grid's facets -- misses that by an
 /// interpolation gap, so the point may start a little inside the solid.
 /// That is forgiven *perpendicular* to the facet, by the depth tolerance: a vertical
@@ -701,7 +701,7 @@ struct GridTraversal: Sendable {
         self.heightfield = heightfield
         self.toward = -view.projectionDirection
         // View depth per unit of travel along the line of sight: the camera's
-        // third row dotted with the direction, which under a sheared plate
+        // third row dotted with the direction, which under a sheared drawing
         // camera is not one.
         let c = view.m.columns
         let perUnit = abs(simd_dot(SIMD3(c.0.z, c.1.z, c.2.z), toward))
@@ -713,14 +713,14 @@ struct GridTraversal: Sendable {
         let dy = g.domain.imag.length / Double(max(g.height - 1, 1)) * Double(step)
         let cell = max(abs(dx), abs(dy))
         self.cell = cell
-        // The depth tolerance forgives the ink its distance from the solid it is
+        // The depth tolerance forgives a curve its distance from the solid it is
         // tested against. Against the grid that is the chord's departure
-        // from f, the plate's depth tolerance. Against f it is the refiner's own
+        // from f, the drawing's depth tolerance. Against f it is the refiner's own
         // tolerance: a vertex is on f to a hundredth of it, and a chord
         // between two vertices departs from the curve by at most the
         // tolerance of a cell, measured across the curve -- which is the
         // perpendicular distance the traversal tests by, since along a level
-        // line f is flat. A plate-scale depth tolerance would let a ring show
+        // line f is flat. A drawing-scale depth tolerance would let a ring show
         // through a wall for the depth tolerance's reach past the top edge.
         let bounded = heightfield.refine.map { min(depthTolerance, $0.tolerance * cell) } ?? depthTolerance
         self.depthTolerance = bounded
@@ -771,7 +771,7 @@ struct GridTraversal: Sendable {
 
     /// The surface over a point of the fundamental tile: f's own height and
     /// the cosine of its tilt, by differences a step small against the cell,
-    /// when the function is at hand; the grid's facet otherwise. The ink
+    /// when the function is at hand; the grid's facet otherwise. The curves
     /// is placed on f, so the solid it is tested against is f: a ring seen
     /// through a notch is hidden where f's top edge hides it, not where the
     /// chord across the nearest two nodes would.
@@ -1054,12 +1054,12 @@ struct GridTraversal: Sendable {
 ///
 /// A sum rather than a surface with optional parts: a heightfield has tiles,
 /// a region, walls and a truncation, and a parametric surface has none of them --
-/// what it has instead is a coordinate at every point, which is what its ink
+/// what it has instead is a coordinate at every point, which is what its curves
 /// is tested by. Each renderer, bound and bake says what it does with each.
 public enum SceneGeometry: Sendable {
     case heightfield(Heightfield)
     case parametric(ParametricSurface)
-    /// A polyhedron, whose ink is its edges (`Solid`).
+    /// A polyhedron, whose curves are its edges (`Solid`).
     case solid(Solid)
 }
 
@@ -1078,20 +1078,20 @@ public enum SceneGeometry: Sendable {
 public struct Scene: Sendable {
     /// Identifies the *geometry*: everything the depth pass draws.
     public let content: ContentID
-    /// Identifies the *ink*. Separate from `content` because editing a level
+    /// Identifies the *curves*. Separate from `content` because editing a level
     /// set changes every stroke and none of the landscape, and rebuilding a
     /// hundred-megabyte height texture to move a contour would make the slider
     /// unusable on exactly the plates where it is most interesting.
-    public let ink: ContentID
+    public let curves: ContentID
     public let geometry: SceneGeometry
     public let layers: [Layer]
 
     public var camera: Camera
     public var mode: PreviewMode
-    /// Hidden-line depth tolerance, in world units of depth, for ink tested by depth.
+    /// Hidden-line depth tolerance, in world units of depth, for curves tested by depth.
     public var depthTolerance: Double
-    /// How finely the ends of tested ink are placed, as a length in the view
-    /// plane: a window sets a fraction of its pixel, since ink placed more
+    /// How finely the ends of tested curves are placed, as a length in the view
+    /// plane: a window sets a fraction of its pixel, since curves placed more
     /// finely than a pixel looks the same and costs a traversal per halving.
     /// Zero, the default and a bake's, places them to the last bit.
     public var resolution: Double = 0
@@ -1099,28 +1099,28 @@ public struct Scene: Sendable {
     /// A heightfield scene.
     public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],
                 region: Region = .full, step: Int, layers: [Layer], camera: Camera,
-                mode: PreviewMode = .plate, depthTolerance: Double, refine: ContourRefine? = nil) {
-        self.init(content: ContentID(), ink: ContentID(),
+                mode: PreviewMode = .drawing, depthTolerance: Double, refine: ContourRefine? = nil) {
+        self.init(content: ContentID(), curves: ContentID(),
                   geometry: .heightfield(Heightfield(surface: surface, occluder: occluder,
                                                      tiles: tiles, region: region, step: step,
                                                      refine: refine)),
                   layers: layers, camera: camera, mode: mode, depthTolerance: depthTolerance)
     }
 
-    /// A parametric surface, with ink on it.
+    /// A parametric surface, with curves on it.
     ///
-    /// Ink that carries surface coordinates is tested by them; ink that does
+    /// Curves that carry surface coordinates are tested by them; curves that do
     /// not falls back to depth, at `depthTolerance`.
     public init(surface: ParametricSurface, layers: [Layer], camera: Camera,
-                mode: PreviewMode = .plate, depthTolerance: Double) {
-        self.init(content: ContentID(), ink: ContentID(), geometry: .parametric(surface),
+                mode: PreviewMode = .drawing, depthTolerance: Double) {
+        self.init(content: ContentID(), curves: ContentID(), geometry: .parametric(surface),
                   layers: layers, camera: camera, mode: mode, depthTolerance: depthTolerance)
     }
 
-    /// A solid, with its edges as ink.
+    /// A solid, with its edges as curves.
     public init(solid: Solid, layers: [Layer], camera: Camera,
-                mode: PreviewMode = .plate, depthTolerance: Double = 0) {
-        self.init(content: ContentID(), ink: ContentID(), geometry: .solid(solid),
+                mode: PreviewMode = .drawing, depthTolerance: Double = 0) {
+        self.init(content: ContentID(), curves: ContentID(), geometry: .solid(solid),
                   layers: layers, camera: camera, mode: mode, depthTolerance: depthTolerance)
     }
 
@@ -1132,7 +1132,7 @@ public struct Scene: Sendable {
                   region: bundle.manifest.occluder.region,
                   step: bundle.manifest.occluder.step,
                   layers: bundle.layers,
-                  camera: .plate(preset.projection),
+                  camera: .oblique(preset.projection),
                   depthTolerance: preset.depthTolerance,
                   refine: bundle.refine)
     }
@@ -1162,21 +1162,21 @@ public struct Scene: Sendable {
         var out = self; out.camera = camera; return out
     }
 
-    /// The same landscape, drawn with different ink. Keeps `content` and mints
-    /// a new `ink`, so the heightfield stays uploaded and only the line buffer
+    /// The same landscape, drawn with different curves. Keeps `content` and mints
+    /// a new `curves`, so the heightfield stays uploaded and only the line buffer
     /// is rebuilt.
     public func drawing(_ layers: [Layer]) -> Scene {
-        Scene(content: content, ink: ContentID(), geometry: geometry,
+        Scene(content: content, curves: ContentID(), geometry: geometry,
               layers: layers, camera: camera, mode: mode, depthTolerance: depthTolerance)
     }
 
-    private init(content: ContentID, ink: ContentID, geometry: SceneGeometry,
+    private init(content: ContentID, curves: ContentID, geometry: SceneGeometry,
                  layers: [Layer], camera: Camera, mode: PreviewMode, depthTolerance: Double) {
-        self.content = content; self.ink = ink; self.geometry = geometry
+        self.content = content; self.curves = curves; self.geometry = geometry
         self.layers = layers; self.camera = camera; self.mode = mode; self.depthTolerance = depthTolerance
     }
 
-    /// The creases of the surface's ink, in its coordinates: every outline
+    /// The creases of the surface's curves, in its coordinates: every outline
     /// that is not the folds -- a truncation edge. A fold that meets one is traced
     /// from it, where the grid may hold none of the fold.
     public var creases: [[P2<ParamSpace>]] {
@@ -1189,16 +1189,16 @@ public struct Scene: Sendable {
         }
     }
 
-    /// Every layer's ink in view space, in declaration (draw) order, tested
+    /// Every layer's curves in view space, in declaration (draw) order, tested
     /// for this camera wherever the geometry can test it exactly.
     ///
-    /// Ink that depends on the camera -- the fold curves of a surface, of
+    /// Curves that depend on the camera -- the fold curves of a surface, of
     /// either kind, and the edges of a solid -- is derived here, for this
     /// camera, rather than carried. On a heightfield every clipped layer is
     /// tested here, by the facing of what it lies on and by the solid
     /// (`GridTraversal`), and the depth buffer has no part in it: the drawing is
     /// a function of the geometry and the camera, never of a resolution. A
-    /// parametric surface's ink is tested by the bake, which has the
+    /// parametric surface's curves are tested by the bake, which has the
     /// surface's coordinate image; its fold curves come tested by
     /// construction. This is the bake's work, not the preview's: it is a
     /// traversal per vertex, and the preview keeps its depth test. `depthTolerance` is
@@ -1219,12 +1219,12 @@ public struct Scene: Sendable {
                     visible = h.visibleFolds(view: view, depthTolerance: depthTolerance)
                 } else if !layer.spec.clipped {
                     visible = layer.paths
-                } else if layer.spec.source.isWallInk {
-                    visible = h.visibleWallInk(layer.paths, view: view, depthTolerance: depthTolerance)
+                } else if layer.spec.source.liesOnWall {
+                    visible = h.visibleWallCurves(layer.paths, view: view, depthTolerance: depthTolerance)
                 } else if layer.spec.liesOnSurface {
-                    visible = h.visibleSurfaceInk(layer.paths, view: view, depthTolerance: depthTolerance)
+                    visible = h.visibleSurfaceCurves(layer.paths, view: view, depthTolerance: depthTolerance)
                 } else {
-                    visible = h.visibleInk(layer.paths, view: view, depthTolerance: depthTolerance)
+                    visible = h.visibleCurves(layer.paths, view: view, depthTolerance: depthTolerance)
                 }
                 return [(layer, visible.mapped(view))]
             case .solid(let s):
@@ -1269,7 +1269,7 @@ public struct Scene: Sendable {
     ///   inside zeta's cutout even though nothing references them. Excluding
     ///   them here would be more principled and would not be the same picture.
     ///
-    /// Unclipped ink is excluded, as it is in Python: it is drawn but never
+    /// Unclipped curves are excluded, as they are in Python: they are drawn but never
     /// looked up, so letting it stretch the frame would spend depth resolution
     /// on nothing and would make the buffer depend on decoration.
     public func viewBounds() -> AABB<ViewSpace>? {
@@ -1288,9 +1288,9 @@ public struct Scene: Sendable {
         case .solid(let s):
             for p in s.vertices { add(camera.view(p)) }
         }
-        // The ink as carried, before any testing visibility: testing visibility is the bake's
-        // expensive step and would be paid twice, and ink the test drops is
-        // still ink the frame was sized to.
+        // The curves as carried, before any testing visibility: testing visibility is the bake's
+        // expensive step and would be paid twice, and curves the test drops are
+        // still curves the frame was sized to.
         for layer in layers where layer.spec.clipped {
             for v in layer.paths.vertices { add(camera.view(v)) }
         }
@@ -1350,8 +1350,8 @@ public struct Scene: Sendable {
 
 /// What a preview draws.
 public enum PreviewMode: Sendable, Equatable {
-    /// The plate: white occluding surface, black hidden-line ink.
-    case plate
+    /// The drawing: white occluding surface, black hidden-line curves.
+    case drawing
     /// A lit heightfield, for orientation.
     case shaded(Lighting)
     /// The depth attachment itself -- the substitute for a frame-capture

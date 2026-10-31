@@ -12,11 +12,11 @@ import KurvenLandscape
 // that consults a pixel fails this by construction -- a pixel's depth span
 // on a steep graph or an edge-on wall exceeds any depth tolerance, and the span
 // changes with the resolution -- and the rules here are built so that no
-// pixel is consulted: the facing of the surface the ink lies on, and the
+// pixel is consulted: the facing of the surface the curves lie on, and the
 // traversal up the line of sight through the drawn solid (`GridTraversal`), which is
 // exact because the drawn solid is piecewise linear. So the suites ask the
 // strongest questions such a rule can be asked: the same bake at every
-// depth resolution, the same drawing scaled when the plate is scaled, and
+// depth resolution, the same drawing scaled when the drawing is scaled, and
 // on a grid too coarse for any approximation to hide in, agreement with
 // a brute-force ray cast against the triangles the depth pass draws.
 
@@ -330,7 +330,7 @@ func stressCameras() -> [(name: String, view: Transform<WorldSpace, ViewSpace>)]
 
 func stressTests() {
     Check.suite("stress: a heightfield bake is the same drawing at every depth resolution") {
-        // The plate with every kind of feature: plateaus below the truncation, cut
+        // The drawing with every kind of feature: plateaus below the truncation, cut
         // faces, pits to the floor, a long slope.
         let preset = Catalog.native.preset("rgamma")!
         let bundle = try NativeLandscape.build(LandscapeRequest(preset: preset, resolution: 240))
@@ -343,8 +343,8 @@ func stressTests() {
             for r in resolutions { bakes.append(try renderer.bake(scene, options: BakeOptions(resolution: r))) }
         }
         let reference = bakes[0]
-        Check.expect(reference.strokes.pathCount > 200 && reference.strokes.inkLength > 100,
-                     "the plate draws", "\(reference.strokes.pathCount) paths, \(String(format: "%.1f", reference.strokes.inkLength)) units of ink")
+        Check.expect(reference.strokes.pathCount > 200 && reference.strokes.totalLength > 100,
+                     "the drawing draws", "\(reference.strokes.pathCount) paths, \(String(format: "%.1f", reference.strokes.totalLength)) units of curves")
         for (r, b) in zip(resolutions, bakes).dropFirst() {
             var same = b.strokes.layers.count == reference.strokes.layers.count
             var differing: [String] = []
@@ -358,9 +358,9 @@ func stressTests() {
         Check.expect(elapsed < .seconds(60), "four bakes ran in reasonable time", "\(elapsed)")
 
         // The steep case: erf under a truncation of 14 over a four-unit window,
-        // where the depth test lost a third of the contour ink to pixel
+        // where the depth test lost a third of the contour curves to pixel
         // span. The drawing is still the same at every resolution, and the
-        // ink the test removes is removed by the solid, not by a pixel.
+        // curves the test removes are removed by the solid, not by a pixel.
         var steep = LandscapeRequest(preset: Catalog.native.preset("erf")!, resolution: 240)
         steep.domain = Domain(real: Interval(lo: -2, hi: 2), imag: Interval(lo: -2, hi: 2))
         steep.truncation = .uniform(14)
@@ -370,42 +370,42 @@ func stressTests() {
         let fine = try renderer.bake(steepScene, options: BakeOptions(resolution: 4096))
         var same = true
         for (x, y) in zip(coarse.strokes.layers, fine.strokes.layers) where x.paths != y.paths { same = false }
-        Check.expect(same, "the steep plate too: 64 px and 4096 px bake the same strokes")
-        // What the solid hides of the facing contour ink, and why: ink
-        // behind a nearer graph, or ink under its own drawn surface by more
+        Check.expect(same, "the steep drawing too: 64 px and 4096 px bake the same strokes")
+        // What the solid hides of the facing contour curves, and why: curves
+        // behind a nearer graph, or curves under its own drawn surface by more
         // than the depth tolerance -- the grid's interpolation gap, which a finer
         // grid closes and the depth tolerance is for. Reported, since neither
         // number is a target; the floor only says the traversal is not
-        // erasing the plate.
+        // erasing the drawing.
         let h = steepScene.heightfield!
         let vis = HeightfieldVisibility(heightfield: h, view: steepScene.camera.view, depthTolerance: steepScene.depthTolerance)
         var kept = 0.0, facingOnly = 0.0, buried = 0, behind = 0
         for layer in steepScene.layers where layer.spec.liesOnSurface {
-            kept += h.visibleSurfaceInk(layer.paths, view: steepScene.camera.view, depthTolerance: steepScene.depthTolerance).inkLength
-            facingOnly += h.visibleSurfaceInk(layer.paths, view: steepScene.camera.view, depthTolerance: .infinity).inkLength
+            kept += h.visibleSurfaceCurves(layer.paths, view: steepScene.camera.view, depthTolerance: steepScene.depthTolerance).totalLength
+            facingOnly += h.visibleSurfaceCurves(layer.paths, view: steepScene.camera.view, depthTolerance: .infinity).totalLength
             for v in layer.paths.vertices where vis.facing(v.xy) > 0 && !vis.isClear(v) {
                 if v.z < h.drawnHeight(at: v.xy) { buried += 1 } else { behind += 1 }
             }
         }
         Check.expect(kept > 0.5 * facingOnly,
-                     "of the facing contour ink, the solid hides what lies behind a nearer graph",
+                     "of the facing contour curves, the solid hides what lies behind a nearer graph",
                      String(format: "%.1f of %.1f units kept; %d hidden vertices above their own facet, %d under it",
                             kept, facingOnly, behind, buried))
     }
 
-    Check.suite("stress: on a real plate the traversal is the brute-force ray cast") {
+    Check.suite("stress: on a real drawing the traversal is the brute-force ray cast") {
         // rgamma's every facing contour vertex, the traversal against the
-        // perpendicular-gap cast over the plate's drawn triangles at the
-        // plate's depth tolerance, and against the depth buffer the bake used to
+        // perpendicular-gap cast over the drawing's drawn triangles at the
+        // drawing's depth tolerance, and against the depth buffer the bake used to
         // test by. The pit at -4, a cone of slope 24 cut by the front
         // wall, is reported on its own: its far wall through the notch lies
-        // partly behind the pit's own side under the plate's diagonal sight
+        // partly behind the pit's own side under the drawing's diagonal sight
         // line, which a depth buffer mostly misses -- the wall rasterizes
         // to slivers -- and which no vertical tolerance could test.
         let preset = Catalog.native.preset("rgamma")!
         let bundle = try NativeLandscape.build(LandscapeRequest(preset: preset, resolution: 240))
         let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
-        // The grid test: the plate without its function, whose solid is
+        // The grid test: the drawing without its function, whose solid is
         // the drawn triangles the cast is against. With the function the
         // test's solid is f (below).
         let withF = scene.heightfield!
@@ -467,7 +467,7 @@ func stressTests() {
         // held to a cast that walks the line in steps of a sixty-fourth of
         // a cell and bisects every crossing of f. What the traversal can miss
         // is a dip of f within one cell along the line; the count is the
-        // measure of that, on the real plate.
+        // measure of that, on the real drawing.
         let visF = HeightfieldVisibility(heightfield: withF, view: view, depthTolerance: scene.depthTolerance)
         let magnitude = withF.refine!.magnitude!
         var totalF = 0, traversalF = 0, castF = 0, disagreeF = 0
@@ -519,10 +519,10 @@ func stressTests() {
         Check.expect(elapsedF < .seconds(120), "in reasonable time", "\(elapsedF)")
     }
 
-    Check.suite("stress: scaling the plate scales the drawing") {
-        // The whole plate -- heights, domain, truncations, walls, ink and depth tolerance --
+    Check.suite("stress: scaling the drawing scales the drawing") {
+        // The whole drawing -- heights, domain, truncations, walls, curves and depth tolerance --
         // scaled by a power of two, so every float scales exactly; the tested
-        // ink must be the tested ink scaled, vertex for vertex. A rule with a
+        // curves must be the tested curves scaled, vertex for vertex. A rule with a
         // pixel or an absolute tolerance in it would not pass this; one that
         // is geometry alone cannot fail it.
         let preset = Catalog.native.preset("rgamma")!
@@ -551,7 +551,7 @@ func stressTests() {
                       paths: PolylineSet(vertices: layer.paths.vertices.map { P3<WorldSpace>($0.v * s) },
                                          offsets: layer.paths.offsets))
             }
-            // The scaled plate is the scaled function: the refiner's |f| and
+            // The scaled drawing is the scaled function: the refiner's |f| and
             // its zeros, read at the point scaled back, scaled up again. The
             // contours are not re-derived under the test, so they pass.
             let refine: ContourRefine? = h.refine.map { r -> ContourRefine in
@@ -687,7 +687,7 @@ func stressTests() {
 
     Check.suite("stress: the facing read off the grid converges on the drawn facets") {
         // The one approximation left in the predicate, measured rather than
-        // hidden. Ink on the surface is cut by the central-difference normal
+        // hidden. Curves on the surface are cut by the central-difference normal
         // -- the normal the fold curves are traced from, so a contour ends on
         // the outline as drawn -- while the solid it is traversed through is
         // the triangulated grid, whose facets turn at grid lines. The

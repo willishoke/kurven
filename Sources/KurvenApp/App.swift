@@ -115,7 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the same preview frame, pixel for pixel, and the same bake. With
         // neither output it stays open, on that surface. `--set FIELD=VALUE`,
         // repeated, then edits it as the controls do -- one edit at a time,
-        // each built from the plate before it.
+        // each built from the drawing before it.
         if let i = args.firstIndex(of: "--surface"), i + 1 < args.endIndex {
             let name = args[i + 1]
             func path(_ flag: String) -> URL? {
@@ -193,7 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Open filling the screen.
     ///
     /// A landscape is worth the whole display: the sidebar is fixed at 320
-    /// points, so every point the window gains is a point of plate. Zoomed
+    /// points, so every point the window gains is a point of drawing. Zoomed
     /// rather than fullscreen -- this takes the screen minus the menu bar and
     /// the Dock, and leaves the green button meaning what it usually means.
     ///
@@ -240,7 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         while document.sampling { try? await Task.sleep(for: .milliseconds(25)) }
         // Truncating is the other kind of edit: no request, no sampling, just
-        // the ink derived again from grids that are already here. Driving it
+        // the curves derived again from grids that are already here. Driving it
         // from here is how that path is checked without a pair of hands.
         if let truncationHeight { document.setTruncation(.uniform(truncationHeight)) }
         while document.drawing { try? await Task.sleep(for: .milliseconds(25)) }
@@ -262,7 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Step a control as a drag does, a step a frame, and say how long the
     /// main actor was ever kept from the next one: a slider whose work is on
     /// the main actor stalls by that work, and past a second or two macOS
-    /// shows the beachball. The time the last step's ink took to land is
+    /// shows the beachball. The time the last step's curves took to land is
     /// what the picture lags the hand by.
     private func headlessDrag(_ control: String, steps: Int) async {
         let clock = ContinuousClock()
@@ -293,13 +293,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tick()
         }
         let released = clock.now
-        if control == "levels" { document.rebuildInk() }
+        if control == "levels" { document.rebuildCurves() }
         while document.drawing {
             try? await Task.sleep(for: .milliseconds(16))
             tick()
         }
         print("Kurven: dragged \(control) \(steps) steps; the main actor's longest stall "
-              + "\(longest.formatted(.units(allowed: [.milliseconds]))), the ink landed "
+              + "\(longest.formatted(.units(allowed: [.milliseconds]))), the curves landed "
               + "\((clock.now - released).formatted(.units(allowed: [.milliseconds]))) "
               + "after the release")
     }
@@ -328,7 +328,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             while document.building { try? await Task.sleep(for: .milliseconds(25)) }
             print("Kurven: \(name) = \(value) — \(document.surfaceStatus ?? "")")
         }
-        guard document.plate != nil else {
+        guard document.surfaceDrawing != nil else {
             FileHandle.standardError.write(Data(
                 "Kurven: could not build \(name) — \(document.surfaceStatus ?? "no reason given")\n".utf8))
             exit(1)
@@ -383,9 +383,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// `--resample KEY=VALUE ... --screenshot PATH` drives the window's own
-    /// Rebuild of a plate bundle: the same Document, the same request mapped
+    /// Rebuild of a drawing bundle: the same Document, the same request mapped
     /// from the bundle's provenance, the same native build. The keys are the
-    /// plate's provenance arguments (`res`, `rMin`, `rMax`, `iMin`, `iMax`,
+    /// drawing's provenance arguments (`res`, `rMin`, `rMax`, `iMin`, `iMax`,
     /// `zLimit`; snake_case is accepted, as the Python plates spelled their
     /// flags). Without it the only way to know the Rebuild button works is to
     /// press it.
@@ -410,8 +410,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let request = (manifest.provenance.example == "function"
                 ? document.landscape
-                : Document.request(fromPlate: manifest, catalog: document.catalog))?
-            .applying(plateArguments: overrides) else {
+                : Document.request(fromDrawing: manifest, catalog: document.catalog))?
+            .applying(drawingArguments: overrides) else {
             FileHandle.standardError.write(Data(("Kurven: cannot resample — this bundle's "
                 + "provenance names '\(manifest.provenance.function)', which is not a "
                 + "function in the catalog, so it opens read-only\n").utf8))

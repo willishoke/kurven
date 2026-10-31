@@ -8,35 +8,35 @@ import KurvenDynamics
 /// Laid out as `LandscapeSection`'s literal rows are -- label, slider, field,
 /// stepper -- and like them, one undo step per drag, named for the control.
 /// Every control writes one field of the document's `SurfaceRequest` and the
-/// plate is built again from the one on screen (`SurfacePlate.build`), which
-/// redoes only what the edit touches. While a slider is dragged the plate is
+/// drawing is built again from the one on screen (`SurfaceDrawing.build`), which
+/// redoes only what the edit touches. While a slider is dragged the drawing is
 /// built from `SurfaceRequest.drafted()`; the full request follows the release.
 ///
 /// What each costs, measured by `kurven-cli surface-costs` on an Apple M5
-/// Max at 1600×1200: the build from the plate before, plus the first preview
-/// frame after it -- which lays out the ink, and uploads a surface only when
+/// Max at 1600×1200: the build from the drawing before, plus the first preview
+/// frame after it -- which lays out the curves, and uploads a surface only when
 /// the surface moved.
 ///
 ///     torus    radii                    13 ms      new surface
-///              line counts              11 ms      ink only
-///              linear curve slope            11 ms      ink only
+///              line counts              11 ms      curves only
+///              linear curve slope            11 ms      curves only
 ///     sn       radii                     6 ms      contours re-placed, not resampled
 ///              modulus                 115 ms      resampled; 65 ms while dragging
-///              samples                 100 ms      resampled; ink only
+///              samples                 100 ms      resampled; curves only
 ///     forced   ring radius              39 ms      grid re-placed from state space;
 ///                                                  7 ms while dragging
 ///              radius from, height from 32 ms      re-placed
 ///              turns                 17–36 ms      the trajectory is a linear curve, placed
 ///                                                  from the grid; no draft needed
 ///              coordinate curves          38 ms      the map at every line vertex
-///              linear curve slope            15 ms      ink only; the trajectory's layout
+///              linear curve slope            15 ms      curves only; the trajectory's layout
 ///                                                  is kept
 ///              harmonics, fit length   390 ms      fitted again
 ///
 /// So the forced torus's fit is the one control that is not interactive, and
-/// it gets a stepper and a field rather than a slider. An ink edit lays out
+/// it gets a stepper and a field rather than a slider. An curves edit lays out
 /// only the layer it touched -- the preview keeps every other layer's
-/// vertices from the frame before -- and ink normals are read off the
+/// vertices from the frame before -- and curve normals are read off the
 /// grid, not asked of the map, so a new surface costs its grid and
 /// little else.
 struct SurfaceSection: View {
@@ -132,11 +132,11 @@ struct SurfaceSection: View {
     }
 
     /// Whether a drag of this control builds drafts. A linear curve, and the
-    /// trajectory, are ink alone, placed from the grid, so their drags
-    /// build the full plate each step: the surface is kept and only their
+    /// trajectory, are curves alone, placed from the grid, so their drags
+    /// build the full drawing each step: the surface is kept and only their
     /// vertices are made again.
     private func drafts(_ field: SurfaceRequest.Field) -> Bool {
-        !SurfaceRequest.inkFields.contains(field)
+        !SurfaceRequest.curveFields.contains(field)
     }
 
     @ViewBuilder
@@ -317,9 +317,9 @@ struct SurfaceSection: View {
         }
     }
 
-    /// The trajectory's own linear curve, when the plate on screen is a fitted
+    /// The trajectory's own linear curve, when the drawing on screen is a fitted
     /// torus: its rotation number, Ω/ω.
-    private var ownSlope: Double? { document.plate?.torus?.rotationNumber }
+    private var ownSlope: Double? { document.surfaceDrawing?.torus?.rotationNumber }
 
     /// The rotation number's convergents within the turns slider's range.
     private var convergents: [ContinuedFraction.Convergent] {

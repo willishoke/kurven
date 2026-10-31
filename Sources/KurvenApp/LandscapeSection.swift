@@ -44,7 +44,7 @@ struct LandscapeSection: View {
             domainControls(landscape, window: window(catalog, landscape))
             resolutionControl(landscape)
             if document.bundle != nil && !document.isLandscape {
-                // A plate bundle from the retired Python pipeline: the controls
+                // A drawing bundle from the retired Python pipeline: the controls
                 // start from its provenance, and this builds the same window
                 // natively without waiting for a control to move.
                 HStack {
@@ -398,7 +398,7 @@ struct TruncationSection: View {
                  + "function with a pole wants a truncation; one without does not.")
                 .font(.caption).foregroundStyle(.secondary)
         case .uniform(let z):
-            truncationSlider("Truncation", value: Binding(get: { z }, set: {
+            truncationSlider("Height", value: Binding(get: { z }, set: {
                 document.setTruncation(.uniform($0))
             }))
         case .realBands(let bands, let beyond):
@@ -442,7 +442,7 @@ struct TruncationSection: View {
                     }),
                     format: .number.precision(.fractionLength(1)))
                     .labelsHidden().monospacedDigit().frame(width: 52)
-                Text("truncation").font(.caption).foregroundStyle(.secondary)
+                Text("height").font(.caption).foregroundStyle(.secondary)
                 Slider(value: Binding(get: { band.height }, set: {
                     var next = bands
                     next[index].height = $0

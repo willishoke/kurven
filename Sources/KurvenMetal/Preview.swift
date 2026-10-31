@@ -21,10 +21,10 @@ struct LineGeometry {
     }
 
     /// Whether a layer's line geometry is the camera's: a heightfield's fold
-    /// lines, or the ink in its walls; or, on a parametric surface that
+    /// lines, or the strokes in its walls; or, on a parametric surface that
     /// carries its solid, its fold curves and every clipped layer that knows
     /// where on the surface it lies. Sphere tracing sights along parallel lines,
-    /// so under perspective a surface's ink stays with the stroke shader.
+    /// so under perspective a surface's strokes stay with the stroke shader.
     static func isTestedExactly(_ layer: Layer, in scene: Scene) -> Bool {
         if let s = scene.parametric {
             guard s.neighbourhood != nil, !scene.camera.isPerspective else { return false }
@@ -33,12 +33,12 @@ struct LineGeometry {
         }
         guard scene.heightfield != nil else { return false }
         if case .foldCurves = layer.spec.source { return true }
-        return layer.spec.source.isWallInk && layer.spec.clipped
+        return layer.spec.source.liesOnWall && layer.spec.clipped
     }
 
-    /// Whether the scene has ink that is tested for the camera: a
-    /// heightfield's fold curves and the ink in its walls, or a sphere-traced
-    /// surface's ink. Such a scene's line geometry is the camera's, and is
+    /// Whether the scene has strokes that are tested for the camera: a
+    /// heightfield's fold curves and the strokes in its walls, or a sphere-traced
+    /// surface's strokes. Such a scene's line geometry is the camera's, and is
     /// laid out again when it moves.
     static func isTestedExactly(_ scene: Scene) -> Bool {
         scene.layers.contains { isTestedExactly($0, in: scene) }
@@ -52,18 +52,18 @@ struct LineGeometry {
     /// one -- on f and refined onto the exact fold, as the bake's are --
     /// and tested by the solid here rather than per fragment:
     /// the surface is edge-on at a fold, which is where a depth test is
-    /// worth nothing. Wall ink likewise: tested by the wall it lies in and
+    /// worth nothing. Wall strokes likewise: tested by the wall it lies in and
     /// the solid. Both are drawn unclipped.
     ///
     /// A `draft` is what a frame can afford while the camera moves: the
     /// folds traced on the grid, not on f, and left to the depth test
-    /// with the wall ink, which is drawn as stored. On a landscape the
+    /// with the wall strokes, which is drawn as stored. On a landscape the
     /// tested layout is hundreds of milliseconds and the draft is one, so
     /// a drag draws drafts and the tested layout follows when the camera
     /// rests.
     ///
     /// A layer that is not the camera's is taken from `reusing` -- the same
-    /// ink's last layout -- as it is: a contour's normals are read off f,
+    /// strokes' last layout -- as it is: a contour's normals are read off f,
     /// four evaluations a vertex, and the camera does not move them.
     static func layOut(scene: Scene, draft: Bool, reusing previous: VisibleLines?) -> VisibleLines {
         var layers: [[KVLineVertex]] = []
@@ -76,14 +76,14 @@ struct LineGeometry {
             var vertices: [KVLineVertex] = []
             var paths = layer.paths
             if let s = scene.parametric, isTestedExactly(layer, in: scene) {
-                // A sphere-traced surface's ink at rest is the bake's: the folds
+                // A sphere-traced surface's strokes at rest are the bake's: the folds
                 // on the exact fold, and every vertex tested by sphere tracing
                 // against the solid. Per fragment against the coordinate
-                // image, the folds and the ink running along them drew as
+                // image, the folds and the strokes running along them drew as
                 // dashes wherever the front-most coordinate at a pixel
                 // flipped between the near sheet and the one behind it,
                 // which at a fold is everywhere. The draft is drawn from the
-                // surface ink, not from here.
+                // surface strokes, not from here.
                 paths = draft ? PolylineSet(paths: [])
                     : Self.sphereTraced(layer, on: s, view: scene.camera.view, creases: scene.creases)
             } else if case .foldCurves = layer.spec.source, let h = scene.heightfield {
@@ -98,14 +98,14 @@ struct LineGeometry {
                     ? h.onGrid.foldCurves(view: scene.camera.view, refined: false)
                     : h.visibleFolds(view: scene.camera.view, depthTolerance: scene.depthTolerance,
                                      resolution: scene.resolution)
-            } else if layer.spec.source.isWallInk, layer.spec.clipped, !draft,
+            } else if layer.spec.source.liesOnWall, layer.spec.clipped, !draft,
                       let h = scene.heightfield {
-                paths = h.visibleWallInk(layer.paths, view: scene.camera.view, depthTolerance: scene.depthTolerance,
+                paths = h.visibleWallCurves(layer.paths, view: scene.camera.view, depthTolerance: scene.depthTolerance,
                                          resolution: scene.resolution)
             }
-            // Ink on a heightfield's surface carries the surface's outward
+            // Strokes on a heightfield's surface carry the surface's outward
             // normal, so the stroke shader can hide it where the surface
-            // faces away; a zero normal is ink tested by depth alone. Once
+            // faces away; a zero normal is strokes tested by depth alone. Once
             // per vertex, in parallel: zeta's contours have six hundred
             // thousand, and each normal is four height reads.
             var normals: [SIMD3<Float>]?
@@ -145,7 +145,7 @@ struct LineGeometry {
         return VisibleLines(layers: layers, resolution: resolution)
     }
 
-    /// A layer of a sphere-traced surface's ink, as the bake tests it: what of it
+    /// A layer of a sphere-traced surface's strokes, as the bake tests it: what of it
     /// the solid leaves in sight, in world space for the stroke shader.
     static func sphereTraced(_ layer: Layer, on surface: ParametricSurface,
                         view: Transform<WorldSpace, ViewSpace>,
@@ -193,11 +193,11 @@ struct LineGeometry {
 }
 
 /// Line geometry laid out and not yet uploaded, a layer at a time: the part
-/// of a frame's ink that can be made away from the renderer, and kept for
+/// of a frame's strokes that can be made away from the renderer, and kept for
 /// the layers the next camera leaves alone.
 public struct VisibleLines: Sendable {
     let layers: [[KVLineVertex]]
-    /// The `Scene.resolution` the ink was tested to: a layout serves a scene
+    /// The `Scene.resolution` the strokes were tested to: a layout serves a scene
     /// that asks no finer, so zooming out keeps it and zooming in tests again.
     let resolution: Double
 
@@ -213,25 +213,25 @@ public extension MetalRenderer {
         LineGeometry.layOut(scene: scene, draft: false, reusing: previous)
     }
 
-    /// The scene's ink as last laid out, for `visibleLines` to keep what the
+    /// The scene's strokes as last laid out, for `visibleLines` to keep what the
     /// camera leaves alone; nil when the last layout was another's.
     func laidLines(for scene: Scene) -> VisibleLines? {
-        guard let c = cachedLines, c.ink == scene.ink else { return nil }
+        guard let c = cachedLines, c.curves == scene.curves else { return nil }
         return c.laid
     }
 
     /// Keep a tested layout for the next frame of its scene.
     func install(_ lines: VisibleLines, for scene: Scene) throws {
         let key: Camera? = LineGeometry.isTestedExactly(scene) ? scene.camera : nil
-        cachedLines = (scene.ink, key, false, lines, try LineGeometry(lines, device: device))
+        cachedLines = (scene.curves, key, false, lines, try LineGeometry(lines, device: device))
     }
 
     /// Whether the next frame of this scene can be drawn tested without
-    /// laying its ink out first: the layout is in hand, or nothing in the
+    /// laying its strokes out first: the layout is in hand, or nothing in the
     /// scene is tested for the camera.
     func hasJudgedLines(for scene: Scene) -> Bool {
         guard LineGeometry.isTestedExactly(scene) else { return true }
-        guard let c = cachedLines, c.ink == scene.ink, c.camera == scene.camera else { return false }
+        guard let c = cachedLines, c.curves == scene.curves, c.camera == scene.camera else { return false }
         return !c.draft && c.laid.serves(scene)
     }
 }
@@ -241,28 +241,28 @@ public struct PreviewOptions: Sendable {
     public var mode: PreviewMode
     /// Which layers to draw, by index into `Scene.layers`. `nil` draws them all.
     public var visibleLayers: Set<Int>?
-    /// Paper colour. The plate's surface is white because the page is.
+    /// Paper colour. The drawing's surface is white because the page is.
     public var background: SIMD4<Float>
-    /// How many pixels' worth of the surface's own depth change the ink test
-    /// allows on top of the depth tolerance. Without it, ink on a surface that is steep
+    /// How many pixels' worth of the surface's own depth change the visibility test
+    /// allows on top of the depth tolerance. Without it, strokes on a surface that is steep
     /// in view breaks into dashes that crawl as the camera moves. Zero is the
-    /// bake's predicate exactly; see `ink_visible` in the shader for the rest.
+    /// bake's predicate exactly; see `stroke_visible` in the shader for the rest.
     public var slopeScale: Float
 
     /// The widest layer's stroke, in pixels. Every other layer is drawn in
-    /// proportion to its plate width, so the plate's hierarchy -- major lines
+    /// proportion to its drawing width, so the drawing's hierarchy -- major lines
     /// over minor ones -- survives at any zoom.
     ///
-    /// Constant on screen rather than scaled with zoom: the plate's widths are
+    /// Constant on screen rather than scaled with zoom: the drawing's widths are
     /// points on a sixteen-inch page, a fraction of a pixel on a window
     /// showing all of it, and a stroke that thins as you pull back reads as
     /// the picture fading rather than as the picture getting smaller. The app
     /// multiplies this by the display's backing scale, so a stroke is as wide
     /// on a Retina screen as on any other.
-    public var inkWidth: Float
+    public var strokeWidth: Float
 
     /// Draw the frame a moving camera can afford: a heightfield's fold
-    /// lines traced on the grid and left to the depth test, its wall ink
+    /// lines traced on the grid and left to the depth test, its wall strokes
     /// as stored. Off, they are tested by the solid for this camera, which
     /// on a landscape is hundreds of milliseconds of CPU per camera; see
     /// `LineGeometry.layOut`.
@@ -272,15 +272,15 @@ public struct PreviewOptions: Sendable {
     /// pixel and the pixel's centre, with room for the surface to bend in
     /// between. Measured with `kurven-cli flicker`, not guessed.
     public static let defaultSlopeScale: Float = 1
-    public static let defaultInkWidth: Float = 1.5
+    public static let defaultStrokeWidth: Float = 1.5
 
-    public init(mode: PreviewMode = .plate, visibleLayers: Set<Int>? = nil,
+    public init(mode: PreviewMode = .drawing, visibleLayers: Set<Int>? = nil,
                 background: SIMD4<Float> = SIMD4(1, 1, 1, 1),
                 slopeScale: Float = PreviewOptions.defaultSlopeScale,
-                inkWidth: Float = PreviewOptions.defaultInkWidth,
+                strokeWidth: Float = PreviewOptions.defaultStrokeWidth,
                 draft: Bool = false) {
         self.mode = mode; self.visibleLayers = visibleLayers; self.background = background
-        self.slopeScale = slopeScale; self.inkWidth = inkWidth; self.draft = draft
+        self.slopeScale = slopeScale; self.strokeWidth = strokeWidth; self.draft = draft
     }
 }
 
@@ -288,8 +288,8 @@ public extension MetalRenderer {
     /// Draw one preview frame into `target`.
     ///
     /// Two passes over the geometry the bake uses. The first is the depth pass,
-    /// unchanged and shared. The second draws the surface (opaque, so ink behind
-    /// it does not show through the outline) and then the ink, deciding
+    /// unchanged and shared. The second draws the surface (opaque, so strokes behind
+    /// it does not show through the outline) and then the strokes, deciding
     /// visibility by reading that depth texture at each fragment's own pixel.
     ///
     /// The bake tests per vertex and this tests per fragment, so the two can
@@ -297,7 +297,7 @@ public extension MetalRenderer {
     /// `slopeScale` pixels' worth of the surface's depth change on top of the
     /// depth tolerance, because a fragment compares the line's depth where it crosses a
     /// pixel with the surface's depth at the pixel's centre, and on a steep
-    /// surface those differ by more than the depth tolerance (see `ink_visible`). Those
+    /// surface those differ by more than the depth tolerance (see `stroke_visible`). Those
     /// two are the only differences between them. Both are bounded by a pixel,
     /// and both are the right way round: the preview is for navigating and the
     /// bake is the artifact.
@@ -352,7 +352,7 @@ public extension MetalRenderer {
             slopeScale: options.slopeScale,
             lightDirection: SIMD3(0.4, -0.6, 0.7),
             ambient: 0.25,
-            strokeWidth: options.inkWidth,
+            strokeWidth: options.strokeWidth,
             depthRange: SIMD2(Float(box?.lo.z ?? 0), Float(box?.hi.z ?? 1)),
             viewport: SIMD2(Float(viewport.width), Float(viewport.height)))
         if case .shaded(let lighting) = options.mode {
@@ -374,7 +374,7 @@ public extension MetalRenderer {
         e2.setFragmentBytes(&shading, length: MemoryLayout<KVShading>.stride, index: 1)
 
         switch options.mode {
-        case .plate:
+        case .drawing:
             encodeGeometry(e2, res: res, height: paperSurfacePipeline, mesh: paperWallPipeline)
         case .shaded:
             e2.setFragmentTexture(depth, index: 1)
@@ -393,13 +393,13 @@ public extension MetalRenderer {
             e2.setRenderPipelineState(strokePipeline)
             e2.setVertexBuffer(buffer, offset: 0, index: 4)
             e2.setFragmentTexture(depth, index: 1)
-            // Which way the ink's surface faces is asked of the camera: ink
+            // Which way the strokes' surface faces is asked of the camera: strokes
             // on the heightfield carries the normal, and the shader hides
             // what faces away.
-            var camera = KVInk(sight: SIMD3<Float>(scene.camera.view.projectionDirection),
+            var camera = KVStroke(sight: SIMD3<Float>(scene.camera.view.projectionDirection),
                                eye: SIMD3<Float>(scene.camera.view.inverse(P3<ViewSpace>(0, 0, 0)).v),
                                perspective: scene.camera.isPerspective ? 1 : 0, onFolds: 0)
-            e2.setVertexBytes(&camera, length: MemoryLayout<KVInk>.stride, index: 7)
+            e2.setVertexBytes(&camera, length: MemoryLayout<KVStroke>.stride, index: 7)
             // Every layer, visible or not, so hiding the widest one does not
             // make the rest jump wider.
             let widest = scene.layers.map(\.spec.width).max() ?? 0
@@ -407,17 +407,17 @@ public extension MetalRenderer {
                 if let visible = options.visibleLayers, !visible.contains(i) { continue }
                 let range = lines.ranges[i]
                 guard range.count > 0 else { continue }
-                // Unclipped ink is drawn with an unreachable depth tolerance rather than
+                // Unclipped strokes are drawn with an unreachable depth tolerance rather than
                 // a second pipeline: a cut-face hatch lies *in* the wall it
                 // hatches, and a depth test would erase about half of it. A
-                // heightfield's folds and wall ink were tested on the way in,
+                // heightfield's folds and wall strokes were tested on the way in,
                 // unless this frame is a draft, which leaves them to the test.
-                var visible = scene.heightfield != nil && layer.spec.source.isWallInk
+                var visible = scene.heightfield != nil && layer.spec.source.liesOnWall
                 if case .foldCurves = layer.spec.source { visible = true }
                 if options.draft { visible = false }
                 shading.depthTolerance = layer.spec.clipped && !visible ? Float(scene.depthTolerance) : .infinity
                 shading.color = Self.color(layer.spec.color)
-                shading.strokeWidth = options.inkWidth
+                shading.strokeWidth = options.strokeWidth
                     * Float(widest > 0 ? layer.spec.width / widest : 1)
                 e2.setVertexBytes(&shading, length: MemoryLayout<KVShading>.stride, index: 1)
                 e2.setFragmentBytes(&shading, length: MemoryLayout<KVShading>.stride, index: 1)
@@ -498,17 +498,17 @@ public extension MetalRenderer {
 
 // MARK: - a parametric surface
 
-/// Ink on a parametric surface, laid out for the surface stroke shader: each
+/// Strokes on a parametric surface, laid out for the surface stroke shader: each
 /// vertex with its outward normal and its surface coordinate. Like
 /// `LineGeometry`, one buffer and a range per layer; a layer without
 /// coordinates has an empty range here and is drawn from `LineGeometry`.
-struct SurfaceInkGeometry {
+struct SurfaceStrokeGeometry {
     let buffer: MTLBuffer?
     let ranges: [(first: Int, count: Int)]
     /// Each layer's vertices as laid out, kept so a later layout can take a
-    /// layer whose ink did not change as it is -- the normals are the
-    /// expensive part, and an edit to one layer's ink leaves the others'.
-    let layers: [[KVInkVertex]]
+    /// layer whose strokes did not change as it is -- the normals are the
+    /// expensive part, and an edit to one layer's strokes leaves the others'.
+    let layers: [[KVStrokeVertex]]
 
     init(_ layers: [PolylineSet<WorldSpace>?], surface: ParametricSurface,
          onFolds: [Bool], device: MTLDevice) throws {
@@ -517,8 +517,8 @@ struct SurfaceInkGeometry {
         }, device: device)
     }
 
-    /// One layer's ink, laid out: a segment per vertex pair, each end with
-    /// its outward normal and its coordinate. Empty for ink without
+    /// One layer's strokes, laid out: a segment per vertex pair, each end with
+    /// its outward normal and its coordinate. Empty for strokes without
     /// coordinates, which `LineGeometry` draws.
     ///
     /// The normals are read off `grid` -- the surface's grid normals,
@@ -528,9 +528,9 @@ struct SurfaceInkGeometry {
     /// 1,225 terms: the difference between a trajectory of three hundred
     /// thousand vertices laid out in a hundred milliseconds and in ten.
     static func layout(_ paths: PolylineSet<WorldSpace>, surface: ParametricSurface,
-                       onFolds folds: Bool, grid: [SIMD3<Float>]? = nil) -> [KVInkVertex] {
+                       onFolds folds: Bool, grid: [SIMD3<Float>]? = nil) -> [KVStrokeVertex] {
         guard let coords = paths.coords else { return [] }
-        // Facing is not asked of fold ink, nor of a surface with no
+        // Facing is not asked of fold strokes, nor of a surface with no
         // outside; a zero normal says so to the shader. Otherwise a normal
         // once per vertex, in parallel.
         var normals = [SIMD3<Float>](repeating: .zero, count: coords.count)
@@ -546,13 +546,13 @@ struct SurfaceInkGeometry {
                 }
             }
         }
-        func vertex(_ k: Int) -> KVInkVertex {
+        func vertex(_ k: Int) -> KVStrokeVertex {
             let c = coords[k]
-            return KVInkVertex(position: SIMD3<Float>(paths.vertices[k].v),
+            return KVStrokeVertex(position: SIMD3<Float>(paths.vertices[k].v),
                                normal: normals[k],
                                coord: SIMD2<Float>(Float(c.x), Float(c.y)))
         }
-        var vertices: [KVInkVertex] = []
+        var vertices: [KVStrokeVertex] = []
         vertices.reserveCapacity(2 * max(coords.count - paths.count, 0))
         for i in 0..<paths.count {
             let lo = paths.offsets[i], hi = paths.offsets[i + 1]
@@ -565,9 +565,9 @@ struct SurfaceInkGeometry {
     }
 
     /// The layers' laid-out vertices, end to end in one buffer.
-    init(layers: [[KVInkVertex]], device: MTLDevice) throws {
+    init(layers: [[KVStrokeVertex]], device: MTLDevice) throws {
         self.layers = layers
-        var vertices: [KVInkVertex] = []
+        var vertices: [KVStrokeVertex] = []
         vertices.reserveCapacity(layers.reduce(0) { $0 + $1.count })
         var ranges: [(first: Int, count: Int)] = []
         for layer in layers {
@@ -581,18 +581,18 @@ struct SurfaceInkGeometry {
             guard let b = vertices.withUnsafeBytes({ bytes in
                 device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count,
                                   options: .storageModeShared)
-            }) else { throw RendererError.allocation("surface ink vertices") }
+            }) else { throw RendererError.allocation("surface stroke vertices") }
             buffer = b
         }
     }
 }
 
-/// A parametric scene's ink for the preview: the layers that do not depend on
-/// the camera, laid out once per ink, and the fold curves, laid out again
+/// A parametric scene's strokes for the preview: the layers that do not depend on
+/// the camera, laid out once per strokes, and the fold curves, laid out again
 /// whenever the camera moves.
-struct SurfaceInk {
-    let statics: SurfaceInkGeometry
-    let folds: SurfaceInkGeometry
+struct SurfaceStrokes {
+    let statics: SurfaceStrokeGeometry
+    let folds: SurfaceStrokeGeometry
     let onFolds: [Bool]
 
     /// Where layer `i` is drawn from, or nil when it has no coordinates.
@@ -608,7 +608,7 @@ extension MetalRenderer {
     /// is not a heightfield.
     ///
     /// The depth pass and the coordinate pass are the bake's, over the same
-    /// position texture. The paper is the same grid again. Ink that carries
+    /// position texture. The paper is the same grid again. Strokes that carry
     /// coordinates is drawn by the surface stroke shader, which asks the
     /// bake's two questions per fragment; the fold curves are derived for this
     /// camera every time it moves, because that is what they depend on.
@@ -687,7 +687,7 @@ extension MetalRenderer {
         var shading = KVShading(
             color: SIMD4(0, 0, 0, 1), depthTolerance: Float(scene.depthTolerance), empty: Self.emptySentinel,
             slopeScale: options.slopeScale, lightDirection: SIMD3(0.4, -0.6, 0.7),
-            ambient: 0.25, strokeWidth: options.inkWidth,
+            ambient: 0.25, strokeWidth: options.strokeWidth,
             depthRange: SIMD2(Float(box?.lo.z ?? 0), Float(box?.hi.z ?? 1)),
             viewport: SIMD2(Float(viewport.width), Float(viewport.height)))
         if case .shaded(let lighting) = options.mode {
@@ -706,7 +706,7 @@ extension MetalRenderer {
         }
         e2.setFragmentBytes(&shading, length: MemoryLayout<KVShading>.stride, index: 1)
         switch options.mode {
-        case .plate:
+        case .drawing:
             drawSurface(e2, paramPaperPipeline)
         case .shaded:
             e2.setFragmentTexture(depth, index: 1)
@@ -718,7 +718,7 @@ extension MetalRenderer {
         }
 
         if options.mode != .depth {
-            let ink = try surfaceInk(for: scene, surface: surface)
+            let curves = try surfaceStrokes(for: scene, surface: surface)
             let isPerspective = scene.camera.isPerspective
             let eye = scene.camera.view.inverse(P3<ViewSpace>(0, 0, 0))
             e2.setVertexBytes(&uniforms, length: MemoryLayout<KVUniforms>.stride, index: 0)
@@ -729,30 +729,30 @@ extension MetalRenderer {
             for (i, layer) in scene.layers.enumerated() {
                 if let visible = options.visibleLayers, !visible.contains(i) { continue }
                 shading.color = Self.color(layer.spec.color)
-                shading.strokeWidth = options.inkWidth
+                shading.strokeWidth = options.strokeWidth
                     * Float(widest > 0 ? layer.spec.width / widest : 1)
                 shading.depthTolerance = layer.spec.clipped ? Float(scene.depthTolerance) : .infinity
-                // At rest a sphere-traced surface's ink comes tested by the solid,
+                // At rest a sphere-traced surface's strokes come tested by the solid,
                 // and is drawn as it comes.
                 let sphereTraced = !options.draft && LineGeometry.isTestedExactly(layer, in: scene)
                 if sphereTraced { shading.depthTolerance = .infinity }
-                if layer.spec.clipped, !sphereTraced, let (buffer, visible) = ink.draw(i) {
-                    var camera = KVInk(sight: SIMD3<Float>(scene.camera.view.projectionDirection),
+                if layer.spec.clipped, !sphereTraced, let (buffer, visible) = curves.draw(i) {
+                    var camera = KVStroke(sight: SIMD3<Float>(scene.camera.view.projectionDirection),
                                        eye: SIMD3<Float>(eye.v),
                                        perspective: isPerspective ? 1 : 0,
-                                       onFolds: ink.onFolds[i] ? 1 : 0)
+                                       onFolds: curves.onFolds[i] ? 1 : 0)
                     e2.setRenderPipelineState(surfaceStrokePipeline)
                     e2.setVertexBuffer(buffer, offset: 0, index: 4)
                     e2.setVertexBytes(&shading, length: MemoryLayout<KVShading>.stride, index: 1)
                     e2.setFragmentBytes(&shading, length: MemoryLayout<KVShading>.stride, index: 1)
-                    e2.setVertexBytes(&camera, length: MemoryLayout<KVInk>.stride, index: 7)
-                    e2.setFragmentBytes(&camera, length: MemoryLayout<KVInk>.stride, index: 7)
+                    e2.setVertexBytes(&camera, length: MemoryLayout<KVStroke>.stride, index: 7)
+                    e2.setFragmentBytes(&camera, length: MemoryLayout<KVStroke>.stride, index: 7)
                     var first = UInt32(visible.first / 2)
                     e2.setVertexBytes(&first, length: MemoryLayout<UInt32>.stride, index: 5)
                     e2.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
                                       instanceCount: visible.count / 2)
                 } else if let buffer = lines.buffer, lines.ranges[i].count > 0 {
-                    // Ink without coordinates, tested by depth as anywhere
+                    // Strokes without coordinates, tested by depth as anywhere
                     // else; or tested already.
                     let range = lines.ranges[i]
                     e2.setRenderPipelineState(strokePipeline)

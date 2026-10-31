@@ -14,10 +14,10 @@ public struct PolylineSet<S>: Sendable, Equatable {
     public let vertices: [P3<S>]
     /// `count + 1` offsets; path `i` is `vertices[offsets[i]..<offsets[i + 1]]`.
     public let offsets: [Int]
-    /// Where on a surface each vertex lies, parallel to `vertices`, for ink
-    /// drawn *on* a parametric surface. `nil` for ink that only has a position.
+    /// Where on a surface each vertex lies, parallel to `vertices`, for curves
+    /// drawn *on* a parametric surface. `nil` for curves that only have a position.
     ///
-    /// A position says where the ink is; a surface coordinate says which piece
+    /// A position says where the curves are; a surface coordinate says which piece
     /// of the surface it belongs to, and that is the question hidden-line
     /// removal actually asks. Two sheets a hair apart in depth are far apart
     /// in coordinates. Kept unwrapped along periodic axes, so a path that
@@ -82,9 +82,9 @@ public struct PolylineSet<S>: Sendable, Equatable {
 
     public var bounds: AABB<S>? { AABB(vertices) }
 
-    /// Total 2D length, ignoring z -- the "ink length" an end-to-end
+    /// Total 2D length, ignoring z -- the "length" an end-to-end
     /// equivalence check compares between two renderings.
-    public var inkLength: Double {
+    public var totalLength: Double {
         var total = 0.0
         for i in 0..<count {
             let p = self[path: i]

@@ -187,14 +187,14 @@ func npyTests() {
 func cameraTests() {
     // The camera the published plates were drawn with. The projections were
     // scipy's Rotation composed as the Python plates composed it until the
-    // golden set was regenerated from Camera.plate (within 7.1e-15 of them).
-    Check.suite("camera: each plate preset lands on the committed projection") {
+    // golden set was regenerated from Camera.drawing (within 7.1e-15 of them).
+    Check.suite("camera: each projection preset lands on the committed projection") {
         for name in ["recip", "elliptic", "zeta"] {
             let spec = try Fixtures.json("camera/\(name).json")
-            let plate = try PlateProjection(json: spec.value("plate", "fixture"))
+            let projection = try ObliqueProjection(json: spec.value("projection", "fixture"))
             let world = try NPY.read(contentsOf: Fixtures.url("camera/\(name).points.npy")).rows3()
             let want = try NPY.read(contentsOf: Fixtures.url("camera/\(name).projected.npy")).rows3()
-            let camera = Camera.plate(plate)
+            let camera = Camera.oblique(projection)
             var worst = 0.0
             for (w, expected) in zip(world, want) {
                 worst = max(worst, simd_reduce_max(abs(camera.view(P3<WorldSpace>(w)).v - expected)))
@@ -205,10 +205,10 @@ func cameraTests() {
         }
     }
 
-    Check.suite("camera: the plate matrix is the composition it claims to be") {
-        let plate = PlateProjection(shear: 0.5, xAngle: -55, zAngle: -90,
+    Check.suite("camera: the projection matrix is the composition it claims to be") {
+        let projection = ObliqueProjection(shear: 0.5, xAngle: -55, zAngle: -90,
                                     flipX: true, yScale: 0.75)
-        let camera = Camera.plate(plate)
+        let camera = Camera.oblique(projection)
         let p = P3<WorldSpace>(1.5, -2.25, 3)
         // The same thing spelled out in the library's own column order.
         var legacy = SIMD3(p.y, p.x, p.z)      // (imag, real, z)
@@ -220,7 +220,7 @@ func cameraTests() {
                      "folding the axis exchange into one matrix changes nothing")
 
         guard case .orthographic(let oblique) = camera.projection else {
-            Check.expect(false, "a plate camera is orthographic"); return
+            Check.expect(false, "a oblique camera is orthographic"); return
         }
         Check.expect(oblique?.shear == 0.5, "the oblique shear survives as a camera property")
     }
@@ -323,7 +323,7 @@ func coreTests() {
     Check.suite("core: the NDC transform puts each sample point on its grid vertex") {
         // Both raster orders, and the screen order's descending row axis, have
         // to land on the same grid the clipper indexes -- a half-pixel shift
-        // here shows up as ink leaking through the surface along outlines
+        // here shows up as curves leaking through the surface along outlines
         // and nowhere else.
         for (name, frame) in [
             ("buffer order", DepthFrame(axis0: Interval(lo: -2, hi: 3),
@@ -352,7 +352,7 @@ func coreTests() {
         }
     }
 
-    Check.suite("core: bake tiles partition the plate's grid exactly") {
+    Check.suite("core: bake tiles partition the drawing's grid exactly") {
         let frame = DepthFrame(axis0: Interval(lo: -3, hi: 5), axis1: Interval(lo: 0, hi: 7),
                                rows: 240, cols: 240)
         for n in [1, 2, 3, 7] {
@@ -417,10 +417,10 @@ func coreTests() {
         let a = Transform<WorldSpace, ViewSpace>(
             rows: (SIMD3(2, 0, 0), SIMD3(0, 1, 0), SIMD3(0, 0, 1)),
             translation: SIMD3(1, 0, 0))
-        let b = Transform<ViewSpace, PlateSpace>(
+        let b = Transform<ViewSpace, PageSpace>(
             rows: (SIMD3(1, 0, 0), SIMD3(0, 3, 0), SIMD3(0, 0, 1)))
         let p = P3<WorldSpace>(1, 2, 3)
-        Check.expect((a >>> b)(p) == b(a(p)) && (a >>> b)(p) == P3<PlateSpace>(3, 6, 3),
+        Check.expect((a >>> b)(p) == b(a(p)) && (a >>> b)(p) == P3<PageSpace>(3, 6, 3),
                      "a >>> b is 'apply a, then b'")
     }
 
@@ -498,9 +498,9 @@ func shaderTests() {
         let surface = KVSurface(samples: SIMD2(71, 72), cells: SIMD2(73, 74),
                                 lo: SIMD2(75, 76), spacing: SIMD2(77, 78),
                                 depthRange: SIMD2(79, 80))
-        let inkVertex = KVInkVertex(position: SIMD3(81, 82, 83), normal: SIMD3(84, 85, 86),
+        let strokeVertex = KVStrokeVertex(position: SIMD3(81, 82, 83), normal: SIMD3(84, 85, 86),
                                     coord: SIMD2(87, 88))
-        let inkCamera = KVInk(sight: SIMD3(89, 90, 91), eye: SIMD3(92, 93, 94),
+        let curveCamera = KVStroke(sight: SIMD3(89, 90, 91), eye: SIMD3(92, 93, 94),
                               perspective: 95, onFolds: 96)
 
         var want: [Float] = []
@@ -514,7 +514,7 @@ func shaderTests() {
         let probe = try MetalRenderer.probeUniformLayout(device: device,
                                                          sending: sent, and: shading,
                                                          and: surface,
-                                                         and: (inkVertex, inkCamera))
+                                                         and: (strokeVertex, curveCamera))
         var mismatch: Int?
         for i in want.indices where i < probe.fields.count && probe.fields[i] != want[i] {
             mismatch = i; break
@@ -523,8 +523,8 @@ func shaderTests() {
                      "every field of all five structs arrives with the value it was given",
                      mismatch.map { "field \($0): sent \(want[$0]), saw \(probe.fields[$0])" } ?? "")
         let cpu = [MemoryLayout<KVUniforms>.size, MemoryLayout<KVShading>.size,
-                   MemoryLayout<KVSurface>.size, MemoryLayout<KVInkVertex>.size,
-                   MemoryLayout<KVInk>.size]
+                   MemoryLayout<KVSurface>.size, MemoryLayout<KVStrokeVertex>.size,
+                   MemoryLayout<KVStroke>.size]
         Check.expect(probe.sizes == cpu, "and the two agree on all five sizes",
                      "GPU \(probe.sizes), CPU \(cpu)")
     }
@@ -795,7 +795,7 @@ func hatchTests() {
     // The rule for choosing contour levels under a truncation runs twice: when a
     // landscape is built, and again whenever the truncation slider moves, because a
     // level list is absolute and a raised truncation would otherwise leave the top of
-    // the plate blank. Pinned to the numbers the Python rule chose, which the
+    // the drawing blank. Pinned to the numbers the Python rule chose, which the
     // golden index has carried unchanged since.
     Check.suite("landscape: the derived numbers are the committed ones") {
         let style = try index.value("style", "hatch").object("hatch.style")
@@ -860,7 +860,7 @@ func strayed(_ a: [SIMD3<Double>], _ b: [SIMD3<Double>]) -> (unmatched: Int, wor
 
 /// Restyling: the edit path a truncation slider takes.
 func restyleTests() {
-    Check.suite("restyle: a new truncation re-derives the ink and keeps the landscape") {
+    Check.suite("restyle: a new truncation re-derives the curves and keeps the landscape") {
         let url = Fixtures.url("contract/landscape.kurven")
         guard FileManager.default.fileExists(atPath: url.path) else {
             Check.expect(false, "the landscape fixture bundle is present"); return
@@ -903,19 +903,19 @@ func restyleTests() {
 // MARK: - 7. navigation
 
 func navigationTests() {
-    let plates: [(String, PlateProjection)] = [
-        ("recip", PlateProjection(shear: 0.5, xAngle: -55, zAngle: -90, flipX: true, yScale: nil)),
-        ("elliptic", PlateProjection(shear: 0.51, xAngle: -63, zAngle: -90, flipX: true, yScale: nil)),
-        ("zeta", PlateProjection(shear: -0.18, xAngle: -79.5, zAngle: -90, flipX: true, yScale: 0.75)),
+    let projections: [(String, ObliqueProjection)] = [
+        ("recip", ObliqueProjection(shear: 0.5, xAngle: -55, zAngle: -90, flipX: true, yScale: nil)),
+        ("elliptic", ObliqueProjection(shear: 0.51, xAngle: -63, zAngle: -90, flipX: true, yScale: nil)),
+        ("zeta", ObliqueProjection(shear: -0.18, xAngle: -79.5, zAngle: -90, flipX: true, yScale: 0.75)),
     ]
 
-    // The bridge between "a plate" and "a thing you can orbit". If this fails,
-    // loading a preset jumps rather than starting where the plate is.
-    Check.suite("navigation: an orbit matching a preset IS the plate camera") {
+    // The bridge between "a drawing" and "a thing you can orbit". If this fails,
+    // loading a preset jumps rather than starting where the drawing is.
+    Check.suite("navigation: an orbit matching a preset IS the oblique camera") {
         let rng = SplitMix(seed: 4)
-        for (name, plate) in plates {
-            let a = Camera.plate(plate).view
-            let b = Orbit(matching: plate).camera.view
+        for (name, projection) in projections {
+            let a = Camera.oblique(projection).view
+            let b = Orbit(matching: projection).camera.view
             var worst = 0.0
             for _ in 0..<200 {
                 let p = P3<WorldSpace>(rng.next(-8, 8), rng.next(-30, 30), rng.next(0, 6))
@@ -929,8 +929,8 @@ func navigationTests() {
         let v = Viewport(width: 1200, height: 800)
         let rng = SplitMix(seed: 9)
         var worst = 0.0
-        for (_, plate) in plates {
-            var n = Navigator(orbit: Orbit(matching: plate),
+        for (_, projection) in projections {
+            var n = Navigator(orbit: Orbit(matching: projection),
                               framing: Framing(center: P2(0, 0), unitsPerPixel: 0.01))
             let start = n
             var back: [Gesture] = []
@@ -954,7 +954,7 @@ func navigationTests() {
         let rng = SplitMix(seed: 17)
         var worst = 0.0
         for _ in 0..<200 {
-            let n = Navigator(orbit: Orbit(matching: plates[0].1),
+            let n = Navigator(orbit: Orbit(matching: projections[0].1),
                               framing: Framing(center: P2(rng.next(-5, 5), rng.next(-5, 5)),
                                                unitsPerPixel: rng.next(0.001, 0.05)))
             let at = SIMD2(rng.next(0, 1440), rng.next(0, 900))
@@ -968,7 +968,7 @@ func navigationTests() {
 
     Check.suite("navigation: pan is invertible and zoom-independent") {
         let v = Viewport(width: 800, height: 600)
-        let n = Navigator(orbit: Orbit(matching: plates[1].1),
+        let n = Navigator(orbit: Orbit(matching: projections[1].1),
                           framing: Framing(center: P2(1.5, -2), unitsPerPixel: 0.02))
         let d = SIMD2(37.0, -19.0)
         let there = n.applying(.pan(d), in: v).applying(.pan(-d), in: v)
@@ -1012,7 +1012,7 @@ func navigationTests() {
 
     Check.suite("navigation: re-targeting turns about a new point without moving it") {
         let v = Viewport(width: 1000, height: 700)
-        let n = Navigator(orbit: Orbit(matching: plates[2].1),
+        let n = Navigator(orbit: Orbit(matching: projections[2].1),
                           framing: Framing(center: P2(0.4, -1.1), unitsPerPixel: 0.03))
         let p = P3<WorldSpace>(2.5, -7, 3.25)
         let before = n.framing.pixel(of: n.camera.view(p).xy, in: v)
@@ -1029,11 +1029,11 @@ func navigationTests() {
                      "and stays put through a turn", "moved \(simd_reduce_max(abs(still - before))) px")
     }
 
-    Check.suite("navigation: perspective is a way of looking, not a plate style") {
+    Check.suite("navigation: perspective is a way of looking, not a projection convention") {
         let v = Viewport(width: 1200, height: 800)
-        let plate = plates[1].1
+        let projection = projections[1].1
         let bounds = AABB<ViewSpace>(lo: SIMD3(-4, -2, 0), hi: SIMD3(6, 3, 4))
-        let ortho = Navigator(orbit: Orbit(matching: plate),
+        let ortho = Navigator(orbit: Orbit(matching: projection),
                               framing: Framing(center: P2(0, 0), unitsPerPixel: 0.01))
         Check.expect(!ortho.orbit.isPerspective && !ortho.camera.isPerspective,
                      "a preset camera is orthographic")
@@ -1205,19 +1205,19 @@ func bakeTests() {
 // MARK: - the preview
 
 func previewTests() {
-    // A plane seen nearly edge-on: z = -x from forty degrees below the plate's
+    // A plane seen nearly edge-on: z = -x from forty degrees below the drawing's
     // horizon, so its view depth changes by about eleven units per unit of
     // screen height. The triangulation of a plane is the plane, so the answer
-    // is known at every pixel -- ink drawn on it is visible, ink a little under
+    // is known at every pixel -- curves drawn on it are visible, curves a little under
     // it is hidden -- which is what a real landscape cannot offer.
     //
     // The preview compares a line's depth where it crosses a pixel with the
     // surface's depth at the pixel's centre. Here half a pixel of that is
     // several times the depth tolerance, so the bake's predicate alone discards much of
-    // the ink on the plane, and while orbiting what it discards crawls. With
+    // the curves on the plane, and while orbiting what it discards crawls. With
     // the slope allowance all of it must survive, and the allowance must still
-    // fall far short of hiding depth: the ink under the plane stays hidden.
-    Check.suite("preview: ink on a surface steep in view is kept, and ink under it is not") {
+    // fall far short of hiding depth: the curves under the plane stay hidden.
+    Check.suite("preview: curves on a surface steep in view is kept, and curves under it is not") {
         let n = 65
         let domain = Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: -1, hi: 1))
         var heights: [Float] = []
@@ -1233,12 +1233,12 @@ func previewTests() {
             let paths = stride(from: -0.6, through: 0.45, by: 0.15).map { x0 -> [P3<WorldSpace>] in
                 [P3(x0, -0.9, -x0 - depth), P3(x0 + 0.1, 0.9, -(x0 + 0.1) - depth)]
             }
-            return Layer(spec: LayerSpec(name: "ink", role: .magnitude,
+            return Layer(spec: LayerSpec(name: "stroke", role: .magnitude,
                                          source: .file(vertices: "", offsets: ""),
                                          width: 0.4, heightPolicy: .surface),
                          paths: PolylineSet(paths: paths))
         }
-        let style = PlateStyle(shear: 0, flipX: false, yScale: nil)
+        let style = DrawingConvention(shear: 0, flipX: false, yScale: nil)
         let orbit = Orbit(target: P3(0, 0, 0), azimuth: Angle(degrees: 0),
                           elevation: Angle(degrees: -40), style: style)
         let viewport = Viewport(width: 512, height: 128)
@@ -1254,7 +1254,7 @@ func previewTests() {
 
         let renderer = try MetalRenderer()
         let target = try renderer.makePreviewTarget(viewport)
-        func ink(_ layer: Layer, depthTolerance: Double, slope: Float) throws -> Int {
+        func curves(_ layer: Layer, depthTolerance: Double, slope: Float) throws -> Int {
             try renderer.renderPreview(scene(layer, depthTolerance: depthTolerance), navigator: navigator,
                                        viewport: viewport,
                                        options: PreviewOptions(slopeScale: slope),
@@ -1262,7 +1262,7 @@ func previewTests() {
             let bgra = try PNG.bgra(target)
             return stride(from: 0, to: bgra.count, by: 4).reduce(0) { count, k in
                 let luma = 299 * Int(bgra[k + 2]) + 587 * Int(bgra[k + 1]) + 114 * Int(bgra[k])
-                // Any visible mark counts as ink: a stroke narrower than a
+                // Any visible mark counts as curves: a stroke narrower than a
                 // pixel is drawn lighter, not narrower.
                 return count + (luma < 224 * 1000 ? 1 : 0)
             }
@@ -1270,20 +1270,20 @@ func previewTests() {
 
         let depthTolerance = 0.005
         let on = strokes(under: 0), under = strokes(under: 0.05)
-        let drawn = try ink(on, depthTolerance: .infinity, slope: 0)
-        let bake = try ink(on, depthTolerance: depthTolerance, slope: 0)
-        let kept = try ink(on, depthTolerance: depthTolerance, slope: PreviewOptions.defaultSlopeScale)
+        let drawn = try curves(on, depthTolerance: .infinity, slope: 0)
+        let bake = try curves(on, depthTolerance: depthTolerance, slope: 0)
+        let kept = try curves(on, depthTolerance: depthTolerance, slope: PreviewOptions.defaultSlopeScale)
         Check.expect(drawn > 1000 && Double(bake) < 0.9 * Double(drawn),
-                     "the plane is steep enough that the bake's predicate loses ink on it",
+                     "the plane is steep enough that the bake's predicate loses curves on it",
                      "\(bake) of \(drawn) px")
         Check.expect(Double(kept) >= 0.99 * Double(drawn),
-                     "with the slope allowance, the ink on it is kept",
+                     "with the slope allowance, the curves on it is kept",
                      "\(kept) of \(drawn) px")
 
-        let behind = try ink(under, depthTolerance: .infinity, slope: 0)
-        let shown = try ink(under, depthTolerance: depthTolerance, slope: PreviewOptions.defaultSlopeScale)
+        let behind = try curves(under, depthTolerance: .infinity, slope: 0)
+        let shown = try curves(under, depthTolerance: depthTolerance, slope: PreviewOptions.defaultSlopeScale)
         Check.expect(behind > 1000 && Double(shown) <= 0.01 * Double(behind),
-                     "and ink just under it is still hidden",
+                     "and curves just under it is still hidden",
                      "\(shown) of \(behind) px show")
     }
 }
@@ -1336,5 +1336,5 @@ odeTests()
 frequencyTests()
 continuedFractionTests()
 forcedTorusTests()
-surfacePlateTests()
+surfaceDrawingTests()
 exit(Check.summary())

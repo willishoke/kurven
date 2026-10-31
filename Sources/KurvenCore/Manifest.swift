@@ -297,7 +297,7 @@ public enum Walls: Sendable, Equatable {
 /// The footprint the heightfield is rasterized over.
 ///
 /// zeta's landscape is a staircase, not a rectangle: the notch in front of the
-/// s = 1 pole is where the plate cuts away to show the cross-section. It is an
+/// s = 1 pole is where the drawing cuts away to show the cross-section. It is an
 /// absence of geometry, not a mask applied afterwards, so a cell contributes
 /// triangles only when all four of its corners are inside -- no bridging, and
 /// nothing to draw over.
@@ -519,9 +519,9 @@ public enum LayerSource: Sendable, Equatable {
 
     /// Curves that lie on a wall: its hatching and its edges. On a
     /// heightfield they are tested by the wall they lie on and by the solid
-    /// (`Heightfield.visibleWallInk`), never by the depth buffer, which
+    /// (`Heightfield.visibleWallCurves`), never by the depth buffer, which
     /// cannot test a curve on a face it sees edge-on.
-    public var isWallInk: Bool {
+    public var liesOnWall: Bool {
         switch self {
         case .hatching(_, .walls), .wallEdges: true
         default: false
@@ -645,17 +645,17 @@ public struct LayerSpec: Sendable, Equatable {
     public var width: Double
     public var heightPolicy: HeightPolicy
     public var color: String
-    /// False for ink that lies *in* the occluding geometry -- a cut-face hatch,
+    /// False for curves that lie *in* the occluding geometry -- a cut-face hatch,
     /// which a depth test would half erase.
     public var clipped: Bool
 
-    /// Whether the ink lies on the heightfield's own surface: the contours of
+    /// Whether the curves lie on the heightfield's own surface: the contours of
     /// |f| and arg f, lifted onto it -- by any height policy, since a
     /// magnitude contour at its level and a phase line at |f| are on the
-    /// surface as surely as ink lifted by the grid. Such ink can be tested by
+    /// surface as surely as curves lifted by the grid. Such curves can be tested by
     /// which way the surface faces under it, as well as by depth. The
     /// scaffold -- truncation edges, hatches, outlines -- sits on creases and walls,
-    /// where the surface's facing is not the ink's.
+    /// where the surface's facing is not the curves'.
     public var liesOnSurface: Bool {
         clipped && (role == .magnitude || role == .phase)
     }
@@ -706,10 +706,10 @@ public struct LayerSpec: Sendable, Equatable {
 /// The Python `Projection` parameter set, verbatim.
 ///
 /// Column 0 of the array `Projection.apply` consumes is imag and column 1 is
-/// real, so `flipX` flips imag and `yScale` scales real. `Camera.plate` folds
+/// real, so `flipX` flips imag and `yScale` scales real. `Camera.oblique` folds
 /// the axis exchange into one matrix; these numbers cross unchanged so the two
 /// cameras can be compared numerically instead of by inspection.
-public struct PlateProjection: Sendable, Equatable {
+public struct ObliqueProjection: Sendable, Equatable {
     public var shear: Double
     public var xAngle: Double
     public var zAngle: Double
@@ -739,14 +739,14 @@ public struct PlateProjection: Sendable, Equatable {
 
 public struct CameraPreset: Sendable, Equatable {
     public var name: String
-    public var projection: PlateProjection
+    public var projection: ObliqueProjection
     /// How far in view depth a curve may lie behind the surface and still be
     /// drawn: the hidden-line test's tolerance.
     public var depthTolerance: Double
     /// The depth buffer's resolution, in pixels along the longer side.
     public var buffer: Int
 
-    public init(name: String, projection: PlateProjection, depthTolerance: Double, buffer: Int) {
+    public init(name: String, projection: ObliqueProjection, depthTolerance: Double, buffer: Int) {
         self.name = name; self.projection = projection; self.depthTolerance = depthTolerance
         self.buffer = buffer
     }
@@ -754,7 +754,7 @@ public struct CameraPreset: Sendable, Equatable {
     init(json: JSONValue) throws {
         let o = try json.object("CameraPreset")
         self.init(name: try o.string("name", "CameraPreset"),
-                  projection: try PlateProjection(json: o.value("projection", "CameraPreset")),
+                  projection: try ObliqueProjection(json: o.value("projection", "CameraPreset")),
                   depthTolerance: try o.double("depthTolerance", "CameraPreset"),
                   buffer: try o.int("buffer", "CameraPreset"))
     }
@@ -768,7 +768,7 @@ public struct Provenance: Sendable, Equatable {
     public var function: String
     /// The recipe that produced this: "function" for a native landscape, or
     /// the name of the retired Python plate that wrote it. `function` names
-    /// the mathematics; a plate bundle whose function is a catalog preset can
+    /// the mathematics; a drawing bundle whose function is a catalog preset can
     /// be rebuilt natively from it and `params`.
     public var example: String
     public var params: [String: JSONValue]

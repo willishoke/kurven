@@ -13,7 +13,7 @@ public struct Surface: Sendable {
     public let truncation: Truncation
     /// True when the samples came from a cache rather than an evaluator, in
     /// which case the Python side looks heights up by nearest pixel and this
-    /// side must too, or the walls sit at a different top edge than the plate's.
+    /// side must too, or the walls sit at a different top edge than the drawing's.
     public let cached: Bool
 
     public init(height: Grid2D<Float>, phase: Grid2D<Float>?, truncation: Truncation,
@@ -75,8 +75,8 @@ public struct Surface: Sendable {
 
     /// The height of a *tiled* landscape at a world point.
     ///
-    /// The grid covers one fundamental tile; the plate covers its images under
-    /// the occluder's affine maps. A point out on the plate is therefore not in
+    /// The grid covers one fundamental tile; the drawing covers its images under
+    /// the occluder's affine maps. A point out on the drawing is therefore not in
     /// the grid, and asking the grid about it returns whatever is nearest the
     /// edge -- which for elliptic, whose cutout runs across all nineteen tiles
     /// and whose tile edge is a pole, is a spire-high wall standing along the
@@ -128,7 +128,7 @@ public struct Surface: Sendable {
     /// decimated by `step`, each cell as the two triangles the rasterizer
     /// splits it into -- from corner (1, 0) to corner (0, 1) -- then truncated.
     /// `height(at:)` interpolates bilinearly, which is what the Python plate
-    /// placed its ink by and the fixtures pin; this is what the ink is drawn
+    /// placed its curves by and the fixtures pin; this is what the curves are drawn
     /// against, and the two differ within a cell by its twist.
     func drawnHeight(at p: P2<DomainSpace>, step: Int) -> Double {
         let drawn = drawnSurface(at: p, step: step)
@@ -171,15 +171,15 @@ public struct Surface: Sendable {
     }
 }
 
-// MARK: - deriving ink from the grids
+// MARK: - deriving curves from the grids
 
-/// What a consumer that has the function supplies, so the ink can be placed by
+/// What a consumer that has the function supplies, so the curves can be placed by
 /// f rather than by the grid. Core has the grids and not the function;
 /// `KurvenLandscape`'s `ContourRefiner` builds one of these.
 public struct ContourRefine: Sendable {
     /// Moves the paths of one level of one field onto the function's own
     /// level set, given the field, the level, the marching-squares paths in
-    /// domain space, and the ceiling: the height above which the ink is cut
+    /// domain space, and the ceiling: the height above which the curves are cut
     /// away (`Restriction.belowTruncation`), so a stretch of a phase line wholly above it
     /// need not be placed. `.infinity` places all of it.
     public typealias Contours = @Sendable (ContourField, Double, [[P2<DomainSpace>]], Double)
@@ -284,12 +284,12 @@ public extension Surface {
     /// Where a path leaves by going *over the truncation*, the split is at the truncation
     /// itself: the run gains a vertex on the truncation edge (`truncationCrossing`) rather than
     /// ending at its last vertex under it, which on a pole's graph is up to
-    /// half a world unit short. Only with a refiner: without one the ink is
+    /// half a world unit short. Only with a refiner: without one the curves are
     /// exactly what Python derives from the same grids, which ends at the
     /// last sample, and the fixtures hold it to that.
     ///
     /// A phase level of ±π is the cut, where arg f jumps, and the grid has no
-    /// contour at it. With a refiner it is drawn once, as one line of ink the
+    /// contour at it. With a refiner it is drawn once, as one line of curves the
     /// way the Jahnke-Emde plates draw it (`Contour.cut`), under the level π
     /// so the refiner knows to place it on arg(-f) = 0.
     func derive(_ source: LayerSource, policy: HeightPolicy, region: Region,
@@ -313,11 +313,11 @@ public extension Surface {
             }
         }
         let carry = refine != nil && restriction.requiresBelowTruncation
-        // Ink lifted to |f| and kept below the truncation is cut away wherever |f|
+        // Curves lifted to |f| and kept below the truncation are cut away wherever |f|
         // is above it, so the refiner need not place it there: on zeta and
         // 1/Γ that was nineteen phase vertices of every twenty. A tenth over
         // the truncation is room for a chord whose ends lie above it and whose middle
-        // dips under. Ink lifted to the truncated surface is drawn on the plateau's
+        // dips under. Curves lifted to the truncated surface are drawn on the plateau's
         // top, and placed all over.
         let ceiling = restriction.requiresBelowTruncation && policy == .magnitude ? 1.1 * truncation.highest : .infinity
 

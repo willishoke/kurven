@@ -2,7 +2,7 @@ import Foundation
 import simd
 import KurvenCore
 
-// MARK: - the plateau, where the drawn surface and the ink meet
+// MARK: - the plateau, where the drawn surface and the curves meet
 
 /// The truncation edge: the pieces `Mesh.truncationEdgeMesh` adds to the depth pass, and the
 /// vertex `Surface.derive` carries a contour to.

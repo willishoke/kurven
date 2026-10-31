@@ -26,7 +26,7 @@ typedef struct {
     // one matrix covers both. Which view component drives which screen axis is
     // folded in here too: the bake rasterizes in ZBuffer's order (rows index
     // view x) so it can be compared against Python, the preview in screen
-    // order (view x across) so it looks like the plate.
+    // order (view x across) so it looks like the drawing.
     simd_float4x4 clip;
 
     // The heightfield's domain rectangle and its grid size after decimation.
@@ -60,9 +60,9 @@ typedef struct {
     simd_float3 position;
 } KVVertex;
 
-// A vertex of depth-tested ink: where it is and, for ink lying on a
+// A vertex of depth-tested strokes: where it is and, for strokes lying on a
 // heightfield, the surface's outward normal there, not normalized -- zero for
-// ink that is tested by depth alone.
+// strokes that is tested by depth alone.
 typedef struct {
     simd_float3 position;
     simd_float3 normal;
@@ -89,7 +89,7 @@ typedef struct {
     // it does not.
     simd_float3 lightDirection;
     float ambient;
-    // The stroke's width in pixels. Ink is drawn as screen-space quads this
+    // The stroke's width in pixels. Strokes are drawn as screen-space quads this
     // wide, plus a pixel for the edge to fall off in.
     float strokeWidth;
     // View-depth range for the `.depth` inspection mode: what to map to black
@@ -120,26 +120,26 @@ typedef struct {
     simd_float2 depthRange;
 } KVSurface;
 
-// A vertex of ink drawn on a parametric surface: where it is, which way the
+// A vertex of strokes drawn on a parametric surface: where it is, which way the
 // surface faces there, and where on the surface it lies.
 typedef struct {
     simd_float3 position;
     // The *outward* normal, not normalized: the parametrization's normal times
     // the surface's orientation. Zero for a surface that bounds no solid, and
-    // for ink on the folds themselves, where facing is not asked.
+    // for strokes on the folds themselves, where facing is not asked.
     simd_float3 normal;
     simd_float2 coord;
-} KVInkVertex;
+} KVStrokeVertex;
 
-// What the ink test needs of the camera to ask which way a surface faces.
+// What the visibility test needs of the camera to ask which way a surface faces.
 typedef struct {
     // World direction lines of sight travel, for an orthographic camera.
     simd_float3 sight;
     // World position of the eye, for a perspective one.
     simd_float3 eye;
     uint32_t perspective;
-    // Nonzero for fold ink: tested by the front-most test alone.
+    // Nonzero for fold strokes: tested by the front-most test alone.
     uint32_t onFolds;
-} KVInk;
+} KVStroke;
 
 #endif /* KurvenShaderTypes_h */

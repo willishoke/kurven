@@ -99,7 +99,7 @@ func torusSeesFromOutside(_ p: SIMD3<Double>, major R: Double, minor r: Double,
     return realRoots(quartic, in: 0, 2.5 * (R + r) + simd_length(p)).isEmpty
 }
 
-/// Elevation and azimuth as the plate cameras have them, with an optional
+/// Elevation and azimuth as the oblique camera have them, with an optional
 /// oblique shear in front, so the view is affine but not orthonormal.
 func testCamera(elevation: Double, azimuth: Double,
                 shear: Double = 0) -> Transform<WorldSpace, ViewSpace> {
@@ -164,16 +164,16 @@ func compareWithRayCast(_ vis: SurfaceVisibility, major R: Double, minor r: Doub
 }
 
 func surfaceTests() {
-    Check.suite("surfaces: ink can carry where on a surface it lies") {
+    Check.suite("surfaces: curves can carry where on a surface it lies") {
         let a: [P3<WorldSpace>] = [P3(0, 0, 0), P3(1, 0, 0), P3(2, 0, 0)]
         let ca: [P2<ParamSpace>] = [P2(0, 0), P2(0.5, 0), P2(1, 0)]
         let set = PolylineSet(paths: [a, [P3(9, 9, 9)]], coords: [ca, [P2(9, 9)]])
         Check.expect(set.count == 1 && set.coords?.count == 3,
                      "a singleton path drops its coordinates with it")
         let moved = set.mapped(Transform<WorldSpace, ViewSpace>.identity)
-        Check.expect(moved.coords == set.coords, "a camera moves the ink and not its coordinates")
+        Check.expect(moved.coords == set.coords, "a camera moves the curves and not its coordinates")
         Check.expect(PolylineSet(paths: [a]).coords == nil,
-                     "ink without coordinates says so rather than inventing them")
+                     "curves without coordinates says so rather than inventing them")
     }
 
     Check.suite("surfaces: which side is outside is computed, not guessed") {
@@ -400,9 +400,9 @@ func surfaceTests() {
                     }
                 }
             }
-            let error = abs(clipped.inkLength - truth) / truth
-            Check.expect(error < 0.002, "\(name): visible ink length matches the ray-cast",
-                         String(format: "%.4f vs %.4f, %.3f%% off", clipped.inkLength, truth,
+            let error = abs(clipped.totalLength - truth) / truth
+            Check.expect(error < 0.002, "\(name): visible length matches the ray-cast",
+                         String(format: "%.4f vs %.4f, %.3f%% off", clipped.totalLength, truth,
                                 100 * error))
         }
     }
@@ -488,16 +488,16 @@ func surfaceGPUTests() {
     }
 }
 
-/// The visible length of ink on the torus `(R, r)`, by the exact ray-cast:
+/// The visible length of curves on the torus `(R, r)`, by the exact ray-cast:
 /// every segment divided `k` ways, each piece kept when its midpoint is seen.
-func rayCastInkLength(_ ink: PolylineSet<WorldSpace>, on surface: ParametricSurface,
+func rayCastLength(_ curves: PolylineSet<WorldSpace>, on surface: ParametricSurface,
                       major R: Double, minor r: Double,
                       view: Transform<WorldSpace, ViewSpace>, k: Int = 8) -> Double {
     let eye = -view.projectionDirection
-    let coords = ink.coords!
+    let coords = curves.coords!
     var total = 0.0
-    for path in 0..<ink.count {
-        for i in ink.offsets[path]..<(ink.offsets[path + 1] - 1) {
+    for path in 0..<curves.count {
+        for i in curves.offsets[path]..<(curves.offsets[path + 1] - 1) {
             let a = coords[i].v, b = coords[i + 1].v
             for j in 0..<k {
                 let at = { (t: Double) in surface.map(P2(a + (b - a) * t)).position }
@@ -512,23 +512,23 @@ func rayCastInkLength(_ ink: PolylineSet<WorldSpace>, on surface: ParametricSurf
 }
 
 func surfaceBakeTests() {
-    Check.suite("bake: a parametric scene bakes its ink by where it lies on the surface") {
+    Check.suite("bake: a parametric scene bakes its curves by where it lies on the surface") {
         let renderer = try MetalRenderer()
         let torus = ParametricSurface.torus(major: 2, minor: 1, samples: (512, 256))
-        let ink = torus.coordinateCurves(counts: (24, 12), resolution: 2048)
+        let curves = torus.coordinateCurves(counts: (24, 12), resolution: 2048)
         let spec = LayerSpec(name: "lines", role: .scaffold, source: .coordinateCurves(u: 24, v: 12),
                              width: 0.3, heightPolicy: .surface)
-        // A plate camera, shear and all, as a real plate would have it.
-        let camera = Camera.plate(PlateProjection(shear: 0.5, xAngle: -50, zAngle: 25,
+        // A oblique camera, shear and all, as a real drawing would have it.
+        let camera = Camera.oblique(ObliqueProjection(shear: 0.5, xAngle: -50, zAngle: 25,
                                                   flipX: false, yScale: nil))
-        let scene = Scene(surface: torus, layers: [Layer(spec: spec, paths: ink)],
+        let scene = Scene(surface: torus, layers: [Layer(spec: spec, paths: curves)],
                           camera: camera, depthTolerance: 0.03)
         let whole = try renderer.bake(scene, options: BakeOptions(resolution: 2400, tiles: 1))
-        let truth = rayCastInkLength(ink, on: torus, major: 2, minor: 1, view: camera.view)
-        let error = abs(whole.strokes.inkLength - truth) / truth
+        let truth = rayCastLength(curves, on: torus, major: 2, minor: 1, view: camera.view)
+        let error = abs(whole.strokes.totalLength - truth) / truth
         Check.expect(whole.surface != nil && error < 0.002,
-                     "the baked plate carries the ray-cast's visible length",
-                     String(format: "%.4f vs %.4f, %.3f%% off", whole.strokes.inkLength, truth,
+                     "the baked drawing carries the ray-cast's visible length",
+                     String(format: "%.4f vs %.4f, %.3f%% off", whole.strokes.totalLength, truth,
                             100 * error))
 
         // Tiling splits the render and never the clip, and depth and
@@ -544,7 +544,7 @@ func surfaceBakeTests() {
                      "\(moved) of \(whole.surface!.coords.count) pixel coordinates differ")
 
         // A linear curve is tested the same way, by the same coordinate image:
-        // ink the surface passes never saw, placed from the grid rather
+        // curves the surface passes never saw, placed from the grid rather
         // than the map, still carries the ray-cast's visible length.
         let linearCurves = torus.linearCurves(slope: 2.0 / 5, turns: 5, count: 3)
         let wound = try renderer.bake(
@@ -553,21 +553,21 @@ func surfaceBakeTests() {
                                                  width: 0.3, heightPolicy: .surface),
                                  paths: linearCurves)]),
             options: BakeOptions(resolution: 2400, tiles: 1))
-        let linearCurveTruth = rayCastInkLength(linearCurves, on: torus, major: 2, minor: 1,
+        let linearCurveTruth = rayCastLength(linearCurves, on: torus, major: 2, minor: 1,
                                             view: camera.view)
-        let linearCurveError = abs(wound.strokes.inkLength - linearCurveTruth) / linearCurveTruth
+        let linearCurveError = abs(wound.strokes.totalLength - linearCurveTruth) / linearCurveTruth
         Check.expect(linearCurveError < 0.002, "a linear curve bakes to the ray-cast's visible length too",
-                     String(format: "%.4f vs %.4f, %.3f%% off", wound.strokes.inkLength,
+                     String(format: "%.4f vs %.4f, %.3f%% off", wound.strokes.totalLength,
                             linearCurveTruth, 100 * linearCurveError))
 
         // The same lines without coordinates are tested by depth, at the
         // scene's depth tolerance -- still a drawing, and a measurably worse one.
-        let bare = Layer(spec: spec, paths: PolylineSet(vertices: ink.vertices, offsets: ink.offsets))
+        let bare = Layer(spec: spec, paths: PolylineSet(vertices: curves.vertices, offsets: curves.offsets))
         let byDepth = try renderer.bake(scene.drawing([bare]),
                                         options: BakeOptions(resolution: 2400, tiles: 1))
-        let depthError = abs(byDepth.strokes.inkLength - truth) / truth
+        let depthError = abs(byDepth.strokes.totalLength - truth) / truth
         Check.expect(byDepth.strokes.pathCount > 0 && depthError > error,
-                     "ink without coordinates falls back to the depth test",
+                     "curves without coordinates falls back to the depth test",
                      String(format: "%.3f%% off by depth, %.3f%% by coordinate",
                             100 * depthError, 100 * error))
     }
@@ -580,7 +580,7 @@ func foldTests() {
             let torus = ParametricSurface.torus(major: R, minor: r, samples: (512, 256))
             for (name, xAngle, shear) in [("elevation 50°", -50.0, 0.0),
                                           ("sheared", -30.0, 0.5)] {
-                let camera = Camera.plate(PlateProjection(shear: shear, xAngle: xAngle, zAngle: 25,
+                let camera = Camera.oblique(ObliqueProjection(shear: shear, xAngle: xAngle, zAngle: 25,
                                                           flipX: false, yScale: nil))
                 let sight = camera.view.projectionDirection
                 let folds = torus.foldCurves(sight: sight)
@@ -618,10 +618,10 @@ func foldTests() {
                 // is the fold's own neighbourhood for the first couple of
                 // pixels. So the bound is a few pixels per cusp, not zero.
                 let px = baked.depth.frame.unitsPerPixel.max()
-                let excess = baked.strokes.inkLength - truth
+                let excess = baked.strokes.totalLength - truth
                 Check.expect(abs(excess) < 16 * px,
                              "\(label): the visible fold length is the ray-cast's, to a few pixels",
-                             String(format: "%.4f vs %.4f, %+.1f px", baked.strokes.inkLength,
+                             String(format: "%.4f vs %.4f, %+.1f px", baked.strokes.totalLength,
                                     truth, excess / px))
             }
         }
@@ -631,18 +631,18 @@ func foldTests() {
 func creaseTests() {
     Check.suite("surfaces: a truncation edge is a crease, drawn once and seen where either face is") {
         // sn in relief, truncated and floored, so that each pole is a chimney
-        // whose flat top meets its wall in a crease: the plate the gaps
+        // whose flat top meets its wall in a crease: the drawing the gaps
         // were found on, two periods each way.
         let base = try PeriodicTorus.jacobiSN(modulus: 0.64, resolution: 300, grid: 512,
                                               truncated: true, turn: 0.125)
             .repeated(real: 2, imag: 2, grid: 1024)
         let height = base.height!, floor = 1.5
-        let plate = PeriodicTorus.Plate(surface: base.surface, layers: base.layers,
+        let drawing = PeriodicTorus.Drawing(surface: base.surface, layers: base.layers,
                                         height: { max(height($0) - floor, 0) },
                                         ceiling: base.ceiling - floor, radii: base.radii)
             .relief(amplitude: 0.45, reach: 1)
-        let surface = plate.surface, ceiling = plate.ceiling
-        let camera = Camera.plate(PlateProjection(shear: 0, xAngle: -55, zAngle: 30,
+        let surface = drawing.surface, ceiling = drawing.ceiling
+        let camera = Camera.oblique(ObliqueProjection(shear: 0, xAngle: -55, zAngle: 30,
                                                   flipX: false, yScale: nil))
         let sight = camera.view.projectionDirection
         let h = { (c: P2<ParamSpace>) in max(height(c) - floor, 0) }
@@ -656,7 +656,7 @@ func creaseTests() {
         // and only the second is a fold: no piece of fold runs along the
         // plateau's edge, truncated one side and not the other at both its
         // ends. A fold that meets the truncation edge ends on it, below.
-        let truncationEdgeLayer = plate.layers.first { $0.spec.name == "truncation edge" }!
+        let truncationEdgeLayer = drawing.layers.first { $0.spec.name == "truncation edge" }!
         let folds = surface.foldCurves(sight: sight, creases: Scene(surface: surface, layers: [truncationEdgeLayer], camera: camera, depthTolerance: 0).creases)
         func onTruncationEdge(_ c: P2<ParamSpace>) -> Bool {
             let hs = beside(c, 1e-4 * cell).map(h)
@@ -682,7 +682,7 @@ func creaseTests() {
         // turns edge-on between two truncation edge vertices where its facing a hair
         // off the truncation edge changes sign, and the fold starts there; on a steep
         // wall its whole visible length can lie within a grid cell.
-        let truncationEdgeCoords = plate.layers.first { $0.spec.name == "truncation edge" }!.paths
+        let truncationEdgeCoords = drawing.layers.first { $0.spec.name == "truncation edge" }!.paths
         func side(_ c: P2<ParamSpace>, truncationHeight: Bool) -> Double {
             let e = 1e-3 * cell
             let g = SIMD2(h(P2(c.x + e, c.y)) - h(P2(c.x - e, c.y)), h(P2(c.x, c.y + e)) - h(P2(c.x, c.y - e)))
@@ -714,7 +714,7 @@ func creaseTests() {
         let seenTruncationEdge = HiddenLine.clip(truncationEdgeLayer.paths.mapped(camera.view), on: sphereTracer,
                                       onFolds: true, onCrease: true)
         let seenFolds = HiddenLine.clip(folds.mapped(camera.view), on: sphereTracer, onFolds: true)
-        func ends(_ p: PolylineSet<PlateSpace>) -> [SIMD2<Double>] {
+        func ends(_ p: PolylineSet<PageSpace>) -> [SIMD2<Double>] {
             (0..<p.count).flatMap { i in
                 [p.vertices[p.offsets[i]], p.vertices[p.offsets[i + 1] - 1]].map { SIMD2($0.x, $0.y) }
             }
@@ -728,7 +728,7 @@ func creaseTests() {
         // The truncation edge is a convex edge: seen where the truncation or the wall beside
         // it faces the eye and nothing stands in front. The normal on the
         // crease itself is half of each, and says nothing.
-        let truncationEdge = plate.layers.first { $0.spec.name == "truncation edge" }!
+        let truncationEdge = drawing.layers.first { $0.spec.name == "truncation edge" }!
         let sphereTracing = SurfaceVisibility(sphereTracing: surface, view: camera.view)
         // Asked at the truncation edge's vertices, which are on the crease: a chord's
         // midpoint is inside the plateau, where only the truncation is beside it.
@@ -750,10 +750,10 @@ func creaseTests() {
         let scene = Scene(surface: surface, layers: [truncationEdge], camera: camera, depthTolerance: 0)
         let baked = try MetalRenderer().bake(scene, options: BakeOptions(resolution: 2000))
         let px = baked.depth.frame.unitsPerPixel.max()
-        let excess = baked.strokes.inkLength - truth
+        let excess = baked.strokes.totalLength - truth
         Check.expect(truth > 0 && abs(excess) < slack + 2 * px,
                      "the baked truncation edge is the convex edge's visible length, to its turning chords",
-                     String(format: "%.4f vs %.4f, %+.1f px of %.1f", baked.strokes.inkLength, truth,
+                     String(format: "%.4f vs %.4f, %+.1f px of %.1f", baked.strokes.totalLength, truth,
                             excess / px, slack / px + 2))
     }
 }
@@ -782,10 +782,10 @@ func periodicTorusTests() {
 
     Check.suite("surfaces: a doubly periodic function drawn on its torus") {
         let m = 0.64
-        let plate = try PeriodicTorus.jacobiSN(modulus: m)
+        let drawing = try PeriodicTorus.jacobiSN(modulus: m)
         var worst = 0.0, off = 0.0, vertices = 0, singular = 0
         var worstWhere = ""
-        for layer in plate.layers {
+        for layer in drawing.layers {
             guard case .contour(let field, let levels, _, _) = layer.spec.source else { continue }
             let coords = layer.paths.coords!
             for (k, c) in coords.enumerated() {
@@ -804,7 +804,7 @@ func periodicTorusTests() {
                 }
                 worst = max(worst, abs(value - level) / scale)
                 off = max(off, simd_length(layer.paths.vertices[k].v
-                                           - plate.surface.map(c).position))
+                                           - drawing.surface.map(c).position))
             }
         }
         Check.expect(vertices > 10_000 && worst < 1e-6,
@@ -814,19 +814,19 @@ func periodicTorusTests() {
         Check.expect(off < 1e-12, "and sits on the torus where its coordinate says", "\(off)")
 
         let renderer = try MetalRenderer()
-        let camera = Camera.plate(PlateProjection(shear: 0.5, xAngle: -50, zAngle: 25,
+        let camera = Camera.oblique(ObliqueProjection(shear: 0.5, xAngle: -50, zAngle: 25,
                                                   flipX: false, yScale: nil))
-        let contours = plate.layers.filter { if case .contour = $0.spec.source { true } else { false } }
-        let baked = try renderer.bake(Scene(surface: plate.surface, layers: contours,
+        let contours = drawing.layers.filter { if case .contour = $0.spec.source { true } else { false } }
+        let baked = try renderer.bake(Scene(surface: drawing.surface, layers: contours,
                                             camera: camera, depthTolerance: 0),
                                       options: BakeOptions(resolution: 2400))
         let truth = contours.reduce(0.0) {
-            $0 + rayCastInkLength($1.paths, on: plate.surface, major: 2, minor: 1,
+            $0 + rayCastLength($1.paths, on: drawing.surface, major: 2, minor: 1,
                                   view: camera.view, k: 4)
         }
-        let error = abs(baked.strokes.inkLength - truth) / truth
+        let error = abs(baked.strokes.totalLength - truth) / truth
         Check.expect(error < 0.003, "and it is seen where the ray-cast sees it",
-                     String(format: "%.4f vs %.4f, %.3f%% off", baked.strokes.inkLength, truth,
+                     String(format: "%.4f vs %.4f, %.3f%% off", baked.strokes.totalLength, truth,
                             100 * error))
     }
 
@@ -837,13 +837,13 @@ func periodicTorusTests() {
     // continuation begins at the same point of the torus.
     Check.suite("surfaces: every line on the sn torus ends on a zero, a pole, or its continuation across the seam") {
         let m = 0.64
-        let plate = try PeriodicTorus.jacobiSN(modulus: m)
-        let u = plate.surface.u.range, v = plate.surface.v.range
+        let drawing = try PeriodicTorus.jacobiSN(modulus: m)
+        let u = drawing.surface.u.range, v = drawing.surface.v.range
         let onEdge = 1e-7
         var loose: [String] = []
         var seam: [(text: String, at: SIMD3<Double>)] = []
         var zeros = 0, poles = 0
-        for layer in plate.layers {
+        for layer in drawing.layers {
             guard case .contour = layer.spec.source, let coords = layer.paths.coords else { continue }
             let offsets = layer.paths.offsets
             for i in 0..<(offsets.count - 1) {
@@ -857,7 +857,7 @@ func periodicTorusTests() {
                                       layer.spec.name as NSString, c.x, c.y, f.magnitude)
                     if abs(c.x - u.lo) < onEdge || abs(c.x - u.hi) < onEdge
                         || abs(c.y - v.lo) < onEdge || abs(c.y - v.hi) < onEdge {
-                        seam.append((text, plate.surface.map(c).position))
+                        seam.append((text, drawing.surface.map(c).position))
                     } else {
                         loose.append(text)
                     }
@@ -888,13 +888,13 @@ func periodicTorusTests() {
     Check.suite("surfaces: a double zero and a double pole each hold two rays of every level") {
         let m = 0.64
         let K = Jacobi.quarterPeriod(m), Kp = Jacobi.quarterPeriod(1 - m)
-        let plate = try PeriodicTorus.plate("sn(z, \(m))^2", origin: Complex(-K / 2, -Kp / 2),
+        let drawing = try PeriodicTorus.drawing("sn(z, \(m))^2", origin: Complex(-K / 2, -Kp / 2),
                                             periods: (2 * K, 2 * Kp))
-        let u = plate.surface.u.range, v = plate.surface.v.range
+        let u = drawing.surface.u.range, v = drawing.surface.v.range
         var atZero = 0, atPole = 0, levels = 0
         var loose: [String] = []
         var seam: [(text: String, at: SIMD3<Double>)] = []
-        for layer in plate.layers {
+        for layer in drawing.layers {
             guard case .contour(let field, let list, _, _) = layer.spec.source, field == .phase,
                   let coords = layer.paths.coords else { continue }
             // The cut, ±π, is drawn once.
@@ -913,7 +913,7 @@ func periodicTorusTests() {
                                       layer.spec.name as NSString, c.x, c.y, f2)
                     if abs(c.x - u.lo) < 1e-7 || abs(c.x - u.hi) < 1e-7
                         || abs(c.y - v.lo) < 1e-7 || abs(c.y - v.hi) < 1e-7 {
-                        seam.append((text, plate.surface.map(c).position))
+                        seam.append((text, drawing.surface.map(c).position))
                     } else {
                         loose.append(text)
                     }
@@ -935,11 +935,11 @@ func periodicTorusTests() {
 }
 
 func surfacePreviewTests() {
-    // At rest the preview draws a sphere-traced surface's ink as the bake tests
+    // At rest the preview draws a sphere-traced surface's curves as the bake tests
     // it. A draft asks the bake's two questions per fragment rather than per
     // vertex, so the two may differ within a pixel of wherever visibility
     // changes and nowhere else. Both held to that: the baked strokes,
-    // rasterized into the preview's own pixels, against the preview's ink.
+    // rasterized into the preview's own pixels, against the preview's curves.
     Check.suite("preview: a parametric surface draws what its bake draws") {
         let renderer = try MetalRenderer()
         let torus = ParametricSurface.torus(major: 2, minor: 1, samples: (512, 256))
@@ -950,7 +950,7 @@ func surfacePreviewTests() {
         let folds = Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                                           width: 0.3, heightPolicy: .surface),
                           paths: .empty)
-        let style = PlateStyle(shear: 0.5, flipX: false, yScale: nil)
+        let style = DrawingConvention(shear: 0.5, flipX: false, yScale: nil)
         let orbit = Orbit(target: P3(0, 0, 0), azimuth: Angle(degrees: 25),
                           elevation: Angle(degrees: -50), style: style)
         let viewport = Viewport(width: 900, height: 700)
@@ -960,9 +960,9 @@ func surfacePreviewTests() {
         }
         let navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
         let target = try renderer.makePreviewTarget(viewport)
-        // Any visible mark counts as ink: a stroke narrower than a pixel is
+        // Any visible mark counts as curves: a stroke narrower than a pixel is
         // drawn lighter, not narrower.
-        func inkMask(_ bgra: [UInt8]) -> [Bool] {
+        func strokeMask(_ bgra: [UInt8]) -> [Bool] {
             (0..<(bgra.count / 4)).map { k -> Bool in
                 let r = 299 * Int(bgra[4 * k + 2]), g = 587 * Int(bgra[4 * k + 1])
                 let b = 114 * Int(bgra[4 * k])
@@ -1003,18 +1003,18 @@ func surfacePreviewTests() {
             try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
                                        options: PreviewOptions(slopeScale: 0, draft: draft),
                                        into: target)
-            let preview = inkMask(try PNG.bgra(target))
+            let preview = strokeMask(try PNG.bgra(target))
             let baked1 = bake.indices.filter { bake[$0] }
             let shown = baked1.filter { near(preview, $0, 1) }.count
-            let inked = preview.indices.filter { preview[$0] }
-            let backed = inked.filter { near(bake, $0, 2) }.count
+            let stroked = preview.indices.filter { preview[$0] }
+            let backed = stroked.filter { near(bake, $0, 2) }.count
             let recall = Double(shown) / Double(max(baked1.count, 1))
-            let precision = Double(backed) / Double(max(inked.count, 1))
+            let precision = Double(backed) / Double(max(stroked.count, 1))
             Check.expect(baked1.count > 5000 && recall > 0.99,
-                         "\(when): the ink the bake keeps, the preview draws",
+                         "\(when): the curves the bake keeps, the preview draws",
                          String(format: "%.2f%% of %d baked pixels", 100 * recall, baked1.count))
-            Check.expect(precision > 0.99, "\(when): and the ink the preview draws, the bake keeps",
-                         String(format: "%.2f%% of %d preview pixels", 100 * precision, inked.count))
+            Check.expect(precision > 0.99, "\(when): and the curves the preview draws, the bake keeps",
+                         String(format: "%.2f%% of %d preview pixels", 100 * precision, stroked.count))
         }
 
         // The control: the same lines drawn without a visibility test. If the
@@ -1024,7 +1024,7 @@ func surfacePreviewTests() {
         try renderer.renderPreview(scene.drawing([Layer(spec: open, paths: lines.paths), folds]),
                                    navigator: navigator, viewport: viewport,
                                    options: PreviewOptions(slopeScale: 0), into: target)
-        let unclipped = inkMask(try PNG.bgra(target))
+        let unclipped = strokeMask(try PNG.bgra(target))
         let all = unclipped.indices.filter { unclipped[$0] }
         let stray = Double(all.filter { !near(bake, $0, 2) }.count) / Double(max(all.count, 1))
         Check.expect(stray > 0.2, "while the same lines drawn unclipped visibly are not",
@@ -1143,12 +1143,12 @@ func edgeOnPreviewTests() {
     // At rest the window draws what sphere tracing keeps, as the bake does, and
     // the draft is held to showing the difference, or this proves nothing.
     Check.suite("preview: a torus nearly edge-on keeps its outline whole at rest") {
-        let plate = try SurfacePlate.build(
+        let drawing = try SurfaceDrawing.build(
             SurfaceRequest(.sn(modulus: 0.64, major: 2, minor: 1, grid: 200), grid: 600))
         var projection = SurfaceRequest.projection
         projection.xAngle = -89.5
         projection.zAngle = 118.2
-        let scene = plate.scene(camera: Camera.plate(projection))
+        let scene = drawing.scene(camera: Camera.oblique(projection))
         let viewport = Viewport(width: 1400, height: 900)
         guard let bounds = scene.quickBounds() else {
             Check.expect(false, "the torus has bounds"); return
@@ -1160,11 +1160,11 @@ func edgeOnPreviewTests() {
         let frame = navigator.framing.frame(viewport)
 
         // The folds alone: the contours meet the outline all along it, and
-        // ink beside a gap would fill it.
+        // curves beside a gap would fill it.
         guard let folds = scene.layers.firstIndex(where: {
             if case .foldCurves = $0.spec.source { true } else { false }
         }) else {
-            Check.expect(false, "the plate draws its folds"); return
+            Check.expect(false, "the drawing draws its folds"); return
         }
         let baked = try renderer.bake(scene.looking(navigator.camera),
                                       options: BakeOptions(resolution: 3000))
@@ -1192,7 +1192,7 @@ func edgeOnPreviewTests() {
                                                                draft: draft),
                                        into: target)
             let bgra = try PNG.bgra(target)
-            func inked(_ row: Int, _ col: Int) -> Bool {
+            func stroked(_ row: Int, _ col: Int) -> Bool {
                 guard row >= 0, row < viewport.height, col >= 0, col < viewport.width else { return false }
                 let k = row * viewport.width + col
                 return 299 * Int(bgra[4 * k + 2]) + 587 * Int(bgra[4 * k + 1])
@@ -1200,7 +1200,7 @@ func edgeOnPreviewTests() {
             }
             let shown = baked1.filter { k in
                 let row = k / viewport.width, col = k % viewport.width
-                return (-1...1).contains { dr in (-1...1).contains { dc in inked(row + dr, col + dc) } }
+                return (-1...1).contains { dr in (-1...1).contains { dc in stroked(row + dr, col + dc) } }
             }.count
             return Double(shown) / Double(max(baked1.count, 1))
         }

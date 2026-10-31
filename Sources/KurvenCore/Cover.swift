@@ -3,14 +3,14 @@ import Foundation
 /// The deck group of a torus: translations by the two periods of a rectangle.
 ///
 /// A doubly periodic function lives on the plane, and the plane is where its
-/// ink is computed: sampled, contoured, placed on f, carried to its zeros and
+/// curves are computed: sampled, contoured, placed on f, carried to its zeros and
 /// poles. The torus is the quotient of the plane by the lattice of periods,
-/// and the rectangle a plate draws is one fundamental domain of that
+/// and the rectangle a drawing draws is one fundamental domain of that
 /// quotient. It is not a chart of the torus, and its edges are not edges of
 /// anything: a zero of sn on the real axis is a zero in the interior of the
-/// plane, with the whole fan of phase lines round it, and the ink round it is
+/// plane, with the whole fan of phase lines round it, and the curves round it are
 /// computed there, on a window of the plane that reaches past the rectangle
-/// on every side (`PeriodicTorus.plate`). What the rectangle decides is which
+/// on every side (`PeriodicTorus.drawing`). What the rectangle decides is which
 /// copy of each curve is kept.
 ///
 /// Typed accordingly. `DomainSpace` is the plane, the cover; `ParamSpace` is
@@ -45,7 +45,7 @@ public struct PeriodLattice: Sendable, Equatable {
     /// path crosses an edge, with the crossing itself for its end vertex.
     ///
     /// Half-open: a vertex on the far edge of either axis belongs to the next
-    /// copy of the rectangle. Ink lying along a seam -- sn's lines of phase
+    /// copy of the rectangle. Curves lying along a seam -- sn's lines of phase
     /// ±π/2 run the length of its imaginary period -- is therefore kept once,
     /// from the copy on the near edge. `slack` is the rounding allowed in that
     /// decision, a small fraction of a cell.

@@ -6,7 +6,7 @@ import KurvenBake
 import KurvenLandscape
 import KurvenDynamics
 
-/// One open bundle or surface plate, and everything the window knows about it.
+/// One open bundle or surface drawing, and everything the window knows about it.
 ///
 /// Every mutation is a whole new value assigned into a stored property, so the
 /// model holds no derived state that can go stale. In particular `scene` keeps
@@ -22,18 +22,18 @@ final class Document {
         case ready(KurvenBundle)
         /// A parametric surface. Not a bundle, so every control that edits
         /// or saves one stays away from it.
-        case surface(SurfacePlate)
+        case surface(SurfaceDrawing)
         case failed(URL, String)
     }
 
     private(set) var state: State = .empty {
         didSet { version &+= 1 }
     }
-    /// Bumped whenever `state` is written, so ink derived on another thread
+    /// Bumped whenever `state` is written, so curves derived on another thread
     /// from one bundle is dropped if a different one is open when it lands.
     private(set) var version = 0
 
-    /// The landscape and its ink. Its camera and depth tolerance are whatever they were
+    /// The landscape and its curves. Its camera and depth tolerance are whatever they were
     /// when it was stored, and nothing reads them: `framedScene` supplies both.
     var scene: Scene?
     var navigator: Navigator?
@@ -54,12 +54,12 @@ final class Document {
         guard var scene, let navigator else { return nil }
         scene.camera = navigator.camera
         scene.depthTolerance = depthTolerance
-        // A quarter of a drawable pixel: finer than any end of ink can show.
+        // A quarter of a drawable pixel: finer than any end of a curve can show.
         scene.resolution = 0.25 * navigator.framing.unitsPerPixel
         return scene
     }
 
-    var mode: PreviewMode = .plate
+    var mode: PreviewMode = .drawing
     /// Layer indices that are drawn. Absent means all of them.
     var hiddenLayers: Set<Int> = []
     var depthTolerance: Double = 0.02
@@ -104,14 +104,14 @@ final class Document {
     /// The styling the controls have asked for, ahead of the bundle that will
     /// carry it: a restyle is derived on another thread (`Landscape.swift`),
     /// and a slider reads its value from here so its thumb does not spring
-    /// back while the ink is being drawn. Nil when the bundle is up to date.
+    /// back while the curves are being drawn. Nil when the bundle is up to date.
     var styled: Styling?
-    /// Ink being derived on another thread: a restyle, a change of
+    /// Curves being derived on another thread: a restyle, a change of
     /// refinement, or a layer's levels.
     var drawing = false
     /// A layer's levels changed, and whether the change was a draft.
-    var inkWanted: Bool?
-    /// Shown in the status line when drawing the ink takes long enough to
+    var curvesWanted: Bool?
+    /// Shown in the status line when drawing the curves takes long enough to
     /// notice, which a slider that restyles within a frame never does.
     var drawingStatus: String?
 
@@ -146,8 +146,8 @@ final class Document {
     }
 
     var title: String {
-        if case .surface(let plate) = state {
-            return SurfacePreset.named(plate.request.name)?.label ?? "Surface"
+        if case .surface(let surfaceDrawing) = state {
+            return SurfacePreset.named(surfaceDrawing.request.name)?.label ?? "Surface"
         }
         if let landscape, isLandscape {
             return catalog.preset(landscape.name)?.label ?? landscape.expression
@@ -160,13 +160,13 @@ final class Document {
         return nil
     }
 
-    var plate: SurfacePlate? {
+    var surfaceDrawing: SurfaceDrawing? {
         if case .surface(let p) = state { return p }
         return nil
     }
 
     /// Whether anything is on screen: a bundle or a surface.
-    var isOpen: Bool { bundle != nil || plate != nil }
+    var isOpen: Bool { bundle != nil || surfaceDrawing != nil }
 
     var layers: [Layer] { scene?.layers ?? [] }
 
@@ -228,14 +228,14 @@ final class Document {
     var refineContours = true
 
     ///
-    /// Nothing here derives ink: the bundle arrives with its layers drawn,
+    /// Nothing here derives curves: the bundle arrives with its layers drawn,
     /// refined or not, from whichever thread read or sampled it.
     func adopt(_ bundle: KurvenBundle, keepingCamera: Bool = false, draft: Bool = false) {
         state = .ready(bundle)
         surface = nil
         surfaceShown = nil
         shownDraft = draft
-        inkWanted = nil
+        curvesWanted = nil
         if !keepingCamera { styled = nil }
         // Styling asked for while this bundle was being sampled, and not in
         // the request it was sampled from, is drawn on it next.
@@ -245,7 +245,7 @@ final class Document {
             return
         }
         var scene = Scene(bundle: bundle, preset: preset)
-        derivedInk = [:]
+        derivedCurves = [:]
         if keepingCamera, let navigator {
             scene.camera = navigator.camera
             self.scene = scene
@@ -268,23 +268,23 @@ final class Document {
         adoptLandscape(bundle)
     }
 
-    /// Take a built plate as the document. A new plate opens at the default
-    /// plate projection, fitted to the window; an edit keeps the camera.
-    func adopt(_ plate: SurfacePlate, keepingCamera: Bool = false) {
-        let before = self.plate
-        state = .surface(plate)
+    /// Take a built drawing as the document. A new drawing opens at the default
+    /// oblique projection, fitted to the window; an edit keeps the camera.
+    func adopt(_ surfaceDrawing: SurfaceDrawing, keepingCamera: Bool = false) {
+        let before = self.surfaceDrawing
+        state = .surface(surfaceDrawing)
         landscape = nil
         shown = nil
-        derivedInk = [:]
+        derivedCurves = [:]
         if keepingCamera, let navigator, let scene {
             // Hidden layers are hidden by name: an edit that adds the lines
             // puts a layer before the folds, and a hidden fold stays hidden.
             let hidden = Set(hiddenLayers.compactMap { scene.layers[safe: $0]?.spec.name })
-            hiddenLayers = Set(plate.layers.indices.filter { hidden.contains(plate.layers[$0].spec.name) })
+            hiddenLayers = Set(surfaceDrawing.layers.indices.filter { hidden.contains(surfaceDrawing.layers[$0].spec.name) })
             // The same surface keeps its identity, so the renderer keeps its
-            // textures and its normals and lays out only the ink.
-            self.scene = before?.content == plate.content
-                ? scene.drawing(plate.layers) : plate.scene(camera: navigator.camera)
+            // textures and its normals and lays out only the curves.
+            self.scene = before?.content == surfaceDrawing.content
+                ? scene.drawing(surfaceDrawing.layers) : surfaceDrawing.scene(camera: navigator.camera)
             return
         }
         let preset = SurfaceRequest.preset
@@ -294,7 +294,7 @@ final class Document {
         levelCounts = [:]
         var navigator = Navigator(orbit: Orbit(matching: preset.projection),
                                   framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
-        let scene = plate.scene(camera: navigator.camera)
+        let scene = surfaceDrawing.scene(camera: navigator.camera)
         if let bounds = scene.quickBounds() {
             navigator.framing = .fitting(bounds, in: viewport)
         }
@@ -366,18 +366,18 @@ final class Document {
     /// Derived on another thread (`redraw`): a level set the refiner has not
     /// placed before is seconds on zeta. A `draft`, while the slider is
     /// dragged, is the grid's contours, and the release places them on f.
-    func rebuildInk(draft: Bool = false) {
+    func rebuildCurves(draft: Bool = false) {
         // A full redraw asked for stays asked for, whatever drafts follow it.
-        inkWanted = draft && (inkWanted ?? true)
+        curvesWanted = draft && (curvesWanted ?? true)
         redraw()
     }
 
     /// The described layers at their current levels, from `cached` where the
-    /// levels are the same and the cached ink is as refined as asked.
-    nonisolated static func inked(_ bundle: KurvenBundle,
+    /// levels are the same and the cached curves are as refined as asked.
+    nonisolated static func stroked(_ bundle: KurvenBundle,
                                   levels: [[Double]?],
-                                  cached: [Int: DerivedInk],
-                                  draft: Bool) -> (layers: [Layer], derived: [Int: DerivedInk]) {
+                                  cached: [Int: DerivedCurves],
+                                  draft: Bool) -> (layers: [Layer], derived: [Int: DerivedCurves]) {
         // The grid's contours, for a draft: the same bundle without its refiner.
         let grid = KurvenBundle(url: bundle.url, manifest: bundle.manifest, surface: bundle.surface,
                                 layers: bundle.layers, wallMesh: bundle.wallMesh, refine: nil)
@@ -394,7 +394,7 @@ final class Document {
                 return c.layer
             }
             let layer = (refined ? bundle : grid).layer(spec, levels: levels)
-            derived[index] = DerivedInk(levels: levels, layer: layer, refined: refined)
+            derived[index] = DerivedCurves(levels: levels, layer: layer, refined: refined)
             return layer
         }
         return (layers, derived)
@@ -402,9 +402,9 @@ final class Document {
 
     /// The last derivation of each described layer, keyed by the levels that
     /// produced it. Cleared whenever the landscape underneath it changes.
-    var derivedInk: [Int: DerivedInk] = [:]
+    var derivedCurves: [Int: DerivedCurves] = [:]
 
-    struct DerivedInk: Sendable {
+    struct DerivedCurves: Sendable {
         var levels: [Double]
         var layer: Layer
         /// Placed on f, or the grid's: a draft's.
@@ -413,12 +413,12 @@ final class Document {
 
     func setLevelCount(_ n: Int, forLayer index: Int, draft: Bool = false) {
         levelCounts[index] = max(n, 1)
-        rebuildInk(draft: draft)
+        rebuildCurves(draft: draft)
     }
 
     func resetLevels(forLayer index: Int) {
         levelCounts.removeValue(forKey: index)
-        rebuildInk()
+        rebuildCurves()
     }
 
     func toggle(layer index: Int) {

@@ -262,7 +262,7 @@ public extension InvariantTorus {
         return (surface, embedded)
     }
 
-    /// The trajectory as ink: the linear curve of `surface` at the rotation
+    /// The trajectory as curves: the linear curve of `surface` at the rotation
     /// number, `turns` turns from the fitted samples' start.
     ///
     /// The fitted torus holds the trajectory to within `residual`, a
@@ -275,7 +275,7 @@ public extension InvariantTorus {
         surface.linearCurves(slope: rotationNumber, turns: turns, start: startPhase)
     }
 
-    /// The integrated trajectory as ink, from `start` for `duration`, every
+    /// The integrated trajectory as curves, from `start` for `duration`, every
     /// `dt`: each vertex the integrated state placed at its own forcing
     /// phase, and its surface coordinate `(ωt, Ωt)`. What the plates draw
     /// is `trajectory(on:turns:)`; this is what it is held to.
@@ -336,7 +336,7 @@ public extension InvariantTorus {
             if path.isEmpty || theta - offset.0 > span {
                 // A new path, its coordinates brought back near zero; after
                 // the first it begins from the previous path's last vertex,
-                // so the ink does not break.
+                // so the curves do not break.
                 offset = (turn * (theta / turn).rounded(.down), turn * (phi / turn).rounded(.down))
                 if let last = path.last {
                     paths.append(path); coords.append(coord)

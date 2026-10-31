@@ -182,7 +182,7 @@ func expressionTests() {
 
 /// `NativeLandscape.build` against the bundles it wrote for the same specs
 /// when they were last regenerated (`kurven-cli fixtures`): the same manifest,
-/// the same grids, the same ink. The bundles are golden. They prove nothing
+/// the same grids, the same curves. The bundles are golden. They prove nothing
 /// about correctness, only that a change to a landscape was made on purpose.
 /// When the Python builder was retired, the grids written here were
 /// byte-identical to its own and the manifests differed only in gitSha.
@@ -231,16 +231,16 @@ func landscapeTests() {
             compare(ours.surface.height, theirs.surface.height, "height")
             compare(ours.surface.phase, theirs.surface.phase, "phase")
 
-            var inkDiffers: [String] = []
+            var curvesDiffer: [String] = []
             for (mine, committed) in zip(ours.layers, theirs.layers) {
-                let a = mine.paths.inkLength, b = committed.paths.inkLength
+                let a = mine.paths.totalLength, b = committed.paths.totalLength
                 if mine.paths.count != committed.paths.count || abs(a - b) > 1e-6 * max(b, 1) {
-                    inkDiffers.append("\(mine.spec.name) \(mine.paths.count)/\(committed.paths.count) paths, "
+                    curvesDiffer.append("\(mine.spec.name) \(mine.paths.count)/\(committed.paths.count) paths, "
                                       + String(format: "length %.6g/%.6g", a, b))
                 }
             }
-            Check.expect(inkDiffers.isEmpty, "and every layer derives to the same ink",
-                         inkDiffers.joined(separator: "; "))
+            Check.expect(curvesDiffer.isEmpty, "and every layer derives to the same curves",
+                         curvesDiffer.joined(separator: "; "))
         }
     }
 
@@ -349,8 +349,8 @@ func refinementTests() {
         let plain = try NativeLandscape.build(request, refine: false)
         let a = restyled.layers.first { $0.spec.name == "mag_major" }!.paths
         let b = plain.restyled(manifest).layers.first { $0.spec.name == "mag_major" }!.paths
-        Check.expect(a.vertices.count != b.vertices.count || a.inkLength != b.inkLength,
-                     "so its ink after the restyle is the refined ink, not the grid's",
+        Check.expect(a.vertices.count != b.vertices.count || a.totalLength != b.totalLength,
+                     "so its curves after the restyle is the refined curves, not the grid's",
                      "\(a.count) vs \(b.count) paths")
         _ = bundle
     }
@@ -406,7 +406,7 @@ func refinementTests() {
         // window's edge, and the cut curves leave the real axis from there
         // into the upper half-plane. The grid has no contour at ±π; the wrap
         // bundles the plain contours carry along the cut are spurious; the
-        // refined plate draws the cut itself, once.
+        // refined drawing draws the cut itself, once.
         let preset = Catalog.native.preset("rgamma")!
         let request = LandscapeRequest(preset: preset, resolution: 240)
         let bundle = try NativeLandscape.build(request)
@@ -436,7 +436,7 @@ func refinementTests() {
             zip(p, p.dropFirst()).reduce(0) { $0 + apart($1.0, $1.1) }
         }
         let cuts = cutPaths(bundle).filter { length($0) > 10 * cell }
-        Check.expect(!cuts.isEmpty, "the refined plate has the cut as ink",
+        Check.expect(!cuts.isEmpty, "the refined drawing has the cut as curves",
                      "\(cuts.count) paths, lengths \(cuts.map { String(format: "%.2f", length($0)) })")
         // Once: no two cut paths run together.
         var doubled = 0
@@ -460,11 +460,11 @@ func refinementTests() {
     }
 
     Check.suite("refine: a phase line is placed only where it can be drawn") {
-        // Phase ink is lifted to |f| and cut away above the truncation, and on tan
+        // Phase curves are lifted to |f| and cut away above the truncation, and on tan
         // most of every phase line is above it, on the poles' spires. Placed
         // under a ceiling, the lines it draws are the same curves, and the
         // stretches over the truncation are not solved for: they were the most of
-        // the refiner's work on zeta and 1/Γ, for ink that was deleted.
+        // the refiner's work on zeta and 1/Γ, for curves that were deleted.
         let request = LandscapeRequest(preset: Catalog.native.preset("tan")!, resolution: 240)
         let plain = try NativeLandscape.build(request, refine: false)
         let refiner = NativeLandscape.refiner(for: plain)!
@@ -506,7 +506,7 @@ func refinementTests() {
     Check.suite("refine: a restyle places only the curves it has not placed before") {
         // The truncation slider's path in the app: the same grids under a new truncation.
         // Before the refiner remembered, every phase line of the landscape
-        // was solved again on each step -- 4.5 s on zeta at 600², for ink
+        // was solved again on each step -- 4.5 s on zeta at 600², for curves
         // that differs from the step before only in where it is clipped.
         let request = LandscapeRequest(preset: Catalog.native.preset("rgamma")!, resolution: 240)
         let built = try NativeLandscape.build(request)
@@ -538,13 +538,13 @@ func refinementTests() {
         Check.expect(again[.phase] == asked[.phase],
                      "and the next truncation places none of them again",
                      "\(asked[.phase] ?? 0) then \(again[.phase] ?? 0)")
-        // The ink is the refiner's answer, remembered or not, to the bit.
+        // The curves are the refiner's answer, remembered or not, to the bit.
         let fresh = NativeLandscape.refiner(for: built)!.refine
         let cold = KurvenBundle(url: built.url, manifest: built.manifest, surface: built.surface,
                                 layers: built.layers, wallMesh: built.wallMesh, refine: fresh)
             .restyled(second)
         Check.expect(twice.layers == cold.layers,
-                     "and the ink is the ink a cold refiner draws under that truncation",
+                     "and the curves are the curves a cold refiner draws under that truncation",
                      "\(twice.layers.map(\.paths.vertices.count)) vs "
                         + "\(cold.layers.map(\.paths.vertices.count))")
     }

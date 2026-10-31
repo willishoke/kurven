@@ -22,7 +22,7 @@ public extension ContourRefine {
     /// the curves it has not placed before -- the truncation edge at the new truncation, the
     /// magnitude rings at the new levels -- and the rest is a lookup.
     ///
-    /// The answer for a key is the answer the refiner gives, so the ink is
+    /// The answer for a key is the answer the refiner gives, so the curves are
     /// the same with or without it, to the bit. What it costs is memory:
     /// every placed curve and the grid paths it came from, up to `budget`
     /// points, past which the least recently asked are forgotten.

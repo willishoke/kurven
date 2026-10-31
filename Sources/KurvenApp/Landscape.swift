@@ -14,7 +14,7 @@ import KurvenLandscape
 ///     sampled in this process, since the evaluator is native.
 ///   - **the truncation, the contour levels, the hatch spacing** need nothing but the
 ///     grids that are already here, because every layer of a landscape's bundle
-///     is a description rather than dumped ink. They are `restyle`, which
+///     is a description rather than dumped curves. They are `restyle`, which
 ///     re-derives from the grids and never leaves the process.
 ///
 /// Neither runs on the main actor. Both coalesce -- one job in flight, the
@@ -37,7 +37,7 @@ import KurvenLandscape
 ///
 /// Every preset samples in 70 ms or less. zeta took 4.5 s, on the main actor
 /// for a truncation step: the refiner placed every phase line over the truncation, where
-/// its ink is cut away (`ContourRefine.Contours`' ceiling), and every
+/// its curves are cut away (`ContourRefine.Contours`' ceiling), and every
 /// evaluation of ζ queued for one lock (`Zeta.weights`).
 @MainActor
 extension Document {
@@ -55,7 +55,7 @@ extension Document {
         surfaceWanted = nil
         // A different function is a different landscape, not an edit of this
         // one: its styling is the new function's defaults, so nothing of the
-        // old plate's truncation or levels is carried across.
+        // old drawing's truncation or levels is carried across.
         send(request, framing: true, draft: false)
     }
 
@@ -128,15 +128,15 @@ extension Document {
     /// it is rather than where the catalog's defaults are. A bundle written by
     /// `landscape` records its own request in `provenance.params`.
     ///
-    /// A bundle from one of the retired Python plates records the plate's
+    /// A bundle from one of the retired Python plates records the drawing's
     /// arguments instead, under the function it sampled. When that function is
     /// a catalog preset, the controls start from those arguments
-    /// (`request(fromPlate:)`), and the first edit -- or Rebuild -- is a native
+    /// (`request(fromDrawing:)`), and the first edit -- or Rebuild -- is a native
     /// landscape over the same window. A bundle whose provenance names nothing
     /// in the catalog opens read-only.
     func adoptLandscape(_ bundle: KurvenBundle) {
         guard bundle.manifest.provenance.example == "function" else {
-            landscape = Self.request(fromPlate: bundle.manifest, catalog: catalog)
+            landscape = Self.request(fromDrawing: bundle.manifest, catalog: catalog)
             // Nothing on screen came from this request, so even an unchanged
             // one is a landscape to build rather than one already shown.
             shown = nil
@@ -168,12 +168,12 @@ extension Document {
         shown = request
     }
 
-    /// The request a plate bundle's provenance describes: the catalog preset it
+    /// The request a drawing bundle's provenance describes: the catalog preset it
     /// names, over the window and at the resolution and truncation its
-    /// arguments record (`plateArguments`). Missing arguments fall back to the
+    /// arguments record (`drawingArguments`). Missing arguments fall back to the
     /// manifest, which records the same window and truncations. Nil when the function
     /// is not in the catalog: then there is no native landscape to rebuild.
-    static func request(fromPlate manifest: Manifest, catalog: Catalog) -> LandscapeRequest? {
+    static func request(fromDrawing manifest: Manifest, catalog: Catalog) -> LandscapeRequest? {
         guard let preset = catalog.preset(manifest.provenance.function) else { return nil }
         var request = LandscapeRequest(preset: preset, resolution: catalog.defaultResolution)
         request.domain = manifest.domain
@@ -186,7 +186,7 @@ extension Document {
             default: break
             }
         }
-        return request.applying(plateArguments: arguments)
+        return request.applying(drawingArguments: arguments)
     }
 
     // MARK: - restyling
@@ -194,12 +194,12 @@ extension Document {
     /// The styling the controls show: the latest asked for, else the bundle's.
     var styling: Styling? { styled ?? bundle.map { Styling($0.manifest) } }
 
-    /// Edit the styling and re-derive the ink from the grids already in
+    /// Edit the styling and re-derive the curves from the grids already in
     /// memory. The landscape is unchanged -- the samples are the samples -- so
     /// the camera, the framing and the window all stay exactly as they are.
     ///
     /// The edit lands in `styled` at once, where the controls read it, and
-    /// the ink follows from another thread (`redraw`).
+    /// the curves follow from another thread (`redraw`).
     func restyle(_ change: (inout Manifest) -> Void) {
         guard let bundle, navigator != nil, let before = styling else { return }
         var manifest = bundle.manifest
@@ -208,7 +208,7 @@ extension Document {
         let after = Styling(manifest)
         guard after != before else { return }
         styled = after
-        // A plate bundle being rebuilt keeps the truncation it was given here, too.
+        // A drawing bundle being rebuilt keeps the truncation it was given here, too.
         if landscape != nil { landscape?.truncation = after.truncation }
         redraw()
     }
@@ -216,13 +216,13 @@ extension Document {
     var truncation: Truncation { styling?.truncation ?? .none }
 
     /// Switch the contour refinement on or off for the open landscape: the
-    /// same grids, the ink derived again, the camera where it was.
+    /// same grids, the curves derived again, the camera where it was.
     func setRefinement(_ on: Bool) {
         refineContours = on
         redraw()
     }
 
-    /// The one job that derives ink off the main actor, coalesced like the
+    /// The one job that derives curves off the main actor, coalesced like the
     /// resample: one in flight, and when it lands, whatever was asked for
     /// meanwhile. A restyle or a change of refinement comes first, since it
     /// draws every layer; a layer's levels after, on the bundle that results.
@@ -241,16 +241,16 @@ extension Document {
         let job: Job
         if target != current || refinementMoves {
             job = .restyle(target, refine: refinementMoves ? refine : nil)
-        } else if let draft = inkWanted, scene != nil {
+        } else if let draft = curvesWanted, scene != nil {
             job = .levels(draft: draft)
         } else {
             return
         }
-        inkWanted = job.isLevels ? nil : inkWanted
+        curvesWanted = job.isLevels ? nil : curvesWanted
         drawing = true
         let asked = version
         let levelSets = bundle.manifest.layers.indices.map { levels(forLayer: $0) }
-        let cached = derivedInk
+        let cached = derivedCurves
         // Said only when it is long enough to see: a truncation that redraws within
         // a frame should not flicker the status line on every step.
         let slow = Task {
@@ -273,9 +273,9 @@ extension Document {
                     styling.apply(to: &manifest)
                     return .restyled(b.restyled(manifest))
                 case .levels(let draft):
-                    let (layers, derived) = Document.inked(bundle, levels: levelSets,
+                    let (layers, derived) = Document.stroked(bundle, levels: levelSets,
                                                            cached: cached, draft: draft)
-                    return .inked(layers, derived)
+                    return .stroked(layers, derived)
                 }
             }.value
             slow.cancel()
@@ -301,16 +301,16 @@ extension Document {
         switch drawn {
         case .restyled(let restyled):
             replace(bundle: restyled)
-            derivedInk = [:]
+            derivedCurves = [:]
             if styled == Styling(restyled.manifest) { styled = nil }
             guard let navigator, let preset = restyled.manifest.presets.first else { return }
             var scene = Scene(bundle: restyled, preset: preset)
             scene.camera = navigator.camera
             self.scene = scene
             // A layer drawn at levels of its own is drawn at them again.
-            if !levelCounts.isEmpty { inkWanted = inkWanted ?? false }
-        case .inked(let layers, let derived):
-            derivedInk = derived
+            if !levelCounts.isEmpty { curvesWanted = curvesWanted ?? false }
+        case .stroked(let layers, let derived):
+            derivedCurves = derived
             if let scene { self.scene = scene.drawing(layers) }
         }
     }
@@ -333,7 +333,7 @@ extension Document {
 
     private enum Drawn: Sendable {
         case restyled(KurvenBundle)
-        case inked([Layer], [Int: DerivedInk])
+        case stroked([Layer], [Int: DerivedCurves])
     }
 
     /// Truncate the landscape differently.
@@ -473,8 +473,8 @@ extension LandscapeRequest {
     /// This request under a Python plate's arguments, as its provenance
     /// recorded them: `rMin`, `rMax`, `iMin`, `iMax` the window, `res` the
     /// resolution, `zLimit` a uniform truncation. Other keys are not the landscape's
-    /// business (the plate's camera, its buffer) and are ignored.
-    func applying(plateArguments a: [String: Double]) -> LandscapeRequest {
+    /// business (the drawing's camera, its buffer) and are ignored.
+    func applying(drawingArguments a: [String: Double]) -> LandscapeRequest {
         var request = self
         request.domain = Domain(
             real: Interval(lo: a["rMin"] ?? domain.real.lo, hi: a["rMax"] ?? domain.real.hi),

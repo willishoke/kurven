@@ -85,10 +85,10 @@ public extension Mesh<WorldSpace> {
     /// below the truncation and another over it is drawn as one slope from the truncation
     /// down to the low corner. The corner where the wall meets the truncation is cut
     /// off, by up to the cell's whole rise -- half a world unit on a pole's
-    /// graph -- and the ink sits where the *interpolated* height reaches the
+    /// graph -- and the curves sit where the *interpolated* height reaches the
     /// truncation, out over the notch: the truncation edge, the hatch across the truncation, a phase
-    /// line carried up to it. Ink from behind shows through the notches, and
-    /// ink on the outline is tested against a wall that is not there.
+    /// line carried up to it. Curves from behind show through the notches, and
+    /// curves on the outline are tested against a wall that is not there.
     ///
     /// What a cell's samples describe is min(interpolated height, truncation): each
     /// of the cell's two triangles cut by the truncation along the line where the

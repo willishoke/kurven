@@ -98,9 +98,9 @@ usage: kurven-cli <command> [options]
 
   bake <bundle> [--preset NAME] [--resolution N] [--tiles N] [--depth-tolerance T]
        [--outline W] [--dump PREFIX] -o out.svg
-        Render a bundle's plate to SVG through the depth-tested hidden-line
+        Render a bundle's drawing to SVG through the depth-tested hidden-line
         pipeline. Defaults to the bundle's first preset and that preset's own
-        depth resolution and depth tolerance -- the settings the published plate
+        depth resolution and depth tolerance -- the settings the published drawing
         was made with. --outline traces the outline of the drawn region off
         the depth buffer and adds it as a stroke of that width. --dump also
         writes each layer's strokes as PREFIX.<layer>.npy plus CSR offsets,
@@ -111,7 +111,7 @@ usage: kurven-cli <command> [options]
   surface sn [--modulus M] [--grid N]
   surface sn --relief A [--repeat N[,M]] [--turn T] [--floor B] [--soft] [--samples S]
   surface periodic --expression E --periods P1,P2 [--grid N]
-  surface forced [--system jerk] [--turns N] [--ink W]
+  surface forced [--system jerk] [--turns N] [--trajectory-width W]
           [--harmonics M] [--fit T] [--radial I] [--axial J] [--coordinate-curves U,V]
           [--major R] [--minor r] [--linear-curves SLOPE[,TURNS[,COUNT]]]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N]
@@ -140,7 +140,7 @@ usage: kurven-cli <command> [options]
         printed. Any surface draws --linear-curves: COUNT straight lines through
         the parameter rectangle at SLOPE turns of v per turn of u (2/5, or a
         decimal), TURNS turns long, or closed when the slope is a fraction.
-        The camera is a plate camera: --x-angle tilts, --z-angle turns, --shear
+        The camera is a oblique camera: --x-angle tilts, --z-angle turns, --shear
         is the oblique foreshortening the published plates use. The fold
         curves -- the outline and inner fold curves -- are drawn at --folds (twice
         --width by default; 0 leaves them out). An output ending in .png
@@ -172,7 +172,7 @@ usage: kurven-cli <command> [options]
         hatching's (any SVG colour; black by default).
 
   surface-costs [--repeat N] [--only torus|sn|forced]
-        Time what each of the window's surface controls costs: the plate
+        Time what each of the window's surface controls costs: the drawing
         rebuilt from the one before it, and the first preview frame after,
         as the window would pay for them -- at full resolution, and at the
         draft grid a drag uses. The numbers SurfaceSection's doc records.
@@ -196,9 +196,9 @@ usage: kurven-cli <command> [options]
 
   preview <bundle> [--preset NAME] [--width N] [--height N] [--mode M]
           [--orbit "AZ,EL"] [--center RE,IM,Z] [--zoom F] [--levels N] [--fov DEGREES]
-          [--depth-tolerance T] [--slope K] [--ink-width W] [--no-refine] [--draft] -o out.png
+          [--depth-tolerance T] [--slope K] [--stroke-width W] [--no-refine] [--draft] -o out.png
         Render one preview frame offscreen and write it as a PNG. Modes:
-        plate (the default), shaded, depth. --orbit turns the preset camera by
+        drawing (the default), shaded, depth. --orbit turns the preset camera by
         that many degrees before drawing; --center puts that world point at
         the middle of the picture, and --zoom then zooms about it. --levels redraws every *described*
         layer at N evenly spaced levels over its own range, which only a
@@ -207,17 +207,17 @@ usage: kurven-cli <command> [options]
         set the visibility test: the hidden-line depth tolerance, and how many
         pixels' worth of the surface's depth change it also allows (0 is the
         bake's predicate).
-        --ink-width is the widest layer's stroke in pixels (default 1.5); the
-        others are drawn in proportion to their plate widths. A bundle that
+        --stroke-width is the widest layer's stroke in pixels (default 1.5); the
+        others are drawn in proportion to their widths in the bake. A bundle that
         names its function has its contours placed by it, as the window does;
         --no-refine draws the grid's contours instead, and bake, depth and
         flicker take it too. This is how the preview is checked against the
-        plate without a window in the way.
+        drawing without a window in the way.
 
   flicker <bundle> [preview's view options] [--frames N] [--step DEGREES]
-          [--depth-tolerance T] [--slope K] [--ink-width W] [--dump DIR] [--max-flip F]
+          [--depth-tolerance T] [--slope K] [--stroke-width W] [--dump DIR] [--max-flip F]
         Turn the preview camera --step degrees a frame (default 0.02) for
-        --frames frames (default 24), and report the ink that comes and goes:
+        --frames frames (default 24), and report the curves that comes and goes:
         toggled (changed between frames, motion included) and flipped (a
         stroke that stayed put while the depth test changed its mind about
         it). Flicker is a motion artifact; this is it as a number. --max-flip
@@ -236,7 +236,7 @@ usage: kurven-cli <command> [options]
         Sample a function over a rectangle and write its bundle. Every layer
         is a description, so the result's truncation, levels and hatch spacing are
         editable afterwards -- in the app, or by `bake --levels`.
-        --bands truncates at a height per band of Re z, as the gamma plate
+        --bands truncates at a height per band of Re z, as the gamma drawing
         does: each BELOW:HEIGHT is the height where Re z < BELOW, the first band
         that matches wins, and --beyond is the height past the last. The
         contour levels are chosen up to the highest of them, so set the
@@ -336,12 +336,12 @@ func bake(_ args: Args) throws {
           depth      \(result.depth.frame.rows)x\(result.depth.frame.cols) \
         in \(result.tiles * result.tiles) pass\(result.tiles == 1 ? "" : "es")
           strokes    \(result.strokes.pathCount) paths, \
-        ink \(String(format: "%.1f", result.strokes.inkLength))
+        curves \(String(format: "%.1f", result.strokes.totalLength))
           took       \(elapsed)
         """)
     for (index, entry) in result.strokes.layers.enumerated() {
         // The outline, when asked for, is one more stroke layer than the
-        // scene has ink layers -- it is traced from the depth buffer, not
+        // scene has layers -- it is traced from the depth buffer, not
         // carried by the bundle.
         let spec = index < scene.layers.count ? scene.layers[index].spec : nil
         print("    \(pad(spec?.name ?? "outline", 14)) "
@@ -363,7 +363,7 @@ func surfaceCommand(_ args: Args) throws {
     if shape == "sn", let amplitude = try args.double("relief") {
         let m = try args.double("modulus") ?? 0.64
         // `--repeat N[,M]`: N periods round the ring and M round the tube,
-        // the ink computed once and carried round by the periods.
+        // the curves computed once and carried round by the periods.
         let repeats = (args.flags["repeat"] ?? "1").split(separator: ",").compactMap { Int($0) }
         guard (1...2).contains(repeats.count), repeats.allSatisfy({ $0 >= 1 }) else {
             throw CLIError("--repeat wants N or N,M whole periods, as in 8 or 8,2")
@@ -371,7 +371,7 @@ func surfaceCommand(_ args: Args) throws {
         // `--samples`: the grid round the ring in all, 1024 a period at most.
         let grid = try args.int("samples", 8192)
         let clock = ContinuousClock()
-        var plate: PeriodicTorus.Plate!
+        var drawing: PeriodicTorus.Drawing!
         let built = try clock.measure {
             var base = try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r,
                                                   resolution: try args.int("grid", 600),
@@ -382,25 +382,25 @@ func surfaceCommand(_ args: Args) throws {
             // c · tanh(|f| / c), an experiment on what the crease costs.
             if args.switches.contains("soft"), let height = base.height {
                 let c = base.ceiling
-                base = PeriodicTorus.Plate(surface: base.surface, layers: base.layers,
+                base = PeriodicTorus.Drawing(surface: base.surface, layers: base.layers,
                                            height: { p in c * tanh(height(p) / c) },
                                            ceiling: c, radii: base.radii)
             }
             // `--floor b`: only |f| above b displaces, so each pole stands
             // alone on the bare torus instead of on a raised ground.
             if let floor = try args.double("floor"), let height = base.height {
-                base = PeriodicTorus.Plate(surface: base.surface, layers: base.layers,
+                base = PeriodicTorus.Drawing(surface: base.surface, layers: base.layers,
                                            height: { p in max(height(p) - floor, 0) },
                                            ceiling: base.ceiling - floor, radii: base.radii)
             }
-            plate = base.relief(amplitude: amplitude, reach: min(r, R - r))
+            drawing = base.relief(amplitude: amplitude, reach: min(r, R - r))
         }
         var projection = SurfaceRequest.projection
         projection.shear = try args.double("shear") ?? projection.shear
         projection.xAngle = try args.double("x-angle") ?? projection.xAngle
         projection.zAngle = try args.double("z-angle") ?? projection.zAngle
-        let scene = Scene(surface: plate.surface, layers: plate.layers,
-                          camera: Camera.plate(projection), depthTolerance: 0)
+        let scene = Scene(surface: drawing.surface, layers: drawing.layers,
+                          camera: Camera.oblique(projection), depthTolerance: 0)
         let output = URL(fileURLWithPath: try args.string("output"))
         let renderer = try MetalRenderer()
         var result: Bake!
@@ -411,9 +411,9 @@ func surfaceCommand(_ args: Args) throws {
         try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
         print("""
             sn in relief, amplitude \(fmt(amplitude)) on R=\(fmt(R)) r=\(fmt(r)) -> \(output.lastPathComponent)
-              reach      \(fmt(min(r, R - r))); displacement up to \(fmt(amplitude * plate.ceiling))\
-            \(plate.surface.outward == nil ? ", NOT embedded: back faces kept" : ", embedded")
-              strokes    \(result.strokes.pathCount) paths, ink \(String(format: "%.1f", result.strokes.inkLength))
+              reach      \(fmt(min(r, R - r))); displacement up to \(fmt(amplitude * drawing.ceiling))\
+            \(drawing.surface.outward == nil ? ", NOT embedded: back faces kept" : ", embedded")
+              strokes    \(result.strokes.pathCount) paths, curves \(String(format: "%.1f", result.strokes.totalLength))
               took       \(built) to build, \(baked) to bake
             """)
         return
@@ -423,7 +423,7 @@ func surfaceCommand(_ args: Args) throws {
         guard n.count == 2 else { throw CLIError("--lines wants U,V, as in 36,18") }
         return SIMD2(n[0], n[1])
     }
-    // The flags, parsed into the request the window keeps; the plate is
+    // The flags, parsed into the request the window keeps; the drawing is
     // built from it by the same function either way.
     var request: SurfaceRequest
     switch shape {
@@ -473,14 +473,14 @@ func surfaceCommand(_ args: Args) throws {
     }
     // The outline and inner fold curves, derived for the camera; --folds 0
     // leaves them out.
-    request.style = SurfaceRequest.Style(lines: width, trajectory: try args.double("ink") ?? 0.08,
+    request.style = SurfaceRequest.Style(lines: width, trajectory: try args.double("trajectory-width") ?? 0.08,
                                          folds: try args.double("folds") ?? 2 * width,
                                          linearCurves: width)
     let clock = ContinuousClock()
-    var plate: SurfacePlate!
-    let built = try clock.measure { plate = try SurfacePlate.build(request) }
-    let surface = plate.surface
-    if let torus = plate.torus {
+    var drawing: SurfaceDrawing!
+    let built = try clock.measure { drawing = try SurfaceDrawing.build(request) }
+    let surface = drawing.surface
+    if let torus = drawing.torus {
         let rho = torus.rotationNumber
         let convergents = ContinuedFraction.convergents(of: rho, maxDenominator: 2000)
             .dropFirst().map { "\($0.p)/\($0.q)" }.joined(separator: ", ")
@@ -494,15 +494,15 @@ func surfaceCommand(_ args: Args) throws {
             torus.residual, torus.residual / torus.extent, rho,
             ContinuedFraction.describe(ContinuedFraction.quotients(of: rho, count: 8), ellipsis: true),
             convergents,
-            plate.embedded ? "embedded: back faces are hidden"
+            drawing.embedded ? "embedded: back faces are hidden"
                            : "NOT embedded -- a slice crosses itself; back faces are kept"))
     }
     var projection = SurfaceRequest.projection
     projection.shear = try args.double("shear") ?? projection.shear
     projection.xAngle = try args.double("x-angle") ?? projection.xAngle
     projection.zAngle = try args.double("z-angle") ?? projection.zAngle
-    let camera = Camera.plate(projection)
-    let scene = plate.scene(camera: camera)
+    let camera = Camera.oblique(projection)
+    let scene = drawing.scene(camera: camera)
     let output = URL(fileURLWithPath: try args.string("output"))
 
     if args.switches.contains("preview") || output.pathExtension.lowercased() == "png" {
@@ -538,7 +538,7 @@ func surfaceCommand(_ args: Args) throws {
           depth      \(result.depth.frame.rows)x\(result.depth.frame.cols) \
         in \(result.tiles * result.tiles) pass\(result.tiles == 1 ? "" : "es")
           strokes    \(result.strokes.pathCount) paths, \
-        ink \(String(format: "%.1f", result.strokes.inkLength))
+        curves \(String(format: "%.1f", result.strokes.totalLength))
           took       \(elapsed)
         """)
 }
@@ -573,7 +573,7 @@ func solidCommand(_ args: Args) throws {
     projection.shear = try args.double("shear") ?? projection.shear
     projection.xAngle = try args.double("x-angle") ?? projection.xAngle
     projection.zAngle = try args.double("z-angle") ?? projection.zAngle
-    let camera = Camera.plate(projection)
+    let camera = Camera.oblique(projection)
     var layers = [Layer(spec: LayerSpec(name: "edges", role: .outline, source: .edges,
                                         width: width, heightPolicy: .surface,
                                         color: args.flags["color"] ?? "#000000"),
@@ -623,7 +623,7 @@ func solidCommand(_ args: Args) throws {
         }
     }.count
     let diagonals = solid.isDiagonal.filter { $0 }.count
-    let hatchLength = result.strokes.layers.dropFirst().reduce(0.0) { $0 + $1.paths.inkLength }
+    let hatchLength = result.strokes.layers.dropFirst().reduce(0.0) { $0 + $1.paths.totalLength }
     let hatchLines = result.strokes.layers.dropFirst().reduce(0) { $0 + $1.paths.count }
     let widths = result.strokes.layers.count - 1
     print("""
@@ -633,7 +633,7 @@ func solidCommand(_ args: Args) throws {
         genus \(1 - solid.eulerCharacteristic / 2), \
         \(solid.isConvex ? "convex: the sign test alone decides" : "not convex: edges are tested for occlusion")
           edges      \(drawn.count) spans drawn, \(whole) of them whole edges, \
-        length \(String(format: "%.2f", drawn.inkLength))
+        length \(String(format: "%.2f", drawn.totalLength))
           hatching   \(layers.count > 1 ? "\(hatchLines) lines at \(widths) width\(widths == 1 ? "" : "s"), length \(String(format: "%.2f", hatchLength))" : "none")
           depth      \(result.depth.frame.rows)x\(result.depth.frame.cols), \
         which visibility does not consult
@@ -671,22 +671,22 @@ func bench(_ args: Args) throws {
     let renderer = try MetalRenderer()
     let clock = ContinuousClock()
 
-    // A camera that moves: the plate's own projection, orbited. Every frame
+    // A camera that moves: the drawing's own projection, orbited. Every frame
     // shares the scene's `content`, so this measures what navigation costs
     // once the resources are built -- which is the whole reason they are
     // separated from the camera.
     func camera(_ i: Int) -> Camera {
-        var plate = preset.projection
-        plate.zAngle = preset.projection.zAngle + Double(i) * 0.25
-        return .plate(plate)
+        var projection = preset.projection
+        projection.zAngle = preset.projection.zAngle + Double(i) * 0.25
+        return .oblique(projection)
     }
 
     // Two things are worth timing separately: the depth pass alone, which is
     // what a bake pays per tile, and the whole preview, which is what a drag
     // pays per frame. Reporting only the first would flatter the app.
-    let modeName = args.flags["mode"] ?? "plate"
+    let modeName = args.flags["mode"] ?? "drawing"
     let mode: PreviewMode = modeName == "shaded" ? .shaded(Lighting())
-        : modeName == "depth" ? .depth : .plate
+        : modeName == "depth" ? .depth : .drawing
     let target = try renderer.makePreviewTarget(viewport)
     var navigator = Navigator(orbit: Orbit(matching: preset.projection),
                               framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
@@ -713,7 +713,7 @@ func bench(_ args: Args) throws {
     }
 
     // Dragging a level slider: re-derive the described layers, rebuild the line
-    // buffer, redraw. The whole point of keeping the ink's identity separate
+    // buffer, redraw. The whole point of keeping the curves' identity separate
     // from the geometry's is that this does not touch the height texture.
     if args.switches.contains("editing") {
         // One slider, one layer: dragging a level control changes one level set
@@ -782,7 +782,7 @@ func bench(_ args: Args) throws {
           + (renderer.hasLinearReadback ? "" : "   (readback is NOT linear here)"))
 
     // --visibility: where a heightfield frame's CPU time goes. Fold curves and
-    // wall ink are the camera's, so the preview derives and tests them per
+    // wall curves are the camera's, so the preview derives and tests them per
     // camera change; each step is timed on its own, on f (what the preview
     // does) and on the grid without the function (what a draft could do).
     guard args.switches.contains("visibility"), let h = base.heightfield else { return }
@@ -801,7 +801,7 @@ func bench(_ args: Args) throws {
               + "\(ms(ts[ts.count / 2]).padding(toLength: 12, withPad: " ", startingAt: 0))"
               + "\(count) vertices")
     }
-    // What the window tests its ink to (`Document.framedScene`).
+    // What the window tests its curves to (`Document.framedScene`).
     let pixel = 0.25 * navigator.framing.unitsPerPixel
     print("visibility, per camera change (median of 5)")
     if h.refine != nil {
@@ -822,18 +822,18 @@ func bench(_ args: Args) throws {
     time("folds traced and tested on the grid") {
         grid.visibleFolds(view: view, depthTolerance: base.depthTolerance, refined: false).vertices.count
     }
-    for layer in base.layers where layer.spec.source.isWallInk && layer.spec.clipped {
+    for layer in base.layers where layer.spec.source.liesOnWall && layer.spec.clipped {
         if h.refine != nil {
             time("\(layer.spec.name) tested on f") {
-                h.visibleWallInk(layer.paths, view: view, depthTolerance: base.depthTolerance).vertices.count
+                h.visibleWallCurves(layer.paths, view: view, depthTolerance: base.depthTolerance).vertices.count
             }
             time("\(layer.spec.name) tested on f, to a quarter pixel") {
-                h.visibleWallInk(layer.paths, view: view, depthTolerance: base.depthTolerance,
+                h.visibleWallCurves(layer.paths, view: view, depthTolerance: base.depthTolerance,
                                  resolution: pixel).vertices.count
             }
         }
         time("\(layer.spec.name) tested on the grid") {
-            grid.visibleWallInk(layer.paths, view: view, depthTolerance: base.depthTolerance).vertices.count
+            grid.visibleWallCurves(layer.paths, view: view, depthTolerance: base.depthTolerance).vertices.count
         }
     }
 }
@@ -918,10 +918,10 @@ func previewView(_ args: Args, viewport: Viewport) throws
     return (bundle, preset, base, navigator)
 }
 
-/// The surface controls' costs, as the window pays them: `SurfacePlate.build`
-/// from the plate before, then one preview frame of the result -- through
+/// The surface controls' costs, as the window pays them: `SurfaceDrawing.build`
+/// from the drawing before, then one preview frame of the result -- through
 /// `Scene.drawing` when the edit kept the surface, as the document does, so
-/// an ink edit re-uploads nothing.
+/// a curve edit re-uploads nothing.
 func surfaceCosts(_ args: Args) throws {
     let repeats = try args.int("repeat", 3)
     let renderer = try MetalRenderer()
@@ -934,8 +934,8 @@ func surfaceCosts(_ args: Args) throws {
     func ms(_ x: Double) -> String { x < 1 ? String(format: "%.1f ms", x * 1e3) : String(format: "%.2f s", x) }
 
     func measure(_ label: String, _ base: SurfaceRequest, _ edit: (inout SurfaceRequest) -> Void,
-                 draft: Bool = false, from start: SurfacePlate? = nil) throws {
-        let before = try start ?? SurfacePlate.build(base)
+                 draft: Bool = false, from start: SurfaceDrawing? = nil) throws {
+        let before = try start ?? SurfaceDrawing.build(base)
         let scene = before.scene(camera: orbit.camera)
         guard let bounds = scene.quickBounds() else { throw CLIError("\(label): empty") }
         let navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
@@ -946,13 +946,13 @@ func surfaceCosts(_ args: Args) throws {
         var kept = false
         for _ in 0..<repeats {
             // The window as it stands before the edit: its textures, its
-            // ink and its normals already made.
+            // curves and its normals already made.
             try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
                                        options: options, into: target)
             let clock = ContinuousClock()
-            var after: SurfacePlate!
+            var after: SurfaceDrawing!
             builds.append(seconds(try clock.measure {
-                after = try SurfacePlate.build(request, reusing: before, draft: draft)
+                after = try SurfaceDrawing.build(request, reusing: before, draft: draft)
             }))
             kept = after.content == before.content
             let next = kept ? scene.drawing(after.layers) : after.scene(camera: orbit.camera)
@@ -966,14 +966,14 @@ func surfaceCosts(_ args: Args) throws {
               + "\(ms(b).padding(toLength: 10, withPad: " ", startingAt: 0))"
               + "\(ms(f).padding(toLength: 10, withPad: " ", startingAt: 0))"
               + "\(ms(b + f).padding(toLength: 10, withPad: " ", startingAt: 0))"
-              + (kept ? "ink only" : "new surface"))
+              + (kept ? "curves only" : "new surface"))
     }
-    /// A step of a drag: the plate a drag's first step built, from the full
+    /// A step of a drag: the drawing a drag's first step built, from the full
     /// one, edited again at the draft -- what each frame of a drag costs.
     func drag(_ label: String, _ base: SurfaceRequest,
               _ edit: @escaping (inout SurfaceRequest) -> Void) throws {
-        let full = try SurfacePlate.build(base)
-        let first = try SurfacePlate.build(base.drafted(), reusing: full, draft: true)
+        let full = try SurfaceDrawing.build(base)
+        let first = try SurfaceDrawing.build(base.drafted(), reusing: full, draft: true)
         try measure(label + ", dragging", base.drafted(), { r in
             var target = base; edit(&target); r = target.drafted()
         }, draft: true, from: first)
@@ -1010,9 +1010,9 @@ func surfaceCosts(_ args: Args) throws {
     guard wanted("forced") else { return }
     print("forced")
     let forced = presets["forced"]!
-    let base = try SurfacePlate.build(forced)
+    let base = try SurfaceDrawing.build(forced)
     func forcedEdit(_ label: String, draft: Bool = false, grid: Int? = nil,
-                    from start: SurfacePlate? = nil,
+                    from start: SurfaceDrawing? = nil,
                     _ change: @escaping (inout String, inout Double, inout Int, inout Int, inout Int,
                                          inout Double, inout Int) -> Void) throws {
         try measure(label, forced, { r in
@@ -1046,7 +1046,7 @@ func surfaceCosts(_ args: Args) throws {
     try drag("revolution radius", forced) { forcedShape(&$0, radius: 3) }
     // The release: the full request, from the last draft, with the full
     // grid's values and the full run still kept.
-    let dragged = try SurfacePlate.build(forced.drafted(), reusing: base, draft: true)
+    let dragged = try SurfaceDrawing.build(forced.drafted(), reusing: base, draft: true)
     try measure("revolution radius, released", forced.drafted(), { r in
         var target = forced; forcedShape(&target, radius: 3); r = target
     }, from: dragged)
@@ -1137,22 +1137,22 @@ func landscapeCosts(_ args: Args) throws {
 }
 
 func previewMode(_ args: Args) throws -> PreviewMode {
-    switch args.flags["mode"] ?? "plate" {
-    case "plate": .plate
+    switch args.flags["mode"] ?? "drawing" {
+    case "drawing": .drawing
     case "shaded": .shaded(Lighting())
     case "depth": .depth
-    case let other: throw CLIError("unknown --mode '\(other)'; try plate, shaded or depth")
+    case let other: throw CLIError("unknown --mode '\(other)'; try drawing, shaded or depth")
     }
 }
 
-/// `--slope K`: the ink test's slope allowance, so a run can be compared with
-/// the bake's predicate (`--slope 0`) at the same camera. `--ink-width W`: the
+/// `--slope K`: the visibility test's slope allowance, so a run can be compared with
+/// the bake's predicate (`--slope 0`) at the same camera. `--stroke-width W`: the
 /// widest stroke in pixels, which is what a Retina window doubles.
 func previewOptions(_ args: Args, mode: PreviewMode) throws -> PreviewOptions {
     var options = PreviewOptions(mode: mode)
     options.draft = args.switches.contains("draft")
     if let k = try args.double("slope") { options.slopeScale = Float(k) }
-    if let w = try args.double("ink-width") { options.inkWidth = Float(w) }
+    if let w = try args.double("stroke-width") { options.strokeWidth = Float(w) }
     return options
 }
 
@@ -1176,7 +1176,7 @@ func preview(_ args: Args) throws {
 
     // The view-space rectangle the picture covers, so another renderer can draw
     // the same strokes into the same frame and the two can be compared as
-    // images. Without it "the preview looks like the plate" is an impression.
+    // images. Without it "the preview looks like the drawing" is an impression.
     let f = navigator.framing.frame(viewport)
     let meta = JSONValue.object([
         // In screen order axis0 runs down the image (view y) and axis1 across
@@ -1187,37 +1187,37 @@ func preview(_ args: Args) throws {
         "azimuth": .double(navigator.orbit.azimuth.degrees),
         "elevation": .double(navigator.orbit.elevation.degrees),
         "depthTolerance": .double(base.depthTolerance),
-        "plate": preset.projection.json,
+        "projection": preset.projection.json,
     ])
     try (meta.canonical + "\n").write(
         to: output.deletingPathExtension().appendingPathExtension("frame.json"),
         atomically: true, encoding: .utf8)
 
     print("""
-        \(bundle.url.lastPathComponent) -> \(output.lastPathComponent)          [\(preset.name), \(args.flags["mode"] ?? "plate")]
+        \(bundle.url.lastPathComponent) -> \(output.lastPathComponent)          [\(preset.name), \(args.flags["mode"] ?? "drawing")]
           \(viewport.width)x\(viewport.height)          azimuth \(String(format: "%.1f", navigator.orbit.azimuth.degrees))          elevation \(String(format: "%.1f", navigator.orbit.elevation.degrees))
           took \(elapsed)
           frame \(output.deletingPathExtension().lastPathComponent).frame.json
         """)
 }
 
-/// Ink that comes and goes while the camera turns, as a number.
+/// Strokes that come and go while the camera turns, as a number.
 ///
 /// Flicker is a motion artifact, so no single frame shows it. This renders a
 /// short orbit -- the camera turning `--step` degrees a frame about its target,
 /// the framing held still -- and draws every frame twice: once as the preview
 /// does, and once with the depth test switched off. A pixel that has a stroke
-/// in both frames of a pair *without* the test, but ink in only one of them
+/// in both frames of a pair *without* the test, but curves in only one of them
 /// *with* it, is a pixel where nothing moved and the visibility test changed
 /// its mind. That is the flicker, and it is counted apart from the motion:
 ///
-/// - *toggled*: ink in one frame and not the next. Honest motion contributes,
+/// - *toggled*: curves in one frame and not the next. Honest motion contributes,
 ///   so this only compares runs at the same step.
 /// - *flipped*: the test changing its mind under a stroke that stayed put.
 ///   Some of it is honest too -- a stroke sliding behind a ridge flips at the
 ///   ridge -- but that is a pixel or so per stroke, not a dash pattern.
 ///
-/// Both are fractions of the mean ink per frame, so a picture with more ink is
+/// Both are fractions of the mean curves per frame, so a picture with more curves are
 /// not counted as flickering more for it.
 func flicker(_ args: Args) throws {
     let viewport = Viewport(width: try args.int("width", 1200),
@@ -1231,15 +1231,15 @@ func flicker(_ args: Args) throws {
     }
     var unclipped = base
     unclipped.depthTolerance = .infinity
-    let options = try previewOptions(args, mode: .plate)
+    let options = try previewOptions(args, mode: .drawing)
 
     let renderer = try MetalRenderer()
     let target = try renderer.makePreviewTarget(viewport)
     let pixels = viewport.width * viewport.height
-    // Ink is any visible mark: a stroke narrower than a pixel is drawn
-    // lighter, not narrower, so mid-grey would miss the plate's thinnest
+    // Curves are any visible mark: a stroke narrower than a pixel is drawn
+    // lighter, not narrower, so mid-grey would miss the drawing's thinnest
     // layers.
-    func ink(_ scene: Scene, _ navigator: Navigator) throws -> [Bool] {
+    func curves(_ scene: Scene, _ navigator: Navigator) throws -> [Bool] {
         try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
                                    options: options, into: target)
         let bgra = try PNG.bgra(target)
@@ -1250,27 +1250,27 @@ func flicker(_ args: Args) throws {
     }
 
     var kept: [Bool] = [], everything: [Bool] = []
-    var inkTotal = 0, toggled = 0, flipped = 0
+    var strokedTotal = 0, toggled = 0, flipped = 0
     for i in 0..<frames {
         var navigator = start
         navigator.orbit.azimuth = Angle(degrees: start.orbit.azimuth.degrees
                                         + Double(i) * step)
-        let k = try ink(base, navigator)
+        let k = try curves(base, navigator)
         if let dump {
             try PNG.write(target, to: dump.appendingPathComponent(
                 String(format: "frame%03d.png", i)))
         }
-        let e = try ink(unclipped, navigator)
+        let e = try curves(unclipped, navigator)
         if i > 0 {
             for p in 0..<pixels where k[p] != kept[p] {
                 toggled += 1
                 if e[p] && everything[p] { flipped += 1 }
             }
         }
-        inkTotal += k.reduce(0) { $0 + ($1 ? 1 : 0) }
+        strokedTotal += k.reduce(0) { $0 + ($1 ? 1 : 0) }
         kept = k; everything = e
     }
-    let perFrame = max(Double(inkTotal) / Double(frames), 1)
+    let perFrame = max(Double(strokedTotal) / Double(frames), 1)
     let toggledRate = Double(toggled) / Double(frames - 1) / perFrame
     let flippedRate = Double(flipped) / Double(frames - 1) / perFrame
 
@@ -1282,7 +1282,7 @@ func flicker(_ args: Args) throws {
           \(viewport.width)x\(viewport.height)  azimuth \(String(format: "%.2f", from)) \
         to \(String(format: "%.2f", from + Double(frames - 1) * step))  \
         elevation \(String(format: "%.1f", start.orbit.elevation.degrees))
-          ink      \(Int(perFrame.rounded())) px a frame
+          curves      \(Int(perFrame.rounded())) px a frame
           toggled  \(percent(toggledRate)) of it a frame   (motion included)
           flipped  \(percent(flippedRate)) of it a frame   (the stroke stayed; the test changed its mind)
         """)

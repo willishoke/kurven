@@ -20,7 +20,7 @@ public enum BundleError: Error, CustomStringConvertible {
     }
 }
 
-/// A decoded bundle: the manifest, the grids, and the ink.
+/// A decoded bundle: the manifest, the grids, and the curves.
 ///
 /// Arrays are eager. A bundle is a value the whole point of which is that it is
 /// already computed; lazily faulting parts of it in would trade the one property
@@ -35,7 +35,7 @@ public struct KurvenBundle: Sendable {
     public let wallMesh: Mesh<WorldSpace>?
     /// Present when the function behind the grids is available: every described
     /// contour layer is derived through it, now and after every restyle, so a
-    /// truncation slider re-derives refined ink rather than falling back to the grid's.
+    /// truncation slider re-derives refined curves rather than falling back to the grid's.
     /// A bundle read from disk has none until a consumer that knows the function
     /// attaches one (`refined(by:)`).
     public let refine: ContourRefine?
@@ -46,13 +46,13 @@ public struct KurvenBundle: Sendable {
         self.layers = layers; self.wallMesh = wallMesh; self.refine = refine
     }
 
-    /// A bundle whose every layer is described: the ink is derived from the
+    /// A bundle whose every layer is described: the curves are derived from the
     /// grids, as `read` derives it for a `--derived` bundle on disk.
     public init(url: URL, manifest: Manifest, surface: Surface,
                 refine: ContourRefine? = nil) {
         self.init(url: url, manifest: manifest, surface: surface,
                   layers: manifest.layers.map {
-                      Layer(spec: $0, paths: surface.ink($0, occluder: manifest.occluder,
+                      Layer(spec: $0, paths: surface.curves($0, occluder: manifest.occluder,
                                                          refine: refine))
                   },
                   wallMesh: nil, refine: refine)
@@ -135,12 +135,12 @@ public struct KurvenBundle: Sendable {
         var layers: [Layer] = []
         for spec in manifest.layers {
             guard let files = spec.files else {
-                // Described, not dumped: derive the ink from the grids the
+                // Described, not dumped: derive the curves from the grids the
                 // bundle already carries. This is what a `--derived` bundle
                 // trades its layer files for, and what makes the levels, the
                 // hatch spacing and the truncation editable.
                 layers.append(Layer(spec: spec,
-                                    paths: surface.ink(spec, occluder: manifest.occluder)))
+                                    paths: surface.curves(spec, occluder: manifest.occluder)))
                 continue
             }
             let v = try NPY.read(contentsOf: file(files.vertices))
@@ -187,7 +187,7 @@ public extension KurvenBundle {
 
     /// One layer, drawn from whatever its spec now says.
     ///
-    /// A described layer is derived again; a dumped one keeps the ink it was
+    /// A described layer is derived again; a dumped one keeps the curves it was
     /// read with, because the bundle carries no question that could produce it
     /// a second time.
     func redrawn(_ spec: LayerSpec) -> Layer {
@@ -195,7 +195,7 @@ public extension KurvenBundle {
             let existing = layers.first { $0.spec.name == spec.name }
             return Layer(spec: spec, paths: existing?.paths ?? .empty)
         }
-        return Layer(spec: spec, paths: surface.ink(spec, occluder: manifest.occluder,
+        return Layer(spec: spec, paths: surface.curves(spec, occluder: manifest.occluder,
                                                     refine: refine))
     }
 
@@ -205,7 +205,7 @@ public extension KurvenBundle {
     /// truncation, the levels, the hatch spacing and the walls all can, and all of them
     /// are derived from the manifest. This is the edit path for every one of
     /// them, and the reason a truncation slider costs milliseconds instead of a round
-    /// trip to Python: only the *ink* and the wall curtains are rebuilt, from
+    /// trip to Python: only the *curves* and the wall curtains are rebuilt, from
     /// grids that never left memory.
     ///
     /// It is a restyling, not a resampling: passing a manifest whose grids,
@@ -221,8 +221,8 @@ public extension KurvenBundle {
                                       truncation: honest.truncation, cached: surface.cached)
         let bundle = KurvenBundle(url: url, manifest: honest, surface: restyledSurface,
                                   layers: [], wallMesh: wallMesh, refine: refine)
-        // A layer's ink is its spec drawn on the truncated surface past the
-        // occluder, so a layer none of those moved for is the ink already
+        // A layer's curves are its spec drawn on the truncated surface past the
+        // occluder, so a layer none of those moved for is the curves already
         // here: a hatch step draws the hatching, not every phase line again.
         let unmoved = honest.truncation == self.manifest.truncation && honest.occluder == self.manifest.occluder
         return KurvenBundle(url: url, manifest: honest, surface: restyledSurface,
@@ -246,7 +246,7 @@ public extension KurvenBundle {
     /// Write a described bundle: the manifest and the two grids.
     ///
     /// Every layer of a landscape is a description, so this is the whole of
-    /// it. A bundle carrying dumped ink would need its layer files written too,
+    /// it. A bundle carrying dumped curves would need its layer files written too,
     /// and a manifest naming files that are not there is worse than refusing.
     func write(to url: URL) throws {
         guard manifest.layers.allSatisfy({ $0.files == nil }) else {

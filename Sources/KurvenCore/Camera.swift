@@ -1,7 +1,7 @@
 import Foundation
 import simd
 
-/// How view space becomes the plate.
+/// How view space becomes the drawing.
 ///
 /// A sum type rather than a struct with optional fields: the Jahnke-Emde
 /// oblique shear is a property of an orthographic drawing and means nothing
@@ -32,7 +32,7 @@ public struct Camera: Sendable, Equatable {
         self.view = view; self.projection = projection
     }
 
-    /// The exact Python plate camera, in world coordinates.
+    /// The exact Python oblique camera, in world coordinates.
     ///
     /// `Projection.apply` consumes `(imag, real, z)` and, in order: scales
     /// column 1 by `yScale`, negates column 0 when `flipX`, subtracts
@@ -46,20 +46,20 @@ public struct Camera: Sendable, Equatable {
     ///
     ///     view = Rx(xAngle) * Rz(zAngle) * pre
     ///
-    /// The three factors are `Orbit`'s elevation, azimuth and `PlateStyle`, so
+    /// The three factors are `Orbit`'s elevation, azimuth and `DrawingConvention`, so
     /// this is `Orbit(matching:).camera` and a preset is a starting point for
     /// navigation rather than a fixed picture.
     ///
     /// Folding the exchange in here is what keeps it out of everywhere else:
     /// the arrays a bundle carries are already world order, and no stage between
-    /// the decoder and the plate touches a column index again.
-    public static func plate(_ p: PlateProjection) -> Camera {
+    /// the decoder and the drawing touches a column index again.
+    public static func oblique(_ p: ObliqueProjection) -> Camera {
         Orbit(matching: p).camera
     }
 
-    /// The plate's 2D coordinates of a world point: the first two view
+    /// The drawing's 2D coordinates of a world point: the first two view
     /// components under orthographic projection.
-    public func plateCoordinates(of p: P3<WorldSpace>) -> P2<PlateSpace> {
+    public func pageCoordinates(of p: P3<WorldSpace>) -> P2<PageSpace> {
         let v = view(p)
         switch projection {
         case .orthographic:

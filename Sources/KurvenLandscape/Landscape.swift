@@ -7,8 +7,8 @@ import KurvenMath
 ///
 /// The Python module's contract is that a landscape is *derived* -- an
 /// expression, a rectangle, a resolution and a truncation are the whole of
-/// what it is, and every layer of its bundle is a description of ink rather
-/// than the ink. That is what let the frontend restyle without asking Python.
+/// what it is, and every layer of its bundle is a description of curves rather
+/// than the curves. That is what let the frontend restyle without asking Python.
 /// This is the other half of the same idea: with the evaluator in
 /// `KurvenMath`, the sampling does not need Python either, so a landscape is a
 /// value this process builds from a `LandscapeRequest` in the time it takes to
@@ -27,10 +27,10 @@ public enum NativeLandscape {
     /// Where a non-finite sample is put instead: past any truncation, and still a number.
     public static let huge = 1e12
 
-    public static let plate = PlateProjection(shear: 0.5, xAngle: -55.0, zAngle: -90.0,
+    public static let projection = ObliqueProjection(shear: 0.5, xAngle: -55.0, zAngle: -90.0,
                                               flipX: true, yScale: nil)
     public static let defaultDepthTolerance = 0.02
-    public static let plateBuffer = 4000
+    public static let defaultBuffer = 4000
 
     /// Phase contours: every 90 degrees major, every 30 minor.
     public static let phaseMajor: [Double] = linspace(-.pi, .pi, 5)
@@ -122,7 +122,7 @@ public enum NativeLandscape {
         return [min(alongReal, 4096), min(alongImag, 4096), min(alongReal, 4096), min(alongImag, 4096)]
     }
 
-    /// The whole plate, as descriptions: `kurven.landscape.default_layers`.
+    /// The whole drawing, as descriptions: `kurven.landscape.default_layers`.
     public static func defaultLayers(_ domain: Domain, shape: (nReal: Int, nImag: Int),
                                      truncation: Truncation, ceiling: Double, spacing: Double?,
                                      phase: Bool = true) -> [LayerSpec] {
@@ -195,7 +195,7 @@ public enum NativeLandscape {
     }
 
     /// The same at a shape given outright, for a window that must line up
-    /// sample for sample with another: `PeriodicTorus.plate` samples the
+    /// sample for sample with another: `PeriodicTorus.drawing` samples the
     /// plane a few cells past a period rectangle on every side, on the
     /// rectangle's own grid extended.
     public static func sample(_ compiled: KurvenMath.Expression.Compiled, domain: Domain,
@@ -231,7 +231,7 @@ public enum NativeLandscape {
 
     /// `kurven.export.quantize`: to float32, clamped into the float64 range so
     /// rounding never invents a value the samples did not have -- a phase grid
-    /// with a value above π would contour at π where the plate has nothing.
+    /// with a value above π would contour at π where the drawing has nothing.
     public static func quantize(_ values: [Double]) -> [Float] {
         var lo = Double.infinity, hi = -Double.infinity
         for v in values where !v.isNaN { lo = min(lo, v); hi = max(hi, v) }
@@ -250,7 +250,7 @@ public enum NativeLandscape {
     ///
     /// With `refine`, the contour layers are placed by the function rather
     /// than by the grid (`ContourRefiner`), and the bundle carries the refiner
-    /// so every restyle keeps doing so. Off, the ink is exactly what the
+    /// so every restyle keeps doing so. Off, the curves are exactly what the
     /// Python side derives from the same grids, which is what the fixtures
     /// compare.
     public static func build(_ request: LandscapeRequest, gitSha: String = "native",
@@ -277,8 +277,8 @@ public enum NativeLandscape {
             occluder: Occluder(step: step, tiles: [.identity],
                                walls: .perimeter(perimeter, base: 0), region: .full, base: 0),
             layers: layers,
-            presets: [CameraPreset(name: "plate", projection: plate, depthTolerance: defaultDepthTolerance,
-                                   buffer: plateBuffer)],
+            presets: [CameraPreset(name: "oblique", projection: projection, depthTolerance: defaultDepthTolerance,
+                                   buffer: defaultBuffer)],
             provenance: Provenance(
                 function: canonical, example: "function",
                 params: ["expression": .string(canonical), "name": .string(request.name),

@@ -5,17 +5,17 @@ import KurvenMetal
 import KurvenBake
 import KurvenLandscape
 
-// MARK: - ink on a heightfield is hidden where the surface faces away
+// MARK: - curves on a heightfield are hidden where the surface faces away
 //
-// A Gaussian ridge along y, seen from a plate camera whose line of sight has a
+// A Gaussian ridge along y, seen from a oblique camera whose line of sight has a
 // component across it: the near graph faces the eye, the steep part of the
-// far graph faces away, and the far graph's lower slope faces the eye again. Ink run
+// far graph faces away, and the far graph's lower slope faces the eye again. Curves run
 // straight over the ridge on the surface must be cut at the two folds, found
 // on the exact gradient; with nothing in front of it, the depth test alone
 // keeps every vertex, which is the leak this test exists to close.
 
 func facingTests() {
-    Check.suite("facing: ink on a heightfield is hidden where the surface turns away") {
+    Check.suite("facing: curves on a heightfield is hidden where the surface turns away") {
         let amplitude = 3.0, width = 0.5
         func height(_ x: Double) -> Double { amplitude * exp(-x * x / (width * width)) }
         func slope(_ x: Double) -> Double { -2 * x / (width * width) * height(x) }
@@ -32,10 +32,10 @@ func facingTests() {
         let field = Heightfield(surface: surface, occluder: Mesh(vertices: [], triangles: []),
                                 tiles: [.identity], step: 1)
 
-        // A camera whose line of sight crosses the ridge: of the two plate
+        // A camera whose line of sight crosses the ridge: of the two drawing
         // turns, the one that looks more along x.
         let cameras = [0.0, 90.0].map {
-            Camera.plate(PlateProjection(shear: 0, xAngle: -55, zAngle: $0, flipX: false, yScale: nil))
+            Camera.oblique(ObliqueProjection(shear: 0, xAngle: -55, zAngle: $0, flipX: false, yScale: nil))
         }
         let camera = cameras.max { abs($0.view.projectionDirection.x) < abs($1.view.projectionDirection.x) }!
         let sight = camera.view.projectionDirection
@@ -52,10 +52,10 @@ func facingTests() {
                      String(format: "worst relative slope error %.1e", worst))
 
         // Nothing in front of anything: the depth test keeps every vertex.
-        let ink = PolylineSet<WorldSpace>(paths: [stride(from: -2.0, through: 2.0, by: 0.01).map {
+        let curves = PolylineSet<WorldSpace>(paths: [stride(from: -2.0, through: 2.0, by: 0.01).map {
             P3<WorldSpace>($0, 0.5, height($0))
         }])
-        let projected = ink.mapped(camera.view)
+        let projected = curves.mapped(camera.view)
         let scene = Scene(surface: surface, occluder: Mesh(vertices: [], triangles: []),
                           tiles: [.identity], step: 1, layers: [], camera: camera, depthTolerance: 0.02)
         guard let bounds = scene.viewBounds() else {
@@ -67,8 +67,8 @@ func facingTests() {
                                empty: -.infinity)
         let byDepth = HiddenLine.clip(projected, against: empty, depthTolerance: 0.02)
         // An infinite depth tolerance disarms the traversal: the facing alone decides.
-        let cut = field.visibleSurfaceInk(ink, view: camera.view, depthTolerance: .infinity).mapped(camera.view)
-        Check.expect(byDepth.count == 1 && byDepth.vertices.count == ink.vertices.count,
+        let cut = field.visibleSurfaceCurves(curves, view: camera.view, depthTolerance: .infinity).mapped(camera.view)
+        Check.expect(byDepth.count == 1 && byDepth.vertices.count == curves.vertices.count,
                      "tested by depth alone, the whole path is kept")
 
         // Where the surface turns edge-on: facing = -(n · sight)/|n| = 0,
@@ -90,23 +90,23 @@ func facingTests() {
         Check.expect(folds.count == 2, "the far graph has two folds: steep enough to turn away, then not",
                      "folds at \(folds.map { String(format: "%.3f", $0) })")
         guard folds.count == 2, cut.count == 2 else {
-            Check.expect(cut.count == 2, "the ink is cut into two runs, one each side of the hidden stretch",
+            Check.expect(cut.count == 2, "the curves are cut into two runs, one each side of the hidden stretch",
                          "\(cut.count) runs"); return
         }
         let ends = [cut.vertices[cut.offsets[1] - 1], cut.vertices[cut.offsets[1]]]
         let expected = folds.map { camera.view(P3<WorldSpace>($0, 0.5, height($0))) }
         let miss = zip(ends, expected).map { simd_length($0.v - $1.v) }.max()!
         Check.expect(cut.count == 2 && miss < 2e-3,
-                     "the ink is cut into two runs, ending and resuming on the exact folds",
+                     "the curves are cut into two runs, ending and resuming on the exact folds",
                      String(format: "fold vertices within %.1e of the analytic folds", miss))
         let kept = (cut.offsets[1] - cut.offsets[0]) + (cut.offsets[2] - cut.offsets[1])
-        Check.expect(kept < ink.vertices.count && kept > ink.vertices.count / 2,
+        Check.expect(kept < curves.vertices.count && kept > curves.vertices.count / 2,
                      "and the stretch between them, facing away, is gone",
-                     "\(ink.vertices.count - kept) of \(ink.vertices.count) vertices hidden")
+                     "\(curves.vertices.count - kept) of \(curves.vertices.count) vertices hidden")
         // With the traversal armed, the far lower slope -- facing the eye again, but
         // behind the ridge from where the eye is -- goes too: the line of sight
         // from it passes under the top edge.
-        let visible = field.visibleSurfaceInk(ink, view: camera.view, depthTolerance: 0.02).mapped(camera.view)
+        let visible = field.visibleSurfaceCurves(curves, view: camera.view, depthTolerance: 0.02).mapped(camera.view)
         let lastKept = visible.vertices.last.map { simd_length($0.v - expected[0].v) } ?? .infinity
         Check.expect(visible.count == 1 && lastKept < 2e-3,
                      "tested by the solid as well, only the near graph remains, up to the first fold",
@@ -140,7 +140,7 @@ func foldCurveTests() {
         let field = Heightfield(surface: surface, occluder: Mesh(vertices: [], triangles: []),
                                 tiles: [.identity], step: 1)
         let cameras = [0.0, 90.0].map {
-            Camera.plate(PlateProjection(shear: 0, xAngle: -55, zAngle: $0, flipX: false, yScale: nil))
+            Camera.oblique(ObliqueProjection(shear: 0, xAngle: -55, zAngle: $0, flipX: false, yScale: nil))
         }
         let camera = cameras.max { abs($0.view.projectionDirection.x) < abs($1.view.projectionDirection.x) }!
         let sight = camera.view.projectionDirection
@@ -191,12 +191,12 @@ func foldCurveTests() {
         Check.expect(scene.layers.contains { if case .foldCurves = $0.spec.source { return true }; return false },
                      "a landscape describes its fold curves")
         let folds = h.foldCurves(view: scene.camera.view)
-        let ink = (0..<folds.count).reduce(0.0) { total, i in
+        let curves = (0..<folds.count).reduce(0.0) { total, i in
             let p = folds[path: i]
             return total + zip(p, p.dropFirst()).reduce(0) { $0 + simd_length($1.1.v - $1.0.v) }
         }
-        Check.expect(folds.count > 0 && ink > 1, "it has fold curves", String(format: "%d lines, %.2f units", folds.count, ink))
-        guard scene.viewBounds() != nil else { Check.expect(false, "the plate has bounds"); return }
+        Check.expect(folds.count > 0 && curves > 1, "it has fold curves", String(format: "%d lines, %.2f units", folds.count, curves))
+        guard scene.viewBounds() != nil else { Check.expect(false, "the drawing has bounds"); return }
         let visibility = HeightfieldVisibility(heightfield: h, view: scene.camera.view, depthTolerance: 0.02)
         // Every vertex but a run's end carried to a zero of f, which is on
         // the floor, where the grid's facing is its chord's.
@@ -240,9 +240,9 @@ func foldCurveTests() {
     }
 }
 
-// MARK: - ink in a cut face is tested by the wall it lies in
+// MARK: - curves on a wall are tested by the wall they lie on
 //
-// The plate camera sees the right wall of rgamma nearly edge-on, and the
+// The oblique camera sees the right wall of rgamma nearly edge-on, and the
 // depth buffer erased most of its hatch, leaving spots. Visible by the wall
 // instead: every stroke on a wall that faces the eye is kept whole, every
 // stroke on a wall that faces away is dropped whole, a corner vertical edge stays
@@ -263,7 +263,7 @@ func wallInkTests() {
         let faces = [SIMD3<Double>(-1, 0, 0), SIMD3(1, 0, 0), SIMD3(0, -1, 0), SIMD3(0, 1, 0)]
             .map { -simd_dot($0, sight) > 0 }
         Check.expect(faces.contains(true) && faces.contains(false),
-                     "the plate camera sees some walls and not others",
+                     "the oblique camera sees some walls and not others",
                      "left \(faces[0]) right \(faces[1]) front \(faces[2]) back \(faces[3])")
         func wallsOf(_ p: P3<WorldSpace>) -> [Int] {
             let slack = 1e-6
@@ -283,7 +283,7 @@ func wallInkTests() {
         // The hatch lies in the face: whole strokes on facing walls, nothing
         // on the others.
         let hatch = scene.layers.first { $0.spec.name == "wall_hatch" }!
-        let keptHatch = h.visibleWallInk(hatch.paths, view: scene.camera.view, depthTolerance: scene.depthTolerance)
+        let keptHatch = h.visibleWallCurves(hatch.paths, view: scene.camera.view, depthTolerance: scene.depthTolerance)
         var wanted = 0.0
         for i in 0..<hatch.paths.count {
             let p = Array(hatch.paths[path: i])
@@ -321,7 +321,7 @@ func wallInkTests() {
         // The outline: a top edge is the surface's edge and shows over any wall
         // where the surface does; a bottom edge shows only on a facing wall.
         let outline = scene.layers.first { $0.spec.name == "wall_edges" }!
-        let keptOutline = h.visibleWallInk(outline.paths, view: scene.camera.view, depthTolerance: scene.depthTolerance)
+        let keptOutline = h.visibleWallCurves(outline.paths, view: scene.camera.view, depthTolerance: scene.depthTolerance)
         func isTopEdge(_ p: [P3<WorldSpace>]) -> Bool {
             p.allSatisfy { abs($0.z - h.surfaceHeight(at: P2($0.x, $0.y))) < 1e-9 * max(1, abs($0.z)) }
                 && !p.allSatisfy { $0.z == 0 }
@@ -364,12 +364,12 @@ func wallInkTests() {
         Check.expect(truncationEdgeEnds.count >= 2 && missed < 1e-9,
                      "the top edge meets the truncation edge where the truncation edge ends, at every notch",
                      String(format: "%d truncation edge ends on the front edge, worst gap %.1e", truncationEdgeEnds.count, missed))
-        // The bake draws the tested ink as it is: the hatch on the edge-on
+        // The bake draws the tested curves as it is: the hatch on the edge-on
         // right wall is whole, not spotty.
         let baked = try MetalRenderer().bake(scene, options: BakeOptions(resolution: 400))
         let hatchIndex = scene.layers.firstIndex { $0.spec.name == "wall_hatch" }!
         let drawn = baked.strokes.layers[hatchIndex].paths
-        let visible = h.visibleWallInk(scene.layers[hatchIndex].paths, view: scene.camera.view,
+        let visible = h.visibleWallCurves(scene.layers[hatchIndex].paths, view: scene.camera.view,
                                       depthTolerance: scene.depthTolerance)
         Check.expect(drawn.count == visible.count && drawn.vertices.count == visible.vertices.count,
                      "the bake draws the wall hatch exactly as tested, stroke for stroke",

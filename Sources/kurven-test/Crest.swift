@@ -107,7 +107,7 @@ func topEdgeTests() {
 
     Check.suite("top edge to the zero: the fold curves run down to the zero as well") {
         // A steeper cone, 10|z|, so that its far graph turns away from the
-        // plate camera: its outlines are two generators running into the
+        // oblique camera: its outlines are two generators running into the
         // apex, which the grid loses a cell short of the floor.
         let domain = Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: 0, hi: 1))
         let request = LandscapeRequest(expression: "10*z", domain: domain, resolution: 8,
@@ -230,7 +230,7 @@ func topEdgeTests() {
         // |z| = 1/2. The fold either side of the tower is its outline,
         // and it meets the truncation edge where the truncation edge's tangent lies along the sight
         // line. Traced on the grid the fold's last vertex sat on the
-        // crease at the truncation height and was dropped as truncation ink, so the
+        // crease at the truncation height and was dropped as truncation curves, so the
         // outline stopped a cell short of the truncation edge.
         let domain = Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: -1, hi: 1))
         let request = LandscapeRequest(expression: "1/z", domain: domain, resolution: 24, truncation: .uniform(2))
@@ -279,9 +279,9 @@ func topEdgeTests() {
         func f(_ x: Double, _ y: Double) -> Double {
             ((x - 1) * (x - 1) + y * y).squareRoot() / ((x + 1) * (x + 1) + y * y).squareRoot()
         }
-        // The line of sight, as the kernel of the plate projection.
-        let o = scene.camera.plateCoordinates(of: P3(0, 0, 0))
-        let cols = [P3<WorldSpace>(1, 0, 0), P3(0, 1, 0), P3(0, 0, 1)].map { scene.camera.plateCoordinates(of: $0) }
+        // The line of sight, as the kernel of the oblique projection.
+        let o = scene.camera.pageCoordinates(of: P3(0, 0, 0))
+        let cols = [P3<WorldSpace>(1, 0, 0), P3(0, 1, 0), P3(0, 0, 1)].map { scene.camera.pageCoordinates(of: $0) }
         let row0 = SIMD3(cols[0].x - o.x, cols[1].x - o.x, cols[2].x - o.x)
         let row1 = SIMD3(cols[0].y - o.y, cols[1].y - o.y, cols[2].y - o.y)
         let sight = simd_normalize(simd_cross(row0, row1))
@@ -353,7 +353,7 @@ func topEdgeTests() {
         let view = scene.camera.view
         let cell = 3.0 / 23
         let topEdge = try bundle.layer("wall_edges").paths
-        let drawn = h.visibleWallInk(topEdge, view: view, depthTolerance: scene.depthTolerance)
+        let drawn = h.visibleWallCurves(topEdge, view: view, depthTolerance: scene.depthTolerance)
         // the run of the back top edge that begins right of the tower
         var start: P3<WorldSpace>?
         for i in 0..<drawn.count {
@@ -540,8 +540,8 @@ func topEdgeTests() {
         Check.expect(topEdge.allSatisfy { $0.z <= min(f($0), $0.x < 0.5 ? 2 : 4) + 1e-9 }, "and none rises above its band's truncation")
     }
 
-    Check.suite("a window's ink is tested to its pixel: every end within the resolution asked for") {
-        // The preview places the ends of tested ink to a quarter of its pixel
+    Check.suite("a window's curves are tested to its pixel: every end within the resolution asked for") {
+        // The preview places the ends of tested curves to a quarter of its pixel
         // (`Scene.resolution`), and a bake to the last bit. The two drawings
         // differ only where a run ends, and there by less than what was
         // asked for, measured in the view plane: a point of either lies
@@ -579,9 +579,9 @@ func topEdgeTests() {
         var fewer = 0
         var pairs = [(h.visibleFolds(view: view, depthTolerance: scene.depthTolerance),
                       h.visibleFolds(view: view, depthTolerance: scene.depthTolerance, resolution: resolution))]
-        for layer in scene.layers where layer.spec.source.isWallInk && layer.spec.clipped {
-            pairs.append((h.visibleWallInk(layer.paths, view: view, depthTolerance: scene.depthTolerance),
-                          h.visibleWallInk(layer.paths, view: view, depthTolerance: scene.depthTolerance,
+        for layer in scene.layers where layer.spec.source.liesOnWall && layer.spec.clipped {
+            pairs.append((h.visibleWallCurves(layer.paths, view: view, depthTolerance: scene.depthTolerance),
+                          h.visibleWallCurves(layer.paths, view: view, depthTolerance: scene.depthTolerance,
                                            resolution: resolution)))
         }
         for (exact, coarse) in pairs {
@@ -610,7 +610,7 @@ func topEdgeTests() {
         // truncated at 2, on 24 samples across, so that a cell is a visible
         // fraction of the object and no approximation has anywhere to hide.
         // The rings are placed on f, the folds are traced on f, the top edge is
-        // f's profile and the ink is tested against f, so: every ring that
+        // f's profile and the curves are tested against f, so: every ring that
         // ends on a fold ends on the drawn fold to the refiner's tolerance;
         // the top edge and the truncation edge meet to rounding; and the fold down the
         // pit's far graph ends at the zero, where the top edge bottoms out.
@@ -623,11 +623,11 @@ func topEdgeTests() {
         let cell = 1.6 / 23
         let view = scene.camera.view
         let vis = HeightfieldVisibility(heightfield: h, view: view, depthTolerance: scene.depthTolerance)
-        // The tested ink, in world space: the folds that show, and each
+        // The tested curves, in world space: the folds that show, and each
         // surface layer less what cannot be seen.
         let folds = h.visibleFolds(view: view, depthTolerance: scene.depthTolerance)
         let visible: [(layer: Layer, paths: PolylineSet<WorldSpace>)] = scene.layers.map {
-            ($0, h.visibleSurfaceInk($0.paths, view: view, depthTolerance: scene.depthTolerance))
+            ($0, h.visibleSurfaceCurves($0.paths, view: view, depthTolerance: scene.depthTolerance))
         }
         // The pit is a bowl: the graph is convex there, so the solid under
         // it is hollow, and a line of sight tangent to the graph -- which is
@@ -637,7 +637,7 @@ func topEdgeTests() {
         // traced fold runs to the zero (below), and the test hides it:
         // what little shows lies on the cut itself.
         let traced = h.foldCurves(view: view)
-        func ink(_ set: PolylineSet<WorldSpace>) -> Double {
+        func curves(_ set: PolylineSet<WorldSpace>) -> Double {
             (0..<set.count).reduce(0.0) { total, i in
                 let p = Array(set[path: i])
                 return total + zip(p, p.dropFirst()).reduce(0) { $0 + simd_length($1.1.v - $1.0.v) }
@@ -647,10 +647,10 @@ func topEdgeTests() {
         // lines of sight leave the solid at once: a fold is tested with no
         // depth tolerance, since its vertices lie on f exactly.
         let offCut = folds.vertices.map(\.y).max() ?? 0
-        Check.expect(traced.count >= 1 && ink(traced) > 0.5 && offCut < 1e-3 * cell,
+        Check.expect(traced.count >= 1 && curves(traced) > 0.5 && offCut < 1e-3 * cell,
                      "no fold is seen in the pit: a line of sight tangent to a bowl's graph runs through the graph",
                      String(format: "%.3f units traced, %.3f seen, furthest %.1e from the cut",
-                            ink(traced), ink(folds), offCut))
+                            curves(traced), curves(folds), offCut))
         /// Distance from a point to the nearest fold segment, in 3D.
         func toFolds(_ v: P3<WorldSpace>) -> Double {
             var best = Double.infinity
@@ -665,7 +665,7 @@ func topEdgeTests() {
             }
             return best
         }
-        // The top edge of the front wall, as drawn, projected onto the plate:
+        // The top edge of the front wall, as drawn, projected onto the drawing:
         // what a ring that passes behind it must end on.
         let outline = try bundle.layer("wall_edges").paths
         var topEdge: [P3<WorldSpace>] = []
@@ -721,7 +721,7 @@ func topEdgeTests() {
                         if g > 2 * 0.02 * cell {
                             // On failure: the traversal's account of the end and of
                             // a point a hair beyond it along the ring.
-                            print(String(format: "    top edge-cut end (%.4f, %.4f, %.4f) %@: %.2e on plate, facing %.3f, run of %d",
+                            print(String(format: "    top edge-cut end (%.4f, %.4f, %.4f) %@: %.2e on the page, facing %.3f, run of %d",
                                          end.x, end.y, end.z, layer.spec.name, g, vis.facing(end.xy), p.count))
                             print("      " + vis.explain(end).replacingOccurrences(of: "\n", with: "\n      "))
                             // A hair further along the ring, which is hidden.
@@ -743,7 +743,7 @@ func topEdgeTests() {
         // Within the top edge's own tolerance, and the depth tolerance the test
         // forgives, which is the tolerance again.
         Check.expect(byTraversal >= 10 && worstTopEdge <= 2 * 0.02 * cell + 1e-9,
-                     "every ring that passes behind the top edge ends on the top edge as drawn, on the plate",
+                     "every ring that passes behind the top edge ends on the top edge as drawn, on the drawing",
                      String(format: "%d ends, worst %.2e against %.2e; %d on the edge, %d on the plateau, %d at zeros",
                             byTraversal, worstTopEdge, 2 * 0.02 * cell, kinds.edge, kinds.truncationHeight, kinds.zero))
         // The top edge and the truncation edge.

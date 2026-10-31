@@ -284,7 +284,7 @@ func hatchingTests() {
         // grid spacings, enough spots for every width to occur on it. At
         // half a unit a face sits inside a single spot.
         let hatching = Hatching(angle: 1.1, spacing: 0.05, tone: .turing(scale: 0.12, seed: 5), widthSteps: 3)
-        let camera = Camera.plate(PlateProjection(shear: 0.3, xAngle: -55, zAngle: -70, flipX: false, yScale: nil))
+        let camera = Camera.oblique(ObliqueProjection(shear: 0.3, xAngle: -55, zAngle: -70, flipX: false, yScale: nil))
         let d = -camera.view.projectionDirection
         var wholeOrAbsent = true, widthsSeen = Set<Int>()
         let lines = s.hatchLines(hatching)
