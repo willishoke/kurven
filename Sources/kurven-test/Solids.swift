@@ -316,6 +316,42 @@ func solidTests() {
         }
     }
 
+    Check.suite("solids: a face that touches itself at a vertex is one loop through it twice") {
+        // A box 4 by 4 by 2 with pits sunk in its top. Where a pit's mouth
+        // meets the top face's outer loop, or another pit's mouth, the top
+        // face's boundary is one loop that passes the shared vertex twice:
+        // H counts the boundary's components, and Euler–Poincaré holds. Not
+        // prisms: over such a face, the vertical edge at the shared vertex
+        // would bound four walls.
+        let corners = [SIMD2(0.0, 0.0), SIMD2(4.0, 0.0), SIMD2(4.0, 4.0), SIMD2(0.0, 4.0)]
+        let cases: [(String, Solid, holes: Int)] = [
+            // A pit with a mouth corner on the box's corner 0: the outer loop
+            // runs round the box, back to 0, then round the mouth clockwise.
+            ("a pit touching the outer loop",
+             pittedBox(corners + [SIMD2(1.5, 0.5), SIMD2(2, 2), SIMD2(0.5, 1.5)],
+                       mouths: [[0, 4, 5, 6]], top: [[0, 1, 2, 3, 0, 6, 5, 4]]), 0),
+            // Two pits whose mouths share the corner 7: one hole, round the
+            // left mouth and then the right, both clockwise.
+            ("two pits touching each other",
+             pittedBox(corners + [SIMD2(1.4, 1.4), SIMD2(0.8, 2), SIMD2(1.4, 2.6), SIMD2(2, 2),
+                                  SIMD2(2.6, 1.4), SIMD2(3.2, 2), SIMD2(2.6, 2.6)],
+                       mouths: [[5, 4, 7, 6], [7, 8, 9, 10]], top: [[0, 1, 2, 3], [7, 4, 5, 6, 7, 10, 9, 8]]), 1),
+        ]
+        for (name, s, holes) in cases {
+            let V = s.vertices.count, E = s.edgePaths.count, F = s.faces.count
+            Check.expect(s.eulerCharacteristic == 2 && s.loops[0].count == holes + 1,
+                         "\(name): \(V) − \(E) + \(F) − \(holes) = 2, a sphere",
+                         "χ = \(s.eulerCharacteristic)")
+            let partition = partitionReport(s)
+            Check.expect(partition.isEmpty, "\(name): \(s.faces[0].count) convex pieces tile the top face",
+                         partition)
+            let (wrong, compared, example) = edgeAgreement(s)
+            Check.expect(wrong == 0 && compared > 10_000,
+                         "\(name): every edge's drawn spans agree with a point-by-point ray cast",
+                         "\(wrong) of \(compared) sampled points disagree \(example)")
+        }
+    }
+
     Check.suite("solids: on the frame no diagonal is drawn, and the back's inner edges are seen through the hole in part") {
         let s = Solid.frame(outer: 4, inner: 2, depth: 1)
         var onDiagonal = 0, offEdges = 0, cameras = 0, compared = 0, wrong = 0, throughHole = 0
@@ -413,6 +449,23 @@ func prism(_ loops: [[SIMD2<Double>]], depth: Double) -> Solid {
         }
     }
     return Solid(vertices: vertices, faces: [top, bottom] + walls)
+}
+
+/// A box 4 by 4 by 2 on `z = 0` with pits sunk in its top, each an inverted
+/// pyramid 1 deep. `points` are the top's vertices, the box's corners first
+/// (counter-clockwise from above); each mouth lists its corners among them,
+/// counter-clockwise from above, and `top` is the top face's loops.
+func pittedBox(_ points: [SIMD2<Double>], mouths: [[Int]], top: [[Int]]) -> Solid {
+    let m = points.count
+    var vertices = points.map { P3<WorldSpace>($0.x, $0.y, 2) } + points.prefix(4).map { P3($0.x, $0.y, 0) }
+    var faces: [[[Int]]] = [top, [[m, m + 3, m + 2, m + 1]]]
+    for k in 0..<4 { faces.append([[m + k, m + (k + 1) % 4, (k + 1) % 4, k]]) }
+    for mouth in mouths {
+        let centre = mouth.reduce(SIMD2<Double>.zero) { $0 + points[$1] } / Double(mouth.count)
+        vertices.append(P3(centre.x, centre.y, 1))
+        for k in mouth.indices { faces.append([[mouth[k], mouth[(k + 1) % mouth.count], vertices.count - 1]]) }
+    }
+    return Solid(vertices: vertices, faces: faces)
 }
 
 /// What is wrong with a solid's partition, or nothing: per face, every piece

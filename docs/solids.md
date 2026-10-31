@@ -16,10 +16,19 @@ kurven-cli surface solid --kind dodecahedron --hatching half-lambert --width-ste
 A `Solid` is given as vertices and its faces in boundary representation,
 each face as its loops (`Solid(vertices:faces:)`): the outer loop
 counter-clockwise seen from outside, then one loop per hole, clockwise. The
-constructor checks that every face is flat, that every edge is shared by
-exactly two faces in opposite directions, that the signed volume is
-positive, and that no two faces sharing an edge lie in one plane (they
-would be one face); anything else is refused.
+constructor checks that every face is flat, that no two loops of a face
+share a vertex, that every edge is shared by exactly two faces in opposite
+directions, that the signed volume is positive, and that no two faces
+sharing an edge lie in one plane (they would be one face); anything else is
+refused.
+
+A loop is one component of the face's boundary. Where a face touches
+itself at a vertex, the loop there passes the vertex twice: a hole that
+touches the outer loop is part of the outer loop, and two holes that touch
+each other are one hole. A square `[0, 1, 2, 3]` with a triangular hole
+touching its corner 0 is the single loop `[0, 1, 2, 3, 0, 4, 5]`. Written
+this way, the holes Euler–Poincaré counts are the boundary's components;
+written as two loops, the touching hole would be counted once too often.
 
 Visibility and hatching both reduce to clipping a line against a convex
 polygon, which is an intersection of half-planes, so the solid cuts every
@@ -133,4 +142,8 @@ with a triangular hole, and loops with straight corners. On every face the
 pieces are convex and made of the face's own vertices, their areas add up
 to the face's, a grid of sample points lands in exactly one piece inside
 the face and in none outside, and the diagonals number pieces − 1 + holes,
-which is Euler's formula for a disc with holes cut into discs.
+which is Euler's formula for a disc with holes cut into discs. Two boxes
+with pits sunk in their tops test faces that touch themselves: one pit
+touches the top face's outer loop at a corner, and two pits touch each
+other at a corner of their mouths. Both are spheres, χ = 2, and their edges
+agree with the ray cast.

@@ -14,6 +14,11 @@ import simd
 /// added: every piece's corners are the face's own vertices, so the
 /// neighbouring faces' sides still meet the pieces' sides end to end.
 ///
+/// A loop passes a vertex twice where the face touches itself there: a hole
+/// touching the outer loop is part of the outer loop, and two holes touching
+/// each other are one hole. Corners are taken by their place in a loop, not
+/// by vertex, so such a vertex is two corners, each with its own two sides.
+///
 /// Every choice is made in index order, so a face gives the same pieces in
 /// every process.
 enum ConvexPartition {
@@ -25,7 +30,10 @@ enum ConvexPartition {
     /// here is a cross product held to it.
     static func pieces(_ loops: [[Int]], point: (Int) -> SIMD2<Double>, tolerance: Double) -> [[Int]] {
         let outer = loops[0]
-        if loops.count == 1, isConvex(outer, point: point, tolerance: tolerance) { return [outer] }
+        // A loop that passes a vertex twice is never one piece.
+        if loops.count == 1, Set(outer).count == outer.count, isConvex(outer, point: point, tolerance: tolerance) {
+            return [outer]
+        }
         let ring = bridged(loops, point: point, tolerance: tolerance)
         return merged(triangles(ring, point: point, tolerance: tolerance), point: point, tolerance: tolerance)
     }

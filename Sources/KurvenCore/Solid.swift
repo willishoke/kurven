@@ -19,8 +19,13 @@ import simd
 /// The solid is given as its faces, in boundary representation: each face
 /// as its *loops*, the outer loop counter-clockwise seen from outside, so the
 /// face's normal by the right-hand rule points out of the solid, and then one
-/// loop per hole, clockwise. A face need not be convex -- the front of a
-/// picture frame is a square with a square hole -- so the solid computes
+/// loop per hole, clockwise. A loop is one component of the face's
+/// boundary: where a face touches itself at a vertex, its boundary there is
+/// one loop that passes the vertex twice. A hole touching the outer loop is
+/// part of the outer loop, and two holes touching each other are one hole,
+/// so Euler–Poincaré's count of holes stays right. A face need not be
+/// convex -- the front of a picture frame is a square with a square hole --
+/// so the solid computes
 /// each face's *convex partition* (`ConvexPartition`) and keeps the
 /// *pieces*: visibility and hatching only ever clip against a convex
 /// polygon. A convex face with no hole is one piece.
@@ -65,7 +70,8 @@ public struct Solid: Sendable, Equatable {
     }
 
     /// - Precondition: every face is flat and its loops bound a region of
-    ///   its plane; every edge lies in exactly two faces, traversed in
+    ///   its plane; no two loops of a face share a vertex; every edge lies
+    ///   in exactly two faces, traversed in
     ///   opposite directions -- the surface is closed and consistently
     ///   oriented -- and the orientation is outward (the signed volume is
     ///   positive); no two faces that share an edge lie in one plane, since
@@ -79,6 +85,17 @@ public struct Solid: Sendable, Equatable {
         var pieces: [[Int]] = [], faces: [[Int]] = [], faceOfPiece: [Int] = []
         var frames: [FaceFrame] = []
         for (i, face) in loops.enumerated() {
+            // A loop is one component of the face's boundary. Where the face
+            // touches itself at a vertex, that component passes the vertex
+            // twice, so it is one loop, not two that share the vertex.
+            for l in face.indices {
+                for m in face.indices where m > l {
+                    guard let k = Set(face[l]).intersection(face[m]).min() else { continue }
+                    preconditionFailure("face \(i): loops \(l) and \(m) share vertex \(k). Where a face touches "
+                                        + "itself at a vertex, write its boundary there as one loop that passes "
+                                        + "the vertex twice")
+                }
+            }
             let frame = FaceFrame(face, vertices: vertices)
             // The tolerances scale with the face itself, the diagonal of its
             // bounding box in its plane, so a face is cut the same way
