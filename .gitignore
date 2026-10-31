@@ -24,3 +24,6 @@ venv/
 *.xcodeproj/
 
 build/
+
+# local handoffs and notes, never committed
+*.local.md

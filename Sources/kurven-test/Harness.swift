@@ -25,7 +25,14 @@ enum Check {
     nonisolated(unsafe) static var passed = 0
     nonisolated(unsafe) static var current = ""
 
+    /// `KURVEN_TEST_ONLY=solids,hatching` runs only the suites whose names
+    /// contain one of the comma-separated words: for chasing one failure
+    /// without the twenty minutes around it.
+    static let only: [Substring]? = ProcessInfo.processInfo.environment["KURVEN_TEST_ONLY"]
+        .map { $0.split(separator: ",") }
+
     static func suite(_ name: String, _ body: () throws -> Void) {
+        if let only, !only.contains(where: { name.contains($0) }) { return }
         print("\n\(name)")
         current = name
         do { try body() }

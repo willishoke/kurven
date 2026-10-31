@@ -85,6 +85,12 @@ struct Args {
         guard let d = Double(v) else { throw CLIError("--\(name) wants a number, got '\(v)'") }
         return d
     }
+    /// A number that must be positive and finite, as a length is.
+    func positive(_ name: String) throws -> Double? {
+        guard let d = try double(name) else { return nil }
+        guard d > 0, d.isFinite else { throw CLIError("--\(name) wants a positive number, got '\(flags[name]!)'") }
+        return d
+    }
 }
 
 let usage = """
@@ -140,17 +146,30 @@ usage: kurven-cli <command> [options]
         --width by default; 0 leaves them out). An output ending in .png
         renders one frame of the realtime preview instead of baking.
 
-  surface solid [--kind K] [--size R] [--width W] [--x-angle DEG] [--z-angle DEG]
-          [--shear S] [--resolution N] -o out.svg
-        Bake a polyhedron to SVG, its edges as the ink. K is one of
-        tetrahedron, cube, octahedron, dodecahedron, icosahedron -- built
-        from their vertex coordinates by a convex hull, set down on a face --
-        or csaszar, the seven-vertex torus. An edge shows where one of its
-        two faces faces the eye and no other face stands in front, and the
-        second half is a cast of the edge against every face, solved in
-        closed form: no margin, no pixel, the same drawing at any
-        --resolution, which only the depth output sees. --size is the
-        circumradius (2 by default).
+  surface solid [--kind K] [--size R] [--hole H] [--depth D] [--width W]
+          [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N] [--color C]
+          [--hatching uniform|turing|half-lambert [--angle DEG] [--spacing S] [--step S]
+          [--width-steps N] [--seed N] [--scale S] [--hatch-width W]
+          [--hatch-color C]] -o out.svg
+        Bake a polyhedron to SVG, its edges drawn. K is one of tetrahedron,
+        cube, octahedron, dodecahedron, icosahedron -- built from their vertex
+        coordinates by a convex hull, set down on a face -- csaszar, the
+        seven-vertex torus, or frame, a picture frame (2R across, a hole
+        --hole wide, --depth thick). An edge shows where one of its two faces
+        faces the eye and nothing stands in front, and the second half is
+        decided by occlusion against every piece of the solid, in closed
+        form: no pixel, the same drawing at any --resolution, which only the
+        depth output sees. --size is the circumradius (2 by
+        default). --hatching hatches every face with lines at --angle (45°)
+        every --spacing, their width set by a tone: uniform is the whole
+        face, turing is Turing's dappled pattern at --scale under --seed,
+        half-lambert is the darkness under half-Lambert shading by a fixed
+        light. With --width-steps 1 the lines are drawn where the tone is
+        positive; with more their width follows the tone in that many steps,
+        up to --hatch-width. --step is how often the tone is read along a
+        line (the spacing by default).
+        --color is the edges' stroke colour and --hatch-color the
+        hatching's (any SVG colour; black by default).
 
   surface-costs [--repeat N] [--only torus|sn|forced]
         Time what each of the window's surface controls costs: the plate
@@ -527,7 +546,7 @@ func surfaceCommand(_ args: Args) throws {
 /// solid is a table and a rule, and the rule is exact.
 func solidCommand(_ args: Args) throws {
     let kind = args.flags["kind"] ?? "dodecahedron"
-    let size = try args.double("size") ?? 2
+    let size = try args.positive("size") ?? 2
     let width = try args.double("width") ?? 0.6
     let solid: Solid
     if kind == "csaszar" {
@@ -536,22 +555,55 @@ func solidCommand(_ args: Args) throws {
         let c = Solid.csaszar
         let r = c.vertices.map { simd_length(SIMD2($0.x, $0.y)) }.max() ?? 1
         solid = c.transformed(rotation: matrix_identity_double3x3 * (size / r))
+    } else if kind == "frame" {
+        let hole = try args.positive("hole") ?? size
+        guard hole < 2 * size else {
+            throw CLIError("--hole wants less than the frame's width, 2 × --size = \(2 * size), got \(hole)")
+        }
+        solid = Solid.frame(outer: 2 * size, inner: hole, depth: try args.positive("depth") ?? size / 2)
     } else if let platonic = Solid.Platonic(rawValue: kind) {
-        solid = Solid.platonic(platonic, circumradius: size).resting(on: 0)
+        solid = Solid.platonic(platonic, circumradius: size).resting(onFace: 0)
     } else {
         throw CLIError("unknown solid '\(kind)'; the table has: "
                        + Solid.Platonic.allCases.map(\.rawValue).joined(separator: ", ")
-                       + ", csaszar")
+                       + ", csaszar, frame")
     }
     var projection = SurfaceRequest.projection
     projection.shear = try args.double("shear") ?? projection.shear
     projection.xAngle = try args.double("x-angle") ?? projection.xAngle
     projection.zAngle = try args.double("z-angle") ?? projection.zAngle
     let camera = Camera.plate(projection)
-    let layer = Layer(spec: LayerSpec(name: "edges", role: .outline, source: .edges,
-                                      width: width, heightPolicy: .surface),
-                      paths: solid.edgePaths)
-    let scene = Scene(solid: solid, layers: [layer], camera: camera)
+    var layers = [Layer(spec: LayerSpec(name: "edges", role: .outline, source: .edges,
+                                        width: width, heightPolicy: .surface,
+                                        color: args.flags["color"] ?? "#000000"),
+                        paths: solid.edgePaths)]
+    if let kind = args.flags["hatching"] {
+        let tone: Tone
+        switch kind {
+        case "uniform": tone = .uniform
+        case "turing":
+            let seed = try args.int("seed", 1)
+            guard seed >= 0 else { throw CLIError("--seed wants a whole number, 0 or more, got \(seed)") }
+            tone = .turing(scale: try args.positive("scale") ?? size / 4, seed: UInt64(seed))
+        case "half-lambert": tone = .halfLambert(light: SIMD3(-0.4, -0.6, 0.7))
+        case let other: throw CLIError("unknown tone '\(other)'; the tones are uniform, turing, half-lambert")
+        }
+        let spacing = try args.positive("spacing") ?? size / 25
+        let step = try args.positive("step")
+        if let step, step < Hatching.finestStep * spacing {
+            throw CLIError("--step wants at least a millionth of --spacing, got \(step)")
+        }
+        let widthSteps = try args.int("width-steps", 1)
+        guard widthSteps >= 1 else { throw CLIError("--width-steps wants 1 or more, got \(widthSteps)") }
+        let hatching = Hatching(angle: (try args.double("angle") ?? 45) * .pi / 180, spacing: spacing,
+                                step: step, tone: tone, widthSteps: widthSteps)
+        layers.append(Layer(spec: LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching),
+                                            width: try args.double("hatch-width") ?? width / 2,
+                                            heightPolicy: .surface,
+                                            color: args.flags["hatch-color"] ?? args.flags["color"] ?? "#000000"),
+                            paths: solid.hatchPaths(hatching)))
+    }
+    let scene = Scene(solid: solid, layers: layers, camera: camera)
     let output = URL(fileURLWithPath: try args.string("output"))
     let options = BakeOptions(resolution: try args.int("resolution", 3000),
                               tiles: args.flags["tiles"].flatMap(Int.init))
@@ -569,15 +621,21 @@ func solidCommand(_ args: Args) throws {
                 && simd_length(p.last!.v - corners[e.b]) < 1e-9
         }
     }.count
+    let diagonals = solid.isDiagonal.filter { $0 }.count
+    let hatchLength = result.strokes.layers.dropFirst().reduce(0.0) { $0 + $1.paths.inkLength }
+    let hatchLines = result.strokes.layers.dropFirst().reduce(0) { $0 + $1.paths.count }
+    let widths = result.strokes.layers.count - 1
     print("""
         \(kind) -> \(output.lastPathComponent)
-          solid      \(solid.vertices.count) vertices, \(solid.edges.count) edges, \
-        \(solid.faces.count) faces, χ = \(solid.eulerCharacteristic), \
-        \(solid.isConvex ? "convex: the sign test alone decides" : "not convex: edges are cast against the faces")
-          edges      \(drawn.count) pieces drawn, \(whole) of them whole edges, \
-        ink \(String(format: "%.2f", result.strokes.inkLength))
+          solid      \(solid.vertices.count) vertices, \(solid.edges.count - diagonals) edges, \
+        \(solid.faces.count) faces\(diagonals > 0 ? " in \(solid.pieces.count) convex pieces" : ""), \
+        genus \(1 - solid.eulerCharacteristic / 2), \
+        \(solid.isConvex ? "convex: the sign test alone decides" : "not convex: edges are tested for occlusion")
+          edges      \(drawn.count) spans drawn, \(whole) of them whole edges, \
+        length \(String(format: "%.2f", drawn.inkLength))
+          hatching   \(layers.count > 1 ? "\(hatchLines) lines at \(widths) width\(widths == 1 ? "" : "s"), length \(String(format: "%.2f", hatchLength))" : "none")
           depth      \(result.depth.frame.rows)x\(result.depth.frame.cols), \
-        which the ink does not consult
+        which visibility does not consult
           took       \(elapsed)
         """)
 }
@@ -1392,6 +1450,9 @@ func sourceName(_ source: LayerSource) -> String {
     case .foldLines: "fold lines"
     case .trajectory: "a trajectory"
     case .edges: "the edges of a solid"
+    case .hatching(let h):
+        "hatching every \(fmt(h.spacing)) at \(fmt(h.angle * 180 / .pi))°, "
+            + "\(h.widthSteps) width\(h.widthSteps == 1 ? "" : "s")"
     }
 }
 
