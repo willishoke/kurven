@@ -21,8 +21,9 @@ here are defined in the [glossary](glossary.md).
 **Faces.** A landscape's boundary is the graph, where z = |f(x + iy)|; the
 plateaus, where |f| reaches the truncation height and the surface is cut
 flat; and the walls along the window's edges. A torus is one face. A
-polyhedron's faces are flat, and a face that is not convex is stored as
-its convex pieces (see [solids.md](solids.md)).
+polyhedron's faces are flat, possibly not convex and possibly with holes,
+and each is cut into convex pieces for visibility and hatching (see
+[solids.md](solids.md)).
 
 **Curves.** Most curves are level sets of a field on a face: contours of
 |f| and arg f on the graph, coordinate curves on a torus, hatch lines on a
@@ -219,13 +220,14 @@ seeded from it.
 
 ## Polyhedra
 
-A polyhedron is given as the convex pieces of its faces, counter-clockwise
-from outside (`Solid(vertices:pieces:)`). Pieces of one plane that share a
-side form a face, and the shared side is a diagonal of the partition, not
-an edge: it is not drawn and hides nothing. The Platonic solids are built
-from their vertex coordinates by a convex hull; Császár's seven-vertex torus
-and a picture frame (a square annulus with depth, ten faces in sixteen
-pieces) are the two that are not convex.
+A polyhedron is given as its faces, each as its loops: the outer loop
+counter-clockwise from outside, then one loop per hole, clockwise
+(`Solid(vertices:faces:)`). The solid cuts each face into convex pieces;
+a side two pieces of one face share is a diagonal of the partition, not an
+edge: it is not drawn and hides nothing. The Platonic solids are built from
+their vertex coordinates by a convex hull; Császár's seven-vertex torus and
+a picture frame (a square annulus with depth, ten faces, two of them with a
+hole) are the two that are not convex.
 
 An edge is seen where one of its two faces faces the eye and no piece stands
 in front. Occlusion is closed form: a segment and a piece both project to

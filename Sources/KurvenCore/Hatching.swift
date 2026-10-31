@@ -14,7 +14,7 @@ import simd
 /// solid, the tone and the camera, and not on a resolution.
 public struct Hatching: Sendable, Equatable {
     /// The direction of the lines in the face's plane, in radians from its
-    /// `u` axis (`Solid.Face`).
+    /// `u` axis (`Solid.FaceFrame`).
     public var angle: Double
     /// Between neighbouring lines, in world units.
     public var spacing: Double
@@ -234,8 +234,8 @@ public enum Tone: Sendable, Equatable {
         return l2 > 0 && l2.isFinite
     }
 
-    /// The tone on one face, in that face's coordinates.
-    public func value(on face: Solid.Face) -> @Sendable (SIMD2<Double>) -> Double {
+    /// The tone on one face, in the coordinates of its frame.
+    public func value(on face: Solid.FaceFrame) -> @Sendable (SIMD2<Double>) -> Double {
         switch self {
         case .uniform:
             return { _ in 1 }
@@ -339,14 +339,14 @@ public extension Solid {
     /// along each run every `step`, and where the width step changes between
     /// two readings the change is bisected on the tone.
     func hatchLines(_ hatching: Hatching, onFace i: Int) -> [HatchLine] {
-        let face = face(i)
-        let polygons: [[SIMD2<Double>]] = face.pieces.map { p in
+        let face = frames[i]
+        let polygons: [[SIMD2<Double>]] = faces[i].map { p in
             pieces[p].map { face.coordinates(vertices[$0].v) }
         }
         // Per side of each piece, whether it is a diagonal of the face
         // rather than an edge of the solid.
         let diagonals = Set(edges.indices.filter { isDiagonal[$0] }.map { SIMD2(edges[$0].a, edges[$0].b) })
-        let onDiagonal: [[Bool]] = face.pieces.map { p in
+        let onDiagonal: [[Bool]] = faces[i].map { p in
             let piece = pieces[p]
             return piece.indices.map { j in
                 let a = piece[j], b = piece[(j + 1) % piece.count]

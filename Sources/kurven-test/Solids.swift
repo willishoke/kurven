@@ -237,29 +237,23 @@ func solidTests() {
                      "\(wrong) of \(compared) sampled points disagree \(example)")
     }
 
-    Check.suite("solids: the picture frame is a torus of ten faces in sixteen convex pieces") {
+    Check.suite("solids: the picture frame is a torus of ten faces, two of them with a hole") {
         let s = Solid.frame(outer: 4, inner: 2, depth: 1)
-        let diagonals = s.isDiagonal.filter { $0 }.count
-        Check.expect(s.vertices.count == 16 && s.edges.count == 32 && s.pieces.count == 16
+        let holes = s.loops.reduce(0) { $0 + $1.count - 1 }
+        Check.expect(s.vertices.count == 16 && s.edgePaths.count == 24 && s.faces.count == 10 && holes == 2
                      && s.eulerCharacteristic == 0,
-                     "the partition has 16 vertices, 32 sides, 16 pieces, χ = 0",
-                     "\(s.vertices.count) vertices, \(s.edges.count) sides, \(s.pieces.count) pieces, χ = \(s.eulerCharacteristic)")
-        Check.expect(diagonals == 8 && s.edgePaths.count == 24,
-                     "8 of the sides are diagonals, between the trapezoids of an annulus, and 24 are edges",
-                     "\(diagonals) diagonals, \(s.edgePaths.count) edges")
+                     "16 vertices, 24 edges, 10 faces, 2 holes: 16 − 24 + 10 − 2 = 0, one shell of genus one",
+                     "\(s.vertices.count) vertices, \(s.edgePaths.count) edges, \(s.faces.count) faces, \(holes) holes")
         Check.expect(!s.isConvex, "it is not convex")
-        // Ten faces: the front and back annuli, four outer walls, four inner.
-        var planar = true
-        for i in s.faces.indices {
-            let f = s.face(i)
-            for piece in f.pieces { for k in s.pieces[piece] {
-                if abs(simd_dot(s.vertices[k].v - f.origin, f.normal)) > 1e-12 { planar = false }
-            } }
-        }
-        let sizes = s.faces.map(\.count).sorted()
-        Check.expect(s.faces.count == 10 && sizes == [1, 1, 1, 1, 1, 1, 1, 1, 4, 4] && planar,
-                     "its pieces join across the diagonals into 10 flat faces: two of four pieces, eight of one",
-                     "\(s.faces.count) faces of sizes \(sizes)")
+        // The annuli are cut into convex pieces; the walls are one piece each.
+        let sizes = s.faces.map(\.count)
+        Check.expect(sizes.dropFirst(2).allSatisfy { $0 == 1 } && sizes.prefix(2).allSatisfy { $0 == 4 },
+                     "each wall is one piece, and each annulus four, the fewest: each of the hole's four reflex "
+                     + "corners needs a diagonal of its own, and with one hole there are as many pieces as diagonals",
+                     "pieces per face \(sizes)")
+        let partition = partitionReport(s)
+        Check.expect(partition.isEmpty, "the pieces are convex, tile their faces, and the partition counts close",
+                     partition)
         // Every diagonal joins two pieces of one face, and every edge two
         // pieces of different faces.
         var sorted = true
@@ -268,6 +262,179 @@ func solidTests() {
             if same != s.isDiagonal[k] { sorted = false }
         }
         Check.expect(sorted, "a diagonal lies within a face and an edge between two")
+    }
+
+    Check.suite("solids: a face with holes is cut into convex pieces that tile it") {
+        // Prisms over faces a convex partition has to work for: reflex
+        // corners, several holes, a hole near the outer loop, straight corners.
+        let square = [SIMD2(-2.0, -2.0), SIMD2(2.0, -2.0), SIMD2(2.0, 2.0), SIMD2(-2.0, 2.0)]
+        func box(_ x0: Double, _ y0: Double, _ x1: Double, _ y1: Double) -> [SIMD2<Double>] {
+            [SIMD2(x0, y0), SIMD2(x0, y1), SIMD2(x1, y1), SIMD2(x1, y0)]   // clockwise: a hole
+        }
+        // Five teeth: four slots cut down from the top, eight reflex corners.
+        var comb = [SIMD2(0.0, 0.0), SIMD2(9.0, 0.0), SIMD2(9.0, 3.0)]
+        for x in [8.0, 6, 4, 2] { comb += [SIMD2(x, 3), SIMD2(x, 1), SIMD2(x - 1, 1), SIMD2(x - 1, 3)] }
+        comb.append(SIMD2(0, 3))
+        let star = (0..<10).map { k -> SIMD2<Double> in
+            let r = k % 2 == 0 ? 3.0 : 1.4, a = Double(k) * .pi / 5
+            return SIMD2(r * cos(a), r * sin(a))
+        }
+        let shapes: [(String, [[SIMD2<Double>]])] = [
+            ("an L", [[SIMD2(0, 0), SIMD2(3, 0), SIMD2(3, 1), SIMD2(1, 1), SIMD2(1, 3), SIMD2(0, 3)]]),
+            ("a comb", [comb]),
+            ("a square with two holes", [square, box(-1.5, -1, -0.5, 1), box(0.5, -1, 1.5, 1)]),
+            ("a square with a hole by its outer loop", [square, box(1, -1.9, 1.9, 1.9)]),
+            ("a star with a triangular hole",
+             [star, [SIMD2(0.5, 0), SIMD2(-0.3, -0.4), SIMD2(-0.3, 0.4)]]),
+            ("a square with straight corners", [
+                [SIMD2(-2, -2), SIMD2(0, -2), SIMD2(2, -2), SIMD2(2, 0), SIMD2(2, 2), SIMD2(0, 2), SIMD2(-2, 2), SIMD2(-2, 0)],
+                [SIMD2(-1, -1), SIMD2(-1, 0), SIMD2(-1, 1), SIMD2(1, 1), SIMD2(1, -1), SIMD2(0, -1)],
+            ]),
+        ]
+        for (name, loops) in shapes {
+            let s = prism(loops, depth: 0.5)
+            let holes = loops.count - 1
+            let pieces = s.faces[0].count
+            Check.expect(s.eulerCharacteristic == 2 - 2 * holes,
+                         "\(name): the prism over it closes, a solid of genus \(holes)",
+                         "χ = \(s.eulerCharacteristic)")
+            let partition = partitionReport(s)
+            Check.expect(partition.isEmpty, "\(name): \(pieces) convex pieces tile the face, no vertex added",
+                         partition)
+            let (wrong, compared, example) = edgeAgreement(s)
+            Check.expect(wrong == 0 && compared > 10_000,
+                         "\(name): every edge's drawn spans agree with a point-by-point ray cast",
+                         "\(wrong) of \(compared) sampled points disagree \(example)")
+            // The partition depends on the face, not on where the solid is:
+            // the same face a hundredth the size and 1000 from the origin is
+            // cut into as many pieces.
+            let far = prism(loops.map { $0.map { $0 / 100 } }, depth: 0.005)
+                .transformed(rotation: matrix_identity_double3x3, translation: SIMD3(1000, 0, 0))
+            let farPartition = partitionReport(far)
+            Check.expect(far.faces[0].count == pieces && farPartition.isEmpty,
+                         "\(name), a hundredth the size and 1000 from the origin: \(pieces) pieces as well",
+                         "\(far.faces[0].count) pieces \(farPartition)")
+        }
+    }
+
+    Check.suite("solids: a small solid far from the origin is held to what its coordinates hold") {
+        // A millimetre across and millions out, tilted so that no face lies
+        // along an axis. A coordinate there is rounded to about 2e-10, a
+        // hundred times a billionth of a millimetre face, so a face held to
+        // the billionth alone is bent by rounding and refused.
+        let tilt = simd_double3x3(simd_quatd(angle: 0.7, axis: simd_normalize(SIMD3(1, 2, 3))))
+        let far = SIMD3(1e6, -2e6, 3e6)
+        let cube = Solid.platonic(.cube, circumradius: 1e-3).transformed(rotation: tilt, translation: far)
+        Check.expect(cube.eulerCharacteristic == 2 && cube.isConvex, "a cube is a convex sphere there")
+        let frame = Solid.frame(outer: 2e-3, inner: 1e-3, depth: 5e-4).transformed(rotation: tilt, translation: far)
+        let partition = partitionReport(frame)
+        Check.expect(frame.eulerCharacteristic == 0 && !frame.isConvex && frame.faces.prefix(2).allSatisfy { $0.count == 4 },
+                     "a picture frame is a torus there, not convex, its annuli four pieces each",
+                     "χ = \(frame.eulerCharacteristic), pieces per face \(frame.faces.map(\.count))")
+        Check.expect(partition.isEmpty, "and its pieces tile their faces", partition)
+        // Rounding alone takes the cube's vertices further off their faces'
+        // planes than a billionth of a face, the tolerance without a floor.
+        var bent = 0.0
+        for (i, f) in cube.frames.enumerated() {
+            for k in cube.loops[i].joined() {
+                bent = max(bent, abs(simd_dot(cube.vertices[k].v - f.origin, f.normal)) / f.extent)
+            }
+        }
+        Check.expect(bent > 1e-9, "rounding alone bends the cube's faces by more than a billionth",
+                     "\(bent) of a face")
+        // Refusal traps, so a bent face is not built here; what can be held
+        // is the tolerance a bend would be measured against.
+        let loosest = (cube.frames + frame.frames).map { $0.flatnessTolerance / $0.extent }.max() ?? 0
+        Check.expect(loosest < 1e-4, "a face bent by a ten-thousandth of its size there is still refused",
+                     "the loosest flatness tolerance is \(loosest) of its face")
+    }
+
+    Check.suite("solids: convexity is decided at the solid's own size, wherever it stands") {
+        // A prism over a pentagon whose fourth corner is pushed in by 1e-4,
+        // two faces of 1.5 meeting at a turn of 1e-4: not convex, by a
+        // margin a billionth of the distance from the origin a million out
+        // would swallow.
+        let dent = [SIMD2(0.0, 0.0), SIMD2(3, 0), SIMD2(3, 1), SIMD2(1.5, 1 - 1e-4), SIMD2(0, 1)]
+        let unit = Solid.platonic(.cube)
+        let tilt = simd_double3x3(simd_quatd(angle: 0.7, axis: simd_normalize(SIMD3(1, 2, 3))))
+        for far in [SIMD3(0.0, 0, 0), SIMD3(1e6, -2e6, 3e6)] {
+            let dented = prism([dent], depth: 1).transformed(rotation: tilt, translation: far)
+            let cube = unit.transformed(rotation: tilt, translation: far)
+            Check.expect(cube.isConvex && !dented.isConvex,
+                         "\(simd_length(far)) from the origin, a cube is convex and a prism dented by 1e-4 is not")
+        }
+    }
+
+    Check.suite("solids: a face with thousands of corners is cut in reasonable time") {
+        // Ear clipping that went back to the first corner after every ear,
+        // and merging that went back to the first side after every merge,
+        // took seconds on these. A star, every other corner reflex: the
+        // pieces inside merge into one polygon a triangle at a time.
+        let star = (0..<2000).map { k -> SIMD2<Double> in
+            let r = k % 2 == 0 ? 10.0 : 7.0, a = Double(k) * .pi / 1000
+            return SIMD2(r * cos(a), r * sin(a))
+        }
+        // A comb of 1,000 teeth, as the comb above: its back merges a tooth
+        // at a time.
+        var comb = [SIMD2(0.0, 0.0), SIMD2(1999.0, 0.0), SIMD2(1999.0, 3.0)]
+        for x in stride(from: 1998.0, through: 2, by: -2) {
+            comb += [SIMD2(x, 3), SIMD2(x, 1), SIMD2(x - 1, 1), SIMD2(x - 1, 3)]
+        }
+        comb.append(SIMD2(0, 3))
+        // A strip wound into a spiral of some fifty turns: out along its
+        // outer side, back along its inner. Its ears lie far round the ring.
+        let turns = (0..<2000).map { k -> (SIMD2<Double>, Double) in
+            let t = Double(k) * 0.05
+            return (SIMD2(cos(3 * t), sin(3 * t)), 1 + t)
+        }
+        let spiral = turns.map { $0.0 * ($0.1 + 0.4) } + turns.reversed().map { $0.0 * $0.1 }
+        for (name, face) in [("a star of 2,000 corners", star), ("a comb of 1,000 teeth", comb),
+                             ("a spiral strip of 4,000 corners", spiral)] {
+            var s: Solid?
+            let elapsed = ContinuousClock().measure { s = prism([face], depth: 1) }
+            let top = s!.faces[0].map { s!.pieces[$0] }
+            let area = top.reduce(0) { $0 + s!.frames[0].area($1.map { s!.vertices[$0].v }) }
+            let faceArea = s!.frames[0].area(s!.loops[0][0].map { s!.vertices[$0].v })
+            Check.expect(elapsed < .seconds(1) && abs(area - faceArea) <= 1e-9 * faceArea,
+                         "\(name): a prism over it is built, its top cut into \(top.count) pieces that cover it",
+                         "\(elapsed), area \(area) of \(faceArea)")
+        }
+    }
+
+    Check.suite("solids: a face that touches itself at a vertex is one loop through it twice") {
+        // A box 4 by 4 by 2 with pits sunk in its top. Where a pit's mouth
+        // meets the top face's outer loop, or another pit's mouth, the top
+        // face's boundary is one loop that passes the shared vertex twice:
+        // H counts the boundary's components, and Euler–Poincaré holds. Not
+        // prisms: over such a face, the vertical edge at the shared vertex
+        // would bound four walls.
+        let corners = [SIMD2(0.0, 0.0), SIMD2(4.0, 0.0), SIMD2(4.0, 4.0), SIMD2(0.0, 4.0)]
+        let cases: [(String, Solid, holes: Int)] = [
+            // A pit with a mouth corner on the box's corner 0: the outer loop
+            // runs round the box, back to 0, then round the mouth clockwise.
+            ("a pit touching the outer loop",
+             pittedBox(corners + [SIMD2(1.5, 0.5), SIMD2(2, 2), SIMD2(0.5, 1.5)],
+                       mouths: [[0, 4, 5, 6]], top: [[0, 1, 2, 3, 0, 6, 5, 4]]), 0),
+            // Two pits whose mouths share the corner 7: one hole, round the
+            // left mouth and then the right, both clockwise.
+            ("two pits touching each other",
+             pittedBox(corners + [SIMD2(1.4, 1.4), SIMD2(0.8, 2), SIMD2(1.4, 2.6), SIMD2(2, 2),
+                                  SIMD2(2.6, 1.4), SIMD2(3.2, 2), SIMD2(2.6, 2.6)],
+                       mouths: [[5, 4, 7, 6], [7, 8, 9, 10]], top: [[0, 1, 2, 3], [7, 4, 5, 6, 7, 10, 9, 8]]), 1),
+        ]
+        for (name, s, holes) in cases {
+            let V = s.vertices.count, E = s.edgePaths.count, F = s.faces.count
+            Check.expect(s.eulerCharacteristic == 2 && s.loops[0].count == holes + 1,
+                         "\(name): \(V) − \(E) + \(F) − \(holes) = 2, a sphere",
+                         "χ = \(s.eulerCharacteristic)")
+            let partition = partitionReport(s)
+            Check.expect(partition.isEmpty, "\(name): \(s.faces[0].count) convex pieces tile the top face",
+                         partition)
+            let (wrong, compared, example) = edgeAgreement(s)
+            Check.expect(wrong == 0 && compared > 10_000,
+                         "\(name): every edge's drawn spans agree with a point-by-point ray cast",
+                         "\(wrong) of \(compared) sampled points disagree \(example)")
+        }
     }
 
     Check.suite("solids: on the frame no diagonal is drawn, and the back's inner edges are seen through the hole in part") {
@@ -321,7 +488,7 @@ func solidTests() {
         let view = Transform<WorldSpace, ViewSpace>(rows: (SIMD3(1, 0, 0), SIMD3(0, 1, 2), SIMD3(0, -1, 2)))
         let occlusion = s.occlusion(view: view)
         guard let wall = s.faces.indices.first(where: {
-            let f = s.face($0)
+            let f = s.frames[$0]
             return simd_distance(f.normal, SIMD3(0, -1, 0)) < 1e-12 && abs(f.origin.y - 1) < 1e-12
         }) else { Check.expect(false, "the frame has a far inner wall"); return }
         // Down the wall to the line of sight's edge, on into the hidden
@@ -335,6 +502,123 @@ func solidTests() {
     }
 }
 
+// MARK: - partition
+
+/// A prism over a face in the plane `z = 0`, `depth` deep: the face's loops
+/// as the plane gives them (the outer counter-clockwise, the holes
+/// clockwise), its top, its bottom, and a wall along every run of sides in
+/// one line -- one face, with the straight corners in its loop.
+func prism(_ loops: [[SIMD2<Double>]], depth: Double) -> Solid {
+    var vertices: [P3<WorldSpace>] = []
+    var top: [[Int]] = [], bottom: [[Int]] = []
+    var walls: [[[Int]]] = []
+    for loop in loops {
+        let base = vertices.count, n = loop.count
+        vertices += loop.map { P3($0.x, $0.y, depth) } + loop.map { P3($0.x, $0.y, 0) }
+        top.append((0..<n).map { base + $0 })
+        bottom.append((0..<n).reversed().map { base + n + $0 })
+        func straight(_ k: Int) -> Bool {
+            let a = loop[(k + n - 1) % n], b = loop[k], c = loop[(k + 1) % n]
+            let u = b - a, v = c - b
+            return abs(u.x * v.y - u.y * v.x) < 1e-12 && simd_dot(u, v) > 0
+        }
+        let start = (0..<n).first { !straight($0) }!
+        var run = [start]
+        for j in 1...n {
+            let k = (start + j) % n
+            run.append(k)
+            guard !straight(k) else { continue }
+            // Along the bottom, then back along the top.
+            walls.append([run.map { base + n + $0 } + run.reversed().map { base + $0 }])
+            run = [k]
+        }
+    }
+    return Solid(vertices: vertices, faces: [top, bottom] + walls)
+}
+
+/// A box 4 by 4 by 2 on `z = 0` with pits sunk in its top, each an inverted
+/// pyramid 1 deep. `points` are the top's vertices, the box's corners first
+/// (counter-clockwise from above); each mouth lists its corners among them,
+/// counter-clockwise from above, and `top` is the top face's loops.
+func pittedBox(_ points: [SIMD2<Double>], mouths: [[Int]], top: [[Int]]) -> Solid {
+    let m = points.count
+    var vertices = points.map { P3<WorldSpace>($0.x, $0.y, 2) } + points.prefix(4).map { P3($0.x, $0.y, 0) }
+    var faces: [[[Int]]] = [top, [[m, m + 3, m + 2, m + 1]]]
+    for k in 0..<4 { faces.append([[m + k, m + (k + 1) % 4, (k + 1) % 4, k]]) }
+    for mouth in mouths {
+        let centre = mouth.reduce(SIMD2<Double>.zero) { $0 + points[$1] } / Double(mouth.count)
+        vertices.append(P3(centre.x, centre.y, 1))
+        for k in mouth.indices { faces.append([[mouth[k], mouth[(k + 1) % mouth.count], vertices.count - 1]]) }
+    }
+    return Solid(vertices: vertices, faces: faces)
+}
+
+/// What is wrong with a solid's partition, or nothing: per face, every piece
+/// is convex and uses only the face's vertices, the pieces' areas add up to
+/// the face's, no point of the face lies in two pieces or in none, and the
+/// diagonals number pieces − 1 + holes, which is Euler's formula for a disc
+/// with holes cut into discs.
+func partitionReport(_ s: Solid) -> String {
+    var problems: [String] = []
+    for i in s.faces.indices {
+        let frame = s.frames[i], members = s.faces[i]
+        let loops = s.loops[i]
+        func plane(_ k: Int) -> SIMD2<Double> { frame.coordinates(s.vertices[k].v) }
+        func area(_ polygon: [Int]) -> Double { frame.area(polygon.map { s.vertices[$0].v }) }
+        let own = Set(loops.joined())
+        var pieceArea = 0.0
+        for piece in members.map({ s.pieces[$0] }) {
+            pieceArea += area(piece)
+            if !Set(piece).isSubset(of: own) || Set(piece).count != piece.count {
+                problems.append("face \(i): piece \(piece) is not made of the face's vertices")
+            }
+            for k in 0..<piece.count {
+                let a = plane(piece[k]), b = plane(piece[(k + 1) % piece.count]), c = plane(piece[(k + 2) % piece.count])
+                let turn = (b - a).x * (c - b).y - (b - a).y * (c - b).x
+                if turn < -1e-12 { problems.append("face \(i): piece \(piece) turns right at \(piece[(k + 1) % piece.count])") }
+            }
+        }
+        let faceArea = loops.reduce(0) { $0 + area($1) }
+        if abs(pieceArea - faceArea) > 1e-9 * max(1, faceArea) {
+            problems.append("face \(i): the pieces cover \(pieceArea), the face is \(faceArea)")
+        }
+        // A grid of points, each in the face (even-odd over the loops) or
+        // not, and in as many pieces; points near a side are left out.
+        func near(_ p: SIMD2<Double>, _ polygon: [Int]) -> Bool {
+            (0..<polygon.count).contains { k in
+                let a = plane(polygon[k]), b = plane(polygon[(k + 1) % polygon.count])
+                let t = max(0, min(1, simd_dot(p - a, b - a) / simd_length_squared(b - a)))
+                return simd_length(p - (a + t * (b - a))) < 1e-6
+            }
+        }
+        func crossings(_ p: SIMD2<Double>, _ polygon: [Int]) -> Int {
+            (0..<polygon.count).filter { k in
+                let a = plane(polygon[k]), b = plane(polygon[(k + 1) % polygon.count])
+                guard (a.y > p.y) != (b.y > p.y) else { return false }
+                return p.x < a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y)
+            }.count
+        }
+        let all = loops.joined().map(plane)
+        let lo = all.reduce(SIMD2(Double.infinity, .infinity)) { simd_min($0, $1) }
+        let hi = all.reduce(SIMD2(-Double.infinity, -.infinity)) { simd_max($0, $1) }
+        let pieces = members.map { s.pieces[$0] }
+        var mismatches = 0
+        for a in 0..<61 { for b in 0..<61 {
+            let p = lo + (hi - lo) * SIMD2(Double(a) + 0.37, Double(b) + 0.61) / 61
+            if pieces.contains(where: { near(p, $0) }) { continue }
+            let inFace = loops.reduce(0) { $0 + crossings(p, $1) } % 2 == 1
+            let inPieces = pieces.filter { crossings(p, $0) % 2 == 1 }.count
+            if inPieces != (inFace ? 1 : 0) { mismatches += 1 }
+        } }
+        if mismatches > 0 { problems.append("face \(i): \(mismatches) sample points in the wrong number of pieces") }
+        let diagonals = s.edges.indices.filter { s.isDiagonal[$0] && s.faceIndex(ofPiece: s.edges[$0].left) == i }.count
+        if diagonals != members.count - 1 + (loops.count - 1) {
+            problems.append("face \(i): \(diagonals) diagonals for \(members.count) pieces and \(loops.count - 1) holes")
+        }
+    }
+    return problems.prefix(4).joined(separator: "; ")
+}
+
 // MARK: - oracles
 
 /// The edge of `s` that the segment `a -> b` lies along, with its index.
@@ -343,8 +627,10 @@ func edgeUnder(_ a: SIMD3<Double>, _ b: SIMD3<Double>, of s: Solid) -> (Int, Sol
         let p = s.vertices[e.a].v, q = s.vertices[e.b].v
         let len2 = simd_length_squared(q - p)
         let t0 = simd_dot(a - p, q - p) / len2, t1 = simd_dot(b - p, q - p) / len2
+        // Both ends within the edge, not merely on its line: an edge can
+        // run on in line with another.
         if simd_length(a - (p + t0 * (q - p))) < 1e-9, simd_length(b - (p + t1 * (q - p))) < 1e-9,
-           t0 >= -1e-9, t1 <= 1 + 1e-9 {
+           min(t0, t1) >= -1e-9, max(t0, t1) <= 1 + 1e-9 {
             return (k, e)
         }
     }
@@ -373,6 +659,32 @@ func rayVisible(_ s: Solid, at p: SIMD3<Double>, own: Set<Int>, toEye d: SIMD3<D
         if firstHit(pieceMesh(s, f), from: p, along: d, after: 1e-9) != nil { return false }
     }
     return true
+}
+
+/// Point-by-point agreement of every edge's drawn spans with the ray cast,
+/// under every stress camera: disagreements, comparisons, and an example.
+/// An edge with a piece exactly edge-on lies on the outline, where whether
+/// it is drawn is rounding, and is set aside.
+func edgeAgreement(_ s: Solid) -> (Int, Int, String) {
+    var compared = 0, wrong = 0
+    var example = ""
+    for (camera, view) in stressCameras() {
+        let d = -view.projectionDirection
+        let drawn = s.visibleEdges(view: view)
+        var spans: [Solid.Edge: [(Double, Double)]] = [:]
+        for i in 0..<drawn.count {
+            let p = drawn[path: i]
+            guard let (_, e) = edgeUnder(p.first!.v, p.last!.v, of: s) else { continue }
+            spans[e, default: []].append(edgeFractions(p.first!.v, p.last!.v, e, s))
+        }
+        for (k, e) in s.edges.enumerated() where !s.isDiagonal[k]
+            && abs(simd_dot(s.normals[e.left], d)) > 1e-9 && abs(simd_dot(s.normals[e.right], d)) > 1e-9 {
+            let (w, c, ex) = occlusionAgreement(s, edge: e, spans: spans[e] ?? [], toEye: d, camera: camera)
+            wrong += w; compared += c
+            if example.isEmpty { example = ex }
+        }
+    }
+    return (wrong, compared, example)
 }
 
 /// Point-by-point agreement of an edge's drawn spans with the ray cast:
