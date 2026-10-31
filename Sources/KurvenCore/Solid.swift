@@ -352,9 +352,16 @@ public struct Solid: Sendable, Equatable {
                 guard lo < hi else { continue }
                 // The piece's view depth over the picture plane is affine:
                 // z = z0 + (gx, gy) · (x - x0, y - y0), from the plane's
-                // normal in view space.
+                // normal in view space. A piece can have straight corners,
+                // so the normal is taken from its first corner and the first
+                // two after it that are not in line with it.
                 let o = projected[piece[0]].v
-                let n = simd_cross(projected[piece[1]].v - o, projected[piece[2]].v - o)
+                var n = SIMD3<Double>.zero
+                for k in 1..<(piece.count - 1) {
+                    let a = projected[piece[k]].v - o, b = projected[piece[k + 1]].v - o
+                    n = simd_cross(a, b)
+                    if simd_length(n) > 1e-9 * simd_length(a) * simd_length(b) { break }
+                }
                 guard abs(n.z) > 1e-9 * scale * scale else { continue }
                 func gap(_ t: Double) -> Double {
                     let p = pa.v + t * (pb.v - pa.v)

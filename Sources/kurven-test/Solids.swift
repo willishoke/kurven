@@ -300,6 +300,10 @@ func solidTests() {
             let partition = partitionReport(s)
             Check.expect(partition.isEmpty, "\(name): \(pieces) convex pieces tile the face, no vertex added",
                          partition)
+            let (wrong, compared, example) = edgeAgreement(s)
+            Check.expect(wrong == 0 && compared > 10_000,
+                         "\(name): every edge's drawn spans agree with a point-by-point ray cast",
+                         "\(wrong) of \(compared) sampled points disagree \(example)")
             // The partition depends on the face, not on where the solid is:
             // the same face a hundredth the size and 1000 from the origin is
             // cut into as many pieces.
@@ -485,8 +489,10 @@ func edgeUnder(_ a: SIMD3<Double>, _ b: SIMD3<Double>, of s: Solid) -> (Int, Sol
         let p = s.vertices[e.a].v, q = s.vertices[e.b].v
         let len2 = simd_length_squared(q - p)
         let t0 = simd_dot(a - p, q - p) / len2, t1 = simd_dot(b - p, q - p) / len2
+        // Both ends within the edge, not merely on its line: an edge can
+        // run on in line with another.
         if simd_length(a - (p + t0 * (q - p))) < 1e-9, simd_length(b - (p + t1 * (q - p))) < 1e-9,
-           t0 >= -1e-9, t1 <= 1 + 1e-9 {
+           min(t0, t1) >= -1e-9, max(t0, t1) <= 1 + 1e-9 {
             return (k, e)
         }
     }
@@ -515,6 +521,32 @@ func rayVisible(_ s: Solid, at p: SIMD3<Double>, own: Set<Int>, toEye d: SIMD3<D
         if firstHit(pieceMesh(s, f), from: p, along: d, after: 1e-9) != nil { return false }
     }
     return true
+}
+
+/// Point-by-point agreement of every edge's drawn spans with the ray cast,
+/// under every stress camera: disagreements, comparisons, and an example.
+/// An edge with a piece exactly edge-on lies on the outline, where whether
+/// it is drawn is rounding, and is set aside.
+func edgeAgreement(_ s: Solid) -> (Int, Int, String) {
+    var compared = 0, wrong = 0
+    var example = ""
+    for (camera, view) in stressCameras() {
+        let d = -view.projectionDirection
+        let drawn = s.visibleEdges(view: view)
+        var spans: [Solid.Edge: [(Double, Double)]] = [:]
+        for i in 0..<drawn.count {
+            let p = drawn[path: i]
+            guard let (_, e) = edgeUnder(p.first!.v, p.last!.v, of: s) else { continue }
+            spans[e, default: []].append(edgeFractions(p.first!.v, p.last!.v, e, s))
+        }
+        for (k, e) in s.edges.enumerated() where !s.isDiagonal[k]
+            && abs(simd_dot(s.normals[e.left], d)) > 1e-9 && abs(simd_dot(s.normals[e.right], d)) > 1e-9 {
+            let (w, c, ex) = occlusionAgreement(s, edge: e, spans: spans[e] ?? [], toEye: d, camera: camera)
+            wrong += w; compared += c
+            if example.isEmpty { example = ex }
+        }
+    }
+    return (wrong, compared, example)
 }
 
 /// Point-by-point agreement of an edge's drawn spans with the ray cast:
