@@ -468,7 +468,7 @@ extension Surface {
         var out: [[P3<WorldSpace>]] = []
         // Divided across the domain the way `wallHatching` divides an edge: the
         // spacing asks for a count, and the strokes are spread to fit it. The
-        // ruling then meets the top's edges with whole gaps, and each stroke
+        // hatching then meets the plateau's edges with whole gaps, and each stroke
         // stands where the walls that run across it stand theirs, so it turns
         // the corner down the wall instead of missing it.
         let n = Surface.strokeCount(length: across.hi - across.lo, spacing: spacing)

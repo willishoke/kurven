@@ -723,11 +723,11 @@ public struct ObliqueProjection: Sendable, Equatable {
     }
 
     public init(json: JSONValue) throws {
-        let o = try json.object("PlateProjection")
-        self.init(shear: try o.double("shear", "PlateProjection"),
-                  xAngle: try o.double("xAngle", "PlateProjection"),
-                  zAngle: try o.double("zAngle", "PlateProjection"),
-                  flipX: try o.bool("flipX", "PlateProjection"),
+        let o = try json.object("ObliqueProjection")
+        self.init(shear: try o.double("shear", "ObliqueProjection"),
+                  xAngle: try o.double("xAngle", "ObliqueProjection"),
+                  zAngle: try o.double("zAngle", "ObliqueProjection"),
+                  flipX: try o.bool("flipX", "ObliqueProjection"),
                   yScale: o.optionalDouble("yScale"))
     }
     public var json: JSONValue {

@@ -647,11 +647,11 @@ public struct Heightfield: Sendable {
 ///
 /// The depth tolerance means two things, and the traversal keeps them apart. A point of
 /// curves lie on a surface it was placed on by the function or by the grid,
-/// and the drawn surface -- the grid's facets -- misses that by an
+/// and the drawn surface -- the grid's triangles -- misses that by an
 /// interpolation gap, so the point may start a little inside the solid.
-/// That is forgiven *perpendicular* to the facet, by the depth tolerance: a vertical
-/// gap times the facet's cosine, still linear along the line over one
-/// facet. Measured vertically it would be a horizontal tolerance of
+/// That is forgiven *perpendicular* to the triangle, by the depth tolerance: a vertical
+/// gap times the triangle's cosine, still linear along the line over one
+/// triangle. Measured vertically it would be a horizontal tolerance of
 /// depth tolerance / slope, and on a cone of slope 24 the rings came out dashed;
 /// measured along the line of sight it forgives nothing at a fold, where the
 /// line runs along the surface for a long way within a hair of it, and the
@@ -745,7 +745,7 @@ struct GridTraversal: Sendable {
 
     /// The drawn surface over a world point, read through the nearest tile:
     /// the grid's interpolated height before the truncation, the truncation there, and
-    /// the cosine of the facet's tilt. The drawn height is the lesser of the
+    /// the cosine of the triangle's tilt. The drawn height is the lesser of the
     /// first two.
     func drawnSurface(at p: SIMD2<Double>) -> (interpolated: Double, truncationHeight: Double, cosine: Double) {
         let s = heightfield.surface
@@ -771,7 +771,7 @@ struct GridTraversal: Sendable {
 
     /// The surface over a point of the fundamental tile: f's own height and
     /// the cosine of its tilt, by differences a step small against the cell,
-    /// when the function is at hand; the grid's facet otherwise. The curves
+    /// when the function is at hand; the grid's triangle otherwise. The curves
     /// is placed on f, so the solid it is tested against is f: a ring seen
     /// through a notch is hidden where f's top edge hides it, not where the
     /// chord across the nearest two nodes would.
@@ -819,7 +819,7 @@ struct GridTraversal: Sendable {
         }
         let tEps = 1e-9 * cell
         /// The line's height over the drawn surface at distance `t` along
-        /// it: over the interpolated facet and over the truncation, and the facet's
+        /// it: over the interpolated triangle and over the truncation, and the triangle's
         /// cosine; nil where the point is outside the region, over which
         /// nothing is drawn.
         /// With the function, the sample also carries the rate the gap over
@@ -875,8 +875,8 @@ struct GridTraversal: Sendable {
             if u0.x > 1e-9, u0.x < grid.extent.x - 1e-9,
                u0.y > 1e-9, u0.y < grid.extent.y - 1e-9 { strictlyInside = true }
             ts.append(ta); ts.append(tb)
-            // The diagonals split the grid's cells into the facets the
-            // depth pass draws; f has no facets, and its brackets are the
+            // The diagonals split the grid's cells into the triangles the
+            // depth pass draws; f has no triangles, and its brackets are the
             // rows and columns.
             for family in 0..<(magnitude == nil ? 3 : 2) {
                 let f0 = family < 2 ? u0[family] : u0.x + u0.y
@@ -906,12 +906,12 @@ struct GridTraversal: Sendable {
 
         // The walk. In its own surface's neighbourhood -- from the start,
         // for as long as it has not yet been outside -- the line is
-        // forgiven the depth tolerance perpendicular to the facet over it. Once it
+        // forgiven the depth tolerance perpendicular to the triangle over it. Once it
         // has been outside, being inside at or beyond the depth tolerance's reach is
         // occlusion.
         var outsideYet = false
         var startJudged = false
-        /// Hidden at `t`, tested under a facet of the given cosine; `g` is
+        /// Hidden at `t`, tested under a triangle of the given cosine; `g` is
         /// the gap there, nil beyond the region (outside, then).
         func hidden(_ t: Double, _ g: Sample?, cosine: Double) -> Bool {
             var visible = t > tEps
@@ -959,8 +959,8 @@ struct GridTraversal: Sendable {
         var previousMiddle: Sample?
         for k in 0..<ts.count {
             let t = ts[k], g = values[k]
-            // A point on a grid line lies under two facets: tested by
-            // the facet behind it and the one ahead. Under f the cosine is
+            // A point on a grid line lies under two triangles: tested by
+            // the triangle behind it and the one ahead. Under f the cosine is
             // continuous and the sample's own serves. The sample at the
             // middle of the interval ahead is taken once, for this and for
             // the search of the interval.
@@ -977,7 +977,7 @@ struct GridTraversal: Sendable {
             // and rises at the other it has a least value between, found by
             // golden section; under the line, it is tested where it is.
             // With the function, the gap over f between this crossing and
-            // the next is not the facet's straight line: it can rise above
+            // the next is not the triangle's straight line: it can rise above
             // the surface's skin and fall back under it, or dip under and
             // come back out, between two samples that see neither. The gap
             // and its rate are read at both ends and at the middle; a
@@ -1021,7 +1021,7 @@ struct GridTraversal: Sendable {
                 }
                 for tx in [peak, dip].compactMap({ $0 }).sorted() where test(tx) { return false }
             }
-            // The truncation edge between this crossing and the next, where the facet
+            // The truncation edge between this crossing and the next, where the triangle
             // meets the truncation: a crease, tested under both.
             if k + 1 < ts.count, let ga = g, let gb = values[k + 1] {
                 let ea = ga.overTriangle - ga.overTruncation, eb = gb.overTriangle - gb.overTruncation

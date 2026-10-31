@@ -248,7 +248,7 @@ func foldCurveTests() {
 // stroke on a wall that faces away is dropped whole, a corner vertical edge stays
 // while either of its walls shows, and the bake draws exactly that.
 
-func wallInkTests() {
+func wallCurveTests() {
     Check.suite("walls: the hatch and outline of a cut face are tested by the wall") {
         let preset = Catalog.native.preset("rgamma")!
         let bundle = try NativeLandscape.build(LandscapeRequest(preset: preset, resolution: 240))

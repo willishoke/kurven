@@ -9,7 +9,7 @@ import simd
 /// `tests/oracles.py` dumps its answers and `kurven-test` compares against
 /// them -- but it is not in the loop.
 ///
-/// Seam-free by construction: this contours the whole grid as one region, so
+/// No stitching by construction: this contours the whole grid as one region, so
 /// there are no chunk boundaries to stitch and none of the thread-completion
 /// nondeterminism that makes the oracle pass `chunk_count = 1` to get a
 /// reproducible answer.
@@ -211,7 +211,7 @@ public enum Contour {
     /// Levels are independent of each other, so they run concurrently. That
     /// they *are* independent is a property of contouring the whole grid at
     /// once: the Python side's threaded backend parallelizes by splitting the
-    /// grid into chunks instead, which is why it has seams to stitch and why
+    /// grid into chunks instead, which is why it has chunk boundaries to stitch and why
     /// its output depends on the order the threads finish in.
     public static func levels(of grid: Grid2D<Float>, _ levels: [Double])
         -> [(level: Double, paths: [[P2<DomainSpace>]])] {

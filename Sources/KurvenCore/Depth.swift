@@ -87,7 +87,7 @@ public struct DepthFrame: Sendable, Equatable {
     /// grid is a contiguous slice of the whole drawing's grid, so a
     /// coordinate lands on the same pixel whether it was rendered whole or in
     /// pieces. Splitting the coordinate range instead would give each tile its
-    /// own grid and leave seams wherever two disagreed by a fraction of a
+    /// own grid and leave gaps wherever two disagreed by a fraction of a
     /// pixel.
     public func tile(_ i: Int, _ j: Int, of n: Int) -> DepthFrame {
         guard n > 1 else { return self }

@@ -137,8 +137,8 @@ public struct Surface: Sendable {
 
     /// `drawnHeight` as the two numbers it is the lesser of -- the grid's
     /// interpolated height and the truncation over the point -- with the cosine of
-    /// the interpolating facet's tilt, `1 / sqrt(1 + |∇h|²)`, which turns a
-    /// vertical gap to that facet into a perpendicular distance.
+    /// the interpolating triangle's tilt, `1 / sqrt(1 + |∇h|²)`, which turns a
+    /// vertical gap to that triangle into a perpendicular distance.
     func drawnSurface(at p: P2<DomainSpace>, step: Int)
         -> (interpolated: Double, truncationHeight: Double, cosine: Double)
     {

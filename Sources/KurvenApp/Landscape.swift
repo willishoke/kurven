@@ -380,7 +380,7 @@ extension Document {
     /// the side `LandscapeStyle.hatchSpacing` counts its seventy strokes on.
     ///
     /// Every face rounds its own count from the spacing and spreads its strokes
-    /// to fit, so the ruling a person sees is a count, not a length. Setting
+    /// to fit, so the hatching a person sees is a count, not a length. Setting
     /// the spacing from a whole count makes that count exact on the longer
     /// faces and the nearest whole one on the others.
     func hatchCount(ofLayer index: Int) -> Int? {

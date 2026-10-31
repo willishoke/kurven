@@ -67,7 +67,7 @@ public extension MetalRenderer {
     ///
     /// Tiling splits the *render*, never the clip. A path that crosses a tile
     /// boundary has vertices decided by two different passes, and clipping each
-    /// pass separately breaks the path at the seam: the segment joining the last
+    /// pass separately breaks the path at the tile boundary: the segment joining the last
     /// vertex on one side to the first on the other is drawn by neither, and a
     /// single stranded vertex is dropped as a run shorter than two. So the
     /// passes are stitched into one `DepthImage` first and the clip runs once
@@ -78,7 +78,7 @@ public extension MetalRenderer {
     ///
     /// Tiles meet on pixel boundaries -- `DepthFrame.tile` splits the grid,
     /// not the coordinate range -- so a coordinate lands on the same pixel
-    /// however the pass was divided, and the stitched buffer has no seam.
+    /// however the pass was divided, and the stitched buffer has no gap.
     ///
     /// It is not bit-identical to a single pass, and cannot be: each pass
     /// derives its NDC mapping from its own sub-frame in float32, so a triangle

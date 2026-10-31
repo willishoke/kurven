@@ -744,12 +744,12 @@ func hatchTests() {
         }
     }
 
-    // What the ruling is for, held to arithmetic rather than to Python: the
+    // What the hatching is for, held to arithmetic rather than to Python: the
     // top's strokes split its width into equal whole gaps, and every one of
-    // them stands where a wall across it stands a stroke, so the ruling turns
+    // them stands where a wall across it stands a stroke, so the hatching turns
     // the corner instead of missing it. 0.3 does not divide the fixture's
     // width, which is the case the rule exists for.
-    Check.suite("hatch: a top's ruling divides its width and meets the walls") {
+    Check.suite("hatch: a plateau's hatching divides its width and meets the walls") {
         let truncation = try index.value("truncation", "hatch").object("hatch.truncations")
         let surface = Surface(height: grid, phase: nil,
                               truncation: try Truncation(json: truncation.value("uniform", "hatch.truncations")))
@@ -1120,7 +1120,7 @@ final class SplitMix {
 
 func bakeTests() {
     // Tiling splits the render, never the clip. Clipping each pass separately
-    // breaks a path at the seam -- the segment joining the last vertex on one
+    // breaks a path at the tile boundary -- the segment joining the last vertex on one
     // side to the first on the other is drawn by neither -- so the passes are
     // stitched into one depth image and the clip runs once. The property that
     // buys is this one: however the pass was divided, the drawing is the same.
@@ -1314,7 +1314,7 @@ previewTests()
 bakeTests()
 facingTests()
 foldCurveTests()
-wallInkTests()
+wallCurveTests()
 stressTests()
 solidTests()
 hatchingTests()

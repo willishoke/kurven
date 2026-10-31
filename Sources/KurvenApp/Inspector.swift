@@ -137,8 +137,8 @@ struct Inspector: View {
     }
 
     /// Hatch strokes along the domain's longer side, in whole steps: each face
-    /// divides itself evenly, so a ruling is a count, and a drag steps through
-    /// counts rather than sliding a ruling past the edges. Restyling, not
+    /// divides itself evenly, so a hatching is a count, and a drag steps through
+    /// counts rather than sliding a hatching past the edges. Restyling, not
     /// resampling: the strokes are re-derived from grids that are already
     /// here, so this redraws within a frame however large the landscape is.
     @ViewBuilder
@@ -196,7 +196,7 @@ struct Inspector: View {
         LabeledContent("Occluder", value: "step \(m.occluder.step), "
                        + "\(m.occluder.tiles.count) tile\(m.occluder.tiles.count == 1 ? "" : "s")")
         if !m.provenance.isReproducible {
-            // Contoured with more than one chunk means the seams were stitched
+            // Contoured with more than one chunk means the chunk boundaries were stitched
             // in thread-completion order. Worth saying before anyone blames a
             // difference on anything else.
             Label("contoured with \(m.provenance.cpuCount) chunks — not reproducible",

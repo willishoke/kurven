@@ -10,7 +10,7 @@ import KurvenMath
 /// that would re-evaluate the layer list and the bake panel on every frame of a
 /// drag to redraw four numbers.
 ///
-/// Every control here says which side of the seam it is on. The function, the
+/// Every control here either resamples or restyles. The function, the
 /// window and the resolution resample (f is evaluated again); the truncation and
 /// the hatch spacing restyle (the grids are already here). The status line
 /// reports every resample, and a restyle only when it is long enough to see

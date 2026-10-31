@@ -18,9 +18,9 @@ import KurvenLandscape
 ///
 /// The surface is interpolated the way the pass draws it: each cell as two
 /// triangles split from (1,0) to (0,1), and the truncation edge pieces making the result
-/// min(interpolated, truncation) exactly (Truncation.swift holds them to that). What is
+/// min(interpolated, h) exactly (Truncation.swift holds them to that). What is
 /// left to differ is float32 rounding, the side of a triangle edge a pixel
-/// centre rounds to, and a sliver thinner than the march step. The
+/// centre rounds to, and a sliver thinner than the walk's step. The
 /// tolerances are the parametric surfaces' (Surfaces.swift).
 struct HeightfieldSolid {
     let grid: Grid2D<Float>
@@ -78,7 +78,7 @@ struct HeightfieldSolid {
     /// line misses it. `at` is the world point at view depth zero and
     /// `direction` the world step per unit of view depth.
     func depth(at w0: SIMD3<Double>, direction d: SIMD3<Double>, cell: Double) -> Double? {
-        // Clip the line to the solid's box, so the march starts where there
+        // Clip the line to the solid's box, so the walk starts where there
         // could be anything to hit.
         let box = box
         var sLo = -Double.infinity, sHi = Double.infinity

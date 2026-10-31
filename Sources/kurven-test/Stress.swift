@@ -117,9 +117,9 @@ func drawnTriangles(_ h: Heightfield, base: Double) -> Mesh<WorldSpace> {
 }
 
 /// Whether the line from `origin` along `direction`, up to distance
-/// `upTo`, passes under some facet of `mesh` by more than `depthTolerance`,
-/// perpendicular to that facet: for every triangle with a footprint, the
-/// stretch of the line over the footprint, and the facet's gap at its ends,
+/// `upTo`, passes under some triangle of `mesh` by more than `depthTolerance`,
+/// perpendicular to that triangle: for every triangle with a footprint, the
+/// stretch of the line over the footprint, and the triangle's gap at its ends,
 /// which is where a linear gap is least. The start of the line counts only
 /// when `startInside`. Brute force over the triangles, sharing nothing
 /// with the traversal.
@@ -131,7 +131,7 @@ func underSomeTriangle(_ mesh: Mesh<WorldSpace>, from origin: SIMD3<Double>,
         let a = mesh.vertices[Int(t.x)].v, b = mesh.vertices[Int(t.y)].v, c = mesh.vertices[Int(t.z)].v
         let n = simd_cross(b - a, c - a)
         let len = simd_length(n)
-        // A wall, seen from above, has no footprint and is no one's facet.
+        // A wall, seen from above, has no footprint and is no one's triangle.
         guard len > 0, abs(n.z) > 1e-12 * len else { continue }
         let cosine = abs(n.z) / len
         // The line clipped to the footprint: inside each edge's half-plane,
@@ -167,7 +167,7 @@ func underSomeTriangle(_ mesh: Mesh<WorldSpace>, from origin: SIMD3<Double>,
 }
 
 /// Whether a point is under the drawn surface, or on it to within
-/// `tolerance`: under some facet whose footprint holds it.
+/// `tolerance`: under some triangle whose footprint holds it.
 func underSurface(_ mesh: Mesh<WorldSpace>, _ p: SIMD3<Double>, tolerance: Double) -> Bool {
     underSomeTriangle(mesh, from: p, along: SIMD3(0, 0, 1), by: -tolerance, startInside: true, upTo: 0)
 }
@@ -175,8 +175,8 @@ func underSurface(_ mesh: Mesh<WorldSpace>, _ p: SIMD3<Double>, tolerance: Doubl
 /// The oracle for the traversal, brute force over the drawn triangles and
 /// sharing nothing with it. A point that starts inside the solid (strictly
 /// over the domain) is in its own surface's neighbourhood until the line
-/// first crosses out: there it is hidden only if it lies under some facet
-/// by more than the depth tolerance, perpendicular to that facet. After that, any
+/// first crosses out: there it is hidden only if it lies under some triangle
+/// by more than the depth tolerance, perpendicular to that triangle. After that, any
 /// crossing of the boundary beyond the depth tolerance's reach along the line is
 /// occlusion. `perUnit` is view depth per unit along the line.
 func exactlyHidden(_ mesh: Mesh<WorldSpace>, from p: SIMD3<Double>, along toward: SIMD3<Double>,
@@ -389,7 +389,7 @@ func stressTests() {
         }
         Check.expect(kept > 0.5 * facingOnly,
                      "of the facing contour curves, the solid hides what lies behind a nearer graph",
-                     String(format: "%.1f of %.1f units kept; %d hidden vertices above their own facet, %d under it",
+                     String(format: "%.1f of %.1f units kept; %d hidden vertices above their own triangle, %d under it",
                             kept, facingOnly, behind, buried))
     }
 
@@ -617,7 +617,7 @@ func stressTests() {
                 points.append(P3(rng.next(d.real.lo, d.real.hi), rng.next(d.imag.lo, d.imag.hi),
                                  rng.next(base, 4)))
             }
-            // On the grid lines and diagonals exactly, where two facets meet.
+            // On the grid lines and diagonals exactly, where two triangles meet.
             for _ in 0..<100 {
                 let i = Double(Int(rng.next(0, 4.999))), t = rng.next(0, 4)
                 let onX = rng.next(0, 1) < 0.5
@@ -685,12 +685,12 @@ func stressTests() {
         }
     }
 
-    Check.suite("stress: the facing read off the grid converges on the drawn facets") {
+    Check.suite("stress: the facing read off the grid converges on the drawn triangles") {
         // The one approximation left in the predicate, measured rather than
         // hidden. Curves on the surface are cut by the central-difference normal
         // -- the normal the fold curves are traced from, so a contour ends on
         // the outline as drawn -- while the solid it is traversed through is
-        // the triangulated grid, whose facets turn at grid lines. The
+        // the triangulated grid, whose triangles turn at grid lines. The
         // two can disagree about which way the surface faces only within a
         // cell of a fold, and that band shrinks with the cell: the
         // disagreement, as a fraction of random surface points, must fall
@@ -723,14 +723,14 @@ func stressTests() {
             let total = 20_000
             for _ in 0..<total {
                 let p = P2<WorldSpace>(rng.next(-1.4, 1.4), rng.next(-1.4, 1.4))
-                // The facet's own normal: the drawn surface's one-sided slopes
-                // a hair into the facet the point is in.
+                // The triangle's own normal: the drawn surface's one-sided slopes
+                // a hair into the triangle the point is in.
                 let e = 1e-6 * cell
                 let h0 = field.drawnHeight(at: p)
                 let hx = (field.drawnHeight(at: P2(p.x + e, p.y)) - h0) / e
                 let hy = (field.drawnHeight(at: P2(p.x, p.y + e)) - h0) / e
-                let facet = -simd_dot(SIMD3(-hx, -hy, 1), sight)
-                if (facet > 0) != (vis.facing(p) > 0) { differ += 1 }
+                let triangle = -simd_dot(SIMD3(-hx, -hy, 1), sight)
+                if (triangle > 0) != (vis.facing(p) > 0) { differ += 1 }
             }
             rates.append((cells, Double(differ) / Double(total)))
         }

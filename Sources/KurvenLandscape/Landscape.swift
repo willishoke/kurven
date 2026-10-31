@@ -305,7 +305,7 @@ public enum NativeLandscape {
 /// number, pinned against the Python answers in `kurven-test`.
 public enum LandscapeStyle {
     /// `x` rounded to a number a person would have chosen: 1, 2, 2.5 or 5 times
-    /// a power of ten. Down, for a spacing, where rounding up thins the ruling.
+    /// a power of ten. Down, for a spacing, where rounding up thins the hatching.
     public static func nice(_ x: Double, down: Bool = false) -> Double {
         guard x.isFinite, x > 0 else { return 1 }
         let scale = pow(10, (log10(x)).rounded(.down))

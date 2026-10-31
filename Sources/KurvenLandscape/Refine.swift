@@ -21,7 +21,7 @@ import KurvenMath
 ///     gradient there, estimates how far off the chord is; where that exceeds
 ///     a fraction of a cell, a new vertex is solved for along the normal and
 ///     the two halves are checked in turn. Density ends up proportional to
-///     curvature, continuously, and with no seams to stitch because there is
+///     curvature, continuously, and with no chunk boundaries to stitch because there is
 ///     only one contour pass.
 ///
 /// The grid still decides which contours exist and roughly where; f decides
