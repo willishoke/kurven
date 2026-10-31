@@ -1,0 +1,37 @@
+# Names the vocabulary rename retired (docs/glossary.md has the word to use
+# instead). scripts/check.sh fails when one appears as a whole word in
+# Sources/, the README or the docs. The glossary, which records them, and
+# docs/notes/, which is history, are exempt. One extended regular expression
+# per line; case matters.
+facets?
+Facets?
+soft edges?
+rulings?
+Rulings?
+Fill
+FillField
+judg(e|ed|es|ing)
+Judged[A-Za-z]*
+SightMarch
+march(ed|es)?
+Enclosure
+standoffs?
+sightLine
+[Cc]aps?
+capHatch
+capOutline
+[Rr]ims?
+[Ff]lanks?
+[Cc]rests?
+pitch
+silhouettes?
+[Ww]indings?
+parameter lines?
+parameterLines
+foldLines
+fold lines?
+[Ii]nk
+PlateSpace
+PlateProjection
+PlateStyle
+SurfacePlate

@@ -75,6 +75,20 @@ golden() {
 }
 step "the committed golden fixtures are what kurven-cli fixtures writes" golden
 
+# The vocabulary: a word docs/glossary.md retired, back in the code or the
+# docs. The hits are printed; the fix is the glossary's word for the thing,
+# or a new glossary entry if the old word turns out to be right after all.
+retired() {
+    local hits
+    hits=$(git -C "$ROOT" grep --untracked -n -w -E \
+        -f <(grep -v -e '^#' -e '^$' "$ROOT/scripts/retired-words.txt") \
+        -- Sources README.md docs ':(exclude)docs/glossary.md' ':(exclude)docs/notes')
+    [ -z "$hits" ] && return 0
+    printf '%s\n' "$hits"
+    return 1
+}
+step "no retired word is back (docs/glossary.md)" retired
+
 printf '\n'
 if [ "$failures" = 0 ]; then
     printf '\033[32mall green\033[0m\n'
