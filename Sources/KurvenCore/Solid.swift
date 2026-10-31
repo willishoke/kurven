@@ -12,8 +12,9 @@ import simd
 /// stands in front. Both halves are decided in closed form: the first by
 /// signs, the second by occlusion against every piece (`Occlusion`) -- the
 /// curve and the piece are both flat, so where one passes behind the other
-/// is an interval, solved, not searched. No tolerance, no pixel, no grid:
-/// the drawing is the same at any resolution.
+/// is an interval, solved, not searched. No pixel and no grid: the few
+/// tolerances are fractions of the solid's own size, so the drawing is the
+/// same at any resolution.
 ///
 /// The solid is given as a *convex partition* of its boundary: convex
 /// polygons, the *pieces*, listed counter-clockwise seen from outside, so a

@@ -272,7 +272,7 @@ func solidTests() {
 
     Check.suite("solids: on the frame no diagonal is drawn, and the back's inner edges are seen through the hole in part") {
         let s = Solid.frame(outer: 4, inner: 2, depth: 1)
-        var onDiagonal = 0, cameras = 0, compared = 0, wrong = 0, throughHole = 0
+        var onDiagonal = 0, offEdges = 0, cameras = 0, compared = 0, wrong = 0, throughHole = 0
         var example = ""
         for (name, view) in stressCameras() {
             cameras += 1
@@ -281,7 +281,7 @@ func solidTests() {
             var spans: [Solid.Edge: [(Double, Double)]] = [:]
             for i in 0..<drawn.count {
                 let p = drawn[path: i]
-                guard let (k, e) = edgeUnder(p.first!.v, p.last!.v, of: s) else { onDiagonal += 1; continue }
+                guard let (k, e) = edgeUnder(p.first!.v, p.last!.v, of: s) else { offEdges += 1; continue }
                 if s.isDiagonal[k] { onDiagonal += 1 }
                 spans[e, default: []].append(edgeFractions(p.first!.v, p.last!.v, e, s))
             }
@@ -302,7 +302,9 @@ func solidTests() {
                 if example.isEmpty { example = ex }
             }
         }
-        Check.expect(onDiagonal == 0, "under \(cameras) cameras nothing drawn lies on a diagonal")
+        Check.expect(onDiagonal == 0 && offEdges == 0,
+                     "under \(cameras) cameras everything drawn lies on an edge, and nothing on a diagonal",
+                     "\(onDiagonal) spans on a diagonal, \(offEdges) on no side at all")
         Check.expect(throughHole > 0, "the back's inner edges are drawn in part: seen through the hole, cut by the front",
                      "\(throughHole) spans")
         Check.expect(wrong == 0 && compared > 10_000,

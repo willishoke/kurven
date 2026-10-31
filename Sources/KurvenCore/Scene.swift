@@ -1235,11 +1235,16 @@ public struct Scene: Sendable {
                     // One layer per width step, at that fraction of the
                     // width: every hatch line when unclipped, the visible
                     // spans otherwise.
-                    return s.visibleHatching(hatching, view: view).map { w, all, visible in
+                    let steps = layer.spec.clipped
+                        ? s.visibleHatching(hatching, view: view)
+                        : s.hatchLinesByWidth(hatching).map {
+                            let all = PolylineSet(paths: $0.lines.map(\.path))
+                            return (widthStep: $0.widthStep, all: all, visible: all)
+                        }
+                    return steps.map { w, all, drawn in
                         var spec = layer.spec
                         spec.width = layer.spec.width * Double(w) / Double(hatching.widthSteps)
                         if hatching.widthSteps > 1 { spec.name = "\(layer.spec.name) \(w)/\(hatching.widthSteps)" }
-                        let drawn = layer.spec.clipped ? visible : all
                         return (Layer(spec: spec, paths: all), drawn.mapped(view))
                     }
                 }

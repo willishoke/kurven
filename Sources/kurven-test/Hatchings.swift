@@ -324,6 +324,14 @@ func hatchingTests() {
         Check.expect(same && coarse.strokes.layers.count == 4 && widthsRight,
                      "the bake has the edges and a layer per width step at a third, two thirds and the width, the same at 64 px and 2048 px",
                      "\(coarse.strokes.layers.count) layers, widths \(widths)")
+        var unclipped = layers[1].spec
+        unclipped.clipped = false
+        let judged = Scene(solid: s, layers: [Layer(spec: unclipped, paths: s.hatchPaths(hatching))], camera: camera)
+            .judgedLayers()
+        let drawn = judged.reduce(0) { $0 + $1.1.count }
+        Check.expect(judged.count == 3 && drawn == lines.count,
+                     "unclipped, every hatch line is drawn, in a layer per width step",
+                     "\(drawn) of \(lines.count) lines in \(judged.count) layers")
     }
 
     Check.suite("hatching: a hatching layer round-trips through the manifest") {

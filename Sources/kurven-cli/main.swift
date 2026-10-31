@@ -146,8 +146,8 @@ usage: kurven-cli <command> [options]
         --width by default; 0 leaves them out). An output ending in .png
         renders one frame of the realtime preview instead of baking.
 
-  surface solid [--kind K] [--size R] [--width W] [--x-angle DEG] [--z-angle DEG]
-          [--shear S] [--resolution N] [--color C]
+  surface solid [--kind K] [--size R] [--hole H] [--depth D] [--width W]
+          [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N] [--color C]
           [--hatching uniform|turing|half-lambert [--angle DEG] [--spacing S] [--step S]
           [--width-steps N] [--seed N] [--scale S] [--hatch-width W]
           [--hatch-color C]] -o out.svg
@@ -158,8 +158,8 @@ usage: kurven-cli <command> [options]
         --hole wide, --depth thick). An edge shows where one of its two faces
         faces the eye and nothing stands in front, and the second half is
         decided by occlusion against every piece of the solid, in closed
-        form: no tolerance, no pixel, the same drawing at any --resolution,
-        which only the depth output sees. --size is the circumradius (2 by
+        form: no pixel, the same drawing at any --resolution, which only the
+        depth output sees. --size is the circumradius (2 by
         default). --hatching hatches every face with lines at --angle (45°)
         every --spacing, their width set by a tone: uniform is the whole
         face, turing is Turing's dappled pattern at --scale under --seed,

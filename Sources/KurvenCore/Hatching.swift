@@ -355,16 +355,16 @@ public extension Solid {
             known = t
         }
         intervals.append((start, b, current))
-        // Neighbours of one width step are one interval.
-        var merged: [(Double, Double, Int)] = []
-        for p in intervals where p.1 > p.0 {
-            if let last = merged.last, last.2 == p.2, last.1 == p.0 {
-                merged[merged.count - 1].1 = p.1
-            } else {
-                merged.append(p)
-            }
-        }
-        return merged
+        // Neighbours differ in width step by construction; only the last
+        // interval can be empty, when a change is bisected to `b` itself.
+        return intervals.filter { $0.1 > $0.0 }
+    }
+
+    /// The hatch lines by width step, the steps that occur in increasing
+    /// order, each step's lines in the order they were laid.
+    func hatchLinesByWidth(_ hatching: Hatching) -> [(widthStep: Int, lines: [HatchLine])] {
+        let byWidth = Dictionary(grouping: hatchLines(hatching), by: \.widthStep)
+        return byWidth.keys.sorted().map { ($0, byWidth[$0]!) }
     }
 
     /// The hatching for a camera: per width step, the hatch lines before
@@ -373,19 +373,12 @@ public extension Solid {
     func visibleHatching(_ hatching: Hatching, view: Transform<WorldSpace, ViewSpace>)
         -> [(widthStep: Int, all: PolylineSet<WorldSpace>, visible: PolylineSet<WorldSpace>)] {
         let occlusion = self.occlusion(view: view)
-        let lines = hatchLines(hatching)
-        var out: [(widthStep: Int, all: PolylineSet<WorldSpace>, visible: PolylineSet<WorldSpace>)] = []
-        for w in 1...hatching.widthSteps {
-            let mine = lines.filter { $0.widthStep == w }
-            guard !mine.isEmpty else { continue }
-            var visible: [[P3<WorldSpace>]] = []
-            for i in faces.indices {
-                let paths = mine.filter { $0.face == i }.map(\.path)
-                guard !paths.isEmpty else { continue }
-                visible += visibleCurves(paths, onFace: i, occlusion: occlusion)
+        return hatchLinesByWidth(hatching).map { w, lines in
+            let byFace = Dictionary(grouping: lines, by: \.face)
+            let visible = byFace.keys.sorted().flatMap { i in
+                visibleCurves(byFace[i]!.map(\.path), onFace: i, occlusion: occlusion)
             }
-            out.append((w, PolylineSet(paths: mine.map(\.path)), PolylineSet(paths: visible)))
+            return (w, PolylineSet(paths: lines.map(\.path)), PolylineSet(paths: visible))
         }
-        return out
     }
 }
