@@ -271,6 +271,10 @@ public struct Solid: Sendable, Equatable {
             }
         }
 
+        /// Whether piece `f` is seen edge-on: it projects to a line, of no
+        /// area, and hides nothing and shows nothing.
+        public func isEdgeOn(_ f: Int) -> Bool { abs(area2[f]) <= 1e-9 * scale * scale }
+
         /// The sub-intervals of `[0, 1]` along the segment `pa -> pb` (in
         /// view space) over which a piece not `excluded` stands in front:
         /// sorted and disjoint.
@@ -278,8 +282,7 @@ public struct Solid: Sendable, Equatable {
                            excluding: (Int) -> Bool) -> [(Double, Double)] {
             var hidden: [(Double, Double)] = []
             for (f, piece) in solid.pieces.enumerated() where !excluding(f) {
-                // A piece seen edge-on projects to nothing and hides nothing.
-                guard abs(area2[f]) > 1e-9 * scale * scale else { continue }
+                guard !isEdgeOn(f) else { continue }
                 let sign: Double = area2[f] > 0 ? 1 : -1
                 // The segment's overlap with the piece's projection: clipped
                 // against each side's half-plane.
@@ -377,25 +380,31 @@ public struct Solid: Sendable, Equatable {
     /// Curves lying on face `face`, cut to the spans that can be seen.
     ///
     /// Nothing of them shows unless the face faces the eye: a curve on a
-    /// back face is behind the solid itself. What remains is tested against
-    /// every piece outside the face -- a piece in the face's own plane stands
-    /// in front of nothing on it -- and a path is kept as one run wherever
-    /// its consecutive spans meet, so a curve breaks only where something
-    /// hides it.
+    /// back face is behind the solid itself, and one on a face seen edge-on
+    /// (`Occlusion.isEdgeOn`) lies on the outline, which is the edges'. What
+    /// remains is tested against every piece outside the face -- a piece in
+    /// the face's own plane stands in front of nothing on it -- and a path is
+    /// kept as one run wherever its consecutive spans meet, so a curve breaks
+    /// only where something hides it.
     public func visibleCurves(_ paths: [[P3<WorldSpace>]], onFace face: Int,
                               occlusion: Occlusion) -> [[P3<WorldSpace>]] {
         let members = Set(faces[face])
-        guard simd_dot(normals[faces[face][0]], occlusion.toEye) > 0 else { return [] }
+        guard simd_dot(normals[faces[face][0]], occlusion.toEye) > 0,
+              !faces[face].allSatisfy(occlusion.isEdgeOn) else { return [] }
         var out: [[P3<WorldSpace>]] = []
         for path in paths {
             var run: [P3<WorldSpace>] = []
             var openAtEnd = false
             for (wa, wb) in zip(path, path.dropFirst()) {
                 let pa = occlusion.view(wa), pb = occlusion.view(wb)
+                // Whether the run so far reaches this segment's start. A
+                // segment of which nothing is seen ends the run.
+                let continuing = openAtEnd
+                openAtEnd = false
                 for (a, b) in occlusion.visible(from: pa, to: pb, excluding: { members.contains($0) })
                     where b - a > 1e-12 {
                     let start = Solid.along(wa.v, wb.v, a), end = Solid.along(wa.v, wb.v, b)
-                    if openAtEnd, a == 0, !run.isEmpty {
+                    if continuing, a == 0, !run.isEmpty {
                         run.append(end)
                     } else {
                         if run.count >= 2 { out.append(run) }

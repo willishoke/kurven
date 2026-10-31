@@ -205,14 +205,27 @@ public extension Solid {
     /// face's hatching is fixed by its own frame and not by which of its
     /// pieces is asked. Each line is clipped to every piece of the face -- a
     /// convex polygon, so an interval -- and the intervals are joined where
-    /// they meet, which is across every diagonal: the two pieces compute the
-    /// crossing from the same two vertices and agree to the bit. The tone is
-    /// then read along each run every `step`, and where the width step
-    /// changes between two readings the change is bisected on the tone.
+    /// they meet, which is across every diagonal. The two pieces compute the
+    /// crossing from the same two vertices but not always to the same bit;
+    /// intervals within `1e-12` of the face's extent of each other are joined.
+    /// A line lying on a side of the face is not drawn: that is an edge, and
+    /// the edge is drawn. One lying on a diagonal is. The tone is then read
+    /// along each run every `step`, and where the width step changes between
+    /// two readings the change is bisected on the tone.
     func hatchLines(_ hatching: Hatching, onFace i: Int) -> [HatchLine] {
         let face = face(i)
         let polygons: [[SIMD2<Double>]] = face.pieces.map { p in
             pieces[p].map { face.coordinates(vertices[$0].v) }
+        }
+        // Per side of each piece, whether it is a diagonal of the face
+        // rather than an edge of the solid.
+        let diagonals = Set(edges.indices.filter { isDiagonal[$0] }.map { SIMD2(edges[$0].a, edges[$0].b) })
+        let onDiagonal: [[Bool]] = face.pieces.map { p in
+            let piece = pieces[p]
+            return piece.indices.map { j in
+                let a = piece[j], b = piece[(j + 1) % piece.count]
+                return diagonals.contains(SIMD2(min(a, b), max(a, b)))
+            }
         }
         let dir = SIMD2(cos(hatching.angle), sin(hatching.angle))
         let per = SIMD2(-dir.y, dir.x)
@@ -233,7 +246,7 @@ public extension Solid {
             let base = c * per
             // The line's overlap with each piece: half-plane by half-plane.
             var intervals: [(Double, Double)] = []
-            for poly in polygons {
+            for (poly, diagonal) in zip(polygons, onDiagonal) {
                 var t0 = -Double.infinity, t1 = Double.infinity
                 var empty = false
                 for j in 0..<poly.count {
@@ -241,7 +254,13 @@ public extension Solid {
                     let e = q - p
                     let f0 = cross(e, base - p), f1 = cross(e, dir)
                     if abs(f1) <= 1e-15 * extent {
-                        if f0 < 0 { empty = true; break }
+                        // Parallel to the side. A line on it is outside the
+                        // piece when the side is an edge, so a line along
+                        // the face's boundary is left to the edge, and
+                        // inside when it is a diagonal, so a line along a
+                        // diagonal is drawn, once, across the join.
+                        let on = abs(f0) <= 1e-12 * extent * simd_length(e)
+                        if on ? !diagonal[j] : f0 < 0 { empty = true; break }
                     } else if f1 > 0 {
                         t0 = max(t0, -f0 / f1)
                     } else {
@@ -286,15 +305,17 @@ public extension Solid {
         var current = widthStep(a)
         // `known` is the last point whose width step is `current`.
         var known = a
-        let tolerance = 1e-13 * max(length, 1)
         for j in 1...readings {
             let t = j == readings ? b : a + length * Double(j) / Double(readings)
             // Between two readings of different steps: the first change,
             // then whatever follows it, until the reading's step is reached.
+            // Each change is bisected until `lo` and `hi` are neighbouring
+            // numbers, where the midpoint no longer moves.
             while widthStep(t) != current {
                 var lo = known, hi = t
-                while hi - lo > tolerance {
+                while true {
                     let mid = 0.5 * (lo + hi)
+                    guard mid > lo, mid < hi else { break }
                     if widthStep(mid) == current { lo = mid } else { hi = mid }
                 }
                 intervals.append((start, hi, current))

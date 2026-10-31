@@ -309,6 +309,28 @@ func solidTests() {
                      "and every span agrees with a point-by-point ray cast against the pieces",
                      "\(wrong) of \(compared) sampled points disagree \(example)")
     }
+
+    Check.suite("solids: a curve on a face breaks where it goes out of sight, and is not joined across") {
+        // A frame 2 deep, seen from low over -y along (0, 2, -1): picture
+        // (x, y + 2z), depth 2z - y, every coordinate exact. The far wall of
+        // the hole, y = 1, is hidden below z = 1 by the near half of the
+        // frame, whose top inner edge projects onto it exactly there.
+        let s = Solid.frame(outer: 4, inner: 2, depth: 2)
+        let view = Transform<WorldSpace, ViewSpace>(rows: (SIMD3(1, 0, 0), SIMD3(0, 1, 2), SIMD3(0, -1, 2)))
+        let occlusion = s.occlusion(view: view)
+        guard let wall = s.faces.indices.first(where: {
+            let f = s.face($0)
+            return simd_distance(f.normal, SIMD3(0, -1, 0)) < 1e-12 && abs(f.origin.y - 1) < 1e-12
+        }) else { Check.expect(false, "the frame has a far inner wall"); return }
+        // Down the wall to the line of sight's edge, on into the hidden
+        // part, across it, and back up: seen, hidden, hidden, hidden, seen.
+        let path: [P3<WorldSpace>] = [P3(-0.5, 1, 2), P3(-0.5, 1, 1), P3(-0.5, 1, 0.5),
+                                      P3(0.5, 1, 0.5), P3(0.5, 1, 1), P3(0.5, 1, 2)]
+        let drawn = s.visibleCurves([path], onFace: wall, occlusion: occlusion)
+        Check.expect(drawn == [Array(path[0...1]), Array(path[4...5])],
+                     "a path on the far wall that dips out of sight is drawn as its two seen ends",
+                     "\(drawn.map { $0.map(\.v) })")
+    }
 }
 
 // MARK: - oracles

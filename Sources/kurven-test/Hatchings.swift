@@ -127,6 +127,72 @@ func hatchingTests() {
         }
     }
 
+    Check.suite("hatching: a change of width is bisected to neighbouring numbers, however far from the origin") {
+        // A thousand units out, one ulp of the parameter is 1.1e-13: a
+        // bisection that stops at a fixed tolerance below that never stops.
+        let cut = 600.2345
+        let graded = Solid.graded(from: 600, to: 600.5, step: 0.1, widthStep: { $0 < cut ? 1 : 2 })
+        let end = graded.first?.1 ?? 0
+        Check.expect(graded.count == 2 && graded[1].0 == end && end >= cut && end.nextDown < cut,
+                     "a step from 1 to 2 at 600.2345 ends the first interval on the first number past it",
+                     "\(graded.count) intervals")
+        let frame = Solid.frame(outer: 2000, inner: 1998, depth: 1)
+        let lines = frame.hatchLines(Hatching(angle: 0, spacing: 5, tone: .turing(scale: 0.5, seed: 1)))
+        Check.expect(!lines.isEmpty, "a frame 2000 across, its strips one unit wide, is hatched with Turing's tone",
+                     "\(lines.count) hatch lines")
+    }
+
+    Check.suite("hatching: a hatch line along an edge is left to the edge, and one along a diagonal is drawn") {
+        let s = Solid.frame(outer: 4, inner: 2, depth: 1)
+        // The front's frame has u along x and v along y, so at angle 0 and
+        // spacing 0.5 lines fall on the outer edges y = ±2, along the hole's
+        // edges y = ±1, and on the walls' top and bottom edges.
+        func onEdge(_ p: SIMD3<Double>) -> Bool {
+            s.edges.indices.contains { k in
+                guard !s.isDiagonal[k] else { return false }
+                let a = s.vertices[s.edges[k].a].v, b = s.vertices[s.edges[k].b].v
+                let t = simd_dot(p - a, b - a) / simd_length_squared(b - a)
+                return t >= -1e-9 && t <= 1 + 1e-9 && simd_length(p - (a + t * (b - a))) < 1e-9
+            }
+        }
+        let lines = s.hatchLines(Hatching(angle: 0, spacing: 0.5))
+        let along = lines.filter { onEdge(0.5 * ($0.path[0].v + $0.path[1].v)) }.count
+        let front = s.faceIndex(ofPiece: 0)
+        let atHole = lines.filter { $0.face == front && abs($0.path[0].y - 1) < 1e-9 }
+            .map { (min($0.path[0].x, $0.path[1].x), max($0.path[0].x, $0.path[1].x)) }
+            .sorted { $0.0 < $1.0 }
+        let split = atHole.count == 2 && abs(atHole[0].0 + 2) < 1e-9 && abs(atHole[0].1 + 1) < 1e-9
+            && abs(atHole[1].0 - 1) < 1e-9 && abs(atHole[1].1 - 2) < 1e-9
+        Check.expect(along == 0 && split,
+                     "no hatch line runs along an edge; y = 1 on the front is drawn on either side of the hole, not across it",
+                     "\(along) along an edge, y = 1 drawn over \(atHole)")
+        // At 45° the line through the front's centre lies on two of its
+        // diagonals, which are not edges: it is drawn along both.
+        let diagonal = s.hatchLines(Hatching(angle: .pi / 4, spacing: 0.5))
+            .filter { $0.face == front && $0.path.allSatisfy { abs($0.x - $0.y) < 1e-9 } }
+        let length = diagonal.reduce(0.0) { $0 + simd_distance($1.path[0].v, $1.path[1].v) }
+        Check.expect(diagonal.count == 2 && abs(length - 2 * 2.0.squareRoot()) < 1e-9,
+                     "a hatch line along the front's diagonals is drawn along both",
+                     "\(diagonal.count) lines, length \(length)")
+    }
+
+    Check.suite("hatching: a face seen edge-on draws no hatching") {
+        let s = Solid.frame(outer: 4, inner: 2, depth: 1)
+        let lines = s.hatchLines(Hatching(angle: 0.5, spacing: 0.08))
+        var edgeOn = 0, drawn = 0
+        for (_, view) in stressCameras() {
+            let occlusion = s.occlusion(view: view)
+            for i in s.faces.indices where abs(simd_dot(s.normals[s.faces[i][0]], occlusion.toEye)) <= 1e-9 {
+                edgeOn += 1
+                drawn += s.visibleCurves(lines.filter { $0.face == i }.map(\.path), onFace: i,
+                                         occlusion: occlusion).count
+            }
+        }
+        Check.expect(edgeOn > 0 && drawn == 0,
+                     "under the stress cameras \(edgeOn) faces are seen edge-on, and none draws a hatch line",
+                     "\(drawn) drawn")
+    }
+
     Check.suite("hatching: tested by occlusion, hatching agrees with a ray cast, through the frame's hole included") {
         let s = Solid.frame(outer: 4, inner: 2, depth: 1)
         let hatching = Hatching(angle: 0.5, spacing: 0.08)
@@ -150,8 +216,8 @@ func hatchingTests() {
                 }
             }
             for line in s.hatchLines(hatching) {
-                // A face seen exactly edge-on projects to a line, and whether
-                // its hatching is drawn is rounding: set aside, as for the edges.
+                // A face seen exactly edge-on projects to a line, which the
+                // ray cast cannot judge; it draws no hatching (tested above).
                 guard abs(simd_dot(s.normals[s.faces[line.face][0]], d)) > 1e-9 else { continue }
                 let a = line.path[0].v, b = line.path[1].v
                 let own = Set(s.faces[line.face])
