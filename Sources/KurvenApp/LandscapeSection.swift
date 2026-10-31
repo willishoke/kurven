@@ -470,7 +470,7 @@ struct TruncationSection: View {
             let domain = document.bundle?.manifest.domain
             let middle = domain.map { ($0.real.lo + $0.real.hi) / 2 } ?? 0
             document.setTruncation(.realBands([RealBand(below: middle, height: current)],
-                                        beyond: current))
+                                              beyond: current))
         }
     }
 

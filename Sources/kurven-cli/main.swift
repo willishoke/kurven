@@ -165,7 +165,7 @@ usage: kurven-cli <command> [options]
         printed. Any surface draws --linear-curves: COUNT straight lines through
         the parameter rectangle at SLOPE turns of v per turn of u (2/5, or a
         decimal), TURNS turns long, or closed when the slope is a fraction.
-        The camera is a oblique camera: --x-angle tilts, --z-angle turns, --shear
+        The camera is an oblique camera: --x-angle tilts, --z-angle turns, --shear
         is the oblique foreshortening the published plates use. The fold
         curves -- the outline and inner fold curves -- are drawn at --folds (twice
         --width by default; 0 leaves them out). An output ending in .png
@@ -243,7 +243,7 @@ usage: kurven-cli <command> [options]
   flicker <bundle> [preview's view options] [--frames N] [--step DEGREES]
           [--depth-tolerance T] [--slope K] [--stroke-width W] [--dump DIR] [--max-flip F]
         Turn the preview camera --step degrees a frame (default 0.02) for
-        --frames frames (default 24), and report the curves that comes and goes:
+        --frames frames (default 24), and report the marks that come and go:
         toggled (changed between frames, motion included) and flipped (a
         stroke that stayed put while the depth test changed its mind about
         it). Flicker is a motion artifact; this is it as a number. --max-flip
@@ -363,7 +363,7 @@ func bake(_ args: Args) throws {
           depth      \(result.depth.frame.rows)x\(result.depth.frame.cols) \
         in \(result.tiles * result.tiles) pass\(result.tiles == 1 ? "" : "es")
           strokes    \(result.strokes.pathCount) paths, \
-        curves \(String(format: "%.1f", result.strokes.totalLength))
+        length \(String(format: "%.1f", result.strokes.totalLength))
           took       \(elapsed)
         """)
     for (index, entry) in result.strokes.layers.enumerated() {
@@ -431,15 +431,15 @@ func surfaceCommand(_ args: Args) throws {
             if args.switches.contains("soft"), let height = base.height {
                 let c = base.ceiling
                 base = PeriodicTorus.Drawing(surface: base.surface, layers: base.layers,
-                                           height: { p in c * tanh(height(p) / c) },
-                                           ceiling: c, radii: base.radii)
+                                             height: { p in c * tanh(height(p) / c) },
+                                             ceiling: c, radii: base.radii)
             }
             // `--floor b`: only |f| above b displaces, so each pole stands
             // alone on the bare torus instead of on a raised ground.
             if let floor = try args.double("floor"), let height = base.height {
                 base = PeriodicTorus.Drawing(surface: base.surface, layers: base.layers,
-                                           height: { p in max(height(p) - floor, 0) },
-                                           ceiling: base.ceiling - floor, radii: base.radii)
+                                             height: { p in max(height(p) - floor, 0) },
+                                             ceiling: base.ceiling - floor, radii: base.radii)
             }
             drawing = base.relief(amplitude: amplitude, reach: min(r, R - r))
         }
@@ -461,7 +461,7 @@ func surfaceCommand(_ args: Args) throws {
             sn in relief, amplitude \(fmt(amplitude)) on R=\(fmt(R)) r=\(fmt(r)) -> \(output.lastPathComponent)
               reach      \(fmt(min(r, R - r))); displacement up to \(fmt(amplitude * drawing.ceiling))\
             \(drawing.surface.outward == nil ? ", NOT embedded: back faces kept" : ", embedded")
-              strokes    \(result.strokes.pathCount) paths, curves \(String(format: "%.1f", result.strokes.totalLength))
+              strokes    \(result.strokes.pathCount) paths, length \(String(format: "%.1f", result.strokes.totalLength))
               took       \(built) to build, \(baked) to bake
             """)
         return
@@ -586,7 +586,7 @@ func surfaceCommand(_ args: Args) throws {
           depth      \(result.depth.frame.rows)x\(result.depth.frame.cols) \
         in \(result.tiles * result.tiles) pass\(result.tiles == 1 ? "" : "es")
           strokes    \(result.strokes.pathCount) paths, \
-        curves \(String(format: "%.1f", result.strokes.totalLength))
+        length \(String(format: "%.1f", result.strokes.totalLength))
           took       \(elapsed)
         """)
 }
@@ -842,7 +842,7 @@ func bench(_ args: Args) throws {
     guard args.switches.contains("visibility"), let h = base.heightfield else { return }
     let view = camera(1).view
     let grid = Heightfield(surface: h.surface, occluder: h.occluder, tiles: h.tiles,
-                              region: h.region, step: h.step, refine: nil)
+                           region: h.region, step: h.step, refine: nil)
     func seconds(_ d: Duration) -> Double {
         Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
     }
@@ -883,7 +883,7 @@ func bench(_ args: Args) throws {
             }
             time("\(layer.spec.name) tested on f, to a quarter pixel") {
                 h.visibleWallCurves(layer.paths, view: view, depthTolerance: base.depthTolerance,
-                                 resolution: pixel).vertices.count
+                                    resolution: pixel).vertices.count
             }
         }
         time("\(layer.spec.name) tested on the grid") {
@@ -1263,18 +1263,18 @@ func preview(_ args: Args) throws {
 /// short orbit -- the camera turning `--step` degrees a frame about its target,
 /// the framing held still -- and draws every frame twice: once as the preview
 /// does, and once with the depth test switched off. A pixel that has a stroke
-/// in both frames of a pair *without* the test, but curves in only one of them
+/// in both frames of a pair *without* the test, but in only one of them
 /// *with* it, is a pixel where nothing moved and the visibility test changed
 /// its mind. That is the flicker, and it is counted apart from the motion:
 ///
-/// - *toggled*: curves in one frame and not the next. Honest motion contributes,
+/// - *toggled*: marked in one frame and not the next. Honest motion contributes,
 ///   so this only compares runs at the same step.
 /// - *flipped*: the test changing its mind under a stroke that stayed put.
 ///   Some of it is honest too -- a stroke sliding behind a ridge flips at the
 ///   ridge -- but that is a pixel or so per stroke, not a dash pattern.
 ///
-/// Both are fractions of the mean curves per frame, so a picture with more curves are
-/// not counted as flickering more for it.
+/// Both are fractions of the mean marked pixels per frame, so a picture with
+/// more strokes is not counted as flickering more for it.
 func flicker(_ args: Args) throws {
     try args.only("flicker", Args.view + Args.previewOptions
                   + ["width", "height", "frames", "step", "dump", "max-flip"])
@@ -1294,10 +1294,10 @@ func flicker(_ args: Args) throws {
     let renderer = try MetalRenderer()
     let target = try renderer.makePreviewTarget(viewport)
     let pixels = viewport.width * viewport.height
-    // Curves are any visible mark: a stroke narrower than a pixel is drawn
+    // A mark is anything visible: a stroke narrower than a pixel is drawn
     // lighter, not narrower, so mid-grey would miss the drawing's thinnest
     // layers.
-    func curves(_ scene: Scene, _ navigator: Navigator) throws -> [Bool] {
+    func marked(_ scene: Scene, _ navigator: Navigator) throws -> [Bool] {
         try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
                                    options: options, into: target)
         let bgra = try PNG.bgra(target)
@@ -1313,12 +1313,12 @@ func flicker(_ args: Args) throws {
         var navigator = start
         navigator.orbit.azimuth = Angle(degrees: start.orbit.azimuth.degrees
                                         + Double(i) * step)
-        let k = try curves(base, navigator)
+        let k = try marked(base, navigator)
         if let dump {
             try PNG.write(target, to: dump.appendingPathComponent(
                 String(format: "frame%03d.png", i)))
         }
-        let e = try curves(unclipped, navigator)
+        let e = try marked(unclipped, navigator)
         if i > 0 {
             for p in 0..<pixels where k[p] != kept[p] {
                 toggled += 1
@@ -1340,7 +1340,7 @@ func flicker(_ args: Args) throws {
           \(viewport.width)x\(viewport.height)  azimuth \(String(format: "%.2f", from)) \
         to \(String(format: "%.2f", from + Double(frames - 1) * step))  \
         elevation \(String(format: "%.1f", start.orbit.elevation.degrees))
-          curves      \(Int(perFrame.rounded())) px a frame
+          marked      \(Int(perFrame.rounded())) px a frame
           toggled  \(percent(toggledRate)) of it a frame   (motion included)
           flipped  \(percent(flippedRate)) of it a frame   (the stroke stayed; the test changed its mind)
         """)

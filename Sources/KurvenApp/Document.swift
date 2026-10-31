@@ -375,9 +375,9 @@ final class Document {
     /// The described layers at their current levels, from `cached` where the
     /// levels are the same and the cached curves are as refined as asked.
     nonisolated static func stroked(_ bundle: KurvenBundle,
-                                  levels: [[Double]?],
-                                  cached: [Int: DerivedCurves],
-                                  draft: Bool) -> (layers: [Layer], derived: [Int: DerivedCurves]) {
+                                    levels: [[Double]?],
+                                    cached: [Int: DerivedCurves],
+                                    draft: Bool) -> (layers: [Layer], derived: [Int: DerivedCurves]) {
         // The grid's contours, for a draft: the same bundle without its refiner.
         let grid = KurvenBundle(url: bundle.url, manifest: bundle.manifest, surface: bundle.surface,
                                 layers: bundle.layers, wallMesh: bundle.wallMesh, refine: nil)

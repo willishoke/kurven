@@ -251,7 +251,7 @@ public extension InvariantTorus {
             DispatchQueue.concurrentPerform(iterations: grid.v) { j in
                 for i in 0..<grid.u {
                     base[j * grid.u + i] = P3(e.place(values[j * grid.u + i],
-                                                         u.coordinate(i)))
+                                                      u.coordinate(i)))
                 }
             }
         }

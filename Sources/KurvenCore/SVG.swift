@@ -10,7 +10,7 @@ public struct Style: Sendable, Equatable {
     public init(_ spec: LayerSpec) { self.init(color: spec.color, width: spec.width) }
 }
 
-/// The finished drawing: strokes on the page coordinates, in draw order.
+/// The finished drawing: strokes in page coordinates, in draw order.
 public struct Strokes: Sendable {
     public var layers: [(style: Style, paths: PolylineSet<PageSpace>)]
 

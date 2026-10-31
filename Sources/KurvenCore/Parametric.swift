@@ -229,7 +229,7 @@ public extension ParametricSurface {
     /// first so the coordinates stay continuous; on a bounded axis they
     /// include both ends.
     func coordinateCurves(counts lines: (u: Int, v: Int),
-                        resolution: Int) -> PolylineSet<WorldSpace> {
+                          resolution: Int) -> PolylineSet<WorldSpace> {
         var coords: [[P2<ParamSpace>]] = []
         func place(_ axis: ParamAxis, _ k: Int, of count: Int) -> Double {
             axis.range.lo + axis.range.length * Double(k)
@@ -281,7 +281,7 @@ public extension ParametricSurface {
     /// sign along it, and is traced from there both ways.
     /// They depend on the camera, so they are derived for one, never stored.
     func foldCurves(sight: SIMD3<Double>, grid: (u: Int, v: Int)? = nil,
-                   creases: [[P2<ParamSpace>]] = []) -> PolylineSet<WorldSpace> {
+                    creases: [[P2<ParamSpace>]] = []) -> PolylineSet<WorldSpace> {
         let nu = grid?.u ?? u.cells, nv = grid?.v ?? v.cells
         @Sendable func edgeOn(_ c: P2<ParamSpace>) -> Double {
             let n = map(c).normal
@@ -535,7 +535,7 @@ public extension ParametricSurface {
     /// point: fast enough to follow the camera. The preview draws these; the
     /// bake keeps `foldCurves`, whose vertices are exact.
     func gridFoldCurves(normals: [SIMD3<Float>],
-                          sight: SIMD3<Double>) -> PolylineSet<WorldSpace> {
+                        sight: SIMD3<Double>) -> PolylineSet<WorldSpace> {
         precondition(normals.count == positions.count,
                      "\(normals.count) normals for \(positions.count) grid points")
         // One column and row past a periodic axis's end, as `foldCurves`
@@ -639,7 +639,7 @@ public extension ParametricSurface {
     /// pixel's worth of it: a path is ended and the next begun from the same
     /// vertex every eight turns.
     func linearCurves(slope: Double, turns: Int, count: Int = 1,
-                 start: P2<ParamSpace>? = nil) -> PolylineSet<WorldSpace> {
+                      start: P2<ParamSpace>? = nil) -> PolylineSet<WorldSpace> {
         precondition(u.periodic && v.periodic, "a linear curve is a curve on a torus")
         precondition(turns >= 1 && count >= 1 && slope.isFinite,
                      "a linear curve wants a finite slope and at least one turn of one strand")

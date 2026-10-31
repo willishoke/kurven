@@ -101,7 +101,7 @@ struct LineGeometry {
             } else if layer.spec.source.liesOnWall, layer.spec.clipped, !draft,
                       let h = scene.heightfield {
                 paths = h.visibleWallCurves(layer.paths, view: scene.camera.view, depthTolerance: scene.depthTolerance,
-                                         resolution: scene.resolution)
+                                            resolution: scene.resolution)
             }
             // Strokes on a heightfield's surface carry the surface's outward
             // normal, so the stroke shader can hide it where the surface
@@ -148,8 +148,8 @@ struct LineGeometry {
     /// A layer of a sphere-traced surface's strokes, as the bake tests it: what of it
     /// the solid leaves in sight, in world space for the stroke shader.
     static func sphereTraced(_ layer: Layer, on surface: ParametricSurface,
-                        view: Transform<WorldSpace, ViewSpace>,
-                        creases: [[P2<ParamSpace>]] = []) -> PolylineSet<WorldSpace> {
+                             view: Transform<WorldSpace, ViewSpace>,
+                             creases: [[P2<ParamSpace>]] = []) -> PolylineSet<WorldSpace> {
         let paths: PolylineSet<WorldSpace>, folds: Bool
         if case .foldCurves = layer.spec.source {
             paths = surface.foldCurves(sight: view.projectionDirection, creases: creases)
@@ -397,8 +397,8 @@ public extension MetalRenderer {
             // on the heightfield carries the normal, and the shader hides
             // what faces away.
             var camera = KVStroke(sight: SIMD3<Float>(scene.camera.view.projectionDirection),
-                               eye: SIMD3<Float>(scene.camera.view.inverse(P3<ViewSpace>(0, 0, 0)).v),
-                               perspective: scene.camera.isPerspective ? 1 : 0, onFolds: 0)
+                                  eye: SIMD3<Float>(scene.camera.view.inverse(P3<ViewSpace>(0, 0, 0)).v),
+                                  perspective: scene.camera.isPerspective ? 1 : 0, onFolds: 0)
             e2.setVertexBytes(&camera, length: MemoryLayout<KVStroke>.stride, index: 7)
             // Every layer, visible or not, so hiding the widest one does not
             // make the rest jump wider.
@@ -549,8 +549,8 @@ struct SurfaceStrokeGeometry {
         func vertex(_ k: Int) -> KVStrokeVertex {
             let c = coords[k]
             return KVStrokeVertex(position: SIMD3<Float>(paths.vertices[k].v),
-                               normal: normals[k],
-                               coord: SIMD2<Float>(Float(c.x), Float(c.y)))
+                                  normal: normals[k],
+                                  coord: SIMD2<Float>(Float(c.x), Float(c.y)))
         }
         var vertices: [KVStrokeVertex] = []
         vertices.reserveCapacity(2 * max(coords.count - paths.count, 0))
@@ -738,9 +738,9 @@ extension MetalRenderer {
                 if sphereTraced { shading.depthTolerance = .infinity }
                 if layer.spec.clipped, !sphereTraced, let (buffer, visible) = curves.draw(i) {
                     var camera = KVStroke(sight: SIMD3<Float>(scene.camera.view.projectionDirection),
-                                       eye: SIMD3<Float>(eye.v),
-                                       perspective: isPerspective ? 1 : 0,
-                                       onFolds: curves.onFolds[i] ? 1 : 0)
+                                          eye: SIMD3<Float>(eye.v),
+                                          perspective: isPerspective ? 1 : 0,
+                                          onFolds: curves.onFolds[i] ? 1 : 0)
                     e2.setRenderPipelineState(surfaceStrokePipeline)
                     e2.setVertexBuffer(buffer, offset: 0, index: 4)
                     e2.setVertexBytes(&shading, length: MemoryLayout<KVShading>.stride, index: 1)

@@ -491,8 +491,8 @@ func surfaceGPUTests() {
 /// The visible length of curves on the torus `(R, r)`, by the exact ray-cast:
 /// every segment divided `k` ways, each piece kept when its midpoint is seen.
 func rayCastLength(_ curves: PolylineSet<WorldSpace>, on surface: ParametricSurface,
-                      major R: Double, minor r: Double,
-                      view: Transform<WorldSpace, ViewSpace>, k: Int = 8) -> Double {
+                   major R: Double, minor r: Double,
+                   view: Transform<WorldSpace, ViewSpace>, k: Int = 8) -> Double {
     let eye = -view.projectionDirection
     let coords = curves.coords!
     var total = 0.0
@@ -518,9 +518,9 @@ func surfaceBakeTests() {
         let curves = torus.coordinateCurves(counts: (24, 12), resolution: 2048)
         let spec = LayerSpec(name: "lines", role: .scaffold, source: .coordinateCurves(u: 24, v: 12),
                              width: 0.3, heightPolicy: .surface)
-        // A oblique camera, shear and all, as a real drawing would have it.
+        // An oblique camera, shear and all, as a real drawing would have it.
         let camera = Camera.oblique(ObliqueProjection(shear: 0.5, xAngle: -50, zAngle: 25,
-                                                  flipX: false, yScale: nil))
+                                                      flipX: false, yScale: nil))
         let scene = Scene(surface: torus, layers: [Layer(spec: spec, paths: curves)],
                           camera: camera, depthTolerance: 0.03)
         let whole = try renderer.bake(scene, options: BakeOptions(resolution: 2400, tiles: 1))
@@ -554,7 +554,7 @@ func surfaceBakeTests() {
                                  paths: linearCurves)]),
             options: BakeOptions(resolution: 2400, tiles: 1))
         let linearCurveTruth = rayCastLength(linearCurves, on: torus, major: 2, minor: 1,
-                                            view: camera.view)
+                                             view: camera.view)
         let linearCurveError = abs(wound.strokes.totalLength - linearCurveTruth) / linearCurveTruth
         Check.expect(linearCurveError < 0.002, "a linear curve bakes to the ray-cast's visible length too",
                      String(format: "%.4f vs %.4f, %.3f%% off", wound.strokes.totalLength,
@@ -581,7 +581,7 @@ func foldTests() {
             for (name, xAngle, shear) in [("elevation 50°", -50.0, 0.0),
                                           ("sheared", -30.0, 0.5)] {
                 let camera = Camera.oblique(ObliqueProjection(shear: shear, xAngle: xAngle, zAngle: 25,
-                                                          flipX: false, yScale: nil))
+                                                              flipX: false, yScale: nil))
                 let sight = camera.view.projectionDirection
                 let folds = torus.foldCurves(sight: sight)
                 var worst = 0.0
@@ -638,12 +638,12 @@ func creaseTests() {
             .repeated(real: 2, imag: 2, grid: 1024)
         let height = base.height!, floor = 1.5
         let drawing = PeriodicTorus.Drawing(surface: base.surface, layers: base.layers,
-                                        height: { max(height($0) - floor, 0) },
-                                        ceiling: base.ceiling - floor, radii: base.radii)
+                                            height: { max(height($0) - floor, 0) },
+                                            ceiling: base.ceiling - floor, radii: base.radii)
             .relief(amplitude: 0.45, reach: 1)
         let surface = drawing.surface, ceiling = drawing.ceiling
         let camera = Camera.oblique(ObliqueProjection(shear: 0, xAngle: -55, zAngle: 30,
-                                                  flipX: false, yScale: nil))
+                                                      flipX: false, yScale: nil))
         let sight = camera.view.projectionDirection
         let h = { (c: P2<ParamSpace>) in max(height(c) - floor, 0) }
         let cell = min(surface.u.spacing, surface.v.spacing)
@@ -712,7 +712,7 @@ func creaseTests() {
         // chord between two of its vertices, which crosses the truncation.
         let sphereTracer = SurfaceVisibility(sphereTracing: surface, view: camera.view)
         let seenTruncationEdge = HiddenLine.clip(truncationEdgeLayer.paths.mapped(camera.view), on: sphereTracer,
-                                      onFolds: true, onCrease: true)
+                                                 onFolds: true, onCrease: true)
         let seenFolds = HiddenLine.clip(folds.mapped(camera.view), on: sphereTracer, onFolds: true)
         func ends(_ p: PolylineSet<PageSpace>) -> [SIMD2<Double>] {
             (0..<p.count).flatMap { i in
@@ -815,14 +815,14 @@ func periodicTorusTests() {
 
         let renderer = try MetalRenderer()
         let camera = Camera.oblique(ObliqueProjection(shear: 0.5, xAngle: -50, zAngle: 25,
-                                                  flipX: false, yScale: nil))
+                                                      flipX: false, yScale: nil))
         let contours = drawing.layers.filter { if case .contour = $0.spec.source { true } else { false } }
         let baked = try renderer.bake(Scene(surface: drawing.surface, layers: contours,
                                             camera: camera, depthTolerance: 0),
                                       options: BakeOptions(resolution: 2400))
         let truth = contours.reduce(0.0) {
             $0 + rayCastLength($1.paths, on: drawing.surface, major: 2, minor: 1,
-                                  view: camera.view, k: 4)
+                               view: camera.view, k: 4)
         }
         let error = abs(baked.strokes.totalLength - truth) / truth
         Check.expect(error < 0.003, "and it is seen where the ray-cast sees it",
@@ -889,7 +889,7 @@ func periodicTorusTests() {
         let m = 0.64
         let K = Jacobi.quarterPeriod(m), Kp = Jacobi.quarterPeriod(1 - m)
         let drawing = try PeriodicTorus.drawing("sn(z, \(m))^2", origin: Complex(-K / 2, -Kp / 2),
-                                            periods: (2 * K, 2 * Kp))
+                                                periods: (2 * K, 2 * Kp))
         let u = drawing.surface.u.range, v = drawing.surface.v.range
         var atZero = 0, atPole = 0, levels = 0
         var loose: [String] = []

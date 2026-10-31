@@ -55,7 +55,7 @@ public extension Surface {
     /// a re-derivation after an edit and a bake all produce the same strokes
     /// for the same spec.
     func curves(_ spec: LayerSpec, occluder: Occluder,
-             refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
+                refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
         if let hatched = hatch(spec.source, in: HatchContext(occluder), refine: refine) {
             return hatched
         }
@@ -190,7 +190,7 @@ extension Surface {
     /// traced on f and the curves are tested against f, so the top edge has to be
     /// f's too, or the rings end on a fold the top edge parts from.
     func topEdge(of edge: PerimeterEdge, tiles: [Affine2],
-               refine: ContourRefine?) -> [P3<WorldSpace>] {
+                 refine: ContourRefine?) -> [P3<WorldSpace>] {
         let n = max(edge.density, 2)
         let magnitudeOfF = refine?.magnitude
         var topEdge: [P3<WorldSpace>] = []
@@ -231,7 +231,7 @@ extension Surface {
                 if let under, let over {
                     if let magnitudeOfF {
                         if let q = truncationCrossing(from: under.p, under.excess, to: over.p, over.excess,
-                                               tiles: tiles, magnitude: magnitudeOfF) {
+                                                      tiles: tiles, magnitude: magnitudeOfF) {
                             topEdge.append(P3(q.x, q.y, truncation.height(atX: q.x)))
                         }
                     } else {
@@ -264,7 +264,7 @@ extension Surface {
     /// bit, nil when both ends lie on one side. One routine for the top edge
     /// and the truncation edge's ends, so the two meet to rounding.
     func truncationCrossing(from a: P2<DomainSpace>, _ ea: Double, to b: P2<DomainSpace>, _ eb: Double,
-                     tiles: [Affine2], magnitude: ContourRefine.Magnitude) -> P2<DomainSpace>? {
+                            tiles: [Affine2], magnitude: ContourRefine.Magnitude) -> P2<DomainSpace>? {
         guard ea.isFinite, eb.isFinite, (ea > 0) != (eb > 0) else { return nil }
         func excess(_ p: P2<DomainSpace>) -> Double {
             magnitude(inTile(p, tiles: tiles)) - truncation.height(atX: p.x)
@@ -412,8 +412,8 @@ extension Surface {
 
     /// The top and bottom edges of every wall, and a vertical edge at every corner.
     func wallEdges(_ perimeter: BoundaryPerimeter, edges: [Int], step: Double,
-                     base: Double, tiles: [Affine2],
-                     refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
+                   base: Double, tiles: [Affine2],
+                   refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         var out: [[P3<WorldSpace>]] = []
         var corners: [P2<WorldSpace>] = []
         for index in edges where index >= 0 && index < perimeter.edges.count {
@@ -433,7 +433,7 @@ extension Surface {
         for corner in corners {
             let top = height(at: P2<DomainSpace>(corner.x, corner.y), tiles: tiles)
             if let verticalEdge = Surface.vertical(x: corner.x, y: corner.y, base: base,
-                                           top: top, step: step) {
+                                                   top: top, step: step) {
                 out.append(verticalEdge)
             }
         }
@@ -620,7 +620,7 @@ extension Surface {
                     continue
                 case .realBands(let bands, let beyond):
                     out += bandedTruncationEdge(lines, bands: bands, beyond: beyond, tiles: tiles,
-                                     refine: refine, magnitude: magnitude)
+                                                refine: refine, magnitude: magnitude)
                     continue
                 default:
                     break
@@ -645,7 +645,7 @@ extension Surface {
     /// truncation heights and mean nothing; they are dropped, and the boundary's own
     /// pieces take their place.
     func bandedTruncationEdge(_ lines: [[P2<DomainSpace>]], bands: [RealBand], beyond: Double, tiles: [Affine2],
-                   refine: ContourRefine, magnitude: ContourRefine.Magnitude) -> [[P3<WorldSpace>]] {
+                              refine: ContourRefine, magnitude: ContourRefine.Magnitude) -> [[P3<WorldSpace>]] {
         let boundaries = bands.map(\.below).sorted()
         let g = height
         let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1))
@@ -756,7 +756,7 @@ extension Surface {
     /// two grid nodes beside it on that edge, by the top edge's bisection; nil
     /// for a vertex off the edge or with no crossing beside it.
     func onBoundaryTruncationCrossing(near p: P2<DomainSpace>, tiles: [Affine2],
-                           magnitude: ContourRefine.Magnitude) -> P2<DomainSpace>? {
+                                      magnitude: ContourRefine.Magnitude) -> P2<DomainSpace>? {
         let g = height
         let eps = 1e-9 * cell
         let f = g.index(of: p)

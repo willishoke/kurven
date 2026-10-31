@@ -227,13 +227,13 @@ public final class MetalRenderer {
     /// had -- the drawing builder hands an unchanged layer's paths on as they
     /// are, so the comparison is a storage identity, not a walk.
     private var cachedSurfaceStrokes: (content: ContentID, curves: ContentID,
-                                   sources: [PolylineSet<WorldSpace>?],
-                                   geometry: SurfaceStrokeGeometry)?
+                                       sources: [PolylineSet<WorldSpace>?],
+                                       geometry: SurfaceStrokeGeometry)?
     private var cachedFolds: (content: ContentID, curves: ContentID, view: simd_double4x4,
                               geometry: SurfaceStrokeGeometry)?
     /// The grid's normals, which the preview's folds are read from and
     /// its strokes' normals interpolated from: fixed for a surface, so a camera
-    /// move costs a dot product per grid point and an strokes edit four reads
+    /// move costs a dot product per grid point and a curve edit four reads
     /// per vertex.
     private var cachedNormals: (content: ContentID, normals: [SIMD3<Float>])?
 
@@ -289,7 +289,7 @@ public final class MetalRenderer {
                                                    sight: scene.camera.view.projectionDirection)
             }
             folds = try SurfaceStrokeGeometry(onFolds.map { $0 ? derived : nil },
-                                           surface: surface, onFolds: onFolds, device: device)
+                                              surface: surface, onFolds: onFolds, device: device)
             cachedFolds = (scene.content, scene.curves, view, folds)
         }
         return SurfaceStrokes(statics: statics, folds: folds, onFolds: onFolds)

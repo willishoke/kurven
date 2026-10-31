@@ -247,7 +247,7 @@ extension Document {
                     return .restyled(b.restyled(manifest))
                 case .levels(let draft):
                     let (layers, derived) = Document.stroked(bundle, levels: levelSets,
-                                                           cached: cached, draft: draft)
+                                                             cached: cached, draft: draft)
                     return .stroked(layers, derived)
                 }
             }.value

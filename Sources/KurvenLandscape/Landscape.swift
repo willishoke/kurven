@@ -28,7 +28,7 @@ public enum NativeLandscape {
     public static let huge = 1e12
 
     public static let projection = ObliqueProjection(shear: 0.5, xAngle: -55.0, zAngle: -90.0,
-                                              flipX: true, yScale: nil)
+                                                     flipX: true, yScale: nil)
     public static let defaultDepthTolerance = 0.02
     public static let defaultBuffer = 4000
 
@@ -167,7 +167,7 @@ public enum NativeLandscape {
                       width: 0.3, heightPolicy: .surface),
             LayerSpec(name: "wall_hatch", role: .scaffold,
                       source: .wallHatching(edges: edges, spacing: spacing, step: step,
-                                         trim: true, base: 0, topOffset: 0),
+                                            trim: true, base: 0, topOffset: 0),
                       width: 0.25, heightPolicy: .surface),
             // The outline and inner fold curves, derived per camera: the
             // bounding curves along the curved edges, as the walls' edges are

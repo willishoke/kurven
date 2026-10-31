@@ -53,7 +53,7 @@ enum GoldenFixtures {
 
     // MARK: shared
 
-    /// The three oblique camera, as the published plates set them. Kept here
+    /// The three oblique cameras, as the published plates set them. Kept here
     /// rather than read from the catalog, so a change to a drawing is a visible
     /// fixture change.
     static let presets: [(String, ObliqueProjection)] = [
@@ -180,7 +180,7 @@ enum GoldenFixtures {
                 LayerSpec(name: "mag_derived", role: .magnitude,
                           source: .contour(field: .magnitude, levels: [0.5, 1.0, 1.5],
                                            restriction: .intersection([.footprint, .belowTruncation,
-                                                         .band(axis: .imag, lo: -1, hi: 1)]),
+                                                                       .band(axis: .imag, lo: -1, hi: 1)]),
                                            tiled: false),
                           width: 0.3, heightPolicy: .level),
                 LayerSpec(name: "all_levels", role: .magnitude,
@@ -215,7 +215,7 @@ enum GoldenFixtures {
                           width: 0.3, heightPolicy: .surface),
                 LayerSpec(name: "wall_hatch", role: .scaffold,
                           source: .wallHatching(edges: [0, 2], spacing: 0.3, step: 0.1, trim: true,
-                                             base: 0.01, topOffset: -0.02),
+                                                base: 0.01, topOffset: -0.02),
                           width: 0.25, heightPolicy: .surface),
                 LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                           width: 0.4, heightPolicy: .surface),
@@ -325,9 +325,9 @@ enum GoldenFixtures {
         ]
         let sources: [(String, LayerSource)] = [
             ("wall_hatch", .wallHatching(edges: [0, 1, 2, 3], spacing: 0.35, step: 0.5, trim: true,
-                                      base: 0, topOffset: 0)),
+                                         base: 0, topOffset: 0)),
             ("wall_hatch_untrimmed", .wallHatching(edges: [0, 2], spacing: 0.6, step: 0.25,
-                                                trim: false, base: 0.1, topOffset: -0.05)),
+                                                   trim: false, base: 0.1, topOffset: -0.05)),
             ("wall_edges", .wallEdges(edges: [0, 1, 2, 3], step: 0.4, base: 0)),
             ("plateau_hatch_real", .plateauHatching(axis: .real, spacing: 0.25, tiled: false)),
             ("plateau_hatch_imag", .plateauHatching(axis: .imag, spacing: 0.3, tiled: false)),

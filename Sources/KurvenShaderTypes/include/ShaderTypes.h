@@ -32,7 +32,7 @@ typedef struct {
     // The heightfield's domain rectangle and its grid size after decimation.
     simd_float2 domainLo;      // (real.lo, imag.lo)
     simd_float2 domainSize;    // (real.length, imag.length)
-    simd_uint2  grid;       // samples along (real, imag)
+    simd_uint2  grid;          // samples along (real, imag)
     simd_uint2  gridSize;      // the full texture size, before decimation
     uint32_t    step;          // texel stride: grid sample i reads texel i*step
 
@@ -62,7 +62,7 @@ typedef struct {
 
 // A vertex of depth-tested strokes: where it is and, for strokes lying on a
 // heightfield, the surface's outward normal there, not normalized -- zero for
-// strokes that is tested by depth alone.
+// strokes tested by depth alone.
 typedef struct {
     simd_float3 position;
     simd_float3 normal;

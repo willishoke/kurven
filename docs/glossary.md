@@ -27,7 +27,7 @@ and Emde, *Funktionentafeln*, 1909).
 | face | A face in the boundary-representation sense: a maximal flat region of a polyhedron's boundary, possibly not convex and possibly with holes. | facet |
 | convex piece | One polygon of a face's convex partition. A solid is given as its pieces (`Solid(vertices:pieces:)`). | face |
 | diagonal | A side shared by two pieces of one face. Not an edge of the solid, and never drawn. | soft edge |
-| edge | A side shared by two pieces of different faces. | crease |
+| edge | A side shared by two pieces of different faces: an edge of the solid. | crease, in the polyhedron code |
 | parametric surface | A map from a parameter rectangle, each axis possibly periodic, into space (`ParametricSurface`). | |
 | grid | The uniform sample grid a surface or a function is evaluated on. | lattice |
 | lattice | A lattice in the mathematical sense: the period lattice of an elliptic function (`PeriodLattice`), Turing's square lattice. | |
@@ -78,9 +78,16 @@ and Emde, *Funktionentafeln*, 1909).
 ## Kept, and why
 
 - **fold**: Whitney's term for the critical set of a projection.
-- **crease**: standard in line drawing for a curve of normal discontinuity.
+- **crease**: standard in line drawing for a curve of normal discontinuity
+  on a surface, such as a truncation edge. On a polyhedron every such curve
+  is an edge, and edge is the word there.
 - **wall**: plain and unambiguous; "lateral face" is the formal term.
 - **level**: the value of a contour, and only that.
 - **trajectory**, **tile**, **window**, **occluder**, **footprint**, `Cover`: already standard.
+- **margin**: the paper round a drawing on its page (`SVG.render`, the
+  framing, the gallery). The hidden-line margin, which was a depth, is the
+  depth tolerance.
+- `sight`: the projection direction as a parameter name, where a vector is
+  passed to a fold trace or a shader. In prose it is a line of sight.
 - **spire, pit, bowl, needle**: describe how a pole or a zero looks in a
   drawing, in prose only, never in identifiers.

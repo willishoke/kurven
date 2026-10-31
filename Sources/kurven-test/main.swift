@@ -210,7 +210,7 @@ func cameraTests() {
 
     Check.suite("camera: the projection matrix is the composition it claims to be") {
         let projection = ObliqueProjection(shear: 0.5, xAngle: -55, zAngle: -90,
-                                    flipX: true, yScale: 0.75)
+                                           flipX: true, yScale: 0.75)
         let camera = Camera.oblique(projection)
         let p = P3<WorldSpace>(1.5, -2.25, 3)
         // The same thing spelled out in the library's own column order.
@@ -223,7 +223,7 @@ func cameraTests() {
                      "folding the axis exchange into one matrix changes nothing")
 
         guard case .orthographic(let oblique) = camera.projection else {
-            Check.expect(false, "a oblique camera is orthographic"); return
+            Check.expect(false, "an oblique camera is orthographic"); return
         }
         Check.expect(oblique?.shear == 0.5, "the oblique shear survives as a camera property")
     }
@@ -502,9 +502,9 @@ func shaderTests() {
                                 lo: SIMD2(75, 76), spacing: SIMD2(77, 78),
                                 depthRange: SIMD2(79, 80))
         let strokeVertex = KVStrokeVertex(position: SIMD3(81, 82, 83), normal: SIMD3(84, 85, 86),
-                                    coord: SIMD2(87, 88))
+                                          coord: SIMD2(87, 88))
         let curveCamera = KVStroke(sight: SIMD3(89, 90, 91), eye: SIMD3(92, 93, 94),
-                              perspective: 95, onFolds: 96)
+                                   perspective: 95, onFolds: 96)
 
         var want: [Float] = []
         for c in 0..<4 { for r in 0..<4 { want.append(v[c][r]) } }
@@ -782,7 +782,7 @@ func hatchTests() {
         }
         for i in crossing {
             guard let wall = surface.hatch(.wallHatching(edges: [i], spacing: spacing, step: 0.5,
-                                                      trim: true, base: 0, topOffset: 0),
+                                                         trim: true, base: 0, topOffset: 0),
                                            in: context) else {
                 Check.expect(false, "the wall on edge \(i) derives")
                 continue

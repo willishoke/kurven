@@ -236,7 +236,7 @@ func landscapeTests() {
                 let a = mine.paths.totalLength, b = committed.paths.totalLength
                 if mine.paths.count != committed.paths.count || abs(a - b) > 1e-6 * max(b, 1) {
                     curvesDiffer.append("\(mine.spec.name) \(mine.paths.count)/\(committed.paths.count) paths, "
-                                      + String(format: "length %.6g/%.6g", a, b))
+                                        + String(format: "length %.6g/%.6g", a, b))
                 }
             }
             Check.expect(curvesDiffer.isEmpty, "and every layer derives to the same curves",

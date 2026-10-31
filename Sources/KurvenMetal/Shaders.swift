@@ -401,7 +401,7 @@ public enum Shaders {
     // How far the surface's depth moves across one pixel at `p`: per axis, the
     // smaller of the two one-sided differences, and the larger of the two axes.
     //
-    // The smaller, not the larger, so that a outline on one side -- a jump
+    // The smaller, not the larger, so that an outline on one side -- a jump
     // to a far surface, or to nothing -- is not mistaken for slope. Were it
     // counted, curves hidden behind a ridge would show through at the ridge.
     // Neighbours off the texture or holding `empty` do not count at all.
@@ -445,7 +445,7 @@ public enum Shaders {
     // reason. It is a preview-only relaxation. The bake does not do this, and
     // with `slopeScale` zero this is the bake's predicate exactly.
     static bool stroke_visible(texture2d<float, access::read> depth, uint2 p, float z,
-                            constant KVShading &s)
+                               constant KVShading &s)
     {
         float behind = depth.read(p).r;
         if (!(behind > s.empty)) { return true; }

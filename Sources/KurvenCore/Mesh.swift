@@ -104,7 +104,7 @@ public extension Mesh<WorldSpace> {
     /// only when all four corners lie in the region, once per tile. A banded
     /// truncation is interpolated across a cell the way the pre-clamped grid is.
     static func truncationEdgeMesh(of surface: Surface, step: Int, region: Region,
-                       tiles: [Affine2]) -> Mesh<WorldSpace> {
+                                   tiles: [Affine2]) -> Mesh<WorldSpace> {
         if case .none = surface.truncation { return .empty }
         let g = surface.height
         let step = max(step, 1)
@@ -116,8 +116,8 @@ public extension Mesh<WorldSpace> {
 
         func corner(_ i: Int, _ j: Int) -> TruncationCorner {
             TruncationCorner(x: xs[i], y: ys[j],
-                      h: Double(g[min(i * step, g.width - 1), min(j * step, g.height - 1)]),
-                      truncationHeight: colTruncation[i])
+                             h: Double(g[min(i * step, g.width - 1), min(j * step, g.height - 1)]),
+                             truncationHeight: colTruncation[i])
         }
 
         /// The pieces of one triangle that the truncation plane cuts it into; none
@@ -188,6 +188,7 @@ private struct TruncationCorner {
     func crossing(to other: TruncationCorner) -> TruncationCorner {
         let t = excess / (excess - other.excess)
         return TruncationCorner(x: x + (other.x - x) * t, y: y + (other.y - y) * t,
-                         h: h + (other.h - h) * t, truncationHeight: truncationHeight + (other.truncationHeight - truncationHeight) * t)
+                                h: h + (other.h - h) * t,
+                                truncationHeight: truncationHeight + (other.truncationHeight - truncationHeight) * t)
     }
 }

@@ -29,7 +29,7 @@ func truncationTests() {
         let truncationEdge = Mesh.truncationEdgeMesh(of: surface, step: 1, region: .full, tiles: [.identity])
         Check.expect(!truncationEdge.isEmpty, "a truncated spire has a truncation edge", "\(truncationEdge.triangles.count) triangles")
         Check.expect(Mesh.truncationEdgeMesh(of: Surface(height: grid, phase: nil, truncation: Truncation.none),
-                                 step: 1, region: .full, tiles: [.identity]).isEmpty,
+                                             step: 1, region: .full, tiles: [.identity]).isEmpty,
                      "and an untruncated one has none")
 
         // The rasterizer's own triangle through a point: corners clamped, then
@@ -102,7 +102,7 @@ func truncationTests() {
             PerimeterEdge(start: P2(3, 4), end: P2(3, 3), density: 2),
         ])
         Check.expect(Mesh.truncationEdgeMesh(of: surface, step: 1, region: .inside(far),
-                                 tiles: [.identity]).isEmpty,
+                                             tiles: [.identity]).isEmpty,
                      "a region that excludes the spire has no truncation edge in it")
         // Decimated by two, the grid is 5 x 5 over the same domain, and the
         // truncation edge is cut on those cells: coarser, and still below the truncation.

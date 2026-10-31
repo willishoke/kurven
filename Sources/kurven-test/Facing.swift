@@ -7,7 +7,7 @@ import KurvenLandscape
 
 // MARK: - curves on a heightfield are hidden where the surface faces away
 //
-// A Gaussian ridge along y, seen from a oblique camera whose line of sight has a
+// A Gaussian ridge along y, seen from an oblique camera whose line of sight has a
 // component across it: the near graph faces the eye, the steep part of the
 // far graph faces away, and the far graph's lower slope faces the eye again. Curves run
 // straight over the ridge on the surface must be cut at the two folds, found

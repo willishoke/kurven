@@ -19,7 +19,7 @@ import KurvenDynamics
 ///
 ///     torus    radii                    13 ms      new surface
 ///              line counts              11 ms      curves only
-///              linear curve slope            11 ms      curves only
+///              linear curve slope       11 ms      curves only
 ///     sn       radii                     6 ms      contours re-placed, not resampled
 ///              modulus                 115 ms      resampled; 65 ms while dragging
 ///              samples                 100 ms      resampled; curves only
@@ -28,13 +28,13 @@ import KurvenDynamics
 ///              radius from, height from 32 ms      re-placed
 ///              turns                 17–36 ms      the trajectory is a linear curve, placed
 ///                                                  from the grid; no draft needed
-///              coordinate curves          38 ms      the map at every line vertex
-///              linear curve slope            15 ms      curves only; the trajectory's layout
+///              coordinate curves        38 ms      the map at every line vertex
+///              linear curve slope       15 ms      curves only; the trajectory's layout
 ///                                                  is kept
 ///              harmonics, fit length   390 ms      fitted again
 ///
 /// So the forced torus's fit is the one control that is not interactive, and
-/// it gets a stepper and a field rather than a slider. An curves edit lays out
+/// it gets a stepper and a field rather than a slider. A curve edit lays out
 /// only the layer it touched -- the preview keeps every other layer's
 /// vertices from the frame before -- and curve normals are read off the
 /// grid, not asked of the map, so a new surface costs its grid and

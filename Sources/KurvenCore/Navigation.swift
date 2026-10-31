@@ -1,7 +1,7 @@
 import Foundation
 import simd
 
-/// Everything in a oblique projection that is not a rotation.
+/// Everything in an oblique projection that is not a rotation.
 ///
 /// `ObliqueProjection` mixes two unrelated things: where the camera is (`zAngle`,
 /// `xAngle`) and what kind of drawing this is (the axis convention, the x flip,

@@ -137,8 +137,9 @@ public struct LandscapeRequest: Sendable, Equatable {
         expression = try o.string("expression", "Spec")
         domain = try Domain(json: o.value("domain", "Spec"))
         resolution = (try? o.int("resolution", "Spec")) ?? NativeLandscape.defaultResolution
-        truncation = if case .some(.object) = o["truncation"] { try Truncation(json: o.value("truncation", "Spec")) }
-               else { nil }
+        truncation = if case .some(.object) = o["truncation"] {
+            try Truncation(json: o.value("truncation", "Spec"))
+        } else { nil }
         spacing = o.optionalDouble("spacing")
         layers = if case .some(.array(let list)) = o["layers"] {
             try list.map(LayerSpec.init(json:))

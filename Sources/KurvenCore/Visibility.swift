@@ -287,7 +287,7 @@ public extension HiddenLine {
                         let mid = 0.5 * (lo + hi)
                         let c = P2<ParamSpace>(a.v + (b.v - a.v) * mid)
                         let j = visibility.test(onCrease ? visibility.ontoCrease(c, chord: b.v - a.v) : c,
-                                                 onFolds: onFolds)
+                                                onFolds: onFolds)
                         if j.seen == kept[k - 1] { lo = mid } else { hi = mid }
                         if j.seen { at = j.at }
                     }

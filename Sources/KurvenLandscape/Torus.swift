@@ -127,10 +127,10 @@ public enum PeriodicTorus {
     /// put in relief, where the truncation is a plateau. Otherwise every phase line
     /// runs through its pole.
     public static func drawing(_ expression: String, origin: Complex = Complex(0),
-                             periods: (real: Double, imag: Double),
-                             major R: Double = 2, minor r: Double = 1,
-                             resolution: Int = 600, ceiling: Double = 3,
-                             grid: Int = 1024, truncated: Bool = false) throws -> Drawing {
+                               periods: (real: Double, imag: Double),
+                               major R: Double = 2, minor r: Double = 1,
+                               resolution: Int = 600, ceiling: Double = 3,
+                               grid: Int = 1024, truncated: Bool = false) throws -> Drawing {
         let compiled = try KurvenMath.Expression.compile(expression)
         let domain = Domain(real: Interval(lo: origin.re, hi: origin.re + periods.real),
                             imag: Interval(lo: origin.im, hi: origin.im + periods.imag))
@@ -289,7 +289,7 @@ public enum PeriodicTorus {
                                 truncated: Bool = false, turn: Double = 0) throws -> Drawing {
         let K = Jacobi.quarterPeriod(m), Kp = Jacobi.quarterPeriod(1 - m)
         return try drawing("sn(z, \(m))", origin: Complex(0, turn * 2 * Kp),
-                         periods: (4 * K, 2 * Kp), major: R, minor: r,
-                         resolution: resolution, grid: grid, truncated: truncated)
+                           periods: (4 * K, 2 * Kp), major: R, minor: r,
+                           resolution: resolution, grid: grid, truncated: truncated)
     }
 }

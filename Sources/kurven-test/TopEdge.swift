@@ -264,7 +264,7 @@ func topEdgeTests() {
     Check.suite("folds arrive along the fold: a tower's outline meets the truncation edge where the graph turns edge-on") {
         // (z - 1)/(z + 1) over Re [-2.1, 2.1], Im [0, 1.4], truncated at 3, on a
         // grid of 24: the pole at -1 sits on the front edge, and the tower's
-        // right graph carries a outline up to the truncation edge. Traced on the
+        // right graph carries an outline up to the truncation edge. Traced on the
         // truncated surface the fold's last vertex was where a grid edge
         // crossed the crease, a cell from where the fold meets the truncation edge, and
         // the straight chord joining them cut across the truncation's projection.
@@ -582,7 +582,7 @@ func topEdgeTests() {
         for layer in scene.layers where layer.spec.source.liesOnWall && layer.spec.clipped {
             pairs.append((h.visibleWallCurves(layer.paths, view: view, depthTolerance: scene.depthTolerance),
                           h.visibleWallCurves(layer.paths, view: view, depthTolerance: scene.depthTolerance,
-                                           resolution: resolution)))
+                                              resolution: resolution)))
         }
         for (exact, coarse) in pairs {
             let a = onScreen(exact), b = onScreen(coarse)

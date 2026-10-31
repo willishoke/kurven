@@ -82,7 +82,7 @@ public struct SurfaceRequest: Sendable, Equatable {
 
     /// The projection a surface drawing opens at.
     public static let projection = ObliqueProjection(shear: 0, xAngle: -55, zAngle: 30,
-                                                   flipX: false, yScale: nil)
+                                                     flipX: false, yScale: nil)
 
     /// The request a drag builds while it lasts: a quarter of the grid
     /// around, and a periodic function sampled at most 240 across. The full
@@ -312,7 +312,7 @@ public struct SurfaceDrawing: Sendable {
                 }
                 return scaffold("lines", .coordinateCurves(u: n.x, v: n.y), style.lines,
                                 old?.paths ?? surface.coordinateCurves(counts: (n.x, n.y),
-                                                                     resolution: resolution))
+                                                                       resolution: resolution))
             }
         }
         /// The linear curve, reused when neither the surface nor it moved. Placed
@@ -326,7 +326,7 @@ public struct SurfaceDrawing: Sendable {
                 return scaffold("linearCurves", .linearCurves(slope: w.slope, turns: w.turns, count: w.count),
                                 style.linearCurves,
                                 old?.paths ?? surface.linearCurves(slope: w.slope, turns: w.turns,
-                                                              count: w.count))
+                                                                   count: w.count))
             }
         }
 
@@ -351,8 +351,8 @@ public struct SurfaceDrawing: Sendable {
                                                    resolution: grid, grid: request.grid)
             } else if case .periodic(let expression, let periods, _, _, let grid) = request.shape {
                 drawing = try PeriodicTorus.drawing(expression, periods: (periods.x, periods.y),
-                                                major: R, minor: r, resolution: grid,
-                                                grid: request.grid)
+                                                    major: R, minor: r, resolution: grid,
+                                                    grid: request.grid)
             } else { fatalError("unreachable") }
             surface = drawing.surface
             // Their own folds come with them; the style's replace them below.
@@ -412,8 +412,8 @@ public struct SurfaceDrawing: Sendable {
                                 paths: .empty))
         }
         return SurfaceDrawing(request: request, surface: surface, layers: layers,
-                            content: kept?.content ?? ContentID(), revolution: revolution,
-                            embedded: embedded, forced: forced)
+                              content: kept?.content ?? ContentID(), revolution: revolution,
+                              embedded: embedded, forced: forced)
     }
 }
 

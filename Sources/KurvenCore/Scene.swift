@@ -152,7 +152,7 @@ public struct Heightfield: Sendable {
     /// an open run's end is carried to the zero the refiner finds from it,
     /// at |f|'s own height there -- the floor -- as the phase lines are.
     public func foldCurves(view: Transform<WorldSpace, ViewSpace>,
-                          refined: Bool = true) -> PolylineSet<WorldSpace> {
+                           refined: Bool = true) -> PolylineSet<WorldSpace> {
         let g = surface.height
         let nx = g.width, ny = g.height
         guard nx >= 2, ny >= 2 else { return .empty }
@@ -329,8 +329,8 @@ public struct Heightfield: Sendable {
     /// the traversal alone, which hides it exactly when the surface in front of
     /// it does.
     public func visibleWallCurves(_ paths: PolylineSet<WorldSpace>,
-                               view: Transform<WorldSpace, ViewSpace>,
-                               depthTolerance: Double, resolution: Double = 0) -> PolylineSet<WorldSpace> {
+                                  view: Transform<WorldSpace, ViewSpace>,
+                                  depthTolerance: Double, resolution: Double = 0) -> PolylineSet<WorldSpace> {
         guard !paths.vertices.isEmpty else { return paths }
         let sight = view.projectionDirection
         let traversal = GridTraversal(self, view: view, depthTolerance: depthTolerance)
@@ -401,8 +401,8 @@ public struct Heightfield: Sendable {
     /// vertex belongs to the run on the visible side, tested by the traversal
     /// alone, since on the fold the facing is zero by construction.
     public func visibleSurfaceCurves(_ paths: PolylineSet<WorldSpace>,
-                                  view: Transform<WorldSpace, ViewSpace>,
-                                  depthTolerance: Double) -> PolylineSet<WorldSpace> {
+                                     view: Transform<WorldSpace, ViewSpace>,
+                                     depthTolerance: Double) -> PolylineSet<WorldSpace> {
         guard !paths.vertices.isEmpty else { return paths }
         let vis = HeightfieldVisibility(heightfield: self, view: view, depthTolerance: surfaceDepthTolerance(depthTolerance))
         let vertices = paths.vertices
@@ -483,8 +483,8 @@ public struct Heightfield: Sendable {
     /// since such curves lie on a crease or a flat top where the surface's
     /// facing is not the curves'.
     public func visibleCurves(_ paths: PolylineSet<WorldSpace>,
-                           view: Transform<WorldSpace, ViewSpace>,
-                           depthTolerance: Double) -> PolylineSet<WorldSpace> {
+                              view: Transform<WorldSpace, ViewSpace>,
+                              depthTolerance: Double) -> PolylineSet<WorldSpace> {
         guard !paths.vertices.isEmpty else { return paths }
         let traversal = GridTraversal(self, view: view, depthTolerance: depthTolerance)
         return Self.runs(of: paths, worker: {

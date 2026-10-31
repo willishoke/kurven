@@ -102,7 +102,7 @@ func forcedTorusTests() {
                                           width: 0.5, heightPolicy: .surface),
                           paths: .empty)
         let camera = Camera.oblique(ObliqueProjection(shear: 0, xAngle: -58, zAngle: 35,
-                                                  flipX: false, yScale: nil))
+                                                      flipX: false, yScale: nil))
         let scene = Scene(surface: surface, layers: [trajectory, folds], camera: camera, depthTolerance: 0)
         let baked = try MetalRenderer().bake(scene, options: BakeOptions(resolution: 2000))
         // On an embedded surface with its outside computed rightly, what is
@@ -181,7 +181,7 @@ func gridFoldTests(_ found: InvariantTorus) {
             let normals = surface.gridNormals()
             for projection in [ObliqueProjection(shear: 0, xAngle: -55, zAngle: 30, flipX: false, yScale: nil),
                           ObliqueProjection(shear: 0.5, xAngle: -30, zAngle: 110, flipX: false,
-                                          yScale: nil)] {
+                                            yScale: nil)] {
                 let camera = Camera.oblique(projection)
                 let sight = camera.view.projectionDirection
                 let exact = surface.foldCurves(sight: sight)
@@ -211,7 +211,7 @@ func gridFoldTests(_ found: InvariantTorus) {
                                           width: 0.6, heightPolicy: .surface),
                           paths: .empty)
         let orbit = Orbit(matching: ObliqueProjection(shear: 0, xAngle: -55, zAngle: 30,
-                                                    flipX: false, yScale: nil))
+                                                      flipX: false, yScale: nil))
         let scene = Scene(surface: forced, layers: [trajectory, folds], camera: orbit.camera,
                           depthTolerance: 0)
         guard let bounds = scene.quickBounds() else {
@@ -397,8 +397,8 @@ func surfaceDrawingTests() {
 
         Check.expectThrows("an unknown system is refused by name") {
             _ = try SurfaceDrawing.build(SurfaceRequest(.forced(system: "lorenz", fit: 100,
-                                                              harmonics: 4, radial: 0, axial: 1,
-                                                              radius: 2.5, turns: 1)))
+                                                                harmonics: 4, radial: 0, axial: 1,
+                                                                radius: 2.5, turns: 1)))
         }
     }
 }

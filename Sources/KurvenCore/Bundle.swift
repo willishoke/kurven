@@ -53,7 +53,7 @@ public struct KurvenBundle: Sendable {
         self.init(url: url, manifest: manifest, surface: surface,
                   layers: manifest.layers.map {
                       Layer(spec: $0, paths: surface.curves($0, occluder: manifest.occluder,
-                                                         refine: refine))
+                                                            refine: refine))
                   },
                   wallMesh: nil, refine: refine)
     }
@@ -83,7 +83,7 @@ public struct KurvenBundle: Sendable {
     public func occluder() -> Mesh<WorldSpace> {
         let o = manifest.occluder
         return Mesh.concat([walls(), Mesh.truncationEdgeMesh(of: surface, step: o.step,
-                                                 region: o.region, tiles: o.tiles)])
+                                                             region: o.region, tiles: o.tiles)])
     }
 
     /// The occluding walls, whether dumped or described.
@@ -196,7 +196,7 @@ public extension KurvenBundle {
             return Layer(spec: spec, paths: existing?.paths ?? .empty)
         }
         return Layer(spec: spec, paths: surface.curves(spec, occluder: manifest.occluder,
-                                                    refine: refine))
+                                                       refine: refine))
     }
 
     /// The same grids under a different manifest.
