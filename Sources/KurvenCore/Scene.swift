@@ -1231,15 +1231,16 @@ public struct Scene: Sendable {
                 if case .edges = layer.spec.source, layer.spec.clipped {
                     return [(layer, s.visibleEdges(view: view).mapped(view))]
                 }
-                if case .fill(let fill) = layer.spec.source {
-                    // One layer per weight, at that fraction of the width:
-                    // the ruling as carried when unclipped, as seen otherwise.
-                    return s.visibleFill(fill, view: view).map { level, unjudged, judged in
+                if case .hatching(let hatching) = layer.spec.source {
+                    // One layer per width step, at that fraction of the
+                    // width: every hatch line when unclipped, the visible
+                    // spans otherwise.
+                    return s.visibleHatching(hatching, view: view).map { w, all, visible in
                         var spec = layer.spec
-                        spec.width = layer.spec.width * Double(level) / Double(fill.levels)
-                        if fill.levels > 1 { spec.name = "\(layer.spec.name) \(level)/\(fill.levels)" }
-                        let ink = layer.spec.clipped ? judged : unjudged
-                        return (Layer(spec: spec, paths: unjudged), ink.mapped(view))
+                        spec.width = layer.spec.width * Double(w) / Double(hatching.widthSteps)
+                        if hatching.widthSteps > 1 { spec.name = "\(layer.spec.name) \(w)/\(hatching.widthSteps)" }
+                        let drawn = layer.spec.clipped ? visible : all
+                        return (Layer(spec: spec, paths: all), drawn.mapped(view))
                     }
                 }
                 return [(layer, layer.paths.mapped(view))]

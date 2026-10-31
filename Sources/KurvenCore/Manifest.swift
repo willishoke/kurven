@@ -510,11 +510,11 @@ public enum LayerSource: Sendable, Equatable {
     /// The edges of a solid, judged per edge by its two faces and cut
     /// exactly where another face hides them (`Solid.visibleEdges`).
     case edges
-    /// A pattern ruled over the facets of a solid (`Fill`): strokes at an
-    /// angle and a spacing, weighted by a field, judged as ink in a face
-    /// (`Solid.visibleInk`). Drawn as one layer per weight, each at that
-    /// fraction of this layer's width.
-    case fill(Fill)
+    /// Hatching over the faces of a solid (`Hatching`): lines at an angle
+    /// and a spacing, their width set by a tone, tested for visibility as
+    /// curves on a face (`Solid.visibleCurves`). Drawn as one layer per
+    /// width step, each at that fraction of this layer's width.
+    case hatching(Hatching)
 
     /// Ink that lies in a cut face: a wall's hatch and its outline. On a
     /// heightfield it is judged by the wall it lies in and by the solid
@@ -575,8 +575,8 @@ public enum LayerSource: Sendable, Equatable {
             self = .trajectory
         case "edges":
             self = .edges
-        case "fill":
-            self = .fill(try Fill(json: json))
+        case "hatching":
+            self = .hatching(try Hatching(json: json))
         case "parameterLines":
             self = .parameterLines(u: try o.int("u", "LayerSource.parameterLines"),
                                    v: try o.int("v", "LayerSource.parameterLines"))
@@ -590,7 +590,7 @@ public enum LayerSource: Sendable, Equatable {
                                                     "wallOutline", "capHatch",
                                                     "capOutline", "parameterLines",
                                                     "winding", "foldLines", "trajectory",
-                                                    "edges", "fill"])
+                                                    "edges", "hatching"])
         }
     }
     public var json: JSONValue {
@@ -627,8 +627,8 @@ public enum LayerSource: Sendable, Equatable {
             .object(["kind": .string("trajectory")])
         case .edges:
             .object(["kind": .string("edges")])
-        case .fill(let fill):
-            fill.json
+        case .hatching(let hatching):
+            hatching.json
         }
     }
 
