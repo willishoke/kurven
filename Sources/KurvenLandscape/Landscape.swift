@@ -170,7 +170,7 @@ public enum NativeLandscape {
                                          trim: true, base: 0, topOffset: 0),
                       width: 0.25, heightPolicy: .surface),
             // The outline and inner fold curves, derived per camera: the
-            // bounding curves along the curved edges, as the wall outline is
+            // bounding curves along the curved edges, as the walls' edges are
             // along the straight ones.
             LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                       width: 0.4, heightPolicy: .surface),

@@ -14,8 +14,8 @@ left out.
   midpoint is within a fiftieth of a grid cell of it.
 - **Hidden lines are decided exactly.** A point is hidden where the solid
   under the surface lies between it and the viewer. That is tested by
-  marching along the projection direction through the solid, not by a depth
-  buffer, so the drawing is the same at any resolution.
+  a traversal of the grid along the line of sight through the solid, not by
+  a depth buffer, so the drawing is the same at any resolution.
 - **The output is a vector drawing.** SVG polylines, nothing rasterized.
 
 ## Gallery

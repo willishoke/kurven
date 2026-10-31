@@ -126,7 +126,7 @@ struct MetalView: NSViewRepresentable {
                 let moving = !view.isPaused
                 if moving {
                     options.draft = true
-                } else if !renderer.hasJudgedLines(for: scene) {
+                } else if !renderer.hasTestedLines(for: scene) {
                     options.draft = true
                     test(scene, with: renderer)
                 }

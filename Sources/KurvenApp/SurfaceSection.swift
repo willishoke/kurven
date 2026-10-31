@@ -212,12 +212,12 @@ struct SurfaceSection: View {
     private func lines(_ request: SurfaceRequest) -> some View {
         let isTorus = { if case .torus = request.shape { true } else { false } }()
         if !isTorus {
-            Toggle("Parameter lines", isOn: Binding(
+            Toggle("Coordinate curves", isOn: Binding(
                 get: { request.lines != nil },
                 set: { on in
                     var next = request
                     next.lines = on ? SIMD2(36, 18) : nil
-                    commit(next, label: "Parameter Lines")
+                    commit(next, label: "Coordinate Curves")
                 }))
                 .help("Lines of constant forcing phase and constant internal phase: the "
                       + "invariant circles and the curves across them.")

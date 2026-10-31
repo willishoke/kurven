@@ -6,17 +6,17 @@ import KurvenMath
 
 // MARK: - the top edge of a cut face, placed on f
 
-/// The wall outline's top edge between the grid's nodes: the grid's chord without
+/// A wall's top edge between the grid's nodes: the grid's chord without
 /// a refiner, f's own profile with one, down to the zero the phase lines fan to.
 func topEdgeTests() {
     /// The top edge of the front edge (y at the domain's low imaginary bound) of
-    /// a bundle's wall outline: the one stroke there whose height varies.
+    /// a bundle's wall edges: the one stroke there whose height varies.
     func frontTopEdge(_ bundle: KurvenBundle) throws -> [P3<WorldSpace>] {
         let y0 = bundle.manifest.domain.imag.lo
-        let outline = try bundle.layer("wall_edges").paths
+        let wallEdges = try bundle.layer("wall_edges").paths
         var best: [P3<WorldSpace>] = []
-        for i in 0..<outline.count {
-            let p = Array(outline[path: i])
+        for i in 0..<wallEdges.count {
+            let p = Array(wallEdges[path: i])
             guard p.allSatisfy({ abs($0.y - y0) < 1e-9 }), p.count >= 2,
                   Set(p.map { $0.z }).count > 1, p.count > best.count else { continue }
             best = p
@@ -527,10 +527,10 @@ func topEdgeTests() {
                      String(format: "worst sag %.2e against %.2e", sag, 0.02 * cell))
         // The top edge of the front edge (Im z = -1) steps at Re z = 1/2: two
         // vertices there, at each band's height, |f| = 1 being under both.
-        let outline = try bundle.layer("wall_edges").paths
+        let wallEdges = try bundle.layer("wall_edges").paths
         var topEdge: [P3<WorldSpace>] = []
-        for i in 0..<outline.count {
-            let p = Array(outline[path: i])
+        for i in 0..<wallEdges.count {
+            let p = Array(wallEdges[path: i])
             if p.allSatisfy({ abs($0.y + 1) < 1e-9 }), Set(p.map { $0.z }).count > 1, p.count > topEdge.count { topEdge = p }
         }
         let atStep = topEdge.filter { abs($0.x - 0.5) < 1e-9 }
@@ -667,10 +667,10 @@ func topEdgeTests() {
         }
         // The top edge of the front wall, as drawn, projected onto the drawing:
         // what a ring that passes behind it must end on.
-        let outline = try bundle.layer("wall_edges").paths
+        let wallEdges = try bundle.layer("wall_edges").paths
         var topEdge: [P3<WorldSpace>] = []
-        for i in 0..<outline.count {
-            let p = Array(outline[path: i])
+        for i in 0..<wallEdges.count {
+            let p = Array(wallEdges[path: i])
             if p.allSatisfy({ abs($0.y) < 1e-9 }), Set(p.map { $0.z }).count > 1, p.count > topEdge.count { topEdge = p }
         }
         let topEdgeOnPage = topEdge.map { view($0) }

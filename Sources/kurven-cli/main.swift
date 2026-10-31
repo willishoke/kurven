@@ -97,7 +97,8 @@ struct Args {
 
     /// Refuses every option `command` does not take. Without this a flag
     /// that was renamed or misspelt was read by nothing, and the command ran
-    /// on its default: `landscape --cap 4` sampled gamma untruncated.
+    /// on its default: gamma given the old name of `--truncation` was
+    /// sampled untruncated.
     func only(_ command: String, _ accepted: [String]) throws {
         let unknown = Set(flags.keys).union(switches).subtracting(accepted)
         guard !unknown.isEmpty else { return }

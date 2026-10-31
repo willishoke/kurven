@@ -37,7 +37,7 @@ public struct Heightfield: Sendable {
         self.region = region; self.step = step; self.refine = refine
     }
 
-    /// The same heightfield for one thread of a parallel judgement: its
+    /// The same heightfield for one thread of a parallel visibility test: its
     /// function forked (`ContourRefine.fork`), its grids shared.
     public func forked() -> Heightfield {
         Heightfield(surface: surface, occluder: occluder, tiles: tiles, region: region,
@@ -910,12 +910,12 @@ struct GridTraversal: Sendable {
         // has been outside, being inside at or beyond the depth tolerance's reach is
         // occlusion.
         var outsideYet = false
-        var startJudged = false
+        var startForgiven = false
         /// Hidden at `t`, tested under a triangle of the given cosine; `g` is
         /// the gap there, nil beyond the region (outside, then).
         func hidden(_ t: Double, _ g: Sample?, cosine: Double) -> Bool {
             var visible = t > tEps
-            if !visible, strictlyInside, !startJudged { visible = true; startJudged = true }
+            if !visible, strictlyInside, !startForgiven { visible = true; startForgiven = true }
             // At the start, a point on the surface to rounding is in its own
             // surface's neighbourhood, not outside it. Further along, a line
             // under the surface by rounding alone is not inside it: the last

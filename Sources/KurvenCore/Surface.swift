@@ -204,7 +204,7 @@ public struct ContourRefine: Sendable {
     /// is a curve to the same tolerance.
     public let tolerance: Double
     /// The same refiner with nothing shared: f compiled again, into closures
-    /// of its own. Each thread of a parallel judgement takes one
+    /// of its own. Each thread of a parallel visibility test takes one
     /// (`Heightfield.parallelMap(_:chunk:worker:_:)`): a closure's context is
     /// a reference-counted object, and with every core calling the same one
     /// the counts were the cores writing one cache line in turn -- at

@@ -1,35 +1,38 @@
 # Names the vocabulary rename retired (docs/glossary.md has the word to use
-# instead). scripts/check.sh fails when one appears as a whole word in
-# Sources/, the README or the docs. The glossary, which records them, and
-# docs/notes/, which is history, are exempt. One extended regular expression
-# per line; case matters.
-facets?
-Facets?
-soft edges?
-rulings?
-Rulings?
-Fill
-FillField
-judg(e|ed|es|ing)
-Judged[A-Za-z]*
-SightMarch
-march(ed|es)?
-Enclosure
-standoffs?
-sightLine
+# instead). scripts/check.sh fails when one comes back in Sources/, the
+# README or the docs, in a file's text or in its name. The glossary, which
+# records them, and docs/notes/, which is history, are exempt.
+#
+# One Perl regular expression per line, for one word and the inflections
+# spelled in it; case matters. It matches as a word on its own or as one
+# component of a camelCase or snake_case name: `judg(e|ed)` catches
+# "judged", `startJudged` and `has_judged`, not "misjudged". A pattern
+# that would also catch the word in a sense that is still right says so
+# with a lookahead.
+[Ff]acets?
+[Ss]oft[ -]?[Ee]dges?
+[Rr]ulings?
+# The type, not the verb at the start of a sentence.
+Fill(?! [a-z])
+[Ff]ill[ -]?[Ff]ields?
+[Jj]udg(?:e|ed|es|ing|ement|ements)
+[Ss]ight[ -]?[Mm]arch
+# A march along a line of sight, not marching squares.
+[Mm]arch(?:ed|es|ing)?(?![ -]squares)
+[Ee]nclosures?
+[Ss]tandoffs?
+[Ss]ight[ -]?[Ll]ines?
 [Cc]aps?
-capHatch
-capOutline
 [Rr]ims?
 [Ff]lanks?
 [Cc]rests?
-pitch
-silhouettes?
-[Ww]indings?
-parameter lines?
-parameterLines
-foldLines
-fold lines?
+[Ww]all[ _-]?[Oo]utlines?
+[Pp]itch
+[Ss]ilhouettes?
+# Linear curves on a torus, not the winding number.
+[Ww]indings?(?! numbers?)
+[Pp]arameter[ -]?[Ll]ines?
+[Ff]old[ -]?[Ll]ines?
 [Ii]nk
 PlateSpace
 PlateProjection

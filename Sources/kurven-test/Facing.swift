@@ -249,7 +249,7 @@ func foldCurveTests() {
 // while either of its walls shows, and the bake draws exactly that.
 
 func wallCurveTests() {
-    Check.suite("walls: the hatch and outline of a cut face are tested by the wall") {
+    Check.suite("walls: the hatching and edges of a cut face are tested by the wall") {
         let preset = Catalog.native.preset("rgamma")!
         let bundle = try NativeLandscape.build(LandscapeRequest(preset: preset, resolution: 240))
         let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
@@ -318,23 +318,23 @@ func wallCurveTests() {
             }
         }
 
-        // The outline: a top edge is the surface's edge and shows over any wall
+        // The edges: a top edge is the surface's edge and shows over any wall
         // where the surface does; a bottom edge shows only on a facing wall.
-        let outline = scene.layers.first { $0.spec.name == "wall_edges" }!
-        let keptOutline = h.visibleWallCurves(outline.paths, view: scene.camera.view, depthTolerance: scene.depthTolerance)
+        let wallEdges = scene.layers.first { $0.spec.name == "wall_edges" }!
+        let keptEdges = h.visibleWallCurves(wallEdges.paths, view: scene.camera.view, depthTolerance: scene.depthTolerance)
         func isTopEdge(_ p: [P3<WorldSpace>]) -> Bool {
             p.allSatisfy { abs($0.z - h.surfaceHeight(at: P2($0.x, $0.y))) < 1e-9 * max(1, abs($0.z)) }
                 && !p.allSatisfy { $0.z == 0 }
         }
         var topEdgeWanted = [Double](repeating: 0, count: 4), topEdgeGot = [Double](repeating: 0, count: 4)
         var bottomEdgeHidden = true
-        for i in 0..<outline.paths.count {
-            let p = Array(outline.paths[path: i])
+        for i in 0..<wallEdges.paths.count {
+            let p = Array(wallEdges.paths[path: i])
             guard let wall = wallsOf(p[0]).first(where: { w in p.allSatisfy { wallsOf($0).contains(w) } }) else { continue }
             if isTopEdge(p) { topEdgeWanted[wall] += length(p) }
         }
-        for i in 0..<keptOutline.count {
-            let p = Array(keptOutline[path: i])
+        for i in 0..<keptEdges.count {
+            let p = Array(keptEdges[path: i])
             guard let wall = wallsOf(p[0]).first(where: { w in p.allSatisfy { wallsOf($0).contains(w) } }) else { continue }
             if isTopEdge(p) {
                 topEdgeGot[wall] += length(p)
@@ -343,9 +343,9 @@ func wallCurveTests() {
             }
         }
         Check.expect(zip(topEdgeGot, topEdgeWanted).allSatisfy { $0 >= 0.95 * $1 },
-                     "wall_outline: every wall's top edge is kept, the far edge included",
+                     "wall_edges: every wall's top edge is kept, the far edge included",
                      "kept " + zip(topEdgeGot, topEdgeWanted).map { String(format: "%.1f/%.1f", $0, $1) }.joined(separator: " "))
-        Check.expect(bottomEdgeHidden, "wall_outline: and no foot of a wall that faces away")
+        Check.expect(bottomEdgeHidden, "wall_edges: and no bottom edge of a wall that faces away")
 
         // Where the truncation edge of a plateau ends at the front edge -- the notch of a
         // pit -- the top edge has a vertex on it, so the two meet.
@@ -355,7 +355,7 @@ func wallCurveTests() {
             let p = truncationEdge[path: i]
             for end in [p.first!, p.last!] where abs(end.y - box.lo.y) <= 1e-9 { truncationEdgeEnds.append(end) }
         }
-        let topEdgeVertices = outline.paths.vertices.filter { abs($0.y - box.lo.y) <= 1e-9 }
+        let topEdgeVertices = wallEdges.paths.vertices.filter { abs($0.y - box.lo.y) <= 1e-9 }
         var missed = 0.0
         for end in truncationEdgeEnds {
             let nearest = topEdgeVertices.map { simd_length($0.v - end.v) }.min() ?? .infinity

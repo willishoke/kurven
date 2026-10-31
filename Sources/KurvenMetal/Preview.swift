@@ -229,7 +229,7 @@ public extension MetalRenderer {
     /// Whether the next frame of this scene can be drawn tested without
     /// laying its strokes out first: the layout is in hand, or nothing in the
     /// scene is tested for the camera.
-    func hasJudgedLines(for scene: Scene) -> Bool {
+    func hasTestedLines(for scene: Scene) -> Bool {
         guard LineGeometry.isTestedExactly(scene) else { return true }
         guard let c = cachedLines, c.curves == scene.curves, c.camera == scene.camera else { return false }
         return !c.draft && c.laid.serves(scene)

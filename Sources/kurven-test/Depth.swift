@@ -91,7 +91,7 @@ struct HeightfieldSolid {
             sLo = max(sLo, min(a, b)); sHi = min(sHi, max(a, b))
         }
         guard sLo <= sHi, sHi.isFinite, sLo.isFinite else { return nil }
-        // March down from the near end in steps that move a quarter of a
+        // Step down from the near end in steps that move a quarter of a
         // cell over the plane, or a quarter of the height span down it.
         let planar = (d.x * d.x + d.y * d.y).squareRoot()
         let vertical = abs(d.z)

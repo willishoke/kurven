@@ -172,8 +172,8 @@ extension Surface {
     /// a minimum between two nodes.
     ///
     /// Without a refiner the truncation crossing is solved on the grid's heights
-    /// linearly, as the truncation edge is contoured (`kurven.hatch._cap_crossing`,
-    /// operation for operation), so the top edge meets the truncation edge where the truncation edge
+    /// linearly, as the truncation edge is contoured (as the Python original
+    /// solved it, operation for operation), so the top edge meets the truncation edge where the truncation edge
     /// ends rather than a sample later, and everything else is the grid's.
     ///
     /// With one, the top edge is f's own profile along the edge: the nodes at
