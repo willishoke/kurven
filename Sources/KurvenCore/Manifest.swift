@@ -8,7 +8,7 @@ import Foundation
 /// change to the schema is a change to those golden files, made on purpose.
 ///
 /// Every sum type here is an `enum` with an exhaustive `switch` at each use
-/// site, so "a cap kind nobody handled" is a compile error rather than a
+/// site, so "a truncation kind nobody handled" is a compile error rather than a
 /// silently ignored branch.
 public enum ManifestError: Error, CustomStringConvertible, Equatable {
     case unsupportedSchema(Int, supported: Int)
@@ -17,6 +17,7 @@ public enum ManifestError: Error, CustomStringConvertible, Equatable {
     case badShape(String, [Int])
     case noSuchPreset(String, have: [String])
     case noSuchLayer(String, have: [String])
+    case unsupported(String)
 
     public var description: String {
         switch self {
@@ -29,11 +30,15 @@ public enum ManifestError: Error, CustomStringConvertible, Equatable {
         case .badShape(let what, let s): "manifest: \(what) has shape \(s)"
         case .noSuchPreset(let n, let have): "manifest: no preset '\(n)' (have \(have))"
         case .noSuchLayer(let n, let have): "manifest: no layer '\(n)' (have \(have))"
+        case .unsupported(let what): "manifest: \(what)"
         }
     }
 }
 
-public let kurvenSchema = 1
+/// Schema 2 took the standard names (truncation, restriction, step,
+/// coordinate curves, ...) and one hatching kind for every face. Schema 1 is
+/// refused, not translated: there are no bundles outside this repository.
+public let kurvenSchema = 2
 /// The axis convention every bundle states about itself. A bundle that says
 /// anything else is not readable by this code, and saying so up front is the
 /// whole point of writing it into the file.
@@ -174,69 +179,73 @@ public struct BoundaryPerimeter: Sendable, Equatable {
     public var json: JSONValue { .object(["edges": .array(edges.map(\.json))]) }
 }
 
-// MARK: - caps
+// MARK: - truncation
 
 public struct RealBand: Sendable, Equatable {
+    /// The band is `x < below`, less the bands before it.
     public var below: Double
-    public var cap: Double
-    public init(below: Double, cap: Double) { self.below = below; self.cap = cap }
+    public var height: Double
+    public init(below: Double, height: Double) { self.below = below; self.height = height }
 
     init(json: JSONValue) throws {
         let o = try json.object("RealBand")
-        self.init(below: try o.double("below", "RealBand"), cap: try o.double("cap", "RealBand"))
+        self.init(below: try o.double("below", "RealBand"), height: try o.double("height", "RealBand"))
     }
-    var json: JSONValue { .object(["below": .double(below), "cap": .double(cap)]) }
+    var json: JSONValue { .object(["below": .double(below), "height": .double(height)]) }
 }
 
-/// How the surface is truncated from above.
+/// The truncation of the surface from above: the drawn surface is
+/// `min(|f|, h(x))` for the truncation height `h`.
 ///
-/// A cap is a property of the model, not the camera: it is what turns a pole
-/// into a visible plateau. The Python `Projection` conflated the two (zeta put
-/// its clamp in the camera); here they are separate types and cannot be.
-public enum Caps: Sendable, Equatable {
+/// A truncation is a property of the model, not the camera: it is what turns
+/// a pole into a visible plateau.
+public enum Truncation: Sendable, Equatable {
     case none
     case uniform(Double)
-    /// Gamma's per-spire truncation. `beyond` is the cap where no band matches
-    /// -- a separate field rather than a final band with a huge threshold,
-    /// because "everything else" is what it means.
+    /// Gamma's per-spire truncation: a height per band of Re z. `beyond` is
+    /// the height where no band matches -- a separate field rather than a
+    /// final band with a huge threshold, because "everything else" is what
+    /// it means.
     case realBands([RealBand], beyond: Double)
 
-    /// The cap at world x (= Re z); `.infinity` where there is none.
+    /// The truncation height at world x (= Re z); `.infinity` where there is
+    /// none.
     public func height(atX x: Double) -> Double {
         switch self {
         case .none: .infinity
-        case .uniform(let z): z
+        case .uniform(let h): h
         case .realBands(let bands, let beyond):
-            bands.first(where: { x < $0.below })?.cap ?? beyond
+            bands.first(where: { x < $0.below })?.height ?? beyond
         }
     }
 
-    /// The highest the cap is anywhere; `.infinity` where there is none.
+    /// The greatest truncation height anywhere; `.infinity` where there is
+    /// none.
     public var highest: Double {
         switch self {
         case .none: .infinity
-        case .uniform(let z): z
-        case .realBands(let bands, let beyond): bands.map(\.cap).reduce(beyond, max)
+        case .uniform(let h): h
+        case .realBands(let bands, let beyond): bands.map(\.height).reduce(beyond, max)
         }
     }
 
     public init(json: JSONValue) throws {
-        let o = try json.object("Caps")
-        switch try o.string("kind", "Caps") {
+        let o = try json.object("Truncation")
+        switch try o.string("kind", "Truncation") {
         case "none": self = .none
-        case "uniform": self = .uniform(try o.double("z", "Caps.uniform"))
+        case "uniform": self = .uniform(try o.double("height", "Truncation.uniform"))
         case "realBands":
-            self = .realBands(try o.array("bands", "Caps.realBands").map(RealBand.init(json:)),
+            self = .realBands(try o.array("bands", "Truncation.realBands").map(RealBand.init(json:)),
                               beyond: o.optionalDouble("beyond") ?? .infinity)
         case let other:
-            throw ManifestError.unknownKind(other, of: "Caps",
+            throw ManifestError.unknownKind(other, of: "Truncation",
                                             known: ["none", "uniform", "realBands"])
         }
     }
     public var json: JSONValue {
         switch self {
         case .none: .object(["kind": .string("none")])
-        case .uniform(let z): .object(["kind": .string("uniform"), "z": .double(z)])
+        case .uniform(let h): .object(["kind": .string("uniform"), "height": .double(h)])
         case .realBands(let b, let beyond):
             beyond.isFinite
                 ? .object(["kind": .string("realBands"), "bands": .array(b.map(\.json)),
@@ -250,8 +259,8 @@ public enum Caps: Sendable, Equatable {
 
 /// The cut-face curtains: dumped as a mesh, or described as a perimeter.
 ///
-/// A dumped mesh has its crests at the *analytic* surface height, which is what
-/// the Python plates draw. A derived one re-evaluates the crest by bilinear
+/// A dumped mesh has its top edges at the *analytic* surface height, which is what
+/// the Python plates draw. A derived one re-evaluates the top edge by bilinear
 /// lookup on `height.npy`, so it differs by the grid's interpolation error --
 /// a difference worth measuring rather than assuming away.
 public enum Walls: Sendable, Equatable {
@@ -394,67 +403,69 @@ public enum ContourField: String, Sendable, CaseIterable {
     case magnitude, phase
 }
 
-public enum KeepAxis: String, Sendable, CaseIterable {
+/// An axis of the domain: the real or the imaginary.
+public enum DomainAxis: String, Sendable, CaseIterable {
     case real, imag
 }
 
-/// Which vertices of a derived contour survive.
+/// The part of the domain a contour is restricted to.
 ///
-/// A small closed vocabulary, not an expression language. Everything the plates
-/// ask for is here -- stay inside the occluder's footprint, stay under the cap,
-/// stay within a band of one axis -- and it can be evaluated without an
-/// interpreter. Ink that needs more than this is ink that should be dumped, and
-/// `LayerSource.file` is how the schema says so.
-public indirect enum Keep: Sendable, Equatable {
+/// A small closed vocabulary, not an expression language: inside the
+/// occluder's footprint, below the truncation, within a band of one axis,
+/// and intersections of these. It can be evaluated without an interpreter.
+/// Curves that need more than this should be stored, and `LayerSource.file`
+/// is how the schema says so.
+public indirect enum Restriction: Sendable, Equatable {
     case all
     /// Inside `occluder.region`: the same polygon the heightfield is cut to,
     /// referenced rather than repeated.
-    case region
-    case belowCap
-    case band(axis: KeepAxis, lo: Double, hi: Double)
-    case every([Keep])
+    case footprint
+    /// Where |f| is below the truncation: on the graph, off the plateaus.
+    case belowTruncation
+    case band(axis: DomainAxis, lo: Double, hi: Double)
+    case intersection([Restriction])
 
-    /// Whether staying under the cap is among the conditions.
-    public var keepsBelowCap: Bool {
+    /// Whether lying below the truncation is among the conditions.
+    public var requiresBelowTruncation: Bool {
         switch self {
-        case .belowCap: true
-        case .every(let all): all.contains { $0.keepsBelowCap }
-        case .all, .region, .band: false
+        case .belowTruncation: true
+        case .intersection(let all): all.contains { $0.requiresBelowTruncation }
+        case .all, .footprint, .band: false
         }
     }
 
     init(json: JSONValue) throws {
-        let o = try json.object("Keep")
-        switch try o.string("kind", "Keep") {
+        let o = try json.object("Restriction")
+        switch try o.string("kind", "Restriction") {
         case "all": self = .all
-        case "region": self = .region
-        case "belowCap": self = .belowCap
+        case "footprint": self = .footprint
+        case "belowTruncation": self = .belowTruncation
         case "band":
-            let axisText = try o.string("axis", "Keep.band")
-            guard let axis = KeepAxis(rawValue: axisText) else {
-                throw ManifestError.unknownKind(axisText, of: "Keep.band axis",
-                                                known: KeepAxis.allCases.map(\.rawValue))
+            let axisText = try o.string("axis", "Restriction.band")
+            guard let axis = DomainAxis(rawValue: axisText) else {
+                throw ManifestError.unknownKind(axisText, of: "Restriction.band axis",
+                                                known: DomainAxis.allCases.map(\.rawValue))
             }
-            self = .band(axis: axis, lo: try o.double("lo", "Keep.band"),
-                         hi: try o.double("hi", "Keep.band"))
-        case "every":
-            self = .every(try o.array("of", "Keep.every").map(Keep.init(json:)))
+            self = .band(axis: axis, lo: try o.double("lo", "Restriction.band"),
+                         hi: try o.double("hi", "Restriction.band"))
+        case "intersection":
+            self = .intersection(try o.array("of", "Restriction.intersection").map(Restriction.init(json:)))
         case let other:
-            throw ManifestError.unknownKind(other, of: "Keep",
-                                            known: ["all", "region", "belowCap",
-                                                    "band", "every"])
+            throw ManifestError.unknownKind(other, of: "Restriction",
+                                            known: ["all", "footprint", "belowTruncation",
+                                                    "band", "intersection"])
         }
     }
     public var json: JSONValue {
         switch self {
         case .all: .object(["kind": .string("all")])
-        case .region: .object(["kind": .string("region")])
-        case .belowCap: .object(["kind": .string("belowCap")])
+        case .footprint: .object(["kind": .string("footprint")])
+        case .belowTruncation: .object(["kind": .string("belowTruncation")])
         case .band(let axis, let lo, let hi):
             .object(["kind": .string("band"), "axis": .string(axis.rawValue),
                      "lo": .double(lo), "hi": .double(hi)])
-        case .every(let of):
-            .object(["kind": .string("every"), "of": .array(of.map(\.json))])
+        case .intersection(let of):
+            .object(["kind": .string("intersection"), "of": .array(of.map(\.json))])
         }
     }
 }
@@ -466,63 +477,53 @@ public indirect enum Keep: Sendable, Equatable {
 /// shrinks a bundle from megabytes of vertices to a list of numbers.
 public enum LayerSource: Sendable, Equatable {
     case file(vertices: String, offsets: String)
-    /// Iso-lines of `field` at `levels`, lifted by the layer's height policy,
-    /// filtered by `keep`, and replicated once per occluder tile when `tiled`.
-    case contour(field: ContourField, levels: [Double], keep: Keep, tiled: Bool)
-
-    // The four hatchings: the ink that shades a cut face and a truncated top.
-    // `Hatch.swift` is the definition of every one of them, ported from the
-    // Python pipeline's, and `tests/fixtures/hatch` pins its strokes. They
-    // are descriptions rather than dumped strokes for the same reason the
-    // contours are: a landscape whose cap the user is dragging has to re-hatch
-    // itself, and a plateau that moves is a different set of strokes.
-
-    /// Vertical strokes up the listed perimeter edges, every `spacing` along
-    /// each edge, from `base` to the capped surface plus `topOffset`, with a
-    /// vertex every `pitch` of height.
-    case wallHatch(edges: [Int], spacing: Double, pitch: Double, trim: Bool,
-                   base: Double, topOffset: Double)
-    /// Each listed edge's crest and foot, and a post at each distinct corner.
-    case wallOutline(edges: [Int], pitch: Double, base: Double)
-    /// Strokes across the truncated tops, parallel to `axis`, dividing the
-    /// domain's extent in the other coordinate evenly: `spacing` rounded to a
-    /// whole count of gaps, as `wallHatch` divides an edge.
-    case capHatch(axis: KeepAxis, spacing: Double, tiled: Bool)
-    /// The rim of every truncated top: the zero contour of |f| - cap(x).
-    case capOutline(tiled: Bool)
-    /// The parameter lines of a parametric surface: `u` lines along which
+    /// Level sets of `field` at `levels`, lifted by the layer's height
+    /// policy, restricted by `restriction`, and replicated once per occluder
+    /// tile when `tiled`.
+    case contour(field: ContourField, levels: [Double], restriction: Restriction, tiled: Bool)
+    /// Hatching (`Hatching`) laid on `faces`: a heightfield's walls or
+    /// plateaus, or every face of a solid. The heightfield's hatchings are
+    /// descriptions rather than stored curves for the same reason contours
+    /// are: dragging the truncation moves every plateau, and a plateau that
+    /// moves is a different set of hatch lines. `Hatch.swift` derives them,
+    /// and `tests/fixtures/hatch` pins them.
+    case hatching(Hatching, faces: HatchedFaces)
+    /// The edges of the listed walls: each one's top and bottom edges, and a
+    /// vertical edge at each distinct corner, with a vertex every `step` of
+    /// height.
+    case wallEdges(edges: [Int], step: Double, base: Double)
+    /// The truncation edge: where the graph meets the plateaus, the level
+    /// set |f| = h(x).
+    case truncationEdge(tiled: Bool)
+    /// The coordinate curves of a parametric surface: `u` curves along which
     /// u is constant and `v` along which v is, evenly spaced. Each vertex
-    /// carries its surface coordinate, so the ink is tested by where on the
+    /// carries its surface coordinate, so visibility is tested where on the
     /// surface it lies.
-    case parameterLines(u: Int, v: Int)
-    /// Windings of a parametric surface: `count` straight lines through its
+    case coordinateCurves(u: Int, v: Int)
+    /// Linear curves on a torus: `count` straight lines through its
     /// parameter rectangle at `slope` turns of `v` per turn of `u`, each
-    /// drawn `turns` turns round -- or until it closes, when the slope is a
-    /// fraction. Each vertex carries its surface coordinate, as the
-    /// parameter lines' do.
-    case winding(slope: Double, turns: Int, count: Int)
-    /// The fold lines of a parametric surface -- its outline and inner
-    /// silhouettes -- which depend on the camera and are derived for it.
-    case foldLines
-    /// A trajectory of a flow, integrated and carried as ink with its
-    /// coordinates on the invariant surface it winds round.
+    /// drawn `turns` turns round -- or until it closes, when the slope is
+    /// rational and it is a (p, q) torus curve. Each vertex carries its
+    /// surface coordinate.
+    case linearCurves(slope: Double, turns: Int, count: Int)
+    /// The fold curves of a parametric surface, where it turns edge-on to
+    /// the projection direction; their image is the outline. They depend on
+    /// the camera and are derived for it.
+    case foldCurves
+    /// A trajectory of a flow, integrated and carried with its coordinates
+    /// on the invariant surface it winds round.
     case trajectory
     /// The edges of a solid, tested per edge by its two faces and cut
-    /// exactly where another face hides them (`Solid.visibleEdges`).
+    /// exactly where something else hides them (`Solid.visibleEdges`).
     case edges
-    /// Hatching over the faces of a solid (`Hatching`): lines at an angle
-    /// and a spacing, their width set by a tone, tested for visibility as
-    /// curves on a face (`Solid.visibleCurves`). Drawn as one layer per
-    /// width step, each at that fraction of this layer's width.
-    case hatching(Hatching)
 
-    /// Ink that lies in a cut face: a wall's hatch and its outline. On a
-    /// heightfield it is tested by the wall it lies in and by the solid
+    /// Curves that lie on a wall: its hatching and its edges. On a
+    /// heightfield they are tested by the wall they lie on and by the solid
     /// (`Heightfield.visibleWallInk`), never by the depth buffer, which
-    /// cannot test ink on a face it sees edge-on.
+    /// cannot test a curve on a face it sees edge-on.
     public var isWallInk: Bool {
         switch self {
-        case .wallHatch, .wallOutline: true
+        case .hatching(_, .walls), .wallEdges: true
         default: false
         }
     }
@@ -541,95 +542,91 @@ public enum LayerSource: Sendable, Equatable {
             }
             self = .contour(field: field,
                             levels: try o.doubles("levels", "LayerSource.contour"),
-                            keep: try Keep(json: o.value("keep", "LayerSource.contour")),
+                            restriction: try Restriction(json: o.value("restriction", "LayerSource.contour")),
                             tiled: try o.bool("tiled", "LayerSource.contour", default: false))
-        case "wallHatch":
-            self = .wallHatch(
-                edges: try o.ints("edges", "LayerSource.wallHatch"),
-                spacing: try o.double("spacing", "LayerSource.wallHatch"),
-                pitch: try o.double("pitch", "LayerSource.wallHatch"),
-                trim: try o.bool("trim", "LayerSource.wallHatch", default: true),
-                base: (try? o.double("base", "LayerSource.wallHatch")) ?? 0,
-                topOffset: (try? o.double("topOffset", "LayerSource.wallHatch")) ?? 0)
-        case "wallOutline":
-            self = .wallOutline(
-                edges: try o.ints("edges", "LayerSource.wallOutline"),
-                pitch: try o.double("pitch", "LayerSource.wallOutline"),
-                base: (try? o.double("base", "LayerSource.wallOutline")) ?? 0)
-        case "capHatch":
-            let axisText = try o.string("axis", "LayerSource.capHatch")
-            guard let axis = KeepAxis(rawValue: axisText) else {
-                throw ManifestError.unknownKind(axisText, of: "KeepAxis",
-                                                known: KeepAxis.allCases.map(\.rawValue))
-            }
-            self = .capHatch(axis: axis,
-                             spacing: try o.double("spacing", "LayerSource.capHatch"),
-                             tiled: try o.bool("tiled", "LayerSource.capHatch",
-                                               default: false))
-        case "capOutline":
-            self = .capOutline(tiled: try o.bool("tiled", "LayerSource.capOutline",
-                                                 default: false))
-        case "foldLines":
-            self = .foldLines
+        case "hatching":
+            let hatching = try Hatching(json: json)
+            let faces = try HatchedFaces(json: o.value("faces", "LayerSource.hatching"))
+            if let why = faces.unsupported(hatching) { throw ManifestError.unsupported(why) }
+            self = .hatching(hatching, faces: faces)
+        case "wallEdges":
+            self = .wallEdges(
+                edges: try o.ints("edges", "LayerSource.wallEdges"),
+                step: try o.double("step", "LayerSource.wallEdges"),
+                base: (try? o.double("base", "LayerSource.wallEdges")) ?? 0)
+        case "truncationEdge":
+            self = .truncationEdge(tiled: try o.bool("tiled", "LayerSource.truncationEdge",
+                                                     default: false))
+        case "foldCurves":
+            self = .foldCurves
         case "trajectory":
             self = .trajectory
         case "edges":
             self = .edges
-        case "hatching":
-            self = .hatching(try Hatching(json: json))
-        case "parameterLines":
-            self = .parameterLines(u: try o.int("u", "LayerSource.parameterLines"),
-                                   v: try o.int("v", "LayerSource.parameterLines"))
-        case "winding":
-            self = .winding(slope: try o.double("slope", "LayerSource.winding"),
-                            turns: try o.int("turns", "LayerSource.winding"),
-                            count: try o.int("count", "LayerSource.winding"))
+        case "coordinateCurves":
+            self = .coordinateCurves(u: try o.int("u", "LayerSource.coordinateCurves"),
+                                     v: try o.int("v", "LayerSource.coordinateCurves"))
+        case "linearCurves":
+            self = .linearCurves(slope: try o.double("slope", "LayerSource.linearCurves"),
+                                 turns: try o.int("turns", "LayerSource.linearCurves"),
+                                 count: try o.int("count", "LayerSource.linearCurves"))
         case let other:
             throw ManifestError.unknownKind(other, of: "LayerSource",
-                                            known: ["file", "contour", "wallHatch",
-                                                    "wallOutline", "capHatch",
-                                                    "capOutline", "parameterLines",
-                                                    "winding", "foldLines", "trajectory",
-                                                    "edges", "hatching"])
+                                            known: ["file", "contour", "hatching", "wallEdges",
+                                                    "truncationEdge", "coordinateCurves",
+                                                    "linearCurves", "foldCurves", "trajectory",
+                                                    "edges"])
         }
     }
     public var json: JSONValue {
         switch self {
         case .file(let v, let o):
             .object(["kind": .string("file"), "vertices": .string(v), "offsets": .string(o)])
-        case .contour(let field, let levels, let keep, let tiled):
+        case .contour(let field, let levels, let restriction, let tiled):
             .object(["kind": .string("contour"), "field": .string(field.rawValue),
                      "levels": .array(levels.map(JSONValue.double)),
-                     "keep": keep.json, "tiled": .bool(tiled)])
-        case .wallHatch(let edges, let spacing, let pitch, let trim, let base, let top):
-            .object(["kind": .string("wallHatch"),
+                     "restriction": restriction.json, "tiled": .bool(tiled)])
+        case .hatching(let hatching, let faces):
+            hatching.json(faces: faces)
+        case .wallEdges(let edges, let step, let base):
+            .object(["kind": .string("wallEdges"),
                      "edges": .array(edges.map { .int($0) }),
-                     "spacing": .double(spacing), "pitch": .double(pitch),
-                     "trim": .bool(trim), "base": .double(base),
-                     "topOffset": .double(top)])
-        case .wallOutline(let edges, let pitch, let base):
-            .object(["kind": .string("wallOutline"),
-                     "edges": .array(edges.map { .int($0) }),
-                     "pitch": .double(pitch), "base": .double(base)])
-        case .capHatch(let axis, let spacing, let tiled):
-            .object(["kind": .string("capHatch"), "axis": .string(axis.rawValue),
-                     "spacing": .double(spacing), "tiled": .bool(tiled)])
-        case .capOutline(let tiled):
-            .object(["kind": .string("capOutline"), "tiled": .bool(tiled)])
-        case .parameterLines(let u, let v):
-            .object(["kind": .string("parameterLines"), "u": .int(u), "v": .int(v)])
-        case .winding(let slope, let turns, let count):
-            .object(["kind": .string("winding"), "slope": .double(slope), "turns": .int(turns),
+                     "step": .double(step), "base": .double(base)])
+        case .truncationEdge(let tiled):
+            .object(["kind": .string("truncationEdge"), "tiled": .bool(tiled)])
+        case .coordinateCurves(let u, let v):
+            .object(["kind": .string("coordinateCurves"), "u": .int(u), "v": .int(v)])
+        case .linearCurves(let slope, let turns, let count):
+            .object(["kind": .string("linearCurves"), "slope": .double(slope), "turns": .int(turns),
                      "count": .int(count)])
-        case .foldLines:
-            .object(["kind": .string("foldLines")])
+        case .foldCurves:
+            .object(["kind": .string("foldCurves")])
         case .trajectory:
             .object(["kind": .string("trajectory")])
         case .edges:
             .object(["kind": .string("edges")])
-        case .hatching(let hatching):
-            hatching.json
         }
+    }
+
+    /// Vertical hatching on the walls along `edges`, a line every `spacing`
+    /// along each wall with a vertex every `step` of height.
+    public static func wallHatching(edges: [Int], spacing: Double, step: Double, trim: Bool = true,
+                                    base: Double = 0, topOffset: Double = 0) -> LayerSource {
+        .hatching(Hatching(angle: .pi / 2, spacing: spacing, step: step),
+                  faces: .walls(edges: edges, trim: trim, base: base, topOffset: topOffset))
+    }
+
+    /// Hatching on the plateaus along one axis of the domain, a line every
+    /// `spacing` across the other.
+    public static func plateauHatching(axis: DomainAxis, spacing: Double, tiled: Bool = false) -> LayerSource {
+        .hatching(Hatching(angle: axis == .real ? 0 : .pi / 2, spacing: spacing),
+                  faces: .plateaus(tiled: tiled))
+    }
+
+    /// The axis plateau hatching runs along, or nil for any other source.
+    public var plateauHatchAxis: DomainAxis? {
+        guard case .hatching(let h, .plateaus) = self else { return nil }
+        return h.angle == 0 ? .real : .imag
     }
 
     /// True when the geometry is a rule rather than a file -- the layers whose
@@ -657,7 +654,7 @@ public struct LayerSpec: Sendable, Equatable {
     /// magnitude contour at its level and a phase line at |f| are on the
     /// surface as surely as ink lifted by the grid. Such ink can be tested by
     /// which way the surface faces under it, as well as by depth. The
-    /// scaffold -- rims, hatches, outlines -- sits on creases and walls,
+    /// scaffold -- truncation edges, hatches, outlines -- sits on creases and walls,
     /// where the surface's facing is not the ink's.
     public var liesOnSurface: Bool {
         clipped && (role == .magnitude || role == .phase)
@@ -742,24 +739,28 @@ public struct PlateProjection: Sendable, Equatable {
 
 public struct CameraPreset: Sendable, Equatable {
     public var name: String
-    public var plate: PlateProjection
-    public var margin: Double
+    public var projection: PlateProjection
+    /// How far in view depth a curve may lie behind the surface and still be
+    /// drawn: the hidden-line test's tolerance.
+    public var depthTolerance: Double
+    /// The depth buffer's resolution, in pixels along the longer side.
     public var buffer: Int
 
-    public init(name: String, plate: PlateProjection, margin: Double, buffer: Int) {
-        self.name = name; self.plate = plate; self.margin = margin; self.buffer = buffer
+    public init(name: String, projection: PlateProjection, depthTolerance: Double, buffer: Int) {
+        self.name = name; self.projection = projection; self.depthTolerance = depthTolerance
+        self.buffer = buffer
     }
 
     init(json: JSONValue) throws {
         let o = try json.object("CameraPreset")
         self.init(name: try o.string("name", "CameraPreset"),
-                  plate: try PlateProjection(json: o.value("plate", "CameraPreset")),
-                  margin: try o.double("margin", "CameraPreset"),
+                  projection: try PlateProjection(json: o.value("projection", "CameraPreset")),
+                  depthTolerance: try o.double("depthTolerance", "CameraPreset"),
                   buffer: try o.int("buffer", "CameraPreset"))
     }
     var json: JSONValue {
-        .object(["name": .string(name), "plate": plate.json,
-                 "margin": .double(margin), "buffer": .int(buffer)])
+        .object(["name": .string(name), "projection": projection.json,
+                 "depthTolerance": .double(depthTolerance), "buffer": .int(buffer)])
     }
 }
 
@@ -809,17 +810,17 @@ public struct Manifest: Sendable, Equatable {
     public var domain: Domain
     public var height: GridRef
     public var phase: GridRef?
-    public var caps: Caps
+    public var truncation: Truncation
     public var occluder: Occluder
     public var layers: [LayerSpec]
     public var presets: [CameraPreset]
     public var provenance: Provenance
 
-    public init(domain: Domain, height: GridRef, phase: GridRef?, caps: Caps,
+    public init(domain: Domain, height: GridRef, phase: GridRef?, truncation: Truncation,
                 occluder: Occluder, layers: [LayerSpec], presets: [CameraPreset],
                 provenance: Provenance) {
         self.schema = kurvenSchema; self.axes = kurvenAxes
-        self.domain = domain; self.height = height; self.phase = phase; self.caps = caps
+        self.domain = domain; self.height = height; self.phase = phase; self.truncation = truncation
         self.occluder = occluder; self.layers = layers; self.presets = presets
         self.provenance = provenance
     }
@@ -839,7 +840,7 @@ public struct Manifest: Sendable, Equatable {
         phase = if case .some(.object) = o["phase"] {
             try GridRef(json: o.value("phase", "Manifest"))
         } else { nil }
-        caps = try Caps(json: o.value("caps", "Manifest"))
+        truncation = try Truncation(json: o.value("truncation", "Manifest"))
         occluder = try Occluder(json: o.value("occluder", "Manifest"))
         layers = try o.array("layers", "Manifest").map(LayerSpec.init(json:))
         presets = try o.array("presets", "Manifest").map(CameraPreset.init(json:))
@@ -853,7 +854,7 @@ public struct Manifest: Sendable, Equatable {
     public var json: JSONValue {
         .object(["schema": .int(schema), "axes": .array(axes.map(JSONValue.string)),
                  "domain": domain.json, "height": height.json,
-                 "phase": phase.map(\.json) ?? .null, "caps": caps.json,
+                 "phase": phase.map(\.json) ?? .null, "truncation": truncation.json,
                  "occluder": occluder.json,
                  "layers": .array(layers.map(\.json)),
                  "presets": .array(presets.map(\.json)),

@@ -20,7 +20,7 @@ public enum Shaders {
         uint2  grid;
         uint2  gridSize;
         uint   step;
-        float  cap;
+        float  truncationHeight;
         uint   regionCount;
         float  empty;
     } KVUniforms;
@@ -31,7 +31,7 @@ public enum Shaders {
 
     typedef struct {
         float4 color;
-        float  margin;
+        float  depthTolerance;
         float  empty;
         float  slopeScale;
         // float3, not packed_float3: C's simd_float3 is sixteen bytes with
@@ -136,7 +136,7 @@ public enum Shaders {
         uint cy = cell / cells_x;
 
         // Two triangles: (00, 01, 10) and (01, 11, 10), matching
-        // `zbuffer.surface_grid_mesh`'s winding.
+        // `zbuffer.surface_grid_mesh`'s linearCurves.
         const uint2 corners[6] = { uint2(0,0), uint2(1,0), uint2(0,1),
                                    uint2(1,0), uint2(1,1), uint2(0,1) };
         uint2 c = corners[corner];
@@ -161,7 +161,7 @@ public enum Shaders {
 
         uint ix = min((cx + c.x) * u.step, u.gridSize.x - 1u);
         uint iy = min((cy + c.y) * u.step, u.gridSize.y - 1u);
-        float h = min(heights.read(uint2(ix, iy)).r, u.cap);
+        float h = min(heights.read(uint2(ix, iy)).r, u.truncationHeight);
 
         float2 d = u.domainLo + u.domainSize
             * float2(float(cx + c.x) / float(u.grid.x - 1),
@@ -325,7 +325,7 @@ public enum Shaders {
 
         uint ix = min((cx + c.x) * u.step, u.gridSize.x - 1u);
         uint iy = min((cy + c.y) * u.step, u.gridSize.y - 1u);
-        float h = min(heights.read(uint2(ix, iy)).r, u.cap);
+        float h = min(heights.read(uint2(ix, iy)).r, u.truncationHeight);
         float2 d = u.domainLo + u.domainSize
             * float2(float(cx + c.x) / float(u.grid.x - 1),
                      float(cy + c.y) / float(u.grid.y - 1));
@@ -353,7 +353,7 @@ public enum Shaders {
 
     // Paper. The plate's surface is not drawn -- it is white, and the page is
     // white -- but it must still be *opaque*, or the ink behind it shows
-    // through the silhouette. So the plate mode paints it flat.
+    // through the outline. So the plate mode paints it flat.
     fragment float4 kv_paper_fragment(PreviewOut in [[stage_in]]) {
         return float4(1.0, 1.0, 1.0, 1.0);
     }
@@ -401,7 +401,7 @@ public enum Shaders {
     // How far the surface's depth moves across one pixel at `p`: per axis, the
     // smaller of the two one-sided differences, and the larger of the two axes.
     //
-    // The smaller, not the larger, so that a silhouette on one side -- a jump
+    // The smaller, not the larger, so that a outline on one side -- a jump
     // to a far surface, or to nothing -- is not mistaken for slope. Were it
     // counted, ink hidden behind a ridge would show through at the ridge.
     // Neighbours off the texture or holding `empty` do not count at all.
@@ -432,16 +432,16 @@ public enum Shaders {
 
     // Whether ink at view depth `z` is in front of the surface at pixel `p`.
     //
-    // `z + margin > buffer` is `clip_hidden_lines`' predicate, which the bake
+    // `z + depthTolerance > buffer` is `clip_hidden_lines`' predicate, which the bake
     // applies per vertex. Here it is applied per fragment, and that moves the
     // two things being compared apart: `z` is the line's depth where it crosses
     // the pixel, up to half a pixel from the centre, and `buffer` is the
     // surface's depth *at* the centre. On a surface that is steep in view, half
-    // a pixel is more depth than the margin, and visible ink is discarded in a
+    // a pixel is more depth than the depthTolerance, and visible ink is discarded in a
     // pattern that moves whenever the camera does -- which is the flicker.
     //
     // So the preview adds `slopeScale` pixels' worth of the surface's own depth
-    // change to the margin: the depth bias shadow maps use, for the same
+    // change to the depthTolerance: the depth bias shadow maps use, for the same
     // reason. It is a preview-only relaxation. The bake does not do this, and
     // with `slopeScale` zero this is the bake's predicate exactly.
     static bool ink_visible(texture2d<float, access::read> depth, uint2 p, float z,
@@ -449,7 +449,7 @@ public enum Shaders {
     {
         float behind = depth.read(p).r;
         if (!(behind > s.empty)) { return true; }
-        float slack = s.margin + s.slopeScale * depth_slope(depth, p, behind, s.empty);
+        float slack = s.depthTolerance + s.slopeScale * depth_slope(depth, p, behind, s.empty);
         return z + slack > behind;
     }
 
@@ -563,8 +563,8 @@ public enum Shaders {
 
     // Ink on a heightfield carries the surface's normal, and is hidden where
     // the surface faces away from the eye before the depth test is asked --
-    // the test the depth margin cannot make, where a steep flank turns away
-    // and its back lies within the margin of its front (see
+    // the test the depth depthTolerance cannot make, where a steep graph turns away
+    // and its back lies within the depthTolerance of its front (see
     // `HeightfieldVisibility`). A zero normal asks nothing.
     vertex StrokeOut kv_stroke_vertex(uint vid [[vertex_id]],
                                       uint iid [[instance_id]],
@@ -612,7 +612,7 @@ public enum Shaders {
     // Front-most: the surface in front of the ink's centreline, at its pixel
     // or one beside it, is the ink's own neighbourhood of the surface -- a
     // tolerance of two per-pixel footprints of the coordinate texture plus a
-    // grid cell, exactly `SurfaceVisibility.isFrontMost`. No margin, and
+    // grid cell, exactly `SurfaceVisibility.isFrontMost`. No depthTolerance, and
     // no slope allowance: neither test is about depth.
 
     struct SurfaceStrokeOut {
@@ -764,14 +764,14 @@ public enum Shaders {
         out[k++] = float(u.gridSize.x);
         out[k++] = float(u.gridSize.y);
         out[k++] = float(u.step);
-        out[k++] = u.cap;
+        out[k++] = u.truncationHeight;
         out[k++] = float(u.regionCount);
         out[k++] = u.empty;
         out[k++] = sh.color.x;
         out[k++] = sh.color.y;
         out[k++] = sh.color.z;
         out[k++] = sh.color.w;
-        out[k++] = sh.margin;
+        out[k++] = sh.depthTolerance;
         out[k++] = sh.empty;
         out[k++] = sh.slopeScale;
         out[k++] = sh.lightDirection.x;

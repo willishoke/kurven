@@ -97,15 +97,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let resolution = args.firstIndex(of: "--resolution")
                 .flatMap { $0 + 1 < args.endIndex ? Int(args[$0 + 1]) : nil }
-            let cap = args.firstIndex(of: "--cap")
+            let truncationHeight = args.firstIndex(of: "--truncation")
                 .flatMap { $0 + 1 < args.endIndex ? Double(args[$0 + 1]) : nil }
-            // `--drag cap|levels STEPS`: step that control as a drag does and
+            // `--drag truncation|levels STEPS`: step that control as a drag does and
             // report the main actor's longest stall -- the beachball, measured.
             let drag = args.firstIndex(of: "--drag").flatMap { i -> (String, Int)? in
                 guard i + 2 < args.endIndex, let n = Int(args[i + 2]) else { return nil }
                 return (args[i + 1], n)
             }
-            Task { await headlessLandscape(what, resolution: resolution, cap: cap, drag: drag,
+            Task { await headlessLandscape(what, resolution: resolution, truncationHeight: truncationHeight, drag: drag,
                                            screenshot: shot, save: save) }
             return
         }
@@ -218,7 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Make the landscape and report it. The window is never shown; everything
     /// it would do is done through the same model.
-    private func headlessLandscape(_ what: String, resolution: Int?, cap: Double?,
+    private func headlessLandscape(_ what: String, resolution: Int?, truncationHeight: Double?,
                                    drag: (control: String, steps: Int)? = nil,
                                    screenshot: URL?, save: URL?) async {
         let catalog = document.catalog
@@ -242,7 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Truncating is the other kind of edit: no request, no sampling, just
         // the ink derived again from grids that are already here. Driving it
         // from here is how that path is checked without a pair of hands.
-        if let cap { document.setCaps(.uniform(cap)) }
+        if let truncationHeight { document.setTruncation(.uniform(truncationHeight)) }
         while document.drawing { try? await Task.sleep(for: .milliseconds(25)) }
         if let drag { await headlessDrag(drag.control, steps: drag.steps) }
         guard document.scene != nil else {
@@ -273,7 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             longest = max(longest, now - last)
             last = now
         }
-        let ceiling = LandscapeStyle.ceiling(of: document.caps) ?? 5
+        let ceiling = LandscapeStyle.ceiling(of: document.truncation) ?? 5
         let layer = document.layers.firstIndex { $0.spec.name == "ang_minor" }
             ?? document.layers.indices.first { document.isDerived(layer: $0) }
         let base = layer.flatMap { document.levels(forLayer: $0)?.count } ?? 0
@@ -281,8 +281,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? await Task.sleep(for: .milliseconds(16))
             tick()
             switch control {
-            case "cap":
-                document.setCaps(.uniform(ceiling * (1 - 0.3 * Double(k) / Double(steps))))
+            case "truncation":
+                document.setTruncation(.uniform(ceiling * (1 - 0.3 * Double(k) / Double(steps))))
             case "levels":
                 guard let layer else { break }
                 document.setLevelCount(base + k, forLayer: layer, draft: true)

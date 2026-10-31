@@ -199,7 +199,7 @@ public final class MetalRenderer {
     /// different places, which is exactly the shape a single entry serves. Two
     /// bundles means two renderers.
     private var cachedResources: SceneResources?
-    /// Keyed by the camera too when the scene has fold lines on a
+    /// Keyed by the camera too when the scene has fold curves on a
     /// heightfield, which are the camera's and are traced again when it moves.
     var cachedLines: (ink: ContentID, camera: Camera?, draft: Bool, laid: VisibleLines,
                       geometry: LineGeometry)?
@@ -245,13 +245,13 @@ public final class MetalRenderer {
     }
     private var cachedCoordinates: (texture: MTLTexture, depth: MTLTexture)?
 
-    /// Ink with coordinates, for the surface stroke shader. The fold lines
+    /// Ink with coordinates, for the surface stroke shader. The fold curves
     /// are rebuilt when the camera does anything but stand still -- read off
-    /// the grid, `gridFoldLines`, not refined onto the exact fold as
+    /// the grid, `gridFoldCurves`, not refined onto the exact fold as
     /// the bake's are -- and everything else when the ink changes.
     func surfaceInk(for scene: Scene, surface: ParametricSurface) throws -> SurfaceInk {
         let onFolds = scene.layers.map { layer -> Bool in
-            if case .foldLines = layer.spec.source { return true }
+            if case .foldCurves = layer.spec.source { return true }
             return false
         }
         let statics: SurfaceInkGeometry
@@ -269,7 +269,7 @@ public final class MetalRenderer {
                 if let previous, i < previous.sources.count, previous.sources[i] == paths {
                     return previous.geometry.layers[i]
                 }
-                // An outline -- a cap's rim -- lies on a crease, where the
+                // An outline -- a truncation edge -- lies on a crease, where the
                 // normal says nothing: laid out as fold ink, with no facing.
                 let crease = scene.layers[i].spec.role == .outline
                 return paths.map { SurfaceInkGeometry.layout($0, surface: surface, onFolds: crease,
@@ -285,7 +285,7 @@ public final class MetalRenderer {
         } else {
             var derived: PolylineSet<WorldSpace>?
             if onFolds.contains(true) {
-                derived = surface.gridFoldLines(normals: gridNormals(for: scene, surface: surface),
+                derived = surface.gridFoldCurves(normals: gridNormals(for: scene, surface: surface),
                                                    sight: scene.camera.view.projectionDirection)
             }
             folds = try SurfaceInkGeometry(onFolds.map { $0 ? derived : nil },
@@ -331,7 +331,7 @@ public final class MetalRenderer {
     /// content, so moving a level set rebuilds the strokes and leaves the
     /// heightfield texture alone.
     ///
-    /// Fold lines and wall ink on a heightfield are tested for the camera,
+    /// Fold curves and wall ink on a heightfield are tested for the camera,
     /// so the geometry is the camera's too, and a draft of it is not the
     /// tested one: a tested layout in hand serves a draft frame, since it is
     /// the better picture, but a draft never serves a tested frame.
@@ -477,7 +477,7 @@ public final class MetalRenderer {
         var uniforms = KVUniforms(
             view: scene.camera.view.float4x4, clip: clipMatrix(scene, frame: frame),
             domainLo: .zero, domainSize: .zero, grid: SIMD2(0, 0), gridSize: SIMD2(0, 0),
-            step: 1, cap: .infinity, regionCount: 0, empty: Self.emptySentinel)
+            step: 1, truncationHeight: .infinity, regionCount: 0, empty: Self.emptySentinel)
 
         let descriptor = MTLRenderPassDescriptor()
         descriptor.colorAttachments[0].texture = out.texture
@@ -533,8 +533,8 @@ public final class MetalRenderer {
             grid: SIMD2<UInt32>(UInt32(res.decimatedWidth), UInt32(res.decimatedHeight)),
             gridSize: SIMD2<UInt32>(UInt32(res.gridWidth), UInt32(res.gridHeight)),
             step: UInt32(scene.heightfield?.step ?? 1),
-            cap: res.capBaked ? .infinity
-                : Float(scene.heightfield?.surface.caps.height(atX: 0) ?? .infinity),
+            truncationHeight: res.truncationBaked ? .infinity
+                : Float(scene.heightfield?.surface.truncation.height(atX: 0) ?? .infinity),
             regionCount: UInt32(res.regionCount),
             empty: Self.emptySentinel)
     }

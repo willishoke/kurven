@@ -94,12 +94,25 @@ func contractTests() {
         Check.expectThrows("rejects an unsupported schema") {
             _ = try Manifest(json: mutated { $0["schema"] = .int(999) })
         }
+        Check.expectThrows("rejects schema 1, whose names schema 2 replaced") {
+            _ = try Manifest(json: mutated { $0["schema"] = .int(1) })
+        }
+        Check.expectThrows("rejects hatching on walls that is not vertical") {
+            let hatching = LayerSource.hatching(Hatching(angle: 0.3, spacing: 0.1),
+                                                faces: .walls(edges: [0], trim: true, base: 0, topOffset: 0))
+            _ = try LayerSource(json: hatching.json)
+        }
+        Check.expectThrows("rejects a tone other than uniform on plateaus") {
+            let hatching = LayerSource.hatching(Hatching(angle: 0, spacing: 0.1, tone: .turing(scale: 1, seed: 1)),
+                                                faces: .plateaus(tiled: false))
+            _ = try LayerSource(json: hatching.json)
+        }
         Check.expectThrows("rejects a bundle in another axis order") {
             _ = try Manifest(json: mutated {
                 $0["axes"] = .array(["imag", "real", "magnitude"].map(JSONValue.string)) })
         }
-        Check.expectThrows("rejects an unknown cap kind") {
-            _ = try Manifest(json: mutated { $0["caps"] = .object(["kind": .string("logarithmic")]) })
+        Check.expectThrows("rejects an unknown truncation kind") {
+            _ = try Manifest(json: mutated { $0["truncation"] = .object(["kind": .string("logarithmic")]) })
         }
         Check.expectThrows("rejects an unknown wall kind") {
             _ = try Manifest(json: occluder("walls", .object(["kind": .string("spline")])))
@@ -225,7 +238,7 @@ func clipTests() {
         let axis0 = try meta.doubles("axis0", "clip meta")
         let axis1 = try meta.doubles("axis1", "clip meta")
         let shape = try meta.ints("shape", "clip meta")
-        let margin = try meta.double("margin", "clip meta")
+        let depthTolerance = try meta.double("depthTolerance", "clip meta")
         let frame = DepthFrame(axis0: Interval(lo: axis0[0], hi: axis0[1]),
                                axis1: Interval(lo: axis1[0], hi: axis1[1]),
                                rows: shape[0], cols: shape[1],
@@ -238,7 +251,7 @@ func clipTests() {
             .map { P3<ViewSpace>($0) }
         let offsets = try NPY.read(contentsOf: Fixtures.url("clip/view.idx.npy")).ints()
         let got = HiddenLine.clip(PolylineSet(vertices: view, offsets: offsets),
-                                  against: depth, margin: margin)
+                                  against: depth, depthTolerance: depthTolerance)
 
         let wantVerts = try NPY.read(contentsOf: Fixtures.url("clip/expected.npy"))
         let wantOffsets = try NPY.read(contentsOf: Fixtures.url("clip/expected.idx.npy")).ints()
@@ -270,9 +283,9 @@ func clipTests() {
                                empty: sentinel)
         var alike = true
         for z in heights.map(Double.init) {
-            for margin in [0.0, 0.02, 0.2] {
-                let a = z + margin > python.depth(under: P2(0.25, 0.25))
-                let b = z + margin > metal.depth(under: P2(0.25, 0.25))
+            for depthTolerance in [0.0, 0.02, 0.2] {
+                let a = z + depthTolerance > python.depth(under: P2(0.25, 0.25))
+                let b = z + depthTolerance > metal.depth(under: P2(0.25, 0.25))
                 if a != b { alike = false }
             }
         }
@@ -310,7 +323,7 @@ func coreTests() {
     Check.suite("core: the NDC transform puts each sample point on its grid vertex") {
         // Both raster orders, and the screen order's descending row axis, have
         // to land on the same grid the clipper indexes -- a half-pixel shift
-        // here shows up as ink leaking through the surface along silhouettes
+        // here shows up as ink leaking through the surface along outlines
         // and nowhere else.
         for (name, frame) in [
             ("buffer order", DepthFrame(axis0: Interval(lo: -2, hi: 3),
@@ -375,21 +388,21 @@ func coreTests() {
         Check.expect(!pointInPolygon(P2(0, 40), corners), "past the top")
     }
 
-    Check.suite("core: caps are a property of the model, and bands read in order") {
-        Check.expect(Caps.none.height(atX: 3) == .infinity, "no cap is no cap")
-        Check.expect(Caps.uniform(5).height(atX: -100) == 5, "a uniform cap ignores x")
-        let bands = Caps.realBands([RealBand(below: -3.5, cap: 8),
-                                    RealBand(below: -2.5, cap: 6),
-                                    RealBand(below: -1.5, cap: 4)], beyond: .infinity)
+    Check.suite("core: truncations are a property of the model, and bands read in order") {
+        Check.expect(Truncation.none.height(atX: 3) == .infinity, "no truncation is no truncation")
+        Check.expect(Truncation.uniform(5).height(atX: -100) == 5, "a uniform truncation ignores x")
+        let bands = Truncation.realBands([RealBand(below: -3.5, height: 8),
+                                    RealBand(below: -2.5, height: 6),
+                                    RealBand(below: -1.5, height: 4)], beyond: .infinity)
         Check.expect(bands.height(atX: -4) == 8 && bands.height(atX: -3) == 6
                      && bands.height(atX: -2) == 4 && bands.height(atX: 0) == .infinity,
                      "the first matching band wins, and past the last there is none")
-        // Gamma's calm region: past the spires there is still a cap.
-        let calm = Caps.realBands([RealBand(below: -3.5, cap: 2.5),
-                                   RealBand(below: 0.5, cap: 5.5)], beyond: 3.0)
+        // Gamma's calm region: past the spires there is still a truncation.
+        let calm = Truncation.realBands([RealBand(below: -3.5, height: 2.5),
+                                   RealBand(below: 0.5, height: 5.5)], beyond: 3.0)
         Check.expect(calm.height(atX: -4) == 2.5 && calm.height(atX: 0) == 5.5
                      && calm.height(atX: 2) == 3.0,
-                     "and `beyond` is the cap where no band matches")
+                     "and `beyond` is the truncation where no band matches")
     }
 
     Check.suite("core: CSR path identity cannot weld unrelated runs") {
@@ -465,7 +478,7 @@ func shaderTests() {
             grid: SIMD2(501, 502),
             gridSize: SIMD2(601, 602),
             step: 701,
-            cap: 801,
+            truncationHeight: 801,
             regionCount: 901,
             empty: -1001)
         // KVShading too. Its `simd_float3` is sixteen bytes with three used;
@@ -474,7 +487,7 @@ func shaderTests() {
         // black landscape, and is the reason this struct is probed as well.
         let shading = KVShading(
             color: SIMD4(11, 12, 13, 14),
-            margin: 21,
+            depthTolerance: 21,
             empty: 22,
             slopeScale: 23,
             lightDirection: SIMD3(31, 32, 33),
@@ -676,14 +689,14 @@ func hatchTests() {
     }
 
     Check.suite("hatch: every source reproduces the committed strokes") {
-        let caps = try index.value("caps", "hatch").object("hatch.caps")
+        let truncation = try index.value("truncation", "hatch").object("hatch.truncations")
         for case .object(let c) in try index.array("cases", "hatch") {
             let name = try c.string("name", "hatch.case")
             let source = try LayerSource(json: c.value("source", "hatch.case"))
             let surface = Surface(
                 height: grid, phase: nil,
-                caps: try Caps(json: caps.value(try c.string("caps", "hatch.case"),
-                                                "hatch.caps")))
+                truncation: try Truncation(json: truncation.value(try c.string("truncation", "hatch.case"),
+                                                "hatch.truncations")))
             let context = Surface.HatchContext(perimeter: perimeter)
             guard let derived = surface.hatch(source, in: context) else {
                 Check.expect(false, "\(name) is a hatching", "\(source)")
@@ -701,12 +714,12 @@ func hatchTests() {
                 continue
             }
             // A stroke is a stroke, vertex for vertex -- both sides walked the
-            // same samples in the same order. A *rim* is a marching-squares
+            // same samples in the same order. A *truncation edge* is a marching-squares
             // contour, and a closed loop has no first vertex: contourpy and
             // this walk can start the same curve at different points on it. So
-            // the rim is compared the way `contourTests` compares a contour, as
+            // the truncation edge is compared the way `contourTests` compares a contour, as
             // the set of segments it draws.
-            if case .capOutline = source {
+            if case .truncationEdge = source {
                 let a = segmentMidpoints(derived), b = segmentMidpoints(expected)
                 let (unmatched, worst) = strayed(a, b)
                 Check.expect(a.count == b.count && unmatched == 0,
@@ -737,17 +750,17 @@ func hatchTests() {
     // the corner instead of missing it. 0.3 does not divide the fixture's
     // width, which is the case the rule exists for.
     Check.suite("hatch: a top's ruling divides its width and meets the walls") {
-        let caps = try index.value("caps", "hatch").object("hatch.caps")
+        let truncation = try index.value("truncation", "hatch").object("hatch.truncations")
         let surface = Surface(height: grid, phase: nil,
-                              caps: try Caps(json: caps.value("uniform", "hatch.caps")))
+                              truncation: try Truncation(json: truncation.value("uniform", "hatch.truncations")))
         let context = Surface.HatchContext(perimeter: perimeter)
         let spacing = 0.3
         let across = grid.domain.imag
         let width = across.hi - across.lo
         let gaps = Double(Int((width / spacing + 0.5).rounded(.down)))
-        guard let top = surface.hatch(.capHatch(axis: .real, spacing: spacing, tiled: false),
+        guard let top = surface.hatch(.plateauHatching(axis: .real, spacing: spacing, tiled: false),
                                       in: context) else {
-            Check.expect(false, "the cap hatch derives")
+            Check.expect(false, "the plateau hatching derives")
             return
         }
         let rows = Set(top.paths.compactMap { $0.first?.y })
@@ -765,7 +778,7 @@ func hatchTests() {
             perimeter.edges[$0].start.x == perimeter.edges[$0].end.x
         }
         for i in crossing {
-            guard let wall = surface.hatch(.wallHatch(edges: [i], spacing: spacing, pitch: 0.5,
+            guard let wall = surface.hatch(.wallHatching(edges: [i], spacing: spacing, step: 0.5,
                                                       trim: true, base: 0, topOffset: 0),
                                            in: context) else {
                 Check.expect(false, "the wall on edge \(i) derives")
@@ -779,9 +792,9 @@ func hatchTests() {
         }
     }
 
-    // The rule for choosing contour levels under a cap runs twice: when a
-    // landscape is built, and again whenever the cap slider moves, because a
-    // level list is absolute and a raised cap would otherwise leave the top of
+    // The rule for choosing contour levels under a truncation runs twice: when a
+    // landscape is built, and again whenever the truncation slider moves, because a
+    // level list is absolute and a raised truncation would otherwise leave the top of
     // the plate blank. Pinned to the numbers the Python rule chose, which the
     // golden index has carried unchanged since.
     Check.suite("landscape: the derived numbers are the committed ones") {
@@ -845,29 +858,29 @@ func strayed(_ a: [SIMD3<Double>], _ b: [SIMD3<Double>]) -> (unmatched: Int, wor
     return (ca + cb, max(wa, wb))
 }
 
-/// Restyling: the edit path a cap slider takes.
+/// Restyling: the edit path a truncation slider takes.
 func restyleTests() {
-    Check.suite("restyle: a new cap re-derives the ink and keeps the landscape") {
+    Check.suite("restyle: a new truncation re-derives the ink and keeps the landscape") {
         let url = Fixtures.url("contract/landscape.kurven")
         guard FileManager.default.fileExists(atPath: url.path) else {
             Check.expect(false, "the landscape fixture bundle is present"); return
         }
         let bundle = try KurvenBundle.read(at: url)
         var manifest = bundle.manifest
-        manifest.caps = .uniform(0.9)
+        manifest.truncation = .uniform(0.9)
         let restyled = bundle.restyled(manifest)
 
         Check.expect(restyled.surface.height.values == bundle.surface.height.values,
                      "the samples are untouched -- this is a restyling, not a resampling")
-        Check.expect(restyled.surface.caps == .uniform(0.9),
-                     "the cap is the new one")
-        // Lowering the cap lowers every wall crest, so the wall hatch is
-        // strictly shorter; the rim moves outward, so the cap layers change too.
+        Check.expect(restyled.surface.truncation == .uniform(0.9),
+                     "the truncation is the new one")
+        // Lowering the truncation lowers every wall top edge, so the wall hatch is
+        // strictly shorter; the truncation edge moves outward, so the truncation layers change too.
         func height(_ b: KurvenBundle, _ name: String) -> Double {
             ((try? b.layer(name))?.paths.vertices.map(\.z).max()) ?? 0
         }
         Check.expect(height(restyled, "wall_hatch") <= 0.9 + 1e-9,
-                     "the wall hatch stops at the new cap",
+                     "the wall hatch stops at the new truncation",
                      "\(height(restyled, "wall_hatch"))")
         Check.expect(height(bundle, "wall_hatch") > 0.9,
                      "and reached higher before it",
@@ -879,7 +892,7 @@ func restyleTests() {
         // rather than quietly emptying it.
         let dumped = try KurvenBundle.read(at: Fixtures.url("contract/uniform_mesh.kurven"))
         var other = dumped.manifest
-        other.caps = .uniform(1.0)
+        other.truncation = .uniform(1.0)
         let keptA = try dumped.layer("mag").paths.count
         let keptB = try dumped.restyled(other).layer("mag").paths.count
         Check.expect(keptA == keptB && keptA > 0,
@@ -1127,7 +1140,7 @@ func bakeTests() {
         _ = try renderer.bake(scene, options: BakeOptions(resolution: 64))
         Check.expect(true, "an orthographic scene bakes")
 
-        var orbit = Orbit(matching: try bundle.manifest.preset("recip").plate)
+        var orbit = Orbit(matching: try bundle.manifest.preset("recip").projection)
         orbit.distance = 10
         scene.camera = orbit.camera
         do {
@@ -1200,7 +1213,7 @@ func previewTests() {
     //
     // The preview compares a line's depth where it crosses a pixel with the
     // surface's depth at the pixel's centre. Here half a pixel of that is
-    // several times the margin, so the bake's predicate alone discards much of
+    // several times the depth tolerance, so the bake's predicate alone discards much of
     // the ink on the plane, and while orbiting what it discards crawls. With
     // the slope allowance all of it must survive, and the allowance must still
     // fall far short of hiding depth: the ink under the plane stays hidden.
@@ -1213,7 +1226,7 @@ func previewTests() {
         }
         let surface = Surface(
             height: Grid2D(width: n, height: n, domain: domain, values: heights),
-            phase: nil, caps: .none)
+            phase: nil, truncation: .none)
         // Slightly slanted on screen, so each stroke crosses a few rows and is
         // tested at every sub-pixel offset rather than at one.
         func strokes(under depth: Double) -> Layer {
@@ -1229,20 +1242,20 @@ func previewTests() {
         let orbit = Orbit(target: P3(0, 0, 0), azimuth: Angle(degrees: 0),
                           elevation: Angle(degrees: -40), style: style)
         let viewport = Viewport(width: 512, height: 128)
-        func scene(_ layer: Layer, margin: Double) -> Scene {
+        func scene(_ layer: Layer, depthTolerance: Double) -> Scene {
             Scene(surface: surface, occluder: Mesh(vertices: [], triangles: []),
                   tiles: [.identity], step: 1, layers: [layer], camera: orbit.camera,
-                  margin: margin)
+                  depthTolerance: depthTolerance)
         }
-        guard let bounds = scene(strokes(under: 0), margin: 0).quickBounds() else {
+        guard let bounds = scene(strokes(under: 0), depthTolerance: 0).quickBounds() else {
             Check.expect(false, "the plane has bounds"); return
         }
         let navigator = Navigator(orbit: orbit, framing: .fitting(bounds, in: viewport))
 
         let renderer = try MetalRenderer()
         let target = try renderer.makePreviewTarget(viewport)
-        func ink(_ layer: Layer, margin: Double, slope: Float) throws -> Int {
-            try renderer.renderPreview(scene(layer, margin: margin), navigator: navigator,
+        func ink(_ layer: Layer, depthTolerance: Double, slope: Float) throws -> Int {
+            try renderer.renderPreview(scene(layer, depthTolerance: depthTolerance), navigator: navigator,
                                        viewport: viewport,
                                        options: PreviewOptions(slopeScale: slope),
                                        into: target)
@@ -1255,11 +1268,11 @@ func previewTests() {
             }
         }
 
-        let margin = 0.005
+        let depthTolerance = 0.005
         let on = strokes(under: 0), under = strokes(under: 0.05)
-        let drawn = try ink(on, margin: .infinity, slope: 0)
-        let bake = try ink(on, margin: margin, slope: 0)
-        let kept = try ink(on, margin: margin, slope: PreviewOptions.defaultSlopeScale)
+        let drawn = try ink(on, depthTolerance: .infinity, slope: 0)
+        let bake = try ink(on, depthTolerance: depthTolerance, slope: 0)
+        let kept = try ink(on, depthTolerance: depthTolerance, slope: PreviewOptions.defaultSlopeScale)
         Check.expect(drawn > 1000 && Double(bake) < 0.9 * Double(drawn),
                      "the plane is steep enough that the bake's predicate loses ink on it",
                      "\(bake) of \(drawn) px")
@@ -1267,8 +1280,8 @@ func previewTests() {
                      "with the slope allowance, the ink on it is kept",
                      "\(kept) of \(drawn) px")
 
-        let behind = try ink(under, margin: .infinity, slope: 0)
-        let shown = try ink(under, margin: margin, slope: PreviewOptions.defaultSlopeScale)
+        let behind = try ink(under, depthTolerance: .infinity, slope: 0)
+        let shown = try ink(under, depthTolerance: depthTolerance, slope: PreviewOptions.defaultSlopeScale)
         Check.expect(behind > 1000 && Double(shown) <= 0.01 * Double(behind),
                      "and ink just under it is still hidden",
                      "\(shown) of \(behind) px show")
@@ -1294,13 +1307,13 @@ navigationTests()
 contourTests()
 hatchTests()
 restyleTests()
-capTests()
-crestTests()
+truncationTests()
+topEdgeTests()
 shaderTests()
 previewTests()
 bakeTests()
 facingTests()
-foldLineTests()
+foldCurveTests()
 wallInkTests()
 stressTests()
 solidTests()
@@ -1318,7 +1331,7 @@ surfacePreviewTests()
 edgeOnPreviewTests()
 foldTests()
 creaseTests()
-windingTests()
+linearCurveTests()
 odeTests()
 frequencyTests()
 continuedFractionTests()

@@ -4,12 +4,12 @@ import simd
 /// A depth image that also records *which* surface point is front-most at each
 /// pixel.
 ///
-/// Depth answers "is anything in front of this ink?" by a margin, and a margin
+/// Depth answers "is anything in front of this ink?" by a depth tolerance, and a depth tolerance
 /// has no right value where two sheets pass within it of each other or where
 /// the surface is steep enough in view that one pixel spans more depth than
-/// the margin allows. The coordinate answers a different question -- "is the
+/// the depth tolerance allows. The coordinate answers a different question -- "is the
 /// thing in front of this ink the ink's own piece of surface?" -- and that one
-/// has no margin in it.
+/// has no depth tolerance in it.
 public struct SurfaceImage: Sendable {
     public let depth: DepthImage
     /// The surface coordinates of the front-most point at each pixel, row

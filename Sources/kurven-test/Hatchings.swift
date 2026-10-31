@@ -305,7 +305,7 @@ func hatchingTests() {
         let layers = [
             Layer(spec: LayerSpec(name: "edges", role: .outline, source: .edges, width: 0.5, heightPolicy: .surface),
                   paths: s.edgePaths),
-            Layer(spec: LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching), width: 0.3,
+            Layer(spec: LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching, faces: .solid), width: 0.3,
                                   heightPolicy: .surface),
                   paths: s.hatchPaths(hatching)),
         ]
@@ -342,7 +342,7 @@ func hatchingTests() {
             Hatching(angle: 0, spacing: 0.2, tone: .halfLambert(light: SIMD3(0.1, -0.3, 0.9)), widthSteps: 2),
         ]
         for hatching in hatchings {
-            let source = LayerSource.hatching(hatching)
+            let source = LayerSource.hatching(hatching, faces: .solid)
             let back = try LayerSource(json: source.json)
             Check.expect(back == source, "\(source.json.canonical) decodes to itself")
         }

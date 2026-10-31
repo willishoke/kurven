@@ -22,22 +22,22 @@ struct LineGeometry {
 
     /// Whether a layer's line geometry is the camera's: a heightfield's fold
     /// lines, or the ink in its walls; or, on a parametric surface that
-    /// carries its solid, its fold lines and every clipped layer that knows
+    /// carries its solid, its fold curves and every clipped layer that knows
     /// where on the surface it lies. Sphere tracing sights along parallel lines,
     /// so under perspective a surface's ink stays with the stroke shader.
     static func isTestedExactly(_ layer: Layer, in scene: Scene) -> Bool {
         if let s = scene.parametric {
             guard s.neighbourhood != nil, !scene.camera.isPerspective else { return false }
-            if case .foldLines = layer.spec.source { return true }
+            if case .foldCurves = layer.spec.source { return true }
             return layer.spec.clipped && layer.paths.coords != nil
         }
         guard scene.heightfield != nil else { return false }
-        if case .foldLines = layer.spec.source { return true }
+        if case .foldCurves = layer.spec.source { return true }
         return layer.spec.source.isWallInk && layer.spec.clipped
     }
 
     /// Whether the scene has ink that is tested for the camera: a
-    /// heightfield's fold lines and the ink in its walls, or a sphere-traced
+    /// heightfield's fold curves and the ink in its walls, or a sphere-traced
     /// surface's ink. Such a scene's line geometry is the camera's, and is
     /// laid out again when it moves.
     static func isTestedExactly(_ scene: Scene) -> Bool {
@@ -48,7 +48,7 @@ struct LineGeometry {
     /// The CPU side of the geometry, apart from the renderer so it can be
     /// done on another thread; `init(_:device:)` uploads it.
     ///
-    /// A heightfield's fold lines are the camera's, traced here for this
+    /// A heightfield's fold curves are the camera's, traced here for this
     /// one -- on f and refined onto the exact fold, as the bake's are --
     /// and tested by the solid here rather than per fragment:
     /// the surface is edge-on at a fold, which is where a depth test is
@@ -86,21 +86,21 @@ struct LineGeometry {
                 // surface ink, not from here.
                 paths = draft ? PolylineSet(paths: [])
                     : Self.sphereTraced(layer, on: s, view: scene.camera.view, creases: scene.creases)
-            } else if case .foldLines = layer.spec.source, let h = scene.heightfield {
+            } else if case .foldCurves = layer.spec.source, let h = scene.heightfield {
                 // At rest the folds are the bake's: every vertex moved onto
                 // the exact fold of f before sphere tracing tests it against f.
                 // Traced on the grid and left there, a vertex lies up to
-                // a cell from the silhouette, which on a steep flank is far
-                // more than sphere tracing's margin on f, so vertices fell
-                // alternately in front of the flank and behind it and the
+                // a cell from the outline, which on a steep graph is far
+                // more than sphere tracing's depth tolerance on f, so vertices fell
+                // alternately in front of the graph and behind it and the
                 // fold drew as dashes.
                 paths = draft
-                    ? h.onGrid.foldLines(view: scene.camera.view, refined: false)
-                    : h.visibleFolds(view: scene.camera.view, margin: scene.margin,
+                    ? h.onGrid.foldCurves(view: scene.camera.view, refined: false)
+                    : h.visibleFolds(view: scene.camera.view, depthTolerance: scene.depthTolerance,
                                      resolution: scene.resolution)
             } else if layer.spec.source.isWallInk, layer.spec.clipped, !draft,
                       let h = scene.heightfield {
-                paths = h.visibleWallInk(layer.paths, view: scene.camera.view, margin: scene.margin,
+                paths = h.visibleWallInk(layer.paths, view: scene.camera.view, depthTolerance: scene.depthTolerance,
                                          resolution: scene.resolution)
             }
             // Ink on a heightfield's surface carries the surface's outward
@@ -151,8 +151,8 @@ struct LineGeometry {
                         view: Transform<WorldSpace, ViewSpace>,
                         creases: [[P2<ParamSpace>]] = []) -> PolylineSet<WorldSpace> {
         let paths: PolylineSet<WorldSpace>, folds: Bool
-        if case .foldLines = layer.spec.source {
-            paths = surface.foldLines(sight: view.projectionDirection, creases: creases)
+        if case .foldCurves = layer.spec.source {
+            paths = surface.foldCurves(sight: view.projectionDirection, creases: creases)
             folds = true
         } else {
             paths = layer.paths
@@ -244,7 +244,7 @@ public struct PreviewOptions: Sendable {
     /// Paper colour. The plate's surface is white because the page is.
     public var background: SIMD4<Float>
     /// How many pixels' worth of the surface's own depth change the ink test
-    /// allows on top of the margin. Without it, ink on a surface that is steep
+    /// allows on top of the depth tolerance. Without it, ink on a surface that is steep
     /// in view breaks into dashes that crawl as the camera moves. Zero is the
     /// bake's predicate exactly; see `ink_visible` in the shader for the rest.
     public var slopeScale: Float
@@ -289,15 +289,15 @@ public extension MetalRenderer {
     ///
     /// Two passes over the geometry the bake uses. The first is the depth pass,
     /// unchanged and shared. The second draws the surface (opaque, so ink behind
-    /// it does not show through the silhouette) and then the ink, deciding
+    /// it does not show through the outline) and then the ink, deciding
     /// visibility by reading that depth texture at each fragment's own pixel.
     ///
     /// The bake tests per vertex and this tests per fragment, so the two can
     /// disagree on runs shorter than a pixel. The per-fragment test also allows
     /// `slopeScale` pixels' worth of the surface's depth change on top of the
-    /// margin, because a fragment compares the line's depth where it crosses a
+    /// depth tolerance, because a fragment compares the line's depth where it crosses a
     /// pixel with the surface's depth at the pixel's centre, and on a steep
-    /// surface those differ by more than the margin (see `ink_visible`). Those
+    /// surface those differ by more than the depth tolerance (see `ink_visible`). Those
     /// two are the only differences between them. Both are bounded by a pixel,
     /// and both are the right way round: the preview is for navigating and the
     /// bake is the artifact.
@@ -347,7 +347,7 @@ public extension MetalRenderer {
         let box = options.mode == .depth ? scene.quickBounds() : nil
         var shading = KVShading(
             color: SIMD4(0, 0, 0, 1),
-            margin: Float(scene.margin),
+            depthTolerance: Float(scene.depthTolerance),
             empty: Self.emptySentinel,
             slopeScale: options.slopeScale,
             lightDirection: SIMD3(0.4, -0.6, 0.7),
@@ -407,15 +407,15 @@ public extension MetalRenderer {
                 if let visible = options.visibleLayers, !visible.contains(i) { continue }
                 let range = lines.ranges[i]
                 guard range.count > 0 else { continue }
-                // Unclipped ink is drawn with an unreachable margin rather than
+                // Unclipped ink is drawn with an unreachable depth tolerance rather than
                 // a second pipeline: a cut-face hatch lies *in* the wall it
                 // hatches, and a depth test would erase about half of it. A
                 // heightfield's folds and wall ink were tested on the way in,
                 // unless this frame is a draft, which leaves them to the test.
                 var visible = scene.heightfield != nil && layer.spec.source.isWallInk
-                if case .foldLines = layer.spec.source { visible = true }
+                if case .foldCurves = layer.spec.source { visible = true }
                 if options.draft { visible = false }
-                shading.margin = layer.spec.clipped && !visible ? Float(scene.margin) : .infinity
+                shading.depthTolerance = layer.spec.clipped && !visible ? Float(scene.depthTolerance) : .infinity
                 shading.color = Self.color(layer.spec.color)
                 shading.strokeWidth = options.inkWidth
                     * Float(widest > 0 ? layer.spec.width / widest : 1)
@@ -588,7 +588,7 @@ struct SurfaceInkGeometry {
 }
 
 /// A parametric scene's ink for the preview: the layers that do not depend on
-/// the camera, laid out once per ink, and the fold lines, laid out again
+/// the camera, laid out once per ink, and the fold curves, laid out again
 /// whenever the camera moves.
 struct SurfaceInk {
     let statics: SurfaceInkGeometry
@@ -610,7 +610,7 @@ extension MetalRenderer {
     /// The depth pass and the coordinate pass are the bake's, over the same
     /// position texture. The paper is the same grid again. Ink that carries
     /// coordinates is drawn by the surface stroke shader, which asks the
-    /// bake's two questions per fragment; the fold lines are derived for this
+    /// bake's two questions per fragment; the fold curves are derived for this
     /// camera every time it moves, because that is what they depend on.
     ///
     /// Under a perspective camera the folds are the orthographic ones for the
@@ -633,7 +633,7 @@ extension MetalRenderer {
         var uniforms = KVUniforms(
             view: scene.camera.view.float4x4, clip: clip,
             domainLo: .zero, domainSize: .zero, grid: .zero, gridSize: .zero,
-            step: 1, cap: .infinity, regionCount: 0, empty: Self.emptySentinel)
+            step: 1, truncationHeight: .infinity, regionCount: 0, empty: Self.emptySentinel)
         let bounds = scene.quickBounds()
         let (zlo, zhi) = (bounds?.lo.z ?? -1, bounds?.hi.z ?? 1)
         let pad = 0.05 * (zhi - zlo) + 1e-6
@@ -685,7 +685,7 @@ extension MetalRenderer {
         // Pass 2: the picture.
         let box = options.mode == .depth ? bounds : nil
         var shading = KVShading(
-            color: SIMD4(0, 0, 0, 1), margin: Float(scene.margin), empty: Self.emptySentinel,
+            color: SIMD4(0, 0, 0, 1), depthTolerance: Float(scene.depthTolerance), empty: Self.emptySentinel,
             slopeScale: options.slopeScale, lightDirection: SIMD3(0.4, -0.6, 0.7),
             ambient: 0.25, strokeWidth: options.inkWidth,
             depthRange: SIMD2(Float(box?.lo.z ?? 0), Float(box?.hi.z ?? 1)),
@@ -731,11 +731,11 @@ extension MetalRenderer {
                 shading.color = Self.color(layer.spec.color)
                 shading.strokeWidth = options.inkWidth
                     * Float(widest > 0 ? layer.spec.width / widest : 1)
-                shading.margin = layer.spec.clipped ? Float(scene.margin) : .infinity
+                shading.depthTolerance = layer.spec.clipped ? Float(scene.depthTolerance) : .infinity
                 // At rest a sphere-traced surface's ink comes tested by the solid,
                 // and is drawn as it comes.
                 let sphereTraced = !options.draft && LineGeometry.isTestedExactly(layer, in: scene)
-                if sphereTraced { shading.margin = .infinity }
+                if sphereTraced { shading.depthTolerance = .infinity }
                 if layer.spec.clipped, !sphereTraced, let (buffer, visible) = ink.draw(i) {
                     var camera = KVInk(sight: SIMD3<Float>(scene.camera.view.projectionDirection),
                                        eye: SIMD3<Float>(eye.v),

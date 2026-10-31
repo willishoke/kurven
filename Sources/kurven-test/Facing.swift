@@ -8,8 +8,8 @@ import KurvenLandscape
 // MARK: - ink on a heightfield is hidden where the surface faces away
 //
 // A Gaussian ridge along y, seen from a plate camera whose line of sight has a
-// component across it: the near flank faces the eye, the steep part of the
-// far flank faces away, and the far flank's foot faces the eye again. Ink run
+// component across it: the near graph faces the eye, the steep part of the
+// far graph faces away, and the far graph's lower slope faces the eye again. Ink run
 // straight over the ridge on the surface must be cut at the two folds, found
 // on the exact gradient; with nothing in front of it, the depth test alone
 // keeps every vertex, which is the leak this test exists to close.
@@ -28,7 +28,7 @@ func facingTests() {
             }
         }
         let grid = Grid2D(width: nx, height: ny, domain: domain, values: values)
-        let surface = Surface(height: grid, phase: nil, caps: .none)
+        let surface = Surface(height: grid, phase: nil, truncation: .none)
         let field = Heightfield(surface: surface, occluder: Mesh(vertices: [], triangles: []),
                                 tiles: [.identity], step: 1)
 
@@ -57,7 +57,7 @@ func facingTests() {
         }])
         let projected = ink.mapped(camera.view)
         let scene = Scene(surface: surface, occluder: Mesh(vertices: [], triangles: []),
-                          tiles: [.identity], step: 1, layers: [], camera: camera, margin: 0.02)
+                          tiles: [.identity], step: 1, layers: [], camera: camera, depthTolerance: 0.02)
         guard let bounds = scene.viewBounds() else {
             Check.expect(false, "the ridge has bounds"); return
         }
@@ -65,9 +65,9 @@ func facingTests() {
         let empty = DepthImage(frame: frame,
                                values: [Float](repeating: -.infinity, count: frame.rows * frame.cols),
                                empty: -.infinity)
-        let byDepth = HiddenLine.clip(projected, against: empty, margin: 0.02)
-        // An infinite margin disarms the traversal: the facing alone decides.
-        let cut = field.visibleSurfaceInk(ink, view: camera.view, margin: .infinity).mapped(camera.view)
+        let byDepth = HiddenLine.clip(projected, against: empty, depthTolerance: 0.02)
+        // An infinite depth tolerance disarms the traversal: the facing alone decides.
+        let cut = field.visibleSurfaceInk(ink, view: camera.view, depthTolerance: .infinity).mapped(camera.view)
         Check.expect(byDepth.count == 1 && byDepth.vertices.count == ink.vertices.count,
                      "tested by depth alone, the whole path is kept")
 
@@ -87,7 +87,7 @@ func facingTests() {
             }
             previous = x
         }
-        Check.expect(folds.count == 2, "the far flank has two folds: steep enough to turn away, then not",
+        Check.expect(folds.count == 2, "the far graph has two folds: steep enough to turn away, then not",
                      "folds at \(folds.map { String(format: "%.3f", $0) })")
         guard folds.count == 2, cut.count == 2 else {
             Check.expect(cut.count == 2, "the ink is cut into two runs, one each side of the hidden stretch",
@@ -103,27 +103,27 @@ func facingTests() {
         Check.expect(kept < ink.vertices.count && kept > ink.vertices.count / 2,
                      "and the stretch between them, facing away, is gone",
                      "\(ink.vertices.count - kept) of \(ink.vertices.count) vertices hidden")
-        // With the traversal armed, the far foot -- facing the eye again, but
+        // With the traversal armed, the far lower slope -- facing the eye again, but
         // behind the ridge from where the eye is -- goes too: the line of sight
-        // from it passes under the crest.
-        let visible = field.visibleSurfaceInk(ink, view: camera.view, margin: 0.02).mapped(camera.view)
+        // from it passes under the top edge.
+        let visible = field.visibleSurfaceInk(ink, view: camera.view, depthTolerance: 0.02).mapped(camera.view)
         let lastKept = visible.vertices.last.map { simd_length($0.v - expected[0].v) } ?? .infinity
         Check.expect(visible.count == 1 && lastKept < 2e-3,
-                     "tested by the solid as well, only the near flank remains, up to the first fold",
+                     "tested by the solid as well, only the near graph remains, up to the first fold",
                      "\(visible.count) runs, last vertex \(String(format: "%.1e", lastKept)) from the fold")
     }
 }
 
-// MARK: - the fold lines of a heightfield
+// MARK: - the fold curves of a heightfield
 //
 // The same ridge: its folds are the two lines x = const where h'(x) is the
-// line of sight's slope, straight along y. `Heightfield.foldLines` must find
+// line of sight's slope, straight along y. `Heightfield.foldCurves` must find
 // both, nothing else, and put every vertex on them to rounding. Then a real
 // landscape: every fold vertex is where the surface faces exactly edge-on,
-// none sits on a cap, and the pits have their far edges.
+// none sits on a plateau, and the pits have their far edges.
 
-func foldLineTests() {
-    Check.suite("folds: a heightfield's fold lines are where it turns edge-on") {
+func foldCurveTests() {
+    Check.suite("folds: a heightfield's fold curves are where it turns edge-on") {
         let amplitude = 3.0, width = 0.5
         func height(_ x: Double) -> Double { amplitude * exp(-x * x / (width * width)) }
         func slope(_ x: Double) -> Double { -2 * x / (width * width) * height(x) }
@@ -136,7 +136,7 @@ func foldLineTests() {
             }
         }
         let surface = Surface(height: Grid2D(width: nx, height: ny, domain: domain, values: values),
-                              phase: nil, caps: .none)
+                              phase: nil, truncation: .none)
         let field = Heightfield(surface: surface, occluder: Mesh(vertices: [], triangles: []),
                                 tiles: [.identity], step: 1)
         let cameras = [0.0, 90.0].map {
@@ -158,8 +158,8 @@ func foldLineTests() {
             }
             previous = x
         }
-        let traced = field.foldLines(view: camera.view)
-        Check.expect(traced.count == 2, "two fold lines, one per analytic fold",
+        let traced = field.foldCurves(view: camera.view)
+        Check.expect(traced.count == 2, "two fold curves, one per analytic fold",
                      "\(traced.count) lines for folds at \(folds.map { String(format: "%.3f", $0) })")
         var worst = 0.0
         for v in traced.vertices {
@@ -173,7 +173,7 @@ func foldLineTests() {
                          "and each runs the whole width of the ridge",
                          String(format: "y from %.2f to %.2f", ys.min() ?? 0, ys.max() ?? 0))
         }
-        let grid = field.foldLines(view: camera.view, refined: false)
+        let grid = field.foldCurves(view: camera.view, refined: false)
         var gridWorst = 0.0
         for v in grid.vertices {
             gridWorst = max(gridWorst, folds.map { abs(v.x - $0) }.min() ?? .infinity)
@@ -188,45 +188,45 @@ func foldLineTests() {
         let bundle = try NativeLandscape.build(LandscapeRequest(preset: preset, resolution: 240))
         let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
         let h = scene.heightfield!
-        Check.expect(scene.layers.contains { if case .foldLines = $0.spec.source { return true }; return false },
-                     "a landscape describes its fold lines")
-        let folds = h.foldLines(view: scene.camera.view)
+        Check.expect(scene.layers.contains { if case .foldCurves = $0.spec.source { return true }; return false },
+                     "a landscape describes its fold curves")
+        let folds = h.foldCurves(view: scene.camera.view)
         let ink = (0..<folds.count).reduce(0.0) { total, i in
             let p = folds[path: i]
             return total + zip(p, p.dropFirst()).reduce(0) { $0 + simd_length($1.1.v - $1.0.v) }
         }
-        Check.expect(folds.count > 0 && ink > 1, "it has fold lines", String(format: "%d lines, %.2f units", folds.count, ink))
+        Check.expect(folds.count > 0 && ink > 1, "it has fold curves", String(format: "%d lines, %.2f units", folds.count, ink))
         guard scene.viewBounds() != nil else { Check.expect(false, "the plate has bounds"); return }
-        let visibility = HeightfieldVisibility(heightfield: h, view: scene.camera.view, margin: 0.02)
+        let visibility = HeightfieldVisibility(heightfield: h, view: scene.camera.view, depthTolerance: 0.02)
         // Every vertex but a run's end carried to a zero of f, which is on
         // the floor, where the grid's facing is its chord's.
         // Every vertex but a run's end carried to a zero (on the floor) or
-        // to the rim (on the crease, where the facing jumps).
-        let capAt = h.surface.caps
-        let offFold = folds.vertices.filter { $0.z > 1e-9 && $0.z < capAt.height(atX: $0.x) - 1e-9 }
+        // to the truncation edge (on the crease, where the facing jumps).
+        let truncationAt = h.surface.truncation
+        let offFold = folds.vertices.filter { $0.z > 1e-9 && $0.z < truncationAt.height(atX: $0.x) - 1e-9 }
             .map { ($0, abs(visibility.facing(P2($0.x, $0.y)))) }
         let worstOff = offFold.max { $0.1 < $1.1 }
         let edgeOn = worstOff?.1 ?? .infinity
-        let where_ = worstOff.map { String(format: " at (%.4f, %.4f, %.4f), cap %.3f, |f| %.4f", $0.0.x, $0.0.y, $0.0.z,
-                                           h.surface.caps.height(atX: $0.0.x), h.surface.magnitude(at: P2<DomainSpace>($0.0.x, $0.0.y))) } ?? ""
+        let where_ = worstOff.map { String(format: " at (%.4f, %.4f, %.4f), truncation %.3f, |f| %.4f", $0.0.x, $0.0.y, $0.0.z,
+                                           h.surface.truncation.height(atX: $0.0.x), h.surface.magnitude(at: P2<DomainSpace>($0.0.x, $0.0.y))) } ?? ""
         let offCount = offFold.filter { $0.1 > 1e-6 }.count
         Check.expect(edgeOn < 1e-6, "every vertex is where the surface faces exactly edge-on",
                      String(format: "worst |facing| %.1e", edgeOn) + where_ + ", \(offCount) of \(offFold.count) off")
         let atZeros = folds.vertices.filter { $0.z <= 1e-9 }.count
-        Check.expect(atZeros >= 2, "and the pits' silhouettes run down to their zeros on the front edge",
+        Check.expect(atZeros >= 2, "and the pits' outlines run down to their zeros on the front edge",
                      "\(atZeros) fold ends on the floor")
-        // Nothing on a cap but the one vertex where a fold up a flank meets
-        // the rim, which ends its run.
-        let cap = h.surface.caps
-        var interiorOnCap = 0, endsOnRim = 0
+        // Nothing on a plateau but the one vertex where a fold up a graph meets
+        // the truncation edge, which ends its run.
+        let truncationHeight = h.surface.truncation
+        var interiorOnPlateau = 0, endsOnTruncationEdge = 0
         for i in 0..<folds.count {
             let p = Array(folds[path: i])
-            for (k, v) in p.enumerated() where v.z >= cap.height(atX: v.x) - 1e-9 {
-                if k == 0 || k == p.count - 1 { endsOnRim += 1 } else { interiorOnCap += 1 }
+            for (k, v) in p.enumerated() where v.z >= truncationHeight.height(atX: v.x) - 1e-9 {
+                if k == 0 || k == p.count - 1 { endsOnTruncationEdge += 1 } else { interiorOnPlateau += 1 }
             }
         }
-        Check.expect(interiorOnCap == 0, "and none is on a cap but a run's end on the rim",
-                     "\(interiorOnCap) interior vertices on a cap, \(endsOnRim) ends on a rim")
+        Check.expect(interiorOnPlateau == 0, "and none is on a plateau but a run's end on the truncation edge",
+                     "\(interiorOnPlateau) interior vertices on a plateau, \(endsOnTruncationEdge) ends on a truncation edge")
         // The pit at -3: its far edge is a fold running down to the floor.
         let pit = folds.vertices.filter { abs($0.x + 3) < 0.4 && $0.y < 0.6 }
         Check.expect((pit.map(\.z).min() ?? .infinity) < 0.5,
@@ -245,7 +245,7 @@ func foldLineTests() {
 // The plate camera sees the right wall of rgamma nearly edge-on, and the
 // depth buffer erased most of its hatch, leaving spots. Visible by the wall
 // instead: every stroke on a wall that faces the eye is kept whole, every
-// stroke on a wall that faces away is dropped whole, a corner post stays
+// stroke on a wall that faces away is dropped whole, a corner vertical edge stays
 // while either of its walls shows, and the bake draws exactly that.
 
 func wallInkTests() {
@@ -283,7 +283,7 @@ func wallInkTests() {
         // The hatch lies in the face: whole strokes on facing walls, nothing
         // on the others.
         let hatch = scene.layers.first { $0.spec.name == "wall_hatch" }!
-        let keptHatch = h.visibleWallInk(hatch.paths, view: scene.camera.view, margin: scene.margin)
+        let keptHatch = h.visibleWallInk(hatch.paths, view: scene.camera.view, depthTolerance: scene.depthTolerance)
         var wanted = 0.0
         for i in 0..<hatch.paths.count {
             let p = Array(hatch.paths[path: i])
@@ -302,7 +302,7 @@ func wallInkTests() {
         Check.expect(strays.isEmpty, "wall_hatch: and nothing on a wall that faces away",
                      "\(strays.count) stray vertices " + strayNote)
         if let stray = strays.first {
-            let visibility = HeightfieldVisibility(heightfield: h, view: scene.camera.view, margin: scene.margin)
+            let visibility = HeightfieldVisibility(heightfield: h, view: scene.camera.view, depthTolerance: scene.depthTolerance)
             for i in 0..<hatch.paths.count {
                 let p = Array(hatch.paths[path: i])
                 guard p.contains(where: { simd_length($0.v - stray.v) < 1e-12 }) else { continue }
@@ -318,59 +318,59 @@ func wallInkTests() {
             }
         }
 
-        // The outline: a crest is the surface's edge and shows over any wall
-        // where the surface does; a foot shows only on a facing wall.
-        let outline = scene.layers.first { $0.spec.name == "wall_outline" }!
-        let keptOutline = h.visibleWallInk(outline.paths, view: scene.camera.view, margin: scene.margin)
-        func isCrest(_ p: [P3<WorldSpace>]) -> Bool {
+        // The outline: a top edge is the surface's edge and shows over any wall
+        // where the surface does; a bottom edge shows only on a facing wall.
+        let outline = scene.layers.first { $0.spec.name == "wall_edges" }!
+        let keptOutline = h.visibleWallInk(outline.paths, view: scene.camera.view, depthTolerance: scene.depthTolerance)
+        func isTopEdge(_ p: [P3<WorldSpace>]) -> Bool {
             p.allSatisfy { abs($0.z - h.surfaceHeight(at: P2($0.x, $0.y))) < 1e-9 * max(1, abs($0.z)) }
                 && !p.allSatisfy { $0.z == 0 }
         }
-        var crestWanted = [Double](repeating: 0, count: 4), crestGot = [Double](repeating: 0, count: 4)
-        var footHidden = true
+        var topEdgeWanted = [Double](repeating: 0, count: 4), topEdgeGot = [Double](repeating: 0, count: 4)
+        var bottomEdgeHidden = true
         for i in 0..<outline.paths.count {
             let p = Array(outline.paths[path: i])
             guard let wall = wallsOf(p[0]).first(where: { w in p.allSatisfy { wallsOf($0).contains(w) } }) else { continue }
-            if isCrest(p) { crestWanted[wall] += length(p) }
+            if isTopEdge(p) { topEdgeWanted[wall] += length(p) }
         }
         for i in 0..<keptOutline.count {
             let p = Array(keptOutline[path: i])
             guard let wall = wallsOf(p[0]).first(where: { w in p.allSatisfy { wallsOf($0).contains(w) } }) else { continue }
-            if isCrest(p) {
-                crestGot[wall] += length(p)
+            if isTopEdge(p) {
+                topEdgeGot[wall] += length(p)
             } else if p.allSatisfy({ $0.z == 0 }), !faces[wall] {
-                footHidden = false
+                bottomEdgeHidden = false
             }
         }
-        Check.expect(zip(crestGot, crestWanted).allSatisfy { $0 >= 0.95 * $1 },
-                     "wall_outline: every wall's crest is kept, the far edge included",
-                     "kept " + zip(crestGot, crestWanted).map { String(format: "%.1f/%.1f", $0, $1) }.joined(separator: " "))
-        Check.expect(footHidden, "wall_outline: and no foot of a wall that faces away")
+        Check.expect(zip(topEdgeGot, topEdgeWanted).allSatisfy { $0 >= 0.95 * $1 },
+                     "wall_outline: every wall's top edge is kept, the far edge included",
+                     "kept " + zip(topEdgeGot, topEdgeWanted).map { String(format: "%.1f/%.1f", $0, $1) }.joined(separator: " "))
+        Check.expect(bottomEdgeHidden, "wall_outline: and no foot of a wall that faces away")
 
-        // Where the rim of a plateau ends at the front edge -- the notch of a
-        // pit -- the crest has a vertex on it, so the two meet.
-        let rim = scene.layers.first { $0.spec.name == "cap_outline" }!.paths
-        var rimEnds: [P3<WorldSpace>] = []
-        for i in 0..<rim.count {
-            let p = rim[path: i]
-            for end in [p.first!, p.last!] where abs(end.y - box.lo.y) <= 1e-9 { rimEnds.append(end) }
+        // Where the truncation edge of a plateau ends at the front edge -- the notch of a
+        // pit -- the top edge has a vertex on it, so the two meet.
+        let truncationEdge = scene.layers.first { $0.spec.name == "truncation_edge" }!.paths
+        var truncationEdgeEnds: [P3<WorldSpace>] = []
+        for i in 0..<truncationEdge.count {
+            let p = truncationEdge[path: i]
+            for end in [p.first!, p.last!] where abs(end.y - box.lo.y) <= 1e-9 { truncationEdgeEnds.append(end) }
         }
-        let crestVertices = outline.paths.vertices.filter { abs($0.y - box.lo.y) <= 1e-9 }
+        let topEdgeVertices = outline.paths.vertices.filter { abs($0.y - box.lo.y) <= 1e-9 }
         var missed = 0.0
-        for end in rimEnds {
-            let nearest = crestVertices.map { simd_length($0.v - end.v) }.min() ?? .infinity
+        for end in truncationEdgeEnds {
+            let nearest = topEdgeVertices.map { simd_length($0.v - end.v) }.min() ?? .infinity
             missed = max(missed, nearest)
         }
-        Check.expect(rimEnds.count >= 2 && missed < 1e-9,
-                     "the crest meets the rim where the rim ends, at every notch",
-                     String(format: "%d rim ends on the front edge, worst gap %.1e", rimEnds.count, missed))
+        Check.expect(truncationEdgeEnds.count >= 2 && missed < 1e-9,
+                     "the top edge meets the truncation edge where the truncation edge ends, at every notch",
+                     String(format: "%d truncation edge ends on the front edge, worst gap %.1e", truncationEdgeEnds.count, missed))
         // The bake draws the tested ink as it is: the hatch on the edge-on
         // right wall is whole, not spotty.
         let baked = try MetalRenderer().bake(scene, options: BakeOptions(resolution: 400))
         let hatchIndex = scene.layers.firstIndex { $0.spec.name == "wall_hatch" }!
         let drawn = baked.strokes.layers[hatchIndex].paths
         let visible = h.visibleWallInk(scene.layers[hatchIndex].paths, view: scene.camera.view,
-                                      margin: scene.margin)
+                                      depthTolerance: scene.depthTolerance)
         Check.expect(drawn.count == visible.count && drawn.vertices.count == visible.vertices.count,
                      "the bake draws the wall hatch exactly as tested, stroke for stroke",
                      "\(drawn.count) strokes drawn, \(visible.count) tested")

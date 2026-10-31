@@ -33,7 +33,7 @@ final class Document {
     /// from one bundle is dropped if a different one is open when it lands.
     private(set) var version = 0
 
-    /// The landscape and its ink. Its camera and margin are whatever they were
+    /// The landscape and its ink. Its camera and depth tolerance are whatever they were
     /// when it was stored, and nothing reads them: `framedScene` supplies both.
     var scene: Scene?
     var navigator: Navigator?
@@ -44,7 +44,7 @@ final class Document {
     let frames = FrameClock()
 
     /// The scene as the window shows it: the stored landscape, through the
-    /// navigator's camera, clipped at the current margin.
+    /// navigator's camera, clipped at the current depth tolerance.
     ///
     /// Assembled on read so a drag writes one property rather than two. The
     /// sidebar lists `scene`'s layers, so writing `scene` on every mouse event
@@ -53,7 +53,7 @@ final class Document {
     var framedScene: Scene? {
         guard var scene, let navigator else { return nil }
         scene.camera = navigator.camera
-        scene.margin = margin
+        scene.depthTolerance = depthTolerance
         // A quarter of a drawable pixel: finer than any end of ink can show.
         scene.resolution = 0.25 * navigator.framing.unitsPerPixel
         return scene
@@ -62,7 +62,7 @@ final class Document {
     var mode: PreviewMode = .plate
     /// Layer indices that are drawn. Absent means all of them.
     var hiddenLayers: Set<Int> = []
-    var margin: Double = 0.02
+    var depthTolerance: Double = 0.02
 
     /// Per-layer level-count overrides, for the layers a bundle *described*
     /// rather than dumped. Absent means the bundle's own levels.
@@ -252,12 +252,12 @@ final class Document {
             adoptLandscape(bundle)
             return
         }
-        margin = preset.margin
+        depthTolerance = preset.depthTolerance
         bakeResolution = preset.buffer
         hiddenLayers = []
         levelCounts = [:]
 
-        var navigator = Navigator(orbit: Orbit(matching: preset.plate),
+        var navigator = Navigator(orbit: Orbit(matching: preset.projection),
                                   framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
         scene.camera = navigator.camera
         if let bounds = scene.quickBounds() {
@@ -288,11 +288,11 @@ final class Document {
             return
         }
         let preset = SurfaceRequest.preset
-        margin = preset.margin
+        depthTolerance = preset.depthTolerance
         bakeResolution = preset.buffer
         hiddenLayers = []
         levelCounts = [:]
-        var navigator = Navigator(orbit: Orbit(matching: preset.plate),
+        var navigator = Navigator(orbit: Orbit(matching: preset.projection),
                                   framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
         let scene = plate.scene(camera: navigator.camera)
         if let bounds = scene.quickBounds() {
@@ -318,11 +318,11 @@ final class Document {
 
     func use(preset: CameraPreset) {
         guard var scene, let navigator else { return }
-        scene.camera = Orbit(matching: preset.plate, target: navigator.orbit.target).camera
+        scene.camera = Orbit(matching: preset.projection, target: navigator.orbit.target).camera
         guard let bounds = scene.quickBounds() else { return }
-        margin = preset.margin
+        depthTolerance = preset.depthTolerance
         bakeResolution = preset.buffer
-        apply(.preset(preset.plate, bounds))
+        apply(.preset(preset.projection, bounds))
     }
 
     func retarget(to world: P3<WorldSpace>) { apply(.retarget(world)) }
@@ -444,7 +444,7 @@ final class Document {
                 + "orthographic, and a perspective bake has no oracle"
             return
         }
-        let options = BakeOptions(resolution: bakeResolution, margin: margin)
+        let options = BakeOptions(resolution: bakeResolution, depthTolerance: depthTolerance)
         baking = true
         bakeStatus = "baking \(bakeResolution)²…"
         Task {

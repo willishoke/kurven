@@ -25,7 +25,7 @@ import KurvenMath
 ///     clip/      the visible runs `HiddenLine.clip` cuts from view-space
 ///                polylines against a depth buffer.
 ///     hatch/     every hatching source derived from one grid, one perimeter
-///                and two kinds of cap, and the two derived style numbers.
+///                and two kinds of truncation, and the two derived style numbers.
 ///     expr/      three landscapes built natively, as bundles, and the specs
 ///                they were built from.
 ///
@@ -102,7 +102,7 @@ enum GoldenFixtures {
         return (height, phase)
     }
 
-    /// Four tiny bundles that between them use every arm of `Caps`, `Walls`,
+    /// Four tiny bundles that between them use every arm of `Truncation`, `Walls`,
     /// `Region` and `LayerSource`, a phase grid and no phase grid, tiles and no
     /// tiles, a clipped and an unclipped layer, a preset and no presets.
     static func contract(_ dir: URL) throws {
@@ -135,9 +135,9 @@ enum GoldenFixtures {
             PerimeterEdge(start: P2(-1, 1), end: P2(-1, 0), density: 4),
         ])
 
-        // (1) uniform cap, explicit wall mesh, two tiles, both layer kinds.
+        // (1) uniform truncation, explicit wall mesh, two tiles, both layer kinds.
         let mesh = try bundle("uniform_mesh.kurven", Manifest(
-            domain: domain, height: heightRef, phase: phaseRef, caps: .uniform(2.5),
+            domain: domain, height: heightRef, phase: phaseRef, truncation: .uniform(2.5),
             occluder: Occluder(step: 2,
                                tiles: [.identity, Affine2(a: -1, b: 0, tx: 3, c: 0, d: 1, ty: 0)],
                                walls: .mesh(vertices: "occluder/walls.npy",
@@ -151,7 +151,7 @@ enum GoldenFixtures {
                           source: .file(vertices: "layers/hatch.npy", offsets: "layers/hatch.idx.npy"),
                           width: 0.25, heightPolicy: .surface, color: "#333333", clipped: false),
             ],
-            presets: [CameraPreset(name: "recip", plate: recip, margin: 0.02, buffer: 512)],
+            presets: [CameraPreset(name: "recip", projection: recip, depthTolerance: 0.02, buffer: 512)],
             provenance: provenance("tiny", ["res": .int(4)])),
             phase: true,
             inputs: ["layers/mag.npy", "layers/mag.idx.npy",
@@ -163,13 +163,13 @@ enum GoldenFixtures {
         try NPY.write([0, 1, 2, 0, 2, 3], shape: [2, 3],
                       to: occluder.appendingPathComponent("walls.tri.npy"))
 
-        // (2) real-band caps, walls described as a perimeter, no phase, no
+        // (2) real-band truncations, walls described as a perimeter, no phase, no
         //     tiles beyond the identity, several presets; a described layer
-        //     beside a dumped one, and the whole Keep vocabulary.
+        //     beside a dumped one, and the whole Restriction vocabulary.
         _ = try bundle("bands_perimeter.kurven", Manifest(
             domain: domain, height: heightRef, phase: nil,
-            caps: .realBands([RealBand(below: -3.5, cap: 8), RealBand(below: -2.5, cap: 6),
-                              RealBand(below: -1.5, cap: 4)], beyond: 3),
+            truncation: .realBands([RealBand(below: -3.5, height: 8), RealBand(below: -2.5, height: 6),
+                              RealBand(below: -1.5, height: 4)], beyond: 3),
             occluder: Occluder(step: 1, tiles: [.identity],
                                walls: .perimeter(perimeter, base: 0),
                                region: .inside(perimeter), base: 0),
@@ -179,55 +179,55 @@ enum GoldenFixtures {
                           width: 0.15, heightPolicy: .magnitude),
                 LayerSpec(name: "mag_derived", role: .magnitude,
                           source: .contour(field: .magnitude, levels: [0.5, 1.0, 1.5],
-                                           keep: .every([.region, .belowCap,
+                                           restriction: .intersection([.footprint, .belowTruncation,
                                                          .band(axis: .imag, lo: -1, hi: 1)]),
                                            tiled: false),
                           width: 0.3, heightPolicy: .level),
                 LayerSpec(name: "all_levels", role: .magnitude,
-                          source: .contour(field: .phase, levels: [0.25], keep: .all, tiled: true),
+                          source: .contour(field: .phase, levels: [0.25], restriction: .all, tiled: true),
                           width: 0.2, heightPolicy: .surface),
             ],
-            presets: presets.map { CameraPreset(name: $0.0, plate: $0.1, margin: 0.01, buffer: 1024) },
+            presets: presets.map { CameraPreset(name: $0.0, projection: $0.1, depthTolerance: 0.01, buffer: 1024) },
             provenance: provenance("tiny_bands")),
             phase: false, inputs: ["layers/ang.npy", "layers/ang.idx.npy"])
 
         // (3) a landscape's own shape: every layer described, and the four
         //     hatching kinds alongside a contour family.
         _ = try bundle("landscape.kurven", Manifest(
-            domain: domain, height: heightRef, phase: phaseRef, caps: .uniform(1.75),
+            domain: domain, height: heightRef, phase: phaseRef, truncation: .uniform(1.75),
             occluder: Occluder(step: 1, tiles: [.identity],
                                walls: .perimeter(perimeter, base: 0), region: .full, base: 0),
             layers: [
                 LayerSpec(name: "mag_major", role: .magnitude,
                           source: .contour(field: .magnitude, levels: [0.5, 1.0, 1.5],
-                                           keep: .belowCap, tiled: false),
+                                           restriction: .belowTruncation, tiled: false),
                           width: 0.4, heightPolicy: .level),
-                LayerSpec(name: "cap_outline", role: .scaffold, source: .capOutline(tiled: false),
+                LayerSpec(name: "truncation_edge", role: .scaffold, source: .truncationEdge(tiled: false),
                           width: 0.4, heightPolicy: .level),
-                LayerSpec(name: "cap_hatch", role: .scaffold,
-                          source: .capHatch(axis: .real, spacing: 0.25, tiled: false),
+                LayerSpec(name: "plateau_hatch", role: .scaffold,
+                          source: .plateauHatching(axis: .real, spacing: 0.25, tiled: false),
                           width: 0.2, heightPolicy: .level),
-                LayerSpec(name: "cap_hatch_tiled", role: .scaffold,
-                          source: .capHatch(axis: .imag, spacing: 0.4, tiled: true),
+                LayerSpec(name: "plateau_hatch_tiled", role: .scaffold,
+                          source: .plateauHatching(axis: .imag, spacing: 0.4, tiled: true),
                           width: 0.2, heightPolicy: .level),
-                LayerSpec(name: "wall_outline", role: .scaffold,
-                          source: .wallOutline(edges: [0, 1, 2, 3], pitch: 0.1, base: 0),
+                LayerSpec(name: "wall_edges", role: .scaffold,
+                          source: .wallEdges(edges: [0, 1, 2, 3], step: 0.1, base: 0),
                           width: 0.3, heightPolicy: .surface),
                 LayerSpec(name: "wall_hatch", role: .scaffold,
-                          source: .wallHatch(edges: [0, 2], spacing: 0.3, pitch: 0.1, trim: true,
+                          source: .wallHatching(edges: [0, 2], spacing: 0.3, step: 0.1, trim: true,
                                              base: 0.01, topOffset: -0.02),
                           width: 0.25, heightPolicy: .surface),
-                LayerSpec(name: "folds", role: .outline, source: .foldLines,
+                LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                           width: 0.4, heightPolicy: .surface),
             ],
-            presets: [CameraPreset(name: "plate", plate: recip, margin: 0.02, buffer: 4000)],
+            presets: [CameraPreset(name: "plate", projection: recip, depthTolerance: 0.02, buffer: 4000)],
             provenance: provenance("1/gamma(z)", ["expression": .string("1/gamma(z)"),
                                                   "resolution": .int(4)])),
             phase: true)
 
-        // (4) the empty case: no caps, no walls, no layers, no presets.
+        // (4) the empty case: no truncations, no walls, no layers, no presets.
         _ = try bundle("empty.kurven", Manifest(
-            domain: domain, height: heightRef, phase: nil, caps: .none,
+            domain: domain, height: heightRef, phase: nil, truncation: .none,
             occluder: Occluder(step: 1, tiles: [.identity], walls: .none, region: .full, base: 0),
             layers: [], presets: [], provenance: provenance("tiny_empty")),
             phase: false)
@@ -277,7 +277,7 @@ enum GoldenFixtures {
         let offsets = try NPY.read(contentsOf: input(
             dir.appendingPathComponent("view.idx.npy"))).ints()
         let visible = HiddenLine.clip(PolylineSet(vertices: view, offsets: offsets),
-                                      against: depth, margin: try meta.double("margin", "clip meta"))
+                                      against: depth, depthTolerance: try meta.double("depthTolerance", "clip meta"))
         try save(visible, columns: 2, to: dir, stem: "expected")
         meta["segments"] = .int(visible.count)
         try text(JSONValue.object(meta).pretty() + "\n", to: metaURL)
@@ -287,8 +287,8 @@ enum GoldenFixtures {
 
     /// The hatching fixture's landscape: a grid small enough to read and
     /// awkward enough to matter. One pole sits just inside the back edge, so a
-    /// wall crest runs into the cap and the two truncations disagree about
-    /// where it stops; the other is interior, so there is a plateau with a rim
+    /// wall top edge runs into the truncation and the two truncations disagree about
+    /// where it stops; the other is interior, so there is a plateau with a truncation edge
     /// all the way round. Both are off the sample grid, because a pole *on*
     /// a sample is an infinity in the grid and this fixture is about hatching,
     /// not about sanitizing.
@@ -315,44 +315,44 @@ enum GoldenFixtures {
             PerimeterEdge(start: P2(r.hi, i.hi), end: P2(r.lo, i.hi), density: 19),
             PerimeterEdge(start: P2(r.lo, i.hi), end: P2(r.lo, i.lo), density: 11),
         ])
-        let caps: [(String, Caps)] = [
+        let truncation: [(String, Truncation)] = [
             ("uniform", .uniform(2)),
-            // A staircase whose boundary falls between the two poles, so a cap
+            // A staircase whose boundary falls between the two poles, so a truncation
             // stroke has to stop at the band edge and start again at another
             // height.
-            ("bands", .realBands([RealBand(below: -1, cap: 1.2), RealBand(below: 0.4, cap: 2.5)],
+            ("bands", .realBands([RealBand(below: -1, height: 1.2), RealBand(below: 0.4, height: 2.5)],
                                  beyond: 1.6)),
         ]
         let sources: [(String, LayerSource)] = [
-            ("wall_hatch", .wallHatch(edges: [0, 1, 2, 3], spacing: 0.35, pitch: 0.5, trim: true,
+            ("wall_hatch", .wallHatching(edges: [0, 1, 2, 3], spacing: 0.35, step: 0.5, trim: true,
                                       base: 0, topOffset: 0)),
-            ("wall_hatch_untrimmed", .wallHatch(edges: [0, 2], spacing: 0.6, pitch: 0.25,
+            ("wall_hatch_untrimmed", .wallHatching(edges: [0, 2], spacing: 0.6, step: 0.25,
                                                 trim: false, base: 0.1, topOffset: -0.05)),
-            ("wall_outline", .wallOutline(edges: [0, 1, 2, 3], pitch: 0.4, base: 0)),
-            ("cap_hatch_real", .capHatch(axis: .real, spacing: 0.25, tiled: false)),
-            ("cap_hatch_imag", .capHatch(axis: .imag, spacing: 0.3, tiled: false)),
-            ("cap_outline", .capOutline(tiled: false)),
+            ("wall_edges", .wallEdges(edges: [0, 1, 2, 3], step: 0.4, base: 0)),
+            ("plateau_hatch_real", .plateauHatching(axis: .real, spacing: 0.25, tiled: false)),
+            ("plateau_hatch_imag", .plateauHatching(axis: .imag, spacing: 0.3, tiled: false)),
+            ("truncation_edge", .truncationEdge(tiled: false)),
         ]
 
         var cases: [JSONValue] = []
-        for (capName, cap) in caps {
-            let surface = Surface(height: grid, phase: nil, caps: cap)
+        for (truncationName, truncationHeight) in truncation {
+            let surface = Surface(height: grid, phase: nil, truncation: truncationHeight)
             let context = Surface.HatchContext(perimeter: perimeter)
             for (sourceName, source) in sources {
                 guard let paths = surface.hatch(source, in: context) else {
                     throw CLIError("\(sourceName) is not a hatching")
                 }
-                let stem = "\(capName)_\(sourceName)"
+                let stem = "\(truncationName)_\(sourceName)"
                 try save(paths, columns: 3, to: dir, stem: stem)
                 cases.append(.object([
-                    "name": .string(stem), "caps": .string(capName), "source": source.json,
+                    "name": .string(stem), "truncation": .string(truncationName), "source": source.json,
                     "vertices": .string("\(stem).npy"), "offsets": .string("\(stem).idx.npy"),
                     "paths": .int(paths.count)]))
             }
         }
 
         // The two derived numbers a consumer computes for itself, because a
-        // cap it moves has to bring the contour levels with it.
+        // truncation it moves has to bring the contour levels with it.
         let style: JSONValue = .object([
             "nice": .array([0.037, 0.12, 0.5, 1.0, 1.4, 2.3, 4.9, 6.0, 7.5, 23.0, 180.0].map { x in
                 .object(["x": .double(x), "up": .double(LandscapeStyle.nice(x)),
@@ -369,7 +369,7 @@ enum GoldenFixtures {
             "domain": hatchDomain.json,
             "shape": .object(["ny": .int(ny), "nx": .int(nx)]),
             "perimeter": perimeter.json,
-            "caps": .object(Dictionary(uniqueKeysWithValues: caps.map { ($0.0, $0.1.json) })),
+            "truncation": .object(Dictionary(uniqueKeysWithValues: truncation.map { ($0.0, $0.1.json) })),
             "cases": .array(cases),
             "style": style,
         ])
@@ -403,7 +403,7 @@ enum GoldenFixtures {
             try bundle.write(to: url)
             // A spec spells out what it leaves to the rules, as null.
             var json = try spec.json.object("spec")
-            for key in ["caps", "spacing", "layers"] where json[key] == nil { json[key] = .null }
+            for key in ["truncation", "spacing", "layers"] where json[key] == nil { json[key] = .null }
             entries.append(.object(["bundle": .string("\(stem).kurven"), "spec": .object(json),
                                     "layers": .int(bundle.manifest.layers.count)]))
         }

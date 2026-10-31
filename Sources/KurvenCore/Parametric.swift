@@ -228,7 +228,7 @@ public extension ParametricSurface {
     /// line running along it closes, its last vertex one period past its
     /// first so the coordinates stay continuous; on a bounded axis they
     /// include both ends.
-    func parameterLines(counts lines: (u: Int, v: Int),
+    func coordinateCurves(counts lines: (u: Int, v: Int),
                         resolution: Int) -> PolylineSet<WorldSpace> {
         var coords: [[P2<ParamSpace>]] = []
         func place(_ axis: ParamAxis, _ k: Int, of count: Int) -> Double {
@@ -260,9 +260,9 @@ public extension ParametricSurface {
         return PolylineSet(paths: paths, coords: lines)
     }
 
-    /// The fold lines for lines of sight along `sight`: where the surface turns
+    /// The fold curves for lines of sight along `sight`: where the surface turns
     /// edge-on, `n · sight = 0`, which is where its outline and every inner
-    /// silhouette lie.
+    /// outline lie.
     ///
     /// Traced by marching squares on that product over the parameter
     /// rectangle -- sampled one step past a periodic axis's end, so a fold
@@ -270,17 +270,17 @@ public extension ParametricSurface {
     /// moved onto the exact fold by bisection along the product's gradient.
     /// The grid decides which folds exist; the map decides where they run.
     /// Where the sign changes across a crease rather than through a zero
-    /// -- a cap's rim, which the rim's own ink draws -- the vertex is
+    /// -- a truncation edge, which the truncation edge's own ink draws -- the vertex is
     /// dropped and the line cut there. From a cut the fold is traced on in
     /// steps a sixteenth of a cell, each set onto the fold by the map, to
     /// where it meets the crease or another cut: a fold down a steep wall
     /// can run its whole visible length inside one cell, where the grid
     /// has no vertex for it. Where the grid has none of a fold at all,
-    /// `creases` -- the rims, in surface coordinates -- seed it: a fold
+    /// `creases` -- the truncation edges, in surface coordinates -- seed it: a fold
     /// meets a crease where the facing a hair to one side of it changes
     /// sign along it, and is traced from there both ways.
     /// They depend on the camera, so they are derived for one, never stored.
-    func foldLines(sight: SIMD3<Double>, grid: (u: Int, v: Int)? = nil,
+    func foldCurves(sight: SIMD3<Double>, grid: (u: Int, v: Int)? = nil,
                    creases: [[P2<ParamSpace>]] = []) -> PolylineSet<WorldSpace> {
         let nu = grid?.u ?? u.cells, nv = grid?.v ?? v.cells
         @Sendable func edgeOn(_ c: P2<ParamSpace>) -> Double {
@@ -313,7 +313,7 @@ public extension ParametricSurface {
         // hundredth of the size holds most of it. That is no fold: nil.
         // Nor is a vertex the map finds no zero beside, within a cell
         // either way: the grid saw a sign change the map does not have,
-        // as across a crease, where a grid cell holds the cap and the
+        // as across a crease, where a grid cell holds the truncation and the
         // wall.
         let h = 0.25 * min(du, dv)
         @Sendable func gradient(_ c: SIMD2<Double>, _ h: Double) -> SIMD2<Double> {
@@ -501,7 +501,7 @@ public extension ParametricSurface {
     /// one-sided at a bounded axis's ends -- `u` fastest, as `positions`.
     ///
     /// They do not depend on the camera, so they are computed once per
-    /// surface and handed to `gridFoldLines` for every camera after.
+    /// surface and handed to `gridFoldCurves` for every camera after.
     /// Where the grid is degenerate the normal is zero.
     func gridNormals() -> [SIMD3<Float>] {
         let nu = u.samples, nv = v.samples
@@ -524,7 +524,7 @@ public extension ParametricSurface {
         return normals
     }
 
-    /// The fold lines as the grid sees them: `foldLines` without asking
+    /// The fold curves as the grid sees them: `foldCurves` without asking
     /// the map anything.
     ///
     /// Marching squares on `n · sight` at the grid points, from normals
@@ -533,12 +533,12 @@ public extension ParametricSurface {
     /// a fold is as accurate as the grid is fine, which at a drawing
     /// grid is well under a pixel, and costs a dot product per grid
     /// point: fast enough to follow the camera. The preview draws these; the
-    /// bake keeps `foldLines`, whose vertices are exact.
-    func gridFoldLines(normals: [SIMD3<Float>],
+    /// bake keeps `foldCurves`, whose vertices are exact.
+    func gridFoldCurves(normals: [SIMD3<Float>],
                           sight: SIMD3<Double>) -> PolylineSet<WorldSpace> {
         precondition(normals.count == positions.count,
                      "\(normals.count) normals for \(positions.count) grid points")
-        // One column and row past a periodic axis's end, as `foldLines`
+        // One column and row past a periodic axis's end, as `foldCurves`
         // samples: the seam's cells close on the first samples.
         let nu = u.cells, nv = v.cells, stride = u.samples
         let s = SIMD3<Float>(sight)
@@ -617,20 +617,20 @@ public extension ParametricSurface {
         return (i, j, a, b)
     }
 
-    /// Windings: straight lines through the parameter rectangle, `slope`
+    /// Linear curves: straight lines through the parameter rectangle, `slope`
     /// turns of `v` per turn of `u`, glued into curves on the torus.
     ///
-    /// A winding is what a torus's coordinates make of a straight line, and
+    /// A linear curve is what a torus's coordinates make of a straight line, and
     /// the same line on every torus with these coordinates: it lives on the
     /// flat torus, and the map -- any map -- is what puts it in space. The
-    /// parameter lines are its two ends, slope zero and slope infinite; the
+    /// coordinate curves are its two ends, slope zero and slope infinite; the
     /// trajectory of a forced system, in the coordinates of its fitted torus,
     /// is the one with the system's own rotation number.
     ///
     /// `count` strands start at `start` -- the rectangle's origin unless
     /// given -- and evenly spaced from it along `v`, and each runs `turns`
     /// turns of `u` -- or, when `slope` is a fraction `p/q` with `q ≤
-    /// turns`, the `q` turns after which it closes, so a rational winding is
+    /// turns`, the `q` turns after which it closes, so a rational linear curve is
     /// one closed (p, q) curve and an irrational one is a stretch of a curve
     /// that never closes. A vertex per grid cell along the steeper axis,
     /// placed by `interpolate`, so the ink lies on the drawn surface; each
@@ -638,12 +638,12 @@ public extension ParametricSurface {
     /// than eight turns from zero, so the preview's float32 still resolves a
     /// pixel's worth of it: a path is ended and the next begun from the same
     /// vertex every eight turns.
-    func winding(slope: Double, turns: Int, count: Int = 1,
+    func linearCurves(slope: Double, turns: Int, count: Int = 1,
                  start: P2<ParamSpace>? = nil) -> PolylineSet<WorldSpace> {
-        precondition(u.periodic && v.periodic, "a winding is a curve on a torus")
+        precondition(u.periodic && v.periodic, "a linear curve is a curve on a torus")
         precondition(turns >= 1 && count >= 1 && slope.isFinite,
-                     "a winding wants a finite slope and at least one turn of one strand")
-        let drawn = Self.windingCloses(slope: slope, within: turns) ?? turns
+                     "a linear curve wants a finite slope and at least one turn of one strand")
+        let drawn = Self.linearCurveCloses(slope: slope, within: turns) ?? turns
         let steps = max(u.cells, Int((abs(slope) * Double(v.cells)).rounded(.up)))
         let du = u.range.length / Double(steps), dv = slope * v.range.length / Double(steps)
         let span = 8 * u.range.length
@@ -675,10 +675,10 @@ public extension ParametricSurface {
         return PolylineSet(paths: paths, coords: coords)
     }
 
-    /// The turns after which a winding of `slope` closes -- the denominator
+    /// The turns after which a linear curve of `slope` closes -- the denominator
     /// of a fraction, to within rounding -- when that is within `turns`;
-    /// nil for a winding that runs out its turns open.
-    static func windingCloses(slope: Double, within turns: Int) -> Int? {
+    /// nil for a linear curve that runs out its turns open.
+    static func linearCurveCloses(slope: Double, within turns: Int) -> Int? {
         guard turns >= 1 else { return nil }
         return (1...turns).first { k in
             let w = slope * Double(k)

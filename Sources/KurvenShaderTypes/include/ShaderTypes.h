@@ -36,9 +36,9 @@ typedef struct {
     simd_uint2  gridSize;      // the full texture size, before decimation
     uint32_t    step;          // texel stride: grid sample i reads texel i*step
 
-    // A uniform cap stays a live knob (min() in the shader). Band caps are
+    // A uniform truncation stays a live knob (min() in the shader). Band truncations are
     // baked into the texture before upload, and this is +INFINITY for them.
-    float cap;
+    float truncationHeight;
 
     // Number of polygon corners bounding the rasterized region; 0 means the
     // whole rectangle.
@@ -73,17 +73,17 @@ typedef struct {
 typedef struct {
     simd_float4 color;
     // Added to a line's view depth before it is compared with the surface --
-    // `outline.clip_hidden_lines`' margin, applied per fragment instead of per
+    // `outline.clip_hidden_lines`' depth tolerance, applied per fragment instead of per
     // vertex. That, and `slopeScale` below, are the whole gap between preview
     // and bake.
-    float margin;
+    float depthTolerance;
     // The value the depth texture holds where nothing was drawn.
     float empty;
     // How many pixels' worth of the surface's own depth change to add to the
-    // margin, per fragment. Preview only, and not in the bake: the preview
+    // depth tolerance, per fragment. Preview only, and not in the bake: the preview
     // compares a line's depth where it crosses a pixel with the surface's depth
     // at the pixel's centre, and on a surface that is steep in view those
-    // differ by more than any constant margin. Zero is the bake's predicate.
+    // differ by more than any constant depth tolerance. Zero is the bake's predicate.
     float slopeScale;
     // Key light direction in view space, and how much light reaches the parts
     // it does not.

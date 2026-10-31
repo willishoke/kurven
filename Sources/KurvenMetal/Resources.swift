@@ -17,9 +17,9 @@ final class SceneResources {
     let content: ContentID
 
     let heights: MTLTexture
-    /// True when the cap is already folded into `heights` (band caps depend on
-    /// x, so they are baked; a uniform cap stays a live uniform).
-    let capBaked: Bool
+    /// True when the truncation is already folded into `heights` (banded truncations depend on
+    /// x, so they are baked; a uniform truncation stays a live uniform).
+    let truncationBaked: Bool
 
     /// The decimated grid: dimensions and domain only. The heights come from
     /// the texture, so the samples themselves are never on the CPU.
@@ -42,9 +42,9 @@ final class SceneResources {
         content = scene.content
 
         let grid: Grid2D<Float>
-        switch h.surface.caps {
-        case .none, .uniform: grid = h.surface.height; capBaked = false
-        case .realBands: grid = h.surface.clamped(); capBaked = true
+        switch h.surface.truncation {
+        case .none, .uniform: grid = h.surface.height; truncationBaked = false
+        case .realBands: grid = h.surface.clamped(); truncationBaked = true
         }
         gridWidth = grid.width
         gridHeight = grid.height

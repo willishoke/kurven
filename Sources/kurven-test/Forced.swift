@@ -56,7 +56,7 @@ func forcedTorusTests() {
                      String(format: "worst %.2e, bound %.2e, over %d vertices in %d paths",
                             worst, bound, ink.vertices.count, ink.count))
 
-        // What the plates draw is not this ink but the winding at the
+        // What the plates draw is not this ink but the linear curve at the
         // rotation number from the samples' start, placed from the grid.
         // Held to the integrated trajectory: every integrated vertex's
         // coordinate lies on that leaf -- at its wrapped θ, the leaf passes
@@ -98,12 +98,12 @@ func forcedTorusTests() {
                                                source: .trajectory, width: 0.08,
                                                heightPolicy: .surface),
                                paths: try found.trajectory(e, duration: 500, every: 0.02))
-        let folds = Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldLines,
+        let folds = Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                                           width: 0.5, heightPolicy: .surface),
                           paths: .empty)
         let camera = Camera.plate(PlateProjection(shear: 0, xAngle: -58, zAngle: 35,
                                                   flipX: false, yScale: nil))
-        let scene = Scene(surface: surface, layers: [trajectory, folds], camera: camera, margin: 0)
+        let scene = Scene(surface: surface, layers: [trajectory, folds], camera: camera, depthTolerance: 0)
         let baked = try MetalRenderer().bake(scene, options: BakeOptions(resolution: 2000))
         // On an embedded surface with its outside computed rightly, what is
         // front-most at any pixel faces the eye; only pixels along the
@@ -184,9 +184,9 @@ func gridFoldTests(_ found: InvariantTorus) {
                                           yScale: nil)] {
                 let camera = Camera.plate(plate)
                 let sight = camera.view.projectionDirection
-                let exact = surface.foldLines(sight: sight)
-                let grid = surface.gridFoldLines(normals: normals, sight: sight)
-                let scene = Scene(surface: surface, layers: [], camera: camera, margin: 0)
+                let exact = surface.foldCurves(sight: sight)
+                let grid = surface.gridFoldCurves(normals: normals, sight: sight)
+                let scene = Scene(surface: surface, layers: [], camera: camera, depthTolerance: 0)
                 guard let bounds = scene.quickBounds() else {
                     Check.expect(false, "\(name) has bounds"); continue
                 }
@@ -207,13 +207,13 @@ func gridFoldTests(_ found: InvariantTorus) {
                                                source: .trajectory, width: 0.08,
                                                heightPolicy: .surface),
                                paths: try found.trajectory(e, duration: 500, every: 0.02))
-        let folds = Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldLines,
+        let folds = Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                                           width: 0.6, heightPolicy: .surface),
                           paths: .empty)
         let orbit = Orbit(matching: PlateProjection(shear: 0, xAngle: -55, zAngle: 30,
                                                     flipX: false, yScale: nil))
         let scene = Scene(surface: forced, layers: [trajectory, folds], camera: orbit.camera,
-                          margin: 0)
+                          depthTolerance: 0)
         guard let bounds = scene.quickBounds() else {
             Check.expect(false, "the forced torus has bounds"); return
         }
@@ -318,37 +318,37 @@ func surfacePlateTests() {
                  keepsSurface: true)
         try edit("forced, radius", forcedRequest(), forcedRequest(radius: 3), keepsSurface: false)
 
-        // A winding is ink alone, on any torus: turning it on, moving its
+        // A linear curve is ink alone, on any torus: turning it on, moving its
         // slope and adding strands all keep the surface. Its slope moves
         // under a slider, so this is the edit that must cost only its own
         // vertices.
-        var wound = ring; wound.winding = SurfaceRequest.Winding(slope: 0.4, turns: 24, count: 1)
-        var steeper = wound; steeper.winding?.slope = 0.618
-        var braided = wound; braided.winding?.count = 3
-        try edit("torus, winding on", ring, wound, keepsSurface: true)
-        try edit("torus, winding slope", wound, steeper, keepsSurface: true)
-        try edit("torus, winding strands", wound, braided, keepsSurface: true)
+        var wound = ring; wound.linearCurves = SurfaceRequest.LinearCurves(slope: 0.4, turns: 24, count: 1)
+        var steeper = wound; steeper.linearCurves?.slope = 0.618
+        var braided = wound; braided.linearCurves?.count = 3
+        try edit("torus, linear curve on", ring, wound, keepsSurface: true)
+        try edit("torus, linear curve slope", wound, steeper, keepsSurface: true)
+        try edit("torus, linear curve strands", wound, braided, keepsSurface: true)
         var forcedWound = forcedRequest()
-        forcedWound.winding = SurfaceRequest.Winding(slope: 1.0 / 3, turns: 24, count: 2)
-        var forcedSteeper = forcedWound; forcedSteeper.winding?.slope = 0.5
-        try edit("forced, winding on", forcedRequest(), forcedWound, keepsSurface: true)
-        try edit("forced, winding slope", forcedWound, forcedSteeper, keepsSurface: true)
+        forcedWound.linearCurves = SurfaceRequest.LinearCurves(slope: 1.0 / 3, turns: 24, count: 2)
+        var forcedSteeper = forcedWound; forcedSteeper.linearCurves?.slope = 0.5
+        try edit("forced, linear curve on", forcedRequest(), forcedWound, keepsSurface: true)
+        try edit("forced, linear curve slope", forcedWound, forcedSteeper, keepsSurface: true)
         let woundPlate = try SurfacePlate.build(forcedWound)
-        Check.expect(woundPlate.layers.map(\.spec.name) == ["trajectory", "winding", "folds"],
-                     "a forced plate's winding is drawn between its trajectory and its folds")
-        // The winding's fields edit the winding and nothing else, and are
+        Check.expect(woundPlate.layers.map(\.spec.name) == ["trajectory", "linearCurves", "folds"],
+                     "a forced plate's linear curve is drawn between its trajectory and its folds")
+        // The linear curve's fields edit the linear curve and nothing else, and are
         // absent until there is one.
         var byField = forcedRequest()
         byField[.slope] = 0.7
         Check.expect(byField[.slope] == nil && byField == forcedRequest(),
-                     "without a winding, its fields are nil and setting them changes nothing")
+                     "without a linear curve, its fields are nil and setting them changes nothing")
         byField = forcedWound
         byField[.slope] = 0.7; byField[.turns] = 12; byField[.strands] = 4
-        Check.expect(byField.winding == SurfaceRequest.Winding(slope: 0.7, turns: 12, count: 4)
+        Check.expect(byField.linearCurves == SurfaceRequest.LinearCurves(slope: 0.7, turns: 12, count: 4)
                      && byField.shape == forcedWound.shape,
                      "and with one, they are its slope, turns and strands")
 
-        // The trajectory is a winding: its turns are its own, and the whole
+        // The trajectory is a linear curve: its turns are its own, and the whole
         // of it -- turns, coordinates, slope -- comes from the fit, with
         // nothing integrated.
         let thirty = try SurfacePlate.build(forcedRequest(turns: 30))
@@ -359,7 +359,7 @@ func surfacePlateTests() {
         }
         Check.expect(abs(spans.reduce(0, +) - 30) < 1e-9 && spans.count == 4
                      && spans.allSatisfy { $0 <= 8 + 1e-9 },
-                     "thirty turns of trajectory are thirty turns of the winding, in four paths",
+                     "thirty turns of trajectory are thirty turns of the linear curve, in four paths",
                      String(format: "%.6f turns in %d paths", spans.reduce(0, +), spans.count))
 
         // What an edit can leave stale is the renderer's: the surface's

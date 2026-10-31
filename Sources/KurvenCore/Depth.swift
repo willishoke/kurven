@@ -9,7 +9,7 @@ import simd
 /// coordinate exactly on `lo` from flooring to -1 under float jitter. Anything
 /// else here is a half-pixel shift between what the renderer drew and what the
 /// clipper reads, which shows up as ink leaking through the surface along
-/// silhouettes and nowhere else.
+/// outlines and nowhere else.
 ///
 /// `axis0` is the first view component and indexes *rows*; `axis1` is the second
 /// and indexes columns. That is the Python convention and the reason `ZBuffer`
@@ -169,7 +169,7 @@ public struct DepthFrame: Sendable, Equatable {
 /// `empty` is the value stored where nothing was drawn -- `-.infinity` for a
 /// buffer built the way Python builds one, and a large negative sentinel for one
 /// that came off the GPU, because Metal cannot clear a float attachment to
-/// infinity. The two are interchangeable for the visibility test (`z + margin`
+/// infinity. The two are interchangeable for the visibility test (`z + depthTolerance`
 /// beats either for any real depth), so carrying the sentinel rather than
 /// rewriting it costs nothing and saves a pass over the whole buffer: on a
 /// 16000-square bake that pass was 400 ms of the 1600 the bake took.

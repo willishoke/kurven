@@ -13,7 +13,7 @@ import KurvenMath
 /// plane, marching squares on |f| and arg f, the phase wraps dropped, every
 /// vertex placed on the function's level set by `ContourRefiner` and every
 /// phase line carried to the zero or pole it ends at. The window sampled is
-/// the period rectangle and a margin of cells past it on every side: the
+/// the period rectangle and a padding of cells past it on every side: the
 /// torus is the plane modulo the periods (`PeriodLattice`), the rectangle one
 /// fundamental domain of it, and a zero on the rectangle's edge -- sn has two
 /// on the real axis and a pole on the imaginary one -- is a point of the
@@ -117,27 +117,27 @@ public enum PeriodicTorus {
     /// the refiner looks for a zero or pole from a run's end
     /// (`ContourRefiner.reach`) and the two cells it carries one over, so a
     /// singular point on the rectangle's edge wants nothing outside the window.
-    public static let margin = 8
+    public static let padding = 8
 
     /// Only rectangular period lattices: a real period along `real` and an
     /// imaginary one along `imag`, which is what sn, and cn and dn on
     /// suitable rectangles, have.
-    /// `capped`: the phase lines are cut at the ceiling, as a landscape's
-    /// are at its cap, and the rim |f| = ceiling is drawn; for a plate to be
-    /// put in relief, where the cap is a plateau. Otherwise every phase line
+    /// `truncated`: the phase lines are cut at the ceiling, as a landscape's
+    /// are at its truncation, and the truncation edge |f| = ceiling is drawn; for a plate to be
+    /// put in relief, where the truncation is a plateau. Otherwise every phase line
     /// runs through its pole.
     public static func plate(_ expression: String, origin: Complex = Complex(0),
                              periods: (real: Double, imag: Double),
                              major R: Double = 2, minor r: Double = 1,
                              resolution: Int = 600, ceiling: Double = 3,
-                             grid: Int = 1024, capped: Bool = false) throws -> Plate {
+                             grid: Int = 1024, truncated: Bool = false) throws -> Plate {
         let compiled = try KurvenMath.Expression.compile(expression)
         let domain = Domain(real: Interval(lo: origin.re, hi: origin.re + periods.real),
                             imag: Interval(lo: origin.im, hi: origin.im + periods.imag))
         let surface = torus(over: domain, major: R, minor: r, grid: grid)
         let group = PeriodLattice(cell: domain)
 
-        // The window: the rectangle's grid, extended `margin` cells each
+        // The window: the rectangle's grid, extended `padding` cells each
         // way and shifted by half a cell on both axes. The samples past the
         // edge are the function's own, since it is periodic, and a curve and
         // its copy one period over are computed from the same sample
@@ -152,19 +152,19 @@ public enum PeriodicTorus {
         let shape = NativeLandscape.gridShape(domain, resolution: resolution)
         let dx = domain.real.length / Double(shape.nReal - 1)
         let dy = domain.imag.length / Double(shape.nImag - 1)
-        let m = Double(margin)
+        let m = Double(padding)
         let cover = Domain(real: Interval(lo: domain.real.lo - (m + 0.5) * dx,
                                           hi: domain.real.hi + (m - 0.5) * dx),
                            imag: Interval(lo: domain.imag.lo - (m + 0.5) * dy,
                                           hi: domain.imag.hi + (m - 0.5) * dy))
-        let coverShape = (nReal: shape.nReal + 2 * margin, nImag: shape.nImag + 2 * margin)
+        let coverShape = (nReal: shape.nReal + 2 * padding, nImag: shape.nImag + 2 * padding)
 
         let samples = NativeLandscape.sample(compiled, domain: cover, shape: coverShape)
         let height = Grid2D(width: coverShape.nReal, height: coverShape.nImag, domain: cover,
                             values: NativeLandscape.quantize(samples.magnitude))
         let phase = Grid2D(width: coverShape.nReal, height: coverShape.nImag, domain: cover,
                            values: NativeLandscape.quantize(samples.phase))
-        let field = Surface(height: height, phase: phase, caps: .uniform(ceiling))
+        let field = Surface(height: height, phase: phase, truncation: .uniform(ceiling))
         // Not lifted: the ink lies on the torus, placed by its coordinate,
         // and |f| is no height of it.
         let refiner = ContourRefiner(compiled, domain: cover,
@@ -184,13 +184,13 @@ public enum PeriodicTorus {
             ("ang_major", .phase, .phase, NativeLandscape.phaseMajor, 0.35),
             ("ang_minor", .phase, .phase, NativeLandscape.phaseMinor, 0.15),
         ]
-        if capped { families.append(("rim", .outline, .magnitude, [ceiling], 0.6)) }
+        if truncated { families.append(("truncation edge", .outline, .magnitude, [ceiling], 0.6)) }
         var layers: [Layer] = families.map { name, role, kind, levels, width in
-            // Capped, a phase line is lifted to |f| and kept under the
-            // ceiling, ending on the rim where it crosses it.
-            let cut = capped && kind == .phase
+            // Truncated, a phase line is lifted to |f| and kept under the
+            // ceiling, ending on the truncation edge where it crosses it.
+            let cut = truncated && kind == .phase
             let source = LayerSource.contour(field: kind, levels: levels,
-                                             keep: cut ? .belowCap : .all, tiled: false)
+                                             restriction: cut ? .belowTruncation : .all, tiled: false)
             let flat = field.derive(source, policy: cut ? .magnitude : .surface, region: .full,
                                     tiles: [.identity], refine: refiner.refine)
             // Where a curve crosses the rectangle's edge, the crossing is
@@ -249,7 +249,7 @@ public enum PeriodicTorus {
                                          heightPolicy: .surface),
                          paths: PolylineSet(paths: placed, coords: coords))
         }
-        layers.append(Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldLines,
+        layers.append(Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                                             width: 0.6, heightPolicy: .surface),
                             paths: .empty))
         // The landscape's height over the rectangle, for a relief.
@@ -286,10 +286,10 @@ public enum PeriodicTorus {
     /// are on the outer equator.
     public static func jacobiSN(modulus m: Double, major R: Double = 2, minor r: Double = 1,
                                 resolution: Int = 600, grid: Int = 1024,
-                                capped: Bool = false, turn: Double = 0) throws -> Plate {
+                                truncated: Bool = false, turn: Double = 0) throws -> Plate {
         let K = Jacobi.quarterPeriod(m), Kp = Jacobi.quarterPeriod(1 - m)
         return try plate("sn(z, \(m))", origin: Complex(0, turn * 2 * Kp),
                          periods: (4 * K, 2 * Kp), major: R, minor: r,
-                         resolution: resolution, grid: grid, capped: capped)
+                         resolution: resolution, grid: grid, truncated: truncated)
     }
 }

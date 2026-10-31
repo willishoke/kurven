@@ -31,7 +31,7 @@ struct Inspector: View {
                 Section("Surface") { SurfaceSection(document: document) }
             }
             if document.plate != nil {
-                // A surface is not a bundle: no truncation, margin
+                // A surface is not a bundle: no truncation, depth tolerance
                 // or provenance. Its camera has the one plate projection it
                 // opened at, so "reset" still has somewhere to go.
                 Section("Camera") {
@@ -49,7 +49,7 @@ struct Inspector: View {
                     TruncationSection(document: document)
                 }
                 Section("Layers") { layerList }
-                Section("Ink") { marginField }
+                Section("Ink") { depthToleranceField }
                 Section("Bake") { BakeSection(document: document) }
                 Section("Bundle") { provenance(bundle) }
             } else {
@@ -107,7 +107,7 @@ struct Inspector: View {
                 if let count = document.hatchCount(ofLayer: index) {
                     strokeSlider(index: index, count: count)
                 }
-                if case .capHatch(let axis, _, _) = layer.spec.source {
+                if let axis = layer.spec.source.plateauHatchAxis {
                     axisPicker(axis)
                 }
             }
@@ -155,16 +155,16 @@ struct Inspector: View {
         .padding(.leading, 20)
     }
 
-    /// Which way the strokes on the truncated tops run. The plates rule them
+    /// Which way the strokes on the plateaus run. The plates rule them
     /// along the real axis; a landscape whose plateaus are long in the other
     /// direction reads better ruled the other way.
     @ViewBuilder
-    private func axisPicker(_ axis: KeepAxis) -> some View {
+    private func axisPicker(_ axis: DomainAxis) -> some View {
         Picker("", selection: Binding(get: { axis }, set: {
-            document.setCapHatchAxis($0)
+            document.setPlateauHatchAxis($0)
         })) {
-            Text("along Re").tag(KeepAxis.real)
-            Text("along Im").tag(KeepAxis.imag)
+            Text("along Re").tag(DomainAxis.real)
+            Text("along Im").tag(DomainAxis.imag)
         }
         .pickerStyle(.segmented).labelsHidden().controlSize(.small)
         .padding(.leading, 20)
@@ -173,11 +173,11 @@ struct Inspector: View {
     // MARK: - ink
 
     @ViewBuilder
-    private var marginField: some View {
-        let live = Binding(get: { document.margin }, set: {
-            document.margin = $0
+    private var depthToleranceField: some View {
+        let live = Binding(get: { document.depthTolerance }, set: {
+            document.depthTolerance = $0
         })
-        LabeledContent("Margin") {
+        LabeledContent("Depth tolerance") {
             HStack {
                 TextField("", value: live, format: .number.precision(.fractionLength(3)))
                     .labelsHidden().monospacedDigit().frame(width: 70)

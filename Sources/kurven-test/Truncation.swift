@@ -2,13 +2,13 @@ import Foundation
 import simd
 import KurvenCore
 
-// MARK: - the truncated top, where the drawn surface and the ink meet
+// MARK: - the plateau, where the drawn surface and the ink meet
 
-/// The cap rim: the pieces `Mesh.capRim` adds to the depth pass, and the
+/// The truncation edge: the pieces `Mesh.truncationEdgeMesh` adds to the depth pass, and the
 /// vertex `Surface.derive` carries a contour to.
-func capTests() {
-    /// A spire on a coarse grid: `h = 3 - 4 r²`, so the cap at 2 cuts it in a
-    /// disc of radius one half, two cells across. Every cell round the rim
+func truncationTests() {
+    /// A spire on a coarse grid: `h = 3 - 4 r²`, so the truncation at 2 cuts it in a
+    /// disc of radius one half, two cells across. Every cell round the truncation edge
     /// straddles it.
     let n = 9
     let domain = Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: -1, hi: 1))
@@ -22,19 +22,19 @@ func capTests() {
                           let p = at(k, n)
                           return Float(spireHeight(p.x, p.y))
                       })
-    let cap = 2.0
-    let surface = Surface(height: grid, phase: nil, caps: .uniform(cap))
+    let truncationHeight = 2.0
+    let surface = Surface(height: grid, phase: nil, truncation: .uniform(truncationHeight))
 
-    Check.suite("cap rim: the pieces are the clamped surface, cell for cell") {
-        let rim = Mesh.capRim(of: surface, step: 1, region: .full, tiles: [.identity])
-        Check.expect(!rim.isEmpty, "a capped spire has a rim", "\(rim.triangles.count) triangles")
-        Check.expect(Mesh.capRim(of: Surface(height: grid, phase: nil, caps: Caps.none),
+    Check.suite("truncation edge: the pieces are the clamped surface, cell for cell") {
+        let truncationEdge = Mesh.truncationEdgeMesh(of: surface, step: 1, region: .full, tiles: [.identity])
+        Check.expect(!truncationEdge.isEmpty, "a truncated spire has a truncation edge", "\(truncationEdge.triangles.count) triangles")
+        Check.expect(Mesh.truncationEdgeMesh(of: Surface(height: grid, phase: nil, truncation: Truncation.none),
                                  step: 1, region: .full, tiles: [.identity]).isEmpty,
-                     "and an uncapped one has none")
+                     "and an untruncated one has none")
 
         // The rasterizer's own triangle through a point: corners clamped, then
         // interpolated. And what the samples describe: interpolated, then
-        // clamped. Drawn under a MAX blend with the rim pieces, the first must
+        // clamped. Drawn under a MAX blend with the truncation edge pieces, the first must
         // become the second.
         func plane(_ a: SIMD3<Double>, _ b: SIMD3<Double>, _ c: SIMD3<Double>,
                    at p: SIMD2<Double>) -> Double? {
@@ -61,38 +61,38 @@ func capTests() {
             }
             let c00 = corner(0, 0), c10 = corner(1, 0), c01 = corner(0, 1), c11 = corner(1, 1)
             let corners = [c00, c10, c01, c11]
-            let straddles = corners.contains { $0.z > cap } && corners.contains { $0.z < cap }
+            let straddles = corners.contains { $0.z > truncationHeight } && corners.contains { $0.z < truncationHeight }
             // The rasterizer's diagonal: (00, 10, 01) and (10, 11, 01).
             let tri: [SIMD3<Double>]
             if plane(c00, c10, c01, at: p) != nil { tri = [c00, c10, c01] } else { tri = [c10, c11, c01] }
-            let expected = min(plane(tri[0], tri[1], tri[2], at: p)!, cap)
-            func clamp(_ v: SIMD3<Double>) -> SIMD3<Double> { SIMD3(v.x, v.y, min(v.z, cap)) }
+            let expected = min(plane(tri[0], tri[1], tri[2], at: p)!, truncationHeight)
+            func clamp(_ v: SIMD3<Double>) -> SIMD3<Double> { SIMD3(v.x, v.y, min(v.z, truncationHeight)) }
             var drawn = plane(clamp(tri[0]), clamp(tri[1]), clamp(tri[2]), at: p)!
-            for t in rim.triangles {
-                let a = rim.vertices[Int(t.x)].v, b = rim.vertices[Int(t.y)].v, c = rim.vertices[Int(t.z)].v
+            for t in truncationEdge.triangles {
+                let a = truncationEdge.vertices[Int(t.x)].v, b = truncationEdge.vertices[Int(t.y)].v, c = truncationEdge.vertices[Int(t.z)].v
                 if let z = plane(a, b, c, at: p) { drawn = max(drawn, z) }
             }
             worst = max(worst, abs(drawn - expected))
             tested += 1
             if straddles { straddled += 1 }
         }
-        Check.expect(straddled > 200, "the sample covers the rim cells", "\(straddled) of \(tested)")
-        Check.expect(worst < 1e-9, "MAX(rasterized cell, rim pieces) is min(interpolated, cap) everywhere",
+        Check.expect(straddled > 200, "the sample covers the truncation edge cells", "\(straddled) of \(tested)")
+        Check.expect(worst < 1e-9, "MAX(rasterized cell, truncation edge pieces) is min(interpolated, truncation) everywhere",
                      String(format: "worst %.1e over %d points", worst, tested))
 
-        // Every piece lies on the clamped surface: on the cap, or on its cell's
-        // interpolated height, and never above the cap.
-        let over = rim.vertices.filter { $0.z > cap + 1e-12 }.count
-        Check.expect(over == 0, "no piece rises above the cap", "\(over) vertices do")
+        // Every piece lies on the clamped surface: on the plateau, or on its cell's
+        // interpolated height, and never above the truncation.
+        let over = truncationEdge.vertices.filter { $0.z > truncationHeight + 1e-12 }.count
+        Check.expect(over == 0, "no piece rises above the truncation", "\(over) vertices do")
     }
 
-    Check.suite("cap rim: the grid is the rasterizer's") {
+    Check.suite("truncation edge: the grid is the rasterizer's") {
         // Per tile, once; outside the region, not at all.
-        let one = Mesh.capRim(of: surface, step: 1, region: .full, tiles: [.identity])
+        let one = Mesh.truncationEdgeMesh(of: surface, step: 1, region: .full, tiles: [.identity])
         let shifted = Affine2(a: 1, b: 0, tx: 5, c: 0, d: 1, ty: 0)
-        let two = Mesh.capRim(of: surface, step: 1, region: .full, tiles: [.identity, shifted])
+        let two = Mesh.truncationEdgeMesh(of: surface, step: 1, region: .full, tiles: [.identity, shifted])
         Check.expect(two.triangles.count == 2 * one.triangles.count,
-                     "two tiles draw the rim twice", "\(two.triangles.count) vs \(one.triangles.count)")
+                     "two tiles draw the truncation edge twice", "\(two.triangles.count) vs \(one.triangles.count)")
         Check.expect(two.vertices.map(\.x).max()! > 4,
                      "the second copy is where its tile puts it")
         let far = BoundaryPerimeter(edges: [
@@ -101,24 +101,24 @@ func capTests() {
             PerimeterEdge(start: P2(4, 4), end: P2(3, 4), density: 2),
             PerimeterEdge(start: P2(3, 4), end: P2(3, 3), density: 2),
         ])
-        Check.expect(Mesh.capRim(of: surface, step: 1, region: .inside(far),
+        Check.expect(Mesh.truncationEdgeMesh(of: surface, step: 1, region: .inside(far),
                                  tiles: [.identity]).isEmpty,
-                     "a region that excludes the spire has no rim in it")
+                     "a region that excludes the spire has no truncation edge in it")
         // Decimated by two, the grid is 5 x 5 over the same domain, and the
-        // rim is cut on those cells: coarser, and still under the cap.
-        let coarse = Mesh.capRim(of: surface, step: 2, region: .full, tiles: [.identity])
+        // truncation edge is cut on those cells: coarser, and still below the truncation.
+        let coarse = Mesh.truncationEdgeMesh(of: surface, step: 2, region: .full, tiles: [.identity])
         let coarseXs = Set(coarse.vertices.map { ($0.x * 1e9).rounded() / 1e9 })
         let grid = Set((0..<5).map { (-1.0 + Double($0) * 0.5) })
         let onGrid = coarse.vertices.filter { v in
             grid.contains(where: { abs($0 - v.x) < 1e-9 }) || grid.contains(where: { abs($0 - v.y) < 1e-9 })
         }.count
         Check.expect(!coarse.isEmpty && onGrid > 0 && coarse.triangles.count < one.triangles.count,
-                     "step 2 cuts the rim on the decimated grid",
+                     "step 2 cuts the truncation edge on the decimated grid",
                      "\(coarse.triangles.count) triangles, \(coarseXs.count) distinct x")
     }
 
-    Check.suite("cap crossing: a contour is carried to the cap, and only by a refiner") {
-        // A ramp `2x + 3` under a cap of 3.5, so the cap is crossed at
+    Check.suite("truncation crossing: a contour is carried to the truncation, and only by a refiner") {
+        // A ramp `2x + 3` under a truncation of 3.5, so the truncation is crossed at
         // x = 1/4; and a phase grid equal to y, whose zero contour is the
         // line y = 0 straight up the ramp.
         let m = 5
@@ -129,9 +129,9 @@ func capTests() {
         let phase = Grid2D(width: m, height: m, domain: d, values: (0..<(m * m)).map { k in
             Float(at(k, m).y)
         })
-        let rampCap = 3.5
-        let s = Surface(height: ramp, phase: phase, caps: .uniform(rampCap))
-        let source = LayerSource.contour(field: .phase, levels: [0], keep: .belowCap, tiled: false)
+        let rampTruncation = 3.5
+        let s = Surface(height: ramp, phase: phase, truncation: .uniform(rampTruncation))
+        let source = LayerSource.contour(field: .phase, levels: [0], restriction: .belowTruncation, tiled: false)
         let identity = ContourRefine(contours: { _, _, paths, _ in paths })
 
         let plain = s.derive(source, policy: .magnitude, region: .full, tiles: [.identity])
@@ -141,25 +141,25 @@ func capTests() {
                      "\(plain.count) and \(carried.count)")
         let plainTop = plain.vertices.map(\.z).max() ?? -1
         let carriedTop = carried.vertices.map(\.z).max() ?? -1
-        Check.expect(abs(plainTop - 3) < 1e-6, "from the grid alone the run ends at its last sample under the cap",
+        Check.expect(abs(plainTop - 3) < 1e-6, "from the grid alone the run ends at its last sample below the truncation",
                      "top z = \(plainTop)")
-        Check.expect(abs(carriedTop - rampCap) < 1e-12, "with a refiner it ends on the cap exactly",
+        Check.expect(abs(carriedTop - rampTruncation) < 1e-12, "with a refiner it ends on the plateau exactly",
                      "top z = \(carriedTop)")
-        let rimVertex = carried.vertices.first { abs($0.z - rampCap) < 1e-12 }
-        Check.expect(rimVertex.map { abs($0.x - 0.25) < 1e-9 && abs($0.y) < 1e-9 } ?? false,
-                     "and that vertex is on the rim, where the interpolated height is the cap",
-                     rimVertex.map { "(\($0.x), \($0.y))" } ?? "no rim vertex")
+        let truncationEdgeVertex = carried.vertices.first { abs($0.z - rampTruncation) < 1e-12 }
+        Check.expect(truncationEdgeVertex.map { abs($0.x - 0.25) < 1e-9 && abs($0.y) < 1e-9 } ?? false,
+                     "and that vertex is on the truncation edge, where the interpolated height is the truncation",
+                     truncationEdgeVertex.map { "(\($0.x), \($0.y))" } ?? "no truncation edge vertex")
         Check.expect(carried.vertices.count == plain.vertices.count + 1,
                      "one vertex was added and none moved",
                      "\(carried.vertices.count) vs \(plain.vertices.count)")
-        Check.expect(carried.vertices.allSatisfy { $0.z <= rampCap + 1e-12 },
-                     "nothing over the cap survives")
+        Check.expect(carried.vertices.allSatisfy { $0.z <= rampTruncation + 1e-12 },
+                     "nothing over the truncation survives")
 
-        // A layer that does not keep below the cap is not touched.
-        let free = LayerSource.contour(field: .phase, levels: [0], keep: .all, tiled: false)
+        // A layer that does not keep below the truncation is not touched.
+        let free = LayerSource.contour(field: .phase, levels: [0], restriction: .all, tiled: false)
         let a = s.derive(free, policy: .magnitude, region: .full, tiles: [.identity])
         let b = s.derive(free, policy: .magnitude, region: .full, tiles: [.identity], refine: identity)
         Check.expect(a.vertices.count == b.vertices.count && a.vertices.map(\.z).max() == b.vertices.map(\.z).max(),
-                     "a layer that keeps everything gains no cap vertex")
+                     "a layer that keeps everything gains no truncation vertex")
     }
 }

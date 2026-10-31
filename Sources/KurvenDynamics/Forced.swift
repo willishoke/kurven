@@ -86,9 +86,9 @@ public struct InvariantTorus: Sendable {
 
     /// `Ω/ω`: turns of the system's own phase per turn of the forcing. In
     /// the fitted torus's coordinates the flow is a rigid rotation, so the
-    /// trajectory is the straight line of this slope -- the winding at the
+    /// trajectory is the straight line of this slope -- the linear curve at the
     /// rotation number -- and the number's continued fraction says which
-    /// closed windings it is nearly, and after how many turns it cuts the
+    /// closed linear curves it is nearly, and after how many turns it cuts the
     /// torus most evenly.
     public var rotationNumber: Double { internalFrequency / forcing }
 
@@ -262,17 +262,17 @@ public extension InvariantTorus {
         return (surface, embedded)
     }
 
-    /// The trajectory as ink: the winding of `surface` at the rotation
+    /// The trajectory as ink: the linear curve of `surface` at the rotation
     /// number, `turns` turns from the fitted samples' start.
     ///
     /// The fitted torus holds the trajectory to within `residual`, a
     /// fraction of a pixel at any drawing resolution, so nothing is
     /// integrated: the trajectory is the straight line `φ = Ωt, θ = ωt` in
-    /// the torus's own coordinates, placed from the grid as any winding
+    /// the torus's own coordinates, placed from the grid as any linear curve
     /// is. The integrated one, `trajectory(_:from:duration:every:)`, is the
     /// check that this is so.
     func trajectory(on surface: ParametricSurface, turns: Int) -> PolylineSet<WorldSpace> {
-        surface.winding(slope: rotationNumber, turns: turns, start: startPhase)
+        surface.linearCurves(slope: rotationNumber, turns: turns, start: startPhase)
     }
 
     /// The integrated trajectory as ink, from `start` for `duration`, every

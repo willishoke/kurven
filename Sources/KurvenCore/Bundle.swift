@@ -35,7 +35,7 @@ public struct KurvenBundle: Sendable {
     public let wallMesh: Mesh<WorldSpace>?
     /// Present when the function behind the grids is available: every described
     /// contour layer is derived through it, now and after every restyle, so a
-    /// cap slider re-derives refined ink rather than falling back to the grid's.
+    /// truncation slider re-derives refined ink rather than falling back to the grid's.
     /// A bundle read from disk has none until a consumer that knows the function
     /// attaches one (`refined(by:)`).
     public let refine: ContourRefine?
@@ -79,10 +79,10 @@ public struct KurvenBundle: Sendable {
 
     /// Everything the depth pass draws besides the heightfield itself: the
     /// walls, and the pieces of the truncated surface the heightfield's own
-    /// triangles cut off (`Mesh.capRim`).
+    /// triangles cut off (`Mesh.truncationEdgeMesh`).
     public func occluder() -> Mesh<WorldSpace> {
         let o = manifest.occluder
-        return Mesh.concat([walls(), Mesh.capRim(of: surface, step: o.step,
+        return Mesh.concat([walls(), Mesh.truncationEdgeMesh(of: surface, step: o.step,
                                                  region: o.region, tiles: o.tiles)])
     }
 
@@ -130,7 +130,7 @@ public struct KurvenBundle: Sendable {
         let cached = manifest.provenance.params["cache"] != nil
 
         let surface = Surface(height: height, phase: phase,
-                              caps: manifest.caps, cached: cached)
+                              truncation: manifest.truncation, cached: cached)
 
         var layers: [Layer] = []
         for spec in manifest.layers {
@@ -138,7 +138,7 @@ public struct KurvenBundle: Sendable {
                 // Described, not dumped: derive the ink from the grids the
                 // bundle already carries. This is what a `--derived` bundle
                 // trades its layer files for, and what makes the levels, the
-                // hatch spacing and the cap editable.
+                // hatch spacing and the truncation editable.
                 layers.append(Layer(spec: spec,
                                     paths: surface.ink(spec, occluder: manifest.occluder)))
                 continue
@@ -177,11 +177,11 @@ public extension KurvenBundle {
     /// with `--derived` has editable level sets and one exported without does
     /// not, and the type says which you have.
     func layer(_ spec: LayerSpec, levels: [Double]) -> Layer {
-        guard case .contour(let field, _, let keep, let tiled) = spec.source else {
+        guard case .contour(let field, _, let restriction, let tiled) = spec.source else {
             return redrawn(spec)
         }
         var edited = spec
-        edited.source = .contour(field: field, levels: levels, keep: keep, tiled: tiled)
+        edited.source = .contour(field: field, levels: levels, restriction: restriction, tiled: tiled)
         return redrawn(edited)
     }
 
@@ -202,9 +202,9 @@ public extension KurvenBundle {
     /// The same grids under a different manifest.
     ///
     /// The landscape does not change -- the samples are the samples -- but the
-    /// cap, the levels, the hatch spacing and the walls all can, and all of them
+    /// truncation, the levels, the hatch spacing and the walls all can, and all of them
     /// are derived from the manifest. This is the edit path for every one of
-    /// them, and the reason a cap slider costs milliseconds instead of a round
+    /// them, and the reason a truncation slider costs milliseconds instead of a round
     /// trip to Python: only the *ink* and the wall curtains are rebuilt, from
     /// grids that never left memory.
     ///
@@ -218,13 +218,13 @@ public extension KurvenBundle {
         honest.height = self.manifest.height
         honest.phase = self.manifest.phase
         let restyledSurface = Surface(height: surface.height, phase: surface.phase,
-                                      caps: honest.caps, cached: surface.cached)
+                                      truncation: honest.truncation, cached: surface.cached)
         let bundle = KurvenBundle(url: url, manifest: honest, surface: restyledSurface,
                                   layers: [], wallMesh: wallMesh, refine: refine)
-        // A layer's ink is its spec drawn on the capped surface past the
+        // A layer's ink is its spec drawn on the truncated surface past the
         // occluder, so a layer none of those moved for is the ink already
         // here: a hatch step draws the hatching, not every phase line again.
-        let unmoved = honest.caps == self.manifest.caps && honest.occluder == self.manifest.occluder
+        let unmoved = honest.truncation == self.manifest.truncation && honest.occluder == self.manifest.occluder
         return KurvenBundle(url: url, manifest: honest, surface: restyledSurface,
                             layers: honest.layers.map { spec in
                                 if unmoved, let kept = layers.first(where: { $0.spec == spec }) {

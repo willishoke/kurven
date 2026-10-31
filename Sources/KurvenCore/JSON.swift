@@ -6,7 +6,7 @@ import Foundation
 /// "decode a manifest, re-encode it, compare bytes with the file", the files
 /// were Python's until the golden sets were regenerated from here, and
 /// `JSONEncoder` cannot produce Python-canonical output: it renders the `Double`
-/// 5.0 as `5`, so a cap height would round-trip to a different document every
+/// 5.0 as `5`, so a truncation height would round-trip to a different document every
 /// time. Owning the writer costs sixty lines and buys an exact comparison, plus
 /// a decoder whose errors name the key that was wrong instead of a coding path.
 ///

@@ -11,7 +11,7 @@ import KurvenMath
 /// drag to redraw four numbers.
 ///
 /// Every control here says which side of the seam it is on. The function, the
-/// window and the resolution resample (f is evaluated again); the cap and
+/// window and the resolution resample (f is evaluated again); the truncation and
 /// the hatch spacing restyle (the grids are already here). The status line
 /// reports every resample, and a restyle only when it is long enough to see
 /// -- turning refinement on, or levels the refiner has not placed before.
@@ -377,14 +377,14 @@ struct LandscapeSection: View {
 /// Truncation is a property of the model, not of the camera: it is what turns a
 /// pole into a plateau you can see the top of. Because the bundle describes its
 /// layers rather than dumping them, moving it is a local re-derivation -- the
-/// heightfield, the wall crests, every cap stroke, the rim, and which contours
+/// heightfield, the wall top edges, every plateau hatch line, the truncation edge, and which contours
 /// survive, all from grids that never leave memory, on another thread, with
 /// the refiner's curves remembered (`Document.redraw`).
 struct TruncationSection: View {
     @Bindable var document: Document
 
     var body: some View {
-        Picker("Truncate", selection: Binding(get: { Kind(document.caps) },
+        Picker("Truncate", selection: Binding(get: { Kind(document.truncation) },
                                               set: { apply($0) })) {
             Text("None").tag(Kind.none)
             Text("At a height").tag(Kind.uniform)
@@ -392,14 +392,14 @@ struct TruncationSection: View {
         }
         .pickerStyle(.segmented)
 
-        switch document.caps {
+        switch document.truncation {
         case .none:
             Text("The surface is drawn at |f|, however far up that goes. A "
-                 + "function with a pole wants a cap; one without does not.")
+                 + "function with a pole wants a truncation; one without does not.")
                 .font(.caption).foregroundStyle(.secondary)
         case .uniform(let z):
-            capSlider("Cap", value: Binding(get: { z }, set: {
-                document.setCaps(.uniform($0))
+            truncationSlider("Truncation", value: Binding(get: { z }, set: {
+                document.setTruncation(.uniform($0))
             }))
         case .realBands(let bands, let beyond):
             bandRows(bands, beyond)
@@ -407,14 +407,14 @@ struct TruncationSection: View {
     }
 
     private var ceiling: Double {
-        // Room to raise the cap past where the landscape currently ends, without
+        // Room to raise the truncation past where the landscape currently ends, without
         // a slider whose whole useful range is its first pixel on a function
         // that reaches 1e12 at a pole.
-        max((LandscapeStyle.ceiling(of: document.caps) ?? 5) * 3, 10)
+        max((LandscapeStyle.ceiling(of: document.truncation) ?? 5) * 3, 10)
     }
 
     @ViewBuilder
-    private func capSlider(_ label: String, value live: Binding<Double>) -> some View {
+    private func truncationSlider(_ label: String, value live: Binding<Double>) -> some View {
         LabeledContent(label) {
             HStack(spacing: 6) {
                 TextField("", value: live, format: .number.precision(.fractionLength(2)))
@@ -424,7 +424,7 @@ struct TruncationSection: View {
         }
     }
 
-    /// Gamma's per-spire truncation, as rows: each band caps everything to the
+    /// Gamma's per-spire truncation, as rows: each band truncates everything to the
     /// left of its threshold, and the last row is everything else. Tested in
     /// order, first match wins, which is exactly how the rows read top to
     /// bottom.
@@ -438,60 +438,60 @@ struct TruncationSection: View {
                     set: { value in
                         var next = bands
                         next[index].below = value
-                        document.setCaps(.realBands(next, beyond: beyond))
+                        document.setTruncation(.realBands(next, beyond: beyond))
                     }),
                     format: .number.precision(.fractionLength(1)))
                     .labelsHidden().monospacedDigit().frame(width: 52)
-                Text("cap").font(.caption).foregroundStyle(.secondary)
-                Slider(value: Binding(get: { band.cap }, set: {
+                Text("truncation").font(.caption).foregroundStyle(.secondary)
+                Slider(value: Binding(get: { band.height }, set: {
                     var next = bands
-                    next[index].cap = $0
-                    document.setCaps(.realBands(next, beyond: beyond))
+                    next[index].height = $0
+                    document.setTruncation(.realBands(next, beyond: beyond))
                 }), in: 0.1...ceiling)
-                Text(String(format: "%.2f", band.cap))
+                Text(String(format: "%.2f", band.height))
                     .font(.caption).monospacedDigit().frame(width: 40, alignment: .trailing)
                 Button {
                     var next = bands
                     next.remove(at: index)
-                    document.setCaps(.realBands(next, beyond: beyond))
+                    document.setTruncation(.realBands(next, beyond: beyond))
                 } label: { Image(systemName: "minus.circle") }
                     .buttonStyle(.borderless).controlSize(.small)
             }
         }
-        capSlider("Beyond", value: Binding(
+        truncationSlider("Beyond", value: Binding(
             get: { beyond.isFinite ? beyond : ceiling },
             set: {
-                document.setCaps(.realBands(bands, beyond: $0))
+                document.setTruncation(.realBands(bands, beyond: $0))
             }))
         Button("Add a band") {
             let below = (bands.last?.below ?? -1) + 1
-            document.setCaps(.realBands(bands + [RealBand(below: below,
-                                                          cap: beyond.isFinite ? beyond : 5)],
+            document.setTruncation(.realBands(bands + [RealBand(below: below,
+                                                          height: beyond.isFinite ? beyond : 5)],
                                         beyond: beyond))
         }
         .controlSize(.small)
     }
 
     private func apply(_ kind: Kind) {
-        let current = LandscapeStyle.ceiling(of: document.caps) ?? 5
+        let current = LandscapeStyle.ceiling(of: document.truncation) ?? 5
         switch kind {
-        case .none: document.setCaps(.none)
-        case .uniform: document.setCaps(.uniform(current))
+        case .none: document.setTruncation(.none)
+        case .uniform: document.setTruncation(.uniform(current))
         case .bands:
-            // Start from the cap that is already there, as one band and a
+            // Start from the truncation that is already there, as one band and a
             // beyond: the first edit should be a change to this landscape, not
             // a different one.
             let domain = document.bundle?.manifest.domain
             let middle = domain.map { ($0.real.lo + $0.real.hi) / 2 } ?? 0
-            document.setCaps(.realBands([RealBand(below: middle, cap: current)],
+            document.setTruncation(.realBands([RealBand(below: middle, height: current)],
                                         beyond: current))
         }
     }
 
     enum Kind: Hashable {
         case none, uniform, bands
-        init(_ caps: Caps) {
-            switch caps {
+        init(_ truncation: Truncation) {
+            switch truncation {
             case .none: self = .none
             case .uniform: self = .uniform
             case .realBands: self = .bands

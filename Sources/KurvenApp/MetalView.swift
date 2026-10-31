@@ -78,7 +78,7 @@ struct MetalView: NSViewRepresentable {
         /// Tracking fires once, so it re-arms itself.
         private func trackModel() {
             withObservationTracking {
-                _ = document.framedScene        // the scene, camera and margin
+                _ = document.framedScene        // the scene, camera and depth tolerance
                 _ = document.previewOptions     // the mode and what is hidden
             } onChange: { [weak self] in
                 // `onChange` runs *before* the new value lands, and can run off

@@ -22,7 +22,7 @@ public struct SurfaceRequest: Sendable, Equatable {
         /// A forced system's invariant torus, fitted from `fit` time units of
         /// one run at `harmonics`, drawn by revolution on a ring of `radius`
         /// with state components `radial` and `axial`; its trajectory drawn
-        /// on it for `turns` turns of the forcing -- as the winding at the
+        /// on it for `turns` turns of the forcing -- as the linear curve at the
         /// rotation number, which is what the trajectory is on the fitted
         /// torus. The turns where it cuts the torus most evenly are the
         /// denominators of the rotation number's convergents.
@@ -35,19 +35,19 @@ public struct SurfaceRequest: Sendable, Equatable {
         public var lines: Double
         public var trajectory: Double
         public var folds: Double
-        public var winding: Double
+        public var linearCurves: Double
         public init(lines: Double = 0.3, trajectory: Double = 0.08, folds: Double = 0.6,
-                    winding: Double = 0.3) {
+                    linearCurves: Double = 0.3) {
             self.lines = lines; self.trajectory = trajectory; self.folds = folds
-            self.winding = winding
+            self.linearCurves = linearCurves
         }
     }
 
-    /// A winding drawn on the torus: `count` straight lines through its
+    /// A linear curve drawn on the torus: `count` straight lines through its
     /// parameter rectangle at `slope` turns of `v` per turn of `u`, each
     /// `turns` turns long -- or closed, when the slope is a fraction whose
-    /// denominator is within the turns. See `ParametricSurface.winding`.
-    public struct Winding: Sendable, Equatable {
+    /// denominator is within the turns. See `ParametricSurface.linearCurves`.
+    public struct LinearCurves: Sendable, Equatable {
         public var slope: Double
         public var turns: Int
         public var count: Int
@@ -57,7 +57,7 @@ public struct SurfaceRequest: Sendable, Equatable {
 
         /// The turns after which a strand closes, when it does within
         /// `turns`: the denominator of a rational slope.
-        public var closes: Int? { ParametricSurface.windingCloses(slope: slope, within: turns) }
+        public var closes: Int? { ParametricSurface.linearCurveCloses(slope: slope, within: turns) }
     }
 
     public var shape: Shape
@@ -67,17 +67,17 @@ public struct SurfaceRequest: Sendable, Equatable {
     /// Lines of constant `u` and `v`, when drawn. A plain torus has nothing
     /// else to draw; a forced torus draws them only when asked.
     public var lines: SIMD2<Int>?
-    /// A winding, when drawn. Ink alone: the surface does not know it is
+    /// A linear curve, when drawn. Ink alone: the surface does not know it is
     /// there, so its slope can move under a slider.
-    public var winding: Winding?
+    public var linearCurves: LinearCurves?
     public var style: Style
     /// The catalog entry this came from, for provenance and the title.
     public var name: String
 
     public init(_ shape: Shape, grid: Int = 1024, lines: SIMD2<Int>? = nil,
-                winding: Winding? = nil, style: Style = Style(), name: String = "") {
+                linearCurves: LinearCurves? = nil, style: Style = Style(), name: String = "") {
         self.shape = shape; self.grid = grid; self.lines = lines
-        self.winding = winding; self.style = style; self.name = name
+        self.linearCurves = linearCurves; self.style = style; self.name = name
     }
 
     /// The projection a surface plate opens at.
@@ -87,7 +87,7 @@ public struct SurfaceRequest: Sendable, Equatable {
     /// The request a drag builds while it lasts: a quarter of the grid
     /// around, and a periodic function sampled at most 240 across. The full
     /// request follows when the drag ends. A forced trajectory needs no
-    /// draft: it is a winding, a vertex per cell of whatever grid.
+    /// draft: it is a linear curve, a vertex per cell of whatever grid.
     public func drafted() -> SurfaceRequest {
         var r = self
         r.grid = min(grid, 256)
@@ -101,9 +101,9 @@ public struct SurfaceRequest: Sendable, Equatable {
         return r
     }
 
-    /// The same, as a camera preset: no margin and the CLI's bake resolution,
+    /// The same, as a camera preset: no depth tolerance and the CLI's bake resolution,
     /// so the window and `kurven-cli surface` bake the same picture.
-    public static let preset = CameraPreset(name: "plate", plate: projection, margin: 0,
+    public static let preset = CameraPreset(name: "plate", projection: projection, depthTolerance: 0,
                                             buffer: 3000)
 }
 
@@ -113,13 +113,13 @@ public extension SurfaceRequest {
         case major, minor, modulus, grid, radius, harmonics, fit, radial, axial
         /// A forced trajectory's length, in turns of the forcing.
         case trajectoryTurns
-        /// The winding's, present when one is drawn: its slope, its length
+        /// The linear curve's, present when one is drawn: its slope, its length
         /// in turns, and how many strands.
         case slope, turns, strands
     }
 
     /// The fields this request's shape has, in the order a panel lists them.
-    /// The winding's are listed by `windingFields` when there is one.
+    /// The linear curve's are listed by `linearCurveFields` when there is one.
     var fields: [Field] {
         switch shape {
         case .torus: [.major, .minor]
@@ -129,20 +129,20 @@ public extension SurfaceRequest {
         }
     }
 
-    static let windingFields: [Field] = [.slope, .turns, .strands]
+    static let linearCurveFields: [Field] = [.slope, .turns, .strands]
 
     /// The fields that move ink alone -- placed from the grid, nothing of
     /// the surface remade -- and so want no draft while dragged.
-    static let inkFields: [Field] = windingFields + [.trajectoryTurns]
+    static let inkFields: [Field] = linearCurveFields + [.trajectoryTurns]
 
     /// A field's value, or nil where the shape has no such field; setting
     /// one the shape does not have changes nothing.
     subscript(field: Field) -> Double? {
         get {
             switch (shape, field) {
-            case (_, .slope): winding?.slope
-            case (_, .turns): winding.map { Double($0.turns) }
-            case (_, .strands): winding.map { Double($0.count) }
+            case (_, .slope): linearCurves?.slope
+            case (_, .turns): linearCurves.map { Double($0.turns) }
+            case (_, .strands): linearCurves.map { Double($0.count) }
             case (.torus(let R, _), .major), (.sn(_, let R, _, _), .major),
                  (.periodic(_, _, let R, _, _), .major): R
             case (.torus(_, let r), .minor), (.sn(_, _, let r, _), .minor),
@@ -162,9 +162,9 @@ public extension SurfaceRequest {
             guard let x = newValue, x.isFinite else { return }
             let n = Int(x.rounded())
             switch field {
-            case .slope: winding?.slope = x; return
-            case .turns: winding?.turns = max(n, 1); return
-            case .strands: winding?.count = max(n, 1); return
+            case .slope: linearCurves?.slope = x; return
+            case .turns: linearCurves?.turns = max(n, 1); return
+            case .strands: linearCurves?.count = max(n, 1); return
             default: break
             }
             switch shape {
@@ -211,7 +211,7 @@ public extension SurfaceRequest {
 /// What an edit costs is decided here, by comparing the new request with the
 /// plate it replaces, and only what the edit touches is made again:
 ///
-///   - **the ink alone** -- line counts, a winding's slope, stroke widths, a
+///   - **the ink alone** -- line counts, a linear curve's slope, stroke widths, a
 ///     forced trajectory's turns, sn's sampling grid -- keeps the surface,
 ///     and with
 ///     it `content`, so the window redraws the ink and keeps the surface's
@@ -262,7 +262,7 @@ public struct SurfacePlate: Sendable {
 
     /// The scene this plate draws, from `camera`.
     public func scene(camera: Camera) -> Scene {
-        Scene(surface: surface, layers: layers, camera: camera, margin: 0)
+        Scene(surface: surface, layers: layers, camera: camera, depthTolerance: 0)
     }
 
     /// Everything the surface itself -- not what is drawn on it -- is built
@@ -310,22 +310,22 @@ public struct SurfacePlate: Sendable {
                 let old = kept.flatMap { k in
                     k.request.lines == n ? k.layers.first { $0.spec.name == "lines" } : nil
                 }
-                return scaffold("lines", .parameterLines(u: n.x, v: n.y), style.lines,
-                                old?.paths ?? surface.parameterLines(counts: (n.x, n.y),
+                return scaffold("lines", .coordinateCurves(u: n.x, v: n.y), style.lines,
+                                old?.paths ?? surface.coordinateCurves(counts: (n.x, n.y),
                                                                      resolution: resolution))
             }
         }
-        /// The winding, reused when neither the surface nor it moved. Placed
+        /// The linear curve, reused when neither the surface nor it moved. Placed
         /// from the grid, so a new slope costs its own vertices and
         /// nothing of the surface's.
-        func winding(on surface: ParametricSurface) -> Layer? {
-            request.winding.map { w in
+        func linearCurves(on surface: ParametricSurface) -> Layer? {
+            request.linearCurves.map { w in
                 let old = kept.flatMap { k in
-                    k.request.winding == w ? k.layers.first { $0.spec.name == "winding" } : nil
+                    k.request.linearCurves == w ? k.layers.first { $0.spec.name == "linearCurves" } : nil
                 }
-                return scaffold("winding", .winding(slope: w.slope, turns: w.turns, count: w.count),
-                                style.winding,
-                                old?.paths ?? surface.winding(slope: w.slope, turns: w.turns,
+                return scaffold("linearCurves", .linearCurves(slope: w.slope, turns: w.turns, count: w.count),
+                                style.linearCurves,
+                                old?.paths ?? surface.linearCurves(slope: w.slope, turns: w.turns,
                                                               count: w.count))
             }
         }
@@ -393,7 +393,7 @@ public struct SurfacePlate: Sendable {
 
             forced = state
 
-            // The trajectory is the winding at the rotation number, placed
+            // The trajectory is the linear curve at the rotation number, placed
             // from the grid: kept when the surface and its turns are.
             var sameInk = false
             if kept != nil, case .forced(_, _, _, _, _, _, turns)? = previous?.request.shape {
@@ -404,10 +404,10 @@ public struct SurfacePlate: Sendable {
                                old?.paths ?? torus.trajectory(on: surface, turns: turns))]
             if let l = lines(on: surface, resolution: 2 * request.grid) { layers.append(l) }
         }
-        if let w = winding(on: surface) { layers.append(w) }
-        // The outline and inner silhouettes, derived per camera.
+        if let w = linearCurves(on: surface) { layers.append(w) }
+        // The outline and inner fold curves, derived per camera.
         if style.folds > 0 {
-            layers.append(Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldLines,
+            layers.append(Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                                                 width: style.folds, heightPolicy: .surface),
                                 paths: .empty))
         }
@@ -450,7 +450,7 @@ public extension SurfacePreset {
         SurfacePreset(name: "forced", label: "Forced oscillator",
                       formula: "x‴ = −αx′x″ − (ω₀² + 3βx²)x′ + A sin ωt",
                       notes: "A forced jerk oscillator's invariant torus, found in the spectrum "
-                          + "of one long run and fitted, with the trajectory winding round it.",
+                          + "of one long run and fitted, with the trajectory linear curve round it.",
                       // 344 turns: a convergent denominator of the rotation
                       // number, where the trajectory cuts the torus evenly.
                       request: SurfaceRequest(.forced(system: "jerk", fit: 8000, harmonics: 24,

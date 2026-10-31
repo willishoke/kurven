@@ -17,7 +17,7 @@ import simd
 ///   solid: exact, with no pixel in it. Without one, the surface in front of
 ///   the ink, at the ink's pixel or one beside it, must be the ink's own
 ///   neighbourhood of the surface. A second sheet in front is far away in
-///   coordinates however close it is in depth, which is where a depth margin
+///   coordinates however close it is in depth, which is where a depth depth tolerance
 ///   fails; but a raster is right only to its resolution, and relief puts
 ///   the ink where that runs out.
 ///
@@ -180,7 +180,7 @@ public struct SurfaceVisibility: Sendable {
     /// its vertices: where the facing jumps, across the chord within half
     /// its length either way; `c` where no jump is in reach. The vertices
     /// are on the crease but the chord between them crosses a face, which
-    /// can face away where the crease is seen: a convex rim is seen where
+    /// can face away where the crease is seen: a convex truncation edge is seen where
     /// either of its faces is.
     public func ontoCrease(_ c: P2<ParamSpace>, chord: SIMD2<Double>) -> P2<ParamSpace> {
         let scale = SIMD2(surface.u.spacing, surface.v.spacing)
@@ -238,16 +238,16 @@ public extension HiddenLine {
     /// along which the verdict changes gains a vertex where it changes,
     /// which belongs to the run on its visible side. Visible by sphere tracing,
     /// that vertex is found by bisection on the whole test, so it lies on
-    /// the fold or on the silhouette of whatever came in front, whichever
+    /// the fold or on the outline of whatever came in front, whichever
     /// cut the ink. Visible by the coordinate image, a segment that crosses a
     /// fold is cut at the fold, found on the exact normal, and that vertex is
     /// tested by the front-most test alone, since on the fold the facing is
     /// zero by construction.
     ///
-    /// Ink that lies on the folds themselves -- `ParametricSurface.foldLines`
+    /// Ink that lies on the folds themselves -- `ParametricSurface.foldCurves`
     /// -- is edge-on everywhere by construction, so its facing is noise about
     /// zero and must not be asked: pass `onFolds` and it is tested by the
-    /// sphere tracing or the front-most test alone. Ink on a crease -- a cap's rim --
+    /// sphere tracing or the front-most test alone. Ink on a crease -- a truncation edge --
     /// is tested so too, and `onCrease` says so: there a cut is bisected on
     /// the crease itself, each point moved onto it from the chord.
     ///

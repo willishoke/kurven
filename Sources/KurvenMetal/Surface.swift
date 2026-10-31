@@ -91,7 +91,7 @@ public extension MetalRenderer {
             clip: simd_float4x4(SIMD4<Float>(m.columns.0), SIMD4<Float>(m.columns.1),
                                 SIMD4<Float>(m.columns.2), SIMD4<Float>(m.columns.3)),
             domainLo: .zero, domainSize: .zero, grid: .zero, gridSize: .zero,
-            step: 1, cap: .infinity, regionCount: 0, empty: sentinel)
+            step: 1, truncationHeight: .infinity, regionCount: 0, empty: sentinel)
         // Padded, so the farthest point lands short of the cleared 1.0 and the
         // LESS test admits it.
         let (lo, hi) = res.viewDepth(view)

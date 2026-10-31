@@ -60,6 +60,8 @@ public struct Hatching: Sendable, Equatable {
 
     // MARK: manifest
 
+    /// Read from a `hatching` layer source; the faces are read beside it
+    /// (`HatchedFaces`).
     public init(json: JSONValue) throws {
         let o = try json.object("LayerSource.hatching")
         let tone: Tone
@@ -101,7 +103,8 @@ public struct Hatching: Sendable, Equatable {
                   step: step, tone: tone, widthSteps: widthSteps)
     }
 
-    public var json: JSONValue {
+    /// The `hatching` layer source laid on `faces`.
+    public func json(faces: HatchedFaces) -> JSONValue {
         let tone: JSONValue
         switch self.tone {
         case .uniform:
@@ -113,8 +116,88 @@ public struct Hatching: Sendable, Equatable {
             tone = .object(["kind": .string("halfLambert"),
                             "light": .array([.double(light.x), .double(light.y), .double(light.z)])])
         }
-        return .object(["kind": .string("hatching"), "angle": .double(angle), "spacing": .double(spacing),
+        return .object(["kind": .string("hatching"), "faces": faces.json,
+                        "angle": .double(angle), "spacing": .double(spacing),
                         "step": .double(step), "widthSteps": .int(widthSteps), "tone": tone])
+    }
+}
+
+/// The faces a hatching is laid on, and how its lines are placed there.
+///
+/// One `Hatching` serves every face; what differs is the face's coordinates
+/// and where the first line falls. On a heightfield's walls and plateaus the
+/// spacing is rounded to a whole number of gaps, so that a plateau's lines
+/// meet the walls' at a corner; on a solid the lines run through the
+/// multiples of the spacing in each face's own frame, so that a face's
+/// hatching does not depend on how it is partitioned.
+public enum HatchedFaces: Sendable, Equatable {
+    /// A heightfield's walls along the listed perimeter edges. In a wall's
+    /// coordinates (distance along its edge, height) the lines are vertical,
+    /// angle π/2, from `base` to the top edge plus `topOffset`, with a vertex
+    /// every `step` of height. A line stands at each end of a wall; `trim`
+    /// leaves those two out.
+    case walls(edges: [Int], trim: Bool, base: Double, topOffset: Double)
+    /// A truncated heightfield's plateaus. In domain coordinates the lines
+    /// run along the real axis (angle 0) or the imaginary axis (angle π/2),
+    /// with a vertex at every grid line they cross, and each ends where it
+    /// reaches the truncation edge, by bisection on f. Copied to every tile
+    /// when `tiled`.
+    case plateaus(tiled: Bool)
+    /// Every face of a solid, at any angle.
+    case solid
+
+    /// Why `hatching` cannot be laid on these faces, or nil when it can.
+    /// A tone other than uniform, or more than one width, is drawn on a
+    /// solid only: a heightfield's layers are one width each.
+    public func unsupported(_ hatching: Hatching) -> String? {
+        let heightfield: String
+        switch self {
+        case .solid:
+            return nil
+        case .walls:
+            guard hatching.angle == .pi / 2 else {
+                return "hatching on walls is vertical, angle π/2, not \(hatching.angle)"
+            }
+            heightfield = "walls"
+        case .plateaus:
+            guard hatching.angle == 0 || hatching.angle == .pi / 2 else {
+                return "hatching on plateaus runs along an axis, angle 0 or π/2, not \(hatching.angle)"
+            }
+            heightfield = "plateaus"
+        }
+        guard hatching.tone == .uniform, hatching.widthSteps == 1 else {
+            return "hatching on \(heightfield) has a uniform tone and one width"
+        }
+        return nil
+    }
+
+    public init(json: JSONValue) throws {
+        let o = try json.object("HatchedFaces")
+        switch try o.string("kind", "HatchedFaces") {
+        case "walls":
+            self = .walls(edges: try o.ints("edges", "HatchedFaces.walls"),
+                          trim: try o.bool("trim", "HatchedFaces.walls", default: true),
+                          base: o.optionalDouble("base") ?? 0,
+                          topOffset: o.optionalDouble("topOffset") ?? 0)
+        case "plateaus":
+            self = .plateaus(tiled: try o.bool("tiled", "HatchedFaces.plateaus", default: false))
+        case "solid":
+            self = .solid
+        case let other:
+            throw ManifestError.unknownKind(other, of: "HatchedFaces", known: ["walls", "plateaus", "solid"])
+        }
+    }
+
+    public var json: JSONValue {
+        switch self {
+        case .walls(let edges, let trim, let base, let top):
+            .object(["kind": .string("walls"), "edges": .array(edges.map { .int($0) }),
+                     "trim": .bool(trim), "base": .double(base), "topOffset": .double(top)])
+        case .plateaus(let tiled):
+            .object(["kind": .string("plateaus"), "tiled": .bool(tiled)])
+        case .solid:
+            .object(["kind": .string("solid")])
+        }
     }
 }
 

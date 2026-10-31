@@ -70,7 +70,7 @@ func solidTests() {
                 let d = -view.projectionDirection
                 let drawn = s.visibleEdges(view: view)
                 // An edge with a face exactly edge-on -- a cube square to the
-                // camera -- lies on the silhouette, and its sign is rounding;
+                // camera -- lies on the outline, and its sign is rounding;
                 // whether it is drawn is not a question with an answer.
                 func decidable(_ e: Solid.Edge) -> Bool {
                     abs(simd_dot(s.normals[e.left], d)) > 1e-9 && abs(simd_dot(s.normals[e.right], d)) > 1e-9

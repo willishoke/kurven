@@ -16,17 +16,17 @@ public struct BakeOptions: Sendable {
     /// How many tiles to split the depth *pass* into per axis. `nil` picks the
     /// smallest number that fits Metal's texture limit.
     public var tiles: Int?
-    /// Hidden-line margin; `nil` takes the scene's.
-    public var margin: Double?
+    /// Hidden-line depth tolerance; `nil` takes the scene's.
+    public var depthTolerance: Double?
     /// Trace the outline of the drawn region and add it as a final stroke
     /// layer. Off by default: the plates are bounded by their own wall ink, and
     /// an outline on top of that is a second edge.
-    public var silhouette: Double?
+    public var outline: Double?
 
-    public init(resolution: Int, tiles: Int? = nil, margin: Double? = nil,
-                silhouette: Double? = nil) {
-        self.resolution = resolution; self.tiles = tiles; self.margin = margin
-        self.silhouette = silhouette
+    public init(resolution: Int, tiles: Int? = nil, depthTolerance: Double? = nil,
+                outline: Double? = nil) {
+        self.resolution = resolution; self.tiles = tiles; self.depthTolerance = depthTolerance
+        self.outline = outline
     }
 
     func tileCount(for resolution: Int) -> Int {
@@ -93,7 +93,7 @@ public extension MetalRenderer {
         guard let bounds = scene.viewBounds() else { throw BakeError.emptyScene }
         let frame = DepthFrame(covering: bounds, resolution: options.resolution)
         let n = options.tileCount(for: options.resolution)
-        let margin = options.margin ?? scene.margin
+        let depthTolerance = options.depthTolerance ?? scene.depthTolerance
 
         let depth: DepthImage
         let image: SurfaceImage?
@@ -149,36 +149,36 @@ public extension MetalRenderer {
             image.map { SurfaceVisibility(surface: s, image: $0, view: scene.camera.view) }
         }
         var layers: [(style: Style, paths: PolylineSet<PlateSpace>)] = []
-        for (layer, projected) in scene.visibleLayers(margin: margin) {
+        for (layer, projected) in scene.visibleLayers(depthTolerance: depthTolerance) {
             let clipped: PolylineSet<PlateSpace>
             if !layer.spec.clipped {
                 clipped = HiddenLine.pass(projected)
             } else if let visibility, projected.coords != nil {
                 // Ink that knows where on the surface it lies is tested by
-                // that, with no margin in it. An outline lies on a fold or
+                // that, with no depth tolerance in it. An outline lies on a fold or
                 // a crease, where the normal says nothing.
                 let outline = layer.spec.role == .outline
                 let folds: Bool
-                if case .foldLines = layer.spec.source { folds = true } else { folds = false }
+                if case .foldCurves = layer.spec.source { folds = true } else { folds = false }
                 clipped = HiddenLine.clip(projected, on: visibility, onFolds: outline,
                                           onCrease: outline && !folds)
             } else if visibility != nil {
                 // Ink on a parametric surface that carries no coordinates
-                // falls back to depth, at the margin.
-                clipped = HiddenLine.clip(projected, against: depth, margin: margin)
+                // falls back to depth, at the depth tolerance.
+                clipped = HiddenLine.clip(projected, against: depth, depthTolerance: depthTolerance)
             } else {
                 // A heightfield's ink comes tested by the facing of what it
                 // lies on and by the solid (`GridTraversal`); a solid's edges by
                 // their faces (`Solid.visibleEdges`). Neither consults the
                 // depth buffer, which is why the drawing is the same at every
                 // resolution: the buffer is rendered for the `depth` output
-                // and the silhouette, and for nothing the ink depends on.
+                // and the outline, and for nothing the ink depends on.
                 clipped = HiddenLine.pass(projected)
             }
             layers.append((Style(layer.spec), clipped))
         }
-        if let width = options.silhouette {
-            layers.append((Style(color: "#000000", width: width), depth.silhouette()))
+        if let width = options.outline {
+            layers.append((Style(color: "#000000", width: width), depth.outline()))
         }
         return Bake(strokes: Strokes(layers: layers), depth: depth, surface: image, tiles: n)
     }

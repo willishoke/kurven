@@ -18,8 +18,8 @@ public struct ContentID: Hashable, Sendable {
 /// instanced once per tile, cut to a region, with its wall curtains.
 public struct Heightfield: Sendable {
     public let surface: Surface
-    /// Wall curtains, and the cap rims where the heightfield's own triangles
-    /// cut the corner (`Mesh.capRim`), in world coordinates.
+    /// Wall curtains, and the truncation edges where the heightfield's own triangles
+    /// cut the corner (`Mesh.truncationEdgeMesh`), in world coordinates.
     public let occluder: Mesh<WorldSpace>
     /// Heightfield instances; always at least the identity.
     public let tiles: [Affine2]
@@ -28,7 +28,7 @@ public struct Heightfield: Sendable {
     /// Subsampling step for the heightfield when it is rasterized.
     public let step: Int
     /// The function behind the grids, when a consumer attached one to the
-    /// bundle: the fold lines are carried to its zeros.
+    /// bundle: the fold curves are carried to its zeros.
     public let refine: ContourRefine?
 
     public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],
@@ -53,7 +53,7 @@ public struct Heightfield: Sendable {
                     region: region, step: step, refine: nil)
     }
 
-    /// Every vertex of the decimated, capped heightfield, once per tile.
+    /// Every vertex of the decimated, truncated heightfield, once per tile.
     ///
     /// The grid is `Surface.grid_mesh`'s `self.clamped[::step, ::step]`. Not
     /// materialized: elliptic's is three million points, zeta's six, and the
@@ -64,27 +64,27 @@ public struct Heightfield: Sendable {
         }
     }
 
-    /// The outward normal of the capped surface over a world point:
+    /// The outward normal of the truncated surface over a world point:
     /// `(-∂h/∂x, -∂h/∂y, 1)`, not normalized, by central differences a grid
     /// spacing wide, the height read through whichever tile the point is in.
     ///
     /// The solid is what lies under the graph, so outward is up, and a
     /// line of sight that reaches a point of the surface facing away from the
     /// eye has entered the solid already: such a point is hidden, whatever
-    /// the depth buffer says to within its margin. That is the test the
-    /// margin cannot make -- where a steep flank turns away, the back of it
-    /// lies within the margin of the front for a stretch that zoom
+    /// the depth buffer says to within its depth tolerance. That is the test the
+    /// depth tolerance cannot make -- where a steep graph turns away, the back of it
+    /// lies within the depth tolerance of the front for a stretch that zoom
     /// magnifies, and back-face ink shows there as ticks.
     ///
     /// Differences in world coordinates, so a tile's reflection is already
-    /// in them; on the cap the differences vanish and the normal is up.
+    /// in them; on the plateau the differences vanish and the normal is up.
     ///
     /// With the function at hand (`refine`), the slope is f's own, read by
     /// differences a step small against the cell and large against
     /// rounding, as the refiner reads it: the ink on the surface is placed
     /// on f to the last bit, and a facing read off the grid a cell wide
     /// tests it with a ruler a cell long -- a ring ends a stencil's width
-    /// short of the fold on a convex flank and shows a stencil's width past
+    /// short of the fold on a convex graph and shows a stencil's width past
     /// it on a hump, whatever the grid. Without the function, the grid
     /// is the surface and its chords are the slope.
     public func normal(at p: P2<WorldSpace>) -> SIMD3<Double> {
@@ -96,7 +96,7 @@ public struct Heightfield: Sendable {
             func h(_ x: Double, _ y: Double) -> Double {
                 let q = surface.inTile(P2<DomainSpace>(x, y), tiles: tiles)
                 let u = magnitude(q)
-                return min(u.isNaN ? .infinity : u, surface.caps.height(atX: q.x))
+                return min(u.isNaN ? .infinity : u, surface.truncation.height(atX: q.x))
             }
             let hx = (h(p.x + step, p.y) - h(p.x - step, p.y)) / (2 * step)
             let hy = (h(p.x, p.y + step) - h(p.x, p.y - step)) / (2 * step)
@@ -110,12 +110,12 @@ public struct Heightfield: Sendable {
         return SIMD3(-hx, -hy, 1)
     }
 
-    /// The normal of the flank over `p`: f's own slope, uncapped, read as
+    /// The normal of the graph over `p`: f's own slope, untruncated, read as
     /// `normal(at:)` reads it, so a fold is traced on the one surface the
-    /// flank is and continues under the cap, where the rim cuts it. The
-    /// capped normal without the function, or where f's slope is not
+    /// graph is and continues below the truncation, where the truncation edge cuts it. The
+    /// truncated normal without the function, or where f's slope is not
     /// finite.
-    func flankNormal(at p: P2<WorldSpace>) -> SIMD3<Double> {
+    func graphNormal(at p: P2<WorldSpace>) -> SIMD3<Double> {
         guard let magnitude = refine?.magnitude else { return normal(at: p) }
         let g = surface.height
         let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1))
@@ -131,27 +131,27 @@ public struct Heightfield: Sendable {
         return SIMD3(-hx, -hy, 1)
     }
 
-    /// The fold lines under a camera: where the surface turns edge-on,
-    /// `n · sight = 0`, which is where its outline and every inner silhouette
-    /// lie -- the far edge of a pit, the crest of a flank seen from the side.
+    /// The fold curves under a camera: where the surface turns edge-on,
+    /// `n · sight = 0`, which is where its outline and every inner outline
+    /// lie -- the far edge of a pit, the top edge of a graph seen from the side.
     /// The 1933 plates draw them, and the notebooks drew them from a
     /// thresholded matrix of gradients, contoured. This is that, with the
     /// line of sight as the threshold: the facing is sampled on the grid,
     /// its zero level traced by marching squares, and, when `refined`, every
     /// vertex moved onto the exact fold by bisection along the facing's
     /// gradient -- the same facing `HeightfieldVisibility` cuts ink by, so
-    /// the two agree on where the surface turns. Nothing on a cap, which is
-    /// flat and faces up and has a rim of its own, and nothing outside the
+    /// the two agree on where the surface turns. Nothing on a plateau, which is
+    /// flat and faces up and has a truncation edge of its own, and nothing outside the
     /// region. They depend on the camera, so they are derived for one, never
     /// stored.
     ///
-    /// A fold that ends beside a zero of f was going there: the silhouette
-    /// of a pit runs down its flank into the zero, the apex of the cone.
+    /// A fold that ends beside a zero of f was going there: the outline
+    /// of a pit runs down its graph into the zero, the apex of the cone.
     /// The grid loses it a cell or two short, where its chord across the
     /// floor flattens the facing out. With the function at hand (`refine`),
     /// an open run's end is carried to the zero the refiner finds from it,
     /// at |f|'s own height there -- the floor -- as the phase lines are.
-    public func foldLines(view: Transform<WorldSpace, ViewSpace>,
+    public func foldCurves(view: Transform<WorldSpace, ViewSpace>,
                           refined: Bool = true) -> PolylineSet<WorldSpace> {
         let g = surface.height
         let nx = g.width, ny = g.height
@@ -198,20 +198,20 @@ public struct Heightfield: Sendable {
     }
 
     /// The height of the surface the ink is tested against, over a world
-    /// point: f's own, capped, read through the tile the point is in, when
+    /// point: f's own, truncated, read through the tile the point is in, when
     /// the function is at hand; the grid's interpolated height otherwise.
     public func surfaceHeight(at p: P2<WorldSpace>) -> Double {
         if let magnitude = refine?.magnitude {
             let q = surface.inTile(P2<DomainSpace>(p.x, p.y), tiles: tiles)
             let u = magnitude(q)
-            if u.isFinite { return min(u, surface.caps.height(atX: q.x)) }
+            if u.isFinite { return min(u, surface.truncation.height(atX: q.x)) }
         }
         return surface.height(at: P2<DomainSpace>(p.x, p.y), tiles: tiles)
     }
 
     /// The height of the surface *as the depth pass draws it* over a world
     /// point: the grid decimated by `step`, each cell as the two triangles
-    /// the rasterizer splits it into, capped, through the tile the point is
+    /// the rasterizer splits it into, truncated, through the tile the point is
     /// in. This is the solid every piece of ink is tested against, so the
     /// test and the rasterizer cannot disagree about where the surface is.
     public func drawnHeight(at p: P2<WorldSpace>) -> Double {
@@ -234,7 +234,7 @@ public struct Heightfield: Sendable {
             guard toEnd > 1e-9 * cell, toEnd < toOther else { return nil }
             let u = magnitude(z)
             guard u.isFinite else { return nil }
-            return P3(z.x, z.y, min(u, surface.caps.height(atX: z.x)))
+            return P3(z.x, z.y, min(u, surface.truncation.height(atX: z.x)))
         }
         var out = run
         if let z = carried(out[0], other: out[out.count - 1]) { out.insert(z, at: 0) }
@@ -242,32 +242,32 @@ public struct Heightfield: Sendable {
         return out
     }
 
-    /// The fold lines that can be seen: `foldLines`, less what the surface
+    /// The fold curves that can be seen: `foldCurves`, less what the surface
     /// hides. A fold cannot be tested by a depth buffer: the surface is
-    /// edge-on there, so its depth changes by the whole flank within one
+    /// edge-on there, so its depth changes by the whole graph within one
     /// pixel, and the pixel's value is the near side's, in front of the fold
-    /// by far more than any margin. It is tested by the solid instead: a fold
+    /// by far more than any depth tolerance. It is tested by the solid instead: a fold
     /// vertex is hidden when the line of sight from it to the eye passes under
-    /// the surface (`GridTraversal`). `margin` is the plate's hidden-line
-    /// margin, which keeps a vertex on the surface it belongs to from hiding
+    /// the surface (`GridTraversal`). `depthTolerance` is the plate's hidden-line
+    /// depth tolerance, which keeps a vertex on the surface it belongs to from hiding
     /// behind that surface's own rounding.
     ///
     /// With the function at hand, ink on the surface is tested where the
-    /// surface is (`onSurface`) and the margin is rounding: a fold vertex
+    /// surface is (`onSurface`) and the depth tolerance is rounding: a fold vertex
     /// lies on f to the last bit, and forgiving the tolerance instead draws
     /// a stub of a bowl's fold beside the cut, hidden by less than the
-    /// tolerance, almost on the crest.
+    /// tolerance, almost on the top edge.
     ///
     /// `resolution` is how finely a fold's end behind the solid is placed,
     /// as a length in the view plane (`runs(of:)`); zero, to the last bit.
-    public func visibleFolds(view: Transform<WorldSpace, ViewSpace>, margin: Double,
+    public func visibleFolds(view: Transform<WorldSpace, ViewSpace>, depthTolerance: Double,
                              refined: Bool = true, resolution: Double = 0) -> PolylineSet<WorldSpace> {
-        let folds = foldLines(view: view, refined: refined)
+        let folds = foldCurves(view: view, refined: refined)
         guard !folds.vertices.isEmpty else { return folds }
-        let traversal = GridTraversal(self, view: view, margin: surfaceMargin(margin))
+        let traversal = GridTraversal(self, view: view, depthTolerance: surfaceDepthTolerance(depthTolerance))
         return Self.runs(of: folds, worker: {
             let m = traversal.forked(), h = m.heightfield
-            return (keep: { m.unoccluded(h.onSurface($0)) }, lift: { _, _, q in q })
+            return (holds: { m.unoccluded(h.onSurface($0)) }, lift: { _, _, q in q })
         }, stop: Self.stop(resolution, view))
     }
 
@@ -288,11 +288,11 @@ public struct Heightfield: Sendable {
         }
     }
 
-    /// The margin ink on the surface is tested with: the plate's against the
+    /// The depth tolerance ink on the surface is tested with: the plate's against the
     /// grid, whose chords are that far from f; rounding against f, since
     /// the ink is tested on f itself.
-    func surfaceMargin(_ margin: Double) -> Double {
-        guard refine?.magnitude != nil else { return margin }
+    func surfaceDepthTolerance(_ depthTolerance: Double) -> Double {
+        guard refine?.magnitude != nil else { return depthTolerance }
         let g = surface.height
         let cell = max(abs(g.domain.real.length) / Double(max(g.width - 1, 1)),
                        abs(g.domain.imag.length) / Double(max(g.height - 1, 1)))
@@ -318,22 +318,22 @@ public struct Heightfield: Sendable {
     /// tested as the folds are: hidden where the wall it lies in faces away
     /// from the eye -- it is then behind the solid the wall bounds -- and
     /// otherwise hidden only where the line of sight from it passes under the
-    /// surface. A post at a corner lies in two walls and shows if either
+    /// surface. A vertical edge at a corner lies in two walls and shows if either
     /// does. Which wall a vertex lies in is read off its position against
     /// the box of each tile, since every wall of a described landscape
     /// stands on a tile's edge.
     ///
-    /// The crest is the exception: it is the surface's own edge as much as
+    /// The top edge is the exception: it is the surface's own edge as much as
     /// the wall's top, and the far edge of a plate is in plain view over a
     /// wall that faces away. A vertex at the surface's height is tested by
     /// the traversal alone, which hides it exactly when the surface in front of
     /// it does.
     public func visibleWallInk(_ paths: PolylineSet<WorldSpace>,
                                view: Transform<WorldSpace, ViewSpace>,
-                               margin: Double, resolution: Double = 0) -> PolylineSet<WorldSpace> {
+                               depthTolerance: Double, resolution: Double = 0) -> PolylineSet<WorldSpace> {
         guard !paths.vertices.isEmpty else { return paths }
         let sight = view.projectionDirection
-        let traversal = GridTraversal(self, view: view, margin: margin)
+        let traversal = GridTraversal(self, view: view, depthTolerance: depthTolerance)
         let d = surface.domain
         let slack = 1e-6 * traversal.cell
         let boxes: [(lo: SIMD2<Double>, hi: SIMD2<Double>)] = tiles.map { tile in
@@ -344,15 +344,15 @@ public struct Heightfield: Sendable {
                     SIMD2(corners.map(\.x).max()!, corners.map(\.y).max()!))
         }
         let cell = traversal.cell
-        /// Whether the point is tested by the traversal at all: on the crest, in
+        /// Whether the point is tested by the traversal at all: on the top edge, in
         /// a wall that faces the eye, or in no wall. Ink that stands in no
         /// wall is left to the traversal alone.
-        @Sendable func onCrest(_ hf: Heightfield, _ p: P3<WorldSpace>) -> Bool {
+        @Sendable func onTopEdge(_ hf: Heightfield, _ p: P3<WorldSpace>) -> Bool {
             let h = hf.surfaceHeight(at: P2(p.x, p.y))
             return p.z >= h - 1e-9 * max(cell, abs(h))
         }
         @Sendable func admitted(_ hf: Heightfield, _ p: P3<WorldSpace>) -> Bool {
-            let onCrest = onCrest(hf, p)
+            let onTopEdge = onTopEdge(hf, p)
             var onAnyWall = false, facesEye = false
             for box in boxes {
                 let walls: [(on: Bool, outward: SIMD3<Double>)] = [
@@ -366,20 +366,20 @@ public struct Heightfield: Sendable {
                     if -simd_dot(wall.outward, sight) > 0 { facesEye = true }
                 }
             }
-            return onCrest || facesEye || !onAnyWall
+            return onTopEdge || facesEye || !onAnyWall
         }
-        // A crest run ends where the traversal turns along the crest itself: the
-        // chord between two crest vertices lies under a concave crest, and a
-        // point under the crest is in the wall, which, facing away, is
+        // A top edge run ends where the traversal turns along the top edge itself: the
+        // chord between two top edge vertices lies under a concave top edge, and a
+        // point under the top edge is in the wall, which, facing away, is
         // never admitted -- so bisected along the chord the run began at
         // the next vertex, half a cell late, and the far edge of a plate
         // came out from behind a tower with a stub missing beside the
-        // silhouette's cusp. Visible on the surface, the chord's points are
-        // crest points.
+        // outline's cusp. Visible on the surface, the chord's points are
+        // top edge points.
         return Self.runs(of: paths, worker: {
             let m = traversal.forked(), h = m.heightfield
-            return (keep: { p in admitted(h, p) && m.unoccluded(p) },
-                    lift: { a, b, q in onCrest(h, a) && onCrest(h, b) ? h.onSurface(q) : q })
+            return (holds: { p in admitted(h, p) && m.unoccluded(p) },
+                    lift: { a, b, q in onTopEdge(h, a) && onTopEdge(h, b) ? h.onSurface(q) : q })
         }, bisectable: { a, b in admitted(self, a) && admitted(self, b) },
            stop: Self.stop(resolution, view))
     }
@@ -389,22 +389,22 @@ public struct Heightfield: Sendable {
     ///
     /// Two tests, as a parametric surface has. The surface bounds the solid
     /// under it, so where it faces away from the eye the ink on it is hidden,
-    /// full stop, and no margin has a say: this is the test a depth margin
-    /// cannot make, since where a steep flank turns away its back lies within
-    /// the margin of its front for a stretch, and the other family of
-    /// contours would show through there as ticks along the silhouette.
+    /// full stop, and no depth tolerance has a say: this is the test a depth depth tolerance
+    /// cannot make, since where a steep graph turns away its back lies within
+    /// the depth tolerance of its front for a stretch, and the other family of
+    /// contours would show through there as ticks along the outline.
     /// Where it faces the eye, the ink is hidden exactly where the sight
     /// line from it passes under the surface in front (`GridTraversal`). A
     /// segment that crosses a fold is cut on the fold itself, found by
-    /// bisection on the normal -- the same facing the fold lines are traced
-    /// from, so a contour ends where the silhouette is drawn -- and the new
+    /// bisection on the normal -- the same facing the fold curves are traced
+    /// from, so a contour ends where the outline is drawn -- and the new
     /// vertex belongs to the run on the visible side, tested by the traversal
     /// alone, since on the fold the facing is zero by construction.
     public func visibleSurfaceInk(_ paths: PolylineSet<WorldSpace>,
                                   view: Transform<WorldSpace, ViewSpace>,
-                                  margin: Double) -> PolylineSet<WorldSpace> {
+                                  depthTolerance: Double) -> PolylineSet<WorldSpace> {
         guard !paths.vertices.isEmpty else { return paths }
-        let vis = HeightfieldVisibility(heightfield: self, view: view, margin: surfaceMargin(margin))
+        let vis = HeightfieldVisibility(heightfield: self, view: view, depthTolerance: surfaceDepthTolerance(depthTolerance))
         let vertices = paths.vertices
         let facing = Self.parallelMap(vertices) { vis.facing(P2($0.x, $0.y)) }
         // The segments whose ends face opposite ways, each cut on the fold.
@@ -442,7 +442,7 @@ public struct Heightfield: Sendable {
         }
         // Where a run ends between a visible point and one the traversal hides,
         // it ends where the traversal turns, by bisection along the segment: a
-        // ring passing behind a crest ends on the crest as drawn, not a
+        // ring passing behind a top edge ends on the top edge as drawn, not a
         // segment short of it.
         var crossings: [(path: Int, k: Int)] = []
         for (i, seq) in sequence.enumerated() {
@@ -454,7 +454,7 @@ public struct Heightfield: Sendable {
         let visibilitySequence = sequence
         let turned = Self.parallelMap(crossings) { c -> P3<WorldSpace>? in
             let a = visibilitySequence[c.path][c.k - 1], b = visibilitySequence[c.path][c.k]
-            return Self.turning(from: a.v, a.visible, to: b.v, keep: { vis.isClear(self.onSurface($0)) })
+            return Self.turning(from: a.v, a.visible, to: b.v, holds: { vis.isClear(self.onSurface($0)) })
         }
         var turn: [[P3<WorldSpace>?]] = sequence.map { [P3<WorldSpace>?](repeating: nil, count: $0.count) }
         for (i, c) in crossings.enumerated() { turn[c.path][c.k] = turned[i] }
@@ -478,52 +478,52 @@ public struct Heightfield: Sendable {
         return PolylineSet(paths: out)
     }
 
-    /// Any other ink -- the rim of a cap, the hatch across it, a dumped
+    /// Any other ink -- the truncation edge of a truncation, the hatch across it, a dumped
     /// scaffold -- less what the solid hides: tested by the traversal alone,
     /// since such ink lies on a crease or a flat top where the surface's
     /// facing is not the ink's.
     public func visibleInk(_ paths: PolylineSet<WorldSpace>,
                            view: Transform<WorldSpace, ViewSpace>,
-                           margin: Double) -> PolylineSet<WorldSpace> {
+                           depthTolerance: Double) -> PolylineSet<WorldSpace> {
         guard !paths.vertices.isEmpty else { return paths }
-        let traversal = GridTraversal(self, view: view, margin: margin)
+        let traversal = GridTraversal(self, view: view, depthTolerance: depthTolerance)
         return Self.runs(of: paths, worker: {
             let m = traversal.forked()
-            return (keep: { m.unoccluded($0) }, lift: { _, _, q in q })
+            return (holds: { m.unoccluded($0) }, lift: { _, _, q in q })
         })
     }
 
-    /// The runs of each path whose vertices pass `keep`, split where one
+    /// The runs of each path whose vertices pass `holds`, split where one
     /// does not; runs shorter than two vertices draw nothing and are dropped.
-    /// `keep` is asked of every vertex in parallel, since the traversal behind it
+    /// `holds` is asked of every vertex in parallel, since the traversal behind it
     /// is the expensive part of a bake.
     ///
     /// Where a run ends between a kept vertex and a dropped one, it ends
-    /// where `keep` turns, found by bisection along the segment to the last
-    /// bit: a ring passing behind a crest ends on the crest as drawn, not at
+    /// where `holds` turns, found by bisection along the segment to the last
+    /// bit: a ring passing behind a top edge ends on the top edge as drawn, not at
     /// its last vertex in front of it. Only across a segment `bisectable`
     /// admits: the traversal's verdict turns at a point of the segment, but a
     /// test of where the vertex *is* -- in a wall that faces the eye, on the
-    /// crest -- does not, and bisecting it would draw the sliver of a stroke
-    /// between the crest as drawn and f.
+    /// top edge -- does not, and bisecting it would draw the sliver of a stroke
+    /// between the top edge as drawn and f.
     /// `lift` places a point of the chord `a -> b` where the ink between
     /// the two vertices actually runs, for the bisection of a run's end:
     /// for most ink the chord itself. `stop` is the fraction of the segment
     /// the bisection may stop at (`stop(_:_:)`): none, by default.
     ///
-    /// `keep` and `lift` are each worker thread's own, made by `worker` once
+    /// `holds` and `lift` are each worker thread's own, made by `worker` once
     /// a thread (`parallelMap(_:chunk:worker:_:)`): a traversal forked for the
     /// thread shares nothing of f with the others.
     static func runs(of paths: PolylineSet<WorldSpace>,
-                     worker: @Sendable () -> (keep: Keep, lift: Lift),
+                     worker: @Sendable () -> (holds: Predicate, lift: Lift),
                      bisectable: @Sendable (P3<WorldSpace>, P3<WorldSpace>) -> Bool = { _, _ in true },
                      stop: @Sendable (P3<WorldSpace>, P3<WorldSpace>) -> Double = { _, _ in 0 })
         -> PolylineSet<WorldSpace>
     {
-        // A few vertices to a thread at a time, and one crossing: a keep that
+        // A few vertices to a thread at a time, and one crossing: a predicate that
         // traverses a line of sight on f is milliseconds a vertex, and at the
         // default chunk a fold of a thousand vertices was four threads' work.
-        let kept = parallelMap(paths.vertices, chunk: 4, worker: worker) { w, v in w.keep(v) }
+        let kept = parallelMap(paths.vertices, chunk: 4, worker: worker) { w, v in w.holds(v) }
         let vertices = paths.vertices
         var crossings: [Int] = []
         for path in 0..<paths.count {
@@ -534,7 +534,7 @@ public struct Heightfield: Sendable {
         }
         let turned = parallelMap(crossings, chunk: 1, worker: worker) { w, k -> P3<WorldSpace>? in
             let a = vertices[k - 1], b = vertices[k]
-            return Self.turning(from: a, kept[k - 1], to: b, keep: w.keep, until: stop(a, b)) {
+            return Self.turning(from: a, kept[k - 1], to: b, holds: w.holds, until: stop(a, b)) {
                 w.lift(a, b, $0)
             }
         }
@@ -558,20 +558,20 @@ public struct Heightfield: Sendable {
         return PolylineSet(paths: out)
     }
 
-    typealias Keep = @Sendable (P3<WorldSpace>) -> Bool
+    typealias Predicate = @Sendable (P3<WorldSpace>) -> Bool
     typealias Lift = @Sendable (P3<WorldSpace>, P3<WorldSpace>, P3<WorldSpace>) -> P3<WorldSpace>
 
-    /// Where `keep` turns on the segment from `a` to `b`, given it holds at
+    /// Where `holds` turns on the segment from `a` to `b`, given it holds at
     /// `a` iff `keptA`: bisection to the last bit of the fraction, or to
     /// `until` of it, returning the last point at which it still holds on
     /// the kept side.
     static func turning(from a: P3<WorldSpace>, _ keptA: Bool, to b: P3<WorldSpace>,
-                        keep: @Sendable (P3<WorldSpace>) -> Bool, until: Double = 0,
+                        holds: @Sendable (P3<WorldSpace>) -> Bool, until: Double = 0,
                         lift: (P3<WorldSpace>) -> P3<WorldSpace> = { $0 }) -> P3<WorldSpace>? {
         var lo = 0.0, hi = 1.0
         while hi - lo > max(until, 1e-13) {
             let mid = 0.5 * (lo + hi)
-            if keep(lift(P3(a.v + (b.v - a.v) * mid))) == keptA { lo = mid } else { hi = mid }
+            if holds(lift(P3(a.v + (b.v - a.v) * mid))) == keptA { lo = mid } else { hi = mid }
         }
         // Turned within rounding of the kept end: the kept vertex is where
         // the ink ends, and a second vertex there would be a run of nothing.
@@ -633,38 +633,38 @@ public struct Heightfield: Sendable {
 /// depth pass answers for every pixel, asked for one point, exactly.
 ///
 /// Exactly, because the drawn surface is piecewise linear: the grid's
-/// cells, two triangles each, capped. Along a straight line the gap between
+/// cells, two triangles each, truncated. Along a straight line the gap between
 /// the line and that surface is therefore linear between the places where
 /// the line crosses a grid row, a grid column or a cell's diagonal, and
 /// its least value lies at one of them. So the traversal visits those crossings
 /// and no other points -- in the grid's own index coordinates, where the
 /// rows, columns and diagonals are the integer levels of `u`, `v` and
-/// `u + v` -- and a point is hidden when at some crossing beyond the margin
+/// `u + v` -- and a point is hidden when at some crossing beyond the depth tolerance
 /// the line is under the surface. Nothing is sampled: a sliver thinner than
 /// any step is still a crossing. The answer is a function of the geometry
 /// alone, which is what makes a bake the same drawing at every depth
 /// resolution.
 ///
-/// The margin means two things, and the traversal keeps them apart. A point of
+/// The depth tolerance means two things, and the traversal keeps them apart. A point of
 /// ink lies on a surface it was placed on by the function or by the grid,
 /// and the drawn surface -- the grid's facets -- misses that by an
 /// interpolation gap, so the point may start a little inside the solid.
-/// That is forgiven *perpendicular* to the facet, by the margin: a vertical
+/// That is forgiven *perpendicular* to the facet, by the depth tolerance: a vertical
 /// gap times the facet's cosine, still linear along the line over one
 /// facet. Measured vertically it would be a horizontal tolerance of
-/// margin / slope, and on a cone of slope 24 the rings came out dashed;
+/// depth tolerance / slope, and on a cone of slope 24 the rings came out dashed;
 /// measured along the line of sight it forgives nothing at a fold, where the
 /// line runs along the surface for a long way within a hair of it, and the
 /// folds vanished. Then, once the line has been outside the solid, anything
 /// it enters is an occluder and is tested *along the line of sight*, as the
 /// depth buffer tested it: hidden when the line is still inside the solid
-/// at the margin's distance toward the eye, or beyond. A wedge of rock
+/// at the depth tolerance's distance toward the eye, or beyond. A wedge of rock
 /// that is thin across but long along the line -- the side of a pit seen
 /// through its notch -- hides what is behind it, as it should.
 ///
 /// A point strictly over the domain is tested where it stands as well. A
 /// point on a wall -- at the domain's edge -- is on the solid's boundary
-/// and is tested only from where the line goes next, so the foot of a wall
+/// and is tested only from where the line goes next, so the bottom edge of a wall
 /// that faces the eye, whose line leaves the domain at once, is seen.
 ///
 /// Built once per camera, since it scans the samples for the solid's extent
@@ -680,9 +680,9 @@ struct GridTraversal: Sendable {
     }
 
     let toward: SIMD3<Double>
-    /// The hidden-line margin, in view depth. Infinite disarms the traversal.
-    let margin: Double
-    /// The margin as a distance along the line of sight: an occluder must
+    /// The hidden-line depth tolerance, in view depth. Infinite disarms the traversal.
+    let depthTolerance: Double
+    /// The depth tolerance as a distance along the line of sight: an occluder must
     /// stand in front by more than this.
     let reach: Double
     /// The drawn grid's spacing, the larger of the two directions.
@@ -697,7 +697,7 @@ struct GridTraversal: Sendable {
     let backs: [Affine2]
     let step: Int
 
-    init(_ heightfield: Heightfield, view: Transform<WorldSpace, ViewSpace>, margin: Double) {
+    init(_ heightfield: Heightfield, view: Transform<WorldSpace, ViewSpace>, depthTolerance: Double) {
         self.heightfield = heightfield
         self.toward = -view.projectionDirection
         // View depth per unit of travel along the line of sight: the camera's
@@ -713,17 +713,17 @@ struct GridTraversal: Sendable {
         let dy = g.domain.imag.length / Double(max(g.height - 1, 1)) * Double(step)
         let cell = max(abs(dx), abs(dy))
         self.cell = cell
-        // The margin forgives the ink its distance from the solid it is
+        // The depth tolerance forgives the ink its distance from the solid it is
         // tested against. Against the grid that is the chord's departure
-        // from f, the plate's margin. Against f it is the refiner's own
+        // from f, the plate's depth tolerance. Against f it is the refiner's own
         // tolerance: a vertex is on f to a hundredth of it, and a chord
         // between two vertices departs from the curve by at most the
         // tolerance of a cell, measured across the curve -- which is the
         // perpendicular distance the traversal tests by, since along a level
-        // line f is flat. A plate-scale margin would let a ring show
-        // through a wall for the margin's reach past the crest.
-        let bounded = heightfield.refine.map { min(margin, $0.tolerance * cell) } ?? margin
-        self.margin = bounded
+        // line f is flat. A plate-scale depth tolerance would let a ring show
+        // through a wall for the depth tolerance's reach past the top edge.
+        let bounded = heightfield.refine.map { min(depthTolerance, $0.tolerance * cell) } ?? depthTolerance
+        self.depthTolerance = bounded
         self.reach = bounded / max(perUnit, 1e-12)
         var top = -Double.infinity, floor = Double.infinity
         heightfield.forEachSample { top = max(top, $0.z); floor = min(floor, $0.z) }
@@ -744,10 +744,10 @@ struct GridTraversal: Sendable {
     }
 
     /// The drawn surface over a world point, read through the nearest tile:
-    /// the grid's interpolated height before the cap, the cap there, and
+    /// the grid's interpolated height before the truncation, the truncation there, and
     /// the cosine of the facet's tilt. The drawn height is the lesser of the
     /// first two.
-    func drawnSurface(at p: SIMD2<Double>) -> (interpolated: Double, cap: Double, cosine: Double) {
+    func drawnSurface(at p: SIMD2<Double>) -> (interpolated: Double, truncationHeight: Double, cosine: Double) {
         let s = heightfield.surface
         guard backs.count > 1 else {
             return surface(at: P2<DomainSpace>(p.x, p.y))
@@ -773,16 +773,16 @@ struct GridTraversal: Sendable {
     /// the cosine of its tilt, by differences a step small against the cell,
     /// when the function is at hand; the grid's facet otherwise. The ink
     /// is placed on f, so the solid it is tested against is f: a ring seen
-    /// through a notch is hidden where f's crest hides it, not where the
+    /// through a notch is hidden where f's top edge hides it, not where the
     /// chord across the nearest two nodes would.
-    func surface(at q: P2<DomainSpace>) -> (interpolated: Double, cap: Double, cosine: Double) {
+    func surface(at q: P2<DomainSpace>) -> (interpolated: Double, truncationHeight: Double, cosine: Double) {
         let s = heightfield.surface
         guard let magnitude = heightfield.refine?.magnitude else {
             return s.drawnSurface(at: q, step: step)
         }
         let (u, slope) = functionSurface(at: q, magnitude: magnitude)
         let cosine = 1 / (1 + simd_dot(slope, slope)).squareRoot()
-        return (u, s.caps.height(atX: q.x), cosine.isNaN ? 0 : cosine)
+        return (u, s.truncation.height(atX: q.x), cosine.isNaN ? 0 : cosine)
     }
 
     /// f's height over a point of the fundamental tile and its slope there,
@@ -819,7 +819,7 @@ struct GridTraversal: Sendable {
         }
         let tEps = 1e-9 * cell
         /// The line's height over the drawn surface at distance `t` along
-        /// it: over the interpolated facet and over the cap, and the facet's
+        /// it: over the interpolated facet and over the truncation, and the facet's
         /// cosine; nil where the point is outside the region, over which
         /// nothing is drawn.
         /// With the function, the sample also carries the rate the gap over
@@ -829,7 +829,7 @@ struct GridTraversal: Sendable {
         /// reflection; only its product with the line's direction is needed,
         /// and both are read in the same frame.
         let magnitude = heightfield.refine?.magnitude
-        typealias Sample = (overTriangle: Double, overCap: Double, cosine: Double, rate: Double)
+        typealias Sample = (overTriangle: Double, overTruncation: Double, cosine: Double, rate: Double)
         func gaps(_ t: Double) -> Sample? {
             let q = pxy + t * dxy
             guard heightfield.region.contains(P2<WorldSpace>(q.x, q.y)) else { return nil }
@@ -838,24 +838,24 @@ struct GridTraversal: Sendable {
                 let dq = heightfield.surface.inTile(P2<DomainSpace>(q.x, q.y), tiles: heightfield.tiles)
                 let (u, slope) = functionSurface(at: dq, magnitude: magnitude)
                 let cosine = 1 / (1 + simd_dot(slope, slope)).squareRoot()
-                let cap = heightfield.surface.caps.height(atX: dq.x)
-                return (z - u, z - cap, cosine.isNaN ? 0 : cosine, d.z - simd_dot(slope, dxy))
+                let truncationHeight = heightfield.surface.truncation.height(atX: dq.x)
+                return (z - u, z - truncationHeight, cosine.isNaN ? 0 : cosine, d.z - simd_dot(slope, dxy))
             }
-            let (interpolated, cap, cosine) = drawnSurface(at: q)
-            return (z - interpolated, z - cap, cosine, 0)
+            let (interpolated, truncationHeight, cosine) = drawnSurface(at: q)
+            return (z - interpolated, z - truncationHeight, cosine, 0)
         }
-        // The cap's bands, if any, as levels of the grid's u where the
-        // cap steps: a crossing of the drawn surface too.
+        // The truncation's bands, if any, as levels of the grid's u where the
+        // truncation steps: a crossing of the drawn surface too.
         var bandEdges: [Double] = []
-        if case .realBands(let bands, _) = heightfield.surface.caps {
+        if case .realBands(let bands, _) = heightfield.surface.truncation {
             let g = heightfield.surface.height
             let dx = g.domain.real.length / Double(max(g.width - 1, 1)) * Double(step)
             bandEdges = bands.map { ($0.below - g.domain.real.lo) / dx }
         }
         // Every crossing of a grid row, column or diagonal -- the
-        // integer levels of u, v and u + v -- and of a cap band's edge, over
+        // integer levels of u, v and u + v -- and of a truncation band's edge, over
         // every tile the line passes, with the ends of each passage; and
-        // the margin's reach, which is where occlusion starts to count.
+        // the depth tolerance's reach, which is where occlusion starts to count.
         var ts: [Double] = []
         var strictlyInside = false
         for grid in grids {
@@ -906,8 +906,8 @@ struct GridTraversal: Sendable {
 
         // The walk. In its own surface's neighbourhood -- from the start,
         // for as long as it has not yet been outside -- the line is
-        // forgiven the margin perpendicular to the facet over it. Once it
-        // has been outside, being inside at or beyond the margin's reach is
+        // forgiven the depth tolerance perpendicular to the facet over it. Once it
+        // has been outside, being inside at or beyond the depth tolerance's reach is
         // occlusion.
         var outsideYet = false
         var startJudged = false
@@ -920,25 +920,25 @@ struct GridTraversal: Sendable {
             // surface's neighbourhood, not outside it. Further along, a line
             // under the surface by rounding alone is not inside it: the last
             // sample lies at the highest height by construction, and over a
-            // cap at that height the sign of its gap is a rounding error.
+            // truncation at that height the sign of its gap is a rounding error.
             let zEps = t > tEps ? -1e-9 * cell : 1e-9 * cell
-            guard let g, g.overTriangle < zEps, g.overCap < zEps else {
+            guard let g, g.overTriangle < zEps, g.overTruncation < zEps else {
                 // Outside here, the start included: a point on the boundary
                 // that stands above the surface is outside from the start,
                 // and what its line then enters is an occluder. Against f,
-                // outside means outside by more than the margin: a line that
+                // outside means outside by more than the depth tolerance: a line that
                 // grazes out of the surface by less than its skin and back
                 // in has not left it.
                 if let g, magnitude != nil {
-                    let clearance = g.overTriangle > g.overCap ? g.overTriangle * cosine : g.overCap
-                    if clearance <= margin {
+                    let clearance = g.overTriangle > g.overTruncation ? g.overTriangle * cosine : g.overTruncation
+                    if clearance <= depthTolerance {
                         trace?(String(format: "t %.4g cells: within the skin, %.3e over f", t / cell, g.overTriangle))
                         return false
                     }
                 }
                 outsideYet = true
                 trace?(String(format: "t %.4g cells: outside (gap %@)", t / cell,
-                              g.map { String(format: "%+.3e over f, %+.3e over cap", $0.overTriangle, $0.overCap) } ?? "off the region"))
+                              g.map { String(format: "%+.3e over f, %+.3e over truncation", $0.overTriangle, $0.overTruncation) } ?? "off the region"))
                 return false
             }
             guard visible else {
@@ -946,14 +946,14 @@ struct GridTraversal: Sendable {
                 return false
             }
             if outsideYet {
-                trace?(String(format: "t %.4g cells: inside by %.3e (under the cap by %.3e) after being outside, reach %.4g cells: %@",
-                              t / cell, -g.overTriangle, -g.overCap, reach / cell, t + tEps >= reach ? "hidden" : "forgiven"))
+                trace?(String(format: "t %.4g cells: inside by %.3e (below the truncation by %.3e) after being outside, reach %.4g cells: %@",
+                              t / cell, -g.overTriangle, -g.overTruncation, reach / cell, t + tEps >= reach ? "hidden" : "forgiven"))
                 return t + tEps >= reach
             }
-            let depth = g.overTriangle > g.overCap ? g.overTriangle * cosine : g.overCap
-            trace?(String(format: "t %.4g cells: inside by %.3e in its own surface's neighbourhood, depth %.3e, margin %.3e: %@",
-                          t / cell, -g.overTriangle, depth, margin, depth + margin < 0 ? "hidden" : "forgiven"))
-            return depth + margin < 0
+            let depth = g.overTriangle > g.overTruncation ? g.overTriangle * cosine : g.overTruncation
+            trace?(String(format: "t %.4g cells: inside by %.3e in its own surface's neighbourhood, depth %.3e, depth tolerance %.3e: %@",
+                          t / cell, -g.overTriangle, depth, depthTolerance, depth + depthTolerance < 0 ? "hidden" : "forgiven"))
+            return depth + depthTolerance < 0
         }
         trace?(String(format: "from (%.4f, %.4f, %.4f), %d samples to %.4g cells", p.x, p.y, p.z, ts.count, (ts.last ?? 0) / cell))
         var previousMiddle: Sample?
@@ -984,7 +984,7 @@ struct GridTraversal: Sendable {
             // greatest value is bracketed where the gap rises at one end and
             // falls at the other, or the middle is above both ends, and a
             // least value likewise; each is found by golden section. The
-            // greatest, if its clearance exceeds the margin, is the line
+            // greatest, if its clearance exceeds the depth tolerance, is the line
             // leaving the surface; the least is tested where it is, after
             // the greatest if that came first. A point just in front of a
             // fold is the case: its line leaves the surface, passes under it
@@ -1021,12 +1021,12 @@ struct GridTraversal: Sendable {
                 }
                 for tx in [peak, dip].compactMap({ $0 }).sorted() where test(tx) { return false }
             }
-            // The rim between this crossing and the next, where the facet
-            // meets the cap: a crease, tested under both.
+            // The truncation edge between this crossing and the next, where the facet
+            // meets the truncation: a crease, tested under both.
             if k + 1 < ts.count, let ga = g, let gb = values[k + 1] {
-                let ea = ga.overTriangle - ga.overCap, eb = gb.overTriangle - gb.overCap
+                let ea = ga.overTriangle - ga.overTruncation, eb = gb.overTriangle - gb.overTruncation
                 if (ea > 0) != (eb > 0), ea != eb {
-                    var rim = t + (ts[k + 1] - t) * ea / (ea - eb)
+                    var truncationEdge = t + (ts[k + 1] - t) * ea / (ea - eb)
                     if heightfield.refine?.magnitude != nil {
                         // On f the excess is not linear between crossings:
                         // bisect the sign change to the last bit.
@@ -1034,14 +1034,14 @@ struct GridTraversal: Sendable {
                         for _ in 0..<60 {
                             let m = 0.5 * (lo + hi)
                             guard let gm = gaps(m) else { break }
-                            let em = gm.overTriangle - gm.overCap
+                            let em = gm.overTriangle - gm.overTruncation
                             if (em > 0) == (elo > 0) { lo = m; elo = em } else { hi = m }
                         }
-                        rim = 0.5 * (lo + hi)
+                        truncationEdge = 0.5 * (lo + hi)
                     }
-                    if rim > tEps, let gr = gaps(rim) {
-                        if hidden(rim, gr, cosine: middle?.cosine ?? gr.cosine) { return false }
-                        if hidden(rim, gr, cosine: 1) { return false }
+                    if truncationEdge > tEps, let gr = gaps(truncationEdge) {
+                        if hidden(truncationEdge, gr, cosine: middle?.cosine ?? gr.cosine) { return false }
+                        if hidden(truncationEdge, gr, cosine: 1) { return false }
                     }
                 }
             }
@@ -1053,7 +1053,7 @@ struct GridTraversal: Sendable {
 /// What the depth pass draws.
 ///
 /// A sum rather than a surface with optional parts: a heightfield has tiles,
-/// a region, walls and a cap, and a parametric surface has none of them --
+/// a region, walls and a truncation, and a parametric surface has none of them --
 /// what it has instead is a coordinate at every point, which is what its ink
 /// is tested by. Each renderer, bound and bake says what it does with each.
 public enum SceneGeometry: Sendable {
@@ -1088,8 +1088,8 @@ public struct Scene: Sendable {
 
     public var camera: Camera
     public var mode: PreviewMode
-    /// Hidden-line margin, in world units of depth, for ink tested by depth.
-    public var margin: Double
+    /// Hidden-line depth tolerance, in world units of depth, for ink tested by depth.
+    public var depthTolerance: Double
     /// How finely the ends of tested ink are placed, as a length in the view
     /// plane: a window sets a fraction of its pixel, since ink placed more
     /// finely than a pixel looks the same and costs a traversal per halving.
@@ -1099,29 +1099,29 @@ public struct Scene: Sendable {
     /// A heightfield scene.
     public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],
                 region: Region = .full, step: Int, layers: [Layer], camera: Camera,
-                mode: PreviewMode = .plate, margin: Double, refine: ContourRefine? = nil) {
+                mode: PreviewMode = .plate, depthTolerance: Double, refine: ContourRefine? = nil) {
         self.init(content: ContentID(), ink: ContentID(),
                   geometry: .heightfield(Heightfield(surface: surface, occluder: occluder,
                                                      tiles: tiles, region: region, step: step,
                                                      refine: refine)),
-                  layers: layers, camera: camera, mode: mode, margin: margin)
+                  layers: layers, camera: camera, mode: mode, depthTolerance: depthTolerance)
     }
 
     /// A parametric surface, with ink on it.
     ///
     /// Ink that carries surface coordinates is tested by them; ink that does
-    /// not falls back to depth, at `margin`.
+    /// not falls back to depth, at `depthTolerance`.
     public init(surface: ParametricSurface, layers: [Layer], camera: Camera,
-                mode: PreviewMode = .plate, margin: Double) {
+                mode: PreviewMode = .plate, depthTolerance: Double) {
         self.init(content: ContentID(), ink: ContentID(), geometry: .parametric(surface),
-                  layers: layers, camera: camera, mode: mode, margin: margin)
+                  layers: layers, camera: camera, mode: mode, depthTolerance: depthTolerance)
     }
 
     /// A solid, with its edges as ink.
     public init(solid: Solid, layers: [Layer], camera: Camera,
-                mode: PreviewMode = .plate, margin: Double = 0) {
+                mode: PreviewMode = .plate, depthTolerance: Double = 0) {
         self.init(content: ContentID(), ink: ContentID(), geometry: .solid(solid),
-                  layers: layers, camera: camera, mode: mode, margin: margin)
+                  layers: layers, camera: camera, mode: mode, depthTolerance: depthTolerance)
     }
 
     /// The scene a bundle describes under one of its presets.
@@ -1132,8 +1132,8 @@ public struct Scene: Sendable {
                   region: bundle.manifest.occluder.region,
                   step: bundle.manifest.occluder.step,
                   layers: bundle.layers,
-                  camera: .plate(preset.plate),
-                  margin: preset.margin,
+                  camera: .plate(preset.projection),
+                  depthTolerance: preset.depthTolerance,
                   refine: bundle.refine)
     }
 
@@ -1167,21 +1167,21 @@ public struct Scene: Sendable {
     /// is rebuilt.
     public func drawing(_ layers: [Layer]) -> Scene {
         Scene(content: content, ink: ContentID(), geometry: geometry,
-              layers: layers, camera: camera, mode: mode, margin: margin)
+              layers: layers, camera: camera, mode: mode, depthTolerance: depthTolerance)
     }
 
     private init(content: ContentID, ink: ContentID, geometry: SceneGeometry,
-                 layers: [Layer], camera: Camera, mode: PreviewMode, margin: Double) {
+                 layers: [Layer], camera: Camera, mode: PreviewMode, depthTolerance: Double) {
         self.content = content; self.ink = ink; self.geometry = geometry
-        self.layers = layers; self.camera = camera; self.mode = mode; self.margin = margin
+        self.layers = layers; self.camera = camera; self.mode = mode; self.depthTolerance = depthTolerance
     }
 
     /// The creases of the surface's ink, in its coordinates: every outline
-    /// that is not the folds -- a cap's rim. A fold that meets one is traced
+    /// that is not the folds -- a truncation edge. A fold that meets one is traced
     /// from it, where the grid may hold none of the fold.
     public var creases: [[P2<ParamSpace>]] {
         layers.flatMap { layer -> [[P2<ParamSpace>]] in
-            if case .foldLines = layer.spec.source { return [] }
+            if case .foldCurves = layer.spec.source { return [] }
             guard layer.spec.role == .outline, let coords = layer.paths.coords else { return [] }
             return (0..<layer.paths.count).map {
                 Array(coords[layer.paths.offsets[$0]..<layer.paths.offsets[$0 + 1]])
@@ -1192,46 +1192,46 @@ public struct Scene: Sendable {
     /// Every layer's ink in view space, in declaration (draw) order, tested
     /// for this camera wherever the geometry can test it exactly.
     ///
-    /// Ink that depends on the camera -- the fold lines of a surface, of
+    /// Ink that depends on the camera -- the fold curves of a surface, of
     /// either kind, and the edges of a solid -- is derived here, for this
     /// camera, rather than carried. On a heightfield every clipped layer is
     /// tested here, by the facing of what it lies on and by the solid
     /// (`GridTraversal`), and the depth buffer has no part in it: the drawing is
     /// a function of the geometry and the camera, never of a resolution. A
     /// parametric surface's ink is tested by the bake, which has the
-    /// surface's coordinate image; its fold lines come tested by
+    /// surface's coordinate image; its fold curves come tested by
     /// construction. This is the bake's work, not the preview's: it is a
-    /// traversal per vertex, and the preview keeps its depth test. `margin` is
-    /// the hidden-line margin to test by; the scene's own when not given.
-    public func visibleLayers(margin: Double? = nil) -> [(Layer, PolylineSet<ViewSpace>)] {
+    /// traversal per vertex, and the preview keeps its depth test. `depthTolerance` is
+    /// the hidden-line depth tolerance to test by; the scene's own when not given.
+    public func visibleLayers(depthTolerance: Double? = nil) -> [(Layer, PolylineSet<ViewSpace>)] {
         let view = camera.view
-        let margin = margin ?? self.margin
+        let depthTolerance = depthTolerance ?? self.depthTolerance
         return layers.flatMap { layer -> [(Layer, PolylineSet<ViewSpace>)] in
             switch geometry {
             case .parametric(let s):
-                if case .foldLines = layer.spec.source {
-                    return [(layer, s.foldLines(sight: view.projectionDirection, creases: creases).mapped(view))]
+                if case .foldCurves = layer.spec.source {
+                    return [(layer, s.foldCurves(sight: view.projectionDirection, creases: creases).mapped(view))]
                 }
                 return [(layer, layer.paths.mapped(view))]
             case .heightfield(let h):
                 let visible: PolylineSet<WorldSpace>
-                if case .foldLines = layer.spec.source {
-                    visible = h.visibleFolds(view: view, margin: margin)
+                if case .foldCurves = layer.spec.source {
+                    visible = h.visibleFolds(view: view, depthTolerance: depthTolerance)
                 } else if !layer.spec.clipped {
                     visible = layer.paths
                 } else if layer.spec.source.isWallInk {
-                    visible = h.visibleWallInk(layer.paths, view: view, margin: margin)
+                    visible = h.visibleWallInk(layer.paths, view: view, depthTolerance: depthTolerance)
                 } else if layer.spec.liesOnSurface {
-                    visible = h.visibleSurfaceInk(layer.paths, view: view, margin: margin)
+                    visible = h.visibleSurfaceInk(layer.paths, view: view, depthTolerance: depthTolerance)
                 } else {
-                    visible = h.visibleInk(layer.paths, view: view, margin: margin)
+                    visible = h.visibleInk(layer.paths, view: view, depthTolerance: depthTolerance)
                 }
                 return [(layer, visible.mapped(view))]
             case .solid(let s):
                 if case .edges = layer.spec.source, layer.spec.clipped {
                     return [(layer, s.visibleEdges(view: view).mapped(view))]
                 }
-                if case .hatching(let hatching) = layer.spec.source {
+                if case .hatching(let hatching, .solid) = layer.spec.source {
                     // One layer per width step, at that fraction of the
                     // width: every hatch line when unclipped, the visible
                     // spans otherwise.
@@ -1298,10 +1298,10 @@ public struct Scene: Sendable {
         // grid, and can lie a hair outside its hull: they are derived here
         // so the frame holds them, since they are tested by the frame.
         if let s = parametric, layers.contains(where: { layer in
-            if case .foldLines = layer.spec.source { return true }
+            if case .foldCurves = layer.spec.source { return true }
             return false
         }) {
-            for v in s.foldLines(sight: camera.view.projectionDirection, creases: creases).vertices { add(camera.view(v)) }
+            for v in s.foldCurves(sight: camera.view.projectionDirection, creases: creases).vertices { add(camera.view(v)) }
         }
         return any ? AABB(lo: lo, hi: hi) : nil
     }
@@ -1367,13 +1367,13 @@ public struct Lighting: Sendable, Equatable {
     }
 }
 
-/// A heightfield's fold lines placed on f, for one thread: a fork of the
+/// A heightfield's fold curves placed on f, for one thread: a fork of the
 /// heightfield, and the grid of the tile the lines were traced on.
 ///
 /// Placing a vertex on the fold is sixty bisections of four evaluations of
 /// f each, the chord between two vertices as many again, and a crossing of
-/// the rim sixty of sixty. Each is independent of every other, so `place`
-/// takes the lines in stages -- every vertex, then every rim crossing, then
+/// the truncation edge sixty of sixty. Each is independent of every other, so `place`
+/// takes the lines in stages -- every vertex, then every truncation edge crossing, then
 /// every chord, then every run's ends -- and runs each stage in parallel
 /// over its pieces, each thread with a placer of its own. The pieces come
 /// back in the order they went in, so the fold is the same whatever the
@@ -1394,58 +1394,58 @@ struct FoldPlacer: Sendable {
 
     var surface: Surface { heightfield.surface }
     var region: Region { heightfield.region }
-    /// With the function at hand the facing is the flank's, uncapped: the
-    /// fold is a property of the one surface the flank is, and runs on
-    /// under the cap, where the cap cuts it at the rim. The capped facing
+    /// With the function at hand the facing is the graph's, untruncated: the
+    /// fold is a property of the one surface the graph is, and runs on
+    /// below the truncation, where the truncation cuts it at the truncation edge. The truncated facing
     /// jumps at the crease, and its zero there is the crease, not the fold.
     var onF: Bool { heightfield.refine?.magnitude != nil }
 
     /// How squarely the surface faces the viewer over `p`: positive facing,
     /// negative facing away, zero on the fold.
     func facing(_ p: P2<WorldSpace>) -> Double {
-        let n = onF ? heightfield.flankNormal(at: p) : heightfield.normal(at: p)
+        let n = onF ? heightfield.graphNormal(at: p) : heightfield.normal(at: p)
         let len = simd_length(n)
         return len > 0 ? -simd_dot(n, sight) / len : 0
     }
 
-    /// |f| over a world point, uncapped, through its tile; the grid's
+    /// |f| over a world point, untruncated, through its tile; the grid's
     /// height without the function.
-    func flankHeight(_ p: P2<WorldSpace>) -> Double {
+    func graphHeight(_ p: P2<WorldSpace>) -> Double {
         guard let magnitude = heightfield.refine?.magnitude else { return heightfield.surfaceHeight(at: p) }
         let u = magnitude(surface.inTile(P2<DomainSpace>(p.x, p.y), tiles: heightfield.tiles))
         return u.isNaN ? .infinity : u
     }
 
-    /// The surface's height over a fold vertex: f's, capped, with the
+    /// The surface's height over a fold vertex: f's, truncated, with the
     /// function at hand, so the fold is drawn at the height the rings that
     /// end on it are drawn at; the grid's otherwise.
     func height(_ p: P2<WorldSpace>) -> Double { heightfield.surfaceHeight(at: p) }
 
     /// A traced vertex placed: moved onto the fold, at the surface's
-    /// height, and whether it lies in the region and on the flank rather
-    /// than under the cap.
+    /// height, and whether it lies in the region and on the graph rather
+    /// than below the truncation.
     struct Vertex: Sendable {
         let p: P2<WorldSpace>
         let z: Double
         let inRegion: Bool
-        let onFlank: Bool
+        let onGraph: Bool
     }
 
     func vertex(_ v: P2<DomainSpace>) -> Vertex {
         var p = P2<WorldSpace>(v.x, v.y)
         if refined { p = ontoEdge(p) }
         let z = height(p)
-        let cap = surface.caps.height(atX: p.x)
+        let truncationHeight = surface.truncation.height(atX: p.x)
         let inRegion = region.contains(p)
-        return Vertex(p: p, z: z, inRegion: inRegion, onFlank: inRegion && z.isFinite && z < cap)
+        return Vertex(p: p, z: z, inRegion: inRegion, onGraph: inRegion && z.isFinite && z < truncationHeight)
     }
 
     /// The traced lines placed on the fold, in stages, each in parallel.
-    /// Nothing on a cap, which faces up and has a rim of its own. With the
-    /// function at hand the fold is traced on the flank alone and runs on
-    /// under the cap: where a run passes under the rim it ends on the rim,
-    /// at the fold's own crossing of |f| = cap, so a tower's silhouette
-    /// reaches the cap and arrives along the fold. On the fundamental
+    /// Nothing on a plateau, which faces up and has a truncation edge of its own. With the
+    /// function at hand the fold is traced on the graph alone and runs on
+    /// below the truncation: where a run passes under the truncation edge it ends on the truncation edge,
+    /// at the fold's own crossing of |f| = h(x), so a tower's outline
+    /// reaches the truncation and arrives along the fold. On the fundamental
     /// tile, where the function is sampled, each run is then subdivided to
     /// the refiner's tolerance and carried to the zero it was going to.
     func place(_ lines: [[P2<DomainSpace>]], fundamental: Bool,
@@ -1455,24 +1455,24 @@ struct FoldPlacer: Sendable {
         var flat: [P2<DomainSpace>] = []
         for line in lines { flat += line; offsets.append(flat.count) }
         let vertices = Heightfield.parallelMap(flat, chunk: 8, worker: worker) { w, v in w.vertex(v) }
-        // Between a vertex on the flank and the next under the cap, the
-        // fold's crossing of the rim.
+        // Between a vertex on the graph and the next below the truncation, the
+        // fold's crossing of the truncation edge.
         var pairs: [Int] = []
         for i in lines.indices {
             for k in (offsets[i] + 1)..<offsets[i + 1] {
                 let a = vertices[k - 1], b = vertices[k]
-                if onF, a.inRegion, b.inRegion, a.onFlank != b.onFlank,
-                   surface.caps.height(atX: b.p.x).isFinite { pairs.append(k) }
+                if onF, a.inRegion, b.inRegion, a.onGraph != b.onGraph,
+                   surface.truncation.height(atX: b.p.x).isFinite { pairs.append(k) }
             }
         }
         let crossings = Heightfield.parallelMap(pairs, chunk: 1, worker: worker) { w, k -> P3<WorldSpace>? in
             let a = vertices[k - 1], b = vertices[k]
-            return b.onFlank ? w.ontoRim(from: b.p, to: a.p) : w.ontoRim(from: a.p, to: b.p)
+            return b.onGraph ? w.ontoTruncationEdge(from: b.p, to: a.p) : w.ontoTruncationEdge(from: a.p, to: b.p)
         }
-        var rim = [P3<WorldSpace>?](repeating: nil, count: flat.count)
-        for (i, k) in pairs.enumerated() { rim[k] = crossings[i] }
-        // The runs: a line cut where it leaves the flank, each piece
-        // ending on the rim it passed under.
+        var truncationEdge = [P3<WorldSpace>?](repeating: nil, count: flat.count)
+        for (i, k) in pairs.enumerated() { truncationEdge[k] = crossings[i] }
+        // The runs: a line cut where it leaves the graph, each piece
+        // ending on the truncation edge it passed under.
         var runs: [[P3<WorldSpace>]] = []
         for i in lines.indices {
             var run: [P3<WorldSpace>] = []
@@ -1482,8 +1482,8 @@ struct FoldPlacer: Sendable {
             }
             for k in offsets[i]..<offsets[i + 1] {
                 let v = vertices[k]
-                if let r = rim[k] { run.append(r) }
-                if v.onFlank { run.append(P3(v.p.x, v.p.y, v.z)) } else { close() }
+                if let r = truncationEdge[k] { run.append(r) }
+                if v.onGraph { run.append(P3(v.p.x, v.p.y, v.z)) } else { close() }
             }
             close()
         }
@@ -1542,7 +1542,7 @@ struct FoldPlacer: Sendable {
         let p = P2<WorldSpace>(q.x, q.y)
         guard region.contains(p) else { return }
         let z = height(p)
-        guard z.isFinite, z < surface.caps.height(atX: p.x) - 1e-9 else { return }
+        guard z.isFinite, z < surface.truncation.height(atX: p.x) - 1e-9 else { return }
         let v = P3<WorldSpace>(p.x, p.y, z)
         // The fold is a curve in space: its departure from the chord is
         // measured there, across and up.
@@ -1619,15 +1619,15 @@ struct FoldPlacer: Sendable {
         return onto(c)
     }
 
-    /// Where the fold crosses the rim, between a vertex on the flank and
-    /// one under the cap: the chord's points moved onto the fold along the
+    /// Where the fold crosses the truncation edge, between a vertex on the graph and
+    /// one below the truncation: the chord's points moved onto the fold along the
     /// chord's normal, as `subdivide` moves a midpoint, and the one where
-    /// |f| reaches the cap found by bisection to the last bit. The
+    /// |f| reaches the truncation found by bisection to the last bit. The
     /// grid's crossing of the crease is where a grid edge meets the
-    /// rim, which is not where the fold does: joined to the flank by one
-    /// straight chord a cell long, the fold cut across the cap's projection
-    /// on its way to the rim.
-    func ontoRim(from a: P2<WorldSpace>, to b: P2<WorldSpace>) -> P3<WorldSpace>? {
+    /// truncation edge, which is not where the fold does: joined to the graph by one
+    /// straight chord a cell long, the fold cut across the truncation's projection
+    /// on its way to the truncation edge.
+    func ontoTruncationEdge(from a: P2<WorldSpace>, to b: P2<WorldSpace>) -> P3<WorldSpace>? {
         let chord = ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
         guard chord > 1e-9 * cell else { return nil }
         let n = SIMD2(-(b.y - a.y), b.x - a.x) / chord
@@ -1646,7 +1646,7 @@ struct FoldPlacer: Sendable {
         }
         func excess(_ t: Double) -> Double {
             let q = onFold(t)
-            return flankHeight(q) - surface.caps.height(atX: q.x)
+            return graphHeight(q) - surface.truncation.height(atX: q.x)
         }
         var lo = 0.0, hi = 1.0
         guard excess(lo) < 0, excess(hi) >= 0 else { return nil }
@@ -1655,8 +1655,8 @@ struct FoldPlacer: Sendable {
             if excess(m) < 0 { lo = m } else { hi = m }
         }
         let q = onFold(0.5 * (lo + hi))
-        let cap = surface.caps.height(atX: q.x)
-        guard region.contains(q), cap.isFinite else { return nil }
-        return P3(q.x, q.y, cap)
+        let truncationHeight = surface.truncation.height(atX: q.x)
+        guard region.contains(q), truncationHeight.isFinite else { return nil }
+        return P3(q.x, q.y, truncationHeight)
     }
 }

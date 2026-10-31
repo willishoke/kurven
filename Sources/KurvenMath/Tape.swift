@@ -2,7 +2,7 @@ import Foundation
 
 extension Expression {
     /// An expression as a list of instructions, each writing one register
-    /// from the registers before it: the tree in post-order, the last
+    /// from the registers before it: the tree in vertical edge-order, the last
     /// register the value.
     ///
     /// The same operations as `Node.compiled()`'s closures, in the same

@@ -23,7 +23,7 @@ import KurvenDynamics
 ///     an edge, which is right for a four-thousand-pixel bake and solid black
 ///     at this size. A thumbnail asks for about twenty.
 ///   - **a disk cache.** The second look at the picker costs nothing, and the
-///     key includes the expression, the window and the cap, so a catalog that
+///     key includes the expression, the window and the truncation, so a catalog that
 ///     changes redraws itself rather than going stale.
 @MainActor
 @Observable
@@ -41,7 +41,7 @@ final class Thumbnails {
     nonisolated static let size = Viewport(width: 440, height: 300)
     static let samples = 220
     /// Bumped when the *styling* a landscape is given by default changes --
-    /// which levels, what is drawn on a truncated top -- since that changes the
+    /// which levels, what is drawn on a plateau -- since that changes the
     /// picture without changing anything else the key is made of.
     static let style = 2
 
@@ -101,7 +101,7 @@ final class Thumbnails {
         var request = preset.request
         request.grid = Thumbnails.grid
         // A trajectory as long as the window's, at a quarter the width, is
-        // grey moiré: a quarter of it keeps its windings as far apart.
+        // grey moiré: a quarter of it keeps its linear curves as far apart.
         if case .forced(let system, let fit, let harmonics, let radial, let axial, let radius,
                         let turns) = request.shape {
             request.shape = .forced(system: system, fit: fit, harmonics: harmonics,
@@ -138,9 +138,9 @@ final class Thumbnails {
         let viewport = Thumbnails.size
         try await Task.detached(priority: .utility) {
             let bundle = try NativeLandscape.build(request)
-            guard let plate = bundle.manifest.presets.first else { return }
-            var scene = Scene(bundle: bundle, preset: plate)
-            var navigator = Navigator(orbit: Orbit(matching: plate.plate),
+            guard let preset = bundle.manifest.presets.first else { return }
+            var scene = Scene(bundle: bundle, preset: preset)
+            var navigator = Navigator(orbit: Orbit(matching: preset.projection),
                                       framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
             scene.camera = navigator.camera
             // The exact bounds, not the subsampled ones the window fits with:
@@ -165,10 +165,10 @@ final class Thumbnails {
         switch entry {
         case .function(let preset):
             let d = preset.domain
-            let cap: String = preset.cap.map { "\($0)" } ?? "none"
+            let truncationHeight: String = preset.truncationHeight.map { "\($0)" } ?? "none"
             let window = "\(d.real.lo),\(d.real.hi),\(d.imag.lo),\(d.imag.hi)"
             let shape = "\(size.width)x\(size.height)@\(samples)"
-            key = preset.expression + "|" + window + "|" + cap + "|" + shape
+            key = preset.expression + "|" + window + "|" + truncationHeight + "|" + shape
                 + "|style\(style)"
         case .surface(let preset):
             // The request spelled out is every number the plate is built from.

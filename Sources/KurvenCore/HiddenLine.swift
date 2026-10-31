@@ -4,7 +4,7 @@ import simd
 /// Hidden-line removal: a pure function of a depth image and some polylines.
 ///
 /// A line-for-line port of `outline.clip_hidden_lines`. A vertex is visible when
-/// `z + margin > buffer[pixel]`; hidden vertices split a path into runs; runs
+/// `z + depthTolerance > buffer[pixel]`; hidden vertices split a path into runs; runs
 /// shorter than two vertices draw nothing and are dropped. Because it takes a
 /// `DepthImage` *value*, it is tested against a Python-dumped buffer and
 /// Python-dumped polylines with no GPU anywhere in the loop -- which is what
@@ -21,23 +21,23 @@ import simd
 /// The first is what `SurfaceVisibility` asks of a parametric surface, and a
 /// heightfield can answer it too, since it bounds the solid under it: the
 /// normal is the gradient, read off the grid. Without it, where a steep
-/// flank turns away from the eye its back lies within any margin of its
+/// graph turns away from the eye its back lies within any depth tolerance of its
 /// front for a stretch, and the ink there -- the other family of contours,
-/// wrapping round the back -- shows through as ticks along the silhouette.
+/// wrapping round the back -- shows through as ticks along the outline.
 /// The second is the traversal up the line of sight (`GridTraversal`): the exact
 /// question the depth buffer approximates per pixel, asked per vertex with
 /// no pixel in it.
 public struct HeightfieldVisibility: Sendable {
     public let heightfield: Heightfield
-    public let margin: Double
+    public let depthTolerance: Double
     /// The direction lines of sight travel, in world space.
     public let sight: SIMD3<Double>
     let traversal: GridTraversal
 
-    public init(heightfield: Heightfield, view: Transform<WorldSpace, ViewSpace>, margin: Double) {
+    public init(heightfield: Heightfield, view: Transform<WorldSpace, ViewSpace>, depthTolerance: Double) {
         self.heightfield = heightfield
-        self.traversal = GridTraversal(heightfield, view: view, margin: margin)
-        self.margin = self.traversal.margin
+        self.traversal = GridTraversal(heightfield, view: view, depthTolerance: depthTolerance)
+        self.depthTolerance = self.traversal.depthTolerance
         self.sight = view.projectionDirection
     }
 
@@ -49,7 +49,7 @@ public struct HeightfieldVisibility: Sendable {
     }
 
     /// Whether nothing of the solid stands between `p` and the eye, to
-    /// within the margin.
+    /// within the depth tolerance.
     public func isClear(_ p: P3<WorldSpace>) -> Bool { traversal.unoccluded(p) }
 
     /// Why `p` is hidden or clear: every sample the traversal took along the
@@ -61,9 +61,9 @@ public struct HeightfieldVisibility: Sendable {
         return lines.joined(separator: "\n")
     }
 
-    /// The margin as a distance along the line of sight: an occluder must
+    /// The depth tolerance as a distance along the line of sight: an occluder must
     /// stand in front of the ink by more than this.
-    public var marginAlongSight: Double { traversal.reach }
+    public var toleranceAlongProjection: Double { traversal.reach }
 
     /// Where along the straight segment `a -> b` over the plane the surface
     /// turns edge-on, as a fraction of the way; nil when both ends face the
@@ -84,12 +84,12 @@ public struct HeightfieldVisibility: Sendable {
 
 public enum HiddenLine {
     public static func clip(_ paths: PolylineSet<ViewSpace>, against depth: DepthImage,
-                            margin: Double) -> PolylineSet<PlateSpace> {
+                            depthTolerance: Double) -> PolylineSet<PlateSpace> {
         var out: [[P3<PlateSpace>]] = []
         for i in 0..<paths.count {
             var run: [P3<PlateSpace>] = []
             for v in paths[path: i] {
-                if v.z + margin > depth.depth(under: v.xy) {
+                if v.z + depthTolerance > depth.depth(under: v.xy) {
                     run.append(P3(v.x, v.y, v.z))
                 } else {
                     if run.count >= 2 { out.append(run) }
@@ -122,7 +122,7 @@ public extension DepthImage {
     ///
     /// None of the three plates draws one -- they are bounded by their own wall
     /// ink -- so the bake offers it rather than assuming it.
-    func silhouette() -> PolylineSet<PlateSpace> {
+    func outline() -> PolylineSet<PlateSpace> {
         guard frame.rows >= 2, frame.cols >= 2 else { return .empty }
         let coverage = (0..<(frame.rows * frame.cols)).map { i -> Float in
             values[i] > empty ? 1 : -1

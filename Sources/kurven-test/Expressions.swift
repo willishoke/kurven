@@ -245,13 +245,13 @@ func landscapeTests() {
     }
 
     Check.suite("landscape: the derived numbers") {
-        // A cap is chosen only when there is a spire to cut.
+        // A truncation is chosen only when there is a spire to cut.
         let flat = (0..<1000).map { Double($0) / 1000 }
-        Check.expect(NativeLandscape.defaultCaps(flat) == .none,
+        Check.expect(NativeLandscape.defaultTruncation(flat) == .none,
                      "a bounded function is not truncated")
         var spire = flat
         spire[500] = 400
-        if case .uniform(let z) = NativeLandscape.defaultCaps(spire) {
+        if case .uniform(let z) = NativeLandscape.defaultTruncation(spire) {
             Check.expect(abs(z - 1.0) < 1e-12, "a spire is cut near the 99th percentile", "\(z)")
         } else {
             Check.expect(false, "a spire is cut near the 99th percentile")
@@ -343,7 +343,7 @@ func refinementTests() {
         let refined = try NativeLandscape.build(request)
         Check.expect(refined.refine != nil, "a native landscape carries its refiner")
         var manifest = refined.manifest
-        manifest.caps = .uniform(3)
+        manifest.truncation = .uniform(3)
         let restyled = refined.restyled(manifest)
         Check.expect(restyled.refine != nil, "and a restyled one still does")
         let plain = try NativeLandscape.build(request, refine: false)
@@ -418,7 +418,7 @@ func refinementTests() {
                 for i in 0..<layer.paths.count {
                     let path = Array(layer.paths[path: i])
                     // Every vertex on Im f = 0 with Re f < 0, but for the two
-                    // ends: a zero, where the phase is anyone's, or a rim
+                    // ends: a zero, where the phase is anyone's, or a truncation edge
                     // vertex, placed by interpolation within a cell's bend.
                     let onCut = path.filter { v in
                         let f = refiner.value(Complex(v.x, v.y))
@@ -460,17 +460,17 @@ func refinementTests() {
     }
 
     Check.suite("refine: a phase line is placed only where it can be drawn") {
-        // Phase ink is lifted to |f| and cut away above the cap, and on tan
+        // Phase ink is lifted to |f| and cut away above the truncation, and on tan
         // most of every phase line is above it, on the poles' spires. Placed
         // under a ceiling, the lines it draws are the same curves, and the
-        // stretches over the cap are not solved for: they were the most of
+        // stretches over the truncation are not solved for: they were the most of
         // the refiner's work on zeta and 1/Γ, for ink that was deleted.
         let request = LandscapeRequest(preset: Catalog.native.preset("tan")!, resolution: 240)
         let plain = try NativeLandscape.build(request, refine: false)
         let refiner = NativeLandscape.refiner(for: plain)!
-        let cap = plain.manifest.caps.highest
+        let truncationHeight = plain.manifest.truncation.highest
         let cell = refiner.cell
-        func drawn(_ p: P2<DomainSpace>) -> Bool { refiner.magnitude(Complex(p.x, p.y)) <= cap }
+        func drawn(_ p: P2<DomainSpace>) -> Bool { refiner.magnitude(Complex(p.x, p.y)) <= truncationHeight }
         func distance(_ v: P2<DomainSpace>, to runs: [[P2<DomainSpace>]]) -> Double {
             var best = Double.infinity
             for run in runs {
@@ -486,25 +486,25 @@ func refinementTests() {
         var everywhere = 0, under = 0, lost = 0, added = 0
         for (level, paths) in Contour.levels(of: plain.surface.phase!, [-2.618, -1.047, 0.524, 2.094]) {
             let all = refiner.refine(field: .phase, level: level, paths)
-            let capped = refiner.refine(field: .phase, level: level, paths, ceiling: 1.1 * cap)
+            let truncated = refiner.refine(field: .phase, level: level, paths, ceiling: 1.1 * truncationHeight)
             everywhere += all.reduce(0) { $0 + $1.count }
-            under += capped.reduce(0) { $0 + $1.count }
-            for run in all { for v in run where drawn(v) && distance(v, to: capped) > 0.05 * cell { lost += 1 } }
-            for run in capped { for v in run where drawn(v) && distance(v, to: all) > 0.05 * cell { added += 1 } }
+            under += truncated.reduce(0) { $0 + $1.count }
+            for run in all { for v in run where drawn(v) && distance(v, to: truncated) > 0.05 * cell { lost += 1 } }
+            for run in truncated { for v in run where drawn(v) && distance(v, to: all) > 0.05 * cell { added += 1 } }
         }
         Check.expect(lost == 0 && added == 0,
-                     "under the cap, the lines placed under a ceiling are the lines placed everywhere",
+                     "below the truncation, the lines placed under a ceiling are the lines placed everywhere",
                      "\(lost) drawn vertices lost, \(added) added")
         // Once the lines over the poles' spires were most of the placing:
         // 1272 vertices under the ceiling of 18354 everywhere. Then every
         // stretch came to be placed once (`ContourRefiner.drawnOnce`) and
         // the rest fell to 2117, so the ceiling now saves the spires alone.
-        Check.expect(under * 3 < everywhere * 2, "and a good part of the placing was over the cap",
+        Check.expect(under * 3 < everywhere * 2, "and a good part of the placing was over the truncation",
                      "\(under) vertices placed, of \(everywhere)")
     }
 
     Check.suite("refine: a restyle places only the curves it has not placed before") {
-        // The cap slider's path in the app: the same grids under a new cap.
+        // The truncation slider's path in the app: the same grids under a new truncation.
         // Before the refiner remembered, every phase line of the landscape
         // was solved again on each step -- 4.5 s on zeta at 600², for ink
         // that differs from the step before only in where it is clipped.
@@ -520,15 +520,15 @@ func refinementTests() {
                                     tolerance: inner.tolerance).remembering()
         let bundle = KurvenBundle(url: built.url, manifest: built.manifest, surface: built.surface,
                                   layers: built.layers, wallMesh: built.wallMesh, refine: counted)
-        let cap = LandscapeStyle.ceiling(of: built.manifest.caps)!
+        let truncationHeight = LandscapeStyle.ceiling(of: built.manifest.truncation)!
         var first = bundle.manifest, second = bundle.manifest
-        // Two caps on one rung of the ceiling's ladder (`ContourRefine.rung`),
+        // Two truncations on one rung of the ceiling's ladder (`ContourRefine.rung`),
         // as a slider's neighbouring steps are.
         let near = [0.97, 0.95, 0.9].first {
-            ContourRefine.rung(above: 1.1 * cap * 0.9 * $0) == ContourRefine.rung(above: 1.1 * cap * 0.9)
+            ContourRefine.rung(above: 1.1 * truncationHeight * 0.9 * $0) == ContourRefine.rung(above: 1.1 * truncationHeight * 0.9)
         }!
-        first.caps = .uniform(cap * 0.9)
-        second.caps = .uniform(cap * 0.9 * near)
+        first.truncation = .uniform(truncationHeight * 0.9)
+        second.truncation = .uniform(truncationHeight * 0.9 * near)
         let once = bundle.restyled(first)
         let asked = solved.withLock { $0 }
         let twice = once.restyled(second)
@@ -536,7 +536,7 @@ func refinementTests() {
         Check.expect(asked[.phase, default: 0] > 0, "the first restyle places the phase lines",
                      "\(asked)")
         Check.expect(again[.phase] == asked[.phase],
-                     "and the next cap places none of them again",
+                     "and the next truncation places none of them again",
                      "\(asked[.phase] ?? 0) then \(again[.phase] ?? 0)")
         // The ink is the refiner's answer, remembered or not, to the bit.
         let fresh = NativeLandscape.refiner(for: built)!.refine
@@ -544,7 +544,7 @@ func refinementTests() {
                                 layers: built.layers, wallMesh: built.wallMesh, refine: fresh)
             .restyled(second)
         Check.expect(twice.layers == cold.layers,
-                     "and the ink is the ink a cold refiner draws under that cap",
+                     "and the ink is the ink a cold refiner draws under that truncation",
                      "\(twice.layers.map(\.paths.vertices.count)) vs "
                         + "\(cold.layers.map(\.paths.vertices.count))")
     }
