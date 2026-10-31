@@ -354,7 +354,7 @@ func solidTests() {
         let view = Transform<WorldSpace, ViewSpace>(rows: (SIMD3(1, 0, 0), SIMD3(0, 1, 2), SIMD3(0, -1, 2)))
         let occlusion = s.occlusion(view: view)
         guard let wall = s.faces.indices.first(where: {
-            let f = s.face($0)
+            let f = s.frames[$0]
             return simd_distance(f.normal, SIMD3(0, -1, 0)) < 1e-12 && abs(f.origin.y - 1) < 1e-12
         }) else { Check.expect(false, "the frame has a far inner wall"); return }
         // Down the wall to the line of sight's edge, on into the hidden
@@ -410,18 +410,13 @@ func prism(_ loops: [[SIMD2<Double>]], depth: Double) -> Solid {
 func partitionReport(_ s: Solid) -> String {
     var problems: [String] = []
     for i in s.faces.indices {
-        let face = s.face(i)
+        let frame = s.frames[i], members = s.faces[i]
         let loops = s.loops[i]
-        func plane(_ k: Int) -> SIMD2<Double> { face.coordinates(s.vertices[k].v) }
-        func area(_ polygon: [Int]) -> Double {
-            (0..<polygon.count).reduce(0) { a, k in
-                let p = plane(polygon[k]), q = plane(polygon[(k + 1) % polygon.count])
-                return a + (p.x * q.y - q.x * p.y) / 2
-            }
-        }
+        func plane(_ k: Int) -> SIMD2<Double> { frame.coordinates(s.vertices[k].v) }
+        func area(_ polygon: [Int]) -> Double { frame.area(polygon.map { s.vertices[$0].v }) }
         let own = Set(loops.joined())
         var pieceArea = 0.0
-        for piece in face.pieces.map({ s.pieces[$0] }) {
+        for piece in members.map({ s.pieces[$0] }) {
             pieceArea += area(piece)
             if !Set(piece).isSubset(of: own) || Set(piece).count != piece.count {
                 problems.append("face \(i): piece \(piece) is not made of the face's vertices")
@@ -455,7 +450,7 @@ func partitionReport(_ s: Solid) -> String {
         let all = loops.joined().map(plane)
         let lo = all.reduce(SIMD2(Double.infinity, .infinity)) { simd_min($0, $1) }
         let hi = all.reduce(SIMD2(-Double.infinity, -.infinity)) { simd_max($0, $1) }
-        let pieces = face.pieces.map { s.pieces[$0] }
+        let pieces = members.map { s.pieces[$0] }
         var mismatches = 0
         for a in 0..<61 { for b in 0..<61 {
             let p = lo + (hi - lo) * SIMD2(Double(a) + 0.37, Double(b) + 0.61) / 61
@@ -466,8 +461,8 @@ func partitionReport(_ s: Solid) -> String {
         } }
         if mismatches > 0 { problems.append("face \(i): \(mismatches) sample points in the wrong number of pieces") }
         let diagonals = s.edges.indices.filter { s.isDiagonal[$0] && s.faceIndex(ofPiece: s.edges[$0].left) == i }.count
-        if diagonals != face.pieces.count - 1 + (loops.count - 1) {
-            problems.append("face \(i): \(diagonals) diagonals for \(face.pieces.count) pieces and \(loops.count - 1) holes")
+        if diagonals != members.count - 1 + (loops.count - 1) {
+            problems.append("face \(i): \(diagonals) diagonals for \(members.count) pieces and \(loops.count - 1) holes")
         }
     }
     return problems.prefix(4).joined(separator: "; ")

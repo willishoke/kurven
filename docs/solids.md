@@ -76,7 +76,7 @@ draws none: it projects to a line, which is the edges' to draw
 width is set by a tone. On a solid every face is hatched in its own plane:
 
 - The face gets a frame: its origin is the centroid of its vertices and its
-  `u` axis runs along the first side of its outer loop (`Solid.Face`).
+  `u` axis runs along the first side of its outer loop (`Solid.FaceFrame`).
 - Lines run at the hatching's angle to `u`, through the multiples of the
   spacing, so a face's hatching depends only on the face, not on how it was
   partitioned.

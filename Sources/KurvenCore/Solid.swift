@@ -44,6 +44,8 @@ public struct Solid: Sendable, Equatable {
     public let pieces: [[Int]]
     /// The faces, each as the indices of its pieces.
     public let faces: [[Int]]
+    /// Per face, the frame its hatching is laid out in.
+    public let frames: [FaceFrame]
     /// Every side of every piece once, with the two pieces it bounds: the
     /// solid's edges and the partition's diagonals.
     public let edges: [Edge]
@@ -76,8 +78,9 @@ public struct Solid: Sendable, Equatable {
         let scale = vertices.map { simd_length($0.v) }.max() ?? 1
         // Each face cut into convex pieces in its own frame.
         var pieces: [[Int]] = [], faces: [[Int]] = [], faceOfPiece: [Int] = []
+        var frames: [FaceFrame] = []
         for (i, face) in loops.enumerated() {
-            let frame = Solid.frame(of: face, vertices: vertices)
+            let frame = FaceFrame(face, vertices: vertices)
             for loop in face {
                 for k in loop {
                     precondition(abs(simd_dot(vertices[k].v - frame.origin, frame.normal)) <= 1e-9 * max(scale, 1),
@@ -89,22 +92,20 @@ public struct Solid: Sendable, Equatable {
             // turned inside out is caught where its edges meet its
             // neighbours'. A hole has to run the other way.
             for (l, hole) in face.enumerated().dropFirst() {
-                let area = (0..<hole.count).reduce(0.0) { a, k in
-                    let p = frame.coordinates(vertices[hole[k]].v)
-                    let q = frame.coordinates(vertices[hole[(k + 1) % hole.count]].v)
-                    return a + p.x * q.y - q.x * p.y
-                }
-                precondition(area < 0, "face \(i): hole \(l) runs the same way as the outer loop")
+                precondition(frame.area(hole.map { vertices[$0].v }) < 0,
+                             "face \(i): hole \(l) runs the same way as the outer loop")
             }
             let cut = ConvexPartition.pieces(face, point: { frame.coordinates(vertices[$0].v) },
                                              tolerance: 1e-9 * scale * scale)
             faces.append(Array(pieces.count..<(pieces.count + cut.count)))
             faceOfPiece += Array(repeating: i, count: cut.count)
             pieces += cut
+            frames.append(frame)
         }
         self.pieces = pieces
         self.faces = faces
         self.faceOfPiece = faceOfPiece
+        self.frames = frames
         var directed: [SIMD2<Int>: Int] = [:]
         for (f, piece) in pieces.enumerated() {
             for k in 0..<piece.count {
@@ -128,12 +129,7 @@ public struct Solid: Sendable, Equatable {
         var normals: [SIMD3<Double>] = []
         var volume = 0.0
         for piece in pieces {
-            var n = SIMD3<Double>.zero
-            for k in 0..<piece.count {
-                let p = vertices[piece[k]].v, q = vertices[piece[(k + 1) % piece.count]].v
-                n += SIMD3((p.y - q.y) * (p.z + q.z), (p.z - q.z) * (p.x + q.x),
-                           (p.x - q.x) * (p.y + q.y))
-            }
+            var n = Solid.newell([piece], vertices: vertices)
             let len = simd_length(n)
             precondition(len > 0, "a piece is degenerate")
             n /= len
@@ -156,7 +152,9 @@ public struct Solid: Sendable, Equatable {
     /// 16 − 24 + 10 − 2 = 0 for the picture frame. Over the partition, where
     /// every piece is a disc, V − E + F counts the same.
     public var eulerCharacteristic: Int {
-        vertices.count - isDiagonal.filter { !$0 }.count + loops.count - loops.reduce(0) { $0 + $1.count - 1 }
+        let V = vertices.count, E = isDiagonal.filter { !$0 }.count
+        let F = loops.count, H = loops.reduce(0) { $0 + $1.count - 1 }
+        return V - E + F - H
     }
 
     /// Whether every vertex lies on or behind every face's plane.
@@ -215,15 +213,34 @@ public struct Solid: Sendable, Equatable {
 
     // MARK: - faces
 
-    /// A face with a frame in its plane: an origin and two unit axes `u`,
-    /// `v` with `u × v` the outward normal, so a loop counter-clockwise
-    /// from outside is counter-clockwise in `(u, v)`. Hatching on the face
-    /// is laid out in these coordinates.
-    public struct Face: Sendable {
-        public let pieces: [Int]
+    /// A frame in a face's plane: an origin and two unit axes `u`, `v` with
+    /// `u × v` the outward normal, so a loop counter-clockwise from outside
+    /// is counter-clockwise in `(u, v)`. Hatching on the face is laid out in
+    /// these coordinates.
+    ///
+    /// The origin is the centroid of the face's vertices and `u` runs along
+    /// the first side of its outer loop. Both are read off the loops, so the
+    /// frame, and the hatching laid out in it, does not depend on the
+    /// partition.
+    public struct FaceFrame: Sendable, Equatable {
         public let normal: SIMD3<Double>
         public let origin: SIMD3<Double>
         public let u: SIMD3<Double>, v: SIMD3<Double>
+
+        init(_ loops: [[Int]], vertices: [P3<WorldSpace>]) {
+            // Newell's normal over every loop: the holes, running the other
+            // way, take their area off the outer loop's.
+            let n = Solid.newell(loops, vertices: vertices)
+            precondition(simd_length(n) > 0, "a face is degenerate")
+            normal = simd_normalize(n)
+            // Summed in index order, not a set's: the frame, and every hatch
+            // line laid out in it, is then the same in every process.
+            let ids = Set(loops.joined()).sorted()
+            origin = ids.reduce(SIMD3<Double>.zero) { $0 + vertices[$1].v } / Double(ids.count)
+            let along = vertices[loops[0][1]].v - vertices[loops[0][0]].v
+            u = simd_normalize(along - simd_dot(along, normal) * normal)
+            v = simd_cross(normal, u)
+        }
 
         public func coordinates(_ p: SIMD3<Double>) -> SIMD2<Double> {
             SIMD2(simd_dot(p - origin, u), simd_dot(p - origin, v))
@@ -231,20 +248,22 @@ public struct Solid: Sendable, Equatable {
         public func point(_ c: SIMD2<Double>) -> SIMD3<Double> {
             origin + c.x * u + c.y * v
         }
+
+        /// The signed area of a polygon in the face's plane, by the shoelace
+        /// formula: positive when it runs counter-clockwise from outside.
+        public func area(_ polygon: [SIMD3<Double>]) -> Double {
+            let c = polygon.map(coordinates)
+            return c.indices.reduce(0.0) { a, k in
+                let p = c[k], q = c[(k + 1) % c.count]
+                return a + p.x * q.y - q.x * p.y
+            } / 2
+        }
     }
 
-    /// Face `i`, framed: the origin is the centroid of its vertices and
-    /// `u` runs along the first side of its outer loop. Both are read off
-    /// the loops, so the frame, and the hatching laid out in it, does not
-    /// depend on the partition.
-    public func face(_ i: Int) -> Face {
-        let frame = Solid.frame(of: loops[i], vertices: vertices)
-        return Face(pieces: faces[i], normal: frame.normal, origin: frame.origin, u: frame.u, v: frame.v)
-    }
-
-    static func frame(of loops: [[Int]], vertices: [P3<WorldSpace>]) -> Face {
-        // Newell's normal over every loop: the holes, running the other
-        // way, take their area off the outer loop's.
+    /// Newell's sum over closed loops: twice the area vector of the region
+    /// they bound, whose direction is the plane's normal by the right-hand
+    /// rule.
+    static func newell(_ loops: [[Int]], vertices: [P3<WorldSpace>]) -> SIMD3<Double> {
         var n = SIMD3<Double>.zero
         for loop in loops {
             for k in 0..<loop.count {
@@ -252,15 +271,7 @@ public struct Solid: Sendable, Equatable {
                 n += SIMD3((p.y - q.y) * (p.z + q.z), (p.z - q.z) * (p.x + q.x), (p.x - q.x) * (p.y + q.y))
             }
         }
-        precondition(simd_length(n) > 0, "a face is degenerate")
-        n = simd_normalize(n)
-        // Summed in index order, not a set's: the frame, and every hatch
-        // line laid out in it, is then the same in every process.
-        let ids = Set(loops.joined()).sorted()
-        let centroid = ids.reduce(SIMD3<Double>.zero) { $0 + vertices[$1].v } / Double(ids.count)
-        let along = vertices[loops[0][1]].v - vertices[loops[0][0]].v
-        let u = simd_normalize(along - simd_dot(along, n) * n)
-        return Face(pieces: [], normal: n, origin: centroid, u: u, v: simd_cross(n, u))
+        return n
     }
 
     /// The face piece `p` belongs to.

@@ -14,9 +14,9 @@ import KurvenBake
 
 /// Whether `p`, in the plane of face `f` of `s`, lies in one of its pieces.
 func onFace(_ s: Solid, _ f: Int, _ p: SIMD3<Double>) -> Bool {
-    let face = s.face(f)
+    let face = s.frames[f]
     guard abs(simd_dot(p - face.origin, face.normal)) < 1e-9 else { return false }
-    for piece in face.pieces {
+    for piece in s.faces[f] {
         let poly = s.pieces[piece]
         var inside = true
         for k in 0..<poly.count {
@@ -109,7 +109,7 @@ func hatchingTests() {
             var interior = 0, offStep = 0, outOfRange = 0
             for line in cube.hatchLines(hatching) {
                 if line.widthStep < 1 || line.widthStep > widthSteps { outOfRange += 1 }
-                let face = cube.face(line.face)
+                let face = cube.frames[line.face]
                 let tone = hatching.tone.value(on: face)
                 for v in line.path {
                     guard !onPieceBoundary(cube, line.face, v.v) else { continue }
