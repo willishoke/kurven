@@ -4,8 +4,8 @@
     python3 docs/gallery/make.py
 
 Each figure is a native landscape (`kurven-cli landscape`) given a camera and,
-for gamma, the published plate's caps, then baked (`kurven-cli bake`, which
-places the contours on f and judges every line exactly). Standard library
+for gamma, the published plate's truncation, then baked (`kurven-cli bake`,
+which places the contours on f and tests every curve's visibility exactly). Standard library
 only: nothing here computes a line, it only sets up the bundles and lays the
 results out. A white ground is added so the plates read in a dark theme.
 
@@ -26,11 +26,11 @@ PAPER = "#ffffff"
 # plate's hierarchy of major over minor lines.
 README_PX = 880
 HEAVIEST_PX = 0.5
-# The bake's viewBox is tight to the ink; a plate sits on its page with this
+# The bake's viewBox is tight to the strokes; a plate sits on its page with this
 # much paper on every side, as a fraction of the drawing's width.
 MARGIN = 0.1
-# The landscape rules the cap and walls at about seventy strokes along the
-# window's longer side; the plates rule them this much closer.
+# The landscape hatches the plateaus and walls at about seventy lines along the
+# window's longer side; the plates hatch them this much closer.
 HATCH = 0.75
 # How far, in README pixels, a thinned polyline may stray from the bake's.
 SIMPLIFY_PX = 0.05
@@ -43,27 +43,29 @@ def run(*args):
     return r.stdout
 
 
-def landscape(work, name, expression, re_, im, res, cap, cameras):
+def landscape(work, name, expression, re_, im, res, truncation, cameras):
     """Sample `expression` and give the bundle one preset per camera.
 
-    `cap` is the truncation height, or `(bands, beyond)` for a height per band
+    `truncation` is the truncation height, or `(bands, beyond)` for a height per band
     of Re z: `bands` as (below, height) pairs. It is set when the function is
     sampled, because the contour levels are chosen then, up to the highest."""
     bundle = work / f"{name}.kurven"
-    if isinstance(cap, tuple):
-        bands, beyond = cap
-        truncation = ["--bands", ",".join(f"{b}:{h}" for b, h in bands), "--beyond", beyond]
+    if isinstance(truncation, tuple):
+        bands, beyond = truncation
+        flags = ["--bands", ",".join(f"{b}:{h}" for b, h in bands), "--beyond", beyond]
     else:
-        truncation = ["--cap", cap]
+        flags = ["--truncation", truncation]
     run("landscape", expression, "--re", f"{re_[0]},{re_[1]}", "--im", f"{im[0]},{im[1]}",
-        "--res", res, *truncation, "-o", bundle)
+        "--res", res, *flags, "-o", bundle)
     path = bundle / "manifest.json"
     m = json.loads(path.read_text())
     base = m["presets"][0]
-    m["presets"] = [dict(base, name=key, plate=dict(base["plate"], **plate)) for key, plate in cameras.items()]
+    m["presets"] = [dict(base, name=key, projection=dict(base["projection"], **projection))
+                    for key, projection in cameras.items()]
     for layer in m["layers"]:
-        if layer["source"]["kind"] in ("capHatch", "wallHatch"):
-            layer["source"]["spacing"] *= HATCH
+        source = layer["source"]
+        if source["kind"] == "hatching" and source["faces"]["kind"] in ("plateaus", "walls"):
+            source["spacing"] *= HATCH
     path.write_text(json.dumps(m, indent=1))
     return bundle
 
@@ -105,7 +107,7 @@ def simplified(svg, px_across):
     return re.sub(r'points="([^"]+)"', thin, svg)
 
 
-def inked(svg, px_across):
+def scaled(svg, px_across):
     """`svg` with every stroke scaled so the heaviest is `HEAVIEST_PX` when its
     viewBox is shown `px_across` pixels wide."""
     across = float(re.search(r'viewBox="([^"]+)"', svg).group(1).split()[2])
@@ -137,7 +139,7 @@ def grid(svgs, cols, cell=1000, gap=2 * MARGIN):
         parts.append(((x + w / 2, y + h / 2), max(w, h), body))
     side = max(p[1] for p in parts) * (1 + gap)
     tile = f'<svg viewBox="0 0 {side} {side}">'
-    parts = [(c, e, simplified(inked(tile + b + "</svg>", README_PX / cols), README_PX / cols)[len(tile):-len("</svg>")])
+    parts = [(c, e, simplified(scaled(tile + b + "</svg>", README_PX / cols), README_PX / cols)[len(tile):-len("</svg>")])
              for c, e, b in parts]
     rows = math.ceil(len(parts) / cols)
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {cols * cell} {rows * cell}" '
@@ -162,12 +164,12 @@ def main():
         sys.exit(f"build the CLI first: swift build -c release")
     work = Path(tempfile.mkdtemp(prefix="kurven-gallery-"))
     try:
-        # Γ, as the published plate frames it: the strip |Im z| ≤ 2.5, a cap
-        # per pole band, and that plate's camera.
+        # Γ, as the published plate frames it: the strip |Im z| ≤ 2.5, a truncation
+        # height per pole band, and that plate's camera.
         gamma = landscape(work, "gamma", "gamma(z)", (-4.5, 4.5), (-2.5, 2.5), 1000,
                           ([(-3.5, 2.5), (-2.5, 3.0), (-1.5, 4.0), (0.5, 5.5)], 4.0),
                           {"plate": dict(shear=-0.5, xAngle=-55.0, zAngle=-90.0, flipX=False)})
-        (OUT / "gamma.svg").write_text(simplified(inked(on_paper(bake(gamma, "plate", work / "gamma.svg")), README_PX), README_PX))
+        (OUT / "gamma.svg").write_text(simplified(scaled(on_paper(bake(gamma, "plate", work / "gamma.svg")), README_PX), README_PX))
 
         # cn(z, 0.64) over the elliptic plate's block of quarter periods,
         # [−K, 5K] × [0, 3K′], with that plate's camera.
@@ -176,7 +178,7 @@ def main():
         Kp = math.pi / (2 * agm(1, math.sqrt(m)))
         cn = landscape(work, "cn", f"cn(z, {m})", (-K, 5 * K), (0, 3 * Kp), 1200, 4,
                        {"plate": dict(shear=0.51, xAngle=-63.0, zAngle=-90.0, flipX=True)})
-        (OUT / "cn.svg").write_text(simplified(inked(on_paper(bake(cn, "plate", work / "cn.svg")), README_PX), README_PX))
+        (OUT / "cn.svg").write_text(simplified(scaled(on_paper(bake(cn, "plate", work / "cn.svg")), README_PX), README_PX))
 
         # 1/(z³ − 1) from four oblique corners: the front face head-on from
         # either side (turn ±90°), the depth receding right or left (shear ±½).
