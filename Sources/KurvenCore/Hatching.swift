@@ -20,7 +20,8 @@ public struct Hatching: Sendable, Equatable {
     public var spacing: Double
     /// How often the tone is read along a line, in world units. A change of
     /// width narrower than this can fall between two readings. The spacing
-    /// by default, so the tone is read as finely as it is drawn.
+    /// by default, so the tone is read as finely as it is drawn, and no finer
+    /// than `finestStep` of it.
     public var step: Double
     public var tone: Tone
     /// How many widths a line can have. One: a line is drawn at the layer's
@@ -29,11 +30,24 @@ public struct Hatching: Sendable, Equatable {
     /// `k / widthSteps` of the layer's width on step `k`.
     public var widthSteps: Int
 
+    /// The finest `step`, as a fraction of the spacing: a line is read at
+    /// most a million times per spacing of its length.
+    public static let finestStep = 1e-6
+
     public init(angle: Double, spacing: Double, step: Double? = nil,
                 tone: Tone = .uniform, widthSteps: Int = 1) {
         precondition(spacing > 0 && spacing.isFinite, "hatching has a positive spacing")
         precondition(widthSteps >= 1, "hatching has at least one width")
-        self.angle = angle; self.spacing = spacing; self.step = step ?? spacing
+        let step = step ?? spacing
+        precondition(step >= Hatching.finestStep * spacing && step.isFinite,
+                     "hatching reads its tone at most a million times a spacing")
+        if case .turing(let scale, _) = tone {
+            precondition(scale > 0 && scale.isFinite, "Turing's tone has a positive scale")
+        }
+        if case .lambert(let light) = tone {
+            precondition(Tone.hasDirection(light), "a light has a direction")
+        }
+        self.angle = angle; self.spacing = spacing; self.step = step
         self.tone = tone; self.widthSteps = widthSteps
     }
 
@@ -54,12 +68,17 @@ public struct Hatching: Sendable, Equatable {
         case "uniform":
             tone = .uniform
         case "turing":
-            tone = .turing(scale: try t.double("scale", "LayerSource.hatching.tone"),
+            let scale = try t.double("scale", "LayerSource.hatching.tone")
+            guard scale > 0, scale.isFinite else {
+                throw JSONError.wrongType("scale", expected: "a positive number", found: "LayerSource.hatching.tone")
+            }
+            tone = .turing(scale: scale,
                            seed: UInt64(bitPattern: Int64(try t.int("seed", "LayerSource.hatching.tone"))))
         case "lambert":
             let l = try t.doubles("light", "LayerSource.hatching.tone")
-            guard l.count == 3 else {
-                throw JSONError.wrongType("light", expected: "three numbers", found: "LayerSource.hatching.tone")
+            guard l.count == 3, Tone.hasDirection(SIMD3(l[0], l[1], l[2])) else {
+                throw JSONError.wrongType("light", expected: "three numbers, not all zero",
+                                          found: "LayerSource.hatching.tone")
             }
             tone = .lambert(light: SIMD3(l[0], l[1], l[2]))
         case let other:
@@ -73,8 +92,13 @@ public struct Hatching: Sendable, Equatable {
         guard widthSteps >= 1 else {
             throw JSONError.wrongType("widthSteps", expected: "a positive integer", found: "LayerSource.hatching")
         }
+        let step = o.optionalDouble("step")
+        if let step, !(step >= Hatching.finestStep * spacing && step.isFinite) {
+            throw JSONError.wrongType("step", expected: "a number no finer than a millionth of the spacing",
+                                      found: "LayerSource.hatching")
+        }
         self.init(angle: try o.double("angle", "LayerSource.hatching"), spacing: spacing,
-                  step: o.optionalDouble("step"), tone: tone, widthSteps: widthSteps)
+                  step: step, tone: tone, widthSteps: widthSteps)
     }
 
     public var json: JSONValue {
@@ -107,6 +131,12 @@ public enum Tone: Sendable, Equatable {
     /// light. Nothing on a face square to the light, full width on one
     /// turned away from it, one value per face.
     case lambert(light: SIMD3<Double>)
+
+    /// Whether `light` has a direction to normalize: not zero, not infinite.
+    static func hasDirection(_ light: SIMD3<Double>) -> Bool {
+        let l2 = simd_length_squared(light)
+        return l2 > 0 && l2.isFinite
+    }
 
     /// The tone on one face, in that face's coordinates.
     public func value(on face: Solid.Face) -> @Sendable (SIMD2<Double>) -> Double {

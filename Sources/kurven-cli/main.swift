@@ -85,6 +85,12 @@ struct Args {
         guard let d = Double(v) else { throw CLIError("--\(name) wants a number, got '\(v)'") }
         return d
     }
+    /// A number that must be positive and finite, as a length is.
+    func positive(_ name: String) throws -> Double? {
+        guard let d = try double(name) else { return nil }
+        guard d > 0, d.isFinite else { throw CLIError("--\(name) wants a positive number, got '\(flags[name]!)'") }
+        return d
+    }
 }
 
 let usage = """
@@ -539,7 +545,7 @@ func surfaceCommand(_ args: Args) throws {
 /// solid is a table and a rule, and the rule is exact.
 func solidCommand(_ args: Args) throws {
     let kind = args.flags["kind"] ?? "dodecahedron"
-    let size = try args.double("size") ?? 2
+    let size = try args.positive("size") ?? 2
     let width = try args.double("width") ?? 0.6
     let solid: Solid
     if kind == "csaszar" {
@@ -549,8 +555,11 @@ func solidCommand(_ args: Args) throws {
         let r = c.vertices.map { simd_length(SIMD2($0.x, $0.y)) }.max() ?? 1
         solid = c.transformed(rotation: matrix_identity_double3x3 * (size / r))
     } else if kind == "frame" {
-        solid = Solid.frame(outer: 2 * size, inner: try args.double("hole") ?? size,
-                            depth: try args.double("depth") ?? size / 2)
+        let hole = try args.positive("hole") ?? size
+        guard hole < 2 * size else {
+            throw CLIError("--hole wants less than the frame's width, 2 × --size = \(2 * size), got \(hole)")
+        }
+        solid = Solid.frame(outer: 2 * size, inner: hole, depth: try args.positive("depth") ?? size / 2)
     } else if let platonic = Solid.Platonic(rawValue: kind) {
         solid = Solid.platonic(platonic, circumradius: size).resting(onFace: 0)
     } else {
@@ -571,15 +580,22 @@ func solidCommand(_ args: Args) throws {
         let tone: Tone
         switch kind {
         case "uniform": tone = .uniform
-        case "turing": tone = .turing(scale: try args.double("scale") ?? size / 4,
-                                      seed: UInt64(try args.int("seed", 1)))
+        case "turing":
+            let seed = try args.int("seed", 1)
+            guard seed >= 0 else { throw CLIError("--seed wants a whole number, 0 or more, got \(seed)") }
+            tone = .turing(scale: try args.positive("scale") ?? size / 4, seed: UInt64(seed))
         case "lambert": tone = .lambert(light: SIMD3(-0.4, -0.6, 0.7))
         case let other: throw CLIError("unknown tone '\(other)'; the tones are uniform, turing, lambert")
         }
-        let hatching = Hatching(angle: (try args.double("angle") ?? 45) * .pi / 180,
-                                spacing: try args.double("spacing") ?? size / 25,
-                                step: try args.double("step"),
-                                tone: tone, widthSteps: try args.int("width-steps", 1))
+        let spacing = try args.positive("spacing") ?? size / 25
+        let step = try args.positive("step")
+        if let step, step < Hatching.finestStep * spacing {
+            throw CLIError("--step wants at least a millionth of --spacing, got \(step)")
+        }
+        let widthSteps = try args.int("width-steps", 1)
+        guard widthSteps >= 1 else { throw CLIError("--width-steps wants 1 or more, got \(widthSteps)") }
+        let hatching = Hatching(angle: (try args.double("angle") ?? 45) * .pi / 180, spacing: spacing,
+                                step: step, tone: tone, widthSteps: widthSteps)
         layers.append(Layer(spec: LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching),
                                             width: try args.double("hatch-width") ?? width / 2,
                                             heightPolicy: .surface,

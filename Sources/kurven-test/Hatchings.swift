@@ -193,6 +193,29 @@ func hatchingTests() {
                      "\(drawn) drawn")
     }
 
+    Check.suite("hatching: a tone or a step that cannot be read is refused at decode") {
+        func hatching(tone: String, step: String = "") throws -> Hatching {
+            try Hatching(json: try JSONValue.parse("""
+                {"kind": "hatching", "angle": 0, "spacing": 0.1, "widthSteps": 1\(step), "tone": \(tone)}
+                """))
+        }
+        Check.expect((try? hatching(tone: #"{"kind": "turing", "scale": 0.5, "seed": 1}"#)) != nil,
+                     "a well-formed hatching decodes")
+        for scale in ["0", "-0.5"] {
+            Check.expectThrows("Turing's tone at scale \(scale) is refused") {
+                _ = try hatching(tone: #"{"kind": "turing", "scale": \#(scale), "seed": 1}"#)
+            }
+        }
+        Check.expectThrows("a light of no direction is refused") {
+            _ = try hatching(tone: #"{"kind": "lambert", "light": [0, 0, 0]}"#)
+        }
+        for step in ["0", "-0.1", "1e-300"] {
+            Check.expectThrows("a step of \(step) is refused") {
+                _ = try hatching(tone: #"{"kind": "uniform"}"#, step: #", "step": \#(step)"#)
+            }
+        }
+    }
+
     Check.suite("hatching: tested by occlusion, hatching agrees with a ray cast, through the frame's hole included") {
         let s = Solid.frame(outer: 4, inner: 2, depth: 1)
         let hatching = Hatching(angle: 0.5, spacing: 0.08)
