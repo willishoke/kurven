@@ -114,21 +114,22 @@ scripts/           check.sh, bundle-app.sh
 docs/gallery/      the README's figures and the script that bakes them
 ```
 
-## Bundles from the Python plates
+## Resampling a bundle without the window
 
-The four plates of the original atlas were Python programs, retired with the
-rest of the Python package. Their bundles were written in schema 1, which
-kurven no longer reads; the catalog draws the same functions natively. A
-bundle whose provenance names a Python plate records that plate's arguments
-in `provenance.params`, and when its `provenance.function` is a catalog preset
-the app fills the landscape controls from them (`rMin`, `rMax`, `iMin`,
-`iMax` the window, `res` the resolution, `zLimit` the truncation height) and
-Rebuild samples it natively. One whose function is not in the catalog opens
-read-only.
+A bundle `kurven-cli landscape` or the app wrote records its request in
+`provenance.params`, and the app can sample it again headlessly, through
+the same path an edit in the window takes, with overrides for the window
+(`rMin`, `rMax`, `iMin`, `iMax`), the resolution (`res`) and a uniform
+truncation height (`truncation`):
 
 ```bash
-KurvenApp --open recip.kurven --resample res=800 --screenshot recip.png
+KurvenApp --open gamma.kurven --resample res=800 --screenshot gamma.png
 ```
+
+Any other bundle, such as a golden fixture, records no request and opens
+read-only. The bundles of the original atlas's Python plates were written
+in schema 1, which kurven no longer reads; the catalog draws the same
+functions natively.
 
 ## Things worth knowing
 

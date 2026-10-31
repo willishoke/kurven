@@ -128,17 +128,11 @@ extension Document {
     /// it is rather than where the catalog's defaults are. A bundle written by
     /// `landscape` records its own request in `provenance.params`.
     ///
-    /// A bundle from one of the retired Python plates records the drawing's
-    /// arguments instead, under the function it sampled. When that function is
-    /// a catalog preset, the controls start from those arguments
-    /// (`request(fromDrawing:)`), and the first edit -- or Rebuild -- is a native
-    /// landscape over the same window. A bundle whose provenance names nothing
-    /// in the catalog opens read-only.
+    /// Any other bundle -- a fixture, or one written by hand -- records no
+    /// request, and opens read-only.
     func adoptLandscape(_ bundle: KurvenBundle) {
         guard bundle.manifest.provenance.example == "function" else {
-            landscape = Self.request(fromDrawing: bundle.manifest, catalog: catalog)
-            // Nothing on screen came from this request, so even an unchanged
-            // one is a landscape to build rather than one already shown.
+            landscape = nil
             shown = nil
             return
         }
@@ -168,27 +162,6 @@ extension Document {
         shown = request
     }
 
-    /// The request a drawing bundle's provenance describes: the catalog preset it
-    /// names, over the window and at the resolution and truncation its
-    /// arguments record (`drawingArguments`). Missing arguments fall back to the
-    /// manifest, which records the same window and truncations. Nil when the function
-    /// is not in the catalog: then there is no native landscape to rebuild.
-    static func request(fromDrawing manifest: Manifest, catalog: Catalog) -> LandscapeRequest? {
-        guard let preset = catalog.preset(manifest.provenance.function) else { return nil }
-        var request = LandscapeRequest(preset: preset, resolution: catalog.defaultResolution)
-        request.domain = manifest.domain
-        request.truncation = manifest.truncation
-        var arguments: [String: Double] = [:]
-        for (key, value) in manifest.provenance.params {
-            switch value {
-            case .double(let d): arguments[key] = d
-            case .int(let i): arguments[key] = Double(i)
-            default: break
-            }
-        }
-        return request.applying(drawingArguments: arguments)
-    }
-
     // MARK: - restyling
 
     /// The styling the controls show: the latest asked for, else the bundle's.
@@ -208,7 +181,7 @@ extension Document {
         let after = Styling(manifest)
         guard after != before else { return }
         styled = after
-        // A drawing bundle being rebuilt keeps the truncation it was given here, too.
+        // The next resample keeps the truncation given here.
         if landscape != nil { landscape?.truncation = after.truncation }
         redraw()
     }
@@ -470,17 +443,17 @@ extension Array {
 }
 
 extension LandscapeRequest {
-    /// This request under a Python plate's arguments, as its provenance
-    /// recorded them: `rMin`, `rMax`, `iMin`, `iMax` the window, `res` the
-    /// resolution, `zLimit` a uniform truncation. Other keys are not the landscape's
-    /// business (the drawing's camera, its buffer) and are ignored.
-    func applying(drawingArguments a: [String: Double]) -> LandscapeRequest {
+    /// This request with `KurvenApp --resample`'s overrides: `rMin`, `rMax`,
+    /// `iMin`, `iMax` the window, as a bundle's provenance records it, `res`
+    /// the resolution and `truncation` a uniform truncation height, as
+    /// `kurven-cli landscape` spells them. Other keys are ignored.
+    func applying(overrides a: [String: Double]) -> LandscapeRequest {
         var request = self
         request.domain = Domain(
             real: Interval(lo: a["rMin"] ?? domain.real.lo, hi: a["rMax"] ?? domain.real.hi),
             imag: Interval(lo: a["iMin"] ?? domain.imag.lo, hi: a["iMax"] ?? domain.imag.hi))
         if let res = a["res"] { request.resolution = Int(res.rounded()) }
-        if let z = a["zLimit"] { request.truncation = .uniform(z) }
+        if let z = a["truncation"] { request.truncation = .uniform(z) }
         return request
     }
 }

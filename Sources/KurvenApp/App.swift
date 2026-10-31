@@ -382,13 +382,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         document.saveBundle(to: url)
     }
 
-    /// `--resample KEY=VALUE ... --screenshot PATH` drives the window's own
-    /// Rebuild of a drawing bundle: the same Document, the same request mapped
-    /// from the bundle's provenance, the same native build. The keys are the
-    /// drawing's provenance arguments (`res`, `rMin`, `rMax`, `iMin`, `iMax`,
-    /// `zLimit`; snake_case is accepted, as the Python plates spelled their
-    /// flags). Without it the only way to know the Rebuild button works is to
-    /// press it.
+    /// `--resample KEY=VALUE ... --screenshot PATH` resamples a landscape
+    /// bundle the way an edit in the window does: the same Document, the
+    /// bundle's own request with the overrides applied (`res`, `rMin`,
+    /// `rMax`, `iMin`, `iMax`, `truncation`; `LandscapeRequest.applying`),
+    /// the same native build. Without it the only way to know a resample
+    /// lands is to move a control.
     private func resample(bundle: URL, settings: [String: String],
                           screenshot: URL?) async {
         await document.load(bundle)
@@ -404,17 +403,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 FileHandle.standardError.write(Data("Kurven: \(key)=\(value) is not a number\n".utf8))
                 exit(1)
             }
-            let parts = key.split(separator: "_")
-            let camel = ([String(parts.first ?? "")] + parts.dropFirst().map(\.capitalized)).joined()
-            overrides[camel] = number
+            overrides[key] = number
         }
-        guard let request = (manifest.provenance.example == "function"
-                ? document.landscape
-                : Document.request(fromDrawing: manifest, catalog: document.catalog))?
-            .applying(drawingArguments: overrides) else {
+        guard let request = document.landscape?.applying(overrides: overrides) else {
             FileHandle.standardError.write(Data(("Kurven: cannot resample — this bundle's "
-                + "provenance names '\(manifest.provenance.function)', which is not a "
-                + "function in the catalog, so it opens read-only\n").utf8))
+                + "provenance is '\(manifest.provenance.example)', not a landscape "
+                + "`kurven-cli landscape` or the window wrote, so it opens read-only\n").utf8))
             exit(1)
         }
         document.landscape = request

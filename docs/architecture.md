@@ -71,9 +71,9 @@ A **`.kurven` bundle** is a `Scene`, serialized: a directory holding a typed
 landscape's bundle is described all the way through: no vertices, a
 manifest and two grids (|f| untruncated, and arg f), a few hundred
 kilobytes. Its contour layers are statements of levels, its walls a
-perimeter, its truncation a value, so each is a control in the app. The
-bundles of the published plates, written by their retired Python programs,
-store some layers as arrays, and the schema says which.
+perimeter, its truncation a value, so each is a control in the app. A layer
+can also be stored as arrays (`file`), as some golden fixtures are, and the
+schema says which.
 
 Bundle arrays are in world order, `x = real`, `y = imag`, `z = |f|`. The
 convention is written into the manifest, because forgetting it was the most

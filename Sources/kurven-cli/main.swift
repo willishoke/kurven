@@ -55,8 +55,8 @@ struct Args {
     /// Whether a token is a value rather than the next option.
     ///
     /// Anything beginning with `-` is an option, *except* a negative number:
-    /// `--shear -0.5` means a shear and `--derived -o out.svg` does not mean
-    /// a derived called "-o". Getting this wrong let a switch swallow the flag
+    /// `--shear -0.5` means a shear and `--soft -o out.svg` does not mean
+    /// a soft called "-o". Getting this wrong let a switch swallow the flag
     /// after it, which showed up as "missing --output" three arguments later.
     static func isValue(_ token: String) -> Bool {
         if !token.hasPrefix("-") { return true }
@@ -226,10 +226,10 @@ usage: kurven-cli <command> [options]
         Render one preview frame offscreen and write it as a PNG. Modes:
         drawing (the default), shaded, depth. --orbit turns the preset camera by
         that many degrees before drawing; --center puts that world point at
-        the middle of the picture, and --zoom then zooms about it. --levels redraws every *described*
-        layer at N evenly spaced levels over its own range, which only a
-        bundle exported with --derived can do. --fov switches to a perspective
-        camera, which previews but does not bake. --depth-tolerance and --slope
+        the middle of the picture, and --zoom then zooms about it. --levels
+        redraws every *described* layer at N evenly spaced levels over its own
+        range; a layer stored as arrays stays as it is. --fov switches to a
+        perspective camera, which previews but does not bake. --depth-tolerance and --slope
         set the visibility test: the hidden-line depth tolerance, and how many
         pixels' worth of the surface's depth change it also allows (0 is the
         bake's predicate).
@@ -774,7 +774,7 @@ func bench(_ args: Args) throws {
         // and the others are reused, which is what the app does.
         guard let edited = bundle.manifest.layers.enumerated().first(where: {
             KurvenBundle.levels(of: $0.element) != nil
-        }) else { throw CLIError("this bundle has no described layers; export with --derived") }
+        }) else { throw CLIError("this bundle has no described layers to edit") }
         var current = bundle.layers
         let counts = (0..<frames).map { 4 + ($0 % 40) }
         var editTimes: [Double] = []
@@ -894,8 +894,8 @@ func bench(_ args: Args) throws {
 
 /// Every layer, with the described ones re-derived at `count` evenly spaced
 /// levels over their own range. A dumped layer has no question behind it and
-/// comes back unchanged, which is the difference `--derived` makes, in one
-/// function.
+/// comes back unchanged, which is the difference a description makes, in
+/// one function.
 func relaid(_ bundle: KurvenBundle, levelCount count: Int) -> [Layer] {
     bundle.manifest.layers.map { relaid(bundle, $0, levelCount: count) }
 }
@@ -928,8 +928,7 @@ func previewView(_ args: Args, viewport: Viewport) throws
         base = base.drawing(relaid(bundle, levelCount: n))
         if !bundle.manifest.layers.contains(where: { KurvenBundle.levels(of: $0) != nil }) {
             FileHandle.standardError.write(Data(
-                ("note: no described layers here, so --levels changes nothing; "
-                 + "export the bundle with --derived\n").utf8))
+                ("note: no described layers here, so --levels changes nothing\n").utf8))
         }
     }
 

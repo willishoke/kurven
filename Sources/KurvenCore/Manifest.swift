@@ -783,10 +783,9 @@ public struct CameraPreset: Sendable, Equatable {
 
 public struct Provenance: Sendable, Equatable {
     public var function: String
-    /// The recipe that produced this: "function" for a native landscape, or
-    /// the name of the retired Python plate that wrote it. `function` names
-    /// the mathematics; a drawing bundle whose function is a catalog preset can
-    /// be rebuilt natively from it and `params`.
+    /// The recipe that produced this: "function" for a native landscape,
+    /// whose request `params` records, so it can be sampled again; "fixture"
+    /// for a golden fixture. `function` names the mathematics.
     public var example: String
     public var params: [String: JSONValue]
     /// The contourpy chunk count the bundle was written with. Anything but 1

@@ -43,20 +43,6 @@ struct LandscapeSection: View {
             literalSliders(landscape)
             domainControls(landscape, window: window(catalog, landscape))
             resolutionControl(landscape)
-            if document.bundle != nil && !document.isLandscape {
-                // A drawing bundle from the retired Python pipeline: the controls
-                // start from its provenance, and this builds the same window
-                // natively without waiting for a control to move.
-                HStack {
-                    Button(document.sampling ? "Rebuilding…" : "Rebuild") {
-                        document.landscapeEdited(draft: false)
-                    }
-                    .disabled(document.sampling)
-                    Spacer()
-                }
-                .help("Sample this plate's function natively over the window and at "
-                      + "the resolution above, in place of the bundle's frozen arrays.")
-            }
             Toggle("Place contours by f, not by the grid",
                    isOn: Binding(get: { document.refineContours },
                                  set: { document.setRefinement($0) }))
