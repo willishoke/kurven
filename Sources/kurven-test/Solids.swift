@@ -67,7 +67,7 @@ func solidTests() {
             var cameras = 0, whole = true, bySigns = true, drawnSome = false, undecided = 0
             for (_, view) in stressCameras() {
                 cameras += 1
-                let d = -view.sightLine
+                let d = -view.projectionDirection
                 let drawn = s.visibleEdges(view: view)
                 // An edge with a face exactly edge-on -- a cube square to the
                 // camera -- lies on the silhouette, and its sign is rounding;
@@ -180,7 +180,7 @@ func solidTests() {
         var example = ""
         for (name, view) in stressCameras() {
             cameras += 1
-            let d = -view.sightLine
+            let d = -view.projectionDirection
             let drawn = s.visibleEdges(view: view)
             var pieces: [Solid.Edge: [(Double, Double)]] = [:]
             for i in 0..<drawn.count {
@@ -276,7 +276,7 @@ func solidTests() {
         var example = ""
         for (name, view) in stressCameras() {
             cameras += 1
-            let d = -view.sightLine
+            let d = -view.projectionDirection
             let drawn = s.visibleEdges(view: view)
             var spans: [Solid.Edge: [(Double, Double)]] = [:]
             for i in 0..<drawn.count {

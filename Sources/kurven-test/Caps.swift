@@ -86,7 +86,7 @@ func capTests() {
         Check.expect(over == 0, "no piece rises above the cap", "\(over) vertices do")
     }
 
-    Check.suite("cap rim: the lattice is the rasterizer's") {
+    Check.suite("cap rim: the grid is the rasterizer's") {
         // Per tile, once; outside the region, not at all.
         let one = Mesh.capRim(of: surface, step: 1, region: .full, tiles: [.identity])
         let shifted = Affine2(a: 1, b: 0, tx: 5, c: 0, d: 1, ty: 0)
@@ -104,16 +104,16 @@ func capTests() {
         Check.expect(Mesh.capRim(of: surface, step: 1, region: .inside(far),
                                  tiles: [.identity]).isEmpty,
                      "a region that excludes the spire has no rim in it")
-        // Decimated by two, the lattice is 5 x 5 over the same domain, and the
+        // Decimated by two, the grid is 5 x 5 over the same domain, and the
         // rim is cut on those cells: coarser, and still under the cap.
         let coarse = Mesh.capRim(of: surface, step: 2, region: .full, tiles: [.identity])
         let coarseXs = Set(coarse.vertices.map { ($0.x * 1e9).rounded() / 1e9 })
-        let lattice = Set((0..<5).map { (-1.0 + Double($0) * 0.5) })
-        let onLattice = coarse.vertices.filter { v in
-            lattice.contains(where: { abs($0 - v.x) < 1e-9 }) || lattice.contains(where: { abs($0 - v.y) < 1e-9 })
+        let grid = Set((0..<5).map { (-1.0 + Double($0) * 0.5) })
+        let onGrid = coarse.vertices.filter { v in
+            grid.contains(where: { abs($0 - v.x) < 1e-9 }) || grid.contains(where: { abs($0 - v.y) < 1e-9 })
         }.count
-        Check.expect(!coarse.isEmpty && onLattice > 0 && coarse.triangles.count < one.triangles.count,
-                     "step 2 cuts the rim on the decimated lattice",
+        Check.expect(!coarse.isEmpty && onGrid > 0 && coarse.triangles.count < one.triangles.count,
+                     "step 2 cuts the rim on the decimated grid",
                      "\(coarse.triangles.count) triangles, \(coarseXs.count) distinct x")
     }
 

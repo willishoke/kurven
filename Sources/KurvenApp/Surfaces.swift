@@ -49,7 +49,7 @@ extension Document {
         surfaceWanted = nil
         if !framing, request == surfaceShown { return }
         // Whatever the plate on screen can lend the next one -- a fitted
-        // torus, its values on the lattice, the trajectory's run, the
+        // torus, its values on the grid, the trajectory's run, the
         // contours -- goes with the request.
         let previous = framing ? nil : plate
         building = true

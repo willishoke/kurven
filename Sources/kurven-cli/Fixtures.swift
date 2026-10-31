@@ -289,7 +289,7 @@ enum GoldenFixtures {
     /// awkward enough to matter. One pole sits just inside the back edge, so a
     /// wall crest runs into the cap and the two truncations disagree about
     /// where it stops; the other is interior, so there is a plateau with a rim
-    /// all the way round. Both are off the sample lattice, because a pole *on*
+    /// all the way round. Both are off the sample grid, because a pole *on*
     /// a sample is an infinity in the grid and this fixture is about hatching,
     /// not about sanitizing.
     static let hatchDomain = Domain(real: Interval(lo: -2, hi: 2.5), imag: Interval(lo: -1, hi: 1.5))

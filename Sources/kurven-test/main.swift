@@ -302,14 +302,14 @@ func coreTests() {
             for c in 0..<frame.cols
             where frame.index(of: frame.coordinate(row: r, col: c)) != SIMD2(r, c) { ok = false }
         }
-        Check.expect(ok, "every lattice vertex round trips to its own pixel")
+        Check.expect(ok, "every grid vertex round trips to its own pixel")
         Check.expect(frame.index(of: P2(-2, 10)) == SIMD2(0, 0),
                      "the low corner lands on pixel 0, not -1 (the 0.01 nudge)")
     }
 
-    Check.suite("core: the NDC transform puts each sample point on its lattice vertex") {
+    Check.suite("core: the NDC transform puts each sample point on its grid vertex") {
         // Both raster orders, and the screen order's descending row axis, have
-        // to land on the same lattice the clipper indexes -- a half-pixel shift
+        // to land on the same grid the clipper indexes -- a half-pixel shift
         // here shows up as ink leaking through the surface along silhouettes
         // and nowhere else.
         for (name, frame) in [
@@ -334,12 +334,12 @@ func coreTests() {
                     worst = max(worst, abs(h.y / h.w - (1 - Double(2 * r + 1) / Double(frame.rows))))
                 }
             }
-            Check.expect(roundTrips, "\(name): every lattice vertex indexes its own pixel")
+            Check.expect(roundTrips, "\(name): every grid vertex indexes its own pixel")
             Check.expect(worst < 1e-12, "\(name): no half-pixel shift", "worst |Δ| = \(worst)")
         }
     }
 
-    Check.suite("core: bake tiles partition the plate's lattice exactly") {
+    Check.suite("core: bake tiles partition the plate's grid exactly") {
         let frame = DepthFrame(axis0: Interval(lo: -3, hi: 5), axis1: Interval(lo: 0, hi: 7),
                                rows: 240, cols: 240)
         for n in [1, 2, 3, 7] {
@@ -462,7 +462,7 @@ func shaderTests() {
             clip: clipProbe,
             domainLo: SIMD2(301, 302),
             domainSize: SIMD2(401, 402),
-            lattice: SIMD2(501, 502),
+            grid: SIMD2(501, 502),
             gridSize: SIMD2(601, 602),
             step: 701,
             cap: 801,

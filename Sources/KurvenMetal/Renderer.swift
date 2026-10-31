@@ -62,7 +62,7 @@ public final class MetalRenderer {
     let shadedWallPipeline: MTLRenderPipelineState
     let strokePipeline: MTLRenderPipelineState
     // A parametric surface in the preview: as paper, shaded, and the ink on
-    // it, which is judged by surface coordinate rather than by depth.
+    // it, which is tested by surface coordinate rather than by depth.
     let paramPaperPipeline: MTLRenderPipelineState
     let paramShadedPipeline: MTLRenderPipelineState
     let surfaceStrokePipeline: MTLRenderPipelineState
@@ -201,7 +201,7 @@ public final class MetalRenderer {
     private var cachedResources: SceneResources?
     /// Keyed by the camera too when the scene has fold lines on a
     /// heightfield, which are the camera's and are traced again when it moves.
-    var cachedLines: (ink: ContentID, camera: Camera?, draft: Bool, laid: JudgedLines,
+    var cachedLines: (ink: ContentID, camera: Camera?, draft: Bool, laid: VisibleLines,
                       geometry: LineGeometry)?
     private var target: DepthTarget?
     private var previewDepth: MTLTexture?
@@ -231,15 +231,15 @@ public final class MetalRenderer {
                                    geometry: SurfaceInkGeometry)?
     private var cachedFolds: (content: ContentID, ink: ContentID, view: simd_double4x4,
                               geometry: SurfaceInkGeometry)?
-    /// The lattice's normals, which the preview's folds are read from and
+    /// The grid's normals, which the preview's folds are read from and
     /// its ink's normals interpolated from: fixed for a surface, so a camera
-    /// move costs a dot product per lattice point and an ink edit four reads
+    /// move costs a dot product per grid point and an ink edit four reads
     /// per vertex.
     private var cachedNormals: (content: ContentID, normals: [SIMD3<Float>])?
 
-    private func latticeNormals(for scene: Scene, surface: ParametricSurface) -> [SIMD3<Float>] {
+    private func gridNormals(for scene: Scene, surface: ParametricSurface) -> [SIMD3<Float>] {
         if let c = cachedNormals, c.content == scene.content { return c.normals }
-        let normals = surface.latticeNormals()
+        let normals = surface.gridNormals()
         cachedNormals = (scene.content, normals)
         return normals
     }
@@ -247,7 +247,7 @@ public final class MetalRenderer {
 
     /// Ink with coordinates, for the surface stroke shader. The fold lines
     /// are rebuilt when the camera does anything but stand still -- read off
-    /// the lattice, `latticeFoldLines`, not refined onto the exact fold as
+    /// the grid, `gridFoldLines`, not refined onto the exact fold as
     /// the bake's are -- and everything else when the ink changes.
     func surfaceInk(for scene: Scene, surface: ParametricSurface) throws -> SurfaceInk {
         let onFolds = scene.layers.map { layer -> Bool in
@@ -263,8 +263,8 @@ public final class MetalRenderer {
             // from the last layout, when the surface is the same one.
             let sources = zip(scene.layers, onFolds).map { $1 ? nil : $0.paths }
             let previous = cachedSurfaceInk.flatMap { $0.content == scene.content ? $0 : nil }
-            let lattice = sources.contains { $0?.coords != nil } && surface.outward != nil
-                ? latticeNormals(for: scene, surface: surface) : nil
+            let grid = sources.contains { $0?.coords != nil } && surface.outward != nil
+                ? gridNormals(for: scene, surface: surface) : nil
             let layers = sources.enumerated().map { i, paths -> [KVInkVertex] in
                 if let previous, i < previous.sources.count, previous.sources[i] == paths {
                     return previous.geometry.layers[i]
@@ -273,7 +273,7 @@ public final class MetalRenderer {
                 // normal says nothing: laid out as fold ink, with no facing.
                 let crease = scene.layers[i].spec.role == .outline
                 return paths.map { SurfaceInkGeometry.layout($0, surface: surface, onFolds: crease,
-                                                             lattice: lattice) } ?? []
+                                                             grid: grid) } ?? []
             }
             statics = try SurfaceInkGeometry(layers: layers, device: device)
             cachedSurfaceInk = (scene.content, scene.ink, sources, statics)
@@ -285,8 +285,8 @@ public final class MetalRenderer {
         } else {
             var derived: PolylineSet<WorldSpace>?
             if onFolds.contains(true) {
-                derived = surface.latticeFoldLines(normals: latticeNormals(for: scene, surface: surface),
-                                                   sight: scene.camera.view.sightLine)
+                derived = surface.gridFoldLines(normals: gridNormals(for: scene, surface: surface),
+                                                   sight: scene.camera.view.projectionDirection)
             }
             folds = try SurfaceInkGeometry(onFolds.map { $0 ? derived : nil },
                                            surface: surface, onFolds: onFolds, device: device)
@@ -331,21 +331,21 @@ public final class MetalRenderer {
     /// content, so moving a level set rebuilds the strokes and leaves the
     /// heightfield texture alone.
     ///
-    /// Fold lines and wall ink on a heightfield are judged for the camera,
+    /// Fold lines and wall ink on a heightfield are tested for the camera,
     /// so the geometry is the camera's too, and a draft of it is not the
-    /// judged one: a judged layout in hand serves a draft frame, since it is
-    /// the better picture, but a draft never serves a judged frame.
+    /// tested one: a tested layout in hand serves a draft frame, since it is
+    /// the better picture, but a draft never serves a tested frame.
     func lineGeometry(for scene: Scene, draft: Bool = false) throws -> LineGeometry {
-        let judged = LineGeometry.isJudged(scene)
-        let key: Camera? = judged ? scene.camera : nil
+        let visible = LineGeometry.isTestedExactly(scene)
+        let key: Camera? = visible ? scene.camera : nil
         if let c = cachedLines, c.ink == scene.ink, c.camera == key,
-           !judged || (!c.draft && c.laid.serves(scene)) || draft {
+           !visible || (!c.draft && c.laid.serves(scene)) || draft {
             return c.geometry
         }
-        let laid = LineGeometry.layOut(scene: scene, draft: judged && draft,
+        let laid = LineGeometry.layOut(scene: scene, draft: visible && draft,
                                        reusing: laidLines(for: scene))
         let g = try LineGeometry(laid, device: device)
-        cachedLines = (scene.ink, key, judged && draft, laid, g)
+        cachedLines = (scene.ink, key, visible && draft, laid, g)
         return g
     }
 
@@ -476,7 +476,7 @@ public final class MetalRenderer {
         let out = try target(rows: frame.rows, cols: frame.cols)
         var uniforms = KVUniforms(
             view: scene.camera.view.float4x4, clip: clipMatrix(scene, frame: frame),
-            domainLo: .zero, domainSize: .zero, lattice: SIMD2(0, 0), gridSize: SIMD2(0, 0),
+            domainLo: .zero, domainSize: .zero, grid: SIMD2(0, 0), gridSize: SIMD2(0, 0),
             step: 1, cap: .infinity, regionCount: 0, empty: Self.emptySentinel)
 
         let descriptor = MTLRenderPassDescriptor()
@@ -524,13 +524,13 @@ public final class MetalRenderer {
     func uniforms(_ scene: Scene, frame: DepthFrame,
                   resources res: SceneResources) -> KVUniforms {
         let clip = clipMatrix(scene, frame: frame)
-        let d = res.latticeDomain
+        let d = res.decimatedDomain
         return KVUniforms(
             view: scene.camera.view.float4x4,
             clip: clip,
             domainLo: SIMD2<Float>(Float(d.real.lo), Float(d.imag.lo)),
             domainSize: SIMD2<Float>(Float(d.real.length), Float(d.imag.length)),
-            lattice: SIMD2<UInt32>(UInt32(res.latticeWidth), UInt32(res.latticeHeight)),
+            grid: SIMD2<UInt32>(UInt32(res.decimatedWidth), UInt32(res.decimatedHeight)),
             gridSize: SIMD2<UInt32>(UInt32(res.gridWidth), UInt32(res.gridHeight)),
             step: UInt32(scene.heightfield?.step ?? 1),
             cap: res.capBaked ? .infinity

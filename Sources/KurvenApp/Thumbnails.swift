@@ -77,7 +77,7 @@ final class Thumbnails {
 
     func isFailed(_ entry: GalleryEntry) -> Bool { failed.contains(entry.id) }
 
-    /// A surface, built from its own request at a coarser lattice -- a
+    /// A surface, built from its own request at a coarser grid -- a
     /// thumbnail is a tenth the width of the window -- and drawn from the
     /// camera it opens at. The forced torus is still fitted in full, which
     /// is most of its half second; that is why this stays off the main actor.
@@ -99,7 +99,7 @@ final class Thumbnails {
     /// What a surface's thumbnail is built from: its own request, coarser.
     nonisolated static func request(for preset: SurfacePreset) -> SurfaceRequest {
         var request = preset.request
-        request.lattice = Thumbnails.lattice
+        request.grid = Thumbnails.grid
         // A trajectory as long as the window's, at a quarter the width, is
         // grey moiré: a quarter of it keeps its windings as far apart.
         if case .forced(let system, let fit, let harmonics, let radial, let axial, let radius,
@@ -111,8 +111,8 @@ final class Thumbnails {
         return request
     }
 
-    /// Lattice points around a surface's `u` for its thumbnail.
-    nonisolated static let lattice = 256
+    /// Grid points around a surface's `u` for its thumbnail.
+    nonisolated static let grid = 256
 
     /// One preview frame of `scene`, written where the cache keeps it.
     nonisolated private static func render(_ scene: Scene, navigator: Navigator,

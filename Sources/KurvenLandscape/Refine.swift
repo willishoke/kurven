@@ -212,7 +212,7 @@ public struct ContourRefiner: Sendable {
         // handoff radius. The grid's pieces are cut back from those discs
         // and the rays spliced on, so the ink nearest a singular point is
         // f's, with as many rays as the point's order says, whatever the
-        // lattice resolved there.
+        // grid resolved there.
         let rays = points.indices.flatMap { seededRays(from: $0, of: points, theta: theta,
                                                        level: level, g: g, ceiling: ceiling) }
         let seeded = Set(rays.filter(\.handoff).map(\.point))
@@ -335,7 +335,7 @@ public struct ContourRefiner: Sendable {
     /// w = f(z) a line of constant phase θ is the ray arg w = θ and a line
     /// of constant magnitude is a circle, so near the point the drawing is
     /// read off the normal form and carried back by Newton on f, and the
-    /// lattice, which cannot see inside the cell the point lies in, is not
+    /// grid, which cannot see inside the cell the point lies in, is not
     /// consulted there. For order k there are k rays at every level,
     /// leaving at the angles (θ − arg coefficient + 2πj) / k, and the same
     /// formula with k negative gives a pole's.
@@ -501,7 +501,7 @@ public struct ContourRefiner: Sendable {
 
     /// The piece cut back from the handoff discs: its vertices inside one
     /// are dropped, and an end so made is marked with the point it meets,
-    /// for that point's ray to be spliced on. A piece that marching
+    /// for that point's ray to be spliced on. A piece that traversing
     /// squares led through a singular point's cell, from one ray onto
     /// another, comes apart there into the two.
     func trimmed(_ piece: Piece, awayFrom discs: [(index: Int, center: P2<DomainSpace>)]) -> [Piece] {
@@ -532,7 +532,7 @@ public struct ContourRefiner: Sendable {
     /// the one leaving at the nearest angle; the two are joined by a chord
     /// placed like any other, so the ink is one curve from the point out.
     /// A ray no run meets -- the grid drew nothing along it, as it may on a
-    /// coarse lattice -- is followed on f to wherever it ends, and if that
+    /// coarse grid -- is followed on f to wherever it ends, and if that
     /// is another point's disc it is spliced there in turn. An end that no
     /// ray fits is carried onto the point as before.
     func spliced(_ rays: [Ray], onto runs: [Piece], points: [SingularPoint], level: Double,
@@ -745,7 +745,7 @@ public struct ContourRefiner: Sendable {
         guard path.count >= 2 else { return [] }
         guard ceiling.isFinite else { return placed(path, level: level, g: g, cut: cut) }
         let n = path.count - 1
-        // Not over: a vertex where |f| is not a number is the snap's to judge.
+        // Not over: a vertex where |f| is not a number is the snap's to test.
         let low = path.map { p in !(magnitude(Complex(p.x, p.y)) > ceiling) }
         let wanted = (0..<n).map { low[$0] || low[$0 + 1] }
         if !wanted.contains(false) { return placed(path, level: level, g: g, cut: cut) }
@@ -812,10 +812,10 @@ public struct ContourRefiner: Sendable {
 
     /// A phase run followed on f beyond either end that lies inside the
     /// window and on no zero. Marching squares ends a run where it cannot
-    /// bracket the level on a lattice edge: beside an essential singularity
+    /// bracket the level on a grid edge: beside an essential singularity
     /// the phase turns many times within a cell, and the lines stopped a
     /// cell short of the origin they run into. From the last vertex the
-    /// lattice placed, the curve is followed on f: a step along the
+    /// grid placed, the curve is followed on f: a step along the
     /// tangent, corrected onto the level set along the gradient, kept only
     /// when the chord to it can be placed (`subdivide`) and halved
     /// otherwise, until the curve leaves the window, where it ends on the

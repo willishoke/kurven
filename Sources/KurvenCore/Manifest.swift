@@ -341,7 +341,7 @@ public func pointInPolygon(_ p: P2<WorldSpace>, _ corners: [P2<WorldSpace>]) -> 
     return inside
 }
 
-/// What blocks sight lines.
+/// What blocks lines of sight.
 ///
 /// The heightfield is never triangles on disk: it is `height.npy` plus a `step`,
 /// instanced once per entry in `tiles`. A renderer rasterizes it from the
@@ -492,7 +492,7 @@ public enum LayerSource: Sendable, Equatable {
     case capOutline(tiled: Bool)
     /// The parameter lines of a parametric surface: `u` lines along which
     /// u is constant and `v` along which v is, evenly spaced. Each vertex
-    /// carries its surface coordinate, so the ink is judged by where on the
+    /// carries its surface coordinate, so the ink is tested by where on the
     /// surface it lies.
     case parameterLines(u: Int, v: Int)
     /// Windings of a parametric surface: `count` straight lines through its
@@ -507,7 +507,7 @@ public enum LayerSource: Sendable, Equatable {
     /// A trajectory of a flow, integrated and carried as ink with its
     /// coordinates on the invariant surface it winds round.
     case trajectory
-    /// The edges of a solid, judged per edge by its two faces and cut
+    /// The edges of a solid, tested per edge by its two faces and cut
     /// exactly where another face hides them (`Solid.visibleEdges`).
     case edges
     /// Hatching over the faces of a solid (`Hatching`): lines at an angle
@@ -517,9 +517,9 @@ public enum LayerSource: Sendable, Equatable {
     case hatching(Hatching)
 
     /// Ink that lies in a cut face: a wall's hatch and its outline. On a
-    /// heightfield it is judged by the wall it lies in and by the solid
+    /// heightfield it is tested by the wall it lies in and by the solid
     /// (`Heightfield.visibleWallInk`), never by the depth buffer, which
-    /// cannot judge ink on a face it sees edge-on.
+    /// cannot test ink on a face it sees edge-on.
     public var isWallInk: Bool {
         switch self {
         case .wallHatch, .wallOutline: true
@@ -655,7 +655,7 @@ public struct LayerSpec: Sendable, Equatable {
     /// Whether the ink lies on the heightfield's own surface: the contours of
     /// |f| and arg f, lifted onto it -- by any height policy, since a
     /// magnitude contour at its level and a phase line at |f| are on the
-    /// surface as surely as ink lifted by the grid. Such ink can be judged by
+    /// surface as surely as ink lifted by the grid. Such ink can be tested by
     /// which way the surface faces under it, as well as by depth. The
     /// scaffold -- rims, hatches, outlines -- sits on creases and walls,
     /// where the surface's facing is not the ink's.

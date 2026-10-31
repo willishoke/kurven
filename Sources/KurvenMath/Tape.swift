@@ -9,7 +9,7 @@ extension Expression {
     /// order, so the same values to the bit. What differs is what an
     /// evaluation touches. A closure tree calls through every node's context,
     /// and a context is a reference-counted object every thread shares: with
-    /// the sight lines of a landscape marched on every core, most of a core's
+    /// the lines of sight of a landscape traversed on every core, most of a core's
     /// time went to retaining and releasing them -- the cores passing the
     /// same few cache lines back and forth -- rather than to f. The tape is
     /// read through a pointer nothing counts, into registers on the stack.

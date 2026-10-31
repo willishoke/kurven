@@ -182,7 +182,7 @@ extension Surface {
     /// down to), and between any two of these the profile subdivided until
     /// no chord departs from f by more than the refiner's tolerance
     /// (`subdividedProfile`). The rings are placed on f, the fold lines are
-    /// traced on f and the ink is judged against f, so the crest has to be
+    /// traced on f and the ink is tested against f, so the crest has to be
     /// f's too, or the rings end on a fold the crest parts from.
     func crest(of edge: PerimeterEdge, tiles: [Affine2],
                refine: ContourRefine?) -> [P3<WorldSpace>] {
@@ -485,7 +485,7 @@ extension Surface {
                 coord.append(b)
                 // With the function at hand the strokes are ruled on f and
                 // end where |f| reaches the cap along them, bisected: the
-                // lattice's chords lie above f on a convex flank, so its cap
+                // grid's chords lie above f on a convex flank, so its cap
                 // region reaches past the rim drawn on f by a fraction of a
                 // cell, and a stroke ruled on it poked out past the rim.
                 func excessAt(_ t: Double) -> Double {

@@ -7,7 +7,7 @@ import KurvenShaderTypes
 /// the camera moves.
 ///
 /// A camera change must touch one uniform buffer and nothing else. Without this
-/// it touches the entire heightfield: `renderDepth` was re-deriving the lattice,
+/// it touches the entire heightfield: `renderDepth` was re-deriving the decimated grid,
 /// re-clamping the grid and re-uploading the texture on every call, which is
 /// 56 ms per frame on zeta's hundred-megabyte grid -- eighteen frames a second
 /// before drawing anything, and four redundant uploads in a tiled bake.
@@ -21,11 +21,11 @@ final class SceneResources {
     /// x, so they are baked; a uniform cap stays a live uniform).
     let capBaked: Bool
 
-    /// The decimated lattice: dimensions and domain only. The heights come from
+    /// The decimated grid: dimensions and domain only. The heights come from
     /// the texture, so the samples themselves are never on the CPU.
-    let latticeWidth: Int
-    let latticeHeight: Int
-    let latticeDomain: Domain
+    let decimatedWidth: Int
+    let decimatedHeight: Int
+    let decimatedDomain: Domain
     let gridWidth: Int
     let gridHeight: Int
 
@@ -36,7 +36,7 @@ final class SceneResources {
     let walls: MTLBuffer?
     let wallVertexCount: Int
 
-    var cells: Int { max(latticeWidth - 1, 0) * max(latticeHeight - 1, 0) }
+    var cells: Int { max(decimatedWidth - 1, 0) * max(decimatedHeight - 1, 0) }
 
     init(scene: Scene, heightfield h: Heightfield, device: MTLDevice) throws {
         content = scene.content
@@ -50,9 +50,9 @@ final class SceneResources {
         gridHeight = grid.height
 
         let extent = grid.decimatedExtent(by: h.step)
-        latticeWidth = extent.width
-        latticeHeight = extent.height
-        latticeDomain = extent.domain
+        decimatedWidth = extent.width
+        decimatedHeight = extent.height
+        decimatedDomain = extent.domain
 
         heights = try SceneResources.upload(grid, device: device)
 

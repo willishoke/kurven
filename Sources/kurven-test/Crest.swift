@@ -108,7 +108,7 @@ func crestTests() {
     Check.suite("crest to the zero: the fold lines run down to the zero as well") {
         // A steeper cone, 10|z|, so that its far flank turns away from the
         // plate camera: its silhouettes are two generators running into the
-        // apex, which the lattice loses a cell short of the floor.
+        // apex, which the grid loses a cell short of the floor.
         let domain = Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: 0, hi: 1))
         let request = LandscapeRequest(expression: "10*z", domain: domain, resolution: 8,
                                        caps: .uniform(20))
@@ -123,7 +123,7 @@ func crestTests() {
         Check.expect(carried.count >= 1 && carried.allSatisfy { abs($0.z) < 1e-9 },
                      "with a refiner a fold ends at the zero, on the floor", "\(carried.count) ends there")
         let lowest = ends(plain).map(\.z).min() ?? -1
-        Check.expect(lowest > 0.05, "which the lattice's own folds stop short of",
+        Check.expect(lowest > 0.05, "which the grid's own folds stop short of",
                      String(format: "lowest end at z = %.3f", lowest))
     }
 
@@ -178,8 +178,8 @@ func crestTests() {
         // Marching squares draws a loop only if a node lies inside it, and
         // no node is at the zero, so every level below the nearest node's
         // value went missing, and which levels those were depended on the
-        // lattice. Seeded from the zero, every requested level is drawn at
-        // every lattice, each ring on its level, each cut to the window on
+        // grid. Seeded from the zero, every requested level is drawn at
+        // every grid, each ring on its level, each cut to the window on
         // the front edge where the zero sits.
         let domain = Domain(real: Interval(lo: -3.8, hi: -2.2), imag: Interval(lo: 0, hi: 0.8))
         var levelsSeen: [Int: [Double]] = [:]
@@ -221,7 +221,7 @@ func crestTests() {
         let l48 = levelsSeen[48]!.map { Int(($0 * 100).rounded()) }
         let l96 = levelsSeen[96]!.map { Int(($0 * 100).rounded()) }
         Check.expect(l24 == l48 && l48 == l96 && l24.first == 4,
-                     "the same levels at every lattice, down to the lowest asked for",
+                     "the same levels at every grid, down to the lowest asked for",
                      "24: \(l24)  48: \(l48)  96: \(l96)")
     }
 
@@ -229,7 +229,7 @@ func crestTests() {
         // 1/z capped at 2: a tower round the pole, its rim the circle
         // |z| = 1/2. The fold either side of the tower is its silhouette,
         // and it meets the rim where the rim's tangent lies along the sight
-        // line. Traced on the lattice the fold's last vertex sat on the
+        // line. Traced on the grid the fold's last vertex sat on the
         // crease at the cap's height and was dropped as cap ink, so the
         // silhouette stopped a cell short of the rim.
         let domain = Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: -1, hi: 1))
@@ -265,7 +265,7 @@ func crestTests() {
         // (z - 1)/(z + 1) over Re [-2.1, 2.1], Im [0, 1.4], capped at 3, on a
         // grid of 24: the pole at -1 sits on the front edge, and the tower's
         // right flank carries a silhouette up to the rim. Traced on the
-        // capped surface the fold's last vertex was where a lattice edge
+        // capped surface the fold's last vertex was where a grid edge
         // crossed the crease, a cell from where the fold meets the rim, and
         // the straight chord joining them cut across the cap's projection.
         // Traced on the flank the fold runs on under the cap and is ended
@@ -279,7 +279,7 @@ func crestTests() {
         func f(_ x: Double, _ y: Double) -> Double {
             ((x - 1) * (x - 1) + y * y).squareRoot() / ((x + 1) * (x + 1) + y * y).squareRoot()
         }
-        // The sight line, as the kernel of the plate projection.
+        // The line of sight, as the kernel of the plate projection.
         let o = scene.camera.plateCoordinates(of: P3(0, 0, 0))
         let cols = [P3<WorldSpace>(1, 0, 0), P3(0, 1, 0), P3(0, 0, 1)].map { scene.camera.plateCoordinates(of: $0) }
         let row0 = SIMD3(cols[0].x - o.x, cols[1].x - o.x, cols[2].x - o.x)
@@ -310,7 +310,7 @@ func crestTests() {
         }
         Check.expect(rimEnds >= 1, "a fold ends on the rim", "\(rimEnds) rim ends")
         Check.expect(worstOffRim < 1e-9, "on |f| = 3 to the last bit", String(format: "worst %.1e off", worstOffRim))
-        Check.expect(worstFacing < 1e-6, "where the flank turns edge-on, not where a lattice edge crosses the crease",
+        Check.expect(worstFacing < 1e-6, "where the flank turns edge-on, not where a grid edge crosses the crease",
                      String(format: "flank facing %.1e at a rim end", worstFacing))
         Check.expect(offFold < 1e-6, "and every flank vertex is on the fold", String(format: "facing %.1e", offFold))
         Check.expect(underCap == 0, "no fold vertex lies under the cap", "\(underCap) do")
@@ -337,7 +337,7 @@ func crestTests() {
         Check.expect(endsOff < 1e-9, "and every stroke ends on |f| = 3", String(format: "worst %.1e off", endsOff))
     }
 
-    Check.suite("a crest comes out from behind a tower where the march turns, not at the next node") {
+    Check.suite("a crest comes out from behind a tower where the traversal turns, not at the next node") {
         // tan(z) over Re [-0.7, 2.3], Im [0, 1], capped at 2.5, on a grid of
         // 24: the tower at pi/2 hides a stretch of the back edge's crest.
         // The crest is concave there, so the chord between two of its
@@ -540,8 +540,8 @@ func crestTests() {
         Check.expect(crest.allSatisfy { $0.z <= min(f($0), $0.x < 0.5 ? 2 : 4) + 1e-9 }, "and none rises above its band's cap")
     }
 
-    Check.suite("a window's ink is judged to its pixel: every end within the resolution asked for") {
-        // The preview places the ends of judged ink to a quarter of its pixel
+    Check.suite("a window's ink is tested to its pixel: every end within the resolution asked for") {
+        // The preview places the ends of tested ink to a quarter of its pixel
         // (`Scene.resolution`), and a bake to the last bit. The two drawings
         // differ only where a run ends, and there by less than what was
         // asked for, measured in the view plane: a point of either lies
@@ -605,12 +605,12 @@ func crestTests() {
                      String(format: "longest %.4f of a pixel", longestDropped / pixel))
     }
 
-    Check.suite("one surface: on a lattice of 24 the pit of 1/Γ at -3 is drawn from f alone") {
+    Check.suite("one surface: on a grid of 24 the pit of 1/Γ at -3 is drawn from f alone") {
         // The figure's own window: 1/Γ over Re [-3.8, -2.2], Im [0, 0.8],
         // capped at 2, on 24 samples across, so that a cell is a visible
         // fraction of the object and no approximation has anywhere to hide.
         // The rings are placed on f, the folds are traced on f, the crest is
-        // f's profile and the ink is judged against f, so: every ring that
+        // f's profile and the ink is tested against f, so: every ring that
         // ends on a fold ends on the drawn fold to the refiner's tolerance;
         // the crest and the rim meet to rounding; and the fold down the
         // pit's far flank ends at the zero, where the crest bottoms out.
@@ -623,18 +623,18 @@ func crestTests() {
         let cell = 1.6 / 23
         let view = scene.camera.view
         let vis = HeightfieldVisibility(heightfield: h, view: view, margin: scene.margin)
-        // The judged ink, in world space: the folds that show, and each
+        // The tested ink, in world space: the folds that show, and each
         // surface layer less what cannot be seen.
         let folds = h.visibleFolds(view: view, margin: scene.margin)
-        let judged: [(layer: Layer, paths: PolylineSet<WorldSpace>)] = scene.layers.map {
+        let visible: [(layer: Layer, paths: PolylineSet<WorldSpace>)] = scene.layers.map {
             ($0, h.visibleSurfaceInk($0.paths, view: view, margin: scene.margin))
         }
         // The pit is a bowl: the graph is convex there, so the solid under
-        // it is hollow, and a sight line tangent to the flank -- which is
+        // it is hollow, and a line of sight tangent to the flank -- which is
         // what a fold is -- runs under the graph, through the flank's own
         // material, until it leaves through the cut. No fold in a pit can
         // be seen; what bounds the rings there is the cut's crest. The
-        // traced fold runs to the zero (below), and the judge hides it:
+        // traced fold runs to the zero (below), and the test hides it:
         // what little shows lies on the cut itself.
         let traced = h.foldLines(view: view)
         func ink(_ set: PolylineSet<WorldSpace>) -> Double {
@@ -644,11 +644,11 @@ func crestTests() {
             }
         }
         // The only fold vertices that can be seen are on the cut, whose
-        // sight lines leave the solid at once: a fold is judged with no
+        // lines of sight leave the solid at once: a fold is tested with no
         // margin, since its vertices lie on f exactly.
         let offCut = folds.vertices.map(\.y).max() ?? 0
         Check.expect(traced.count >= 1 && ink(traced) > 0.5 && offCut < 1e-3 * cell,
-                     "no fold is seen in the pit: a sight line tangent to a bowl's flank runs through the flank",
+                     "no fold is seen in the pit: a line of sight tangent to a bowl's flank runs through the flank",
                      String(format: "%.3f units traced, %.3f seen, furthest %.1e from the cut",
                             ink(traced), ink(folds), offCut))
         /// Distance from a point to the nearest fold segment, in 3D.
@@ -685,13 +685,13 @@ func crestTests() {
             }
             return best
         }
-        // Every end of every judged ring, sorted by what it ends on: the
+        // Every end of every tested ring, sorted by what it ends on: the
         // domain's edge, the cap, a zero, a fold (facing zero there), or
-        // the march (hidden behind the crest). The last two are the ones
-        // the lattice used to leave short.
-        var worst = 0.0, ends = 0, worstCrest = 0.0, byMarch = 0
+        // the traversal (hidden behind the crest). The last two are the ones
+        // the grid used to leave short.
+        var worst = 0.0, ends = 0, worstCrest = 0.0, byTraversal = 0
         var kinds = (edge: 0, cap: 0, zero: 0)
-        for (layer, paths) in judged where layer.spec.liesOnSurface {
+        for (layer, paths) in visible where layer.spec.liesOnSurface {
             for i in 0..<paths.count {
                 let p = paths[path: i]
                 for end in [p.first!, p.last!] {
@@ -704,7 +704,7 @@ func crestTests() {
                         let g = toFolds(end)
                         worst = max(worst, g)
                         if g > 0.02 * cell {
-                            // On failure: the march's own account of the end
+                            // On failure: the traversal's own account of the end
                             // and of the nearest vertex of the traced fold.
                             print(String(format: "    fold-cut end (%.4f, %.4f, %.4f) %@: %.2e from folds, run of %d",
                                          end.x, end.y, end.z, layer.spec.name, g, p.count))
@@ -715,11 +715,11 @@ func crestTests() {
                             }
                         }
                     } else {
-                        byMarch += 1
+                        byTraversal += 1
                         let g = toCrestOnPlate(end)
                         worstCrest = max(worstCrest, g)
                         if g > 2 * 0.02 * cell {
-                            // On failure: the march's account of the end and of
+                            // On failure: the traversal's account of the end and of
                             // a point a hair beyond it along the ring.
                             print(String(format: "    crest-cut end (%.4f, %.4f, %.4f) %@: %.2e on plate, facing %.3f, run of %d",
                                          end.x, end.y, end.z, layer.spec.name, g, vis.facing(end.xy), p.count))
@@ -740,12 +740,12 @@ func crestTests() {
         Check.expect(ends == 0 || worst <= 0.02 * cell + 1e-9,
                      "a ring cut on a fold ends on the drawn fold, within the refiner's tolerance",
                      String(format: "%d ends, worst %.2e against %.2e", ends, worst, 0.02 * cell))
-        // Within the crest's own tolerance, and the margin the judge
+        // Within the crest's own tolerance, and the margin the test
         // forgives, which is the tolerance again.
-        Check.expect(byMarch >= 10 && worstCrest <= 2 * 0.02 * cell + 1e-9,
+        Check.expect(byTraversal >= 10 && worstCrest <= 2 * 0.02 * cell + 1e-9,
                      "every ring that passes behind the crest ends on the crest as drawn, on the plate",
                      String(format: "%d ends, worst %.2e against %.2e; %d on the edge, %d on the cap, %d at zeros",
-                            byMarch, worstCrest, 2 * 0.02 * cell, kinds.edge, kinds.cap, kinds.zero))
+                            byTraversal, worstCrest, 2 * 0.02 * cell, kinds.edge, kinds.cap, kinds.zero))
         // The crest and the rim.
         let rim = try bundle.layer("cap_outline").paths
         var rimEnds: [P3<WorldSpace>] = []

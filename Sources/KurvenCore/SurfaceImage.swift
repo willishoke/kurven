@@ -34,11 +34,11 @@ public struct SurfaceImage: Sendable {
 }
 
 public extension SurfaceImage {
-    /// Rasterize a parametric surface's lattice on the CPU.
+    /// Rasterize a parametric surface's grid on the CPU.
     ///
     /// The reference the GPU coordinate pass is held to, as the Python
-    /// Z-buffer is for the depth pass. Two triangles per lattice cell, sampled
-    /// at the frame's lattice points -- the same points `metalClip` puts pixel
+    /// Z-buffer is for the depth pass. Two triangles per grid cell, sampled
+    /// at the frame's grid points -- the same points `metalClip` puts pixel
     /// centres on -- keeping the greatest view z, and carrying the
     /// interpolated surface coordinate of whichever triangle won.
     static func rasterize(_ s: ParametricSurface, view: Transform<WorldSpace, ViewSpace>,
@@ -48,7 +48,7 @@ public extension SurfaceImage {
         let rowScale = Double(rows - 1) / frame.axis0.length
         let colScale = Double(cols - 1) / frame.axis1.length
 
-        // Every lattice vertex once, as (row, col, view z) in continuous pixel
+        // Every grid vertex once, as (row, col, view z) in continuous pixel
         // units, with its unwrapped coordinate beside it.
         var pixel: [SIMD3<Double>] = []
         var param: [SIMD2<Double>] = []

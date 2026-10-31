@@ -17,7 +17,7 @@ public enum Shaders {
         float4x4 clip;
         float2 domainLo;
         float2 domainSize;
-        uint2  lattice;
+        uint2  grid;
         uint2  gridSize;
         uint   step;
         float  cap;
@@ -113,7 +113,7 @@ public enum Shaders {
     }
 
     // ---------------------------------------------------------------------
-    // heightfield: an implicit mesh, six vertices per lattice cell
+    // heightfield: an implicit mesh, six vertices per grid cell
     // ---------------------------------------------------------------------
     //
     // No vertex buffer and no index buffer exist for the surface. The vertex id
@@ -129,7 +129,7 @@ public enum Shaders {
                                      constant float2 *region [[buffer(2)]],
                                      texture2d<float, access::read> heights [[texture(0)]])
     {
-        uint cells_x = u.lattice.x - 1;
+        uint cells_x = u.grid.x - 1;
         uint cell = vid / 6u;
         uint corner = vid % 6u;
         uint cx = cell % cells_x;
@@ -151,8 +151,8 @@ public enum Shaders {
             for (uint k = 0; k < 4u && kept; ++k) {
                 uint2 q = uint2(k & 1u, k >> 1u);
                 float2 d = u.domainLo + u.domainSize
-                    * float2(float(cx + q.x) / float(u.lattice.x - 1),
-                             float(cy + q.y) / float(u.lattice.y - 1));
+                    * float2(float(cx + q.x) / float(u.grid.x - 1),
+                             float(cy + q.y) / float(u.grid.y - 1));
                 float2 w = float2(t.linear.x * d.x + t.linear.y * d.y + t.offset.x,
                                   t.linear.z * d.x + t.linear.w * d.y + t.offset.y);
                 kept = inside_region(w, region, u.regionCount);
@@ -164,8 +164,8 @@ public enum Shaders {
         float h = min(heights.read(uint2(ix, iy)).r, u.cap);
 
         float2 d = u.domainLo + u.domainSize
-            * float2(float(cx + c.x) / float(u.lattice.x - 1),
-                     float(cy + c.y) / float(u.lattice.y - 1));
+            * float2(float(cx + c.x) / float(u.grid.x - 1),
+                     float(cy + c.y) / float(u.grid.y - 1));
         float3 world = float3(t.linear.x * d.x + t.linear.y * d.y + t.offset.x,
                               t.linear.z * d.x + t.linear.w * d.y + t.offset.y,
                               h);
@@ -274,7 +274,7 @@ public enum Shaders {
         float3 world;
     };
 
-    // A parametric surface as paper, or shaded: the lattice of `kv_param_vertex`.
+    // A parametric surface as paper, or shaded: the grid of `kv_param_vertex`.
     vertex PreviewOut kv_param_surface_vertex(uint vid [[vertex_id]],
                                               constant KVUniforms &u [[buffer(0)]],
                                               constant KVSurface &s [[buffer(6)]],
@@ -300,7 +300,7 @@ public enum Shaders {
                                         constant float2 *region [[buffer(2)]],
                                         texture2d<float, access::read> heights [[texture(0)]])
     {
-        uint cells_x = u.lattice.x - 1;
+        uint cells_x = u.grid.x - 1;
         uint cell = vid / 6u;
         uint corner = vid % 6u;
         uint cx = cell % cells_x;
@@ -315,8 +315,8 @@ public enum Shaders {
             for (uint k = 0; k < 4u && kept; ++k) {
                 uint2 q = uint2(k & 1u, k >> 1u);
                 float2 d = u.domainLo + u.domainSize
-                    * float2(float(cx + q.x) / float(u.lattice.x - 1),
-                             float(cy + q.y) / float(u.lattice.y - 1));
+                    * float2(float(cx + q.x) / float(u.grid.x - 1),
+                             float(cy + q.y) / float(u.grid.y - 1));
                 float2 w = float2(t.linear.x * d.x + t.linear.y * d.y + t.offset.x,
                                   t.linear.z * d.x + t.linear.w * d.y + t.offset.y);
                 kept = inside_region(w, region, u.regionCount);
@@ -327,8 +327,8 @@ public enum Shaders {
         uint iy = min((cy + c.y) * u.step, u.gridSize.y - 1u);
         float h = min(heights.read(uint2(ix, iy)).r, u.cap);
         float2 d = u.domainLo + u.domainSize
-            * float2(float(cx + c.x) / float(u.lattice.x - 1),
-                     float(cy + c.y) / float(u.lattice.y - 1));
+            * float2(float(cx + c.x) / float(u.grid.x - 1),
+                     float(cy + c.y) / float(u.grid.y - 1));
         float3 world = float3(t.linear.x * d.x + t.linear.y * d.y + t.offset.x,
                               t.linear.z * d.x + t.linear.w * d.y + t.offset.y, h);
 
@@ -604,7 +604,7 @@ public enum Shaders {
     }
 
     // ---------------------------------------------------------------------
-    // ink on a parametric surface: judged by where on the surface it lies
+    // ink on a parametric surface: visible by where on the surface it lies
     // ---------------------------------------------------------------------
     //
     // The bake's two tests, per fragment. Facing: on a surface that bounds a
@@ -612,7 +612,7 @@ public enum Shaders {
     // Front-most: the surface in front of the ink's centreline, at its pixel
     // or one beside it, is the ink's own neighbourhood of the surface -- a
     // tolerance of two per-pixel footprints of the coordinate texture plus a
-    // lattice cell, exactly `SurfaceVisibility.isFrontMost`. No margin, and
+    // grid cell, exactly `SurfaceVisibility.isFrontMost`. No margin, and
     // no slope allowance: neither test is about depth.
 
     struct SurfaceStrokeOut {
@@ -759,8 +759,8 @@ public enum Shaders {
         out[k++] = u.domainLo.y;
         out[k++] = u.domainSize.x;
         out[k++] = u.domainSize.y;
-        out[k++] = float(u.lattice.x);
-        out[k++] = float(u.lattice.y);
+        out[k++] = float(u.grid.x);
+        out[k++] = float(u.grid.y);
         out[k++] = float(u.gridSize.x);
         out[k++] = float(u.gridSize.y);
         out[k++] = float(u.step);

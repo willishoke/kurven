@@ -3,7 +3,7 @@ import KurvenCore
 import KurvenMath
 import KurvenLandscape
 
-/// A surface plate, described: which surface, at what lattice, with what ink.
+/// A surface plate, described: which surface, at what grid, with what ink.
 ///
 /// The value the CLI parses its flags into and the app keeps in its
 /// document, so both build a plate with one function -- `SurfacePlate.build`
@@ -61,9 +61,9 @@ public struct SurfaceRequest: Sendable, Equatable {
     }
 
     public var shape: Shape
-    /// Lattice points around `u`; `v` gets half as many (a periodic plate
+    /// Grid points around `u`; `v` gets half as many (a periodic plate
     /// sizes `v` to its rectangle instead).
-    public var lattice: Int
+    public var grid: Int
     /// Lines of constant `u` and `v`, when drawn. A plain torus has nothing
     /// else to draw; a forced torus draws them only when asked.
     public var lines: SIMD2<Int>?
@@ -74,9 +74,9 @@ public struct SurfaceRequest: Sendable, Equatable {
     /// The catalog entry this came from, for provenance and the title.
     public var name: String
 
-    public init(_ shape: Shape, lattice: Int = 1024, lines: SIMD2<Int>? = nil,
+    public init(_ shape: Shape, grid: Int = 1024, lines: SIMD2<Int>? = nil,
                 winding: Winding? = nil, style: Style = Style(), name: String = "") {
-        self.shape = shape; self.lattice = lattice; self.lines = lines
+        self.shape = shape; self.grid = grid; self.lines = lines
         self.winding = winding; self.style = style; self.name = name
     }
 
@@ -84,13 +84,13 @@ public struct SurfaceRequest: Sendable, Equatable {
     public static let projection = PlateProjection(shear: 0, xAngle: -55, zAngle: 30,
                                                    flipX: false, yScale: nil)
 
-    /// The request a drag builds while it lasts: a quarter of the lattice
+    /// The request a drag builds while it lasts: a quarter of the grid
     /// around, and a periodic function sampled at most 240 across. The full
     /// request follows when the drag ends. A forced trajectory needs no
-    /// draft: it is a winding, a vertex per cell of whatever lattice.
+    /// draft: it is a winding, a vertex per cell of whatever grid.
     public func drafted() -> SurfaceRequest {
         var r = self
-        r.lattice = min(lattice, 256)
+        r.grid = min(grid, 256)
         switch shape {
         case .torus, .forced: break
         case .sn(let m, let R, let rr, let grid):
@@ -131,7 +131,7 @@ public extension SurfaceRequest {
 
     static let windingFields: [Field] = [.slope, .turns, .strands]
 
-    /// The fields that move ink alone -- placed from the lattice, nothing of
+    /// The fields that move ink alone -- placed from the grid, nothing of
     /// the surface remade -- and so want no draft while dragged.
     static let inkFields: [Field] = windingFields + [.trajectoryTurns]
 
@@ -219,7 +219,7 @@ public extension SurfaceRequest {
 ///   - **the radii of a torus** re-place what is drawn on it: a periodic
 ///     function's contours are the function's, and move with the torus from
 ///     their coordinates;
-///   - **a forced torus's revolution** re-places its values on the lattice,
+///   - **a forced torus's revolution** re-places its values on the grid,
 ///     kept in state space, and the trajectory's states, without evaluating
 ///     the fitted series or integrating again;
 ///   - **its fit** -- system, fit length, harmonics -- fits again.
@@ -245,7 +245,7 @@ public struct SurfacePlate: Sendable {
     let forced: Forced?
 
     /// A fitted torus and what has been worked out from it, in state space:
-    /// its values on each lattice asked for.
+    /// its values on each grid asked for.
     struct Forced: Sendable {
         let fit: FitKey
         let torus: InvariantTorus
@@ -268,7 +268,7 @@ public struct SurfacePlate: Sendable {
     /// Everything the surface itself -- not what is drawn on it -- is built
     /// from: two requests with the same geometry have the same surface.
     static func geometry(_ r: SurfaceRequest) -> SurfaceRequest {
-        var g = SurfaceRequest(r.shape, lattice: r.lattice)
+        var g = SurfaceRequest(r.shape, grid: r.grid)
         switch r.shape {
         case .torus: break
         case .sn(let m, let R, let rr, _): g.shape = .sn(modulus: m, major: R, minor: rr, grid: 0)
@@ -316,7 +316,7 @@ public struct SurfacePlate: Sendable {
             }
         }
         /// The winding, reused when neither the surface nor it moved. Placed
-        /// from the lattice, so a new slope costs its own vertices and
+        /// from the grid, so a new slope costs its own vertices and
         /// nothing of the surface's.
         func winding(on surface: ParametricSurface) -> Layer? {
             request.winding.map { w in
@@ -335,7 +335,7 @@ public struct SurfacePlate: Sendable {
         var revolution: Revolution?, embedded = true, forced: Forced?
         switch request.shape {
         case .torus(let R, let r):
-            let n = request.lattice
+            let n = request.grid
             surface = kept?.surface
                 ?? ParametricSurface.torus(major: R, minor: r, samples: (n, max(n / 2, 8)))
             layers = lines(on: surface, resolution: 4 * n).map { [$0] } ?? []
@@ -345,14 +345,14 @@ public struct SurfacePlate: Sendable {
             if let previous, let key = contours(request), contours(previous.request) == key {
                 // The same contours: as they are, or re-placed on new radii.
                 let old = PeriodicTorus.Plate(surface: previous.surface, layers: previous.layers)
-                plate = kept != nil ? old : old.placed(major: R, minor: r, lattice: request.lattice)
+                plate = kept != nil ? old : old.placed(major: R, minor: r, grid: request.grid)
             } else if case .sn(let m, _, _, let grid) = request.shape {
                 plate = try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r,
-                                                   resolution: grid, lattice: request.lattice)
+                                                   resolution: grid, grid: request.grid)
             } else if case .periodic(let expression, let periods, _, _, let grid) = request.shape {
                 plate = try PeriodicTorus.plate(expression, periods: (periods.x, periods.y),
                                                 major: R, minor: r, resolution: grid,
-                                                lattice: request.lattice)
+                                                grid: request.grid)
             } else { fatalError("unreachable") }
             surface = plate.surface
             // Their own folds come with them; the style's replace them below.
@@ -375,18 +375,18 @@ public struct SurfacePlate: Sendable {
             let torus = state.torus
             let e = Revolution.fitting(torus, radial: radial, axial: axial, radius: radius)
             revolution = e
-            let lattice = (request.lattice, request.lattice / 2)
+            let grid = (request.grid, request.grid / 2)
             if let kept {
                 surface = kept.surface
                 embedded = kept.embedded
             } else {
-                let values = state.values[lattice.0] ?? torus.values(lattice: lattice)
-                // The lattice asked for now, and the largest before it: the
+                let values = state.values[grid.0] ?? torus.values(grid: grid)
+                // The grid asked for now, and the largest before it: the
                 // one a drag's drafts return to.
-                let largest = state.values.keys.max().map { max($0, lattice.0) } ?? lattice.0
+                let largest = state.values.keys.max().map { max($0, grid.0) } ?? grid.0
                 state.values = state.values.filter { $0.key == largest }
-                state.values[lattice.0] = values
-                let placed = torus.surface(e, lattice: lattice, values: values)
+                state.values[grid.0] = values
+                let placed = torus.surface(e, grid: grid, values: values)
                 surface = placed.surface
                 embedded = placed.embedded
             }
@@ -394,7 +394,7 @@ public struct SurfacePlate: Sendable {
             forced = state
 
             // The trajectory is the winding at the rotation number, placed
-            // from the lattice: kept when the surface and its turns are.
+            // from the grid: kept when the surface and its turns are.
             var sameInk = false
             if kept != nil, case .forced(_, _, _, _, _, _, turns)? = previous?.request.shape {
                 sameInk = true
@@ -402,7 +402,7 @@ public struct SurfacePlate: Sendable {
             let old = sameInk ? kept?.layers.first { $0.spec.name == "trajectory" } : nil
             layers = [scaffold("trajectory", .trajectory, style.trajectory,
                                old?.paths ?? torus.trajectory(on: surface, turns: turns))]
-            if let l = lines(on: surface, resolution: 2 * request.lattice) { layers.append(l) }
+            if let l = lines(on: surface, resolution: 2 * request.grid) { layers.append(l) }
         }
         if let w = winding(on: surface) { layers.append(w) }
         // The outline and inner silhouettes, derived per camera.

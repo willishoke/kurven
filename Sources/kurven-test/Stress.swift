@@ -13,11 +13,11 @@ import KurvenLandscape
 // on a steep flank or an edge-on wall exceeds any margin, and the span
 // changes with the resolution -- and the rules here are built so that no
 // pixel is consulted: the facing of the surface the ink lies on, and the
-// march up the sight line through the drawn solid (`SightMarch`), which is
+// traversal up the line of sight through the drawn solid (`GridTraversal`), which is
 // exact because the drawn solid is piecewise linear. So the suites ask the
 // strongest questions such a rule can be asked: the same bake at every
 // depth resolution, the same drawing scaled when the plate is scaled, and
-// on a lattice too coarse for any approximation to hide in, agreement with
+// on a grid too coarse for any approximation to hide in, agreement with
 // a brute-force ray cast against the triangles the depth pass draws.
 
 /// The ray from `origin` along `direction` against every triangle of
@@ -49,11 +49,11 @@ func firstHit(_ mesh: Mesh<WorldSpace>, from origin: SIMD3<Double>,
 }
 
 /// The drawn solid of a one-tile, uncut heightfield as explicit triangles:
-/// the lattice's cells as the rasterizer splits them, clamped at the
+/// the grid's cells as the rasterizer splits them, clamped at the
 /// vertices, except that a triangle the cap cuts is replaced by its rim
 /// pieces (`Mesh.capRim`), so the surface is exactly min(interpolated, cap);
 /// plus wall curtains down to `base` and a floor. This is the boundary of
-/// what the depth pass draws, and a sight line that is inside the solid
+/// what the depth pass draws, and a line of sight that is inside the solid
 /// anywhere crosses one of these triangles.
 func drawnTriangles(_ h: Heightfield, base: Double) -> Mesh<WorldSpace> {
     let s = h.surface, g = s.height
@@ -122,8 +122,8 @@ func drawnTriangles(_ h: Heightfield, base: Double) -> Mesh<WorldSpace> {
 /// stretch of the line over the footprint, and the facet's gap at its ends,
 /// which is where a linear gap is least. The start of the line counts only
 /// when `startInside`. Brute force over the triangles, sharing nothing
-/// with the march.
-func underSomeFacet(_ mesh: Mesh<WorldSpace>, from origin: SIMD3<Double>,
+/// with the traversal.
+func underSomeTriangle(_ mesh: Mesh<WorldSpace>, from origin: SIMD3<Double>,
                     along direction: SIMD3<Double>, by margin: Double, startInside: Bool,
                     upTo: Double = .infinity) -> Bool {
     let o = SIMD2(origin.x, origin.y), d = SIMD2(direction.x, direction.y)
@@ -169,10 +169,10 @@ func underSomeFacet(_ mesh: Mesh<WorldSpace>, from origin: SIMD3<Double>,
 /// Whether a point is under the drawn surface, or on it to within
 /// `tolerance`: under some facet whose footprint holds it.
 func underSurface(_ mesh: Mesh<WorldSpace>, _ p: SIMD3<Double>, tolerance: Double) -> Bool {
-    underSomeFacet(mesh, from: p, along: SIMD3(0, 0, 1), by: -tolerance, startInside: true, upTo: 0)
+    underSomeTriangle(mesh, from: p, along: SIMD3(0, 0, 1), by: -tolerance, startInside: true, upTo: 0)
 }
 
-/// The oracle for the march, brute force over the drawn triangles and
+/// The oracle for the traversal, brute force over the drawn triangles and
 /// sharing nothing with it. A point that starts inside the solid (strictly
 /// over the domain) is in its own surface's neighbourhood until the line
 /// first crosses out: there it is hidden only if it lies under some facet
@@ -186,19 +186,19 @@ func exactlyHidden(_ mesh: Mesh<WorldSpace>, from p: SIMD3<Double>, along toward
     if underSurface(mesh, p, tolerance: 1e-9 * cell) {
         exit = firstHit(mesh, from: p, along: toward, after: 1e-10) ?? .infinity
     }
-    if underSomeFacet(mesh, from: p, along: toward, by: margin, startInside: strictlyInside, upTo: exit) {
+    if underSomeTriangle(mesh, from: p, along: toward, by: margin, startInside: strictlyInside, upTo: exit) {
         return true
     }
     return firstHit(mesh, from: p, along: toward, after: max(exit, reach) + 1e-10) != nil
 }
 
-/// A small heightfield with random heights, for the lattice tests.
-/// Whether f hides `p` from the eye, by walking the sight line in steps of
+/// A small heightfield with random heights, for the grid tests.
+/// Whether f hides `p` from the eye, by walking the line of sight in steps of
 /// a sixty-fourth of a cell and bisecting each crossing of the surface it
-/// finds, under the march's own meaning of the margin: in its own surface's
+/// finds, under the traversal's own meaning of the margin: in its own surface's
 /// neighbourhood from the start, the line is forgiven the margin
 /// perpendicular to the surface; once it has been outside, being inside at
-/// or beyond the margin's reach is occlusion. The oracle for `SightMarch`
+/// or beyond the margin's reach is occlusion. The oracle for `GridTraversal`
 /// with the function at hand.
 func denselyHidden(_ h: Heightfield, magnitude: ContourRefine.Magnitude, from p: SIMD3<Double>,
                    along toward: SIMD3<Double>, margin: Double, perUnit: Double, cell: Double,
@@ -218,8 +218,8 @@ func denselyHidden(_ h: Heightfield, magnitude: ContourRefine.Magnitude, from p:
                hi: SIMD2(max(dom.real.lo, dom.real.hi), max(dom.imag.lo, dom.imag.hi)))
     func gaps(_ t: Double) -> (overF: Double, overCap: Double, cosine: Double)? {
         let q = P2<WorldSpace>(p.x + t * d.x, p.y + t * d.y)
-        // Nothing is drawn outside the domain's box: the march stops at the
-        // lattice's edge, and f beyond it is not the solid.
+        // Nothing is drawn outside the domain's box: the traversal stops at the
+        // grid's edge, and f beyond it is not the solid.
         guard q.x >= box.lo.x, q.x <= box.hi.x, q.y >= box.lo.y, q.y <= box.hi.y,
               h.region.contains(q) else { return nil }
         let dq = P2<DomainSpace>(q.x, q.y)
@@ -237,14 +237,14 @@ func denselyHidden(_ h: Heightfield, magnitude: ContourRefine.Magnitude, from p:
     }
     var outsideYet = false
     let tEps = 1e-9 * cell
-    // As the march: a point on the solid's boundary -- the domain's edge --
-    // is judged only from where the line goes next.
+    // As the traversal: a point on the solid's boundary -- the domain's edge --
+    // is tested only from where the line goes next.
     let strictlyInside = p.x > box.lo.x + 1e-9 && p.x < box.hi.x - 1e-9
         && p.y > box.lo.y + 1e-9 && p.y < box.hi.y - 1e-9
     func hidden(_ t: Double, _ g: (overF: Double, overCap: Double, cosine: Double)?) -> Bool {
         let zEps = t > tEps ? 0 : 1e-9 * cell
         guard inside(g, zEps: zEps), let g else {
-            // As the march: outside by less than the margin is within the
+            // As the traversal: outside by less than the margin is within the
             // surface's skin, not outside it.
             if let g {
                 let clearance = g.overF > g.overCap ? g.overF * g.cosine : g.overCap
@@ -271,7 +271,7 @@ func denselyHidden(_ h: Heightfield, magnitude: ContourRefine.Magnitude, from p:
     while t < tMax, left < 100_000 {
         let tn = t + step
         let g = gaps(tn)
-        // A crossing of the surface between the two: bisect it and judge
+        // A crossing of the surface between the two: bisect it and test
         // just inside.
         if inside(previous, zEps: 0) != inside(g, zEps: 0) {
             var lo = t, hi = tn
@@ -283,8 +283,8 @@ func denselyHidden(_ h: Heightfield, magnitude: ContourRefine.Magnitude, from p:
             let tc = insideLo ? lo : hi
             if hidden(tc, gaps(tc)) { return tc }
         }
-        // Leaving the region between the two: the march judges the exit
-        // itself, so the cast does too -- bisected, and judged a hair
+        // Leaving the region between the two: the traversal tests the exit
+        // itself, so the cast does too -- bisected, and tested a hair
         // inside, where a line passing under a crest is inside the solid --
         // before the sample beyond it, which is off the region.
         if previous != nil, g == nil {
@@ -302,7 +302,7 @@ func denselyHidden(_ h: Heightfield, magnitude: ContourRefine.Magnitude, from p:
     return nil
 }
 
-func randomLattice(cells: Int, seed: UInt64, caps: Caps, amplitude: Double = 3) -> Heightfield {
+func randomHeightfield(cells: Int, seed: UInt64, caps: Caps, amplitude: Double = 3) -> Heightfield {
     let n = cells + 1
     let rng = SplitMix(seed: seed)
     let domain = Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: -1.5, hi: 0.5))
@@ -360,7 +360,7 @@ func stressTests() {
         // The steep case: erf under a cap of 14 over a four-unit window,
         // where the depth test lost a third of the contour ink to pixel
         // span. The drawing is still the same at every resolution, and the
-        // ink the judge removes is removed by the solid, not by a pixel.
+        // ink the test removes is removed by the solid, not by a pixel.
         var steep = LandscapeRequest(preset: Catalog.native.preset("erf")!, resolution: 240)
         steep.domain = Domain(real: Interval(lo: -2, hi: 2), imag: Interval(lo: -2, hi: 2))
         steep.caps = .uniform(14)
@@ -373,9 +373,9 @@ func stressTests() {
         Check.expect(same, "the steep plate too: 64 px and 4096 px bake the same strokes")
         // What the solid hides of the facing contour ink, and why: ink
         // behind a nearer flank, or ink under its own drawn surface by more
-        // than the margin -- the lattice's interpolation gap, which a finer
-        // lattice closes and the margin is for. Reported, since neither
-        // number is a target; the floor only says the march is not
+        // than the margin -- the grid's interpolation gap, which a finer
+        // grid closes and the margin is for. Reported, since neither
+        // number is a target; the floor only says the traversal is not
         // erasing the plate.
         let h = steepScene.heightfield!
         let vis = HeightfieldVisibility(heightfield: h, view: steepScene.camera.view, margin: steepScene.margin)
@@ -393,28 +393,28 @@ func stressTests() {
                             kept, facingOnly, behind, buried))
     }
 
-    Check.suite("stress: on a real plate the march is the brute-force ray cast") {
-        // rgamma's every facing contour vertex, the march against the
+    Check.suite("stress: on a real plate the traversal is the brute-force ray cast") {
+        // rgamma's every facing contour vertex, the traversal against the
         // perpendicular-gap cast over the plate's drawn triangles at the
         // plate's margin, and against the depth buffer the bake used to
-        // judge by. The pit at -4, a cone of slope 24 cut by the front
+        // test by. The pit at -4, a cone of slope 24 cut by the front
         // wall, is reported on its own: its far wall through the notch lies
         // partly behind the pit's own side under the plate's diagonal sight
         // line, which a depth buffer mostly misses -- the wall rasterizes
-        // to slivers -- and which no vertical tolerance could judge.
+        // to slivers -- and which no vertical tolerance could test.
         let preset = Catalog.native.preset("rgamma")!
         let bundle = try NativeLandscape.build(LandscapeRequest(preset: preset, resolution: 240))
         let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
-        // The lattice judge: the plate without its function, whose solid is
+        // The grid test: the plate without its function, whose solid is
         // the drawn triangles the cast is against. With the function the
-        // judge's solid is f (below).
+        // test's solid is f (below).
         let withF = scene.heightfield!
         let h = Heightfield(surface: withF.surface, occluder: withF.occluder, tiles: withF.tiles,
                             region: withF.region, step: withF.step)
         let view = scene.camera.view
         let mesh = drawnTriangles(h, base: 0)
         let vis = HeightfieldVisibility(heightfield: h, view: view, margin: scene.margin)
-        let toward = -view.sightLine
+        let toward = -view.projectionDirection
         let c = view.m.columns
         let perUnit = abs(simd_dot(SIMD3(c.0.z, c.1.z, c.2.z), toward))
         let d = h.surface.domain
@@ -423,14 +423,14 @@ func stressTests() {
         let depth = try MetalRenderer().bake(scene, options: BakeOptions(resolution: 1000)).depth
         let g = h.surface.height
         let cell = max(abs(g.domain.real.length) / Double(g.width - 1), abs(g.domain.imag.length) / Double(g.height - 1))
-        var total = 0, marchHidden = 0, castHidden = 0, disagree = 0, depthHidden = 0
-        var pit = (total: 0, march: 0, cast: 0, depth: 0)
+        var total = 0, traversalHidden = 0, castHidden = 0, disagree = 0, depthHidden = 0
+        var pit = (total: 0, traversal: 0, cast: 0, depth: 0)
         let clock = ContinuousClock()
         let elapsed = clock.measure {
             for layer in scene.layers where layer.spec.liesOnSurface {
                 let vertices = layer.paths.vertices
                 let facing = vertices.map { vis.facing($0.xy) > 0 }
-                let march = vertices.map { vis.isClear($0) }
+                let traversal = vertices.map { vis.isClear($0) }
                 let cast = Heightfield.parallelMap(vertices) { v in
                     let strictlyInside = v.x > box.lo.x + 1e-9 && v.x < box.hi.x - 1e-9
                         && v.y > box.lo.y + 1e-9 && v.y < box.hi.y - 1e-9
@@ -441,13 +441,13 @@ func stressTests() {
                     total += 1
                     let q = view(v)
                     let byDepth = q.z + scene.margin > depth.depth(under: q.xy)
-                    if !march[k] { marchHidden += 1 }
+                    if !traversal[k] { traversalHidden += 1 }
                     if !cast[k] { castHidden += 1 }
                     if !byDepth { depthHidden += 1 }
-                    if march[k] != cast[k] { disagree += 1 }
+                    if traversal[k] != cast[k] { disagree += 1 }
                     if v.x > -4.3, v.x < -3.7, v.y < 0.6 {
                         pit.total += 1
-                        if !march[k] { pit.march += 1 }
+                        if !traversal[k] { pit.traversal += 1 }
                         if !cast[k] { pit.cast += 1 }
                         if !byDepth { pit.depth += 1 }
                     }
@@ -455,37 +455,37 @@ func stressTests() {
             }
         }
         Check.expect(disagree == 0 && total > 5000,
-                     "the march and the cast agree on every facing contour vertex",
-                     "\(total) vertices; march hides \(marchHidden), cast hides \(castHidden), the 1000 px depth buffer hid \(depthHidden)")
-        Check.expect(pit.march == pit.cast && pit.march > pit.depth,
+                     "the traversal and the cast agree on every facing contour vertex",
+                     "\(total) vertices; traversal hides \(traversalHidden), cast hides \(castHidden), the 1000 px depth buffer hid \(depthHidden)")
+        Check.expect(pit.traversal == pit.cast && pit.traversal > pit.depth,
                      "in the pit at -4 both hide what the depth buffer missed",
-                     "\(pit.total) facing vertices: march \(pit.march), cast \(pit.cast), depth buffer \(pit.depth)")
+                     "\(pit.total) facing vertices: traversal \(pit.traversal), cast \(pit.cast), depth buffer \(pit.depth)")
         Check.expect(elapsed < .seconds(60), "in reasonable time", "\(elapsed)")
 
-        // With the function, the judge's solid is f: the march samples the
-        // sight line at the lattice's crossings and reads f there, and is
+        // With the function, the test's solid is f: the traversal samples the
+        // line of sight at the grid's crossings and reads f there, and is
         // held to a cast that walks the line in steps of a sixty-fourth of
-        // a cell and bisects every crossing of f. What the march can miss
+        // a cell and bisects every crossing of f. What the traversal can miss
         // is a dip of f within one cell along the line; the count is the
         // measure of that, on the real plate.
         let visF = HeightfieldVisibility(heightfield: withF, view: view, margin: scene.margin)
         let magnitude = withF.refine!.magnitude!
-        var totalF = 0, marchF = 0, castF = 0, disagreeF = 0
+        var totalF = 0, traversalF = 0, castF = 0, disagreeF = 0
         var examples = ""
         let elapsedF = clock.measure {
             for layer in scene.layers where layer.spec.liesOnSurface {
                 let vertices = layer.paths.vertices
                 let facing = vertices.map { visF.facing($0.xy) > 0 }
-                let march = vertices.map { visF.isClear($0) }
+                let traversal = vertices.map { visF.isClear($0) }
                 let cast = Heightfield.parallelMap(vertices) { v in
                     denselyHidden(withF, magnitude: magnitude, from: v.v, along: toward,
                                   margin: visF.margin, perUnit: perUnit, cell: cell)
                 }
                 for k in vertices.indices where facing[k] {
                     totalF += 1
-                    if !march[k] { marchF += 1 }
+                    if !traversal[k] { traversalF += 1 }
                     if cast[k] != nil { castF += 1 }
-                    if march[k] != (cast[k] == nil) {
+                    if traversal[k] != (cast[k] == nil) {
                         disagreeF += 1
                         if disagreeF == 1 {
                             let v = vertices[k]
@@ -497,16 +497,16 @@ func stressTests() {
                                 profile += String(format: " %+.3f", v.z + t * toward.z - min(u, withF.surface.caps.height(atX: q.x)))
                             }
                             print(profile)
-                            print("    the march: " + visF.explain(v).replacingOccurrences(of: "\n", with: "\n    "))
+                            print("    the traversal: " + visF.explain(v).replacingOccurrences(of: "\n", with: "\n    "))
                             _ = denselyHidden(withF, magnitude: magnitude, from: v.v, along: toward, margin: visF.margin,
                                               perUnit: perUnit, cell: cell) { print("    " + $0) }
                         }
                         if disagreeF <= 6 {
                             let v = vertices[k]
-                            examples += String(format: " [(%.3f, %.3f, %.3f) cap %.2f |f| %.4f: march %@, cast %@]",
+                            examples += String(format: " [(%.3f, %.3f, %.3f) cap %.2f |f| %.4f: traversal %@, cast %@]",
                                                v.x, v.y, v.z, withF.surface.caps.height(atX: v.x),
                                                magnitude(P2<DomainSpace>(v.x, v.y)),
-                                               march[k] ? "clear" : "hidden",
+                                               traversal[k] ? "clear" : "hidden",
                                                cast[k].map { String(format: "hides at t = %.4f cells", $0 / cell) } ?? "clear")
                         }
                     }
@@ -514,22 +514,22 @@ func stressTests() {
             }
         }
         Check.expect(disagreeF == 0 && totalF > 5000,
-                     "with the function, the march against f is the dense cast against f",
-                     "\(totalF) vertices; march hides \(marchF), cast hides \(castF), \(disagreeF) disagree" + examples)
+                     "with the function, the traversal against f is the dense cast against f",
+                     "\(totalF) vertices; traversal hides \(traversalF), cast hides \(castF), \(disagreeF) disagree" + examples)
         Check.expect(elapsedF < .seconds(120), "in reasonable time", "\(elapsedF)")
     }
 
     Check.suite("stress: scaling the plate scales the drawing") {
         // The whole plate -- heights, domain, caps, walls, ink and margin --
-        // scaled by a power of two, so every float scales exactly; the judged
-        // ink must be the judged ink scaled, vertex for vertex. A rule with a
+        // scaled by a power of two, so every float scales exactly; the tested
+        // ink must be the tested ink scaled, vertex for vertex. A rule with a
         // pixel or an absolute tolerance in it would not pass this; one that
         // is geometry alone cannot fail it.
         let preset = Catalog.native.preset("rgamma")!
         let bundle = try NativeLandscape.build(LandscapeRequest(preset: preset, resolution: 240))
         let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
         let h = scene.heightfield!
-        let judged = scene.judgedLayers()
+        let visible = scene.visibleLayers()
         for s in [8.0, 0.125] {
             let g = h.surface.height
             let domain = Domain(real: Interval(lo: g.domain.real.lo * s, hi: g.domain.real.hi * s),
@@ -553,7 +553,7 @@ func stressTests() {
             }
             // The scaled plate is the scaled function: the refiner's |f| and
             // its zeros, read at the point scaled back, scaled up again. The
-            // contours are not re-derived under the judge, so they pass.
+            // contours are not re-derived under the test, so they pass.
             let refine: ContourRefine? = h.refine.map { r -> ContourRefine in
                 let magnitude: ContourRefine.Magnitude? = r.magnitude.map { m -> ContourRefine.Magnitude in
                     { (p: P2<DomainSpace>) -> Double in s * m(P2<DomainSpace>(p.x / s, p.y / s)) }
@@ -568,9 +568,9 @@ func stressTests() {
             let scaled = Scene(surface: surface, occluder: occluder, tiles: h.tiles, region: h.region,
                                step: h.step, layers: layers, camera: scene.camera, margin: scene.margin * s,
                                refine: refine)
-            let judgedScaled = scaled.judgedLayers()
+            let visibleScaled = scaled.visibleLayers()
             var worst = 0.0, structure = true
-            for ((layer, a), (_, b)) in zip(judged, judgedScaled) {
+            for ((layer, a), (_, b)) in zip(visible, visibleScaled) {
                 guard a.offsets == b.offsets else {
                     structure = false
                     Check.expect(false, "x\(s): \(layer.spec.name) has the same runs",
@@ -583,25 +583,25 @@ func stressTests() {
             }
             Check.expect(structure && worst < 1e-6,
                          "x\(s): every layer is the drawing scaled, vertex for vertex",
-                         String(format: "worst |Δ| / scale %.1e over %d layers", worst, judged.count))
+                         String(format: "worst |Δ| / scale %.1e over %d layers", worst, visible.count))
         }
     }
 
-    Check.suite("stress: on a 4x4 lattice the march is the brute-force ray cast, exactly") {
-        // Heights drawn at random on a lattice of four cells a side: every
+    Check.suite("stress: on a 4x4 grid the traversal is the brute-force ray cast, exactly") {
+        // Heights drawn at random on a grid of four cells a side: every
         // cell is a different slope, every crossing is a crease, and no
-        // approximation has anywhere to hide. The march is held to a ray
-        // cast against the triangles the depth pass draws -- the lattice's
+        // approximation has anywhere to hide. The traversal is held to a ray
+        // cast against the triangles the depth pass draws -- the grid's
         // cells as it splits them, the cap's rim pieces, the walls -- at
-        // points on the drawn surface, on its lattice lines, and anywhere in
+        // points on the drawn surface, on its grid lines, and anywhere in
         // the box; under every camera; at three margins. The oracle is
         // `exactlyHidden`: brute force over the triangles, with the margin
-        // meaning what the march means by it, and at a margin of zero also
+        // meaning what the traversal means by it, and at a margin of zero also
         // the plain question of whether the ray crosses a triangle at all.
         // The two must agree wherever the oracle's own answer is not within
         // rounding of changing.
         for (label, caps) in [("uncut", Caps.none), ("capped at 2.2", .uniform(2.2))] {
-            let field = randomLattice(cells: 4, seed: 0xC0FFEE, caps: caps)
+            let field = randomHeightfield(cells: 4, seed: 0xC0FFEE, caps: caps)
             let base = -1.0
             let mesh = drawnTriangles(field, base: base)
             let rng = SplitMix(seed: 42)
@@ -617,7 +617,7 @@ func stressTests() {
                 points.append(P3(rng.next(d.real.lo, d.real.hi), rng.next(d.imag.lo, d.imag.hi),
                                  rng.next(base, 4)))
             }
-            // On the lattice lines and diagonals exactly, where two facets meet.
+            // On the grid lines and diagonals exactly, where two facets meet.
             for _ in 0..<100 {
                 let i = Double(Int(rng.next(0, 4.999))), t = rng.next(0, 4)
                 let onX = rng.next(0, 1) < 0.5
@@ -630,7 +630,7 @@ func stressTests() {
             let clock = ContinuousClock()
             let elapsed = clock.measure {
                 for (name, view) in stressCameras() {
-                    let toward = -view.sightLine
+                    let toward = -view.projectionDirection
                     let c = view.m.columns
                     let perUnit = abs(simd_dot(SIMD3(c.0.z, c.1.z, c.2.z), toward))
                     for margin in [0.0, 1e-6, 0.05] {
@@ -662,7 +662,7 @@ func stressTests() {
                                 if disagree <= 6 {
                                     let under = underSurface(mesh, p.v, tolerance: 1e-9 * 0.5)
                                     let exit = under ? (firstHit(mesh, from: p.v, along: toward, after: 1e-10) ?? .infinity) : 0
-                                    let perp = underSomeFacet(mesh, from: p.v, along: toward, by: margin, startInside: strictlyInside, upTo: exit)
+                                    let perp = underSomeTriangle(mesh, from: p.v, along: toward, by: margin, startInside: strictlyInside, upTo: exit)
                                     let ray = firstHit(mesh, from: p.v, along: toward, after: max(exit, margin / perUnit) + 1e-10)
                                     print(String(format: "    DISAGREE %@ m=%g at (%.4f, %.4f, %.4f) inside %@: oracle %@ (under %@ exit %.4f perp %@ rayHit %@ reach %.4f) drawn %.4f",
                                                  name, margin, p.x, p.y, p.z, strictlyInside ? "yes" : "no", truth ? "hidden" : "seen",
@@ -679,29 +679,29 @@ func stressTests() {
                 }
             }
             Check.expect(disagree == 0 && compared > 40_000,
-                         "\(label): the march agrees with the ray cast at every decidable point",
+                         "\(label): the traversal agrees with the ray cast at every decidable point",
                          "\(disagree) of \(compared) disagree, \(undecidable) within rounding of the margin \(example)")
             Check.expect(elapsed < .seconds(60), "\(label): in reasonable time", "\(elapsed)")
         }
     }
 
-    Check.suite("stress: the facing read off the lattice converges on the drawn facets") {
+    Check.suite("stress: the facing read off the grid converges on the drawn facets") {
         // The one approximation left in the predicate, measured rather than
         // hidden. Ink on the surface is cut by the central-difference normal
         // -- the normal the fold lines are traced from, so a contour ends on
-        // the silhouette as drawn -- while the solid it is marched through is
-        // the triangulated lattice, whose facets turn at lattice lines. The
+        // the silhouette as drawn -- while the solid it is traversed through is
+        // the triangulated grid, whose facets turn at grid lines. The
         // two can disagree about which way the surface faces only within a
         // cell of a fold, and that band shrinks with the cell: the
         // disagreement, as a fraction of random surface points, must fall
-        // as the lattice is refined and be small at a drawing lattice. On a
-        // 4x4 lattice it is large, and that is a fact about central
+        // as the grid is refined and be small at a drawing grid. On a
+        // 4x4 grid it is large, and that is a fact about central
         // differences on four cells, not a tolerance chosen to pass.
         func height(_ x: Double, _ y: Double) -> Double {
             2.5 * exp(-(x * x + 0.6 * y * y) / 0.3) + 0.4 * sin(3 * x) * cos(2 * y)
         }
         let view = testCamera(elevation: -40, azimuth: 30)
-        let sight = view.sightLine
+        let sight = view.projectionDirection
         var rates: [(cells: Int, rate: Double)] = []
         for cells in [4, 8, 16, 32, 64, 128] {
             let n = cells + 1
@@ -737,7 +737,7 @@ func stressTests() {
         let text = rates.map { String(format: "%d: %.2f%%", $0.cells, 100 * $0.rate) }.joined(separator: "  ")
         var falls = true
         for (a, b) in zip(rates, rates.dropFirst()) where b.rate > 0.75 * a.rate && a.rate > 0.002 { falls = false }
-        Check.expect(falls, "the disagreement falls as the lattice is refined", text)
+        Check.expect(falls, "the disagreement falls as the grid is refined", text)
         Check.expect(rates.last!.rate < 0.01, "and is under 1% of surface points at 128 cells", text)
     }
 }

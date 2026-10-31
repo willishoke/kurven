@@ -6,7 +6,7 @@ import KurvenMath
 ///
 /// A function with periods ω₁ and ω₂ lives on the rectangle they span with
 /// opposite edges identified, and that rectangle, rolled up both ways, is a
-/// torus. The elliptic plate reflects one tile across a lattice to show the
+/// torus. The elliptic plate reflects one tile across a grid to show the
 /// same thing flat; here the contours close up on themselves instead.
 ///
 /// The contours are the landscape's own: the function sampled over the
@@ -20,7 +20,7 @@ import KurvenMath
 /// plane's interior like any other, with the whole fan of lines round it to
 /// be placed. Each curve is then cut to the rectangle and carried into it by
 /// whole periods, and that point of the rectangle is each vertex's surface
-/// coordinate: where it lies on the torus and what its visibility is judged
+/// coordinate: where it lies on the torus and what its visibility is tested
 /// by. Where a curve crosses the rectangle's edge it ends on the edge, and
 /// its continuation, a copy of the same curve one period over, begins on the
 /// opposite edge at the same point of the torus.
@@ -47,15 +47,15 @@ public enum PeriodicTorus {
         /// × `imag` copies of the ink. The ink is periodic, so each copy is
         /// a translation of the one computed; the bigger torus is the
         /// quotient of the plane by the sublattice, and this is the
-        /// pullback along the covering. The lattice keeps the base's
-        /// samples per period around the ring, up to `lattice` in all.
-        public func repeated(real: Int, imag: Int = 1, lattice: Int) -> Plate {
+        /// pullback along the covering. The grid keeps the base's
+        /// samples per period around the ring, up to `grid` in all.
+        public func repeated(real: Int, imag: Int = 1, grid: Int) -> Plate {
             guard real >= 1, imag >= 1, real * imag > 1 else { return self }
             let pu = surface.u.range.length, pv = surface.v.range.length
             let domain = Domain(real: Interval(lo: surface.u.range.lo, hi: surface.u.range.lo + Double(real) * pu),
                                 imag: Interval(lo: surface.v.range.lo, hi: surface.v.range.lo + Double(imag) * pv))
             let torus = PeriodicTorus.torus(over: domain, major: radii.major, minor: radii.minor,
-                                            samples: (u: min(surface.u.samples * real, lattice),
+                                            samples: (u: min(surface.u.samples * real, grid),
                                                       v: max(surface.v.samples * imag, 32)))
             let layers = self.layers.map { layer -> Layer in
                 guard let coords = layer.paths.coords else { return layer }
@@ -100,9 +100,9 @@ public enum PeriodicTorus {
         /// The same function on a torus of other radii. The contours are the
         /// function's, which the radii do not touch: only where each vertex
         /// sits in space moves, read from its coordinate on the new torus.
-        public func placed(major R: Double, minor r: Double, lattice: Int) -> Plate {
+        public func placed(major R: Double, minor r: Double, grid: Int) -> Plate {
             let domain = Domain(real: surface.u.range, imag: surface.v.range)
-            let torus = PeriodicTorus.torus(over: domain, major: R, minor: r, lattice: lattice)
+            let torus = PeriodicTorus.torus(over: domain, major: R, minor: r, grid: grid)
             let layers = self.layers.map { layer -> Layer in
                 guard let coords = layer.paths.coords else { return layer }
                 return Layer(spec: layer.spec,
@@ -130,14 +130,14 @@ public enum PeriodicTorus {
                              periods: (real: Double, imag: Double),
                              major R: Double = 2, minor r: Double = 1,
                              resolution: Int = 600, ceiling: Double = 3,
-                             lattice: Int = 1024, capped: Bool = false) throws -> Plate {
+                             grid: Int = 1024, capped: Bool = false) throws -> Plate {
         let compiled = try KurvenMath.Expression.compile(expression)
         let domain = Domain(real: Interval(lo: origin.re, hi: origin.re + periods.real),
                             imag: Interval(lo: origin.im, hi: origin.im + periods.imag))
-        let surface = torus(over: domain, major: R, minor: r, lattice: lattice)
+        let surface = torus(over: domain, major: R, minor: r, grid: grid)
         let group = PeriodLattice(cell: domain)
 
-        // The window: the rectangle's lattice, extended `margin` cells each
+        // The window: the rectangle's grid, extended `margin` cells each
         // way and shifted by half a cell on both axes. The samples past the
         // edge are the function's own, since it is periodic, and a curve and
         // its copy one period over are computed from the same sample
@@ -260,17 +260,17 @@ public enum PeriodicTorus {
         return Plate(surface: surface, layers: layers, height: relief, ceiling: ceiling, radii: (R, r))
     }
 
-    /// The torus a rectangle of periods glues into, its lattice `lattice`
+    /// The torus a rectangle of periods glues into, its grid `grid`
     /// points around the real period and enough around the imaginary one to
     /// keep the cells square on the tube.
     static func torus(over domain: Domain, major R: Double, minor r: Double,
-                      lattice: Int) -> ParametricSurface {
+                      grid: Int) -> ParametricSurface {
         let aspect = domain.imag.length / domain.real.length
         return torus(over: domain, major: R, minor: r,
-                     samples: (lattice, max(Int(Double(lattice) * min(aspect, 1) * r / R), 32)))
+                     samples: (grid, max(Int(Double(grid) * min(aspect, 1) * r / R), 32)))
     }
 
-    /// The same torus with the lattice's samples given outright.
+    /// The same torus with the grid's samples given outright.
     static func torus(over domain: Domain, major R: Double, minor r: Double,
                       samples: (u: Int, v: Int)) -> ParametricSurface {
         ParametricSurface.torus(major: R, minor: r,
@@ -285,11 +285,11 @@ public enum PeriodicTorus {
     /// on the inner; at 1/4 the poles sit on top of the tube; at 1/2 they
     /// are on the outer equator.
     public static func jacobiSN(modulus m: Double, major R: Double = 2, minor r: Double = 1,
-                                resolution: Int = 600, lattice: Int = 1024,
+                                resolution: Int = 600, grid: Int = 1024,
                                 capped: Bool = false, turn: Double = 0) throws -> Plate {
         let K = Jacobi.quarterPeriod(m), Kp = Jacobi.quarterPeriod(1 - m)
         return try plate("sn(z, \(m))", origin: Complex(0, turn * 2 * Kp),
                          periods: (4 * K, 2 * Kp), major: R, minor: r,
-                         resolution: resolution, lattice: lattice, capped: capped)
+                         resolution: resolution, grid: grid, capped: capped)
     }
 }

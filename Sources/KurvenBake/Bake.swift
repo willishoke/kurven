@@ -76,7 +76,7 @@ public extension MetalRenderer {
     /// and buys a bake that does not depend on how it was split. A single pass
     /// skips the stitch entirely and is handed straight to the clip.
     ///
-    /// Tiles meet on pixel boundaries -- `DepthFrame.tile` splits the lattice,
+    /// Tiles meet on pixel boundaries -- `DepthFrame.tile` splits the grid,
     /// not the coordinate range -- so a coordinate lands on the same pixel
     /// however the pass was divided, and the stitched buffer has no seam.
     ///
@@ -149,12 +149,12 @@ public extension MetalRenderer {
             image.map { SurfaceVisibility(surface: s, image: $0, view: scene.camera.view) }
         }
         var layers: [(style: Style, paths: PolylineSet<PlateSpace>)] = []
-        for (layer, projected) in scene.judgedLayers(margin: margin) {
+        for (layer, projected) in scene.visibleLayers(margin: margin) {
             let clipped: PolylineSet<PlateSpace>
             if !layer.spec.clipped {
                 clipped = HiddenLine.pass(projected)
             } else if let visibility, projected.coords != nil {
-                // Ink that knows where on the surface it lies is judged by
+                // Ink that knows where on the surface it lies is tested by
                 // that, with no margin in it. An outline lies on a fold or
                 // a crease, where the normal says nothing.
                 let outline = layer.spec.role == .outline
@@ -167,8 +167,8 @@ public extension MetalRenderer {
                 // falls back to depth, at the margin.
                 clipped = HiddenLine.clip(projected, against: depth, margin: margin)
             } else {
-                // A heightfield's ink comes judged by the facing of what it
-                // lies on and by the solid (`SightMarch`); a solid's edges by
+                // A heightfield's ink comes tested by the facing of what it
+                // lies on and by the solid (`GridTraversal`); a solid's edges by
                 // their faces (`Solid.visibleEdges`). Neither consults the
                 // depth buffer, which is why the drawing is the same at every
                 // resolution: the buffer is rendered for the `depth` output
@@ -186,7 +186,7 @@ public extension MetalRenderer {
     /// Render the plate as `n x n` sub-frames and copy each into its place in
     /// one row-major array.
     ///
-    /// Tiles meet on pixel boundaries -- `DepthFrame.tile` splits the lattice,
+    /// Tiles meet on pixel boundaries -- `DepthFrame.tile` splits the grid,
     /// not the coordinate range -- so a pixel lands in the same place however
     /// the plate was divided.
     private func stitch<T>(_ frame: DepthFrame, _ n: Int,

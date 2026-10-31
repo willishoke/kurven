@@ -23,11 +23,11 @@ import KurvenDynamics
 ///     sn       radii                     6 ms      contours re-placed, not resampled
 ///              modulus                 115 ms      resampled; 65 ms while dragging
 ///              samples                 100 ms      resampled; ink only
-///     forced   ring radius              39 ms      lattice re-placed from state space;
+///     forced   ring radius              39 ms      grid re-placed from state space;
 ///                                                  7 ms while dragging
 ///              radius from, height from 32 ms      re-placed
 ///              turns                 17–36 ms      the trajectory is a winding, placed
-///                                                  from the lattice; no draft needed
+///                                                  from the grid; no draft needed
 ///              parameter lines          38 ms      the map at every line vertex
 ///              winding slope            15 ms      ink only; the trajectory's layout
 ///                                                  is kept
@@ -37,7 +37,7 @@ import KurvenDynamics
 /// it gets a stepper and a field rather than a slider. An ink edit lays out
 /// only the layer it touched -- the preview keeps every other layer's
 /// vertices from the frame before -- and ink normals are read off the
-/// lattice, not asked of the map, so a new surface costs its lattice and
+/// grid, not asked of the map, so a new surface costs its grid and
 /// little else.
 struct SurfaceSection: View {
     @Bindable var document: Document
@@ -132,7 +132,7 @@ struct SurfaceSection: View {
     }
 
     /// Whether a drag of this control builds drafts. A winding, and the
-    /// trajectory, are ink alone, placed from the lattice, so their drags
+    /// trajectory, are ink alone, placed from the grid, so their drags
     /// build the full plate each step: the surface is kept and only their
     /// vertices are made again.
     private func drafts(_ field: SurfaceRequest.Field) -> Bool {

@@ -135,7 +135,7 @@ public struct Surface: Sendable {
         return min(drawn.interpolated, drawn.cap)
     }
 
-    /// `drawnHeight` as the two numbers it is the lesser of -- the lattice's
+    /// `drawnHeight` as the two numbers it is the lesser of -- the grid's
     /// interpolated height and the cap over the point -- with the cosine of
     /// the interpolating facet's tilt, `1 / sqrt(1 + |∇h|²)`, which turns a
     /// vertical gap to that facet into a perpendicular distance.
@@ -208,7 +208,7 @@ public struct ContourRefine: Sendable {
     /// (`Heightfield.parallelMap(_:chunk:worker:_:)`): a closure's context is
     /// a reference-counted object, and with every core calling the same one
     /// the counts were the cores writing one cache line in turn -- at
-    /// eighteen threads a march cost twice its single-threaded time, and
+    /// eighteen threads a traversal cost twice its single-threaded time, and
     /// forked, a third more. Nil, a refiner that cannot be forked, is shared.
     public let fork: (@Sendable () -> ContourRefine)?
 
@@ -337,9 +337,9 @@ public extension Surface {
         for ((level, _), refined) in zip(contoured, refinedLevels) {
             for line in refined {
                 // Lifted onto f where the function is at hand: a phase line
-                // lifted to the lattice's height stands a chord's error off
+                // lifted to the grid's height stands a chord's error off
                 // the surface the rings, the folds and the crest are drawn
-                // on, and the judge hides it there or shows it floating.
+                // on, and the test hides it there or shows it floating.
                 var lifted: [P3<WorldSpace>]
                 if policy != .level, let magnitude = refine?.magnitude {
                     lifted = line.map { p in

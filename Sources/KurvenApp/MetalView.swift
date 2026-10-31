@@ -49,8 +49,8 @@ struct MetalView: NSViewRepresentable {
         weak var view: MTKView?
         private var renderer: MetalRenderer?
         private(set) var lastError: String?
-        /// The judged layout being made for the camera at rest, if one is.
-        private var judging: Task<Void, Never>?
+        /// The tested layout being made for the camera at rest, if one is.
+        private var visibility: Task<Void, Never>?
 
         init(document: Document) {
             self.document = document
@@ -119,16 +119,16 @@ struct MetalView: NSViewRepresentable {
                 options.inkWidth *= Float(view.drawableSize.width / max(view.bounds.width, 1))
                 // While the camera moves -- the view is on the display's
                 // clock -- every frame is a draft. At rest the frame is
-                // judged once the layout is in hand, and a draft until then,
+                // tested once the layout is in hand, and a draft until then,
                 // the layout made meanwhile on another thread: a landscape's
-                // judged ink is hundreds of milliseconds of CPU per camera,
+                // tested ink is hundreds of milliseconds of CPU per camera,
                 // which is a stutter on the main thread and nothing off it.
                 let moving = !view.isPaused
                 if moving {
                     options.draft = true
                 } else if !renderer.hasJudgedLines(for: scene) {
                     options.draft = true
-                    judge(scene, with: renderer)
+                    test(scene, with: renderer)
                 }
                 try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
                                            options: options,
@@ -147,20 +147,20 @@ struct MetalView: NSViewRepresentable {
             }
         }
 
-        /// Lay out the scene's judged ink on another thread, and redraw when
+        /// Lay out the scene's tested ink on another thread, and redraw when
         /// it is in hand. One at a time: a layout for a camera the user has
         /// since left is installed all the same, and the next frame, finding
         /// it is not the camera's, asks for the current one.
-        private func judge(_ scene: KurvenCore.Scene, with renderer: MetalRenderer) {
-            guard judging == nil else { return }
+        private func test(_ scene: KurvenCore.Scene, with renderer: MetalRenderer) {
+            guard visibility == nil else { return }
             let previous = renderer.laidLines(for: scene)
-            judging = Task { [weak self] in
+            visibility = Task { [weak self] in
                 let lines = await Task.detached(priority: .userInitiated) {
-                    MetalRenderer.judgedLines(for: scene, reusing: previous)
+                    MetalRenderer.visibleLines(for: scene, reusing: previous)
                 }.value
                 guard let self else { return }
                 try? renderer.install(lines, for: scene)
-                judging = nil
+                visibility = nil
                 view?.needsDisplay = true
             }
         }
@@ -202,7 +202,7 @@ final class GestureView: MTKView {
     /// Back to on-demand once nothing has happened for a quarter second -- long
     /// enough to ride out the gaps in a drag, short enough that an idle window
     /// costs nothing. One more frame then: the frames on the clock were
-    /// drafts, and the camera at rest gets its judged ink.
+    /// drafts, and the camera at rest gets its tested ink.
     func settleIfIdle() {
         guard !isPaused, CACurrentMediaTime() - lastActivity > 0.25 else { return }
         isPaused = true

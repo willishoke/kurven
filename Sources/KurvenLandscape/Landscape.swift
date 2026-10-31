@@ -197,7 +197,7 @@ public enum NativeLandscape {
     /// The same at a shape given outright, for a window that must line up
     /// sample for sample with another: `PeriodicTorus.plate` samples the
     /// plane a few cells past a period rectangle on every side, on the
-    /// rectangle's own lattice extended.
+    /// rectangle's own grid extended.
     public static func sample(_ compiled: KurvenMath.Expression.Compiled, domain: Domain,
                               shape: (nReal: Int, nImag: Int)) -> Samples {
         let real = linspace(domain.real.lo, domain.real.hi, shape.nReal)

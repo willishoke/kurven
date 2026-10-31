@@ -130,7 +130,7 @@ usage: kurven-cli <command> [options]
         function round the tube: 0 puts the zeros on the outer equator,
         1/4 the poles on top. --floor B displaces only |f| above B, so each
         pole stands alone on the bare torus; --soft caps as c tanh(|f|/c)
-        instead of a crease. --samples is the lattice round the ring in all.
+        instead of a crease. --samples is the grid round the ring in all.
         forced finds a forced system's invariant torus in the spectrum of a
         long run, fits it as a Fourier series in the forcing phase and the
         system's own, and draws --turns turns of the trajectory on it, the
@@ -175,7 +175,7 @@ usage: kurven-cli <command> [options]
         Time what each of the window's surface controls costs: the plate
         rebuilt from the one before it, and the first preview frame after,
         as the window would pay for them -- at full resolution, and at the
-        draft lattice a drag uses. The numbers SurfaceSection's doc records.
+        draft grid a drag uses. The numbers SurfaceSection's doc records.
 
   landscape-costs [--only NAME] [--resolution N]
         Time what each of the window's landscape controls costs, per catalog
@@ -188,7 +188,7 @@ usage: kurven-cli <command> [options]
         Dump the depth buffer as float32 .npy, for comparison against a
         reference. This is what stands in for a GPU frame capture.
 
-  bench <bundle> [--preset NAME] [--resolution N] [--frames N] [--judging]
+  bench <bundle> [--preset NAME] [--resolution N] [--frames N] [--visibility]
         Render the depth pass repeatedly from a moving camera and report the
         frame time. This is the Phase 2 question -- whether navigation can hold
         60 fps -- asked without a window: the preview does exactly this work
@@ -367,16 +367,16 @@ func surfaceCommand(_ args: Args) throws {
         guard (1...2).contains(repeats.count), repeats.allSatisfy({ $0 >= 1 }) else {
             throw CLIError("--repeat wants N or N,M whole periods, as in 8 or 8,2")
         }
-        // `--samples`: the lattice round the ring in all, 1024 a period at most.
-        let lattice = try args.int("samples", 8192)
+        // `--samples`: the grid round the ring in all, 1024 a period at most.
+        let grid = try args.int("samples", 8192)
         let clock = ContinuousClock()
         var plate: PeriodicTorus.Plate!
         let built = try clock.measure {
             var base = try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r,
                                                   resolution: try args.int("grid", 600),
-                                                  lattice: min(lattice, 1024), capped: true,
+                                                  grid: min(grid, 1024), capped: true,
                                                   turn: try args.double("turn") ?? 0)
-                .repeated(real: repeats[0], imag: repeats.count > 1 ? repeats[1] : 1, lattice: lattice)
+                .repeated(real: repeats[0], imag: repeats.count > 1 ? repeats[1] : 1, grid: grid)
             // `--soft`: the cap as a smooth saturation rather than a crease,
             // c · tanh(|f| / c), an experiment on what the crease costs.
             if args.switches.contains("soft"), let height = base.height {
@@ -454,7 +454,7 @@ func surfaceCommand(_ args: Args) throws {
     default:
         throw CLIError("unknown surface '\(shape)'; the catalog has: torus, sn, periodic, forced")
     }
-    request.lattice = try args.int("samples", 1024)
+    request.grid = try args.int("samples", 1024)
     // A winding: `--winding 2/5`, `--winding 0.618,24` for that many turns,
     // `--winding 1/3,3,4` for four strands of it.
     if let text = args.flags["winding"] {
@@ -532,7 +532,7 @@ func surfaceCommand(_ args: Args) throws {
     try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
     print("""
         \(shape)\(shape == "forced" ? "" : " R=\(fmt(R)) r=\(fmt(r))") -> \(output.lastPathComponent)
-          lattice    \(surface.u.samples)x\(surface.v.samples)\
+          grid    \(surface.u.samples)x\(surface.v.samples)\
         \(surface.outward == nil ? ", bounds no solid, back faces kept" : ", closed")
           depth      \(result.depth.frame.rows)x\(result.depth.frame.cols) \
         in \(result.tiles * result.tiles) pass\(result.tiles == 1 ? "" : "es")
@@ -780,13 +780,13 @@ func bench(_ args: Args) throws {
           + "\(String(format: "%.0f", 1 / drafts[drafts.count / 2])) fps moving"
           + (renderer.hasLinearReadback ? "" : "   (readback is NOT linear here)"))
 
-    // --judging: where a heightfield frame's CPU time goes. Fold lines and
-    // wall ink are the camera's, so the preview derives and judges them per
+    // --visibility: where a heightfield frame's CPU time goes. Fold lines and
+    // wall ink are the camera's, so the preview derives and tests them per
     // camera change; each step is timed on its own, on f (what the preview
-    // does) and on the lattice without the function (what a draft could do).
-    guard args.switches.contains("judging"), let h = base.heightfield else { return }
+    // does) and on the grid without the function (what a draft could do).
+    guard args.switches.contains("visibility"), let h = base.heightfield else { return }
     let view = camera(1).view
-    let lattice = Heightfield(surface: h.surface, occluder: h.occluder, tiles: h.tiles,
+    let grid = Heightfield(surface: h.surface, occluder: h.occluder, tiles: h.tiles,
                               region: h.region, step: h.step, refine: nil)
     func seconds(_ d: Duration) -> Double {
         Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
@@ -800,39 +800,39 @@ func bench(_ args: Args) throws {
               + "\(ms(ts[ts.count / 2]).padding(toLength: 12, withPad: " ", startingAt: 0))"
               + "\(count) vertices")
     }
-    // What the window judges its ink to (`Document.framedScene`).
+    // What the window tests its ink to (`Document.framedScene`).
     let pixel = 0.25 * navigator.framing.unitsPerPixel
-    print("judging, per camera change (median of 5)")
+    print("visibility, per camera change (median of 5)")
     if h.refine != nil {
         time("folds traced on f") { h.foldLines(view: view, refined: false).vertices.count }
-        time("folds traced and judged on f") {
+        time("folds traced and tested on f") {
             h.visibleFolds(view: view, margin: base.margin, refined: false).vertices.count
         }
-        time("folds judged on f, ends to a quarter pixel") {
+        time("folds tested on f, ends to a quarter pixel") {
             h.visibleFolds(view: view, margin: base.margin, refined: false,
                            resolution: pixel).vertices.count
         }
         time("folds refined onto f") { h.foldLines(view: view).vertices.count }
-        time("folds refined and judged, ends to a quarter pixel") {
+        time("folds refined and tested, ends to a quarter pixel") {
             h.visibleFolds(view: view, margin: base.margin, resolution: pixel).vertices.count
         }
     }
-    time("folds traced on the lattice") { lattice.foldLines(view: view, refined: false).vertices.count }
-    time("folds traced and judged on the lattice") {
-        lattice.visibleFolds(view: view, margin: base.margin, refined: false).vertices.count
+    time("folds traced on the grid") { grid.foldLines(view: view, refined: false).vertices.count }
+    time("folds traced and tested on the grid") {
+        grid.visibleFolds(view: view, margin: base.margin, refined: false).vertices.count
     }
     for layer in base.layers where layer.spec.source.isWallInk && layer.spec.clipped {
         if h.refine != nil {
-            time("\(layer.spec.name) judged on f") {
+            time("\(layer.spec.name) tested on f") {
                 h.visibleWallInk(layer.paths, view: view, margin: base.margin).vertices.count
             }
-            time("\(layer.spec.name) judged on f, to a quarter pixel") {
+            time("\(layer.spec.name) tested on f, to a quarter pixel") {
                 h.visibleWallInk(layer.paths, view: view, margin: base.margin,
                                  resolution: pixel).vertices.count
             }
         }
-        time("\(layer.spec.name) judged on the lattice") {
-            lattice.visibleWallInk(layer.paths, view: view, margin: base.margin).vertices.count
+        time("\(layer.spec.name) tested on the grid") {
+            grid.visibleWallInk(layer.paths, view: view, margin: base.margin).vertices.count
         }
     }
 }
@@ -1010,12 +1010,12 @@ func surfaceCosts(_ args: Args) throws {
     print("forced")
     let forced = presets["forced"]!
     let base = try SurfacePlate.build(forced)
-    func forcedEdit(_ label: String, draft: Bool = false, lattice: Int? = nil,
+    func forcedEdit(_ label: String, draft: Bool = false, grid: Int? = nil,
                     from start: SurfacePlate? = nil,
                     _ change: @escaping (inout String, inout Double, inout Int, inout Int, inout Int,
                                          inout Double, inout Int) -> Void) throws {
         try measure(label, forced, { r in
-            if let lattice { r.lattice = lattice }
+            if let grid { r.grid = grid }
             guard case .forced(var s, var f, var h, var ra, var ax, var rad, var t) = r.shape
             else { return }
             change(&s, &f, &h, &ra, &ax, &rad, &t)
@@ -1044,7 +1044,7 @@ func surfaceCosts(_ args: Args) throws {
     }
     try drag("revolution radius", forced) { forcedShape(&$0, radius: 3) }
     // The release: the full request, from the last draft, with the full
-    // lattice's values and the full run still kept.
+    // grid's values and the full run still kept.
     let dragged = try SurfacePlate.build(forced.drafted(), reusing: base, draft: true)
     try measure("revolution radius, released", forced.drafted(), { r in
         var target = forced; forcedShape(&target, radius: 3); r = target

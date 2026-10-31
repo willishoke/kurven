@@ -24,21 +24,21 @@ import simd
 /// flank turns away from the eye its back lies within any margin of its
 /// front for a stretch, and the ink there -- the other family of contours,
 /// wrapping round the back -- shows through as ticks along the silhouette.
-/// The second is the march up the sight line (`SightMarch`): the exact
+/// The second is the traversal up the line of sight (`GridTraversal`): the exact
 /// question the depth buffer approximates per pixel, asked per vertex with
 /// no pixel in it.
 public struct HeightfieldVisibility: Sendable {
     public let heightfield: Heightfield
     public let margin: Double
-    /// The direction sight lines travel, in world space.
+    /// The direction lines of sight travel, in world space.
     public let sight: SIMD3<Double>
-    let march: SightMarch
+    let traversal: GridTraversal
 
     public init(heightfield: Heightfield, view: Transform<WorldSpace, ViewSpace>, margin: Double) {
         self.heightfield = heightfield
-        self.march = SightMarch(heightfield, view: view, margin: margin)
-        self.margin = self.march.margin
-        self.sight = view.sightLine
+        self.traversal = GridTraversal(heightfield, view: view, margin: margin)
+        self.margin = self.traversal.margin
+        self.sight = view.projectionDirection
     }
 
     /// How squarely the surface faces the viewer over `p`: positive facing,
@@ -50,20 +50,20 @@ public struct HeightfieldVisibility: Sendable {
 
     /// Whether nothing of the solid stands between `p` and the eye, to
     /// within the margin.
-    public func isClear(_ p: P3<WorldSpace>) -> Bool { march.unoccluded(p) }
+    public func isClear(_ p: P3<WorldSpace>) -> Bool { traversal.unoccluded(p) }
 
-    /// Why `p` is hidden or clear: every sample the march took along the
-    /// sight line from it and what it made of each, one line per sample.
+    /// Why `p` is hidden or clear: every sample the traversal took along the
+    /// line of sight from it and what it made of each, one line per sample.
     public func explain(_ p: P3<WorldSpace>) -> String {
         var lines: [String] = []
-        let clear = march.unoccluded(p) { lines.append($0) }
+        let clear = traversal.unoccluded(p) { lines.append($0) }
         lines.append(clear ? "clear" : "hidden")
         return lines.joined(separator: "\n")
     }
 
-    /// The margin as a distance along the sight line: an occluder must
+    /// The margin as a distance along the line of sight: an occluder must
     /// stand in front of the ink by more than this.
-    public var marginAlongSight: Double { march.reach }
+    public var marginAlongSight: Double { traversal.reach }
 
     /// Where along the straight segment `a -> b` over the plane the surface
     /// turns edge-on, as a fraction of the way; nil when both ends face the
@@ -102,8 +102,8 @@ public enum HiddenLine {
     }
 
     /// Ink that is not depth-tested: unclipped ink, and every layer of a
-    /// heightfield or a solid, which arrives already judged by its geometry
-    /// (`Scene.judgedLayers`). Passing it through this rather than casting
+    /// heightfield or a solid, which arrives already tested by its geometry
+    /// (`Scene.visibleLayers`). Passing it through this rather than casting
     /// keeps "which space am I in" a decision the type system witnesses.
     public static func pass(_ paths: PolylineSet<ViewSpace>) -> PolylineSet<PlateSpace> {
         PolylineSet(vertices: paths.vertices.map { P3<PlateSpace>($0.v) },
@@ -116,7 +116,7 @@ public extension DepthImage {
     ///
     /// Binarize coverage into a signed field and take its zero level set. The
     /// Python version does this by handing the binarized buffer to matplotlib's
-    /// contouring and mapping the result back out of pixel space; with marching
+    /// contouring and mapping the result back out of pixel space; with traversing
     /// squares in Core it is four lines, and it needs no plotting library to
     /// find the edge of a picture.
     ///
@@ -127,7 +127,7 @@ public extension DepthImage {
         let coverage = (0..<(frame.rows * frame.cols)).map { i -> Float in
             values[i] > empty ? 1 : -1
         }
-        // A grid whose sample positions are the frame's own lattice, so a
+        // A grid whose sample positions are the frame's own grid, so a
         // contour vertex comes out in view units without a second mapping.
         let grid = Grid2D(
             width: frame.cols, height: frame.rows,

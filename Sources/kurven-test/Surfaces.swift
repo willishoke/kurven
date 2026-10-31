@@ -83,7 +83,7 @@ func realRoots(_ c: [Double], in a: Double, _ b: Double) -> [Double] {
 }
 
 /// Whether a point *off* the torus, just outside it, is seen from `eye`: the
-/// full quartic along the sight line, which has no root at the point itself.
+/// full quartic along the line of sight, which has no root at the point itself.
 /// This is the question a point on a fold needs asked, since there the sight
 /// line is tangent and the cubic of `torusSees` has a double root at zero.
 func torusSeesFromOutside(_ p: SIMD3<Double>, major R: Double, minor r: Double,
@@ -109,7 +109,7 @@ func testCamera(elevation: Double, azimuth: Double,
     return Transform(rows: (t.columns.0, t.columns.1, t.columns.2))
 }
 
-/// The view-space bounds of a surface's lattice.
+/// The view-space bounds of a surface's grid.
 func viewBounds(_ s: ParametricSurface,
                 _ view: Transform<WorldSpace, ViewSpace>) -> AABB<ViewSpace> {
     AABB(s.positions.map { view($0) })!
@@ -196,9 +196,9 @@ func surfaceTests() {
                      "a horn torus passes through itself, so it bounds nothing and culls nothing")
     }
 
-    Check.suite("surfaces: the sight line is the camera's kernel, not the gradient of depth") {
+    Check.suite("surfaces: the line of sight is the camera's kernel, not the gradient of depth") {
         let view = testCamera(elevation: -55, azimuth: 30, shear: 0.5)
-        let d = view.sightLine
+        let d = view.projectionDirection
         let p = P3<WorldSpace>(0.3, -0.7, 0.2)
         let a = view(p), b = view(P3(target: p, plus: d))
         Check.expect(simd_length(SIMD2(b.x - a.x, b.y - a.y)) < 1e-12 && b.z < a.z,
@@ -228,7 +228,7 @@ func surfaceTests() {
                 dxy = max(dxy, simd_length(SIMD2(p.x - s.x, p.y - s.y)))
             }
         }
-        // The lattice is a chord approximation of the torus: its sagitta at
+        // The grid is a chord approximation of the torus: its sagitta at
         // 384 x 192 is (R + r)(1 − cos(π/384)) ≈ 1e-4 around the axis.
         Check.expect(covered > frame.rows * frame.cols / 5, "the torus covers the frame",
                      "\(covered) pixels")
@@ -261,28 +261,28 @@ func surfaceTests() {
                              "\(label): every disagreement is within two pixels of a visibility edge",
                              "\(wrong) of \(n) disagree, \(unexplained) unexplained \(example)"
                              + " (depth test: \(depthWrong))")
-                // The round torus bounds a solid the march can ask directly,
+                // The round torus bounds a solid sphere tracing can ask directly,
                 // and then there is no pixel to be within.
-                Check.expect(vis.marches && wrong == 0,
-                             "\(label): by the march, no disagreement at all",
+                Check.expect(vis.tracesSpheres && wrong == 0,
+                             "\(label): by sphere tracing, no disagreement at all",
                              "\(wrong) of \(n) disagree")
             }
         }
     }
 
-    Check.suite("surfaces: the march on a displaced torus agrees with a fine walk up the sight line") {
+    Check.suite("surfaces: sphere tracing on a displaced torus agrees with a fine walk up the line of sight") {
         // The torus in relief under a smooth bump field, capped at 1: the
-        // solid the march is held to is the enclosure's own point test,
-        // walked up the sight line in steps of a ten-thousandth of the
+        // solid sphere tracing is held to is the tubular neighbourhood's own point test,
+        // walked up the line of sight in steps of a ten-thousandth of the
         // solid, which is as fine as the oracle gets without being the
-        // march. A disagreement is excused where the walk's least gap is
+        // sphere tracing. A disagreement is excused where the walk's least gap is
         // within rounding of zero: a line grazing the surface, which no
         // test with a tolerance decides the same way twice.
         let R = 2.0, r = 1.0
         let base = ParametricSurface.torus(major: R, minor: r, samples: (256, 128))
         let relief = base.displaced(by: { c in min(0.5 * (1 + cos(3 * c.x) * cos(2 * c.y)) + 0.3, 1) },
                                     amplitude: 0.4, ceiling: 1, encloses: true)
-        Check.expect(relief.enclosure != nil, "the displaced torus keeps the torus's foot")
+        Check.expect(relief.neighbourhood != nil, "the displaced torus keeps the torus's foot")
         for (name, view) in [("elevation 60°", testCamera(elevation: -60, azimuth: 30)),
                              ("low, over the far wall", testCamera(elevation: -80, azimuth: 40)),
                              ("sheared", testCamera(elevation: -35, azimuth: -20, shear: 0.5))] {
@@ -290,8 +290,8 @@ func surfaceTests() {
             let vis = SurfaceVisibility(surface: relief,
                                         image: SurfaceImage.rasterize(relief, view: view, frame: frame),
                                         view: view)
-            let e = relief.enclosure!
-            let d = -view.sightLine
+            let e = relief.neighbourhood!
+            let d = -view.projectionDirection
             let rng = SplitMix(seed: 0xC0FFEE)
             var wrong = 0, unexplained = 0, tested = 0, seen = 0
             var example = ""
@@ -300,33 +300,33 @@ func surfaceTests() {
                 guard let f = vis.facing(c), f > 0 else { continue }
                 tested += 1
                 let q = relief.map(c).position
-                let march = vis.isClear(q)
-                if march { seen += 1 }
+                let traversal = vis.isClear(q)
+                if traversal { seen += 1 }
                 // The walk: every sample from just off the surface to past
                 // the ball, and the least gap it saw.
                 let step = 1e-4 * e.radius
                 var t = 1e-5 * e.radius, least = Double.infinity, clear = true
                 while t < 2 * e.radius + simd_length(q) {
                     let (coord, distance) = e.foot(q + t * d)
-                    let gap = distance - e.standoff(coord)
+                    let gap = distance - e.normalOffset(coord)
                     least = min(least, gap)
                     if gap < -1e-9 * e.radius { clear = false; break }
                     t += step
                 }
-                guard march != clear else { continue }
+                guard traversal != clear else { continue }
                 wrong += 1
                 if abs(least) > 1e-6 * e.radius {
                     unexplained += 1
                     if example.isEmpty {
-                        example = String(format: "e.g. (%.4f, %.4f) march %@, walk %@, least gap %.2e",
-                                         c.x, c.y, march ? "clear" : "hidden", clear ? "clear" : "hidden", least)
+                        example = String(format: "e.g. (%.4f, %.4f) sphere tracing %@, walk %@, least gap %.2e",
+                                         c.x, c.y, traversal ? "clear" : "hidden", clear ? "clear" : "hidden", least)
                     }
                 }
             }
             Check.expect(seen > tested / 4 && seen < tested,
                          "\(name): the sample has both seen and hidden points", "\(seen) of \(tested) seen")
             Check.expect(unexplained == 0,
-                         "\(name): the march and the walk agree except where the line grazes",
+                         "\(name): sphere tracing and the walk agree except where the line grazes",
                          "\(wrong) of \(tested) disagree, \(unexplained) unexplained \(example)")
         }
     }
@@ -410,7 +410,7 @@ func surfaceTests() {
 
 func surfaceGPUTests() {
     // The GPU pass is held to the CPU rasterizer as the depth pass is held to
-    // the Python Z-buffer: the same triangles, sampled at the same lattice
+    // the Python Z-buffer: the same triangles, sampled at the same grid
     // points, and differing only where a rule of rasterization is allowed to
     // -- a sample exactly on an edge, which the CPU claims for both triangles
     // and Metal for one.
@@ -493,7 +493,7 @@ func surfaceGPUTests() {
 func rayCastInkLength(_ ink: PolylineSet<WorldSpace>, on surface: ParametricSurface,
                       major R: Double, minor r: Double,
                       view: Transform<WorldSpace, ViewSpace>, k: Int = 8) -> Double {
-    let eye = -view.sightLine
+    let eye = -view.projectionDirection
     let coords = ink.coords!
     var total = 0.0
     for path in 0..<ink.count {
@@ -543,8 +543,8 @@ func surfaceBakeTests() {
         Check.expect(same, "a tiled bake draws what a single-pass bake draws",
                      "\(moved) of \(whole.surface!.coords.count) pixel coordinates differ")
 
-        // A winding is judged the same way, by the same coordinate image:
-        // ink the surface passes never saw, placed from the lattice rather
+        // A winding is tested the same way, by the same coordinate image:
+        // ink the surface passes never saw, placed from the grid rather
         // than the map, still carries the ray-cast's visible length.
         let winding = torus.winding(slope: 2.0 / 5, turns: 5, count: 3)
         let wound = try renderer.bake(
@@ -560,7 +560,7 @@ func surfaceBakeTests() {
                      String(format: "%.4f vs %.4f, %.3f%% off", wound.strokes.inkLength,
                             windingTruth, 100 * windingError))
 
-        // The same lines without coordinates are judged by depth, at the
+        // The same lines without coordinates are tested by depth, at the
         // scene's margin -- still a drawing, and a measurably worse one.
         let bare = Layer(spec: spec, paths: PolylineSet(vertices: ink.vertices, offsets: ink.offsets))
         let byDepth = try renderer.bake(scene.drawing([bare]),
@@ -582,7 +582,7 @@ func foldTests() {
                                           ("sheared", -30.0, 0.5)] {
                 let camera = Camera.plate(PlateProjection(shear: shear, xAngle: xAngle, zAngle: 25,
                                                           flipX: false, yScale: nil))
-                let sight = camera.view.sightLine
+                let sight = camera.view.projectionDirection
                 let folds = torus.foldLines(sight: sight)
                 var worst = 0.0
                 for c in folds.coords! {
@@ -598,7 +598,7 @@ func foldTests() {
                 let scene = Scene(surface: torus, layers: [Layer(spec: spec, paths: .empty)],
                                   camera: camera, margin: 0)
                 let baked = try renderer.bake(scene, options: BakeOptions(resolution: 2400))
-                // On a fold the sight line is tangent to the torus, so the
+                // On a fold the line of sight is tangent to the torus, so the
                 // ray-cast is asked a hair outside it, where it has an answer.
                 let eye = -sight
                 var truth = 0.0
@@ -633,9 +633,9 @@ func creaseTests() {
         // sn in relief, capped and floored, so that each pole is a chimney
         // whose flat top meets its wall in a crease: the plate the gaps
         // were found on, two periods each way.
-        let base = try PeriodicTorus.jacobiSN(modulus: 0.64, resolution: 300, lattice: 512,
+        let base = try PeriodicTorus.jacobiSN(modulus: 0.64, resolution: 300, grid: 512,
                                               capped: true, turn: 0.125)
-            .repeated(real: 2, imag: 2, lattice: 1024)
+            .repeated(real: 2, imag: 2, grid: 1024)
         let height = base.height!, floor = 1.5
         let plate = PeriodicTorus.Plate(surface: base.surface, layers: base.layers,
                                         height: { max(height($0) - floor, 0) },
@@ -644,7 +644,7 @@ func creaseTests() {
         let surface = plate.surface, ceiling = plate.ceiling
         let camera = Camera.plate(PlateProjection(shear: 0, xAngle: -55, zAngle: 30,
                                                   flipX: false, yScale: nil))
-        let sight = camera.view.sightLine
+        let sight = camera.view.projectionDirection
         let h = { (c: P2<ParamSpace>) in max(height(c) - floor, 0) }
         let cell = min(surface.u.spacing, surface.v.spacing)
         // The four points a hair either way along each axis.
@@ -671,7 +671,7 @@ func creaseTests() {
         }
         Check.expect(folds.count > 0 && along == 0, "no fold is drawn along a crease",
                      "\(along) of \(folds.coords!.count - folds.count) fold segments along a rim")
-        // Nor beside one: where the lattice saw the sign change across a
+        // Nor beside one: where the grid saw the sign change across a
         // crease and the map finds no zero within a cell, there is no fold
         // to move the vertex onto, and it is not drawn where it was.
         let worst = folds.coords!.map { abs(surface.facing($0, sight: sight) ?? 0) }.max() ?? 0
@@ -681,7 +681,7 @@ func creaseTests() {
         // Where a fold meets a rim, it ends on the rim. The wall or the cap
         // turns edge-on between two rim vertices where its facing a hair
         // off the rim changes sign, and the fold starts there; on a steep
-        // wall its whole visible length can lie within a lattice cell.
+        // wall its whole visible length can lie within a grid cell.
         let rimCoords = plate.layers.first { $0.spec.name == "rim" }!.paths
         func side(_ c: P2<ParamSpace>, cap: Bool) -> Double {
             let e = 1e-3 * cell
@@ -710,10 +710,10 @@ func creaseTests() {
         // And where it meets it in sight, the rim's seen piece ends where the
         // fold's does: a cut in the rim is bisected on the rim, not on the
         // chord between two of its vertices, which crosses the cap.
-        let marchingJudge = SurfaceVisibility(marching: surface, view: camera.view)
-        let seenRim = HiddenLine.clip(rimLayer.paths.mapped(camera.view), on: marchingJudge,
+        let sphereTracer = SurfaceVisibility(sphereTracing: surface, view: camera.view)
+        let seenRim = HiddenLine.clip(rimLayer.paths.mapped(camera.view), on: sphereTracer,
                                       onFolds: true, onCrease: true)
-        let seenFolds = HiddenLine.clip(folds.mapped(camera.view), on: marchingJudge, onFolds: true)
+        let seenFolds = HiddenLine.clip(folds.mapped(camera.view), on: sphereTracer, onFolds: true)
         func ends(_ p: PolylineSet<PlateSpace>) -> [SIMD2<Double>] {
             (0..<p.count).flatMap { i in
                 [p.vertices[p.offsets[i]], p.vertices[p.offsets[i + 1] - 1]].map { SIMD2($0.x, $0.y) }
@@ -729,13 +729,13 @@ func creaseTests() {
         // it faces the eye and nothing stands in front. The normal on the
         // crease itself is half of each, and says nothing.
         let rim = plate.layers.first { $0.spec.name == "rim" }!
-        let marching = SurfaceVisibility(marching: surface, view: camera.view)
+        let sphereTracing = SurfaceVisibility(sphereTracing: surface, view: camera.view)
         // Asked at the rim's vertices, which are on the crease: a chord's
         // midpoint is inside the plateau, where only the cap is beside it.
         let coords = rim.paths.coords!
         let seen = coords.map { c in
             beside(c, 1e-3 * cell).contains { (surface.facing($0, sight: sight) ?? 0) > 0 }
-                && marching.isClear(surface.map(c).position)
+                && sphereTracing.isClear(surface.map(c).position)
         }
         // A chord whose ends disagree counts half, and is the reference's
         // own uncertainty: the bake finds where along it the verdict turns.
@@ -880,7 +880,7 @@ func periodicTorusTests() {
     }
 
     // sn² has periods 2K and 2iK', double zeros and double poles. At a
-    // double point every level has two rays, which the lattice cannot
+    // double point every level has two rays, which the grid cannot
     // resolve inside the point's cell: the fan is read off the normal form,
     // f(z) ≈ a (z − z₀)^±2, and its rays are what the grid's lines are
     // spliced onto. The rectangle is shifted so that one zero and one pole
@@ -935,7 +935,7 @@ func periodicTorusTests() {
 }
 
 func surfacePreviewTests() {
-    // At rest the preview draws a marched surface's ink as the bake judges
+    // At rest the preview draws a sphere-traced surface's ink as the bake tests
     // it. A draft asks the bake's two questions per fragment rather than per
     // vertex, so the two may differ within a pixel of wherever visibility
     // changes and nowhere else. Both held to that: the baked strokes,
@@ -1034,12 +1034,12 @@ func surfacePreviewTests() {
 }
 
 func windingTests() {
-    Check.suite("surfaces: a winding is a straight line on the flat torus, placed on the lattice") {
+    Check.suite("surfaces: a winding is a straight line on the flat torus, placed on the grid") {
         let torus = ParametricSurface.torus(major: 2, minor: 1, samples: (512, 256))
         let turn = 2 * Double.pi
 
-        // The interpolator returns the lattice at its own points, and is
-        // within a lattice cell's sag of the map between them.
+        // The interpolator returns the grid at its own points, and is
+        // within a grid cell's sag of the map between them.
         var exact = true, sag = 0.0
         for j in stride(from: 0, to: 256, by: 17) {
             for i in stride(from: 0, to: 512, by: 13) {
@@ -1051,13 +1051,13 @@ func windingTests() {
                 sag = max(sag, simd_length(torus.interpolate(mid).v - torus.map(mid).position))
             }
         }
-        Check.expect(exact, "the lattice interpolates to itself at its own points")
+        Check.expect(exact, "the grid interpolates to itself at its own points")
         Check.expect(sag < 1e-3 && sag > 0, "and to the map between them, whole periods away",
                      String(format: "%.2e off", sag))
 
         // Its normals interpolate to within a cell's turn of the map's:
-        // on this lattice the tube turns 360°/256 a cell, so under a degree.
-        let normals = torus.latticeNormals()
+        // on this grid the tube turns 360°/256 a cell, so under a degree.
+        let normals = torus.gridNormals()
         var tilt = 0.0
         for j in stride(from: 0, to: 256, by: 5) {
             for i in stride(from: 0, to: 512, by: 7) {
@@ -1076,7 +1076,7 @@ func windingTests() {
         let closed = torus.winding(slope: 2.0 / 5, turns: 24)
         let steps = 512
         Check.expect(closed.count == 1 && closed.vertices.count == 5 * steps + 1,
-                     "slope 2/5 closes after five turns, a vertex per lattice cell",
+                     "slope 2/5 closes after five turns, a vertex per grid cell",
                      "\(closed.count) paths, \(closed.vertices.count) vertices")
         let ends = simd_length(closed.vertices[0].v - closed.vertices[closed.vertices.count - 1].v)
         Check.expect(ends < 1e-9, "and its last vertex is its first",
@@ -1138,13 +1138,13 @@ func edgeOnPreviewTests() {
     // sn on its torus seen from half a degree off its equatorial plane, the
     // window's camera when this was found: the outline's long edges run
     // along the top and bottom of the tube, where the front-most coordinate
-    // at a pixel flips between the near sheet and the far one. Judged per
+    // at a pixel flips between the near sheet and the far one. Visible per
     // fragment against the coordinate image, those edges drew as dashes.
-    // At rest the window draws what the march keeps, as the bake does, and
+    // At rest the window draws what sphere tracing keeps, as the bake does, and
     // the draft is held to showing the difference, or this proves nothing.
     Check.suite("preview: a torus nearly edge-on keeps its outline whole at rest") {
         let plate = try SurfacePlate.build(
-            SurfaceRequest(.sn(modulus: 0.64, major: 2, minor: 1, grid: 200), lattice: 600))
+            SurfaceRequest(.sn(modulus: 0.64, major: 2, minor: 1, grid: 200), grid: 600))
         var projection = SurfaceRequest.projection
         projection.xAngle = -89.5
         projection.zAngle = 118.2
@@ -1209,7 +1209,7 @@ func edgeOnPreviewTests() {
                      "at rest the preview draws all of the outline the bake keeps",
                      String(format: "%.3f%% of %d baked pixels", 100 * rest, baked1.count))
         Check.expect(draft < rest - 0.002,
-                     "while the draft, judged per fragment, breaks it",
+                     "while the draft, tested per fragment, breaks it",
                      String(format: "the draft draws %.3f%%", 100 * draft))
     }
 }

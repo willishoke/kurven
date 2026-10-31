@@ -223,7 +223,7 @@ func hatchingTests() {
         var example = ""
         for (name, view) in stressCameras() {
             cameras += 1
-            let d = -view.sightLine
+            let d = -view.projectionDirection
             let seen = s.visibleHatching(hatching, view: view)
             guard seen.count == 1 else { Check.expect(false, "one width"); return }
             let visible = seen[0].visible
@@ -240,7 +240,7 @@ func hatchingTests() {
             }
             for line in s.hatchLines(hatching) {
                 // A face seen exactly edge-on projects to a line, which the
-                // ray cast cannot judge; it draws no hatching (tested above).
+                // ray cast cannot decide; it draws no hatching (tested above).
                 guard abs(simd_dot(s.normals[s.faces[line.face][0]], d)) > 1e-9 else { continue }
                 let a = line.path[0].v, b = line.path[1].v
                 let own = Set(s.faces[line.face])
@@ -281,11 +281,11 @@ func hatchingTests() {
     Check.suite("hatching: on a convex solid facing is the whole test, and the bake is the same at every resolution") {
         let s = Solid.platonic(.dodecahedron, circumradius: 2).resting(onFace: 0)
         // A face is about 1.4 across; at this scale that is a dozen Turing
-        // lattice spacings, enough spots for every width to occur on it. At
+        // grid spacings, enough spots for every width to occur on it. At
         // half a unit a face sits inside a single spot.
         let hatching = Hatching(angle: 1.1, spacing: 0.05, tone: .turing(scale: 0.12, seed: 5), widthSteps: 3)
         let camera = Camera.plate(PlateProjection(shear: 0.3, xAngle: -55, zAngle: -70, flipX: false, yScale: nil))
-        let d = -camera.view.sightLine
+        let d = -camera.view.projectionDirection
         var wholeOrAbsent = true, widthsSeen = Set<Int>()
         let lines = s.hatchLines(hatching)
         for (w, all, visible) in s.visibleHatching(hatching, view: camera.view) {
@@ -326,12 +326,12 @@ func hatchingTests() {
                      "\(coarse.strokes.layers.count) layers, widths \(widths)")
         var unclipped = layers[1].spec
         unclipped.clipped = false
-        let judged = Scene(solid: s, layers: [Layer(spec: unclipped, paths: s.hatchPaths(hatching))], camera: camera)
-            .judgedLayers()
-        let drawn = judged.reduce(0) { $0 + $1.1.count }
-        Check.expect(judged.count == 3 && drawn == lines.count,
+        let visible = Scene(solid: s, layers: [Layer(spec: unclipped, paths: s.hatchPaths(hatching))], camera: camera)
+            .visibleLayers()
+        let drawn = visible.reduce(0) { $0 + $1.1.count }
+        Check.expect(visible.count == 3 && drawn == lines.count,
                      "unclipped, every hatch line is drawn, in a layer per width step",
-                     "\(drawn) of \(lines.count) lines in \(judged.count) layers")
+                     "\(drawn) of \(lines.count) lines in \(visible.count) layers")
     }
 
     Check.suite("hatching: a hatching layer round-trips through the manifest") {

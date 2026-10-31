@@ -7,7 +7,7 @@ import KurvenLandscape
 
 // MARK: - ink on a heightfield is hidden where the surface faces away
 //
-// A Gaussian ridge along y, seen from a plate camera whose sight line has a
+// A Gaussian ridge along y, seen from a plate camera whose line of sight has a
 // component across it: the near flank faces the eye, the steep part of the
 // far flank faces away, and the far flank's foot faces the eye again. Ink run
 // straight over the ridge on the surface must be cut at the two folds, found
@@ -32,13 +32,13 @@ func facingTests() {
         let field = Heightfield(surface: surface, occluder: Mesh(vertices: [], triangles: []),
                                 tiles: [.identity], step: 1)
 
-        // A camera whose sight line crosses the ridge: of the two plate
+        // A camera whose line of sight crosses the ridge: of the two plate
         // turns, the one that looks more along x.
         let cameras = [0.0, 90.0].map {
             Camera.plate(PlateProjection(shear: 0, xAngle: -55, zAngle: $0, flipX: false, yScale: nil))
         }
-        let camera = cameras.max { abs($0.view.sightLine.x) < abs($1.view.sightLine.x) }!
-        let sight = camera.view.sightLine
+        let camera = cameras.max { abs($0.view.projectionDirection.x) < abs($1.view.projectionDirection.x) }!
+        let sight = camera.view.projectionDirection
         Check.expect(abs(sight.x) > 0.3, "the camera looks across the ridge",
                      String(format: "sight (%.2f, %.2f, %.2f)", sight.x, sight.y, sight.z))
 
@@ -66,10 +66,10 @@ func facingTests() {
                                values: [Float](repeating: -.infinity, count: frame.rows * frame.cols),
                                empty: -.infinity)
         let byDepth = HiddenLine.clip(projected, against: empty, margin: 0.02)
-        // An infinite margin disarms the march: the facing alone decides.
+        // An infinite margin disarms the traversal: the facing alone decides.
         let cut = field.visibleSurfaceInk(ink, view: camera.view, margin: .infinity).mapped(camera.view)
         Check.expect(byDepth.count == 1 && byDepth.vertices.count == ink.vertices.count,
-                     "judged by depth alone, the whole path is kept")
+                     "tested by depth alone, the whole path is kept")
 
         // Where the surface turns edge-on: facing = -(n · sight)/|n| = 0,
         // with n = (-h', 0, 1), so h' = sight.z / sight.x.
@@ -103,21 +103,21 @@ func facingTests() {
         Check.expect(kept < ink.vertices.count && kept > ink.vertices.count / 2,
                      "and the stretch between them, facing away, is gone",
                      "\(ink.vertices.count - kept) of \(ink.vertices.count) vertices hidden")
-        // With the march armed, the far foot -- facing the eye again, but
-        // behind the ridge from where the eye is -- goes too: the sight line
+        // With the traversal armed, the far foot -- facing the eye again, but
+        // behind the ridge from where the eye is -- goes too: the line of sight
         // from it passes under the crest.
-        let judged = field.visibleSurfaceInk(ink, view: camera.view, margin: 0.02).mapped(camera.view)
-        let lastKept = judged.vertices.last.map { simd_length($0.v - expected[0].v) } ?? .infinity
-        Check.expect(judged.count == 1 && lastKept < 2e-3,
-                     "judged by the solid as well, only the near flank remains, up to the first fold",
-                     "\(judged.count) runs, last vertex \(String(format: "%.1e", lastKept)) from the fold")
+        let visible = field.visibleSurfaceInk(ink, view: camera.view, margin: 0.02).mapped(camera.view)
+        let lastKept = visible.vertices.last.map { simd_length($0.v - expected[0].v) } ?? .infinity
+        Check.expect(visible.count == 1 && lastKept < 2e-3,
+                     "tested by the solid as well, only the near flank remains, up to the first fold",
+                     "\(visible.count) runs, last vertex \(String(format: "%.1e", lastKept)) from the fold")
     }
 }
 
 // MARK: - the fold lines of a heightfield
 //
 // The same ridge: its folds are the two lines x = const where h'(x) is the
-// sight line's slope, straight along y. `Heightfield.foldLines` must find
+// line of sight's slope, straight along y. `Heightfield.foldLines` must find
 // both, nothing else, and put every vertex on them to rounding. Then a real
 // landscape: every fold vertex is where the surface faces exactly edge-on,
 // none sits on a cap, and the pits have their far edges.
@@ -142,8 +142,8 @@ func foldLineTests() {
         let cameras = [0.0, 90.0].map {
             Camera.plate(PlateProjection(shear: 0, xAngle: -55, zAngle: $0, flipX: false, yScale: nil))
         }
-        let camera = cameras.max { abs($0.view.sightLine.x) < abs($1.view.sightLine.x) }!
-        let sight = camera.view.sightLine
+        let camera = cameras.max { abs($0.view.projectionDirection.x) < abs($1.view.projectionDirection.x) }!
+        let sight = camera.view.projectionDirection
         let critical = sight.z / sight.x
         var folds: [Double] = []
         var previous = -2.0
@@ -173,14 +173,14 @@ func foldLineTests() {
                          "and each runs the whole width of the ridge",
                          String(format: "y from %.2f to %.2f", ys.min() ?? 0, ys.max() ?? 0))
         }
-        let lattice = field.foldLines(view: camera.view, refined: false)
-        var latticeWorst = 0.0
-        for v in lattice.vertices {
-            latticeWorst = max(latticeWorst, folds.map { abs(v.x - $0) }.min() ?? .infinity)
+        let grid = field.foldLines(view: camera.view, refined: false)
+        var gridWorst = 0.0
+        for v in grid.vertices {
+            gridWorst = max(gridWorst, folds.map { abs(v.x - $0) }.min() ?? .infinity)
         }
-        Check.expect(lattice.count == traced.count && latticeWorst < 4.0 / Double(nx - 1),
-                     "read off the lattice alone, the same lines within a cell",
-                     String(format: "worst %.1e in x", latticeWorst))
+        Check.expect(grid.count == traced.count && gridWorst < 4.0 / Double(nx - 1),
+                     "read off the grid alone, the same lines within a cell",
+                     String(format: "worst %.1e in x", gridWorst))
     }
 
     Check.suite("folds: a landscape's pits have their far edges") {
@@ -199,7 +199,7 @@ func foldLineTests() {
         guard scene.viewBounds() != nil else { Check.expect(false, "the plate has bounds"); return }
         let visibility = HeightfieldVisibility(heightfield: h, view: scene.camera.view, margin: 0.02)
         // Every vertex but a run's end carried to a zero of f, which is on
-        // the floor, where the lattice's facing is its chord's.
+        // the floor, where the grid's facing is its chord's.
         // Every vertex but a run's end carried to a zero (on the floor) or
         // to the rim (on the crease, where the facing jumps).
         let capAt = h.surface.caps
@@ -232,7 +232,7 @@ func foldLineTests() {
         Check.expect((pit.map(\.z).min() ?? .infinity) < 0.5,
                      "the pit at -3 has a fold reaching down its wall",
                      String(format: "lowest fold vertex at z = %.3f", pit.map(\.z).min() ?? .infinity))
-        // The bake draws them: judged by depth, not by facing.
+        // The bake draws them: tested by depth, not by facing.
         let baked = try MetalRenderer().bake(scene, options: BakeOptions(resolution: 400))
         let drawn = baked.strokes.layers.last!.paths
         Check.expect(drawn.vertices.count > 0, "the bake draws the fold layer",
@@ -240,21 +240,21 @@ func foldLineTests() {
     }
 }
 
-// MARK: - ink in a cut face is judged by the wall it lies in
+// MARK: - ink in a cut face is tested by the wall it lies in
 //
 // The plate camera sees the right wall of rgamma nearly edge-on, and the
-// depth buffer erased most of its hatch, leaving spots. Judged by the wall
+// depth buffer erased most of its hatch, leaving spots. Visible by the wall
 // instead: every stroke on a wall that faces the eye is kept whole, every
 // stroke on a wall that faces away is dropped whole, a corner post stays
 // while either of its walls shows, and the bake draws exactly that.
 
 func wallInkTests() {
-    Check.suite("walls: the hatch and outline of a cut face are judged by the wall") {
+    Check.suite("walls: the hatch and outline of a cut face are tested by the wall") {
         let preset = Catalog.native.preset("rgamma")!
         let bundle = try NativeLandscape.build(LandscapeRequest(preset: preset, resolution: 240))
         let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
         let h = scene.heightfield!
-        let sight = scene.camera.view.sightLine
+        let sight = scene.camera.view.projectionDirection
         let d = h.surface.domain
         let box = (lo: SIMD2(min(d.real.lo, d.real.hi), min(d.imag.lo, d.imag.hi)),
                    hi: SIMD2(max(d.real.lo, d.real.hi), max(d.imag.lo, d.imag.hi)))
@@ -295,7 +295,7 @@ func wallInkTests() {
                             length(hatch.paths), keptHatch.count, hatch.paths.count))
         let strays = keptHatch.vertices.filter { v in !wallsOf(v).contains { faces[$0] } }
         let strayNote = strays.prefix(3).map { v in
-            String(format: "(%.3f, %.3f, %.4f) f %.4f lattice %.4f walls %@", v.x, v.y, v.z,
+            String(format: "(%.3f, %.3f, %.4f) f %.4f grid %.4f walls %@", v.x, v.y, v.z,
                    h.surfaceHeight(at: P2(v.x, v.y)), h.surface.height(at: P2<DomainSpace>(v.x, v.y)),
                    wallsOf(v).description)
         }.joined(separator: "; ")
@@ -364,15 +364,15 @@ func wallInkTests() {
         Check.expect(rimEnds.count >= 2 && missed < 1e-9,
                      "the crest meets the rim where the rim ends, at every notch",
                      String(format: "%d rim ends on the front edge, worst gap %.1e", rimEnds.count, missed))
-        // The bake draws the judged ink as it is: the hatch on the edge-on
+        // The bake draws the tested ink as it is: the hatch on the edge-on
         // right wall is whole, not spotty.
         let baked = try MetalRenderer().bake(scene, options: BakeOptions(resolution: 400))
         let hatchIndex = scene.layers.firstIndex { $0.spec.name == "wall_hatch" }!
         let drawn = baked.strokes.layers[hatchIndex].paths
-        let judged = h.visibleWallInk(scene.layers[hatchIndex].paths, view: scene.camera.view,
+        let visible = h.visibleWallInk(scene.layers[hatchIndex].paths, view: scene.camera.view,
                                       margin: scene.margin)
-        Check.expect(drawn.count == judged.count && drawn.vertices.count == judged.vertices.count,
-                     "the bake draws the wall hatch exactly as judged, stroke for stroke",
-                     "\(drawn.count) strokes drawn, \(judged.count) judged")
+        Check.expect(drawn.count == visible.count && drawn.vertices.count == visible.vertices.count,
+                     "the bake draws the wall hatch exactly as tested, stroke for stroke",
+                     "\(drawn.count) strokes drawn, \(visible.count) tested")
     }
 }

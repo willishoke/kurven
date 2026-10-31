@@ -77,10 +77,10 @@ public extension Mesh<WorldSpace> {
         })
     }
 
-    /// The truncated surface where a lattice cell straddles the cap: the
+    /// The truncated surface where a grid cell straddles the cap: the
     /// pieces the heightfield pass gets wrong.
     ///
-    /// The heightfield is rasterized from heights clamped *at the lattice
+    /// The heightfield is rasterized from heights clamped *at the grid
     /// vertices* and interpolated between them, so a cell with one corner
     /// under the cap and another over it is drawn as one slope from the cap
     /// down to the low corner. The corner where the wall meets the cap is cut
@@ -88,7 +88,7 @@ public extension Mesh<WorldSpace> {
     /// flank -- and the ink sits where the *interpolated* height reaches the
     /// cap, out over the notch: the rim, the hatch across the cap, a phase
     /// line carried up to it. Ink from behind shows through the notches, and
-    /// ink on the silhouette is judged against a wall that is not there.
+    /// ink on the silhouette is tested against a wall that is not there.
     ///
     /// What a cell's samples describe is min(interpolated height, cap): each
     /// of the cell's two triangles cut by the cap along the line where the
@@ -100,7 +100,7 @@ public extension Mesh<WorldSpace> {
     /// has to be skipped in the heightfield pass and nothing is drawn wrong
     /// twice.
     ///
-    /// The lattice is the rasterizer's: every `step`-th sample, a cell kept
+    /// The grid is the rasterizer's: every `step`-th sample, a cell kept
     /// only when all four corners lie in the region, once per tile. A banded
     /// cap is interpolated across a cell the way the pre-clamped grid is.
     static func capRim(of surface: Surface, step: Int, region: Region,
@@ -178,7 +178,7 @@ public extension Mesh<WorldSpace> {
     }
 }
 
-/// A lattice corner of a cell on a cap rim: where it is, how high the sample
+/// A grid corner of a cell on a cap rim: where it is, how high the sample
 /// is, and the cap there. Its excess over the cap is what `Mesh.capRim`
 /// solves the cut on.
 private struct RimCorner {

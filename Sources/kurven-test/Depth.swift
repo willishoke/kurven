@@ -8,7 +8,7 @@ import KurvenLandscape
 // MARK: - the depth pass against an exact ray cast
 
 /// What the depth buffer records at a pixel is the nearest point of the drawn
-/// solid along that pixel's sight line: the heightfield's triangles, capped,
+/// solid along that pixel's line of sight: the heightfield's triangles, capped,
 /// and the wall curtains that close it at the domain's edge. All of that is
 /// one solid with a predicate -- a world point is inside when it lies over the
 /// domain, above the walls' base and under the capped surface -- and a sight
@@ -74,7 +74,7 @@ struct HeightfieldSolid {
     }
 
     /// The view depth of the solid under a pixel: the largest view z along
-    /// the sight line at which the line is inside the solid, or nil when the
+    /// the line of sight at which the line is inside the solid, or nil when the
     /// line misses it. `at` is the world point at view depth zero and
     /// `direction` the world step per unit of view depth.
     func depth(at w0: SIMD3<Double>, direction d: SIMD3<Double>, cell: Double) -> Double? {
