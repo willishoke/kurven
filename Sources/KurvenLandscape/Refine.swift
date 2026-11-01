@@ -128,8 +128,8 @@ public struct ContourRefiner: Sendable {
     }
 
     /// The scalar field and level a contour is solved on. A phase level of
-    /// ±π is the cut, which `Surface.derive` contours as the zero level of
-    /// arg(-f) (`Contour.cut`), and is placed on that.
+    /// ±π is the cut, which arg f as a scalar field (`Surface.field`) hands
+    /// on as the zero level of arg(-f) (`Contour.cut`), and is placed on that.
     func field(_ f: ContourField, level: Double) -> (g: @Sendable (Complex) -> Double, level: Double) {
         if f == .phase && Contour.isCut(level) { return (turnedPhase, 0) }
         return (field(f), level)
@@ -1472,18 +1472,17 @@ public extension NativeLandscape {
         var reports: [RefinementReport] = []
         for spec in bundle.manifest.layers {
             guard case .contour(let field, let levels, _, _) = spec.source else { continue }
-            let grid: Grid2D<Float>
-            switch field {
-            case .magnitude: grid = bundle.surface.height
-            case .phase: guard let p = bundle.surface.phase else { continue }; grid = p
-            }
+            // The grid's paths as `Surface.derive` hands them to a refiner,
+            // the cut once as the zero level of the turned phase: the field
+            // under a refiner that moves nothing.
+            let unmoved = ContourRefine(contours: { _, _, paths, _ in paths })
+            guard let grid = bundle.surface.field(field, refine: unmoved) else { continue }
             var contoured: [(level: Double, paths: [[P2<DomainSpace>]])] = []
             let gridTime = clock.measure {
-                // As `Surface.derive` contours them under a refiner: the cut
-                // once, as the zero level of the turned phase.
-                let plain = field == .phase ? levels.filter { !Contour.isCut($0) } : levels
-                contoured = Contour.levels(of: grid, plain)
-                if plain.count < levels.count { contoured.append((.pi, Contour.cut(of: grid))) }
+                contoured = Contour.levels(of: grid, Surface.levels(levels, of: field),
+                                           over: bundle.surface.rectangle).map {
+                    ($0.level, $0.paths.map { $0.map { P2<DomainSpace>($0.v) } })
+                }
             }
             var refined: [(level: Double, paths: [[P2<DomainSpace>]])] = []
             let refineTime = clock.measure {

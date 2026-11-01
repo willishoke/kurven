@@ -1,5 +1,6 @@
 import Foundation
 import simd
+import Synchronization
 import KurvenCore
 
 /// Contours of a `ScalarField` on a parameter rectangle, held to closed forms.
@@ -179,6 +180,71 @@ func scalarFieldTests() {
             .map { abs(remainder(atan2($0.y, $0.x) - 3, 2 * .pi)) }.max() ?? .infinity
         Check.expect(ray.count == 1 && turn < 1e-2, "the level 3 is one ray, with nothing along the cut",
                      "\(ray.count) paths, \(turn) off its angle")
+    }
+
+    Check.suite("fields: arg f hands the refiner the grid's own contours, and the cut at ±π") {
+        // |z| and arg z on a grid that keeps off the origin. The refiner here
+        // moves nothing, and says what it was asked: the field's routine is
+        // handed what the grid has, so what comes back is what it was handed.
+        let m = 40
+        let domain = Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: -1, hi: 1))
+        var moduli = [Float](repeating: 0, count: m * m), phases = moduli
+        for j in 0..<m { for i in 0..<m {
+            let x = -1 + 2 * Double(i) / Double(m - 1), y = -1 + 2 * Double(j) / Double(m - 1)
+            moduli[j * m + i] = Float((x * x + y * y).squareRoot())
+            phases[j * m + i] = Float(atan2(y, x))
+        } }
+        let surface = Surface(height: Grid2D(width: m, height: m, domain: domain, values: moduli),
+                              phase: Grid2D(width: m, height: m, domain: domain, values: phases),
+                              truncation: .uniform(0.8))
+        let asked = Mutex([String]())
+        let unmoved = ContourRefine(contours: { field, level, paths, ceiling in
+            asked.withLock { $0.append("\(field) \(level) \(ceiling)") }
+            return paths
+        })
+        func inParameters(_ paths: [[P2<DomainSpace>]]) -> [[P2<ParamSpace>]] {
+            paths.map { $0.map { P2<ParamSpace>($0.v) } }
+        }
+        let phase = surface.phase!
+        let levels = Surface.levels([-.pi, 3, .pi], of: .phase)
+        Check.expect(levels == [3, .pi], "the cut is asked once, after the rest", "\(levels)")
+
+        // No period: at a level beside the cut the refiner is handed the
+        // grid's contours whole, crossings along the wrap included, which
+        // only it can tell from a level set beside a zero.
+        let field = surface.field(.phase, refine: unmoved)!
+        let placed = Contour.levels(of: field, levels, over: surface.rectangle)
+        let grid = inParameters(Contour.levels(of: phase, [3])[0].paths)
+        let alongWrap = placed[0].paths.joined().filter { $0.x < -0.2 && abs($0.y) < 1.0 / Double(m - 1) }
+        Check.expect(placed[0].paths == grid && !alongWrap.isEmpty,
+                     "the level 3 is the grid's, with its crossings along the wrap",
+                     "\(placed[0].paths.count) paths vs \(grid.count), \(alongWrap.count) along the wrap")
+        let cut = inParameters(Contour.cut(of: phase))
+        Check.expect(placed[1].paths == cut && !cut.isEmpty, "the level π is the cut, `Contour.cut`",
+                     "\(placed[1].paths.count) paths vs \(cut.count)")
+        let bare = Contour.levels(of: surface.field(.phase, refine: nil)!, levels, over: surface.rectangle)
+        Check.expect(bare[0].paths == grid && bare[1].paths.isEmpty,
+                     "without a refiner the grid's contours, and no cut",
+                     "\(bare[0].paths.count) and \(bare[1].paths.count) paths")
+
+        // A landscape layer is its field's contours at the levels it asks
+        // for, lifted; the refiner is handed the field's tag and the
+        // layer's ceiling, a tenth over the truncation for curves lifted to
+        // |f| and kept below it.
+        asked.withLock { $0 = [] }
+        let layer = surface.derive(.contour(field: .phase, levels: [-.pi, 3, .pi], restriction: .all, tiled: false),
+                                   policy: .level, region: .full, tiles: [.identity], refine: unmoved)
+        let lifted = placed.flatMap { level, paths in
+            paths.filter { $0.count >= 2 }.map { $0.map { P3<WorldSpace>($0.x, $0.y, level) } }
+        }
+        Check.expect((0..<layer.count).map { Array(layer[path: $0]) } == lifted,
+                     "a phase layer is the field's contours, lifted at their levels",
+                     "\(layer.count) paths vs \(lifted.count)")
+        _ = surface.derive(.contour(field: .magnitude, levels: [0.5], restriction: .belowTruncation, tiled: false),
+                           policy: .magnitude, region: .full, tiles: [.identity], refine: unmoved)
+        let calls = asked.withLock { $0 }
+        Check.expect(calls.sorted() == ["magnitude 0.5 \(1.1 * 0.8)", "phase 3.0 inf", "phase \(Double.pi) inf"],
+                     "placed under the field's tag and the layer's ceiling", "\(calls)")
     }
 
     Check.suite("fields: a contour is ended where it leaves the trimmed domain") {
