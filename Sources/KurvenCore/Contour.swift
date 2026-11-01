@@ -244,7 +244,7 @@ public enum Contour {
         return (0..<levels.count).map { (levels[$0], results[$0]) }
     }
 
-    static func interpolate(_ grid: Grid2D<Float>, _ level: Double,
+    private static func interpolate(_ grid: Grid2D<Float>, _ level: Double,
                                     _ ax: Int, _ ay: Int,
                                     _ bx: Int, _ by: Int) -> P2<DomainSpace> {
         let za = Double(grid[ax, ay]), zb = Double(grid[bx, by])
