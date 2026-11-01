@@ -230,26 +230,33 @@ public enum Truncation: Sendable, Equatable {
         }
     }
 
+    /// One band's part of a stretch of Re z (`bands(from:to:)`).
+    public struct BandSpan: Sendable, Equatable {
+        /// The band, as `band(atX:)` numbers it.
+        public let band: Int
+        public let height: Double
+        /// Where it holds the stretch: from `lo` up to, not including, `hi`.
+        public let lo: Double, hi: Double
+    }
+
     /// The bands that meet the stretch of Re z from `lo` to `hi`, in order
-    /// along it: each band's index (`band(atX:)`), its height, and the part
-    /// of the stretch it holds, from its start up to, not including, the
-    /// next band's. Nothing where there is no truncation.
-    public func bands(from lo: Double, to hi: Double)
-        -> [(band: Int, height: Double, lo: Double, hi: Double)] {
+    /// along it, each with the part of the stretch it holds. The truncation is
+    /// constant on each. Nothing where there is no truncation.
+    public func bands(from lo: Double, to hi: Double) -> [BandSpan] {
         switch self {
         case .none:
             return []
         case .uniform(let h):
-            return lo < hi ? [(0, h, lo, hi)] : []
+            return lo < hi ? [BandSpan(band: 0, height: h, lo: lo, hi: hi)] : []
         case .realBands(let bands, let beyond):
             // A band is x < below, less the bands before it: from the
             // greatest boundary before it to its own.
-            var out: [(band: Int, height: Double, lo: Double, hi: Double)] = []
+            var out: [BandSpan] = []
             var start = -Double.infinity
             for k in 0...bands.count {
                 let end = k < bands.count ? bands[k].below : .infinity
                 let a = max(start, lo), b = min(end, hi)
-                if a < b { out.append((k, k < bands.count ? bands[k].height : beyond, a, b)) }
+                if a < b { out.append(BandSpan(band: k, height: k < bands.count ? bands[k].height : beyond, lo: a, hi: b)) }
                 if k < bands.count { start = max(start, end) }
             }
             return out.sorted { $0.lo < $1.lo }

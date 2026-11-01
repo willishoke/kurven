@@ -171,6 +171,15 @@ public extension Surface {
             + self.walls(walls, tiles: tiles, refine: refine)
     }
 
+    /// The parameter rectangle of the graph and the plateaus: the domain,
+    /// sampled as the height grid is. Nil when the grid has fewer than two
+    /// samples along an axis, too few to span it.
+    var parameterRectangle: (u: ParamAxis, v: ParamAxis)? {
+        guard height.width >= 2, height.height >= 2 else { return nil }
+        return (ParamAxis(domain.real, periodic: false, samples: height.width),
+                ParamAxis(domain.imag, periodic: false, samples: height.height))
+    }
+
     /// The graph, where z = |f| under the truncation: its parameter
     /// rectangle the domain, sampled as the height grid is, and its trimmed
     /// domain the footprint where |f| is under the truncation height. Nil
@@ -180,7 +189,7 @@ public extension Surface {
     /// (`Heightfield.graphNormal(at:)`), or the grid's a cell wide.
     func graph(tiles: [Affine2] = [.identity], region: Region = .full,
                refine: ContourRefine? = nil) -> Face? {
-        guard let rectangle = rectangle else { return nil }
+        guard let rectangle = parameterRectangle else { return nil }
         let magnitude = faceMagnitude(refine)
         let truncation = self.truncation
         let g = height
@@ -220,12 +229,12 @@ public extension Surface {
     /// in the band.
     func plateaus(tiles: [Affine2] = [.identity], region: Region = .full,
                   refine: ContourRefine? = nil) -> [Face] {
-        guard let rectangle = rectangle else { return [] }
+        guard let rectangle = parameterRectangle else { return [] }
         let magnitude = faceMagnitude(refine)
         let truncation = self.truncation
         let real = domain.real
-        return truncation.bands(from: min(real.lo, real.hi), to: max(real.lo, real.hi)).compactMap { band in
-            let h = band.height, k = band.band
+        return truncation.bands(from: min(real.lo, real.hi), to: max(real.lo, real.hi)).compactMap { span in
+            let h = span.height, k = span.band
             guard h.isFinite else { return nil }
             return Face(
                 id: .plateau(band: k), domain: rectangle,
@@ -244,7 +253,7 @@ public extension Surface {
     /// lower, where |f| is over the lesser. It faces the lower band.
     func risers(tiles: [Affine2] = [.identity], region: Region = .full,
                 refine: ContourRefine? = nil) -> [Face] {
-        guard let rectangle = rectangle else { return [] }
+        guard let rectangle = parameterRectangle else { return [] }
         let magnitude = faceMagnitude(refine)
         let real = domain.real
         let bands = truncation.bands(from: min(real.lo, real.hi), to: max(real.lo, real.hi))
@@ -315,15 +324,6 @@ public extension Surface {
 }
 
 extension Surface {
-    /// The parameter rectangle of the graph and the plateaus: the domain,
-    /// sampled as the height grid is. Nil when the grid has fewer than two
-    /// samples along an axis, too few to span it.
-    fileprivate var rectangle: (u: ParamAxis, v: ParamAxis)? {
-        guard height.width >= 2, height.height >= 2 else { return nil }
-        return (ParamAxis(domain.real, periodic: false, samples: height.width),
-                ParamAxis(domain.imag, periodic: false, samples: height.height))
-    }
-
     /// |f| at a point of the domain, untruncated, as the faces read it: f's
     /// own with a refiner, the grid's without, and over any truncation
     /// where it is not a number.

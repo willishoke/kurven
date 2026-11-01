@@ -444,19 +444,6 @@ extension Surface {
 // MARK: - plateaus
 
 extension Surface {
-    /// Where the truncation changes across `[lo, hi]`, as the intervals it makes. The
-    /// truncation is constant on each `[a, b)`.
-    func truncationIntervals(lo: Double, hi: Double) -> [(Double, Double)] {
-        var edges = [lo]
-        if case .realBands(let bands, _) = truncation {
-            for band in bands where band.below > lo && band.below < hi {
-                edges.append(band.below)
-            }
-        }
-        edges = Array(Set(edges)).sorted() + [hi]
-        return zip(edges, edges.dropFirst()).filter { $1 > $0 }.map { ($0, $1) }
-    }
-
     func plateauHatchLines(axis: DomainAxis, spacing: Double,
                            refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         guard spacing.isFinite, spacing > 0 else { return [] }
@@ -481,7 +468,7 @@ extension Surface {
             // real axis crosses the bands and is solved piece by piece, and one
             // along the imaginary axis stays in a single band for its length.
             let intervals = axis == .real
-                ? truncationIntervals(lo: alongInterval.lo, hi: alongInterval.hi)
+                ? truncation.bands(from: alongInterval.lo, to: alongInterval.hi).map { ($0.lo, $0.hi) }
                 : [(alongInterval.lo, alongInterval.hi)]
             for (a, b) in intervals {
                 let truncationHeight = truncation.height(atX: axis == .real ? a : c)

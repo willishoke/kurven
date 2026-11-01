@@ -327,7 +327,7 @@ public extension Surface {
     ///
     /// The contours are the field's (`field(of:refine:ceiling:)`), asked for
     /// through `Contour.levels(of:_:over:contains:)` as any field's are,
-    /// over the graph's parameter rectangle (`graph(tiles:region:refine:)`).
+    /// over the graph's parameter rectangle (`parameterRectangle`).
     /// Not over its trimmed domain: the restriction says which part of the
     /// domain a layer keeps, and a run is carried to the truncation edge by
     /// `truncationCrossing`, as below. A phase level of ±π is the branch cut,
@@ -337,7 +337,7 @@ public extension Surface {
     func derive(_ source: LayerSource, policy: HeightPolicy, region: Region,
                 tiles: [Affine2], refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
         guard case .contour(let tag, let levels, let restriction, let tiled) = source,
-              let graph = graph(tiles: tiles, region: region, refine: refine) else {
+              let rectangle = parameterRectangle else {
             return .empty
         }
         let carry = refine != nil && restriction.requiresBelowTruncation
@@ -362,7 +362,7 @@ public extension Surface {
         // dropped for `Contour.cut`'s: about 0.3-0.6 ms at res 1000, under
         // 1% of the refined work. Skipping it would want the branch cut as a
         // field of its own and a second `Contour.levels` call.
-        let contoured = Contour.levels(of: scalar, tag.levels(levels), over: graph.domain)
+        let contoured = Contour.levels(of: scalar, tag.levels(levels), over: rectangle)
 
         var paths: [[P3<WorldSpace>]] = []
         for (level, placed) in contoured {

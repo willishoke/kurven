@@ -1477,11 +1477,11 @@ public extension NativeLandscape {
             // the branch cut once as the zero level of the turned phase: the
             // field under a refiner that moves nothing.
             let unmoved = ContourRefine(contours: { _, _, paths, _ in paths })
-            guard let graph = bundle.surface.graph(),
+            guard let rectangle = bundle.surface.parameterRectangle,
                   let grid = bundle.surface.field(of: field, refine: unmoved) else { continue }
             var contoured: [(level: Double, paths: [[P2<DomainSpace>]])] = []
             let gridTime = clock.measure {
-                contoured = Contour.levels(of: grid, field.levels(levels), over: graph.domain).map {
+                contoured = Contour.levels(of: grid, field.levels(levels), over: rectangle).map {
                     ($0.level, $0.paths.map { $0.map { P2<DomainSpace>($0.v) } })
                 }
             }
