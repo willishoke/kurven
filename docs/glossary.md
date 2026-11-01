@@ -31,7 +31,7 @@ and Emde, *Funktionentafeln*, 1909).
 | diagonal | A side shared by two pieces of one face. Not an edge of the solid, and never drawn. | soft edge |
 | edge | A side shared by two pieces of different faces: an edge of the solid. | crease, in the polyhedron code |
 | parametric surface | A map from a parameter rectangle, each axis possibly periodic, into space (`ParametricSurface`). | |
-| trim | The part of a parameter rectangle a face covers, given as a point membership test (`contains`; Requicha 1980), as a trimmed surface is in boundary representation. A contour is ended where it leaves it. Not the wall hatching's `trim` flag, which leaves out the lines at a wall's ends. | |
+| trimmed domain | The part of a parameter rectangle a face covers: in boundary representation, the domain of a trimmed surface, bounded by its *trim loops*. `contains` is its point membership classification (Requicha 1980); a contour is ended where a vertex of it leaves the domain. Not the wall hatching's `trim` flag, which leaves out the lines at a wall's ends. | |
 | grid | The uniform sample grid a surface or a function is evaluated on. | lattice |
 | lattice | A lattice in the mathematical sense: the period lattice of an elliptic function (`PeriodLattice`), Turing's square lattice. | |
 | seam | Where a periodic chart's rectangle is glued to itself. | also tile and chunk boundaries |

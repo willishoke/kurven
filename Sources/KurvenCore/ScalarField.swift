@@ -68,10 +68,15 @@ public extension Contour {
     /// and no crossing where the difference jumps. The samples are their own
     /// grid: nothing wraps or is unwrapped there.
     ///
-    /// `contains`, the trim, says which points of the rectangle the face
-    /// covers; on a periodic axis it is asked at unwrapped coordinates, and
-    /// answers the same a period along. A path is cut where it leaves, each
-    /// run ended on the trim by bisection along the chord it leaves by.
+    /// `contains` says which points of the rectangle lie in the face's
+    /// trimmed domain; on a periodic axis it is asked at unwrapped
+    /// coordinates, and must answer the same a period along. It is asked at
+    /// a path's vertices: a run is cut where a vertex leaves the trimmed
+    /// domain, and ended on its boundary by bisection along the chord it
+    /// leaves by. Where the boundary passes between two vertices and back,
+    /// as a hole narrower than a step does, the path is not cut: a
+    /// membership test cannot say where to look, and clipping exactly needs
+    /// the boundary itself.
     static func levels(of field: ScalarField, _ levels: [Double],
                        over rectangle: (u: ParamAxis, v: ParamAxis),
                        contains: (@Sendable (P2<ParamSpace>) -> Bool)? = nil)
@@ -179,36 +184,46 @@ public extension Contour {
         return out
     }
 
-    /// The runs of a path where `contains` holds, each end that leaves the
-    /// trim bisected onto it along its chord.
+    /// The runs of a path inside the trimmed domain, each end where a vertex
+    /// leaves it bisected onto its boundary along the chord.
+    ///
+    /// A closed path's last vertex is its first, or its first a period
+    /// along, and is taken to lie where the first does, so rounding at the
+    /// seam cannot cut a loop at its closing vertex. It is walked from a
+    /// vertex outside, so the run through its first vertex is not split in
+    /// two there.
     private static func trimmed(_ path: [P2<ParamSpace>], closed: Bool,
                                 contains: (P2<ParamSpace>) -> Bool) -> [[P2<ParamSpace>]] {
+        var points = path, inside = path.map(contains)
+        if closed {
+            inside[inside.count - 1] = inside[0]
+            guard let s = inside.firstIndex(of: false) else { return [path] }
+            if s > 0 {
+                let shift = path[path.count - 1].v - path[0].v
+                points = Array(path[s...]) + path[1...s].map { P2($0.v + shift) }
+                inside = Array(inside[s...]) + Array(inside[1...s])
+            }
+        }
         var runs: [[P2<ParamSpace>]] = [], run: [P2<ParamSpace>] = []
-        var previous: (point: P2<ParamSpace>, inside: Bool)?
-        for c in path {
-            let inside = contains(c)
-            if let p = previous, p.inside != inside {
-                let (kept, _) = bisect(inside ? c.v : p.point.v, inside ? p.point.v : c.v) {
+        for k in points.indices {
+            let c = points[k]
+            if k > 0, inside[k] != inside[k - 1] {
+                let p = points[k - 1]
+                let (kept, _) = bisect(inside[k] ? c.v : p.v, inside[k] ? p.v : c.v) {
                     contains(P2($0))
                 }
-                if inside {
-                    run = [P2(kept)]
+                // Where the boundary is a vertex, the vertex is the end.
+                if inside[k] {
+                    run = kept == c.v ? [] : [P2(kept)]
                 } else {
-                    run.append(P2(kept))
+                    if kept != p.v { run.append(P2(kept)) }
                     if run.count >= 2 { runs.append(run) }
                     run = []
                 }
             }
-            if inside { run.append(c) }
-            previous = (c, inside)
+            if inside[k] { run.append(c) }
         }
         if run.count >= 2 { runs.append(run) }
-        // A closed path cut somewhere and inside where it begins: one curve,
-        // so its first run carries on from its last.
-        guard closed, runs.count >= 2, contains(path[0]) else { return runs }
-        let shift = path[path.count - 1].v - path[0].v
-        let last = runs.removeLast()
-        runs[0] = last + runs[0].dropFirst().map { P2($0.v + shift) }
         return runs
     }
 }

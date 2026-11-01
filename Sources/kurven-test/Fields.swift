@@ -169,7 +169,7 @@ func scalarFieldTests() {
                      "\(ray.count) paths, \(turn) off its angle")
     }
 
-    Check.suite("fields: a contour is ended on the trim") {
+    Check.suite("fields: a contour is ended where it leaves the trimmed domain") {
         let square = (u: ParamAxis(Interval(lo: -1, hi: 1), periodic: false, samples: 41),
                       v: ParamAxis(Interval(lo: -1, hi: 1), periodic: false, samples: 41))
         let disc: @Sendable (P2<ParamSpace>) -> Bool = { simd_length($0.v) <= 1 }
@@ -178,16 +178,48 @@ func scalarFieldTests() {
         Check.expect(chord.count == 1 && (ends?.max() ?? 1) < 1e-12,
                      "a chord of the disc ends on its circle", "\(chord.count) runs, \(ends ?? [])")
 
-        // A closed loop cut by a half-plane is one arc, on either side, from
-        // wherever the loop happened to begin.
+        // A closed loop cut by a half-plane is one arc, on either side,
+        // whether the loop begins on the cut, inside or outside: the ring
+        // begins at its lowest point, (0, -1/2).
         let ring = ScalarField { $0.x * $0.x + $0.y * $0.y }
-        for (name, side) in [("right", 1.0), ("left", -1.0)] {
-            let arcs = Contour.levels(of: ring, [0.25], over: square,
-                                      contains: { side * $0.x >= 0 })[0].paths
-            let ends = arcs.first.map { [$0[0], $0[$0.count - 1]].map { abs($0.x) } }
-            Check.expect(arcs.count == 1 && (ends?.max() ?? 1) < 1e-12,
-                         "the \(name) half of a ring is one arc, ended on the cut",
-                         "\(arcs.count) arcs, \(ends ?? [])")
+        let cell = 2.0 / 40
+        for cut in [0.0, 0.2, -0.2] {
+            for (name, side) in [("right", 1.0), ("left", -1.0)] {
+                let arcs = Contour.levels(of: ring, [0.25], over: square,
+                                          contains: { side * ($0.x - cut) >= 0 })[0].paths
+                let ends = arcs.first.map { [$0[0], $0[$0.count - 1]].map { abs($0.x - cut) } }
+                let kept = arcs.joined().allSatisfy { side * ($0.x - cut) >= 0 }
+                let step = arcs.joined().isEmpty ? 0 : arcs.map { zip($0, $0.dropFirst())
+                    .map { simd_length($1.v - $0.v) }.max() ?? 0 }.max()!
+                Check.expect(arcs.count == 1 && (ends?.max() ?? 1) < 1e-12 && kept && step < 2 * cell,
+                             "the \(name) of x = \(cut) on a ring is one arc, ended on the cut",
+                             "\(arcs.count) arcs, ends \(ends ?? []) off, longest step \(step / cell) cells")
+            }
+        }
+
+        // A closed contour across the seam whose closing vertex lies a period
+        // past its first, where the domain may answer otherwise by rounding:
+        // v = 1 on the torus, from u = 0 to 2π, where sin 2u is 0 and -4.9e-16.
+        // Kept where sin 2u >= 0 it is two quarters, not one run with a chord
+        // across the quarter between; so too where the loop begins inside
+        // the domain, or outside it.
+        let torus = (u: ParamAxis.angle(samples: 40), v: ParamAxis.angle(samples: 30))
+        let quarters: [(String, @Sendable (Double) -> Double)] = [
+            ("sin 2u >= 0, the loop beginning on its boundary", { sin(2 * $0) }),
+            ("cos 2u >= 0, beginning inside", { cos(2 * $0) }),
+            ("-cos 2u >= 0, beginning outside", { -cos(2 * $0) }),
+        ]
+        for (name, g) in quarters {
+            let runs = Contour.levels(of: ScalarField(period: 2 * .pi) { $0.y }, [1], over: torus,
+                                      contains: { g($0.x) >= 0 })[0].paths
+            let length = runs.map { zip($0, $0.dropFirst()).map { simd_length($1.v - $0.v) }.reduce(0, +) }
+                .reduce(0, +)
+            let ends = runs.flatMap { [$0[0], $0[$0.count - 1]] }.map { abs(g($0.x)) }.max() ?? .infinity
+            // A boundary that falls on a vertex ends the run there, once.
+            let repeated = runs.contains { zip($0, $0.dropFirst()).contains { $0 == $1 } }
+            Check.expect(runs.count == 2 && abs(length - .pi) < 1e-9 && ends < 1e-14 && !repeated,
+                         "v = 1 kept where \(name) is two quarters, ended on their boundaries",
+                         "\(runs.count) runs, \(length / .pi) π long, ends \(ends) off\(repeated ? ", a vertex repeated" : "")")
         }
     }
 }
