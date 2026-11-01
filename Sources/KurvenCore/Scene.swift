@@ -1530,15 +1530,11 @@ struct FoldPlacer: Sendable {
         guard chord > 1e-9 * cell else { return }
         let mid = SIMD2(0.5 * (a.x + b.x), 0.5 * (a.y + b.y))
         let n = SIMD2(-(b.y - a.y), b.x - a.x) / chord
-        var lo = mid - 0.5 * chord * n, hi = mid + 0.5 * chord * n
-        var flo = facing(P2(lo.x, lo.y))
+        let lo = mid - 0.5 * chord * n, hi = mid + 0.5 * chord * n
+        let flo = facing(P2(lo.x, lo.y))
         guard (flo > 0) != (facing(P2(hi.x, hi.y)) > 0) else { return }
-        for _ in 0..<60 {
-            let m = 0.5 * (lo + hi)
-            let fm = facing(P2(m.x, m.y))
-            if (fm > 0) == (flo > 0) { lo = m; flo = fm } else { hi = m }
-        }
-        let q = 0.5 * (lo + hi)
+        let bracket = bisect(lo, hi) { (facing(P2($0.x, $0.y)) > 0) == (flo > 0) }
+        let q = 0.5 * (bracket.holds + bracket.fails)
         let p = P2<WorldSpace>(q.x, q.y)
         guard region.contains(p) else { return }
         let z = height(p)
@@ -1562,15 +1558,11 @@ struct FoldPlacer: Sendable {
         let len = (gx * gx + gy * gy).squareRoot()
         guard len > 0 else { return c }
         let d = SIMD2(gx, gy) / len * cell
-        var a = SIMD2(c.x, c.y) - d, b = SIMD2(c.x, c.y) + d
-        var fa = facing(P2(a.x, a.y))
+        let a = SIMD2(c.x, c.y) - d, b = SIMD2(c.x, c.y) + d
+        let fa = facing(P2(a.x, a.y))
         guard (fa > 0) != (facing(P2(b.x, b.y)) > 0) else { return c }
-        for _ in 0..<60 {
-            let m = 0.5 * (a + b)
-            let fm = facing(P2(m.x, m.y))
-            if (fm > 0) == (fa > 0) { a = m; fa = fm } else { b = m }
-        }
-        let m = 0.5 * (a + b)
+        let bracket = bisect(a, b) { (facing(P2($0.x, $0.y)) > 0) == (fa > 0) }
+        let m = 0.5 * (bracket.holds + bracket.fails)
         return P2(m.x, m.y)
     }
 
@@ -1603,17 +1595,12 @@ struct FoldPlacer: Sendable {
     /// along the gradient instead can miss where the facing is sharp -- a
     /// pit one cell wide -- and leave the vertex on the chord.
     func ontoEdge(_ c: P2<WorldSpace>) -> P2<WorldSpace> {
-        for (a0, b0) in gridEdges(through: c) {
-            var a = a0, b = b0
-            var fa = facing(P2(a.x, a.y))
+        for (a, b) in gridEdges(through: c) {
+            let fa = facing(P2(a.x, a.y))
             let fb = facing(P2(b.x, b.y))
             guard (fa > 0) != (fb > 0) else { continue }
-            for _ in 0..<60 {
-                let m = 0.5 * (a + b)
-                let fm = facing(P2(m.x, m.y))
-                if (fm > 0) == (fa > 0) { a = m; fa = fm } else { b = m }
-            }
-            let m = 0.5 * (a + b)
+            let bracket = bisect(a, b) { (facing(P2($0.x, $0.y)) > 0) == (fa > 0) }
+            let m = 0.5 * (bracket.holds + bracket.fails)
             return P2(m.x, m.y)
         }
         return onto(c)
@@ -1633,27 +1620,19 @@ struct FoldPlacer: Sendable {
         let n = SIMD2(-(b.y - a.y), b.x - a.x) / chord
         func onFold(_ t: Double) -> P2<WorldSpace> {
             let m = SIMD2(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y))
-            var lo = m - 0.5 * chord * n, hi = m + 0.5 * chord * n
-            var flo = facing(P2(lo.x, lo.y))
+            let lo = m - 0.5 * chord * n, hi = m + 0.5 * chord * n
+            let flo = facing(P2(lo.x, lo.y))
             guard (flo > 0) != (facing(P2(hi.x, hi.y)) > 0) else { return P2(m.x, m.y) }
-            for _ in 0..<60 {
-                let c = 0.5 * (lo + hi)
-                let fc = facing(P2(c.x, c.y))
-                if (fc > 0) == (flo > 0) { lo = c; flo = fc } else { hi = c }
-            }
-            let c = 0.5 * (lo + hi)
+            let bracket = bisect(lo, hi) { (facing(P2($0.x, $0.y)) > 0) == (flo > 0) }
+            let c = 0.5 * (bracket.holds + bracket.fails)
             return P2(c.x, c.y)
         }
         func excess(_ t: Double) -> Double {
             let q = onFold(t)
             return graphHeight(q) - surface.truncation.height(atX: q.x)
         }
-        var lo = 0.0, hi = 1.0
-        guard excess(lo) < 0, excess(hi) >= 0 else { return nil }
-        for _ in 0..<60 {
-            let m = 0.5 * (lo + hi)
-            if excess(m) < 0 { lo = m } else { hi = m }
-        }
+        guard excess(0) < 0, excess(1) >= 0 else { return nil }
+        let (lo, hi) = bisect(0, 1) { excess($0) < 0 }
         let q = onFold(0.5 * (lo + hi))
         let truncationHeight = surface.truncation.height(atX: q.x)
         guard region.contains(q), truncationHeight.isFinite else { return nil }

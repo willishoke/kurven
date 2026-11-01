@@ -1,5 +1,4 @@
 import Foundation
-import Dispatch
 import simd
 
 /// A scalar field on a face's parameter rectangle: what a level set is taken
@@ -94,17 +93,10 @@ public extension Contour {
                                     over rectangle: (u: ParamAxis, v: ParamAxis))
         -> [(level: Double, paths: [[P2<ParamSpace>]])] {
         let (u, v) = rectangle
-        // Row by row in parallel, each writing only its own row.
-        var stored = [Double](repeating: 0, count: u.samples * v.samples)
-        stored.withUnsafeMutableBufferPointer { out in
-            nonisolated(unsafe) let base = out.baseAddress!
-            DispatchQueue.concurrentPerform(iterations: v.samples) { j in
-                for i in 0..<u.samples {
-                    base[j * u.samples + i] = field.value(P2(u.coordinate(i), v.coordinate(j)))
-                }
-            }
+        // Row by row in parallel.
+        let samples = Heightfield.parallelMap(Array(0..<(u.samples * v.samples)), chunk: u.samples) { k in
+            field.value(P2(u.coordinate(k % u.samples), v.coordinate(k / u.samples)))
         }
-        let samples = stored
         let w = u.periodic ? u.samples + 1 : u.samples, h = v.periodic ? v.samples + 1 : v.samples
         let domain = Domain(real: u.range, imag: v.range)
 
@@ -128,25 +120,14 @@ public extension Contour {
                 let pb = SIMD2(u.coordinate(b.x), v.coordinate(b.y))
                 // From the end the grid has at or under the level to the end
                 // over it, so the bisection keeps the grid's own bracket.
-                var (under, over) = grid[a.x, a.y] > 0 ? (pb, pa) : (pa, pb)
-                for _ in 0..<60 {
-                    let m = 0.5 * (under + over)
-                    if excess(field.value(P2(m))) > 0 { over = m } else { under = m }
-                }
-                return P2(0.5 * (under + over))
+                let (under, over) = grid[a.x, a.y] > 0 ? (pb, pa) : (pa, pb)
+                let bracket = bisect(under, over) { !(excess(field.value(P2($0))) > 0) }
+                return P2(0.5 * (bracket.holds + bracket.fails))
             }
             return paths.map { unwrapped($0, u.period, v.period) }
         }
 
-        guard levels.count > 1 else { return levels.map { ($0, lines(at: $0)) } }
-        var results = [[[P2<ParamSpace>]]](repeating: [], count: levels.count)
-        results.withUnsafeMutableBufferPointer { out in
-            nonisolated(unsafe) let base = out.baseAddress!
-            DispatchQueue.concurrentPerform(iterations: levels.count) { k in
-                base[k] = lines(at: levels[k])
-            }
-        }
-        return zip(levels, results).map { ($0, $1) }
+        return zip(levels, Heightfield.parallelMap(levels, chunk: 1, lines)).map { ($0, $1) }
     }
 
     /// A path whose every step is the short way round a periodic axis.
@@ -172,10 +153,8 @@ public extension Contour {
         for c in path {
             let inside = contains(c)
             if let p = previous, p.inside != inside {
-                var (kept, cut) = inside ? (c.v, p.point.v) : (p.point.v, c.v)
-                for _ in 0..<60 {
-                    let m = 0.5 * (kept + cut)
-                    if contains(P2(m)) { kept = m } else { cut = m }
+                let (kept, _) = bisect(inside ? c.v : p.point.v, inside ? p.point.v : c.v) {
+                    contains(P2($0))
                 }
                 if inside {
                     run = [P2(kept)]

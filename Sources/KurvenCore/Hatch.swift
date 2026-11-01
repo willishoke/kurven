@@ -560,14 +560,9 @@ extension Surface {
     /// The coordinate between `lo` and `hi` where `f` changes sign, bisected
     /// to the last bit; `lo` when it does not.
     static func bisected(_ lo: Double, _ hi: Double, _ f: (Double) -> Double) -> Double {
-        var a = lo, b = hi
-        var fa = f(a)
-        guard (fa < 0) != (f(b) < 0) else { return lo }
-        for _ in 0..<60 {
-            let m = 0.5 * (a + b)
-            let fm = f(m)
-            if (fm < 0) == (fa < 0) { a = m; fa = fm } else { b = m }
-        }
+        let flo = f(lo)
+        guard (flo < 0) != (f(hi) < 0) else { return lo }
+        let (a, b) = bisect(lo, hi) { (f($0) < 0) == (flo < 0) }
         return 0.5 * (a + b)
     }
 
@@ -673,12 +668,8 @@ extension Surface {
                 if eDown.isFinite, (eDown > 0) != (elo > 0) { hi = near.y - Double(k - 1) * step; ehi = excess(hi); lo = down; elo = eDown; found = true; break }
             }
             guard found, (elo > 0) != (ehi > 0) else { return nil }
-            for _ in 0..<60 {
-                let m = 0.5 * (lo + hi)
-                let em = excess(m)
-                if (em > 0) == (elo > 0) { lo = m; elo = em } else { hi = m; ehi = em }
-            }
-            return P2(b, 0.5 * (lo + hi))
+            let bracket = bisect(lo, hi) { (excess($0) > 0) == (elo > 0) }
+            return P2(b, 0.5 * (bracket.holds + bracket.fails))
         }
 
         var out: [[P3<WorldSpace>]] = []
