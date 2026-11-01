@@ -181,7 +181,10 @@ public struct ContourRefine: Sendable {
     /// level set, given the field, the level, the marching-squares paths in
     /// domain space, and the ceiling: the height above which the curves are cut
     /// away (`Restriction.belowTruncation`), so a stretch of a phase line wholly above it
-    /// need not be placed. `.infinity` places all of it.
+    /// need not be placed. `.infinity` places all of it. It is how |f| and
+    /// arg f place their contours as scalar fields: `Surface.field(of:refine:ceiling:)`
+    /// builds each a `place` that calls this with the tag and the ceiling
+    /// closed over. It is also how the truncation edge is placed.
     public typealias Contours = @Sendable (ContourField, Double, [[P2<DomainSpace>]], Double)
         -> [[P2<DomainSpace>]]
     /// |f| at a domain point, untruncated, as the grid would hold it.
@@ -273,6 +276,54 @@ public extension Surface {
         return P3(x, a.y + (b.y - a.y) * t, truncation.height(atX: x))
     }
 
+    /// The parameter rectangle of the graph: the domain, sampled as the
+    /// height grid is. Nil when the grid has fewer than two samples along an
+    /// axis, too few to span it.
+    ///
+    /// |f| and arg f are placed fields, contoured on their own samples, and
+    /// `Contour.levels(of:_:over:contains:)` reads their rectangle only to
+    /// test the trimmed domain, which the graph does not ask. It is here for
+    /// that call's signature; phase 3's `Face` will supply the domain.
+    var rectangle: (u: ParamAxis, v: ParamAxis)? {
+        guard height.width >= 2, height.height >= 2 else { return nil }
+        return (ParamAxis(domain.real, periodic: false, samples: height.width),
+                ParamAxis(domain.imag, periodic: false, samples: height.height))
+    }
+
+    /// |f| or arg f, as `tag` names it, as a scalar field on the graph,
+    /// contoured on its grid and placed on f by `refine`
+    /// (`ContourRefine.Contours`), which is handed the tag and `ceiling`, the
+    /// height above which a layer's curves are cut away. Without a refiner
+    /// the grid's paths are the contours. Nil for arg f on a landscape with
+    /// no phase grid.
+    ///
+    /// arg f is circle-valued and has no period here: the refiner owns its
+    /// branch cut, the level ±π. Beside a zero of f a grid edge can span
+    /// more than π of phase, which the refiner keeps by testing the edge's
+    /// midpoint on f, and the rule a circle-valued field is contoured by --
+    /// no crossing on an edge whose samples differ by more than half a
+    /// period -- would drop it. So the refiner is handed the grid's own
+    /// paths, the spurious crossings along the wrap included, and at the
+    /// branch cut the zero level of arg(-f) (`Contour.cut`), which it places
+    /// there. Without a refiner the branch cut has no contour: nothing would
+    /// drop the wrap's crossings.
+    func field(of tag: ContourField, refine: ContourRefine?, ceiling: Double = .infinity)
+        -> ScalarField? {
+        let samples: Grid2D<Float>
+        switch tag {
+        case .magnitude: samples = height
+        case .phase:
+            guard let phase else { return nil }
+            samples = phase
+        }
+        return ScalarField(samples: samples) { level, paths in
+            let isCut = tag == .phase && Contour.isCut(level)
+            guard let refine else { return isCut ? [] : paths }
+            let lines = isCut ? Contour.cut(of: samples) : paths.map { $0.map { P2<DomainSpace>($0.v) } }
+            return refine.contours(tag, level, lines, ceiling).map { $0.map { P2<ParamSpace>($0.v) } }
+        }
+    }
+
     /// Every level of a described layer, contoured, lifted, filtered and tiled.
     ///
     /// A path that leaves the kept region and comes back is split where it left,
@@ -288,29 +339,16 @@ public extension Surface {
     /// exactly what Python derives from the same grids, which ends at the
     /// last sample, and the fixtures hold it to that.
     ///
-    /// A phase level of ±π is the cut, where arg f jumps, and the grid has no
-    /// contour at it. With a refiner it is drawn once, as one line of curves the
-    /// way the Jahnke-Emde plates draw it (`Contour.cut`), under the level π
-    /// so the refiner knows to place it on arg(-f) = 0.
+    /// The contours are the field's (`field(of:refine:ceiling:)`), asked for
+    /// through `Contour.levels(of:_:over:contains:)` as any field's are. A
+    /// phase level of ±π is the branch cut, where arg f jumps, and the grid
+    /// has no contour at it. With a refiner it is drawn once, after the other
+    /// levels, as one line of curves the way the Jahnke-Emde plates draw it.
     func derive(_ source: LayerSource, policy: HeightPolicy, region: Region,
                 tiles: [Affine2], refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
-        guard case .contour(let field, let levels, let restriction, let tiled) = source else {
+        guard case .contour(let tag, let levels, let restriction, let tiled) = source,
+              let rectangle else {
             return .empty
-        }
-        let grid: Grid2D<Float>
-        var contoured: [(level: Double, paths: [[P2<DomainSpace>]])]
-        switch field {
-        case .magnitude:
-            grid = height
-            contoured = Contour.levels(of: grid, levels)
-        case .phase:
-            guard let phase else { return .empty }
-            grid = phase
-            let plain = levels.filter { !Contour.isCut($0) }
-            contoured = Contour.levels(of: grid, plain)
-            if refine != nil, plain.count < levels.count {
-                contoured.append((.pi, Contour.cut(of: grid)))
-            }
         }
         let carry = refine != nil && restriction.requiresBelowTruncation
         // Curves lifted to |f| and kept below the truncation are cut away wherever |f|
@@ -320,22 +358,25 @@ public extension Surface {
         // dips under. Curves lifted to the truncated surface are drawn on the plateau's
         // top, and placed all over.
         let ceiling = restriction.requiresBelowTruncation && policy == .magnitude ? 1.1 * truncation.highest : .infinity
+        guard let scalar = field(of: tag, refine: refine, ceiling: ceiling) else { return .empty }
 
         // A refiner has the function the grid was sampled from and moves
         // the vertices onto its true level set, in domain space, before
         // the lift: the grid decides which contours exist, f decides
-        // exactly where they run. Every level at once: a level is a few
-        // closed rings, each followed along its own length, and refined one
-        // level at a time a layer kept two cores of ten busy.
-        let refinedLevels: [[[P2<DomainSpace>]]] = refine.map { r in
-            Heightfield.parallelMap(contoured.map { ($0.level, $0.paths) }, chunk: 1) { level, lines in
-                r.contours(field, level, lines, ceiling)
-            }
-        } ?? contoured.map(\.paths)
+        // exactly where they run. Every level at once, as `Contour.levels`
+        // hands them on: a level is a few closed rings, each followed along
+        // its own length, and refined one level at a time a layer kept two
+        // cores of ten busy.
+        //
+        // Marching squares runs at the branch cut too, and its paths are
+        // dropped for `Contour.cut`'s: about 0.3-0.6 ms at res 1000, under
+        // 1% of the refined work. Skipping it would want the branch cut as a
+        // field of its own and a second `Contour.levels` call.
+        let contoured = Contour.levels(of: scalar, tag.levels(levels), over: rectangle)
 
         var paths: [[P3<WorldSpace>]] = []
-        for ((level, _), refined) in zip(contoured, refinedLevels) {
-            for line in refined {
+        for (level, placed) in contoured {
+            for line in placed.map({ $0.map { P2<DomainSpace>($0.v) } }) {
                 // Lifted onto f where the function is at hand: a phase line
                 // lifted to the grid's height stands a chord's error off
                 // the surface the rings, the folds and the top edge are drawn
@@ -397,5 +438,15 @@ public extension Surface {
         return PolylineSet(paths: tiles.flatMap { tile in
             paths.map { $0.map { tile($0) } }
         })
+    }
+}
+
+public extension ContourField {
+    /// The levels a layer's contours are asked for: as listed, but for arg f
+    /// a level of ±π is the branch cut, asked once, as π, after the rest.
+    func levels(_ listed: [Double]) -> [Double] {
+        guard self == .phase else { return listed }
+        let plain = listed.filter { !Contour.isCut($0) }
+        return plain.count < listed.count ? plain + [.pi] : listed
     }
 }

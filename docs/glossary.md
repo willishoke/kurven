@@ -43,7 +43,7 @@ and Emde, *Funktionentafeln*, 1909).
 | Term | Meaning | Was |
 |---|---|---|
 | curve | A polyline on a surface, in world space, before visibility and projection. | ink |
-| scalar field | A function on a face's parameter rectangle, whose level sets are drawn: a coordinate, a height, \|f\|, arg f (`ScalarField`). A *circle-valued* field, such as arg f or the coordinate along a periodic axis, is defined up to whole multiples of its period. | |
+| scalar field | A function on a face's parameter rectangle, whose level sets are drawn: a coordinate, a height, \|f\|, arg f (`ScalarField`). A *circle-valued* field, such as arg f or the coordinate along a periodic axis, is defined up to whole multiples of its period (arg f's branch cut is the refiner's: `Surface.field`). | |
 | level set, contour | The curve where a field takes one value: \|f\| = c, arg f = θ. A smooth field's are found by marching squares on its samples, each vertex then bisected onto the level set along its grid edge (`Contour.levels(of:_:over:contains:)`); a field with a routine of its own, as \|f\| and arg f have the refiner, places them through the same call (`ScalarField.Contouring.placed`). | |
 | restriction | The part of the domain a contour is kept to: the footprint, below the truncation, a band, or an intersection of these (`Restriction`). | keep |
 | coordinate curves | The curves u = const and v = const on a parametric surface. | parameter lines |
