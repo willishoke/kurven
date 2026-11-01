@@ -385,8 +385,9 @@ public extension Surface {
     /// last sample, and the fixtures hold it to that.
     ///
     /// The contours are the field's (`field(of:refine:ceiling:)`), asked for
-    /// through `Contour.levels(of:_:over:contains:)` as any field's are,
-    /// over the graph's parameter rectangle (`parameterRectangle`).
+    /// through `Contour.levels(of:_:over:contains:trimLoops:)` as any
+    /// field's are, over the graph's parameter rectangle
+    /// (`parameterRectangle`).
     /// Not over its trimmed domain: the restriction says which part of the
     /// domain a layer keeps, and a run is carried to the truncation edge by
     /// `truncationCrossing`, as below. A phase level of ±π is the branch cut,
