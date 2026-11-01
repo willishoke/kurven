@@ -462,11 +462,11 @@ func topEdgeTests() {
                      String(format: "%d ends beside it, %d further off, worst %.4f cells", interiorEnds, farEnds, worstEnd / cell))
     }
 
-    Check.suite("banded truncation edge: a tower cut at two heights, its truncation edge on f band by band, with the step's top") {
+    Check.suite("banded truncation edge: a tower cut at two heights, its truncation edge on f band by band, with the riser's top") {
         // 1/(z - 1/2) over Re [-1/2, 3/2], Im [-1, 1]: a tower at 1/2, truncated
         // at 2 for Re z < 1/2 and at 4 beyond. The truncation edge is the half circle
         // |z - 1/2| = 1/2 on the left and |z - 1/2| = 1/4 on the right, and
-        // between them, along Re z = 1/2, the top of the step: 2 at |Im z|
+        // between them, along Re z = 1/2, the top of the riser: 2 at |Im z|
         // = 1/2, rising with |f| = 1/|Im z| to 4 at |Im z| = 1/4, flat at 4
         // between.
         let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
@@ -475,19 +475,19 @@ func topEdgeTests() {
         let bundle = try NativeLandscape.build(request, refine: true)
         let truncationEdge = try bundle.layer("truncation_edge").paths
         func f(_ v: P3<WorldSpace>) -> Double { 1 / ((v.x - 0.5) * (v.x - 0.5) + v.y * v.y).squareRoot() }
-        var leftOff = 0.0, rightOff = 0.0, stepOff = 0.0, left = 0, right = 0, step = 0
-        var leftEnds: [Double] = [], rightEnds: [Double] = [], stepEnds: [Double] = []
+        var leftOff = 0.0, rightOff = 0.0, riserOff = 0.0, left = 0, right = 0, risers = 0
+        var leftEnds: [Double] = [], rightEnds: [Double] = [], riserEnds: [Double] = []
         for i in 0..<truncationEdge.count {
             let p = Array(truncationEdge[path: i])
-            let onStep = p.allSatisfy { abs($0.x - 0.5) < 1e-12 }
-            if onStep {
-                step += 1
-                for v in p { stepOff = max(stepOff, abs(v.z - min(f(v), 4))) }
-                stepEnds += [p.first!.y, p.last!.y]
+            let onRiser = p.allSatisfy { abs($0.x - 0.5) < 1e-12 }
+            if onRiser {
+                risers += 1
+                for v in p { riserOff = max(riserOff, abs(v.z - min(f(v), 4))) }
+                riserEnds += [p.first!.y, p.last!.y]
                 // a curve to the tolerance: no chord's midpoint height off by more than it
                 for (a, b) in zip(p, p.dropFirst()) {
                     let ym = 0.5 * (a.y + b.y), zm = min(1 / abs(ym), 4)
-                    stepOff = max(stepOff, min(abs(zm - 0.5 * (a.z + b.z)), 1) * 0.0) // measured below
+                    riserOff = max(riserOff, min(abs(zm - 0.5 * (a.z + b.z)), 1) * 0.0) // measured below
                 }
             } else if p.allSatisfy({ $0.x <= 0.5 + 1e-12 }) {
                 left += 1
@@ -509,10 +509,10 @@ func topEdgeTests() {
                      String(format: "%d ends, worst %.1e", leftEnds.count, le))
         Check.expect(rightEnds.count == 2 && re < 1e-9, "the right truncation edge ends on the boundary at Im z = ±1/4",
                      String(format: "%d ends, worst %.1e", rightEnds.count, re))
-        let se = stepEnds.map { abs(abs($0) - 0.5) }.max() ?? .infinity
-        Check.expect(step == 1 && se < 1e-9 && stepOff < 1e-9,
-                     "and the step's top runs along the boundary from one left end to the other, at min(|f|, 4)",
-                     String(format: "%d pieces, ends off by %.1e, heights off by %.1e", step, se, stepOff))
+        let se = riserEnds.map { abs(abs($0) - 0.5) }.max() ?? .infinity
+        Check.expect(risers == 1 && se < 1e-9 && riserOff < 1e-9,
+                     "and the riser's top runs along the boundary from one left end to the other, at min(|f|, 4)",
+                     String(format: "%d pieces, ends off by %.1e, heights off by %.1e", risers, se, riserOff))
         var sag = 0.0
         for i in 0..<truncationEdge.count {
             let p = Array(truncationEdge[path: i])
@@ -525,7 +525,7 @@ func topEdgeTests() {
         let cell = 2.0 / 31
         Check.expect(sag <= 0.02 * cell + 1e-12, "and is a curve to the refiner's tolerance",
                      String(format: "worst sag %.2e against %.2e", sag, 0.02 * cell))
-        // The top edge of the front edge (Im z = -1) steps at Re z = 1/2: two
+        // The top edge of the front edge (Im z = -1) meets the riser at Re z = 1/2: two
         // vertices there, at each band's height, |f| = 1 being under both.
         let wallEdges = try bundle.layer("wall_edges").paths
         var topEdge: [P3<WorldSpace>] = []
@@ -533,10 +533,10 @@ func topEdgeTests() {
             let p = Array(wallEdges[path: i])
             if p.allSatisfy({ abs($0.y + 1) < 1e-9 }), Set(p.map { $0.z }).count > 1, p.count > topEdge.count { topEdge = p }
         }
-        let atStep = topEdge.filter { abs($0.x - 0.5) < 1e-9 }
-        Check.expect(atStep.count == 2 && atStep.allSatisfy { abs($0.z - 1) < 1e-9 },
-                     "the front top edge has the step's two vertices at Re z = 1/2, both at |f| = 1 there",
-                     "\(atStep.count) vertices, heights \(atStep.map { String(format: "%.4f", $0.z) })")
+        let atRiser = topEdge.filter { abs($0.x - 0.5) < 1e-9 }
+        Check.expect(atRiser.count == 2 && atRiser.allSatisfy { abs($0.z - 1) < 1e-9 },
+                     "the front top edge has two vertices on the riser at Re z = 1/2, both at |f| = 1 there",
+                     "\(atRiser.count) vertices, heights \(atRiser.map { String(format: "%.4f", $0.z) })")
         Check.expect(topEdge.allSatisfy { $0.z <= min(f($0), $0.x < 0.5 ? 2 : 4) + 1e-9 }, "and none rises above its band's truncation")
     }
 

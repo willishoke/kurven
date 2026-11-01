@@ -196,27 +196,27 @@ extension Surface {
         var topEdge: [P3<WorldSpace>] = []
         topEdge.reserveCapacity(n)
         var previous: (p: P2<DomainSpace>, excess: Double)?
-        // The nodes along the edge; with the function, where a banded truncation
-        // steps between two nodes, the step's two vertices as well, on
-        // either side of the boundary at its own band's height -- the
-        // boundary itself belongs to the band beyond it, so the near side
-        // is a rounding step short of it.
+        // The nodes along the edge; with the function, where the edge meets a
+        // riser between two nodes, two vertices there as well, one either
+        // side of the boundary at its own band's height -- the boundary
+        // itself belongs to the band beyond it, so the near side is a
+        // rounding step short of it.
         var stations: [P2<DomainSpace>] = (0..<n).map { Surface.point(on: edge, at: Double($0) / Double(n - 1)) }
         if magnitudeOfF != nil, case .realBands(let bands, _) = truncation {
-            var withSteps: [P2<DomainSpace>] = []
+            var withRisers: [P2<DomainSpace>] = []
             for (a, b) in zip(stations, stations.dropFirst()) {
-                withSteps.append(a)
+                withRisers.append(a)
                 for band in bands {
                     let x = band.below
                     guard (a.x < x && b.x >= x) || (b.x < x && a.x >= x), b.x != a.x else { continue }
                     let t = (x - a.x) / (b.x - a.x)
                     let y = a.y + (b.y - a.y) * t
                     let near = P2<DomainSpace>(a.x < x ? x.nextDown : x, y), far = P2<DomainSpace>(a.x < x ? x : x.nextDown, y)
-                    withSteps.append(near); withSteps.append(far)
+                    withRisers.append(near); withRisers.append(far)
                 }
             }
-            withSteps.append(stations[stations.count - 1])
-            stations = withSteps
+            withRisers.append(stations[stations.count - 1])
+            stations = withRisers
         }
         for p in stations {
             let u = magnitudeOfF.map { $0(inTile(p, tiles: tiles)) } ?? magnitude(at: p, tiles: tiles)
@@ -296,7 +296,7 @@ extension Surface {
         func subdivide(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>, depth: Int,
                        into out: inout [P3<WorldSpace>]) {
             guard depth < 5, a.z.isFinite, b.z.isFinite else { return }
-            // The two vertices of a banded truncation's step stand at one point.
+            // The two vertices either side of a riser stand at one point.
             guard abs(a.x - b.x) + abs(a.y - b.y) > 1e-9 * cell else { return }
             let mid = P2<DomainSpace>(0.5 * (a.x + b.x), 0.5 * (a.y + b.y))
             let z = profile(mid)
@@ -444,19 +444,6 @@ extension Surface {
 // MARK: - plateaus
 
 extension Surface {
-    /// Where the truncation changes across `[lo, hi]`, as the intervals it makes. The
-    /// truncation is constant on each `[a, b)`.
-    func truncationIntervals(lo: Double, hi: Double) -> [(Double, Double)] {
-        var edges = [lo]
-        if case .realBands(let bands, _) = truncation {
-            for band in bands where band.below > lo && band.below < hi {
-                edges.append(band.below)
-            }
-        }
-        edges = Array(Set(edges)).sorted() + [hi]
-        return zip(edges, edges.dropFirst()).filter { $1 > $0 }.map { ($0, $1) }
-    }
-
     func plateauHatchLines(axis: DomainAxis, spacing: Double,
                            refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         guard spacing.isFinite, spacing > 0 else { return [] }
@@ -481,7 +468,7 @@ extension Surface {
             // real axis crosses the bands and is solved piece by piece, and one
             // along the imaginary axis stays in a single band for its length.
             let intervals = axis == .real
-                ? truncationIntervals(lo: alongInterval.lo, hi: alongInterval.hi)
+                ? truncation.bands(from: alongInterval.lo, to: alongInterval.hi).map { ($0.lo, $0.hi) }
                 : [(alongInterval.lo, alongInterval.hi)]
             for (a, b) in intervals {
                 let truncationHeight = truncation.height(atX: axis == .real ? a : c)
@@ -595,7 +582,7 @@ extension Surface {
     /// is re-solved by the top edge's own bisection along that edge
     /// (`truncationCrossing`), so the top edge meets the truncation edge to rounding. A banded
     /// truncation edge is placed band by band at each band's own level
-    /// (`bandedTruncationEdge`), with the top of the wall where the truncation steps.
+    /// (`bandedTruncationEdge`), with the top of each riser.
     func truncationEdge(tiles: [Affine2] = [.identity], refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         guard let excess = truncationExcess() else { return [] }
         var out: [[P3<WorldSpace>]] = []
@@ -632,7 +619,7 @@ extension Surface {
     /// |f| = that band's truncation: the grid's truncation edge lines are split by band, each
     /// run placed by the refiner at its own level, and a run's end beside a
     /// band's boundary is solved onto the boundary, where |f| reaches the
-    /// truncation along it. Where the truncation steps the surface has a wall, and its
+    /// truncation along it. Where the truncation steps the surface has a riser, and its
     /// top is the truncation edge there: along the boundary, at the lesser truncation where
     /// |f| is below it and at f's own height up to the greater truncation, from
     /// one end of the lesser band's truncation edge to the other. The grid's vertices
@@ -713,7 +700,7 @@ extension Surface {
                 }
             }
         }
-        // The top of each step wall: between the two ends of the lesser
+        // The top of each riser: between the two ends of the lesser
         // band's truncation edge on the boundary, nearest each other in y, at f's
         // height truncated by the greater band.
         for (b, ends) in endsOnBoundary {

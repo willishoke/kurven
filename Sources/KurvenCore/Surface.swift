@@ -98,6 +98,65 @@ public struct Surface: Sendable {
         magnitude(at: inTile(p, tiles: tiles))
     }
 
+    /// The outward normal of the truncated surface over a world point of a
+    /// tiled landscape: `(-∂h/∂x, -∂h/∂y, 1)`, not normalized, by central
+    /// differences a grid spacing wide, the height read through whichever
+    /// tile the point is in. Differences in world coordinates, so a tile's
+    /// reflection is already in them; on a plateau the differences vanish
+    /// and the normal is up.
+    ///
+    /// With the function (`refine`), the slope is f's own, read by
+    /// differences a step small against the cell and large against
+    /// rounding, as the refiner reads it: the curves on the surface are placed
+    /// on f to the last bit, and a facing read off the grid a cell wide
+    /// tests it with a ruler a cell long -- a ring ends a stencil's width
+    /// short of the fold on a convex graph and shows a stencil's width past
+    /// it on a hump, whatever the grid. Without the function, the grid
+    /// is the surface and its chords are the slope.
+    func normal(at p: P2<WorldSpace>, tiles: [Affine2], refine: ContourRefine?) -> SIMD3<Double> {
+        let g = height
+        let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1))
+        let dy = abs(g.domain.imag.length) / Double(max(g.height - 1, 1))
+        if let magnitude = refine?.magnitude {
+            let step = 1e-4 * max(dx, dy)
+            func h(_ x: Double, _ y: Double) -> Double {
+                let q = inTile(P2<DomainSpace>(x, y), tiles: tiles)
+                let u = magnitude(q)
+                return min(u.isNaN ? .infinity : u, truncation.height(atX: q.x))
+            }
+            let hx = (h(p.x + step, p.y) - h(p.x - step, p.y)) / (2 * step)
+            let hy = (h(p.x, p.y + step) - h(p.x, p.y - step)) / (2 * step)
+            if hx.isFinite, hy.isFinite { return SIMD3(-hx, -hy, 1) }
+        }
+        func h(_ x: Double, _ y: Double) -> Double {
+            height(at: P2<DomainSpace>(x, y), tiles: tiles)
+        }
+        let hx = (h(p.x + dx, p.y) - h(p.x - dx, p.y)) / (2 * dx)
+        let hy = (h(p.x, p.y + dy) - h(p.x, p.y - dy)) / (2 * dy)
+        return SIMD3(-hx, -hy, 1)
+    }
+
+    /// The normal of the graph over `p`: f's own slope, untruncated, read as
+    /// `normal(at:tiles:refine:)` reads it, so a fold is traced on the one
+    /// surface the graph is and continues below the truncation, where the
+    /// truncation edge cuts it. The truncated normal without the function,
+    /// or where f's slope is not finite.
+    func graphNormal(at p: P2<WorldSpace>, tiles: [Affine2], refine: ContourRefine?) -> SIMD3<Double> {
+        guard let magnitude = refine?.magnitude else { return normal(at: p, tiles: tiles, refine: refine) }
+        let g = height
+        let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1))
+        let dy = abs(g.domain.imag.length) / Double(max(g.height - 1, 1))
+        let step = 1e-4 * max(dx, dy)
+        func h(_ x: Double, _ y: Double) -> Double {
+            let u = magnitude(inTile(P2<DomainSpace>(x, y), tiles: tiles))
+            return u.isNaN ? .infinity : u
+        }
+        let hx = (h(p.x + step, p.y) - h(p.x - step, p.y)) / (2 * step)
+        let hy = (h(p.x, p.y + step) - h(p.x, p.y - step)) / (2 * step)
+        guard hx.isFinite, hy.isFinite else { return normal(at: p, tiles: tiles, refine: refine) }
+        return SIMD3(-hx, -hy, 1)
+    }
+
     /// The point of the fundamental tile a world point is the image of.
     func inTile(_ p: P2<DomainSpace>, tiles: [Affine2]) -> P2<DomainSpace> {
         guard tiles.count > 1 else { return p }
@@ -276,20 +335,6 @@ public extension Surface {
         return P3(x, a.y + (b.y - a.y) * t, truncation.height(atX: x))
     }
 
-    /// The parameter rectangle of the graph: the domain, sampled as the
-    /// height grid is. Nil when the grid has fewer than two samples along an
-    /// axis, too few to span it.
-    ///
-    /// |f| and arg f are placed fields, contoured on their own samples, and
-    /// `Contour.levels(of:_:over:contains:)` reads their rectangle only to
-    /// test the trimmed domain, which the graph does not ask. It is here for
-    /// that call's signature; phase 3's `Face` will supply the domain.
-    var rectangle: (u: ParamAxis, v: ParamAxis)? {
-        guard height.width >= 2, height.height >= 2 else { return nil }
-        return (ParamAxis(domain.real, periodic: false, samples: height.width),
-                ParamAxis(domain.imag, periodic: false, samples: height.height))
-    }
-
     /// |f| or arg f, as `tag` names it, as a scalar field on the graph,
     /// contoured on its grid and placed on f by `refine`
     /// (`ContourRefine.Contours`), which is handed the tag and `ceiling`, the
@@ -340,14 +385,18 @@ public extension Surface {
     /// last sample, and the fixtures hold it to that.
     ///
     /// The contours are the field's (`field(of:refine:ceiling:)`), asked for
-    /// through `Contour.levels(of:_:over:contains:)` as any field's are. A
-    /// phase level of ±π is the branch cut, where arg f jumps, and the grid
-    /// has no contour at it. With a refiner it is drawn once, after the other
-    /// levels, as one line of curves the way the Jahnke-Emde plates draw it.
+    /// through `Contour.levels(of:_:over:contains:)` as any field's are,
+    /// over the graph's parameter rectangle (`parameterRectangle`).
+    /// Not over its trimmed domain: the restriction says which part of the
+    /// domain a layer keeps, and a run is carried to the truncation edge by
+    /// `truncationCrossing`, as below. A phase level of ±π is the branch cut,
+    /// where arg f jumps, and the grid has no contour at it. With a refiner
+    /// it is drawn once, after the other levels, as one line of curves the
+    /// way the Jahnke-Emde plates draw it.
     func derive(_ source: LayerSource, policy: HeightPolicy, region: Region,
                 tiles: [Affine2], refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
         guard case .contour(let tag, let levels, let restriction, let tiled) = source,
-              let rectangle else {
+              let rectangle = parameterRectangle else {
             return .empty
         }
         let carry = refine != nil && restriction.requiresBelowTruncation

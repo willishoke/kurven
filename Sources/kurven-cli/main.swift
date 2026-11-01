@@ -842,7 +842,7 @@ func bench(_ args: Args) throws {
     guard args.switches.contains("visibility"), let h = base.heightfield else { return }
     let view = camera(1).view
     let grid = Heightfield(surface: h.surface, occluder: h.occluder, tiles: h.tiles,
-                           region: h.region, step: h.step, refine: nil)
+                           region: h.region, step: h.step, refine: nil, walls: h.walls)
     func seconds(_ d: Duration) -> Double {
         Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
     }

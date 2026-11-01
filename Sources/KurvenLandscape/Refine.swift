@@ -1477,7 +1477,7 @@ public extension NativeLandscape {
             // the branch cut once as the zero level of the turned phase: the
             // field under a refiner that moves nothing.
             let unmoved = ContourRefine(contours: { _, _, paths, _ in paths })
-            guard let rectangle = bundle.surface.rectangle,
+            guard let rectangle = bundle.surface.parameterRectangle,
                   let grid = bundle.surface.field(of: field, refine: unmoved) else { continue }
             var contoured: [(level: Double, paths: [[P2<DomainSpace>]])] = []
             let gridTime = clock.measure {
