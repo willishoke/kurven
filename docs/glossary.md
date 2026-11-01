@@ -23,7 +23,7 @@ and Emde, *Funktionentafeln*, 1909).
 | plateau | The flat part of a landscape where \|f\| ≥ h(x). | cap, cap face, truncated top |
 | truncation edge | Where the graph meets a plateau: the level set \|f\| = h(x). | rim, cap outline |
 | wall | A vertical face along an edge of the window's perimeter, closing the solid. Its *top edge* follows the surface, its *bottom edge* is on the floor, and a *vertical edge* stands at each corner. | crest, foot, post |
-| riser | The vertical face where a banded truncation steps between two bands' heights, from the lesser up to \|f\| or the greater, facing the lower band: a stair's riser, with the plateaus as its treads. | step wall |
+| riser | The vertical face where a banded truncation steps between two bands' heights, from the lesser up to \|f\| or the greater, facing the lower band: a stair's riser, with the plateaus as its treads. | step wall; step, in this sense |
 | crease | A curve where a surface is continuous but its normal is not, such as a truncation edge. Standard in line drawing. | |
 | face | A region of one smooth surface, flat or curved, bounded by loops: the boundary-representation sense (Mäntylä 1988). A landscape's graph, each plateau, riser and wall; a parametric surface, which is one face; each maximal flat region of a polyhedron's boundary, possibly not convex and possibly with holes (`Face`, `FaceID`, `SceneGeometry.faces`). On a tiled landscape the graph, a plateau or a riser is one face, copied to every tile. | facet |
 | manifold | The closed surface a solid is bounded by: its faces together. In boundary representation, its *shell*. | |
