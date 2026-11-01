@@ -219,6 +219,43 @@ public enum Truncation: Sendable, Equatable {
         }
     }
 
+    /// The band world x lies in: the index of the first listed band it is
+    /// under, the count of them beyond the last, and 0 for a uniform
+    /// truncation's one band. Nil where there is no truncation.
+    public func band(atX x: Double) -> Int? {
+        switch self {
+        case .none: nil
+        case .uniform: 0
+        case .realBands(let bands, _): bands.firstIndex(where: { x < $0.below }) ?? bands.count
+        }
+    }
+
+    /// The bands that meet the stretch of Re z from `lo` to `hi`, in order
+    /// along it: each band's index (`band(atX:)`), its height, and the part
+    /// of the stretch it holds, from its start up to, not including, the
+    /// next band's. Nothing where there is no truncation.
+    public func bands(from lo: Double, to hi: Double)
+        -> [(band: Int, height: Double, lo: Double, hi: Double)] {
+        switch self {
+        case .none:
+            return []
+        case .uniform(let h):
+            return lo < hi ? [(0, h, lo, hi)] : []
+        case .realBands(let bands, let beyond):
+            // A band is x < below, less the bands before it: from the
+            // greatest boundary before it to its own.
+            var out: [(band: Int, height: Double, lo: Double, hi: Double)] = []
+            var start = -Double.infinity
+            for k in 0...bands.count {
+                let end = k < bands.count ? bands[k].below : .infinity
+                let a = max(start, lo), b = min(end, hi)
+                if a < b { out.append((k, k < bands.count ? bands[k].height : beyond, a, b)) }
+                if k < bands.count { start = max(start, end) }
+            }
+            return out.sorted { $0.lo < $1.lo }
+        }
+    }
+
     /// The greatest truncation height anywhere; `.infinity` where there is
     /// none.
     public var highest: Double {

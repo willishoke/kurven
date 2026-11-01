@@ -20,10 +20,15 @@ here are defined in the [glossary](glossary.md).
 
 **Faces.** A landscape's boundary is the graph, where z = |f(x + iy)|; the
 plateaus, where |f| reaches the truncation height and the surface is cut
-flat; and the walls along the window's edges. A torus is one face. A
-polyhedron's faces are flat, possibly not convex and possibly with holes,
-and each is cut into convex pieces for visibility and hatching (see
-[solids.md](solids.md)).
+flat; the risers, where a banded truncation steps between two heights; and
+the walls along the window's edges. A torus is one face. A polyhedron's
+faces are flat, possibly not convex and possibly with holes, and each is
+cut into convex pieces for visibility and hatching (see
+[solids.md](solids.md)). Each is a `Face` (`SceneGeometry.faces`): a map
+from a parameter rectangle, trimmed to the part of it the face covers, with
+`contains` saying which part that is. Together they tile the solid's
+boundary, its manifold; a tiled landscape's graph is one face, copied to
+every tile.
 
 **Curves.** Most curves are level sets of a field on a face: contours of
 |f| and arg f on the graph, coordinate curves on a torus, hatch lines on a
@@ -132,7 +137,7 @@ the surface.
 cut flat. A contour that reaches a plateau is carried to the truncation
 edge, the level set |f| = h(x), solved exactly. Under a banded truncation
 (gamma's, one height per band of Re z) the truncation edge is not a level
-set of |f| at all, and the step between two bands is a wall of its own.
+set of |f| at all, and the riser between two bands is a face of its own.
 
 **Hatching.** Walls and plateaus are hatched: vertical lines up the walls,
 lines along an axis across the plateaus (`Hatch.swift`). Both are the same

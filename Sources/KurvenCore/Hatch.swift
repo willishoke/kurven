@@ -713,7 +713,7 @@ extension Surface {
                 }
             }
         }
-        // The top of each step wall: between the two ends of the lesser
+        // The top of each riser: between the two ends of the lesser
         // band's truncation edge on the boundary, nearest each other in y, at f's
         // height truncated by the greater band.
         for (b, ends) in endsOnBoundary {

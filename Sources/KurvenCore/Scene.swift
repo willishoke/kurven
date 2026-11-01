@@ -30,18 +30,22 @@ public struct Heightfield: Sendable {
     /// The function behind the grids, when a consumer attached one to the
     /// bundle: the fold curves are carried to its zeros.
     public let refine: ContourRefine?
+    /// The walls as the manifest gives them: a perimeter they stand on, which
+    /// is their faces (`faces`), or a mesh, already in `occluder`.
+    public let walls: Walls
 
     public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],
-                region: Region = .full, step: Int, refine: ContourRefine? = nil) {
+                region: Region = .full, step: Int, refine: ContourRefine? = nil,
+                walls: Walls = .none) {
         self.surface = surface; self.occluder = occluder; self.tiles = tiles
-        self.region = region; self.step = step; self.refine = refine
+        self.region = region; self.step = step; self.refine = refine; self.walls = walls
     }
 
     /// The same heightfield for one thread of a parallel visibility test: its
     /// function forked (`ContourRefine.fork`), its grids shared.
     public func forked() -> Heightfield {
         Heightfield(surface: surface, occluder: occluder, tiles: tiles, region: region,
-                    step: step, refine: refine?.forked())
+                    step: step, refine: refine?.forked(), walls: walls)
     }
 
     /// The same heightfield without its function: traced and tested on the
@@ -50,7 +54,7 @@ public struct Heightfield: Sendable {
     /// moving.
     public var onGrid: Heightfield {
         Heightfield(surface: surface, occluder: occluder, tiles: tiles,
-                    region: region, step: step, refine: nil)
+                    region: region, step: step, refine: nil, walls: walls)
     }
 
     /// Every vertex of the decimated, truncated heightfield, once per tile.
@@ -1099,11 +1103,12 @@ public struct Scene: Sendable {
     /// A heightfield scene.
     public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],
                 region: Region = .full, step: Int, layers: [Layer], camera: Camera,
-                mode: PreviewMode = .drawing, depthTolerance: Double, refine: ContourRefine? = nil) {
+                mode: PreviewMode = .drawing, depthTolerance: Double, refine: ContourRefine? = nil,
+                walls: Walls = .none) {
         self.init(content: ContentID(), curves: ContentID(),
                   geometry: .heightfield(Heightfield(surface: surface, occluder: occluder,
                                                      tiles: tiles, region: region, step: step,
-                                                     refine: refine)),
+                                                     refine: refine, walls: walls)),
                   layers: layers, camera: camera, mode: mode, depthTolerance: depthTolerance)
     }
 
@@ -1134,7 +1139,8 @@ public struct Scene: Sendable {
                   layers: bundle.layers,
                   camera: .oblique(preset.projection),
                   depthTolerance: preset.depthTolerance,
-                  refine: bundle.refine)
+                  refine: bundle.refine,
+                  walls: bundle.manifest.occluder.walls)
     }
 
     /// The heightfield, when that is what this scene draws.

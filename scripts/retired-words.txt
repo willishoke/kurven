@@ -27,6 +27,7 @@ Fill(?! [a-z])
 [Ff]lanks?
 [Cc]rests?
 [Ww]all[ _-]?[Oo]utlines?
+[Ss]tep[ _-]?[Ww]alls?
 [Pp]itch
 [Ss]ilhouettes?
 # Linear curves on a torus, not the winding number.
