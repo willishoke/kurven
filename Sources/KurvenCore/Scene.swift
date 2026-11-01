@@ -68,9 +68,9 @@ public struct Heightfield: Sendable {
         }
     }
 
-    /// The outward normal of the truncated surface over a world point:
-    /// `(-∂h/∂x, -∂h/∂y, 1)`, not normalized, by central differences a grid
-    /// spacing wide, the height read through whichever tile the point is in.
+    /// The outward normal of the truncated surface over a world point,
+    /// through the heightfield's tiles and its function when it has one
+    /// (`Surface.normal(at:tiles:refine:)`).
     ///
     /// The solid is what lies under the graph, so outward is up, and a
     /// line of sight that reaches a point of the surface facing away from the
@@ -79,60 +79,15 @@ public struct Heightfield: Sendable {
     /// depth tolerance cannot make -- where a steep graph turns away, the back of it
     /// lies within the depth tolerance of the front for a stretch that zoom
     /// magnifies, and back-face curves show there as ticks.
-    ///
-    /// Differences in world coordinates, so a tile's reflection is already
-    /// in them; on the plateau the differences vanish and the normal is up.
-    ///
-    /// With the function at hand (`refine`), the slope is f's own, read by
-    /// differences a step small against the cell and large against
-    /// rounding, as the refiner reads it: the curves on the surface are placed
-    /// on f to the last bit, and a facing read off the grid a cell wide
-    /// tests it with a ruler a cell long -- a ring ends a stencil's width
-    /// short of the fold on a convex graph and shows a stencil's width past
-    /// it on a hump, whatever the grid. Without the function, the grid
-    /// is the surface and its chords are the slope.
     public func normal(at p: P2<WorldSpace>) -> SIMD3<Double> {
-        let g = surface.height
-        let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1))
-        let dy = abs(g.domain.imag.length) / Double(max(g.height - 1, 1))
-        if let magnitude = refine?.magnitude {
-            let step = 1e-4 * max(dx, dy)
-            func h(_ x: Double, _ y: Double) -> Double {
-                let q = surface.inTile(P2<DomainSpace>(x, y), tiles: tiles)
-                let u = magnitude(q)
-                return min(u.isNaN ? .infinity : u, surface.truncation.height(atX: q.x))
-            }
-            let hx = (h(p.x + step, p.y) - h(p.x - step, p.y)) / (2 * step)
-            let hy = (h(p.x, p.y + step) - h(p.x, p.y - step)) / (2 * step)
-            if hx.isFinite, hy.isFinite { return SIMD3(-hx, -hy, 1) }
-        }
-        func h(_ x: Double, _ y: Double) -> Double {
-            surface.height(at: P2<DomainSpace>(x, y), tiles: tiles)
-        }
-        let hx = (h(p.x + dx, p.y) - h(p.x - dx, p.y)) / (2 * dx)
-        let hy = (h(p.x, p.y + dy) - h(p.x, p.y - dy)) / (2 * dy)
-        return SIMD3(-hx, -hy, 1)
+        surface.normal(at: p, tiles: tiles, refine: refine)
     }
 
-    /// The normal of the graph over `p`: f's own slope, untruncated, read as
-    /// `normal(at:)` reads it, so a fold is traced on the one surface the
-    /// graph is and continues below the truncation, where the truncation edge cuts it. The
-    /// truncated normal without the function, or where f's slope is not
-    /// finite.
-    func graphNormal(at p: P2<WorldSpace>) -> SIMD3<Double> {
-        guard let magnitude = refine?.magnitude else { return normal(at: p) }
-        let g = surface.height
-        let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1))
-        let dy = abs(g.domain.imag.length) / Double(max(g.height - 1, 1))
-        let step = 1e-4 * max(dx, dy)
-        func h(_ x: Double, _ y: Double) -> Double {
-            let u = magnitude(surface.inTile(P2<DomainSpace>(x, y), tiles: tiles))
-            return u.isNaN ? .infinity : u
-        }
-        let hx = (h(p.x + step, p.y) - h(p.x - step, p.y)) / (2 * step)
-        let hy = (h(p.x, p.y + step) - h(p.x, p.y - step)) / (2 * step)
-        guard hx.isFinite, hy.isFinite else { return normal(at: p) }
-        return SIMD3(-hx, -hy, 1)
+    /// The normal of the graph over `p`, untruncated where the heightfield
+    /// has its function (`Surface.graphNormal(at:tiles:refine:)`): what the
+    /// fold curves are traced by, and the graph face's.
+    public func graphNormal(at p: P2<WorldSpace>) -> SIMD3<Double> {
+        surface.graphNormal(at: p, tiles: tiles, refine: refine)
     }
 
     /// The fold curves under a camera: where the surface turns edge-on,

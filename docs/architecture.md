@@ -27,8 +27,10 @@ cut into convex pieces for visibility and hatching (see
 [solids.md](solids.md)). Each is a `Face` (`SceneGeometry.faces`): a map
 from a parameter rectangle, trimmed to the part of it the face covers, with
 `contains` saying which part that is. Together they tile the solid's
-boundary, its manifold; a tiled landscape's graph is one face, copied to
-every tile.
+boundary, its manifold, but for a landscape's sides where it has no walls
+or walls given as a mesh, which describe no face. A tiled landscape's graph
+is one face with a copy on every tile, each turned by its tile and cut to
+the footprint where it stands.
 
 **Curves.** Most curves are level sets of a field on a face: contours of
 |f| and arg f on the graph, coordinate curves on a torus, hatch lines on a

@@ -1,19 +1,20 @@
 import Foundation
 import simd
 
-/// Which part of a solid's boundary a face is.
-public enum FaceID: Sendable, Hashable {
+/// Which part of a solid's boundary a face is, in the order a landscape
+/// lists its faces (`Surface.faces(tiles:region:walls:refine:)`).
+public enum FaceID: Sendable, Hashable, Comparable {
     /// A landscape's graph, where z = |f|.
     case graph
     /// The plateau of one band of the truncation, numbered as
     /// `Truncation.band(atX:)` numbers them; a uniform truncation's one
     /// plateau is band 0.
     case plateau(band: Int)
-    /// The wall along one edge of the walls' perimeter.
-    case wall(edge: Int)
     /// The riser where a banded truncation steps, at the end of band `band`
     /// toward greater Re z.
     case riser(band: Int)
+    /// The wall along one edge of the walls' perimeter.
+    case wall(edge: Int)
     /// A parametric surface's one face.
     case surface
     /// A polyhedron's face, as `Solid.loops` lists them.
@@ -21,16 +22,19 @@ public enum FaceID: Sendable, Hashable {
 }
 
 /// A face in the boundary-representation sense (Mäntylä 1988): a region of
-/// one smooth surface, flat or curved, bounded by loops. The faces of a
-/// solid together are its manifold, the closed surface it is bounded by;
-/// in boundary representation, its shell.
+/// one smooth surface, flat or curved, bounded by loops. A solid's faces
+/// together are its manifold, the surface it is bounded by, in boundary
+/// representation its shell. That is closed for a polyhedron, a torus, or a
+/// landscape standing on walls given as a perimeter; a landscape's faces
+/// leave its sides open where it has no walls, or walls given as a mesh,
+/// which describe no face.
 ///
 /// A face is a map from a parameter rectangle into space, trimmed: the part
-/// of the rectangle it covers is its *trimmed domain*, bounded by its trim
-/// loops, and `contains` is the domain's point membership classification
-/// (Requicha 1980). A landscape's faces are its graph, a plateau per band
-/// of the truncation, a riser where the truncation steps between two bands,
-/// and a wall along each edge of the walls' perimeter
+/// of the parameter plane it covers is its *trimmed domain*, bounded by its
+/// trim loops, and each copy's `contains` is the domain's point membership
+/// classification (Requicha 1980). A landscape's faces are its graph, a
+/// plateau per band of the truncation, a riser where the truncation steps
+/// between two bands, and a wall along each edge of the walls' perimeter
 /// (`Surface.faces(tiles:region:walls:refine:)`); a parametric surface is
 /// one face (`ParametricSurface.face`); a polyhedron's faces are its loops,
 /// flat (`Solid.face(_:)`). `SceneGeometry.faces` lists a scene's.
@@ -40,28 +44,68 @@ public enum FaceID: Sendable, Hashable {
 public struct Face: Sendable {
     public let id: FaceID
     /// The parameter rectangle the map is defined on, and where a field on
-    /// the face is sampled to be contoured.
+    /// the face is sampled to be contoured. It covers the trimmed domain,
+    /// except up a wall or a riser with no finite truncation over it: there
+    /// it stops at the grid's highest sample, and f can rise over its
+    /// samples.
     public let domain: (u: ParamAxis, v: ParamAxis)
-    /// Whether a point of the parameter rectangle lies in the trimmed
-    /// domain. On a periodic axis it answers the same a period along.
-    public let contains: @Sendable (P2<ParamSpace>) -> Bool
-    /// The point of space at a point of the parameter rectangle, with its
-    /// two partial derivatives.
+    /// The point of space at a point of the parameter plane, with its two
+    /// partial derivatives: the face where it is first, before a copy moves
+    /// it (`Copy.place`).
     public let map: @Sendable (P2<ParamSpace>) -> SurfaceJet
-    /// `+1` when `du × dv` points out of the solid the face bounds, `-1`
-    /// when it points in; nil when it bounds no solid.
-    public let outward: Double?
-    /// The copies of the face in space: the face itself is the identity's,
-    /// and a landscape's graph, plateaus and risers are copied by its tiles,
-    /// as its curves are (`Occluder.tiles`).
-    public let instances: [Affine2]
+    /// Where the face is in space. One copy, on the identity, but for a tiled
+    /// landscape's graph, plateaus and risers, which have one per tile, as
+    /// the curves on them do (`Occluder.tiles`): contoured once, then
+    /// replicated.
+    public let copies: [Copy]
 
+    /// One copy of a face: where it is, which way it faces, and how much of
+    /// it is there.
+    public struct Copy: Sendable {
+        /// The map from the face's own place to this copy's.
+        public let tile: Affine2
+        /// `+1` when `du × dv`, carried into place (`place`), points out of
+        /// the solid the face bounds, `-1` when it points in; nil when the
+        /// face bounds no solid. The face's own orientation turned by the
+        /// tile: a reflected copy's is the other way.
+        public let outward: Double?
+        /// Whether a point of the parameter plane lies in this copy's
+        /// trimmed domain. Answered anywhere in the plane, not only on the
+        /// rectangle: the face's own trim is part of it (a landscape face
+        /// ends at the domain's edge, a wall at its edge's ends), and so is
+        /// the footprint, tested at the copy's point in space, as the mesh
+        /// and visibility test it. On a periodic axis it answers the same a
+        /// period along.
+        public let contains: @Sendable (P2<ParamSpace>) -> Bool
+
+        /// A jet of the face's map carried into place: its point moved by the
+        /// tile, its derivatives turned with it, heights kept.
+        public func place(_ jet: SurfaceJet) -> SurfaceJet {
+            func turned(_ d: SIMD3<Double>) -> SIMD3<Double> {
+                SIMD3(tile.a * d.x + tile.b * d.y, tile.c * d.x + tile.d * d.y, d.z)
+            }
+            return SurfaceJet(position: tile(P3<WorldSpace>(jet.position)).v,
+                              du: turned(jet.du), dv: turned(jet.dv))
+        }
+    }
+
+    /// A face in one place, on the identity.
     public init(id: FaceID, domain: (u: ParamAxis, v: ParamAxis),
                 contains: @escaping @Sendable (P2<ParamSpace>) -> Bool,
-                map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet,
-                outward: Double?, instances: [Affine2] = [.identity]) {
-        self.id = id; self.domain = domain; self.contains = contains; self.map = map
-        self.outward = outward; self.instances = instances
+                map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet, outward: Double?) {
+        self.init(id: id, domain: domain, map: map, outward: outward, tiles: [.identity]) { p, _ in contains(p) }
+    }
+
+    /// A face copied by `tiles`: each copy faces as `outward` says, turned by
+    /// its tile, and holds what `contains` says asked with its tile.
+    public init(id: FaceID, domain: (u: ParamAxis, v: ParamAxis),
+                map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet, outward: Double?,
+                tiles: [Affine2], contains: @escaping @Sendable (P2<ParamSpace>, Affine2) -> Bool) {
+        self.id = id; self.domain = domain; self.map = map
+        copies = tiles.map { tile in
+            let turn: Double = tile.a * tile.d - tile.b * tile.c < 0 ? -1 : 1
+            return Copy(tile: tile, outward: outward.map { $0 * turn }, contains: { contains($0, tile) })
+        }
     }
 }
 
@@ -153,16 +197,18 @@ public extension Surface {
     /// and a wall along each edge of the walls' perimeter, in that order.
     /// Nothing for a grid too small to span its domain.
     ///
-    /// The graph, the plateaus and the risers lie over the domain, are
-    /// trimmed to the footprint, and are copied by the tiles: contoured
-    /// once, then replicated, as the curves on them are. The walls stand on
-    /// the perimeter in world space, their top edge read through whichever
-    /// tile is under it. Walls given as a mesh describe no face.
+    /// The graph, the plateaus and the risers lie over the domain and are
+    /// copied by the tiles: contoured once, then replicated, as the curves on
+    /// them are. Each copy is cut to the footprint where it stands in space,
+    /// as the mesh and visibility cut it. The walls stand on the perimeter in
+    /// space, their top edge read through whichever tile is under it. Walls
+    /// given as a mesh describe no face.
     ///
-    /// With a refiner the faces are f's: the graph is |f| and every
-    /// membership that compares |f| with the truncation reads f. Without one
-    /// the grid is the surface. Where |f| is not a number it counts as
-    /// over any truncation, as the facing reads it.
+    /// The faces bound the solid the drawing tests curves against. With a
+    /// refiner they are f's: the graph is |f| and every membership that
+    /// compares |f| with the truncation reads f. Without one the grid is the
+    /// surface. Where |f| is not a number it counts as over any truncation,
+    /// as the facing reads it.
     func faces(tiles: [Affine2] = [.identity], region: Region = .full, walls: Walls = .none,
                refine: ContourRefine? = nil) -> [Face] {
         guard let graph = graph(tiles: tiles, region: region, refine: refine) else { return [] }
@@ -180,48 +226,32 @@ public extension Surface {
                 ParamAxis(domain.imag, periodic: false, samples: height.height))
     }
 
-    /// The graph, where z = |f| under the truncation: its parameter
-    /// rectangle the domain, sampled as the height grid is, and its trimmed
-    /// domain the footprint where |f| is under the truncation height. Nil
-    /// when the grid has fewer than two samples along an axis, too few to
-    /// span it. The derivatives are the untruncated slope: f's, by
-    /// differences a step small against the cell, as the fold curves read it
-    /// (`Heightfield.graphNormal(at:)`), or the grid's a cell wide.
+    /// The graph, where z = |f| under the truncation: over the parameter
+    /// rectangle, its trimmed domain where |f| is under the truncation
+    /// height, in the footprint. Nil when the grid is too small to span its
+    /// domain. Its derivatives are the slope the graph's normal is read from
+    /// (`graphNormal(at:tiles:refine:)`), so `du × dv` is the normal the
+    /// facing reads: f's own, untruncated, with a refiner; without one the
+    /// grid's chords, truncated.
     func graph(tiles: [Affine2] = [.identity], region: Region = .full,
                refine: ContourRefine? = nil) -> Face? {
         guard let rectangle = parameterRectangle else { return nil }
         let magnitude = faceMagnitude(refine)
         let truncation = self.truncation
-        let g = height
-        let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1))
-        let dy = abs(g.domain.imag.length) / Double(max(g.height - 1, 1))
-        let grid = self
-        let slope: @Sendable (P2<DomainSpace>) -> SIMD2<Double> = { p in
-            // f's own slope by differences a step small against the cell;
-            // the grid's chords a cell wide where there is no f, or its
-            // slope is not finite.
-            if refine?.magnitude != nil {
-                let step = 1e-4 * max(dx, dy)
-                let hx = (magnitude(P2(p.x + step, p.y)) - magnitude(P2(p.x - step, p.y))) / (2 * step)
-                let hy = (magnitude(P2(p.x, p.y + step)) - magnitude(P2(p.x, p.y - step))) / (2 * step)
-                if hx.isFinite, hy.isFinite { return SIMD2(hx, hy) }
-            }
-            let hx = (grid.magnitude(at: P2(p.x + dx, p.y)) - grid.magnitude(at: P2(p.x - dx, p.y))) / (2 * dx)
-            let hy = (grid.magnitude(at: P2(p.x, p.y + dy)) - grid.magnitude(at: P2(p.x, p.y - dy))) / (2 * dy)
-            return SIMD2(hx, hy)
-        }
+        let surface = self
         return Face(
             id: .graph, domain: rectangle,
-            contains: { p in
-                rectangle.u.covers(p.x) && rectangle.v.covers(p.y) && region.contains(P2(p.x, p.y))
-                    && magnitude(P2(p.x, p.y)) < truncation.height(atX: p.x)
-            },
             map: { p in
-                let q = P2<DomainSpace>(p.v), s = slope(q)
-                return SurfaceJet(position: SIMD3(p.x, p.y, magnitude(q)),
-                                  du: SIMD3(1, 0, s.x), dv: SIMD3(0, 1, s.y))
+                let n = surface.graphNormal(at: P2(p.x, p.y), tiles: tiles, refine: refine)
+                return SurfaceJet(position: SIMD3(p.x, p.y, magnitude(P2(p.x, p.y))),
+                                  du: SIMD3(1, 0, -n.x), dv: SIMD3(0, 1, -n.y))
             },
-            outward: 1, instances: tiles)
+            outward: 1, tiles: tiles,
+            contains: { p, tile in
+                rectangle.u.covers(p.x) && rectangle.v.covers(p.y)
+                    && region.contains(tile(P3(p.x, p.y, 0)).xy)
+                    && magnitude(P2(p.x, p.y)) < truncation.height(atX: p.x)
+            })
     }
 
     /// A plateau per band of the truncation that meets the domain and has a
@@ -238,53 +268,73 @@ public extension Surface {
             guard h.isFinite else { return nil }
             return Face(
                 id: .plateau(band: k), domain: rectangle,
-                contains: { p in
-                    rectangle.u.covers(p.x) && rectangle.v.covers(p.y) && region.contains(P2(p.x, p.y))
-                        && truncation.band(atX: p.x) == k && !(magnitude(P2(p.x, p.y)) < h)
-                },
                 map: { p in SurfaceJet(position: SIMD3(p.x, p.y, h), du: SIMD3(1, 0, 0), dv: SIMD3(0, 1, 0)) },
-                outward: 1, instances: tiles)
+                outward: 1, tiles: tiles,
+                contains: { p, tile in
+                    rectangle.u.covers(p.x) && rectangle.v.covers(p.y)
+                        && region.contains(tile(P3(p.x, p.y, 0)).xy)
+                        && truncation.band(atX: p.x) == k && !(magnitude(P2(p.x, p.y)) < h)
+                })
         }
     }
 
-    /// A riser at each boundary inside the domain between two bands of
-    /// different heights: the vertical face x = b, its parameters (y, z),
-    /// from the lesser height up to |f| or the greater height, whichever is
-    /// lower, where |f| is over the lesser. It faces the lower band.
+    /// A riser at each boundary x = b between two bands of different
+    /// heights: the vertical face there, its parameters (y, z), from the
+    /// lesser height up to |f| or the greater, whichever is lower, facing the
+    /// lower band. A boundary on the domain's far edge has one too: the
+    /// truncation is read at a point's own x, so the band beyond starts on
+    /// the edge, and the surface drops to it there.
+    ///
+    /// It stands where the footprint holds the higher band's side, read a
+    /// hair either side of the boundary, and the lower band's side too, or
+    /// else has the higher band on its left. There a wall on the boundary
+    /// rises to the truncation at its own x, which is the band to the right,
+    /// the lower, and the riser stands on it; with the higher band on the
+    /// right the wall rises all the way, and where the footprint holds only
+    /// the lower side the wall is all there is.
     func risers(tiles: [Affine2] = [.identity], region: Region = .full,
                 refine: ContourRefine? = nil) -> [Face] {
         guard let rectangle = parameterRectangle else { return [] }
         let magnitude = faceMagnitude(refine)
+        let truncation = self.truncation
         let real = domain.real
-        let bands = truncation.bands(from: min(real.lo, real.hi), to: max(real.lo, real.hi))
+        let (lo, hi) = (min(real.lo, real.hi), max(real.lo, real.hi))
+        let spans = truncation.bands(from: lo, to: hi)
+        var boundaries = zip(spans, spans.dropFirst()).map { (left: $0, right: $1.height, at: $0.hi) }
+        if let last = spans.last, let k = truncation.band(atX: hi), k != last.band {
+            boundaries.append((last, truncation.height(atX: hi), hi))
+        }
         let highest = highestSample
-        return zip(bands, bands.dropFirst()).compactMap { left, right in
-            let b = left.hi
-            let lesser = min(left.height, right.height), greater = max(left.height, right.height)
+        let side = 1e-9 * cell
+        let y = rectangle.v
+        return boundaries.compactMap { left, right, b in
+            let lesser = min(left.height, right), greater = max(left.height, right)
             guard lesser.isFinite, lesser < greater else { return nil }
-            let y = rectangle.v
+            let leftHigher = left.height > right
             return Face(
                 id: .riser(band: left.band),
                 domain: (y, ParamAxis(Interval(lo: lesser, hi: greater.isFinite ? greater : max(highest, lesser)),
                                       periodic: false, samples: 2)),
-                contains: { p in
-                    y.covers(p.x) && region.contains(P2(b, p.x))
-                        && p.y >= lesser && p.y <= min(magnitude(P2(b, p.x)), greater)
-                },
                 map: { p in SurfaceJet(position: SIMD3(b, p.x, p.y), du: SIMD3(0, 1, 0), dv: SIMD3(0, 0, 1)) },
-                outward: left.height > right.height ? 1 : -1, instances: tiles)
+                outward: leftHigher ? 1 : -1, tiles: tiles,
+                contains: { p, tile in
+                    guard y.covers(p.x), p.y >= lesser, p.y <= min(magnitude(P2(b, p.x)), greater) else { return false }
+                    let leftHeld = b > lo && region.contains(tile(P3(b - side, p.x, 0)).xy)
+                    let rightHeld = b < hi && region.contains(tile(P3(b + side, p.x, 0)).xy)
+                    return leftHeld && (rightHeld || leftHigher)
+                })
         }
     }
 
     /// A wall along each edge of the perimeter: its parameters the distance
     /// along the edge and the height, from the base up to the top edge, the
-    /// truncated surface over the edge (`topEdge(of:tiles:refine:)`, here
-    /// exact rather than sampled). The perimeter's turn says which side is
-    /// out: counter-clockwise from above, `du × dv` is.
-    ///
-    /// The rectangle's height runs up to the highest truncation, or without
-    /// one to the grid's highest sample: a bound to sample a field on, not
-    /// part of membership, since f can rise over its samples.
+    /// truncated surface over the edge read through the tile under it, as
+    /// the wall's curtain reads it (`Mesh.wallCurtain`), here exact rather
+    /// than sampled. The point on the edge is `a + (b - a) t`, which keeps
+    /// a vertical edge's x, so a wall standing on a band's boundary reads
+    /// the truncation there, the band to the right, all along it. The
+    /// perimeter's turn says which side is out: counter-clockwise from
+    /// above, `du × dv` is.
     func walls(_ walls: Walls, tiles: [Affine2] = [.identity],
                refine: ContourRefine? = nil) -> [Face] {
         guard case .perimeter(let perimeter, let base) = walls else { return [] }
@@ -302,16 +352,15 @@ public extension Surface {
             guard length > 0 else { return nil }
             let s = ParamAxis(Interval(lo: 0, hi: length), periodic: false, samples: max(edge.density, 2))
             @Sendable func foot(_ distance: Double) -> P2<DomainSpace> {
-                let q = Surface.point(on: edge, at: distance / length)
-                return P2(q.x, q.y)
+                P2(edge.start.v + along * (distance / length))
             }
             return Face(
                 id: .wall(edge: k),
                 domain: (s, ParamAxis(Interval(lo: base, hi: max(top, base)), periodic: false, samples: 2)),
                 contains: { p in
                     guard s.covers(p.x), p.y >= base else { return false }
-                    let q = foot(p.x)
-                    return p.y <= min(magnitude(grid.inTile(q, tiles: tiles)), truncation.height(atX: q.x))
+                    let q = grid.inTile(foot(p.x), tiles: tiles)
+                    return p.y <= min(magnitude(q), truncation.height(atX: q.x))
                 },
                 map: { p in
                     let q = foot(p.x)
