@@ -132,15 +132,41 @@ func scalarFieldTests() {
             values[j * n + i] = Float(x * x + y * y)
         } }
         let samples = Grid2D(width: n, height: n, domain: domain, values: values)
-        let field = ScalarField(samples: samples, value: { $0.x }, place: { level, paths in
+        let field = ScalarField(samples: samples) { level, paths in
             paths.map { $0.map { P2($0.x + level, $0.y) } }
-        })
+        }
         let square = (u: ParamAxis(Interval(lo: -1, hi: 1), periodic: false, samples: n),
                       v: ParamAxis(Interval(lo: -1, hi: 1), periodic: false, samples: n))
         let got = Contour.levels(of: field, [0.25], over: square)[0].paths
         let want = Contour.lines(of: samples, level: 0.25).map { $0.map { P2<ParamSpace>($0.x + 0.25, $0.y) } }
         Check.expect(got == want, "the grid's contours, as the routine places them",
                      "\(got.count) paths vs \(want.count)")
+
+        // arg z round the origin, handed on as the samples' contours: a
+        // circle-valued field's routine is handed its cut at π, where the
+        // samples pass from π to -π, and no crossing along the cut at a
+        // level beside it.
+        let m = 40
+        var phases = [Float](repeating: 0, count: m * m)
+        for j in 0..<m { for i in 0..<m {
+            let x = -1 + 2 * Double(i) / Double(m - 1), y = -1 + 2 * Double(j) / Double(m - 1)
+            phases[j * m + i] = Float(atan2(y, x))
+        } }
+        let phase = ScalarField(samples: Grid2D(width: m, height: m, domain: domain, values: phases),
+                                period: 2 * .pi) { _, paths in paths }
+        let window = (u: ParamAxis(Interval(lo: -1, hi: 1), periodic: false, samples: m),
+                      v: ParamAxis(Interval(lo: -1, hi: 1), periodic: false, samples: m))
+        let cut = Contour.levels(of: phase, [.pi], over: window)[0].paths
+        let across = cut.joined().map { abs($0.y) }.max() ?? .infinity
+        Check.expect(cut.count == 1 && cut[0].allSatisfy { $0.x < 0 } && across < 1e-6,
+                     "the level π is one path along the cut", "\(cut.count) paths, \(across) off the axis")
+        // Linear along an edge, the ray is off its angle by a chord's error,
+        // which is large only within a few cells of the origin.
+        let ray = Contour.levels(of: phase, [3], over: window)[0].paths
+        let turn = ray.joined().filter { simd_length($0.v) > 0.2 }
+            .map { abs(remainder(atan2($0.y, $0.x) - 3, 2 * .pi)) }.max() ?? .infinity
+        Check.expect(ray.count == 1 && turn < 1e-2, "the level 3 is one ray, with nothing along the cut",
+                     "\(ray.count) paths, \(turn) off its angle")
     }
 
     Check.suite("fields: a contour is ended on the trim") {
