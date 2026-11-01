@@ -48,6 +48,18 @@ func scalarFieldTests() {
         }
         Check.expect(worst < 1e-12 * 2 * .pi, "each lies on its coordinate curve, to 1e-12 of the period",
                      "Hausdorff \(worst)")
+        // Each is closed across the seam by marching squares itself, the
+        // crossing there found once: its last vertex is its first carried a
+        // period round, to the bit. Two crossings found apart on the two
+        // sides of the seam, as an open path from seam to seam would end on,
+        // agree only to rounding.
+        let unclosed = contours.enumerated().filter { k, paths in
+            guard let path = paths.first, let first = path.first, let last = path.last else { return true }
+            let round = k < 36 ? SIMD2(0, v.range.length) : SIMD2(u.range.length, 0)
+            return last.v != first.v + round && last.v != first.v - round
+        }.count
+        Check.expect(unclosed == 0, "each ends on its first vertex a period round",
+                     "\(unclosed) of \(contours.count) do not")
 
         // A smooth field with no period: x² + y² on a square, whose level
         // 1/4 is the circle of radius 1/2.
