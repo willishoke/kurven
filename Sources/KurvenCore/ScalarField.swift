@@ -6,9 +6,7 @@ import simd
 ///
 /// A field on a periodic axis takes the same value a period along it. A
 /// *circle-valued* field, such as the coordinate along a periodic axis, is
-/// defined up to whole multiples of its own `period`, and a level is too.
-/// arg f is circle-valued too, but is handed over with no period: its
-/// routine, the refiner, owns its branch cut (`Surface.field`).
+/// defined up to whole multiples of its own period, and a level is too.
 public struct ScalarField: Sendable {
     /// Moves the marching-squares paths of one level onto the field's own
     /// level set: the hook through which a field with a routine of its own,
@@ -21,29 +19,27 @@ public struct ScalarField: Sendable {
     /// How a field's level sets are found.
     public enum Contouring: Sendable {
         /// Sampled on the parameter rectangle's grid, and each crossing
-        /// bisected on the value: a field with no singular points.
-        case bisection(value: @Sendable (P2<ParamSpace>) -> Double)
+        /// bisected on the value: a field with no singular points. `period`
+        /// is the field's period when it is circle-valued: 2π for an angle.
+        case bisection(value: @Sendable (P2<ParamSpace>) -> Double, period: Double?)
         /// Contoured on `samples`, the grid the routine was built against,
         /// and the paths handed to `place`: a field with a routine of its
-        /// own.
+        /// own, which owns its branch cut if it has one (arg f's, as
+        /// `Surface.field(of:refine:ceiling:)` says).
         case placed(samples: Grid2D<Float>, place: Place)
     }
 
     public let contouring: Contouring
-    /// The field's period when it is circle-valued and contoured by
-    /// bisection: 2π for an angle. Nil for a field with a routine of its
-    /// own, which owns its cut if it has one.
-    public let period: Double?
 
     /// A smooth field, contoured by bisection on its value.
     public init(period: Double? = nil, value: @escaping @Sendable (P2<ParamSpace>) -> Double) {
-        self.contouring = .bisection(value: value); self.period = period
+        self.contouring = .bisection(value: value, period: period)
     }
 
     /// A field whose contours are placed by a routine of its own, from
     /// marching squares on `samples`.
     public init(samples: Grid2D<Float>, place: @escaping Place) {
-        self.contouring = .placed(samples: samples, place: place); self.period = nil
+        self.contouring = .placed(samples: samples, place: place)
     }
 }
 
@@ -61,9 +57,7 @@ public extension Contour {
     /// its first vertex, as a coordinate curve does. A circle-valued field's
     /// difference is taken the short way round, and it jumps by a period at
     /// the level opposite; an edge whose two samples differ by more than
-    /// half a period is that jump, and has no crossing. That rule is for a
-    /// smooth field: beside a zero of f an edge can span more than π of arg f
-    /// and still cross the level, which is why arg f has no period here.
+    /// half a period is that jump, and has no crossing.
     ///
     /// A field with a routine of its own is contoured on its samples, by
     /// marching squares at each level, and the paths handed to the routine,
@@ -85,8 +79,8 @@ public extension Contour {
         -> [(level: Double, paths: [[P2<ParamSpace>]])] {
         let contoured: [(level: Double, paths: [[P2<ParamSpace>]])]
         switch field.contouring {
-        case .bisection(let value):
-            contoured = plainLevels(of: value, period: field.period, levels, over: rectangle)
+        case .bisection(let value, let period):
+            contoured = plainLevels(of: value, period: period, levels, over: rectangle)
         case .placed(let samples, let place):
             let grid = Contour.levels(of: samples, levels)
             let paths = Heightfield.parallelMap(Array(grid.indices), chunk: 1) { k in

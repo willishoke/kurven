@@ -156,7 +156,7 @@ func scalarFieldTests() {
                      "\(got.count) paths vs \(want.count)")
     }
 
-    Check.suite("fields: arg f hands the refiner the grid's own contours, and the cut at ±π") {
+    Check.suite("fields: arg f hands the refiner the grid's own contours, and the branch cut at ±π") {
         // |z| and arg z on a grid that keeps off the origin. The refiner here
         // moves nothing, and says what it was asked: the field's routine is
         // handed what the grid has, so what comes back is what it was handed.
@@ -180,25 +180,26 @@ func scalarFieldTests() {
             paths.map { $0.map { P2<ParamSpace>($0.v) } }
         }
         let phase = surface.phase!
-        let levels = Surface.levels([-.pi, 3, .pi], of: .phase)
-        Check.expect(levels == [3, .pi], "the cut is asked once, after the rest", "\(levels)")
+        let levels = ContourField.phase.levels([-.pi, 3, .pi])
+        Check.expect(levels == [3, .pi], "the branch cut is asked once, after the rest", "\(levels)")
 
-        // No period: at a level beside the cut the refiner is handed the
+        // No period: at a level beside the branch cut the refiner is handed the
         // grid's contours whole, crossings along the wrap included, which
         // only it can tell from a level set beside a zero.
-        let field = surface.field(.phase, refine: unmoved)!
-        let placed = Contour.levels(of: field, levels, over: surface.rectangle)
+        let rectangle = surface.rectangle!
+        let field = surface.field(of: .phase, refine: unmoved)!
+        let placed = Contour.levels(of: field, levels, over: rectangle)
         let grid = inParameters(Contour.levels(of: phase, [3])[0].paths)
         let alongWrap = placed[0].paths.joined().filter { $0.x < -0.2 && abs($0.y) < 1.0 / Double(m - 1) }
         Check.expect(placed[0].paths == grid && !alongWrap.isEmpty,
                      "the level 3 is the grid's, with its crossings along the wrap",
                      "\(placed[0].paths.count) paths vs \(grid.count), \(alongWrap.count) along the wrap")
         let cut = inParameters(Contour.cut(of: phase))
-        Check.expect(placed[1].paths == cut && !cut.isEmpty, "the level π is the cut, `Contour.cut`",
+        Check.expect(placed[1].paths == cut && !cut.isEmpty, "the level π is the branch cut, `Contour.cut`",
                      "\(placed[1].paths.count) paths vs \(cut.count)")
-        let bare = Contour.levels(of: surface.field(.phase, refine: nil)!, levels, over: surface.rectangle)
+        let bare = Contour.levels(of: surface.field(of: .phase, refine: nil)!, levels, over: rectangle)
         Check.expect(bare[0].paths == grid && bare[1].paths.isEmpty,
-                     "without a refiner the grid's contours, and no cut",
+                     "without a refiner the grid's contours, and no branch cut",
                      "\(bare[0].paths.count) and \(bare[1].paths.count) paths")
 
         // A landscape layer is its field's contours at the levels it asks

@@ -101,7 +101,7 @@ crossing for every level along the wrap; a vertex whose two edge samples
 differ by more than π is on the wrap, not on a level set, and is dropped.
 |f| and arg f are scalar fields (`Surface.field`), asked for their contours
 through `Contour.levels` as any field is, with the refiner as the routine
-that places them; it owns arg f's cut at ±π, drawn once.
+that places them; it owns arg f's branch cut at ±π, drawn once.
 
 **Refine.** Let g be the residual along a grid edge: |f| − c for a modulus
 contour, arg f − θ for a phase contour. Marching squares puts a vertex where
