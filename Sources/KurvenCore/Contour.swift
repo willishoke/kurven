@@ -84,13 +84,30 @@ public enum Contour {
     /// is what contourpy does and what a consumer drawing a polyline needs.
     public static func lines(of grid: Grid2D<Float>, level: Double,
                              index: Index? = nil) -> [[P2<DomainSpace>]] {
+        lines(of: grid, level: level, index: index, wraps: (false, false)) { a, b in
+            interpolate(grid, level, a.x, a.y, b.x, b.y)
+        }
+    }
+
+    /// `lines(of:level:index:)` with each crossing placed by `crossing`, given
+    /// the sample indices of its edge's two ends, lower first. A nil crossing
+    /// is no crossing: the segments that meet its edge are not drawn.
+    ///
+    /// On an axis that `wraps`, the last row or column of samples is the
+    /// first again, a periodic axis sampled one cell past its end, and an edge
+    /// there is the edge at the start: a contour that crosses the seam is one
+    /// path, not two ending at it. The crossing is asked of the edge at the
+    /// start, so the two cells beside the seam agree on it.
+    static func lines<S>(of grid: Grid2D<Float>, level: Double, index: Index?,
+                         wraps: (x: Bool, y: Bool),
+                         crossing place: (SIMD2<Int>, SIMD2<Int>) -> P2<S>?) -> [[P2<S>]] {
         guard grid.width >= 2, grid.height >= 2 else { return [] }
         let index = index ?? Index(grid)
 
         // Every cell contributes zero, one or two segments, each joining two of
         // its four edges. Collected first, linked second.
         var from: [EdgeID: EdgeID] = [:]
-        var points: [EdgeID: P2<DomainSpace>] = [:]
+        var points: [EdgeID: P2<S>?] = [:]
         var hasPredecessor = Set<EdgeID>()
         // Segment starts in the order the scan meets them. Walking the
         // dictionary's keys instead starts each path wherever Swift's
@@ -119,26 +136,23 @@ public enum Contour {
                 if code == 0 || code == 15 { continue }
 
                 // Edge ids for this cell: bottom, right, top, left.
+                let right = wraps.x && x + 1 == w - 1 ? 0 : x + 1
+                let top = wraps.y && y + 1 == h - 1 ? 0 : y + 1
                 let e0 = EdgeID(horizontal: true, x: x, y: y)
-                let e1 = EdgeID(horizontal: false, x: x + 1, y: y)
-                let e2 = EdgeID(horizontal: true, x: x, y: y + 1)
+                let e1 = EdgeID(horizontal: false, x: right, y: y)
+                let e2 = EdgeID(horizontal: true, x: x, y: top)
                 let e3 = EdgeID(horizontal: false, x: x, y: y)
 
-                func crossing(_ id: EdgeID) -> P2<DomainSpace> {
+                func crossing(_ id: EdgeID) -> P2<S>? {
                     if let p = points[id] { return p }
-                    let p: P2<DomainSpace>
-                    switch id {
-                    case e0: p = interpolate(grid, level, x, y, x + 1, y)
-                    case e1: p = interpolate(grid, level, x + 1, y, x + 1, y + 1)
-                    case e2: p = interpolate(grid, level, x, y + 1, x + 1, y + 1)
-                    default: p = interpolate(grid, level, x, y, x, y + 1)
-                    }
+                    let a = SIMD2(id.x, id.y)
+                    let p = place(a, id.horizontal ? a &+ SIMD2(1, 0) : a &+ SIMD2(0, 1))
                     points[id] = p
                     return p
                 }
 
                 func link(_ a: EdgeID, _ b: EdgeID) {
-                    _ = crossing(a); _ = crossing(b)
+                    guard crossing(a) != nil, crossing(b) != nil else { return }
                     from[a] = b
                     order.append(a)
                     hasPredecessor.insert(b)
@@ -244,18 +258,18 @@ public enum Contour {
     /// Chain the segments into polylines: open runs first, from their starts,
     /// then whatever is left, which is closed loops -- each in scan order, so
     /// the answer is the same on every run.
-    private static func walk(from: [EdgeID: EdgeID], order: [EdgeID],
-                             points: [EdgeID: P2<DomainSpace>],
-                             hasPredecessor: Set<EdgeID>) -> [[P2<DomainSpace>]] {
-        var out: [[P2<DomainSpace>]] = []
+    private static func walk<S>(from: [EdgeID: EdgeID], order: [EdgeID],
+                                points: [EdgeID: P2<S>?],
+                                hasPredecessor: Set<EdgeID>) -> [[P2<S>]] {
+        var out: [[P2<S>]] = []
         var visited = Set<EdgeID>()
 
         func trace(_ start: EdgeID, closing: Bool) {
-            var path: [P2<DomainSpace>] = []
+            var path: [P2<S>] = []
             var cursor: EdgeID? = start
             while let id = cursor, !visited.contains(id) {
                 visited.insert(id)
-                if let p = points[id] { path.append(p) }
+                if let p = points[id] ?? nil { path.append(p) }
                 cursor = from[id]
             }
             // A closed loop ends where it began; repeating the first vertex is
