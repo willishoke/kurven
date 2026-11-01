@@ -26,7 +26,10 @@ faces are flat, possibly not convex and possibly with holes, and each is
 cut into convex pieces for visibility and hatching (see
 [solids.md](solids.md)). Each is a `Face` (`SceneGeometry.faces`): a map
 from a parameter rectangle, trimmed to the part of it the face covers, with
-`contains` saying which part that is. Together they tile the solid's
+`contains` saying which part that is, and trim loops where that part
+ends: a polyhedron face's loops, and for the graph the domain's edge and the
+plateaus' loops, the truncation edge among them. A contour on a face is cut
+where it crosses a trim loop. Together they tile the solid's
 boundary, its manifold, but for a landscape's sides where it has no walls
 or walls given as a mesh, which describe no face. A tiled landscape's graph
 is one face with a copy on every tile, each turned by its tile and cut to
