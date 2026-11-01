@@ -250,13 +250,7 @@ public extension ParametricSurface {
         // fitted torus's Fourier series is. The lines are settled before
         // the threads start, so each reads an immutable copy.
         let lines = coords
-        var paths = [[P3<WorldSpace>]](repeating: [], count: lines.count)
-        paths.withUnsafeMutableBufferPointer { out in
-            nonisolated(unsafe) let base = out.baseAddress!
-            DispatchQueue.concurrentPerform(iterations: lines.count) { k in
-                base[k] = lines[k].map { P3(map($0).position) }
-            }
-        }
+        let paths = Heightfield.parallelMap(lines, chunk: 1) { line in line.map { P3<WorldSpace>(map($0).position) } }
         return PolylineSet(paths: paths, coords: lines)
     }
 
@@ -289,18 +283,11 @@ public extension ParametricSurface {
             return len > 0 ? simd_dot(n, sight) / len : 0
         }
         let du = u.range.length / Double(nu), dv = v.range.length / Double(nv)
-        // Row by row in parallel: each writes only its own row. The map is
-        // the expensive part, and this is asked again whenever the camera
-        // moves.
-        var values = [Float](repeating: 0, count: (nu + 1) * (nv + 1))
-        values.withUnsafeMutableBufferPointer { out in
-            nonisolated(unsafe) let base = out.baseAddress!
-            DispatchQueue.concurrentPerform(iterations: nv + 1) { j in
-                for i in 0...nu {
-                    base[j * (nu + 1) + i] = Float(edgeOn(P2(u.range.lo + Double(i) * du,
-                                                             v.range.lo + Double(j) * dv)))
-                }
-            }
+        // Row by row in parallel. The map is the expensive part, and this
+        // is asked again whenever the camera moves.
+        let values = Heightfield.parallelMap(Array(0..<((nu + 1) * (nv + 1))), chunk: nu + 1) { k in
+            let i = k % (nu + 1), j = k / (nu + 1)
+            return Float(edgeOn(P2(u.range.lo + Double(i) * du, v.range.lo + Double(j) * dv)))
         }
         let field = Grid2D(width: nu + 1, height: nv + 1,
                            domain: Domain(real: u.range, imag: v.range), values: values)
@@ -323,15 +310,11 @@ public extension ParametricSurface {
         // The zero within `r` either way along the unit `e`, or nil.
         @Sendable func onto(_ c: SIMD2<Double>, along e: SIMD2<Double>, within r: Double) -> SIMD2<Double>? {
             let d = e * r
-            var a = c - d, b = c + d
-            var fa = edgeOn(P2(a))
+            let a = c - d, b = c + d
+            let fa = edgeOn(P2(a))
             guard (fa > 0) != (edgeOn(P2(b)) > 0) else { return nil }
-            for _ in 0..<60 {
-                let m = 0.5 * (a + b)
-                let fm = edgeOn(P2(m))
-                if (fm > 0) == (fa > 0) { a = m; fa = fm } else { b = m }
-            }
-            let m = 0.5 * (a + b)
+            let bracket = bisect(a, b) { (edgeOn(P2($0)) > 0) == (fa > 0) }
+            let m = 0.5 * (bracket.holds + bracket.fails)
             func across(_ t: Double) -> Double { abs(edgeOn(P2(m + t * d)) - edgeOn(P2(m - t * d))) }
             return across(1e-3) > 0.5 * across(1e-1) ? nil : m
         }

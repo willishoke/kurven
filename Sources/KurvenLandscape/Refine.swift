@@ -641,15 +641,12 @@ public struct ContourRefiner: Sendable {
                 func excess(_ r: Double) -> Double { magnitude(c + r * dir) - level }
                 // Bracket the crossing along the ray from the zero, where
                 // |f| is below the level, outward to where it is above.
-                var lo = 0.0, hi = r0
+                var hi = r0
                 var tries = 0
                 while excess(hi) <= 0, tries < 12 { hi *= 2; tries += 1 }
                 guard excess(hi) > 0, hi <= 4 * cell else { loop = []; break }
-                for _ in 0..<60 {
-                    let m = 0.5 * (lo + hi)
-                    if excess(m) > 0 { hi = m } else { lo = m }
-                }
-                let r = 0.5 * (lo + hi)
+                let bracket = bisect(0, hi) { !(excess($0) > 0) }
+                let r = 0.5 * (bracket.holds + bracket.fails)
                 loop.append(P2(c.re + r * dir.re, c.im + r * dir.im))
             }
             guard loop.count == n else { continue }
@@ -679,12 +676,7 @@ public struct ContourRefiner: Sendable {
         /// The level's crossing of the window's edge between an inside vertex
         /// and an outside one.
         func crossing(_ a: P2<DomainSpace>, _ b: P2<DomainSpace>) -> P2<DomainSpace>? {
-            var lo = a, hi = b
-            for _ in 0..<60 {
-                let m = P2<DomainSpace>(0.5 * (lo.x + hi.x), 0.5 * (lo.y + hi.y))
-                if inWindow(m) { lo = m } else { hi = m }
-            }
-            let p = lo
+            let p = P2<DomainSpace>(bisect(a.v, b.v) { inWindow(P2($0)) }.holds)
             // Along whichever edge it is on, solve |f| = level by bisection
             // between the chord point and a step either way.
             let r = grid.real, im = grid.imag
@@ -697,13 +689,9 @@ public struct ContourRefiner: Sendable {
             var tries = 0
             while (excess(slo) > 0) == (excess(shi) > 0), tries < 10 { slo *= 2; shi *= 2; tries += 1 }
             guard (excess(slo) > 0) != (excess(shi) > 0) else { return p }
-            var elo = excess(slo)
-            for _ in 0..<60 {
-                let m = 0.5 * (slo + shi)
-                let em = excess(m)
-                if (em > 0) == (elo > 0) { slo = m; elo = em } else { shi = m }
-            }
-            return at(0.5 * (slo + shi))
+            let elo = excess(slo)
+            let bracket = bisect(slo, shi) { (excess($0) > 0) == (elo > 0) }
+            return at(0.5 * (bracket.holds + bracket.fails))
         }
         // A closed loop: start the walk at an outside vertex so no run is
         // split in two. An open run is walked from its first vertex.
@@ -921,12 +909,7 @@ public struct ContourRefiner: Sendable {
             if !inWindow(q) {
                 // Ended on the window's edge: the chord's crossing of the
                 // edge, then the level solved along the edge itself.
-                var lo = p, hi = q
-                for _ in 0..<60 {
-                    let m = P2<DomainSpace>(0.5 * (lo.x + hi.x), 0.5 * (lo.y + hi.y))
-                    if inWindow(m) { lo = m } else { hi = m }
-                }
-                let e = lo
+                let e = P2<DomainSpace>(bisect(p.v, q.v) { inWindow(P2($0)) }.holds)
                 let r = grid.real, im = grid.imag
                 let onRow = abs(e.y - im.lo) <= 1e-6 * cell || abs(e.y - im.hi) <= 1e-6 * cell
                 func at(_ t: Double) -> P2<DomainSpace> { onRow ? P2(e.x + t, e.y) : P2(e.x, e.y + t) }
@@ -935,13 +918,9 @@ public struct ContourRefiner: Sendable {
                 while (res(slo) > 0) == (res(shi) > 0), tries < 8 { slo *= 2; shi *= 2; tries += 1 }
                 var end: P2<DomainSpace>?
                 if (res(slo) > 0) != (res(shi) > 0), abs(res(slo)) < .pi / 2, abs(res(shi)) < .pi / 2 {
-                    var rlo = res(slo)
-                    for _ in 0..<60 {
-                        let m = 0.5 * (slo + shi)
-                        let rm = res(m)
-                        if (rm > 0) == (rlo > 0) { slo = m; rlo = rm } else { shi = m }
-                    }
-                    end = at(0.5 * (slo + shi))
+                    let rlo = res(slo)
+                    let bracket = bisect(slo, shi) { (res($0) > 0) == (rlo > 0) }
+                    end = at(0.5 * (bracket.holds + bracket.fails))
                 }
                 // Only an end on the level, that the surface has a height
                 // at, reached by a chord that can be placed: a line that
