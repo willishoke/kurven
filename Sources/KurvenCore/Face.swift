@@ -315,6 +315,15 @@ public extension Surface {
 }
 
 extension Surface {
+    /// The parameter rectangle of the graph and the plateaus: the domain,
+    /// sampled as the height grid is. Nil when the grid has fewer than two
+    /// samples along an axis, too few to span it.
+    fileprivate var rectangle: (u: ParamAxis, v: ParamAxis)? {
+        guard height.width >= 2, height.height >= 2 else { return nil }
+        return (ParamAxis(domain.real, periodic: false, samples: height.width),
+                ParamAxis(domain.imag, periodic: false, samples: height.height))
+    }
+
     /// |f| at a point of the domain, untruncated, as the faces read it: f's
     /// own with a refiner, the grid's without, and over any truncation
     /// where it is not a number.

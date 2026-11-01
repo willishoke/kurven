@@ -276,20 +276,6 @@ public extension Surface {
         return P3(x, a.y + (b.y - a.y) * t, truncation.height(atX: x))
     }
 
-    /// The parameter rectangle of the graph: the domain, sampled as the
-    /// height grid is. Nil when the grid has fewer than two samples along an
-    /// axis, too few to span it.
-    ///
-    /// |f| and arg f are placed fields, contoured on their own samples, and
-    /// `Contour.levels(of:_:over:contains:)` reads their rectangle only to
-    /// test the trimmed domain, which the graph does not ask. It is here for
-    /// that call's signature; phase 3's `Face` will supply the domain.
-    var rectangle: (u: ParamAxis, v: ParamAxis)? {
-        guard height.width >= 2, height.height >= 2 else { return nil }
-        return (ParamAxis(domain.real, periodic: false, samples: height.width),
-                ParamAxis(domain.imag, periodic: false, samples: height.height))
-    }
-
     /// |f| or arg f, as `tag` names it, as a scalar field on the graph,
     /// contoured on its grid and placed on f by `refine`
     /// (`ContourRefine.Contours`), which is handed the tag and `ceiling`, the
@@ -340,14 +326,18 @@ public extension Surface {
     /// last sample, and the fixtures hold it to that.
     ///
     /// The contours are the field's (`field(of:refine:ceiling:)`), asked for
-    /// through `Contour.levels(of:_:over:contains:)` as any field's are. A
-    /// phase level of ±π is the branch cut, where arg f jumps, and the grid
-    /// has no contour at it. With a refiner it is drawn once, after the other
-    /// levels, as one line of curves the way the Jahnke-Emde plates draw it.
+    /// through `Contour.levels(of:_:over:contains:)` as any field's are,
+    /// over the graph's parameter rectangle (`graph(tiles:region:refine:)`).
+    /// Not over its trimmed domain: the restriction says which part of the
+    /// domain a layer keeps, and a run is carried to the truncation edge by
+    /// `truncationCrossing`, as below. A phase level of ±π is the branch cut,
+    /// where arg f jumps, and the grid has no contour at it. With a refiner
+    /// it is drawn once, after the other levels, as one line of curves the
+    /// way the Jahnke-Emde plates draw it.
     func derive(_ source: LayerSource, policy: HeightPolicy, region: Region,
                 tiles: [Affine2], refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
         guard case .contour(let tag, let levels, let restriction, let tiled) = source,
-              let rectangle else {
+              let graph = graph(tiles: tiles, region: region, refine: refine) else {
             return .empty
         }
         let carry = refine != nil && restriction.requiresBelowTruncation
@@ -372,7 +362,7 @@ public extension Surface {
         // dropped for `Contour.cut`'s: about 0.3-0.6 ms at res 1000, under
         // 1% of the refined work. Skipping it would want the branch cut as a
         // field of its own and a second `Contour.levels` call.
-        let contoured = Contour.levels(of: scalar, tag.levels(levels), over: rectangle)
+        let contoured = Contour.levels(of: scalar, tag.levels(levels), over: graph.domain)
 
         var paths: [[P3<WorldSpace>]] = []
         for (level, placed) in contoured {

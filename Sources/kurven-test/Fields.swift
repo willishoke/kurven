@@ -186,7 +186,7 @@ func scalarFieldTests() {
         // No period: at a level beside the branch cut the refiner is handed the
         // grid's contours whole, crossings along the wrap included, which
         // only it can tell from a level set beside a zero.
-        let rectangle = surface.rectangle!
+        let rectangle = surface.graph()!.domain
         let field = surface.field(of: .phase, refine: unmoved)!
         let placed = Contour.levels(of: field, levels, over: rectangle)
         let grid = inParameters(Contour.levels(of: phase, [3])[0].paths)
