@@ -235,9 +235,22 @@ public struct Surface: Sendable {
     /// limit from the footprint's side (`Surface.footprintSide`).
     func wallHeight(at p: P2<DomainSpace>, t: Double, from a: P2<WorldSpace>, to b: P2<WorldSpace>,
                     inward: SIMD2<Double>, tiles: [Affine2]) -> Double {
+        let foot = wallTruncation(at: p, t: t, along: b.v - a.v, inward: inward, tiles: tiles)
+        return min(magnitude(at: foot.point), foot.truncationHeight)
+    }
+
+    /// The truncation over a wall's foot `p`, `t` of the way along its edge,
+    /// `along` the edge's direction and `inward` its normal into the
+    /// footprint, and the point of the domain the foot is the image of: the
+    /// foot carried back through the tile under it, the truncation read at
+    /// its x there (`wallFootX`) from the footprint's side
+    /// (`Surface.footprintSide`). Every reader of a wall's top reads it so:
+    /// the curtain, the top edge, the corners and the wall face.
+    func wallTruncation(at p: P2<DomainSpace>, t: Double, along: SIMD2<Double>, inward: SIMD2<Double>,
+                        tiles: [Affine2]) -> (point: P2<DomainSpace>, truncationHeight: Double) {
         let (q, back) = tile(under: p, tiles: tiles)
-        let side = Surface.footprintSide(at: t, along: b.v - a.v, inward: inward, back: back)
-        return min(magnitude(at: q), truncationHeight(atX: wallFootX(q.x, at: t, along: b.v - a.v, back: back), from: side))
+        let side = Surface.footprintSide(at: t, along: along, inward: inward, back: back)
+        return (q, truncationHeight(atX: wallFootX(q.x, at: t, along: along, back: back), from: side))
     }
 
     /// Re z of a wall's foot carried back into the domain by `back`, taken

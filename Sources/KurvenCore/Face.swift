@@ -444,11 +444,8 @@ public extension Surface {
                 domain: (s, ParamAxis(Interval(lo: base, hi: max(top, base)), periodic: false, samples: 2)),
                 contains: { p in
                     guard s.covers(p.x), p.y >= base else { return false }
-                    let (q, back) = grid.tile(under: foot(p.x), tiles: tiles)
-                    let t = p.x / length
-                    let side = Surface.footprintSide(at: t, along: along, inward: inward, back: back)
-                    return p.y <= min(magnitude(q), grid.truncationHeight(atX: grid.wallFootX(q.x, at: t, along: along, back: back),
-                                                                          from: side))
+                    let top = grid.wallTruncation(at: foot(p.x), t: p.x / length, along: along, inward: inward, tiles: tiles)
+                    return p.y <= min(magnitude(top.point), top.truncationHeight)
                 },
                 map: { p in
                     let q = foot(p.x)

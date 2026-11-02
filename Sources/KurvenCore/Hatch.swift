@@ -199,22 +199,33 @@ extension Surface {
     /// traced on f and the curves are tested against f, so the top edge has to be
     /// f's too, or the rings end on a fold the top edge parts from.
     ///
-    /// The top edge reads the truncation from the footprint's side, `inward`
-    /// the edge's normal into it (`Surface.footprintSide`): a wall standing
-    /// on a band boundary reads the band its footprint is in, all along, and
-    /// a wall ending on one reads its own band at the end.
+    /// The top edge reads the truncation as the curtain does
+    /// (`wallTruncation`): at each point's own x, through the tile under it,
+    /// from the footprint's side, `inward` the edge's normal into it
+    /// (`Surface.footprintSide`). A wall standing on a band boundary reads the
+    /// band its footprint is in, all along, and a wall ending on one reads its
+    /// own band at the end.
     func topEdge(of edge: PerimeterEdge, inward: SIMD2<Double>, tiles: [Affine2],
                  refine: ContourRefine?) -> [P3<WorldSpace>] {
         let n = max(edge.density, 2)
         let magnitudeOfF = refine?.magnitude
         let along = edge.end.v - edge.start.v
-        // The side the truncation is read from at a station `t` along the
-        // edge, nil for one between the ends; at world x, as the top edge
-        // reads the truncation.
-        func side(_ t: Double?) -> Truncation.Side {
-            Surface.footprintSide(at: t ?? 0.5, along: along, inward: inward, back: .identity)
+        /// A point of the edge: `t` of the way along it, nil between the
+        /// ends; or where it meets a riser, the riser's boundary in the
+        /// domain and the side of it the truncation is read from.
+        typealias Station = (p: P2<DomainSpace>, t: Double?, riser: (x: Double, side: Truncation.Side)?)
+        /// |f| over a station and the truncation there, both read through
+        /// the tile under it.
+        func read(_ station: Station) -> (u: Double, truncationHeight: Double) {
+            let foot = wallTruncation(at: station.p, t: station.t ?? 0.5, along: along, inward: inward, tiles: tiles)
+            let truncationHeight = station.riser.map { self.truncationHeight(atX: $0.x, from: $0.side) } ?? foot.truncationHeight
+            return (magnitudeOfF.map { $0(foot.point) } ?? magnitude(at: foot.point), truncationHeight)
         }
-        let between = side(nil)
+        /// The surface over a point between the stations, truncated.
+        func profile(_ p: P2<DomainSpace>) -> Double {
+            let (u, truncationHeight) = read((p, nil, nil))
+            return min(u, truncationHeight)
+        }
         var topEdge: [P3<WorldSpace>] = []
         topEdge.reserveCapacity(n)
         var previous: (p: P2<DomainSpace>, excess: Double)?
@@ -223,36 +234,53 @@ extension Surface {
         // side of the boundary at its own band's height -- the boundary
         // itself belongs to the band beyond it, so the near side is a
         // rounding step short of it.
-        var stations: [(p: P2<DomainSpace>, t: Double?)] = (0..<n).map {
+        var stations: [Station] = (0..<n).map {
             let t = Double($0) / Double(n - 1)
-            return (Surface.point(on: edge, at: t), t)
+            return (Surface.point(on: edge, at: t), t, nil)
         }
         if magnitudeOfF != nil, case .realBands(let bands, _) = truncation {
             // The boundaries inside the domain, a band that starts on its
-            // right edge starting beyond it, that the edge crosses: one it
-            // ends on it meets in its own band (`Surface.footprintSide`).
+            // right edge starting beyond it, that the edge crosses in the
+            // domain, through the tile under the crossing: one it ends on it
+            // meets in its own band (`Surface.footprintSide`).
             let real = domain.real
-            let boundaries = bands.map(\.below).filter {
-                $0 > min(real.lo, real.hi) && $0 < max(real.lo, real.hi) && $0 != edge.start.x && $0 != edge.end.x
-            }
-            var withRisers: [(p: P2<DomainSpace>, t: Double?)] = []
+            let boundaries = bands.map(\.below).filter { $0 > min(real.lo, real.hi) && $0 < max(real.lo, real.hi) }
+            var withRisers: [Station] = []
             for (a, b) in zip(stations, stations.dropFirst()) {
                 withRisers.append(a)
-                for x in boundaries {
-                    let (a, b) = (a.p, b.p)
-                    guard (a.x < x && b.x >= x) || (b.x < x && a.x >= x), b.x != a.x else { continue }
-                    let t = (x - a.x) / (b.x - a.x)
-                    let y = a.y + (b.y - a.y) * t
-                    let near = P2<DomainSpace>(a.x < x ? x.nextDown : x, y), far = P2<DomainSpace>(a.x < x ? x : x.nextDown, y)
-                    withRisers.append((near, nil)); withRisers.append((far, nil))
+                let backs = [tile(under: a.p, tiles: tiles).back, tile(under: b.p, tiles: tiles).back]
+                var met: [(s: Double, near: Station, far: Station)] = []
+                for back in backs.indices.filter({ $0 == 0 || backs[$0] != backs[0] }).map({ backs[$0] }) {
+                    guard let forward = back.inverse else { continue }
+                    let qa = back(P3(a.p.x, a.p.y, 0)), qb = back(P3(b.p.x, b.p.y, 0))
+                    // An end of the edge on a boundary, a rounding off it
+                    // where it came back through a tile.
+                    let xa = a.t == 0 ? wallFootX(qa.x, at: 0, along: along, back: back) : qa.x
+                    let xb = b.t == 1 ? wallFootX(qb.x, at: 1, along: along, back: back) : qb.x
+                    for x in boundaries {
+                        guard (xa < x && xb >= x) || (xb < x && xa >= x), xb != xa,
+                              !(a.t == 0 && xa == x), !(b.t == 1 && xb == x) else { continue }
+                        let s = (x - xa) / (xb - xa)
+                        let y = qa.y + (qb.y - qa.y) * s
+                        // Met where this tile is the one under it.
+                        let crossing = forward(P3(x, y, 0))
+                        guard backs[0] == backs[1] || tile(under: P2(crossing.x, crossing.y), tiles: tiles).back == back,
+                              !met.contains(where: { $0.s == s }) else { continue }
+                        let near = forward(P3(xa < x ? x.nextDown : x, y, 0)), far = forward(P3(xa < x ? x : x.nextDown, y, 0))
+                        let (nearSide, farSide): (Truncation.Side, Truncation.Side) = xa < x ? (.left, .right) : (.right, .left)
+                        met.append((s, (P2(near.x, near.y), nil, (x, nearSide)), (P2(far.x, far.y), nil, (x, farSide))))
+                    }
+                }
+                for crossing in met.sorted(by: { $0.s < $1.s }) {
+                    withRisers.append(crossing.near); withRisers.append(crossing.far)
                 }
             }
             withRisers.append(stations[stations.count - 1])
             stations = withRisers
         }
-        for (p, t) in stations {
-            let u = magnitudeOfF.map { $0(inTile(p, tiles: tiles)) } ?? magnitude(at: p, tiles: tiles)
-            let truncationHeight = self.truncationHeight(atX: p.x, from: side(t))
+        for station in stations {
+            let p = station.p
+            let (u, truncationHeight) = read(station)
             let excess = u - truncationHeight
             if let a = previous, excess.isFinite, a.excess.isFinite, a.p.x != p.x || a.p.y != p.y {
                 let here: (p: P2<DomainSpace>, excess: Double) = (p, excess)
@@ -261,17 +289,17 @@ extension Surface {
                 if a.excess <= 0 && excess > 0 { under = a; over = here }
                 if excess <= 0 && a.excess > 0 { under = here; over = a }
                 if let under, let over {
-                    if let magnitudeOfF {
+                    if magnitudeOfF != nil {
                         if let q = truncationCrossing(from: under.p, under.excess, to: over.p, over.excess,
-                                                      tiles: tiles, magnitude: magnitudeOfF, from: between) {
-                            topEdge.append(P3(q.x, q.y, self.truncationHeight(atX: q.x, from: between)))
+                                                      excess: { let r = read(($0, nil, nil)); return r.u - r.truncationHeight }) {
+                            topEdge.append(P3(q.x, q.y, read((q, nil, nil)).truncationHeight))
                         }
                     } else {
                         let t = under.excess / (under.excess - over.excess)
                         if t > 0, t < 1 {
                             let x = under.p.x + (over.p.x - under.p.x) * t
                             let y = under.p.y + (over.p.y - under.p.y) * t
-                            topEdge.append(P3(x, y, self.truncationHeight(atX: x, from: between)))
+                            topEdge.append(P3(x, y, read((P2(x, y), nil, nil)).truncationHeight))
                         }
                     }
                 }
@@ -279,9 +307,8 @@ extension Surface {
             topEdge.append(P3(p.x, p.y, min(u, truncationHeight)))
             previous = (p, excess)
         }
-        guard let refine, let magnitude = refine.magnitude else { return topEdge }
-        return subdividedProfile(withMinima(topEdge, tiles: tiles, magnitude: magnitude, from: between),
-                                 tiles: tiles, magnitude: magnitude, tolerance: refine.tolerance, from: between)
+        guard let refine, refine.magnitude != nil else { return topEdge }
+        return subdividedProfile(withMinima(topEdge, profile: profile), profile: profile, tolerance: refine.tolerance)
     }
 
     /// The grid's spacing, the larger of the two directions: what the
@@ -298,15 +325,13 @@ extension Surface {
     /// Where |f| crosses the truncation on the straight segment from `a` to `b`,
     /// given the excess over the truncation at each end: bisection on f to the last
     /// bit, nil when both ends lie on one side. One routine for the top edge
-    /// and the truncation edge's ends, so the two meet to rounding. On a band
-    /// boundary the truncation is read from `side`.
+    /// and the truncation edge's ends, so the two meet to rounding. `excess`
+    /// is |f| less the truncation at a point of the segment, as the caller
+    /// reads it: the top edge through the tile under the point, from the
+    /// footprint's side.
     func truncationCrossing(from a: P2<DomainSpace>, _ ea: Double, to b: P2<DomainSpace>, _ eb: Double,
-                            tiles: [Affine2], magnitude: ContourRefine.Magnitude,
-                            from side: Truncation.Side = .right) -> P2<DomainSpace>? {
+                            excess: (P2<DomainSpace>) -> Double) -> P2<DomainSpace>? {
         guard ea.isFinite, eb.isFinite, (ea > 0) != (eb > 0) else { return nil }
-        func excess(_ p: P2<DomainSpace>) -> Double {
-            magnitude(inTile(p, tiles: tiles)) - truncationHeight(atX: p.x, from: side)
-        }
         var lo = SIMD2(a.x, a.y), hi = SIMD2(b.x, b.y)
         var elo = ea
         for _ in 0..<60 {
@@ -323,16 +348,12 @@ extension Surface {
     /// midpoint is taken onto the profile where the chord departs from it
     /// by more than `tolerance` cells, and the halves likewise, five deep.
     /// The top edge is a function of the distance along its straight edge, so
-    /// the vertices keep their order. On a band boundary the truncation is
-    /// read from `side`.
-    func subdividedProfile(_ topEdge: [P3<WorldSpace>], tiles: [Affine2],
-                           magnitude: ContourRefine.Magnitude, tolerance: Double,
-                           from side: Truncation.Side = .right) -> [P3<WorldSpace>] {
+    /// the vertices keep their order. `profile` is the truncated surface
+    /// over a point of the edge, as the top edge reads it.
+    func subdividedProfile(_ topEdge: [P3<WorldSpace>], profile: (P2<DomainSpace>) -> Double,
+                           tolerance: Double) -> [P3<WorldSpace>] {
         guard topEdge.count >= 2 else { return topEdge }
         let cell = self.cell
-        func profile(_ p: P2<DomainSpace>) -> Double {
-            min(magnitude(inTile(p, tiles: tiles)), truncationHeight(atX: p.x, from: side))
-        }
         func subdivide(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>, depth: Int,
                        into out: inout [P3<WorldSpace>]) {
             guard depth < 5, a.z.isFinite, b.z.isFinite else { return }
@@ -356,16 +377,13 @@ extension Surface {
 
     /// The top edge with a vertex at every minimum of |f| that falls between two
     /// of its vertices. The edge is straight, so the top edge is a function of
-    /// the distance along it and the new vertices keep that order. On a band
-    /// boundary the truncation is read from `side`.
-    func withMinima(_ topEdge: [P3<WorldSpace>], tiles: [Affine2],
-                    magnitude: ContourRefine.Magnitude, from side: Truncation.Side = .right) -> [P3<WorldSpace>] {
+    /// the distance along it and the new vertices keep that order. `profile`
+    /// is the truncated surface over a point of the edge, as the top edge
+    /// reads it.
+    func withMinima(_ topEdge: [P3<WorldSpace>], profile: (P2<DomainSpace>) -> Double) -> [P3<WorldSpace>] {
         guard topEdge.count >= 3 else { return topEdge }
-        // The edge lies in the domain: world x, y are domain x, y here.
+        // A vertex's point on the edge.
         func dom(_ v: P3<WorldSpace>) -> P2<DomainSpace> { P2(v.x, v.y) }
-        func profile(_ p: P2<DomainSpace>) -> Double {
-            min(magnitude(inTile(p, tiles: tiles)), truncationHeight(atX: p.x, from: side))
-        }
         func between(_ a: P2<DomainSpace>, _ b: P2<DomainSpace>, _ t: Double) -> P2<DomainSpace> {
             P2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
         }
@@ -483,12 +501,15 @@ extension Surface {
         }
         for corner in corners {
             // Every wall ending at the corner, and its top there; those that
-            // leave the line x = corner.x, where any does.
+            // leave the line of Re z the corner stands on in the domain,
+            // through the tile under it, where any does.
+            let back = tile(under: P2(corner.x, corner.y), tiles: tiles).back
             let tops = perimeter.edges.indices.flatMap { k -> [(top: Double, leaves: Bool)] in
                 let e = perimeter.edges[k]
                 return [(e.start, 0.0), (e.end, 1.0)].filter { $0.0 == corner }.map { _, t in
                     (wallHeight(at: P2(corner.x, corner.y), t: t, from: e.start, to: e.end,
-                                inward: perimeter.inward(k), tiles: tiles), e.start.x != e.end.x)
+                                inward: perimeter.inward(k), tiles: tiles),
+                     !Surface.standsOnLineOfReZ(e.end.v - e.start.v, back: back))
                 }
             }
             let leaving = tops.filter(\.leaves).map(\.top)
@@ -1059,7 +1080,7 @@ extension Surface {
             let j = min(max(Int(f.y.rounded(.down)), 0), g.height - 2)
             a = g.position(x: i, y: j); b = g.position(x: i, y: j + 1)
         }
-        return truncationCrossing(from: a, excess(a), to: b, excess(b), tiles: tiles, magnitude: magnitude)
+        return truncationCrossing(from: a, excess(a), to: b, excess(b), excess: excess)
     }
 }
 
