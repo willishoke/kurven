@@ -808,12 +808,15 @@ extension Surface {
             for run in runs where run.points.count >= 2 && run.truncationHeight.isFinite {
                 for piece in refine.contours(.magnitude, run.truncationHeight, [run.points], .infinity) where piece.count >= 2 {
                     var piece = piece
-                    for i in [0, piece.count - 1] {
+                    // The far end's index read after the near end has had
+                    // its point on the boundary put before it.
+                    for atStart in [true, false] {
+                        let i = atStart ? 0 : piece.count - 1
                         if let q = onBoundaryTruncationCrossing(near: piece[i], tiles: tiles, magnitude: magnitude) {
                             piece[i] = q
                         } else if let b = boundary(beside: piece[i].x) ?? boundaries.first(where: { abs(piece[i].x - $0) <= 2 * dx }),
                                   let q = ontoBoundary(b, truncationHeight: run.truncationHeight, near: piece[i]) {
-                            if i == 0 { piece.insert(q, at: 0) } else { piece.append(q) }
+                            if atStart { piece.insert(q, at: 0) } else { piece.append(q) }
                             endsOnBoundary[b, default: []].append((run.truncationHeight, q))
                         }
                     }

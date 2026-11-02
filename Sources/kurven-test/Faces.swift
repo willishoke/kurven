@@ -833,6 +833,16 @@ func faceTests() {
                              resolution: 32, truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4)),
             refine: true)
         landscapes.append(Landscape("a tower banded at 2 | 4, on f", surface: tower.surface, refine: tower.refine))
+        // 1/sin(πz) with a boundary through each pole from 1 to 6, banded at
+        // 2 and 4 by turns: six risers, and at each boundary a pole's
+        // plateau ending on it from either side.
+        let poles = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/sin(pi*z)", domain: Domain(real: Interval(lo: -0.5, hi: 6.5), imag: Interval(lo: -1, hi: 1)),
+                             resolution: 224,
+                             truncation: .realBands((1...6).map { RealBand(below: Double($0), height: $0 % 2 == 1 ? 2 : 4) }, beyond: 2)),
+            refine: true)
+        landscapes.append(Landscape("1/sin(πz) banded at 2 | 4 by turns through its poles, on f", surface: poles.surface,
+                                    refine: poles.refine))
         // Uniform on f: 1/(z³ - 1), its three towers cut at 5.
         let cubic = try NativeLandscape.build(
             LandscapeRequest(expression: "1/(z^3 - 1)", domain: Domain(real: Interval(lo: -1.3, hi: 1.6), imag: Interval(lo: -1.2, hi: 1.5)),
