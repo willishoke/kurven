@@ -323,7 +323,6 @@ public extension Surface {
                refine: ContourRefine? = nil) -> Face? {
         guard let rectangle = parameterRectangle else { return nil }
         let magnitude = faceMagnitude(refine)
-        let truncation = self.truncation
         let surface = self
         return Face(
             id: .graph, domain: rectangle,
@@ -348,18 +347,19 @@ public extension Surface {
             contains: { p, tile in
                 rectangle.u.covers(p.x) && rectangle.v.covers(p.y)
                     && region.contains(tile(P3(p.x, p.y, 0)).xy)
-                    && magnitude(P2(p.x, p.y)) < truncation.height(atX: p.x)
+                    && magnitude(P2(p.x, p.y)) < surface.truncationHeight(atX: p.x)
             })
     }
 
     /// A plateau per band of the truncation that meets the domain and has a
     /// finite height: over the domain, where |f| reaches the band's height
-    /// in the band.
+    /// in the band, the domain's right edge in the band before it
+    /// (`band(atX:from:)`).
     func plateaus(tiles: [Affine2] = [.identity], region: Region = .full,
                   refine: ContourRefine? = nil) -> [Face] {
         guard let rectangle = parameterRectangle else { return [] }
         let magnitude = faceMagnitude(refine)
-        let truncation = self.truncation
+        let surface = self
         let real = domain.real
         return truncation.bands(from: min(real.lo, real.hi), to: max(real.lo, real.hi)).compactMap { span in
             let h = span.height, k = span.band
@@ -371,55 +371,44 @@ public extension Surface {
                 contains: { p, tile in
                     rectangle.u.covers(p.x) && rectangle.v.covers(p.y)
                         && region.contains(tile(P3(p.x, p.y, 0)).xy)
-                        && truncation.band(atX: p.x) == k && !(magnitude(P2(p.x, p.y)) < h)
+                        && surface.band(atX: p.x) == k && !(magnitude(P2(p.x, p.y)) < h)
                 })
         }
     }
 
-    /// A riser at each boundary x = b between two bands of different
-    /// heights: the vertical face there, its parameters (y, z), from the
-    /// lesser height up to |f| or the greater, whichever is lower, facing the
-    /// lower band. A boundary on the domain's far edge has one too: the
-    /// truncation is read at a point's own x, so the band beyond starts on
-    /// the edge, and the surface drops to it there.
-    ///
-    /// It stands where the footprint holds the higher band's side, read a
-    /// hair either side of the boundary, and the lower band's side too, or
-    /// else has the higher band on its left. There a wall on the boundary
-    /// rises to the truncation at its own x, which is the band to the right,
-    /// the lower, and the riser stands on it; with the higher band on the
-    /// right the wall rises all the way, and where the footprint holds only
-    /// the lower side the wall is all there is.
+    /// A riser at each boundary x = b inside the domain between two bands of
+    /// different heights: the vertical face there, its parameters (y, z),
+    /// from the lesser height up to |f| or the greater, whichever is lower,
+    /// facing the lower band. It stands where the footprint holds both
+    /// sides of the boundary, read a hair either side of it. Where it holds
+    /// one, a wall on the boundary reads the band on the footprint's side
+    /// (`walls(_:tiles:refine:)`) and rises to the solid's top there, and
+    /// there is no drop to face. A boundary on the domain's edge has none:
+    /// the band beyond the far edge starts outside the domain
+    /// (`truncationHeight(atX:from:)`).
     func risers(tiles: [Affine2] = [.identity], region: Region = .full,
                 refine: ContourRefine? = nil) -> [Face] {
         guard let rectangle = parameterRectangle else { return [] }
         let magnitude = faceMagnitude(refine)
-        let truncation = self.truncation
         let real = domain.real
-        let (lo, hi) = (min(real.lo, real.hi), max(real.lo, real.hi))
-        let spans = truncation.bands(from: lo, to: hi)
-        var boundaries = zip(spans, spans.dropFirst()).map { (left: $0, right: $1.height, at: $0.hi) }
-        if let last = spans.last, let k = truncation.band(atX: hi), k != last.band {
-            boundaries.append((last, truncation.height(atX: hi), hi))
-        }
+        let spans = truncation.bands(from: min(real.lo, real.hi), to: max(real.lo, real.hi))
         let highest = highestSample
         let side = 1e-9 * cell
         let y = rectangle.v
-        return boundaries.compactMap { left, right, b in
-            let lesser = min(left.height, right), greater = max(left.height, right)
+        return zip(spans, spans.dropFirst()).compactMap { left, right in
+            let b = left.hi
+            let lesser = min(left.height, right.height), greater = max(left.height, right.height)
             guard lesser.isFinite, lesser < greater else { return nil }
-            let leftHigher = left.height > right
             return Face(
                 id: .riser(band: left.band),
                 domain: (y, ParamAxis(Interval(lo: lesser, hi: greater.isFinite ? greater : max(highest, lesser)),
                                       periodic: false, samples: 2)),
                 map: { p in SurfaceJet(position: SIMD3(b, p.x, p.y), du: SIMD3(0, 1, 0), dv: SIMD3(0, 0, 1)) },
-                outward: leftHigher ? 1 : -1, tiles: tiles,
+                outward: left.height > right.height ? 1 : -1, tiles: tiles,
                 contains: { p, tile in
                     guard y.covers(p.x), p.y >= lesser, p.y <= min(magnitude(P2(b, p.x)), greater) else { return false }
-                    let leftHeld = b > lo && region.contains(tile(P3(b - side, p.x, 0)).xy)
-                    let rightHeld = b < hi && region.contains(tile(P3(b + side, p.x, 0)).xy)
-                    return leftHeld && (rightHeld || leftHigher)
+                    return region.contains(tile(P3(b - side, p.x, 0)).xy)
+                        && region.contains(tile(P3(b + side, p.x, 0)).xy)
                 })
         }
     }
@@ -428,27 +417,25 @@ public extension Surface {
     /// along the edge and the height, from the base up to the top edge, the
     /// truncated surface over the edge read through the tile under it, as
     /// the wall's curtain reads it (`Mesh.wallCurtain`), here exact rather
-    /// than sampled. The point on the edge is `a + (b - a) t`, which keeps
-    /// a vertical edge's x, so a wall standing on a band's boundary reads
-    /// the truncation there, the band to the right, all along it. The
-    /// perimeter's turn says which side is out: counter-clockwise from
-    /// above, `du × dv` is.
+    /// than sampled: the truncation read from the footprint's side
+    /// (`Surface.footprintSide`). The point on the edge is `a + (b - a) t`,
+    /// which keeps a vertical edge's x, so a wall standing on a band's
+    /// boundary reads the band its footprint is in, all along it. The sign
+    /// of the perimeter's signed area says which side is out:
+    /// counter-clockwise from above, `du × dv` is.
     func walls(_ walls: Walls, tiles: [Affine2] = [.identity],
                refine: ContourRefine? = nil) -> [Face] {
         guard case .perimeter(let perimeter, let base) = walls else { return [] }
         let magnitude = faceMagnitude(refine)
         let truncation = self.truncation
         let grid = self
-        let corners = perimeter.edges.map(\.start.v)
-        let turn = corners.indices.reduce(0.0) { a, k in
-            let p = corners[k], q = corners[(k + 1) % corners.count]
-            return a + p.x * q.y - q.x * p.y
-        }
+        let area = perimeter.signedArea
         let top = truncation.highest.isFinite ? truncation.highest : highestSample
         return perimeter.edges.enumerated().compactMap { k, edge in
             let along = edge.end.v - edge.start.v, length = simd_length(along)
             guard length > 0 else { return nil }
             let s = ParamAxis(Interval(lo: 0, hi: length), periodic: false, samples: max(edge.density, 2))
+            let inward = perimeter.inward(k)
             @Sendable func foot(_ distance: Double) -> P2<DomainSpace> {
                 P2(edge.start.v + along * (distance / length))
             }
@@ -457,15 +444,18 @@ public extension Surface {
                 domain: (s, ParamAxis(Interval(lo: base, hi: max(top, base)), periodic: false, samples: 2)),
                 contains: { p in
                     guard s.covers(p.x), p.y >= base else { return false }
-                    let q = grid.inTile(foot(p.x), tiles: tiles)
-                    return p.y <= min(magnitude(q), truncation.height(atX: q.x))
+                    let (q, back) = grid.tile(under: foot(p.x), tiles: tiles)
+                    let t = p.x / length
+                    let side = Surface.footprintSide(at: t, along: along, inward: inward, back: back)
+                    return p.y <= min(magnitude(q), grid.truncationHeight(atX: grid.wallFootX(q.x, at: t, along: along, back: back),
+                                                                          from: side))
                 },
                 map: { p in
                     let q = foot(p.x)
                     return SurfaceJet(position: SIMD3(q.x, q.y, p.y),
                                       du: SIMD3(along.x / length, along.y / length, 0), dv: SIMD3(0, 0, 1))
                 },
-                outward: turn < 0 ? -1 : 1)
+                outward: area < 0 ? -1 : 1)
         }
     }
 }

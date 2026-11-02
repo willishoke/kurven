@@ -35,7 +35,7 @@ public struct Surface: Sendable {
         case .realBands:
             var out = height.values
             for x in 0..<height.width {
-                let truncationHeight = Float(truncation.height(atX: height.position(x: x, y: 0).x))
+                let truncationHeight = Float(self.truncationHeight(atX: height.position(x: x, y: 0).x))
                 for y in 0..<height.height { out[y * height.width + x] = min(out[y * height.width + x], truncationHeight) }
             }
             return Grid2D(width: height.width, height: height.height,
@@ -50,7 +50,44 @@ public struct Surface: Sendable {
 
     /// The height a wall rises to: `magnitude`, truncated. `Surface.height_at`.
     public func height(at p: P2<DomainSpace>) -> Double {
-        min(magnitude(at: p), truncation.height(atX: p.x))
+        min(magnitude(at: p), truncationHeight(atX: p.x))
+    }
+
+    /// The truncation height over Re z = x on the landscape: the band x lies
+    /// in (`Truncation.height(atX:)`), but on the domain's right edge the
+    /// one-sided limit from the left, from inside the domain. A band that
+    /// starts on the right edge lies beyond the domain, and nothing of the
+    /// landscape stands in it: the graph, the plateaus, the depth pass and
+    /// the right wall end with the band before it, and there is no riser
+    /// there.
+    ///
+    /// Elsewhere the limit is taken from `side`, the right unless a wall
+    /// reads it: a wall on a band boundary reads the band on its
+    /// footprint's side (`Surface.footprintSide`).
+    ///
+    /// The right edge is read at the domain's own end, not at the grid's
+    /// last column, which its spacing can put a rounding past it.
+    public func truncationHeight(atX x: Double, from side: Truncation.Side = .right) -> Double {
+        guard case .realBands = truncation else { return truncation.height(atX: x) }
+        return isOnRightEdge(x) ? truncation.height(atX: rightEdge, from: .left) : truncation.height(atX: x, from: side)
+    }
+
+    /// The band over Re z = x on the landscape, as `truncationHeight(atX:from:)`
+    /// reads it: on the domain's right edge, the band before it.
+    public func band(atX x: Double, from side: Truncation.Side = .right) -> Int? {
+        guard case .realBands = truncation else { return truncation.band(atX: x) }
+        return isOnRightEdge(x) ? truncation.band(atX: rightEdge, from: .left) : truncation.band(atX: x, from: side)
+    }
+
+    /// Re z of the domain's right edge, its greater end.
+    var rightEdge: Double { max(domain.real.lo, domain.real.hi) }
+
+    /// Whether Re z = x is the domain's right edge: its greater end, or the
+    /// grid's last column there, which its spacing can put a rounding off it.
+    func isOnRightEdge(_ x: Double) -> Bool {
+        let real = domain.real
+        guard real.lo <= real.hi else { return x == real.lo }
+        return x == real.hi || x == height.position(x: height.width - 1, y: 0).x
     }
 
     /// Every `step`-th sample, truncated and lifted, without materializing a grid.
@@ -64,7 +101,7 @@ public struct Surface: Sendable {
         // The truncation depends only on x, so it is one lookup per sampled column
         // rather than one per sample -- which is the whole difference between
         // `Truncation.realBands` costing nothing and costing a branch per point.
-        let columnTruncation = columns.map { truncation.height(atX: g.position(x: $0, y: 0).x) }
+        let columnTruncation = columns.map { truncationHeight(atX: g.position(x: $0, y: 0).x) }
         for y in stride(from: 0, to: g.height, by: max(step, 1)) {
             for (i, x) in columns.enumerated() {
                 let p = g.position(x: x, y: y)
@@ -122,7 +159,7 @@ public struct Surface: Sendable {
             func h(_ x: Double, _ y: Double) -> Double {
                 let q = inTile(P2<DomainSpace>(x, y), tiles: tiles)
                 let u = magnitude(q)
-                return min(u.isNaN ? .infinity : u, truncation.height(atX: q.x))
+                return min(u.isNaN ? .infinity : u, truncationHeight(atX: q.x))
             }
             let hx = (h(p.x + step, p.y) - h(p.x - step, p.y)) / (2 * step)
             let hy = (h(p.x, p.y + step) - h(p.x, p.y - step)) / (2 * step)
@@ -159,12 +196,20 @@ public struct Surface: Sendable {
 
     /// The point of the fundamental tile a world point is the image of.
     func inTile(_ p: P2<DomainSpace>, tiles: [Affine2]) -> P2<DomainSpace> {
-        guard tiles.count > 1 else { return p }
+        tile(under: p, tiles: tiles).point
+    }
+
+    /// The tile under a world point: the point of the fundamental tile it is
+    /// the image of (`inTile(_:tiles:)`), and the inverse of the tile, which
+    /// carries it back. The identity for one tile, or where none is
+    /// invertible.
+    func tile(under p: P2<DomainSpace>, tiles: [Affine2]) -> (point: P2<DomainSpace>, back: Affine2) {
+        guard tiles.count > 1 else { return (p, .identity) }
         let d = domain
         let (xlo, xhi) = (min(d.real.lo, d.real.hi), max(d.real.lo, d.real.hi))
         let (ylo, yhi) = (min(d.imag.lo, d.imag.hi), max(d.imag.lo, d.imag.hi))
 
-        var best: P2<DomainSpace>?
+        var best: (point: P2<DomainSpace>, back: Affine2)?
         var bestDistance = Double.infinity
         for tile in tiles {
             guard let back = tile.inverse else { continue }
@@ -176,11 +221,56 @@ public struct Surface: Sendable {
             let distance = dx + dy
             if distance < bestDistance {
                 bestDistance = distance
-                best = P2<DomainSpace>(q.x, q.y)
+                best = (P2<DomainSpace>(q.x, q.y), back)
                 if distance == 0 { break }
             }
         }
-        return best ?? p
+        return best ?? (p, .identity)
+    }
+
+    /// The height a wall rises to at its foot `p`, `t` of the way along its
+    /// edge from `a` to `b`, `inward` its normal into the footprint: the
+    /// truncated surface over the foot, read through the tile under it, as
+    /// `height(at:tiles:)` reads it, but with the truncation's one-sided
+    /// limit from the footprint's side (`Surface.footprintSide`).
+    func wallHeight(at p: P2<DomainSpace>, t: Double, from a: P2<WorldSpace>, to b: P2<WorldSpace>,
+                    inward: SIMD2<Double>, tiles: [Affine2]) -> Double {
+        let (q, back) = tile(under: p, tiles: tiles)
+        let side = Surface.footprintSide(at: t, along: b.v - a.v, inward: inward, back: back)
+        return min(magnitude(at: q), truncationHeight(atX: wallFootX(q.x, at: t, along: b.v - a.v, back: back), from: side))
+    }
+
+    /// Re z of a wall's foot carried back into the domain by `back`, taken
+    /// onto a band boundary within `edgeTolerance` of it where the wall
+    /// stands on a line of Re z or ends: carried back through a tile, a foot
+    /// on the boundary's image lands a rounding either side of it (the wall
+    /// at 4.6 under x ↦ 5 - x comes back at 0.40000000000000036), and would
+    /// read the band on whichever side it fell before its footprint's side
+    /// could count. A foot between the ends of a wall that crosses a
+    /// boundary keeps its x, so the wall steps where it crosses.
+    func wallFootX(_ x: Double, at t: Double, along: SIMD2<Double>, back: Affine2) -> Double {
+        guard case .realBands(let bands, _) = truncation,
+              t == 0 || t == 1 || back.a * along.x + back.b * along.y == 0 else { return x }
+        let tolerance = edgeTolerance
+        return bands.lazy.map(\.below).first { abs(x - $0) <= tolerance } ?? x
+    }
+
+    /// The side of Re z a wall's foot reads the truncation from, at `t` of
+    /// the way along its edge, `along` the edge's direction and `inward` its
+    /// normal into the footprint, both carried back into the domain by
+    /// `back`: the side the footprint is on. Along a wall that stands on a
+    /// line of Re z, as one on a band boundary does, that is the way `inward`
+    /// points; at an end of a wall that leaves the line, the way the wall
+    /// goes, so its top runs on to its end in its own band. Elsewhere, on a
+    /// wall that crosses a boundary, the right, as `Truncation.height(atX:)`
+    /// reads it, so the wall steps there. The sides differ only on a
+    /// boundary.
+    static func footprintSide(at t: Double, along: SIMD2<Double>, inward: SIMD2<Double>,
+                              back: Affine2) -> Truncation.Side {
+        func carried(_ d: SIMD2<Double>) -> Double { back.a * d.x + back.b * d.y }
+        let across = carried(along)
+        let x = across == 0 ? carried(inward) : t == 0 ? across : t == 1 ? -across : 0
+        return x < 0 ? .left : .right
     }
 
     /// The height as the depth pass draws it over a domain point: the grid
@@ -204,7 +294,7 @@ public struct Surface: Sendable {
         let g = height
         let step = max(step, 1)
         let nx = (g.width + step - 1) / step, ny = (g.height + step - 1) / step
-        let truncationHeight = truncation.height(atX: p.x)
+        let truncationHeight = self.truncationHeight(atX: p.x)
         guard nx >= 2, ny >= 2 else { return (Double(g[0, 0]), truncationHeight, 1) }
         let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1)) * Double(step)
         let dy = abs(g.domain.imag.length) / Double(max(g.height - 1, 1)) * Double(step)
@@ -310,7 +400,7 @@ public extension Surface {
         switch restriction {
         case .all: true
         case .footprint: region.contains(p.xy)
-        case .belowTruncation: p.z <= truncation.height(atX: p.x)
+        case .belowTruncation: p.z <= truncationHeight(atX: p.x)
         case .band(let axis, let lo, let hi):
             switch axis {
             case .real: p.x > lo && p.x < hi
@@ -328,11 +418,11 @@ public extension Surface {
     /// the truncation edge is contoured by, so the crossing lands on the drawn truncation edge to
     /// within a cell's bend.
     func truncationCrossing(from a: P3<WorldSpace>, to b: P3<WorldSpace>) -> P3<WorldSpace>? {
-        let ea = a.z - truncation.height(atX: a.x), eb = b.z - truncation.height(atX: b.x)
+        let ea = a.z - truncationHeight(atX: a.x), eb = b.z - truncationHeight(atX: b.x)
         guard ea.isFinite, eb.isFinite, ea <= 0, eb > 0 else { return nil }
         let t = ea / (ea - eb)
         let x = a.x + (b.x - a.x) * t
-        return P3(x, a.y + (b.y - a.y) * t, truncation.height(atX: x))
+        return P3(x, a.y + (b.y - a.y) * t, truncationHeight(atX: x))
     }
 
     /// |f| or arg f, as `tag` names it, as a scalar field on the graph,
@@ -436,7 +526,7 @@ public extension Surface {
                     lifted = line.map { p in
                         let u = magnitude(p)
                         guard u.isFinite else { return lift([p], policy: policy, level: level)[0] }
-                        return P3(p.x, p.y, policy == .surface ? min(u, truncation.height(atX: p.x)) : u)
+                        return P3(p.x, p.y, policy == .surface ? min(u, truncationHeight(atX: p.x)) : u)
                     }
                 } else {
                     lifted = lift(line, policy: policy, level: level)

@@ -45,7 +45,12 @@ public extension Mesh<WorldSpace> {
     /// that ships `Walls.mesh` this is unused; for `Walls.perimeter` it is the
     /// definition, and the difference between the two is the grid's
     /// interpolation error, which is a thing to measure rather than assume.
-    static func wallCurtain(from a: P2<WorldSpace>, to b: P2<WorldSpace>,
+    ///
+    /// The curtain stands on the footprint's side of its edge: `inward` is
+    /// the edge's normal into the footprint, and where the edge stands on a
+    /// band boundary, or ends on one, its top is the band's on that side
+    /// (`Surface.wallHeight`), not the band the boundary starts.
+    static func wallCurtain(from a: P2<WorldSpace>, to b: P2<WorldSpace>, inward: SIMD2<Double>,
                             samples: Int, surface: Surface, base: Double,
                             tiles: [Affine2] = [.identity]) -> Mesh<WorldSpace> {
         guard samples >= 2 else { return .empty }
@@ -54,8 +59,8 @@ public extension Mesh<WorldSpace> {
         top.reserveCapacity(samples); bottom.reserveCapacity(samples)
         for i in 0..<samples {
             let t = Double(i) / Double(samples - 1)
-            let p = P2<DomainSpace>(a.x * (1 - t) + b.x * t, a.y * (1 - t) + b.y * t)
-            top.append(P3(p.x, p.y, surface.height(at: p, tiles: tiles)))
+            let p = Surface.point(from: a, to: b, at: t)
+            top.append(P3(p.x, p.y, surface.wallHeight(at: p, t: t, from: a, to: b, inward: inward, tiles: tiles)))
             bottom.append(P3(p.x, p.y, base))
         }
         let n = Int32(samples)
@@ -71,9 +76,10 @@ public extension Mesh<WorldSpace> {
     /// Every edge of a boundary as a curtain.
     static func walls(of perimeter: BoundaryPerimeter, surface: Surface,
                       base: Double, tiles: [Affine2] = [.identity]) -> Mesh<WorldSpace> {
-        concat(perimeter.edges.map {
-            wallCurtain(from: $0.start, to: $0.end, samples: $0.density,
-                        surface: surface, base: base, tiles: tiles)
+        concat(perimeter.edges.indices.map { k in
+            let edge = perimeter.edges[k]
+            return wallCurtain(from: edge.start, to: edge.end, inward: perimeter.inward(k),
+                               samples: edge.density, surface: surface, base: base, tiles: tiles)
         })
     }
 
@@ -112,7 +118,7 @@ public extension Mesh<WorldSpace> {
         guard nx >= 2, ny >= 2 else { return .empty }
         let xs = (0..<nx).map { g.position(x: $0 * step, y: 0).x }
         let ys = (0..<ny).map { g.position(x: 0, y: $0 * step).y }
-        let colTruncation = xs.map { surface.truncation.height(atX: $0) }
+        let colTruncation = xs.map { surface.truncationHeight(atX: $0) }
 
         func corner(_ i: Int, _ j: Int) -> TruncationCorner {
             TruncationCorner(x: xs[i], y: ys[j],

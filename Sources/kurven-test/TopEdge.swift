@@ -540,6 +540,53 @@ func topEdgeTests() {
         Check.expect(topEdge.allSatisfy { $0.z <= min(f($0), $0.x < 0.5 ? 2 : 4) + 1e-9 }, "and none rises above its band's truncation")
     }
 
+    Check.suite("banded truncation edge: a riser's top that reaches the domain's edge is drawn to it") {
+        // The tower 1/(z - 1/2) at 2 | 4 again, over Im [-0.3, 1]: the band
+        // at 2 holds the boundary Re z = 1/2 from Im z = -1/2, off the
+        // domain, to 1/2, so the riser's top runs from the domain's edge at
+        // Im z = -0.3, where its truncation edge has no end, to Im z = 1/2.
+        let request = LandscapeRequest(expression: "1/(z - 0.5)",
+                                       domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -0.3, hi: 1)),
+                                       resolution: 32, truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4))
+        let bundle = try NativeLandscape.build(request, refine: true)
+        let truncationEdge = try bundle.layer("truncation_edge").paths
+        let tops = (0..<truncationEdge.count).map { Array(truncationEdge[path: $0]) }.filter { $0.allSatisfy { $0.x == 0.5 } }
+        let off = tops.joined().map { abs($0.z - min(1 / abs($0.y), 4)) }.max() ?? .infinity
+        Check.expect(tops.count == 1 && tops[0].first?.y == -0.3 && abs((tops[0].last?.y ?? 0) - 0.5) < 1e-9 && off < 1e-9,
+                     "the riser's top runs from Im z = -0.3 to 1/2 along Re z = 1/2, at min(|f|, 4)",
+                     "\(tops.count) tops, \(tops.map { "from \($0.first!.y) to \($0.last!.y)" }), heights off by \(off)")
+    }
+
+    Check.suite("banded truncation edge: six risers, one on each boundary, topped in order along Re z") {
+        // 1/sin(πz) over Re [-1/2, 13/2], its poles at the integers, banded at
+        // 2 and 4 by turns with a boundary through each pole from 1 to 6. At
+        // each the plateau of the band at 2 holds the boundary where
+        // 1/sinh(π|Im z|) ≥ 2, so each riser's top runs along it between
+        // Im z = ±asinh(1/2)/π, at min(|f|, 4); and they come in order along
+        // Re z, whatever order the process hashes the boundaries in.
+        let bands = (1...6).map { RealBand(below: Double($0), height: $0 % 2 == 1 ? 2 : 4) }
+        let request = LandscapeRequest(expression: "1/sin(pi*z)",
+                                       domain: Domain(real: Interval(lo: -0.5, hi: 6.5), imag: Interval(lo: -1, hi: 1)),
+                                       resolution: 224, truncation: .realBands(bands, beyond: 2))
+        let bundle = try NativeLandscape.build(request, refine: true)
+        let truncationEdge = try bundle.layer("truncation_edge").paths
+        let reach = asinh(0.5) / Double.pi
+        var tops: [(x: Double, y: Double)] = [], off = 0.0
+        for i in 0..<truncationEdge.count {
+            let p = Array(truncationEdge[path: i])
+            guard let x = p.first?.x, x == x.rounded(), x >= 1, x <= 6, p.allSatisfy({ $0.x == x }) else { continue }
+            tops.append((x, p[0].y))
+            off = max(off, abs(p[0].y + reach), abs(p[p.count - 1].y - reach))
+            for v in p {
+                let u = 1 / hypot(sin(Double.pi * v.x) * cosh(Double.pi * v.y), cos(Double.pi * v.x) * sinh(Double.pi * v.y))
+                off = max(off, abs(v.z - min(u, 4)))
+            }
+        }
+        Check.expect(tops.map(\.x) == [1, 2, 3, 4, 5, 6] && off < 1e-9,
+                     "one riser's top on each boundary, from Im z = -asinh(1/2)/π to asinh(1/2)/π at min(|f|, 4), in order along Re z",
+                     "tops at Re z = \(tops.map(\.x)), off by \(off)")
+    }
+
     Check.suite("a window's curves are tested to its pixel: every end within the resolution asked for") {
         // The preview places the ends of tested curves to a quarter of its pixel
         // (`Scene.resolution`), and a bake to the last bit. The two drawings

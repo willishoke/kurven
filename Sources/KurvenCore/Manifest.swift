@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 /// The bundle schema: the one definition of it.
 ///
@@ -169,14 +170,38 @@ public struct PerimeterEdge: Sendable, Equatable {
 }
 
 public struct BoundaryPerimeter: Sendable, Equatable {
-    public var edges: [PerimeterEdge]
-    public init(edges: [PerimeterEdge]) { self.edges = edges }
+    public var edges: [PerimeterEdge] { didSet { signedArea = Self.signedArea(of: edges) } }
+    /// The area the edges' starts enclose, by the shoelace formula, signed:
+    /// positive when the perimeter runs counter-clockwise seen from above,
+    /// negative clockwise. Kept with the edges, so `inward(_:)` costs one
+    /// edge.
+    public private(set) var signedArea: Double
+    public init(edges: [PerimeterEdge]) { self.edges = edges; signedArea = Self.signedArea(of: edges) }
 
     public init(json: JSONValue) throws {
         let o = try json.object("Perimeter")
         self.init(edges: try o.array("edges", "Perimeter").map(PerimeterEdge.init(json:)))
     }
     public var json: JSONValue { .object(["edges": .array(edges.map(\.json))]) }
+
+    private static func signedArea(of edges: [PerimeterEdge]) -> Double {
+        let corners = edges.map(\.start.v)
+        return 0.5 * corners.indices.reduce(0.0) { a, k in
+            let p = corners[k], q = corners[(k + 1) % corners.count]
+            return a + p.x * q.y - q.x * p.y
+        }
+    }
+
+    /// Edge `k`'s unit normal into the footprint the perimeter bounds, in
+    /// the ground plane: to the left of the edge's direction when the
+    /// perimeter runs counter-clockwise, to the right when it runs
+    /// clockwise. Zero for an edge of no length.
+    public func inward(_ k: Int) -> SIMD2<Double> {
+        let d = edges[k].end.v - edges[k].start.v, length = simd_length(d)
+        guard length > 0 else { return .zero }
+        let left = SIMD2(-d.y, d.x) / length
+        return signedArea < 0 ? -left : left
+    }
 }
 
 // MARK: - truncation
@@ -209,24 +234,49 @@ public enum Truncation: Sendable, Equatable {
     case realBands([RealBand], beyond: Double)
 
     /// The truncation height at world x (= Re z); `.infinity` where there is
-    /// none.
+    /// none. On a band boundary, the band that starts there: the truncation
+    /// is right-continuous, and this is its limit from the right.
     public func height(atX x: Double) -> Double {
+        height(atX: x, from: .right)
+    }
+
+    /// Which side of a point along x a one-sided limit approaches it from.
+    public enum Side: Sendable, Equatable {
+        /// From lesser x.
+        case left
+        /// From greater x.
+        case right
+    }
+
+    /// The one-sided limit of the truncation height at x from `side`: the
+    /// band just left of x or just right of it. The two differ only on a
+    /// band boundary, where the band from the left is the one that ends
+    /// there.
+    public func height(atX x: Double, from side: Side) -> Double {
         switch self {
         case .none: .infinity
         case .uniform(let h): h
         case .realBands(let bands, let beyond):
-            bands.first(where: { x < $0.below })?.height ?? beyond
+            (side == .right ? bands.first { x < $0.below } : bands.first { x <= $0.below })?.height ?? beyond
         }
     }
 
     /// The band world x lies in: the index of the first listed band it is
     /// under, the count of them beyond the last, and 0 for a uniform
-    /// truncation's one band. Nil where there is no truncation.
+    /// truncation's one band. Nil where there is no truncation. On a band
+    /// boundary, the band that starts there.
     public func band(atX x: Double) -> Int? {
+        band(atX: x, from: .right)
+    }
+
+    /// The band x lies in as a one-sided limit from `side`, as
+    /// `height(atX:from:)` reads it.
+    public func band(atX x: Double, from side: Side) -> Int? {
         switch self {
         case .none: nil
         case .uniform: 0
-        case .realBands(let bands, _): bands.firstIndex(where: { x < $0.below }) ?? bands.count
+        case .realBands(let bands, _):
+            (side == .right ? bands.firstIndex { x < $0.below } : bands.firstIndex { x <= $0.below }) ?? bands.count
         }
     }
 
