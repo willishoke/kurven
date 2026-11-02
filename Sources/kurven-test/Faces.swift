@@ -1158,6 +1158,104 @@ func faceTests() {
         }
     }
 
+    Check.suite("folds: on tiles under a banded truncation, a fold runs on the graph wherever the facing turns, read through the tile") {
+        // The truncation under a fold is read at the point's own x through
+        // the tile under it, as the surface is: every vertex of a fold lies
+        // on the graph, |f| under the truncation there, or on its
+        // truncation edge; and wherever the facing changes sign between two
+        // points of the graph in the footprint, well under the truncation,
+        // a fold passes between them.
+        // A tower, 1/(z - 1/2), banded on either side of its pole, 4 | 2 and
+        // 2 | 4, in two tiles, the second reflected across the right edge or
+        // turned a quarter, (x, y) ↦ (5/2 - y, x): the truncation under the
+        // second differs from the one at the world x by a band about the
+        // pole's image. On f and on the grid.
+        var landscapes: [Landscape] = []
+        let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        let reflected = Affine2(a: -1, b: 0, tx: 3, c: 0, d: 1, ty: 0), turned = Affine2(a: 0, b: -1, tx: 2.5, c: 1, d: 0, ty: 0)
+        for (left, right, tile, name, onF) in [(4.0, 2.0, reflected, "reflected", true), (2, 4, turned, "turned", true),
+                                               (2, 4, reflected, "reflected", false), (4, 2, turned, "turned", false)] {
+            let tower = try NativeLandscape.build(
+                LandscapeRequest(expression: "1/(z - 0.5)", domain: domain, resolution: 48,
+                                 truncation: .realBands([RealBand(below: 0.5, height: left)], beyond: right)),
+                refine: onF)
+            landscapes.append(Landscape("a tower banded at \(Int(left)) | \(Int(right)) in two tiles, the second \(name), \(onF ? "on f" : "on the grid")",
+                                        surface: tower.surface, tiles: [.identity, tile], refine: tower.refine))
+        }
+        let camera = Camera.oblique(ObliqueProjection(shear: 0, xAngle: -55, zAngle: 30, flipX: false, yScale: nil))
+        // The direction lines of sight travel: the kernel of the view's first
+        // two rows, away from the eye.
+        let m = camera.view.m.columns
+        let rows = (SIMD3(m.0.x, m.1.x, m.2.x), SIMD3(m.0.y, m.1.y, m.2.y), SIMD3(m.0.z, m.1.z, m.2.z))
+        var sight = simd_normalize(simd_cross(rows.0, rows.1))
+        if simd_dot(rows.2, sight) > 0 { sight = -sight }
+        for l in landscapes {
+            let h = l.heightfield, surface = l.surface
+            let real = surface.domain.real, imag = surface.domain.imag
+            let cell = max(abs(real.length) / Double(surface.height.width - 1), abs(imag.length) / Double(surface.height.height - 1))
+            guard case .realBands(let bands, _) = surface.truncation else { continue }
+            let boundaries = bands.map(\.below)
+            func magnitude(_ q: SIMD2<Double>) -> Double {
+                let u = l.refine?.magnitude?(P2(q.x, q.y)) ?? surface.magnitude(at: P2(q.x, q.y))
+                return u.isNaN ? .infinity : u
+            }
+            let folds = h.foldCurves(view: camera.view)
+            var vertices = 0, off: [String] = []
+            for v in folds.vertices {
+                let q = carriedBack(v.xy.v, l).q
+                guard !boundaries.contains(where: { abs(q.x - $0) <= 1e-9 * cell }) else { continue }
+                vertices += 1
+                let top = surface.truncationHeight(atX: q.x)
+                if !(magnitude(q) <= top * (1 + 1e-6)) { off.append("\(v.v), |f| \(magnitude(q)) over \(top)") }
+            }
+            // The facing on a grid of each tile's image, and the folds near
+            // each sign change.
+            let traced = Segments((0..<folds.count).map { folds[path: $0].map(\.xy.v) }, cell: cell)
+            func facing(_ w: SIMD2<Double>) -> Double {
+                let n = l.refine?.magnitude != nil ? h.graphNormal(at: P2(w)) : h.normal(at: P2(w))
+                return -simd_dot(n, sight) / simd_length(n)
+            }
+            var turns = 0, missing: [String] = []
+            for tile in l.tiles {
+                let (nx, ny) = (161, 97)
+                func point(_ i: Int, _ j: Int) -> (p: SIMD2<Double>, w: SIMD2<Double>) {
+                    let p = SIMD2(real.lo + real.length * (Double(i) + 0.37) / Double(nx), imag.lo + imag.length * (Double(j) + 0.61) / Double(ny))
+                    return (p, tile(P3(p.x, p.y, 0)).xy.v)
+                }
+                /// On the graph well under the truncation, away from a band
+                /// boundary, the domain's edge and the footprint's, and held
+                /// by this tile alone.
+                func clear(_ p: SIMD2<Double>, _ w: SIMD2<Double>) -> Bool {
+                    let reach = 2 * cell
+                    guard p.x - reach > min(real.lo, real.hi), p.x + reach < max(real.lo, real.hi),
+                          p.y - reach > min(imag.lo, imag.hi), p.y + reach < max(imag.lo, imag.hi),
+                          !boundaries.contains(where: { abs(p.x - $0) <= reach }),
+                          [SIMD2(reach, 0), SIMD2(-reach, 0), SIMD2(0, reach), SIMD2(0, -reach), .zero]
+                              .allSatisfy({ l.region.contains(P2(w + $0)) }),
+                          carriedBack(w, l).back == tile.inverse else { return false }
+                    return magnitude(p) < 0.98 * surface.truncationHeight(atX: p.x)
+                }
+                for j in 0..<ny {
+                    var previous: (p: SIMD2<Double>, w: SIMD2<Double>, facing: Double)?
+                    for i in 0..<nx {
+                        let (p, w) = point(i, j)
+                        let here = (p, w, facing(w))
+                        defer { previous = here }
+                        guard let a = previous, (a.facing > 0) != (here.2 > 0), clear(a.p, a.w), clear(p, w),
+                              clear(0.5 * (a.p + p), 0.5 * (a.w + w)) else { continue }
+                        turns += 1
+                        let mid = 0.5 * (a.w + w), reach = simd_length(w - a.w) + cell
+                        if traced.distance(mid, within: reach).isInfinite { missing.append("\(mid)") }
+                    }
+                }
+            }
+            Check.expect(vertices > 50 && off.isEmpty && turns > 20 && missing.isEmpty,
+                         "\(l.name): every fold vertex on the graph, and a fold wherever the facing turns on it",
+                         "\(off.count) of \(vertices) vertices on a plateau, \(missing.count) of \(turns) turns with no fold: "
+                            + (off.prefix(2) + missing.prefix(2)).joined(separator: "; "))
+        }
+    }
+
     Check.suite("faces: the graph's trim loops are its truncation edge, closed, and a contour on it is cut where it crosses them") {
         var landscapes = try faceLandscapes()
         // A tower cut at 2 left of Re z = 1/2 and at 4 beyond, on f: the top

@@ -1369,6 +1369,12 @@ struct FoldPlacer: Sendable {
         return len > 0 ? -simd_dot(n, sight) / len : 0
     }
 
+    /// The truncation over a world point, read at its x in the domain,
+    /// through the tile under it, as the surface under it is.
+    func truncationHeight(at p: P2<WorldSpace>) -> Double {
+        surface.truncationHeight(atX: surface.inTile(P2<DomainSpace>(p.x, p.y), tiles: heightfield.tiles).x)
+    }
+
     /// |f| over a world point, untruncated, through its tile; the grid's
     /// height without the function.
     func graphHeight(_ p: P2<WorldSpace>) -> Double {
@@ -1396,7 +1402,7 @@ struct FoldPlacer: Sendable {
         var p = P2<WorldSpace>(v.x, v.y)
         if refined { p = ontoEdge(p) }
         let z = height(p)
-        let truncationHeight = surface.truncationHeight(atX: p.x)
+        let truncationHeight = self.truncationHeight(at: p)
         let inRegion = region.contains(p)
         return Vertex(p: p, z: z, inRegion: inRegion, onGraph: inRegion && z.isFinite && z < truncationHeight)
     }
@@ -1423,7 +1429,7 @@ struct FoldPlacer: Sendable {
             for k in (offsets[i] + 1)..<offsets[i + 1] {
                 let a = vertices[k - 1], b = vertices[k]
                 if onF, a.inRegion, b.inRegion, a.onGraph != b.onGraph,
-                   surface.truncationHeight(atX: b.p.x).isFinite { pairs.append(k) }
+                   truncationHeight(at: b.p).isFinite { pairs.append(k) }
             }
         }
         let crossings = Heightfield.parallelMap(pairs, chunk: 1, worker: worker) { w, k -> P3<WorldSpace>? in
@@ -1499,7 +1505,7 @@ struct FoldPlacer: Sendable {
         let p = P2<WorldSpace>(q.x, q.y)
         guard region.contains(p) else { return }
         let z = height(p)
-        guard z.isFinite, z < surface.truncationHeight(atX: p.x) - 1e-9 else { return }
+        guard z.isFinite, z < truncationHeight(at: p) - 1e-9 else { return }
         let v = P3<WorldSpace>(p.x, p.y, z)
         // The fold is a curve in space: its departure from the chord is
         // measured there, across and up.
@@ -1590,12 +1596,12 @@ struct FoldPlacer: Sendable {
         }
         func excess(_ t: Double) -> Double {
             let q = onFold(t)
-            return graphHeight(q) - surface.truncationHeight(atX: q.x)
+            return graphHeight(q) - self.truncationHeight(at: q)
         }
         guard excess(0) < 0, excess(1) >= 0 else { return nil }
         let (lo, hi) = bisect(0, 1) { excess($0) < 0 }
         let q = onFold(0.5 * (lo + hi))
-        let truncationHeight = surface.truncationHeight(atX: q.x)
+        let truncationHeight = self.truncationHeight(at: q)
         guard region.contains(q), truncationHeight.isFinite else { return nil }
         return P3(q.x, q.y, truncationHeight)
     }
