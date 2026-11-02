@@ -159,7 +159,12 @@ private func tiling(_ l: Landscape) -> Tally {
                     // they reach ground two tiles hold they read the first,
                     // which need not be this copy's.
                     let reach = [(cell.x, 0.0), (-cell.x, 0), (0, cell.y), (0, -cell.y)]
-                    if face.id == .graph, reach.allSatisfy({ cover(P3(ground.x + $0.0, ground.y + $0.1, 0)) <= 1 }) {
+                    // Through a turned tile the facing's differences run
+                    // along the grid's other axis, a cell of the other
+                    // length, and read another chord; nothing here is about
+                    // that, so the turned layouts leave the normal out.
+                    let turned = l.tiles.contains { $0.a == 0 }
+                    if face.id == .graph, !turned, reach.allSatisfy({ cover(P3(ground.x + $0.0, ground.y + $0.1, 0)) <= 1 }) {
                         let facing = onF ? heightfield.graphNormal(at: ground.xy) : heightfield.normal(at: ground.xy)
                         let off = simd_length(n - facing) / simd_length(facing)
                         if !(off <= 1e-9) {
@@ -415,6 +420,24 @@ private func faceLandscapes() throws -> [Landscape] {
     landscapes.append(Landscape("the hatch fixture, a band boundary on the far edge", surface: edgeBand,
                                 walls: .perimeter(perimeter, base: 0)))
     landscapes.append(Landscape("the hatch fixture, a band boundary on the far edge, no walls", surface: edgeBand))
+    // A wall on the image of the boundary Re z = 0.4 in a second tile,
+    // reflected x ↦ 5 - x, where it stands at 4.6, or turned a quarter, where
+    // it runs along Im z = 0.7: the foot carried back lands a rounding off
+    // 0.4, and the wall reads its footprint's band all the same, on either
+    // side of it.
+    let reflected = Affine2(a: -1, b: 0, tx: 5, c: 0, d: 1, ty: 0)
+    let turned = Affine2(a: 0, b: -1, tx: 10, c: 1, d: 0, ty: 0.3)
+    for (name, tile, corners) in [
+        ("reflected, the footprint on the higher band's side", reflected, [(4.6, -1.0), (5.9, -1.0), (5.9, 1.5), (4.6, 1.5)]),
+        ("reflected, the footprint on the lower band's side", reflected, [(3.0, -1.0), (4.6, -1.0), (4.6, 1.5), (3.0, 1.5)]),
+        ("turned, the footprint on the higher band's side", turned, [(8.6, -0.5), (10.9, -0.5), (10.9, 0.7), (8.6, 0.7)]),
+        ("turned, the footprint on the lower band's side", turned, [(8.6, 0.7), (10.9, 0.7), (10.9, 2.7), (8.6, 2.7)]),
+    ] {
+        let walled = footprint(corners)
+        landscapes.append(Landscape("the hatch fixture, low bands, a wall on a boundary's image in a tile \(name)",
+                                    surface: low, tiles: [.identity, tile], region: .inside(walled),
+                                    walls: .perimeter(walled, base: -0.5)))
+    }
     // Reflected across both of the domain's far edges into four tiles,
     // three of them reflected or turned: under the low bands, on a
     // footprint across all four with walls on it; and uniform, on all

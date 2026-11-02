@@ -445,8 +445,10 @@ public extension Surface {
                 contains: { p in
                     guard s.covers(p.x), p.y >= base else { return false }
                     let (q, back) = grid.tiled(foot(p.x), tiles: tiles)
-                    let side = Surface.footprintSide(at: p.x / length, along: along, inward: inward, back: back)
-                    return p.y <= min(magnitude(q), grid.truncationHeight(atX: q.x, from: side))
+                    let t = p.x / length
+                    let side = Surface.footprintSide(at: t, along: along, inward: inward, back: back)
+                    return p.y <= min(magnitude(q), grid.truncationHeight(atX: grid.wallFootX(q.x, at: t, along: along, back: back),
+                                                                          from: side))
                 },
                 map: { p in
                     let q = foot(p.x)

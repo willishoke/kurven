@@ -236,7 +236,22 @@ public struct Surface: Sendable {
                     inward: SIMD2<Double>, tiles: [Affine2]) -> Double {
         let (q, back) = tiled(p, tiles: tiles)
         let side = Surface.footprintSide(at: t, along: b.v - a.v, inward: inward, back: back)
-        return min(magnitude(at: q), truncationHeight(atX: q.x, from: side))
+        return min(magnitude(at: q), truncationHeight(atX: wallFootX(q.x, at: t, along: b.v - a.v, back: back), from: side))
+    }
+
+    /// Re z of a wall's foot carried back into the domain by `back`, taken
+    /// onto a band boundary within `edgeTolerance` of it where the wall
+    /// stands on a line of Re z or ends: carried back through a tile, a foot
+    /// on the boundary's image lands a rounding either side of it (the wall
+    /// at 4.6 under x ↦ 5 - x comes back at 0.40000000000000036), and would
+    /// read the band on whichever side it fell before its footprint's side
+    /// could count. A foot between the ends of a wall that crosses a
+    /// boundary keeps its x, so the wall steps where it crosses.
+    func wallFootX(_ x: Double, at t: Double, along: SIMD2<Double>, back: Affine2) -> Double {
+        guard case .realBands(let bands, _) = truncation,
+              t == 0 || t == 1 || back.a * along.x + back.b * along.y == 0 else { return x }
+        let tolerance = edgeTolerance
+        return bands.lazy.map(\.below).first { abs(x - $0) <= tolerance } ?? x
     }
 
     /// The side of Re z a wall's foot reads the truncation from, at `t` of
