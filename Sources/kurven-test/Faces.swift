@@ -101,7 +101,7 @@ private struct Landscape {
 /// number of faces, those whose face turns inward, those on the graph whose
 /// normal is not the facing's, and the first failure of each kind.
 private struct Tally {
-    var sampled = 0, wrong = 0, inward = 0, skewed = 0, stations = 0, offTop = 0
+    var sampled = 0, wrong = 0, inward = 0, normals = 0, skewed = 0, stations = 0, offTop = 0
     var examples: [String: String] = [:]
     mutating func fail(_ kind: String, _ what: String) { if examples[kind] == nil { examples[kind] = what } }
 }
@@ -173,16 +173,14 @@ private func tiling(_ l: Landscape) -> Tally {
                 let onCrease = abs(m - h) <= 1e-9 * max(1, abs(h))
                 expect(P3(ground.x, ground.y, z), held ? 1 : 0, slack: onCrease ? 1 : 0) { face, n in
                     guard n.z > 0 else { return false }
-                    // The facing's differences reach a cell out, and where
-                    // they reach ground two tiles hold they read the first,
-                    // which need not be this copy's.
-                    let reach = [(cell.x, 0.0), (-cell.x, 0), (0, cell.y), (0, -cell.y)]
-                    // Through a turned tile the facing's differences run
-                    // along the grid's other axis, a cell of the other
-                    // length, and read another chord; nothing here is about
-                    // that, so the turned layouts leave the normal out.
-                    let turned = l.tiles.contains { abs($0.a) < 1e-12 }
-                    if face.id == .graph, !turned, reach.allSatisfy({ cover(P3(ground.x + $0.0, ground.y + $0.1, 0)) <= 1 }) {
+                    // The facing's differences reach a cell out along the
+                    // grid's axes as the tile turns them, and where they
+                    // reach ground two tiles hold they read the first, which
+                    // need not be this copy's.
+                    let reach = [(tile.a * cell.x, tile.c * cell.x), (-tile.a * cell.x, -tile.c * cell.x),
+                                 (tile.b * cell.y, tile.d * cell.y), (-tile.b * cell.y, -tile.d * cell.y)]
+                    if face.id == .graph, reach.allSatisfy({ cover(P3(ground.x + $0.0, ground.y + $0.1, 0)) <= 1 }) {
+                        t.normals += 1
                         let facing = onF ? heightfield.graphNormal(at: ground.xy) : heightfield.normal(at: ground.xy)
                         let off = simd_length(n - facing) / simd_length(facing)
                         if !(off <= 1e-9) {
@@ -814,10 +812,10 @@ func faceTests() {
                 case .surface, .solid: "other"
                 }
             }.mapValues(\.count).sorted { $0.key < $1.key }.map { "\($0.value) \($0.key)" }.joined(separator: ", ")
-            Check.expect(t.wrong == 0 && t.inward == 0 && t.skewed == 0 && t.sampled > 10_000,
+            Check.expect(t.wrong == 0 && t.inward == 0 && t.skewed == 0 && t.sampled > 10_000 && t.normals > 300,
                          "\(l.name): \(kinds), \(l.tiles.count) tile(s); every point of the boundary in one face, "
                             + "none off it, each face turned out, the graph's normal the facing's",
-                         "\(t.wrong) in the wrong number, \(t.inward) facing in, \(t.skewed) normals off, "
+                         "\(t.wrong) in the wrong number, \(t.inward) facing in, \(t.skewed) of \(t.normals) normals off, "
                             + "of \(t.sampled): \(t.examples.filter { $0.key != "offTop" }.sorted { $0.key < $1.key }.map(\.value).joined(separator: "; "))")
             if case .perimeter = l.walls {
                 Check.expect(t.offTop == 0 && t.stations > 50,

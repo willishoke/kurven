@@ -138,9 +138,13 @@ public struct Surface: Sendable {
     /// The outward normal of the truncated surface over a world point of a
     /// tiled landscape: `(-∂h/∂x, -∂h/∂y, 1)`, not normalized, by central
     /// differences a grid spacing wide, the height read through whichever
-    /// tile the point is in. Differences in world coordinates, so a tile's
-    /// reflection is already in them; on a plateau the differences vanish
-    /// and the normal is up.
+    /// tile the point is in. The differences run along the grid's own axes
+    /// as the tile under the point carries them into place, a cell of each
+    /// axis's own length, and the slope they give is carried back into
+    /// world coordinates: so a copy's normal is the copy of the normal, a
+    /// reflected copy's turned with it, and a turned copy's read off the
+    /// grid's chords, not a cell of one axis's length along the other. On a
+    /// plateau the differences vanish and the normal is up.
     ///
     /// With the function (`refine`), the slope is f's own, read by
     /// differences a step small against the cell and large against
@@ -165,12 +169,16 @@ public struct Surface: Sendable {
             let hy = (h(p.x, p.y + step) - h(p.x, p.y - step)) / (2 * step)
             if hx.isFinite, hy.isFinite { return SIMD3(-hx, -hy, 1) }
         }
-        func h(_ x: Double, _ y: Double) -> Double {
-            height(at: P2<DomainSpace>(x, y), tiles: tiles)
+        func h(_ q: SIMD2<Double>) -> Double {
+            height(at: P2<DomainSpace>(q.x, q.y), tiles: tiles)
         }
-        let hx = (h(p.x + dx, p.y) - h(p.x - dx, p.y)) / (2 * dx)
-        let hy = (h(p.x, p.y + dy) - h(p.x, p.y - dy)) / (2 * dy)
-        return SIMD3(-hx, -hy, 1)
+        // The grid's axes in place, and the slope along each.
+        let back = tile(under: P2(p.x, p.y), tiles: tiles).back
+        let forward = back.inverse ?? .identity
+        let u = SIMD2(forward.a, forward.c) * dx, v = SIMD2(forward.b, forward.d) * dy
+        let hu = (h(p.v + u) - h(p.v - u)) / (2 * dx)
+        let hv = (h(p.v + v) - h(p.v - v)) / (2 * dy)
+        return SIMD3(-(back.a * hu + back.c * hv), -(back.b * hu + back.d * hv), 1)
     }
 
     /// The normal of the graph over `p`: f's own slope, untruncated, read as
