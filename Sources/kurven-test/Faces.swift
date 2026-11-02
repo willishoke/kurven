@@ -862,10 +862,29 @@ func faceTests() {
         }
 
         // A riser's top is drawn only where the riser stands: on f, every
-        // vertex of a top the truncation edge draws along a band boundary
-        // lies on a riser, and where the footprint holds both sides and |f|
-        // clears the lower band's height, a top is drawn.
-        for l in landscapes where l.refine?.magnitude != nil && l.tiles.count == 1 {
+        // segment of a top the truncation edge draws along a band boundary
+        // lies on a riser at its middle, and where the footprint holds both
+        // sides and |f| clears the lower band's height, a top is drawn. Also
+        // on a flat top, two vertices, 10 exp(-2z) at 2 | 4: on a footprint
+        // holding both sides only above Im z = 0, and on one notched across
+        // the boundary over Im z in (-0.3, 0.3).
+        let flat = try NativeLandscape.build(
+            LandscapeRequest(expression: "10*exp(-2*z)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                             resolution: 32, truncation: .realBands([RealBand(below: 0.2, height: 2)], beyond: 4)),
+            refine: true)
+        let flatTops = [
+            ("both sides only above Im z = 0", [(0.2, -1.2), (1.7, -1.2), (1.7, 1.2), (-0.7, 1.2), (-0.7, 0.0), (0.2, 0.0)]),
+            ("notched across the boundary over Im z in (-0.3, 0.3)",
+             [(-0.7, -1.2), (1.7, -1.2), (1.7, 1.2), (-0.7, 1.2), (-0.7, 0.3), (0.2, 0.3), (0.2, -0.3), (-0.7, -0.3)]),
+        ].map { name, corners in
+            let notched = BoundaryPerimeter(edges: corners.indices.map { k in
+                let a = corners[k], b = corners[(k + 1) % corners.count]
+                return PerimeterEdge(start: P2(a.0, a.1), end: P2(b.0, b.1), density: 9)
+            })
+            return Landscape("a flat riser top, 10 exp(-2z) at 2 | 4, on a footprint \(name), on f",
+                             surface: flat.surface, region: .inside(notched), refine: flat.refine)
+        }
+        for l in landscapes + flatTops where l.refine?.magnitude != nil && l.tiles.count == 1 {
             guard case .realBands(let bands, _) = l.surface.truncation,
                   let magnitude = l.refine?.magnitude,
                   let drawn = l.surface.hatch(.truncationEdge(tiled: true),
@@ -880,12 +899,15 @@ func faceTests() {
             let tops = (0..<drawn.count).map { Array(drawn[path: $0]) }.filter { p in
                 p.count >= 2 && boundaries.contains(p[0].x) && p.allSatisfy { $0.x == p[0].x }
             }
-            for v in tops.joined() {
-                let p = P2<ParamSpace>(v.y, v.z)
+            // Asked under the chord, between the riser's foot and the lower
+            // end: a chord of a curved top runs over the top itself.
+            for (a, c) in tops.flatMap({ zip($0, $0.dropFirst()) }) {
+                let y = 0.5 * (a.y + c.y)
                 let held = risers.contains { face in
-                    face.map(p).position.x == v.x && face.copies.contains { $0.contains(p) }
+                    let p = P2<ParamSpace>(y, 0.5 * (face.domain.v.range.lo + min(a.z, c.z)))
+                    return face.map(p).position.x == a.x && face.copies.contains { $0.contains(p) }
                 }
-                if !held { stray.append("(\(v.x), \(v.y), \(v.z))") }
+                if !held { stray.append("(\(a.x), \(y))") }
             }
             for b in boundaries {
                 let lesser = min(l.surface.truncation.height(atX: b.nextDown), l.surface.truncation.height(atX: b))

@@ -90,7 +90,9 @@ public extension Surface {
             paths = wallEdges(perimeter, edges: edges, step: step, base: base,
                               tiles: context.tiles, refine: refine)
         case .truncationEdge(let tiled):
-            paths = drawnTruncationEdge(tiles: context.tiles, tiled: tiled, region: context.region, refine: refine)
+            // Cut to the footprint already, the risers' tops exactly.
+            return PolylineSet(paths: drawnTruncationEdge(tiles: context.tiles, tiled: tiled,
+                                                          region: context.region, refine: refine))
         }
         return PolylineSet(paths: Surface.clip(paths, to: context.region))
     }
@@ -643,37 +645,70 @@ extension Surface {
     }
 
     /// The truncation edge as its layer draws it: on every tile when
-    /// `tiled`, and in place otherwise, each riser's top kept only where
-    /// the riser stands, where the footprint holds both sides of its
-    /// boundary, read a hair either side of it where the copy stands, as
-    /// `risers(tiles:region:refine:)` reads it. Where the footprint holds one
-    /// side there is no riser: a wall on the boundary rises to the top on
-    /// that side, and a top drawn there would stand over the wall, or along
-    /// its top edge. The cut is at the vertices, as the footprint's is
-    /// (`clip(_:to:)`).
+    /// `tiled`, and in place otherwise, cut to the footprint, each riser's
+    /// top kept only where the riser stands, where the footprint holds both
+    /// sides of its boundary, read a hair either side of it where the copy
+    /// stands, as `risers(tiles:region:refine:)` reads it. Where the
+    /// footprint holds one side there is no riser: a wall on the boundary
+    /// rises to the top on that side, and a top drawn there would stand over
+    /// the wall, or along its top edge.
+    ///
+    /// The placed pieces are cut at their vertices, as every layer is
+    /// (`clip(_:to:)`). A riser's top is cut exactly, where the footprint's
+    /// perimeter crosses the two lines either side of its boundary, its
+    /// height read there: a flat top has a vertex at each end and nothing
+    /// between, and cut at its vertices it went missing where the riser
+    /// stands, or ran across a notch where none does.
     func drawnTruncationEdge(tiles: [Affine2], tiled: Bool, region: Region,
                              refine: ContourRefine?) -> [[P3<WorldSpace>]] {
         let trim = graphTrimLoops(tiles: tiles, refine: refine)
         let pieces = trim.truncationEdge.dropLast(trim.riserTops.count)
         let side = 1e-9 * cell
+        let magnitude = refine?.magnitude
         return (tiled ? tiles.map(Optional.some) : [nil]).flatMap { tile -> [[P3<WorldSpace>]] in
             func placed(_ v: P3<WorldSpace>) -> P3<WorldSpace> { tile.map { $0(v) } ?? v }
-            func held(_ p: P3<WorldSpace>) -> Bool {
-                guard case .inside = region else { return true }
-                return region.contains(placed(p).xy)
+            var paths = Surface.clip(pieces.map { $0.map(placed) }, to: region)
+            guard case .inside(let perimeter) = region else {
+                return paths + trim.riserTops.map { $0.top.map(placed) }
             }
-            var paths = pieces.map { $0.map(placed) }
             for (b, top) in trim.riserTops {
-                var run: [P3<WorldSpace>] = []
-                for v in top {
-                    if held(P3(b - side, v.y, 0)) && held(P3(b + side, v.y, 0)) {
-                        run.append(placed(v))
-                    } else {
-                        if run.count >= 2 { paths.append(run) }
-                        run = []
+                guard let first = top.first, let last = top.last, first.y < last.y else { continue }
+                let greater = max(truncation.height(atX: b, from: .left), truncation.height(atX: b, from: .right))
+                func height(_ y: Double) -> Double {
+                    guard let magnitude else { return first.z }
+                    let u = magnitude(inTile(P2(b, y), tiles: tiles))
+                    return min(u.isNaN ? .infinity : u, greater)
+                }
+                // Where the perimeter crosses the lines a hair either side
+                // of the boundary, in the copy's place: w(y) = o + y d.
+                var stops = [first.y, last.y]
+                for x in [b - side, b + side] {
+                    let o = placed(P3(x, 0, 0)).xy.v, d = placed(P3(x, 1, 0)).xy.v - o
+                    for edge in perimeter.edges {
+                        let p = edge.start.v, e = edge.end.v - edge.start.v
+                        let det = e.x * d.y - e.y * d.x
+                        guard det != 0 else { continue }
+                        let r = p - o
+                        let y = (e.x * r.y - e.y * r.x) / det, s = (d.x * r.y - d.y * r.x) / det
+                        if s >= 0, s <= 1, y > first.y, y < last.y { stops.append(y) }
                     }
                 }
-                if run.count >= 2 { paths.append(run) }
+                stops.sort()
+                func holds(_ y: Double) -> Bool {
+                    region.contains(placed(P3(b - side, y, 0)).xy) && region.contains(placed(P3(b + side, y, 0)).xy)
+                }
+                // The stretches between the stops the footprint holds on
+                // both sides, run together, each drawn from its first stop to
+                // its last through the top's vertices between.
+                var stretches: [(lo: Double, hi: Double)] = []
+                for (a, c) in zip(stops, stops.dropFirst()) where c > a && holds(0.5 * (a + c)) {
+                    if let last = stretches.last, last.hi == a { stretches[stretches.count - 1].hi = c } else { stretches.append((a, c)) }
+                }
+                for (lo, hi) in stretches {
+                    let start = lo == first.y ? first : P3<WorldSpace>(b, lo, height(lo))
+                    let end = hi == last.y ? last : P3<WorldSpace>(b, hi, height(hi))
+                    paths.append(([start] + top.filter { $0.y > lo && $0.y < hi } + [end]).map(placed))
+                }
             }
             return paths
         }
