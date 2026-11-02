@@ -250,9 +250,20 @@ public struct Surface: Sendable {
     /// boundary keeps its x, so the wall steps where it crosses.
     func wallFootX(_ x: Double, at t: Double, along: SIMD2<Double>, back: Affine2) -> Double {
         guard case .realBands(let bands, _) = truncation,
-              t == 0 || t == 1 || back.a * along.x + back.b * along.y == 0 else { return x }
+              t == 0 || t == 1 || Surface.standsOnLineOfReZ(along, back: back) else { return x }
         let tolerance = edgeTolerance
         return bands.lazy.map(\.below).first { abs(x - $0) <= tolerance } ?? x
+    }
+
+    /// Whether a wall whose edge runs along `along` stands on a line of Re z
+    /// once carried back into the domain by `back`: the carried direction's
+    /// part along Re z is a rounding of its length. Not exactly zero: a
+    /// tile written from cos and sin turns a quarter with cos(π/2) =
+    /// 6.1e-17, and a wall on a boundary's image there carries back
+    /// crossing it at that slope.
+    static func standsOnLineOfReZ(_ along: SIMD2<Double>, back: Affine2) -> Bool {
+        let carried = SIMD2(back.a * along.x + back.b * along.y, back.c * along.x + back.d * along.y)
+        return abs(carried.x) <= 1e-12 * simd_length(carried)
     }
 
     /// The side of Re z a wall's foot reads the truncation from, at `t` of
@@ -269,7 +280,7 @@ public struct Surface: Sendable {
                               back: Affine2) -> Truncation.Side {
         func carried(_ d: SIMD2<Double>) -> Double { back.a * d.x + back.b * d.y }
         let across = carried(along)
-        let x = across == 0 ? carried(inward) : t == 0 ? across : t == 1 ? -across : 0
+        let x = standsOnLineOfReZ(along, back: back) ? carried(inward) : t == 0 ? across : t == 1 ? -across : 0
         return x < 0 ? .left : .right
     }
 
