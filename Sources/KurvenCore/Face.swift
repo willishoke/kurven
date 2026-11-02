@@ -420,16 +420,16 @@ public extension Surface {
     /// than sampled: the truncation read from the footprint's side
     /// (`Surface.footprintSide`). The point on the edge is `a + (b - a) t`,
     /// which keeps a vertical edge's x, so a wall standing on a band's
-    /// boundary reads the band its footprint is in, all along it. The
-    /// perimeter's turn says which side is out: counter-clockwise from
-    /// above, `du × dv` is.
+    /// boundary reads the band its footprint is in, all along it. The sign
+    /// of the perimeter's signed area says which side is out:
+    /// counter-clockwise from above, `du × dv` is.
     func walls(_ walls: Walls, tiles: [Affine2] = [.identity],
                refine: ContourRefine? = nil) -> [Face] {
         guard case .perimeter(let perimeter, let base) = walls else { return [] }
         let magnitude = faceMagnitude(refine)
         let truncation = self.truncation
         let grid = self
-        let turn = perimeter.turn
+        let area = perimeter.signedArea
         let top = truncation.highest.isFinite ? truncation.highest : highestSample
         return perimeter.edges.enumerated().compactMap { k, edge in
             let along = edge.end.v - edge.start.v, length = simd_length(along)
@@ -444,7 +444,7 @@ public extension Surface {
                 domain: (s, ParamAxis(Interval(lo: base, hi: max(top, base)), periodic: false, samples: 2)),
                 contains: { p in
                     guard s.covers(p.x), p.y >= base else { return false }
-                    let (q, back) = grid.tiled(foot(p.x), tiles: tiles)
+                    let (q, back) = grid.tile(under: foot(p.x), tiles: tiles)
                     let t = p.x / length
                     let side = Surface.footprintSide(at: t, along: along, inward: inward, back: back)
                     return p.y <= min(magnitude(q), grid.truncationHeight(atX: grid.wallFootX(q.x, at: t, along: along, back: back),
@@ -455,7 +455,7 @@ public extension Surface {
                     return SurfaceJet(position: SIMD3(q.x, q.y, p.y),
                                       du: SIMD3(along.x / length, along.y / length, 0), dv: SIMD3(0, 0, 1))
                 },
-                outward: turn < 0 ? -1 : 1)
+                outward: area < 0 ? -1 : 1)
         }
     }
 }

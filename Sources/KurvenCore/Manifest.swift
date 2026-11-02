@@ -170,8 +170,13 @@ public struct PerimeterEdge: Sendable, Equatable {
 }
 
 public struct BoundaryPerimeter: Sendable, Equatable {
-    public var edges: [PerimeterEdge]
-    public init(edges: [PerimeterEdge]) { self.edges = edges }
+    public var edges: [PerimeterEdge] { didSet { signedArea = Self.signedArea(of: edges) } }
+    /// The area the edges' starts enclose, by the shoelace formula, signed:
+    /// positive when the perimeter runs counter-clockwise seen from above,
+    /// negative clockwise. Kept with the edges, so `inward(_:)` costs one
+    /// edge.
+    public private(set) var signedArea: Double
+    public init(edges: [PerimeterEdge]) { self.edges = edges; signedArea = Self.signedArea(of: edges) }
 
     public init(json: JSONValue) throws {
         let o = try json.object("Perimeter")
@@ -179,12 +184,9 @@ public struct BoundaryPerimeter: Sendable, Equatable {
     }
     public var json: JSONValue { .object(["edges": .array(edges.map(\.json))]) }
 
-    /// Twice the signed area the edges' starts enclose, by the shoelace
-    /// formula: positive when the perimeter runs counter-clockwise seen from
-    /// above, negative clockwise.
-    public var turn: Double {
+    private static func signedArea(of edges: [PerimeterEdge]) -> Double {
         let corners = edges.map(\.start.v)
-        return corners.indices.reduce(0.0) { a, k in
+        return 0.5 * corners.indices.reduce(0.0) { a, k in
             let p = corners[k], q = corners[(k + 1) % corners.count]
             return a + p.x * q.y - q.x * p.y
         }
@@ -198,7 +200,7 @@ public struct BoundaryPerimeter: Sendable, Equatable {
         let d = edges[k].end.v - edges[k].start.v, length = simd_length(d)
         guard length > 0 else { return .zero }
         let left = SIMD2(-d.y, d.x) / length
-        return turn < 0 ? -left : left
+        return signedArea < 0 ? -left : left
     }
 }
 

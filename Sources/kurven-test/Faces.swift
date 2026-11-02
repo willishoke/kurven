@@ -207,7 +207,7 @@ private func tiling(_ l: Landscape) -> Tally {
     if case .perimeter(let perimeter, let base) = l.walls {
         let corners = perimeter.edges.map(\.start)
         let eps = 1e-6 * size
-        let turn = corners.indices.reduce(0.0) { a, k in
+        let area = corners.indices.reduce(0.0) { a, k in
             let p = corners[k], q = corners[(k + 1) % corners.count]
             return a + p.x * q.y - q.x * p.y
         }
@@ -234,7 +234,7 @@ private func tiling(_ l: Landscape) -> Tally {
             wallFeet.append((edge.start, edge.end))
             let stations = tops[k]
             let d = simd_normalize(edge.end.v - edge.start.v)
-            let inward = turn > 0 ? SIMD2(-d.y, d.x) : SIMD2(d.y, -d.x)
+            let inward = area > 0 ? SIMD2(-d.y, d.x) : SIMD2(d.y, -d.x)
             for v in stations {
                 let top = v.z
                 guard top.isFinite, top > base else { continue }

@@ -196,13 +196,14 @@ public struct Surface: Sendable {
 
     /// The point of the fundamental tile a world point is the image of.
     func inTile(_ p: P2<DomainSpace>, tiles: [Affine2]) -> P2<DomainSpace> {
-        tiled(p, tiles: tiles).point
+        tile(under: p, tiles: tiles).point
     }
 
-    /// `inTile(_:tiles:)`'s point, and the inverse of the tile it was
-    /// carried back by: the identity for one tile, or where none is
+    /// The tile under a world point: the point of the fundamental tile it is
+    /// the image of (`inTile(_:tiles:)`), and the inverse of the tile, which
+    /// carries it back. The identity for one tile, or where none is
     /// invertible.
-    func tiled(_ p: P2<DomainSpace>, tiles: [Affine2]) -> (point: P2<DomainSpace>, back: Affine2) {
+    func tile(under p: P2<DomainSpace>, tiles: [Affine2]) -> (point: P2<DomainSpace>, back: Affine2) {
         guard tiles.count > 1 else { return (p, .identity) }
         let d = domain
         let (xlo, xhi) = (min(d.real.lo, d.real.hi), max(d.real.lo, d.real.hi))
@@ -234,7 +235,7 @@ public struct Surface: Sendable {
     /// limit from the footprint's side (`Surface.footprintSide`).
     func wallHeight(at p: P2<DomainSpace>, t: Double, from a: P2<WorldSpace>, to b: P2<WorldSpace>,
                     inward: SIMD2<Double>, tiles: [Affine2]) -> Double {
-        let (q, back) = tiled(p, tiles: tiles)
+        let (q, back) = tile(under: p, tiles: tiles)
         let side = Surface.footprintSide(at: t, along: b.v - a.v, inward: inward, back: back)
         return min(magnitude(at: q), truncationHeight(atX: wallFootX(q.x, at: t, along: b.v - a.v, back: back), from: side))
     }
