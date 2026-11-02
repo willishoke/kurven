@@ -227,10 +227,13 @@ extension Surface {
             return (Surface.point(on: edge, at: t), t)
         }
         if magnitudeOfF != nil, case .realBands(let bands, _) = truncation {
-            // The boundaries inside the domain: a band that starts on its
-            // right edge starts beyond it.
+            // The boundaries inside the domain, a band that starts on its
+            // right edge starting beyond it, that the edge crosses: one it
+            // ends on it meets in its own band (`Surface.footprintSide`).
             let real = domain.real
-            let boundaries = bands.map(\.below).filter { $0 > min(real.lo, real.hi) && $0 < max(real.lo, real.hi) }
+            let boundaries = bands.map(\.below).filter {
+                $0 > min(real.lo, real.hi) && $0 < max(real.lo, real.hi) && $0 != edge.start.x && $0 != edge.end.x
+            }
             var withRisers: [(p: P2<DomainSpace>, t: Double?)] = []
             for (a, b) in zip(stations, stations.dropFirst()) {
                 withRisers.append(a)

@@ -438,6 +438,17 @@ private func faceLandscapes() throws -> [Landscape] {
                                beyond: 4))
     let gamma = try NativeLandscape.build(request, refine: true)
     let scene = Scene(bundle: gamma, preset: gamma.manifest.presets[0])
+    // A tower on f, higher left of its boundary, on a footprint notched
+    // below Im z = 0 left of the boundary, walls on it: the riser's top
+    // stands only over Im z > 0, where the footprint holds both sides.
+    let tower = try NativeLandscape.build(
+        LandscapeRequest(expression: "1/(z - 0.5)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                         resolution: 32, truncation: .realBands([RealBand(below: 0.5, height: 4)], beyond: 2)),
+        refine: true)
+    let halfNotched = footprint([(0.5, -1), (1.5, -1), (1.5, 1), (-0.5, 1), (-0.5, 0), (0.5, 0)])
+    landscapes.append(Landscape("a tower banded at 4 | 2, on a footprint holding one side below Im z = 0, on f",
+                                surface: tower.surface, region: .inside(halfNotched),
+                                walls: .perimeter(halfNotched, base: -0.5), refine: tower.refine))
     let o = gamma.manifest.occluder
     landscapes.append(Landscape("Γ, banded, on f", surface: gamma.surface, tiles: o.tiles, region: o.region,
                                 walls: o.walls, refine: gamma.refine, faces: scene.geometry.faces))
