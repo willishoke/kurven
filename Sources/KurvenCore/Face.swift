@@ -1,5 +1,6 @@
 import Foundation
 import simd
+import Synchronization
 
 /// Which part of a solid's boundary a face is, in the order a landscape
 /// lists its faces (`Surface.faces(tiles:region:walls:refine:)`).
@@ -58,7 +59,7 @@ public struct Face: Sendable {
     /// the curves on them do (`Occluder.tiles`): contoured once, then
     /// replicated.
     public let copies: [Copy]
-    private let loops: (@Sendable () -> [[P2<ParamSpace>]])?
+    private let loops: Computed<[[P2<ParamSpace>]]>?
 
     /// The closed curves in the parameter plane the face's trimmed domain
     /// ends on, before a copy is cut to the footprint, each ending where it
@@ -68,10 +69,10 @@ public struct Face: Sendable {
     /// whole rectangle; the graph's are the domain's edge and the plateaus'
     /// loops, the truncation edge among them
     /// (`Surface.graphTrimLoops(tiles:refine:)`), placed on f with a refiner
-    /// when asked, and not kept. The polyhedron face's and the graph's bound
-    /// the trimmed domain even-odd.
+    /// the first time they are asked, and shared by every copy. The
+    /// polyhedron face's and the graph's bound the trimmed domain even-odd.
     /// Nil where they are not built yet: a plateau, a riser, a wall.
-    public var trimLoops: [[P2<ParamSpace>]]? { loops?() }
+    public var trimLoops: [[P2<ParamSpace>]]? { loops?.value }
 
     /// One copy of a face: where it is, which way it faces, and how much of
     /// it is there.
@@ -91,7 +92,8 @@ public struct Face: Sendable {
         /// and visibility test it. On a periodic axis it answers the same a
         /// period along.
         public let contains: @Sendable (P2<ParamSpace>) -> Bool
-        fileprivate let loops: (@Sendable () -> [[P2<ParamSpace>]])?
+        fileprivate let loops: Computed<[[P2<ParamSpace>]]>?
+        fileprivate let footprint: [[P2<ParamSpace>]]
 
         /// The closed curves this copy's trimmed domain ends on: the face's
         /// trim loops and, where a footprint cuts the copy, the footprint's
@@ -99,7 +101,7 @@ public struct Face: Sendable {
         /// plane. Which side of each is in the copy is `contains`'s to say,
         /// as it is where a contour on the copy is cut. Nil where the face's
         /// are.
-        public var trimLoops: [[P2<ParamSpace>]]? { loops?() }
+        public var trimLoops: [[P2<ParamSpace>]]? { loops.map { $0.value + footprint } }
 
         /// A jet of the face's map carried into place: its point moved by the
         /// tile, its derivatives turned with it, heights kept.
@@ -123,18 +125,38 @@ public struct Face: Sendable {
 
     /// A face copied by `tiles`: each copy faces as `outward` says, turned by
     /// its tile, and holds what `contains` says asked with its tile. Its
-    /// trim loops are `trimLoops`, and `footprint`'s asked with its tile.
+    /// trim loops are what `trimLoops` makes, once, when they are first
+    /// asked, and `footprint`'s asked with its tile.
     public init(id: FaceID, domain: (u: ParamAxis, v: ParamAxis),
                 map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet, outward: Double?,
                 tiles: [Affine2], trimLoops: (@Sendable () -> [[P2<ParamSpace>]])? = nil,
                 footprint: (@Sendable (Affine2) -> [[P2<ParamSpace>]])? = nil,
                 contains: @escaping @Sendable (P2<ParamSpace>, Affine2) -> Bool) {
-        self.id = id; self.domain = domain; self.map = map; self.loops = trimLoops
+        let loops = trimLoops.map(Computed.init)
+        self.id = id; self.domain = domain; self.map = map; self.loops = loops
         copies = tiles.map { tile in
             let turn: Double = tile.a * tile.d - tile.b * tile.c < 0 ? -1 : 1
-            let loops = trimLoops.map { own in { @Sendable in own() + (footprint?(tile) ?? []) } }
             return Copy(tile: tile, outward: outward.map { $0 * turn }, contains: { contains($0, tile) },
-                        loops: loops)
+                        loops: loops, footprint: footprint?(tile) ?? [])
+        }
+    }
+}
+
+/// A value made the first time it is asked, and kept: shared by whatever
+/// holds it, as a face's copies share its trim loops.
+final class Computed<Value: Sendable>: Sendable {
+    private let make: @Sendable () -> Value
+    private let made = Mutex<Value?>(nil)
+
+    init(_ make: @escaping @Sendable () -> Value) { self.make = make }
+
+    /// The lock is held while it is made, so it is made once.
+    var value: Value {
+        made.withLock { made in
+            if let made { return made }
+            let value = make()
+            made = value
+            return value
         }
     }
 }
