@@ -1256,6 +1256,96 @@ func faceTests() {
         }
     }
 
+    Check.suite("restriction: a tiled contour's copy is cut to the footprint where it lands, exactly") {
+        // On tiles whose footprint is not symmetric under the tiling,
+        // reflected and turned: every kept piece of a copy lies in the
+        // footprint where the copy stands, ending on its perimeter or where
+        // the contour ends, and the copy is kept wherever it is in the
+        // footprint, read sixteen times a segment. With a band of Im z as
+        // well, read on the domain the copy came from.
+        let landscapes = try faceLandscapes().filter { l in
+            guard l.tiles.count > 1, case .inside = l.region else { return false }
+            return true
+        }
+        for l in landscapes {
+            guard case .inside(let perimeter) = l.region else { continue }
+            let surface = l.surface
+            let real = surface.domain.real, imag = surface.domain.imag
+            let size = max(abs(real.length), abs(imag.length))
+            let cell = max(abs(real.length) / Double(surface.height.width - 1), abs(imag.length) / Double(surface.height.height - 1))
+            let tolerance = 1e-9 * size
+            let finite = surface.height.values.filter(\.isFinite).map(Double.init).sorted()
+            let (lo, hi) = (finite[finite.count / 10], min(finite[9 * finite.count / 10], 6))
+            let levels = (1...7).map { lo + (hi - lo) * Double($0) / 8 }
+            let band = (lo: imag.lo + 0.3 * imag.length, hi: imag.lo + 0.7 * imag.length)
+            let outline = Segments([perimeter.edges.map(\.start.v) + [perimeter.edges[0].start.v]], cell: cell)
+            func cover(_ w: SIMD2<Double>) -> Int {
+                l.tiles.filter { tile in
+                    guard let back = tile.inverse else { return false }
+                    let q = back(P3(w.x, w.y, 0))
+                    return q.x >= min(real.lo, real.hi) && q.x <= max(real.lo, real.hi)
+                        && q.y >= min(imag.lo, imag.hi) && q.y <= max(imag.lo, imag.hi)
+                }.count
+            }
+            for (what, restriction, banded) in [
+                ("the footprint", Restriction.footprint, false),
+                ("the footprint and a band of Im z", .intersection([.footprint, .band(axis: .imag, lo: band.lo, hi: band.hi)]), true),
+            ] {
+                func derived(_ r: Restriction) -> PolylineSet<WorldSpace> {
+                    surface.derive(.contour(field: .magnitude, levels: levels, restriction: r, tiled: true),
+                                   policy: .magnitude, region: l.region, tiles: l.tiles, refine: l.refine)
+                }
+                let whole = derived(.all), kept = derived(restriction)
+                guard whole.count % l.tiles.count == 0 else {
+                    Check.expect(false, "\(l.name), \(what): the whole contours come a copy per tile"); continue
+                }
+                let perCopy = whole.count / l.tiles.count
+                let wholeVertices = Set(whole.vertices.map(\.xy))
+                let runs = (0..<kept.count).map { kept[path: $0].map(\.xy.v) }
+                let pieces = Segments(runs, cell: cell)
+                var outside: [String] = [], endsOff: [String] = [], misclipped: [String] = []
+                var inSamples = 0, outSamples = 0
+                for run in runs {
+                    for (a, b) in zip(run, run.dropFirst()) {
+                        for k in 0...16 {
+                            let q = a + (b - a) * (Double(k) / 16)
+                            if !l.region.contains(P2(q)), !(outline.distance(q, within: cell) <= tolerance) {
+                                outside.append("\(q)")
+                            }
+                        }
+                    }
+                    for e in [run[0], run[run.count - 1]] where !wholeVertices.contains(P2(e)) {
+                        if !(outline.distance(e, within: cell) <= tolerance) { endsOff.append("\(e)") }
+                    }
+                }
+                for c in 0..<whole.count {
+                    let tile = l.tiles[c / perCopy]
+                    guard let back = tile.inverse else { continue }
+                    let path = whole[path: c].map(\.xy.v)
+                    for (a, b) in zip(path, path.dropFirst()) {
+                        let ya = back(P3(a.x, a.y, 0)).y, yb = back(P3(b.x, b.y, 0)).y
+                        let inBand = { (y: Double) in !banded || (y > band.lo && y < band.hi) }
+                        guard inBand(ya) == inBand(yb) else { continue }
+                        for k in 0..<16 {
+                            let q = a + (b - a) * ((Double(k) + 0.5) / 16)
+                            guard outline.distance(q, within: cell).isInfinite || outline.distance(q, within: cell) > 1e-6 * size,
+                                  cover(q) == 1 else { continue }
+                            let expected = l.region.contains(P2(q)) && inBand(ya)
+                            if expected { inSamples += 1 } else { outSamples += 1 }
+                            let onPiece = pieces.distance(q, within: cell) <= tolerance
+                            if onPiece != expected { misclipped.append("\(q) on tile \(c / perCopy) \(onPiece ? "kept" : "cut away")") }
+                        }
+                    }
+                }
+                Check.expect(inSamples > 200 && outSamples > 200 && outside.isEmpty && endsOff.isEmpty && misclipped.isEmpty,
+                             "\(l.name), kept to \(what): each copy cut to the footprint where it lands, exactly",
+                             "\(outside.count) points kept outside, \(endsOff.count) of \(2 * runs.count) ends off the perimeter, "
+                                + "\(misclipped.count) of \(inSamples) in and \(outSamples) out misclipped: "
+                                + (outside.prefix(1) + endsOff.prefix(1) + misclipped.prefix(2)).joined(separator: "; "))
+            }
+        }
+    }
+
     Check.suite("faces: the graph's trim loops are its truncation edge, closed, and a contour on it is cut where it crosses them") {
         var landscapes = try faceLandscapes()
         // A tower cut at 2 left of Re z = 1/2 and at 4 beyond, on f: the top

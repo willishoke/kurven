@@ -540,6 +540,15 @@ public indirect enum Restriction: Sendable, Equatable {
         }
     }
 
+    /// Whether lying in the footprint is among the conditions.
+    public var requiresFootprint: Bool {
+        switch self {
+        case .footprint: true
+        case .intersection(let all): all.contains { $0.requiresFootprint }
+        case .all, .belowTruncation, .band: false
+        }
+    }
+
     init(json: JSONValue) throws {
         let o = try json.object("Restriction")
         switch try o.string("kind", "Restriction") {

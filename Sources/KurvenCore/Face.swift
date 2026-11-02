@@ -335,15 +335,7 @@ public extension Surface {
             trimLoops: {
                 surface.graphTrimLoops(tiles: tiles, refine: refine).loops.map { $0.map { P2<ParamSpace>($0.v) } }
             },
-            footprint: { tile in
-                guard case .inside(let perimeter) = region, let back = tile.inverse else { return nil }
-                let corners = perimeter.edges.map { e -> P2<ParamSpace> in
-                    let q = back(P3(e.start.x, e.start.y, 0))
-                    return P2(q.x, q.y)
-                }
-                return (corners.isEmpty ? [] : [corners + [corners[0]]],
-                        { p in region.contains(tile(P3(p.x, p.y, 0)).xy) })
-            },
+            footprint: { tile in Surface.footprint(region, on: tile) },
             contains: { p, tile in
                 rectangle.u.covers(p.x) && rectangle.v.covers(p.y)
                     && region.contains(tile(P3(p.x, p.y, 0)).xy)
@@ -458,6 +450,24 @@ public extension Surface {
 }
 
 extension Surface {
+    /// The footprint where a copy on `tile` stands, in the parameter plane:
+    /// its perimeter carried back through the tile, closed, and whether it
+    /// holds the point of space a point of the plane lands on. Nil where
+    /// there is no footprint. A tile with no inverse carries no perimeter
+    /// back, and the footprint is asked a point at a time.
+    static func footprint(_ region: Region, on tile: Affine2)
+        -> (perimeter: [[P2<ParamSpace>]], contains: @Sendable (P2<ParamSpace>) -> Bool)? {
+        guard case .inside(let perimeter) = region else { return nil }
+        let corners = tile.inverse.map { back in
+            perimeter.edges.map { e -> P2<ParamSpace> in
+                let q = back(P3(e.start.x, e.start.y, 0))
+                return P2(q.x, q.y)
+            }
+        } ?? []
+        return (corners.isEmpty ? [] : [corners + [corners[0]]],
+                { p in region.contains(tile(P3(p.x, p.y, 0)).xy) })
+    }
+
     /// |f| at a point of the domain, untruncated, as the faces read it: f's
     /// own with a refiner, the grid's without, and over any truncation
     /// where it is not a number.

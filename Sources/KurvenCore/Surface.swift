@@ -504,7 +504,8 @@ public extension Surface {
     /// (`parameterRectangle`).
     /// Not over its trimmed domain: the restriction says which part of the
     /// domain a layer keeps, and a run is carried to the truncation edge by
-    /// `truncationCrossing`, as below. A phase level of ±π is the branch cut,
+    /// `truncationCrossing`, as below. A tiled layer's copy on each tile is
+    /// cut to the footprint where it lands, exactly. A phase level of ±π is the branch cut,
     /// where arg f jumps, and the grid has no contour at it. With a refiner
     /// it is drawn once, after the other levels, as one line of curves the
     /// way the Jahnke-Emde plates draw it.
@@ -538,64 +539,88 @@ public extension Surface {
         // field of its own and a second `Contour.levels` call.
         let contoured = Contour.levels(of: scalar, tag.levels(levels), over: rectangle)
 
-        var paths: [[P3<WorldSpace>]] = []
-        for (level, placed) in contoured {
-            for line in placed.map({ $0.map { P2<DomainSpace>($0.v) } }) {
-                // Lifted onto f where the function is at hand: a phase line
-                // lifted to the grid's height stands a chord's error off
-                // the surface the rings, the folds and the top edge are drawn
-                // on, and the test hides it there or shows it floating.
-                var lifted: [P3<WorldSpace>]
-                if policy != .level, let magnitude = refine?.magnitude {
-                    lifted = line.map { p in
-                        let u = magnitude(p)
-                        guard u.isFinite else { return lift([p], policy: policy, level: level)[0] }
-                        return P3(p.x, p.y, policy == .surface ? min(u, truncationHeight(atX: p.x)) : u)
-                    }
-                } else {
-                    lifted = lift(line, policy: policy, level: level)
-                }
-                // A run the refiner carried to a zero of f ends at the zero's
-                // own height. The grid has no sample there: its chord over a
-                // pit's floor bottoms out at the nearest sample's height, a
-                // cell's rise above the zero, and lifting the end to the
-                // chord would hang the fan of phase lines that far above the
-                // top edge that f draws under them. Only an end that *is* a zero,
-                // to rounding against the grid's own height, so a vertex the
-                // grid places a hair under f is left on the drawn surface.
-                if policy != .level, let magnitude = refine?.magnitude, !lifted.isEmpty {
-                    for i in Set([0, lifted.count - 1]) {
-                        let u = magnitude(line[i])
-                        if u.isFinite, u <= 1e-6 * lifted[i].z {
-                            lifted[i] = P3(lifted[i].x, lifted[i].y, u)
+        /// The runs of the contours a restriction keeps, lifted: a path cut
+        /// where a vertex leaves the kept region, and carried to the
+        /// truncation edge where it leaves over the truncation.
+        func kept(_ contoured: [(level: Double, paths: [[P2<ParamSpace>]])], region: Region) -> [[P3<WorldSpace>]] {
+            var paths: [[P3<WorldSpace>]] = []
+            for (level, placed) in contoured {
+                for line in placed.map({ $0.map { P2<DomainSpace>($0.v) } }) {
+                    // Lifted onto f where the function is at hand: a phase line
+                    // lifted to the grid's height stands a chord's error off
+                    // the surface the rings, the folds and the top edge are drawn
+                    // on, and the test hides it there or shows it floating.
+                    var lifted: [P3<WorldSpace>]
+                    if policy != .level, let magnitude = refine?.magnitude {
+                        lifted = line.map { p in
+                            let u = magnitude(p)
+                            guard u.isFinite else { return lift([p], policy: policy, level: level)[0] }
+                            return P3(p.x, p.y, policy == .surface ? min(u, truncationHeight(atX: p.x)) : u)
                         }
-                    }
-                }
-                var run: [P3<WorldSpace>] = []
-                var previous: (vertex: P3<WorldSpace>, admitted: Bool)?
-                for v in lifted {
-                    let admitted = admits(v, restriction, region: region)
-                    if admitted {
-                        if carry, let p = previous, !p.admitted,
-                           let truncationEdge = truncationCrossing(from: v, to: p.vertex),
-                           admits(truncationEdge, restriction, region: region) {
-                            run.append(truncationEdge)
-                        }
-                        run.append(v)
                     } else {
-                        if carry, let p = previous, p.admitted,
-                           let truncationEdge = truncationCrossing(from: p.vertex, to: v),
-                           admits(truncationEdge, restriction, region: region) {
-                            run.append(truncationEdge)
-                        }
-                        if run.count >= 2 { paths.append(run) }
-                        run = []
+                        lifted = lift(line, policy: policy, level: level)
                     }
-                    previous = (v, admitted)
+                    // A run the refiner carried to a zero of f ends at the zero's
+                    // own height. The grid has no sample there: its chord over a
+                    // pit's floor bottoms out at the nearest sample's height, a
+                    // cell's rise above the zero, and lifting the end to the
+                    // chord would hang the fan of phase lines that far above the
+                    // top edge that f draws under them. Only an end that *is* a zero,
+                    // to rounding against the grid's own height, so a vertex the
+                    // grid places a hair under f is left on the drawn surface.
+                    if policy != .level, let magnitude = refine?.magnitude, !lifted.isEmpty {
+                        for i in Set([0, lifted.count - 1]) {
+                            let u = magnitude(line[i])
+                            if u.isFinite, u <= 1e-6 * lifted[i].z {
+                                lifted[i] = P3(lifted[i].x, lifted[i].y, u)
+                            }
+                        }
+                    }
+                    var run: [P3<WorldSpace>] = []
+                    var previous: (vertex: P3<WorldSpace>, admitted: Bool)?
+                    for v in lifted {
+                        let admitted = admits(v, restriction, region: region)
+                        if admitted {
+                            if carry, let p = previous, !p.admitted,
+                               let truncationEdge = truncationCrossing(from: v, to: p.vertex),
+                               admits(truncationEdge, restriction, region: region) {
+                                run.append(truncationEdge)
+                            }
+                            run.append(v)
+                        } else {
+                            if carry, let p = previous, p.admitted,
+                               let truncationEdge = truncationCrossing(from: p.vertex, to: v),
+                               admits(truncationEdge, restriction, region: region) {
+                                run.append(truncationEdge)
+                            }
+                            if run.count >= 2 { paths.append(run) }
+                            run = []
+                        }
+                        previous = (v, admitted)
+                    }
+                    if run.count >= 2 { paths.append(run) }
                 }
-                if run.count >= 2 { paths.append(run) }
             }
+            return paths
         }
+
+        // The footprint is where a copy stands in space, so each tile's copy
+        // is clipped to it there, exactly, as a face's copy is
+        // (`Face.contours(of:_:on:)`): cut where the footprint's perimeter,
+        // carried back through the tile, crosses a contour, and kept where
+        // the footprint holds the copy's point. What else the restriction
+        // asks is read on the domain, where the copy came from: a band of
+        // Re z or Im z is the function's, and the truncation is read at the
+        // point's own x through the tile under it, which is the domain's.
+        if tiled, restriction.requiresFootprint, case .inside = region {
+            return PolylineSet(paths: tiles.flatMap { tile -> [[P3<WorldSpace>]] in
+                guard let footprint = Surface.footprint(region, on: tile) else { return [] }
+                let clipped = Contour.clipped(contoured, over: rectangle, contains: footprint.contains,
+                                              cuts: footprint.perimeter)
+                return kept(clipped, region: .full).map { $0.map { tile($0) } }
+            })
+        }
+        let paths = kept(contoured, region: region)
         guard tiled else { return PolylineSet(paths: paths) }
         // Replicated by the same maps the occluder instances the heightfield
         // with, so a tiled contour cannot drift from the tile it lies on.
