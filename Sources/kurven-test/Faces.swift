@@ -526,6 +526,7 @@ private struct TrimTally {
     var open = 0, drawn = 0, drawnOff = 0, worstDrawn = 0.0
     var asked = 0, misplaced = 0, worstMisplaced = 0.0
     var runs = 0, endsOff = 0, worstEnd = 0.0, samples = 0, misclipped = 0
+    var riserAsked = 0, riserMissing = 0
     var examples: [String: [String]] = [:]
     mutating func note(_ kind: String, _ what: String) {
         if examples[kind, default: []].count < 3 { examples[kind, default: []].append(what) }
@@ -571,6 +572,33 @@ private func trimLoops(_ l: Landscape, margin: Double) -> TrimTally? {
         || loops.filter({ $0.first != $0.last }).count != reported.open {
         t.open += 1
         t.note("drawn", "the face's loops are not graphTrimLoops', or not as many open")
+    }
+
+    // On f, each riser's top drawn wherever the lower band's plateau holds
+    // its boundary: read along each boundary inside the domain, a point
+    // where |f| clears the lesser height lies on a top drawn along it, and
+    // one where |f| is under it on none.
+    if let magnitude = l.refine?.magnitude, case .realBands(let bands, _) = surface.truncation {
+        let (lo, hi) = (min(real.lo, real.hi), max(real.lo, real.hi))
+        let tops = reported.truncationEdge.filter { p in p.count >= 2 && p.allSatisfy { $0.x == p[0].x } }
+        for b in Set(bands.map(\.below)).filter({ $0 > lo && $0 < hi }).sorted() {
+            let left = surface.truncation.height(atX: b.nextDown), right = surface.truncation.height(atX: b)
+            let lesser = min(left, right)
+            guard lesser.isFinite, lesser < max(left, right) else { continue }
+            for j in 0..<97 {
+                let y = imag.lo + imag.length * (Double(j) + 0.5) / 97
+                let u = magnitude(P2(b, y))
+                guard abs(u - lesser) > 1e-3 * lesser else { continue }
+                t.riserAsked += 1
+                let drawn = tops.contains { p in
+                    p[0].x == b && y >= p.map(\.y).min()! && y <= p.map(\.y).max()!
+                }
+                if drawn != (u > lesser) {
+                    t.riserMissing += 1
+                    t.note("riser", "(\(b), \(y)), |f| = \(u) against \(lesser), \(drawn ? "a top drawn" : "no top")")
+                }
+            }
+        }
     }
 
     // The truncation edge as the layer draws it, replicated and cut to the
@@ -833,6 +861,14 @@ func faceTests() {
                              resolution: 32, truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4)),
             refine: true)
         landscapes.append(Landscape("a tower banded at 2 | 4, on f", surface: tower.surface, refine: tower.refine))
+        // The same over Im [-0.3, 1]: its riser's top runs from the domain's
+        // edge, where the band at 2 has no truncation edge to end.
+        let cutTower = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/(z - 0.5)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -0.3, hi: 1)),
+                             resolution: 32, truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4)),
+            refine: true)
+        landscapes.append(Landscape("a tower banded at 2 | 4 over Im [-0.3, 1], on f", surface: cutTower.surface,
+                                    refine: cutTower.refine))
         // 1/sin(πz) with a boundary through each pole from 1 to 6, banded at
         // 2 and 4 by turns: six risers, and at each boundary a pole's
         // plateau ending on it from either side.
@@ -874,6 +910,11 @@ func faceTests() {
             let margin = l.refine == nil ? 0.25 : 0.05
             guard let t = trimLoops(l, margin: margin) else {
                 Check.expect(l.faces.isEmpty, "\(l.name): the graph has trim loops"); continue
+            }
+            if t.riserAsked > 0 {
+                Check.expect(t.riserMissing == 0,
+                             "\(l.name): each riser's top is drawn where the lower band's plateau holds its boundary, and only there",
+                             "\(t.riserMissing) of \(t.riserAsked) wrong: \(t.examples("riser"))")
             }
             Check.expect(t.open == 0 && t.drawnOff == 0,
                          "\(l.name): the graph's trim loops are closed, and the truncation edge drawn lies on them",

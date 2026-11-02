@@ -733,9 +733,9 @@ extension Surface {
     /// run placed by the refiner at its own level, and a run's end beside a
     /// band's boundary is solved onto the boundary, where |f| reaches the
     /// truncation along it. Where the truncation steps the surface has a riser, and its
-    /// top is the truncation edge there: along the boundary, at the lesser truncation where
-    /// |f| is below it and at f's own height up to the greater truncation, from
-    /// one end of the lesser band's truncation edge to the other. The grid's vertices
+    /// top is the truncation edge there: along the boundary, at f's own height up to the
+    /// greater truncation, wherever the lesser band's plateau holds the boundary, from one
+    /// end of that band's truncation edge on it to the next, or to the domain's edge. The grid's vertices
     /// in the cells that straddle a boundary are interpolated between two
     /// truncation heights and mean nothing; they are dropped, and the boundary's own
     /// pieces take their place.
@@ -825,19 +825,21 @@ extension Surface {
                 }
             }
         }
-        // The top of each riser: between the two ends of the lesser
-        // band's truncation edge on the boundary, nearest each other in y, at f's
-        // height truncated by the greater band. In order along x, then y.
-        for b in endsOnBoundary.keys.sorted() {
-            let ends = endsOnBoundary[b] ?? []
+        // The top of each riser, at f's height truncated by the greater
+        // band: along the boundary wherever the lesser band's plateau holds
+        // it, from one end of that band's truncation edge on it to the next,
+        // or to the domain's edge, read at the middle of each stretch
+        // between. In order along x, then y.
+        let corner0 = g.position(x: 0, y: 0), corner1 = g.position(x: g.width - 1, y: g.height - 1)
+        let (y0, y1) = (min(corner0.y, corner1.y), max(corner0.y, corner1.y))
+        for b in boundaries {
             let left = truncation.height(atX: b, from: .left), right = truncation.height(atX: b, from: .right)
             let lesser = min(left, right), greater = max(left, right)
             guard lesser.isFinite, lesser < greater else { continue }
-            let lows = ends.filter { $0.truncationHeight == lesser }.map(\.point).sorted { $0.y < $1.y }
-            var k = 0
-            while k + 1 < lows.count {
-                let a = lows[k], c = lows[k + 1]
-                k += 2
+            let lows = (endsOnBoundary[b] ?? []).filter { $0.truncationHeight == lesser }.map(\.point.y).sorted()
+            let stops = [y0] + lows.filter { $0 > y0 && $0 < y1 } + [y1]
+            for (a, c) in zip(stops, stops.dropFirst()) where c > a && !(mag(P2(b, 0.5 * (a + c))) < lesser) {
+                let a = P2<DomainSpace>(b, a), c = P2<DomainSpace>(b, c)
                 func top(_ y: Double) -> Double { min(mag(P2(b, y)), greater) }
                 var curve: [P3<WorldSpace>] = [P3(b, a.y, top(a.y))]
                 func subdivide(_ y0: Double, _ z0: Double, _ y1: Double, _ z1: Double, depth: Int) {
