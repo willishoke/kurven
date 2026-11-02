@@ -1161,6 +1161,53 @@ func faceTests() {
         }
     }
 
+    Check.suite("faces: a pole beside a band boundary, at every resolution, has its truncation edge on its own band's level") {
+        // Poles 1/(z - c) along Re c from -0.2 to 1.2, Im c wandering within
+        // 0.13 of the axis, beside the boundary Re z = 1/2 under 2 | 4 and
+        // 4 | 2, at six resolutions: their plateaus cross the boundary, end
+        // on it, or turn back short of it within a column. Every vertex of
+        // the placed truncation edge, off the boundary, is in the band at its
+        // own x and on |f| = that band's height. Open chains: 237 on main
+        // 1ae3d87 over the 492; four remain, at the coarsest grids, where
+        // the higher band's plateau turns back a column short of the
+        // boundary and the grid's line runs through the dropped cells into
+        // the lower band's plateau, which crosses it, so no run of its own
+        // band lies across the gap to join it to.
+        let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        let knownOpen: Set<String> = ["2|4 res 24 c 0.78", "2|4 res 32 c 0.78", "4|2 res 24 c 0.22", "4|2 res 32 c 0.22"]
+        var cases = 0, wrong = 0, off = 0, examples: [String] = [], open: [String: Int] = [:]
+        for (left, right) in [(2.0, 4.0), (4.0, 2.0)] {
+            for resolution in [24, 32, 48, 64, 100, 200] {
+                for k in 0..<41 {
+                    let c = -0.2 + 1.4 * Double(k) / 40, cy = 0.13 * sin(Double(k))
+                    let pole = try NativeLandscape.build(
+                        LandscapeRequest(expression: "1/(z - (\(c) + \(cy)i))", domain: domain, resolution: resolution,
+                                         truncation: .realBands([RealBand(below: 0.5, height: left)], beyond: right)),
+                        refine: true)
+                    guard let magnitude = pole.refine?.magnitude else { continue }
+                    let trim = pole.surface.graphTrimLoops(refine: pole.refine)
+                    let name = String(format: "%g|%g res %d c %.2f", left, right, resolution, c)
+                    cases += 1
+                    if trim.open > 0 { open[name] = trim.open }
+                    for v in trim.truncationEdge.dropLast(trim.riserTops.count).joined() where v.x != 0.5 {
+                        let h = v.x < 0.5 ? left : right
+                        if v.z != h { wrong += 1; if examples.count < 3 { examples.append("\(name): (\(v.x), \(v.y)) at \(v.z)") } }
+                        if !(abs(magnitude(P2(v.x, v.y)) - v.z) <= 1e-6 * v.z) {
+                            off += 1
+                            if examples.count < 3 { examples.append("\(name): (\(v.x), \(v.y)) |f| \(magnitude(P2(v.x, v.y)))") }
+                        }
+                    }
+                }
+            }
+        }
+        Check.expect(cases == 492 && wrong == 0 && off == 0,
+                     "every vertex of 492 poles' truncation edges lies in the band at its x, on |f| = that band's height",
+                     "\(wrong) in the wrong band, \(off) off the level: \(examples.joined(separator: "; "))")
+        Check.expect(Set(open.keys).isSubset(of: knownOpen) && open.values.allSatisfy { $0 == 1 },
+                     "and no more open chains than the four known, a plateau turning back into another band's line",
+                     "open: \(open.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" })")
+    }
+
     Check.suite("faces: a polyhedron face's trim loops are its loops, and a contour cut at them is its hatching") {
         // Hatching clips each line to the face's convex pieces, half-plane by
         // half-plane, and joins the intervals across the diagonals; a contour
