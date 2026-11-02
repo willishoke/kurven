@@ -914,6 +914,25 @@ func faceTests() {
                                                               truncation: moved(onEdge, from: 1.5, to: 1.5 + 2.0 / 31)), refine: true)
         pairs.append(("a tower banded at 2 | 4 to the far edge and 1 beyond, on f", tower.surface, past.surface,
                       .perimeter(towerWalls, base: 0), tower.refine, past.refine))
+        // 1/(z³ - 1) on the cubic preset's window, Re z in [-1.3, 1.6], whose
+        // grid's last column a rounding past 1.6 reads its truncation there.
+        let window = Domain(real: Interval(lo: -1.3, hi: 1.6), imag: Interval(lo: -1.2, hi: 1.5))
+        let windowWalls = BoundaryPerimeter(edges: [(-1.3, -1.2), (1.6, -1.2), (1.6, 1.5), (-1.3, 1.5)].indices.map { k in
+            let c = [(-1.3, -1.2), (1.6, -1.2), (1.6, 1.5), (-1.3, 1.5)]
+            let a = c[k], b = c[(k + 1) % c.count]
+            return PerimeterEdge(start: P2(a.0, a.1), end: P2(b.0, b.1), density: 33)
+        })
+        let cubicBands = Truncation.realBands([RealBand(below: 0.2, height: 2.5), RealBand(below: 1.6, height: 5)], beyond: 0.3)
+        let cubic = try NativeLandscape.build(LandscapeRequest(expression: "1/(z^3 - 1)", domain: window, resolution: 64,
+                                                               truncation: cubicBands), refine: true)
+        let cubicCell = 2.9 / Double(cubic.surface.height.width - 1)
+        let cubicPast = try NativeLandscape.build(LandscapeRequest(expression: "1/(z^3 - 1)", domain: window, resolution: 64,
+                                                                   truncation: moved(cubicBands, from: 1.6, to: 1.6 + cubicCell)),
+                                                  refine: true)
+        let lastColumn = cubic.surface.height.position(x: cubic.surface.height.width - 1, y: 0).x
+        Check.expect(lastColumn > 1.6, "the cubic window's last column lies a rounding past Re z = 1.6", "\(lastColumn)")
+        pairs.append(("1/(z³ - 1) at 2.5 | 5 to the far edge at 1.6 and 0.3 beyond, its last column past it, on f",
+                      cubic.surface, cubicPast.surface, .perimeter(windowWalls, base: 0), cubic.refine, cubicPast.refine))
         for (name, s, t, walls, refine, refinePast) in pairs {
             guard case .perimeter(let perimeter, let base) = walls else { continue }
             let context = Surface.HatchContext(perimeter: perimeter, region: .full, tiles: [.identity])

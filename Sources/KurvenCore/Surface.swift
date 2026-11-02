@@ -64,15 +64,23 @@ public struct Surface: Sendable {
     /// Elsewhere the limit is taken from `side`, the right unless a wall
     /// reads it: a wall on a band boundary reads the band on its
     /// footprint's side (`Surface.footprintSide`).
+    ///
+    /// The right edge is read at the domain's own end, not at the grid's
+    /// last column, which its spacing can put a rounding past it.
     public func truncationHeight(atX x: Double, from side: Truncation.Side = .right) -> Double {
-        truncation.height(atX: x, from: isOnRightEdge(x) ? .left : side)
+        guard case .realBands = truncation else { return truncation.height(atX: x) }
+        return isOnRightEdge(x) ? truncation.height(atX: rightEdge, from: .left) : truncation.height(atX: x, from: side)
     }
 
     /// The band over Re z = x on the landscape, as `truncationHeight(atX:from:)`
     /// reads it: on the domain's right edge, the band before it.
     public func band(atX x: Double, from side: Truncation.Side = .right) -> Int? {
-        truncation.band(atX: x, from: isOnRightEdge(x) ? .left : side)
+        guard case .realBands = truncation else { return truncation.band(atX: x) }
+        return isOnRightEdge(x) ? truncation.band(atX: rightEdge, from: .left) : truncation.band(atX: x, from: side)
     }
+
+    /// Re z of the domain's right edge, its greater end.
+    var rightEdge: Double { max(domain.real.lo, domain.real.hi) }
 
     /// Whether Re z = x is the domain's right edge: its greater end, or the
     /// grid's last column there, which its spacing can put a rounding off it.
