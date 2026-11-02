@@ -800,6 +800,44 @@ func faceTests() {
                          "\(wrong.count) of \(corners): \(wrong.prefix(3).joined(separator: "; "))")
         }
 
+        // A wall that crosses a band boundary steps there: on f its top edge
+        // is f's profile under the truncation at each vertex's own x, read
+        // from the right as the band starts there, and wherever two
+        // consecutive vertices lie in different bands they stand at one
+        // point, the step a vertical segment, not a ramp. On walls rising,
+        // falling and level across the boundary, the higher band on either
+        // side.
+        for (left, right) in [(0.5, 1.0), (1.0, 0.5)] {
+            let tower = try NativeLandscape.build(
+                LandscapeRequest(expression: "1/(z - 0.5)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                                 resolution: 32, truncation: .realBands([RealBand(below: 0.5, height: left)], beyond: right)),
+                refine: true)
+            guard let magnitude = tower.refine?.magnitude else { continue }
+            for (slope, front) in [("rising", [(-0.5, -0.9), (1.5, -0.6)]), ("falling", [(-0.5, -0.6), (1.5, -0.9)]),
+                                   ("level", [(-0.5, -0.75), (1.5, -0.75)])] {
+                let corners = front + [(1.5, 1.0), (-0.5, 1.0)]
+                let perimeter = BoundaryPerimeter(edges: corners.indices.map { k in
+                    let a = corners[k], b = corners[(k + 1) % corners.count]
+                    return PerimeterEdge(start: P2(a.0, a.1), end: P2(b.0, b.1), density: 17)
+                })
+                let drawn = tower.surface.hatch(.wallEdges(edges: [0], step: 1, base: 0),
+                                                in: Surface.HatchContext(perimeter: perimeter), refine: tower.refine)
+                let top = drawn.map { Array($0[path: 0]) } ?? []
+                var wrong: [String] = []
+                for v in top where !(abs(v.z - min(magnitude(P2(v.x, v.y)), v.x < 0.5 ? left : right)) <= 1e-9) {
+                    wrong.append("(\(v.x), \(v.z))")
+                }
+                var steps = 0
+                for (a, c) in zip(top, top.dropFirst()) where (a.x < 0.5) != (c.x < 0.5) {
+                    steps += 1
+                    if !(simd_length(a.xy.v - c.xy.v) <= 1e-12) { wrong.append("a ramp from (\(a.x), \(a.z)) to (\(c.x), \(c.z))") }
+                }
+                Check.expect(!top.isEmpty && steps == 1 && wrong.isEmpty,
+                             "a wall \(slope) across a boundary at \(left) | \(right), on f: its top edge steps at Re z = 1/2, with no ramp",
+                             "\(steps) crossings, \(wrong.count) wrong: \(wrong.prefix(3).joined(separator: ", "))")
+            }
+        }
+
         // A riser's top is drawn only where the riser stands: on f, every
         // vertex of a top the truncation edge draws along a band boundary
         // lies on a riser, and where the footprint holds both sides and |f|

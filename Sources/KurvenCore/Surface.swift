@@ -235,14 +235,17 @@ public struct Surface: Sendable {
     /// the way along its edge, `along` the edge's direction and `inward` its
     /// normal into the footprint, both carried back into the domain by
     /// `back`: the side the footprint is on. Along a wall that stands on a
-    /// band boundary that is the way `inward` points; at an end of a wall
-    /// that leaves the boundary, the way the wall goes, so its top runs on
-    /// to its end in its own band. The sides differ only on a boundary.
+    /// line of Re z, as one on a band boundary does, that is the way `inward`
+    /// points; at an end of a wall that leaves the line, the way the wall
+    /// goes, so its top runs on to its end in its own band. Elsewhere, on a
+    /// wall that crosses a boundary, the right, as `Truncation.height(atX:)`
+    /// reads it, so the wall steps there. The sides differ only on a
+    /// boundary.
     static func footprintSide(at t: Double, along: SIMD2<Double>, inward: SIMD2<Double>,
                               back: Affine2) -> Truncation.Side {
         func carried(_ d: SIMD2<Double>) -> Double { back.a * d.x + back.b * d.y }
-        let into = t == 0 ? carried(along) : t == 1 ? -carried(along) : 0
-        let x = into != 0 ? into : carried(inward)
+        let across = carried(along)
+        let x = across == 0 ? carried(inward) : t == 0 ? across : t == 1 ? -across : 0
         return x < 0 ? .left : .right
     }
 
