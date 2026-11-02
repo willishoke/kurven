@@ -879,6 +879,25 @@ func faceTests() {
             refine: true)
         landscapes.append(Landscape("1/sin(πz) banded at 2 | 4 by turns through its poles, on f", surface: poles.surface,
                                     refine: poles.refine))
+        // A pole's plateau across a band boundary into a band too high for a
+        // plateau of its own: its truncation edge ends on the boundary from
+        // the one side, and its riser's top runs between the two ends.
+        let across = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/(z - 0.4)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                             resolution: 32, truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 20)),
+            refine: true)
+        landscapes.append(Landscape("1/(z - 0.4) banded at 2 | 20, its plateau across the boundary, on f", surface: across.surface,
+                                    refine: across.refine))
+        // A pole's plateau that turns back a column short of a band boundary,
+        // on a coarse grid and on a fine one.
+        for (expression, resolution) in [("1/(z + 0.03)", 32), ("1/(z + 0.01)", 200)] {
+            let pole = try NativeLandscape.build(
+                LandscapeRequest(expression: expression, domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                                 resolution: resolution, truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4)),
+                refine: true)
+            landscapes.append(Landscape("\(expression) at res \(resolution) banded at 2 | 4, a column short of the boundary, on f",
+                                        surface: pole.surface, refine: pole.refine))
+        }
         // Uniform on f: 1/(z³ - 1), its three towers cut at 5.
         let cubic = try NativeLandscape.build(
             LandscapeRequest(expression: "1/(z^3 - 1)", domain: Domain(real: Interval(lo: -1.3, hi: 1.6), imag: Interval(lo: -1.2, hi: 1.5)),
@@ -984,23 +1003,25 @@ func faceTests() {
         }
     }
 
-    Check.suite("faces: the graph's trim loops say where they are open") {
-        // Recorded, not fixed (bug 8 in the handoff): a plateau that comes
-        // within a column of a band boundary without crossing it. The banded
-        // truncation edge drops the vertices beside the boundary, and with
-        // |f| under the truncation all along it there is nothing on it to
-        // join the ends to, so the plateau's loop is left open, in the
-        // drawing as in the loops. Until the drawing closes it, the loops
-        // say so.
-        let pole = try NativeLandscape.build(
-            LandscapeRequest(expression: "1/(z + 0.03)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
-                             resolution: 32, truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4)),
-            refine: true)
-        let trim = pole.surface.graphTrimLoops(refine: pole.refine)
-        let open = trim.loops.filter { $0.first != $0.last }
-        Check.expect(trim.open == 1 && open.count == 1,
-                     "a pole's plateau a column short of a band boundary is one open chain, and counted",
-                     "\(trim.open) counted, \(open.count) open: \(open.map { "\($0[0].v) to \($0[$0.count - 1].v)" })")
+    Check.suite("faces: the graph's trim loops close a plateau that turns back a column short of a band boundary") {
+        // A pole's plateau that comes within a column of a band boundary
+        // without crossing it, |f| under the truncation all along the
+        // boundary: the banded truncation edge drops the vertices beside the
+        // boundary, and with nothing on it to join the ends to they are
+        // placed at the plateau's own level instead, so the plateau's loop
+        // closes, in the drawing as in the loops. On a coarse grid, and on a
+        // fine one with the plateau nearer the boundary.
+        for (expression, resolution) in [("1/(z + 0.03)", 32), ("1/(z + 0.01)", 200)] {
+            let pole = try NativeLandscape.build(
+                LandscapeRequest(expression: expression, domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                                 resolution: resolution, truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4)),
+                refine: true)
+            let trim = pole.surface.graphTrimLoops(refine: pole.refine)
+            let open = trim.loops.filter { $0.first != $0.last }
+            Check.expect(trim.open == 0 && open.isEmpty,
+                         "\(expression) at res \(resolution): its plateau's loop, a column short of the boundary at Re z = 1/2, is closed",
+                         "\(trim.open) counted, \(open.count) open: \(open.map { "\($0[0].v) to \($0[$0.count - 1].v)" })")
+        }
     }
 
     Check.suite("faces: a polyhedron face's trim loops are its loops, and a contour cut at them is its hatching") {

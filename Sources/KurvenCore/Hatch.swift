@@ -738,7 +738,11 @@ extension Surface {
     /// end of that band's truncation edge on it to the next, or to the domain's edge. The grid's vertices
     /// in the cells that straddle a boundary are interpolated between two
     /// truncation heights and mean nothing; they are dropped, and the boundary's own
-    /// pieces take their place.
+    /// pieces take their place. But where a plateau comes within a column of a boundary
+    /// and turns back, |f| reaching the band's truncation nowhere on the boundary near
+    /// either side of the gap, the dropped vertices are that band's own truncation edge:
+    /// they are placed with the runs either side, at its level, so long as the placed run
+    /// keeps to the band.
     ///
     /// Each placed run, as drawn but on the ground, goes into `pieces`
     /// under its band, as `band(atX:from:)` numbers it; the risers'
@@ -785,32 +789,94 @@ extension Surface {
         /// the truncation they belong to and the point.
         var endsOnBoundary: [Double: [(truncationHeight: Double, point: P2<DomainSpace>)]] = [:]
         for line in lines {
-            // Runs of one band's vertices, the straddling cells' dropped.
+            // Runs of one band's vertices, the straddling cells' dropped:
+            // after each run, the vertices dropped there and the boundaries
+            // they lie beside, and before the first, `head`.
             var runs: [(truncationHeight: Double, points: [P2<DomainSpace>])] = []
+            var gaps: [(beside: Set<Double>, points: [P2<DomainSpace>])] = []
+            var head: [P2<DomainSpace>] = []
             var broken = true
             for v in line {
-                if boundary(beside: v.x) != nil { broken = true; continue }
+                if let b = boundary(beside: v.x) {
+                    if runs.isEmpty { head.append(v) } else {
+                        gaps[gaps.count - 1].beside.insert(b); gaps[gaps.count - 1].points.append(v)
+                    }
+                    broken = true
+                    continue
+                }
                 let c = truncationHeight(atX: v.x)
                 if !broken, let last = runs.last, last.truncationHeight == c {
                     runs[runs.count - 1].points.append(v)
                 } else {
-                    runs.append((c, [v]))
+                    runs.append((c, [v])); gaps.append(([], []))
                 }
                 broken = false
             }
+            let closed = line.first == line.last
             // A closed line whose first and last runs are the same band and
             // unbroken between is one run.
-            if line.first == line.last, runs.count >= 2, runs[0].truncationHeight == runs[runs.count - 1].truncationHeight,
+            if closed, runs.count >= 2, runs[0].truncationHeight == runs[runs.count - 1].truncationHeight,
                boundary(beside: line[0].x) == nil {
                 let last = runs.removeLast()
+                gaps.removeLast()
                 runs[0].points = last.points.dropLast() + runs[0].points
             }
-            for run in runs where run.points.count >= 2 && run.truncationHeight.isFinite {
-                for piece in refine.contours(.magnitude, run.truncationHeight, [run.points], .infinity) where piece.count >= 2 {
+            // On a closed line the last gap runs on through the head, its
+            // first vertex the line's last, to the first run.
+            if closed, !head.isEmpty, !runs.isEmpty {
+                for b in head.compactMap({ boundary(beside: $0.x) }) { gaps[gaps.count - 1].beside.insert(b) }
+                gaps[gaps.count - 1].points += head.dropFirst()
+            }
+            // A gap is a stretch of the band's own truncation edge, not a
+            // crossing of the boundary, where the runs either side are the
+            // same band and |f| reaches that band's truncation nowhere on the
+            // boundary near either end: the plateau comes within a column of
+            // the boundary and turns back. Then the dropped vertices are the
+            // band's, and are placed with the runs, on f, at its level.
+            let n = runs.count
+            let joins = (0..<n).map { k -> Bool in
+                let j = k + 1 < n ? k + 1 : 0
+                guard closed || k + 1 < n, let b = gaps[k].beside.first, gaps[k].beside.count == 1,
+                      runs[k].truncationHeight == runs[j].truncationHeight, runs[k].truncationHeight.isFinite,
+                      let end = runs[k].points.last, let start = runs[j].points.first else { return false }
+                return ontoBoundary(b, truncationHeight: runs[k].truncationHeight, near: end) == nil
+                    && ontoBoundary(b, truncationHeight: runs[k].truncationHeight, near: start) == nil
+            }
+            // The runs joined across those gaps, each with the runs it was
+            // made of; in order from the first run, or on a closed line whose
+            // last gap joins, from the run after the last gap that does not.
+            var placed: [(truncationHeight: Double, points: [P2<DomainSpace>], from: [Int])] = []
+            if closed, n > 0, joins.allSatisfy({ $0 }) {
+                var points = (0..<n).flatMap { runs[$0].points + gaps[$0].points }
+                points.append(points[0])
+                placed = [(runs[0].truncationHeight, points, Array(0..<n))]
+            } else {
+                let first = closed && joins.last == true ? (joins.lastIndex(of: false)! + 1) % n : 0
+                for m in 0..<n {
+                    let k = (first + m) % n
+                    if m > 0, joins[(k + n - 1) % n] {
+                        placed[placed.count - 1].points += runs[k].points
+                        placed[placed.count - 1].from.append(k)
+                    } else {
+                        placed.append((runs[k].truncationHeight, runs[k].points, [k]))
+                    }
+                    if joins[k], m + 1 < n { placed[placed.count - 1].points += gaps[k].points }
+                }
+            }
+            for run in placed where run.points.count >= 2 && run.truncationHeight.isFinite {
+                let band = self.band(atX: run.points[0].x)
+                var refined = refine.contours(.magnitude, run.truncationHeight, [run.points], .infinity)
+                // Joined, it must stay on its band's side of the boundaries;
+                // where it does not, its runs are placed apart, as they were.
+                if run.from.count > 1, !refined.joined().allSatisfy({ self.band(atX: $0.x) == band }) {
+                    refined = run.from.flatMap { refine.contours(.magnitude, run.truncationHeight, [runs[$0].points], .infinity) }
+                }
+                for piece in refined where piece.count >= 2 {
                     var piece = piece
-                    // The far end's index read after the near end has had
-                    // its point on the boundary put before it.
-                    for atStart in [true, false] {
+                    // A closed piece has no ends. The far end's index read
+                    // after the near end has had its point on the boundary
+                    // put before it.
+                    for atStart in [true, false] where piece.first != piece.last {
                         let i = atStart ? 0 : piece.count - 1
                         if let q = onBoundaryTruncationCrossing(near: piece[i], tiles: tiles, magnitude: magnitude) {
                             piece[i] = q
@@ -821,7 +887,7 @@ extension Surface {
                         }
                     }
                     out.append(piece.map { P3($0.x, $0.y, run.truncationHeight) })
-                    if let band = self.band(atX: run.points[0].x) { pieces[band, default: []].append(piece) }
+                    if let band { pieces[band, default: []].append(piece) }
                 }
             }
         }
