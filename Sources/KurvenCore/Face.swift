@@ -61,18 +61,43 @@ public struct Face: Sendable {
     public let copies: [Copy]
     private let loops: Computed<[[P2<ParamSpace>]]>?
 
-    /// The closed curves in the parameter plane the face's trimmed domain
-    /// ends on, before a copy is cut to the footprint, each ending where it
-    /// begins: where a contour on the face is cut
-    /// (`Contour.levels(of:_:over:contains:trimLoops:)`). A polyhedron
-    /// face's are its loops; a parametric surface has none, its domain the
-    /// whole rectangle; the graph's are the domain's edge and the plateaus'
-    /// loops, the truncation edge among them
-    /// (`Surface.graphTrimLoops(tiles:refine:)`), placed on f with a refiner
-    /// the first time they are asked, and shared by every copy. The
-    /// polyhedron face's and the graph's bound the trimmed domain even-odd.
-    /// Nil where they are not built yet: a plateau, a riser, a wall.
+    /// The closed curves in the parameter plane that bound the face's
+    /// trimmed domain even-odd, before a copy is cut to the footprint, each
+    /// ending where it begins: where a contour on the face is cut, and which
+    /// side of each is kept (`contours(of:_:on:)`). A polyhedron face's are
+    /// its loops. The graph's are the domain's edge and the plateaus' loops,
+    /// the truncation edge among them (`Surface.graphTrimLoops(tiles:refine:)`),
+    /// placed on f with a refiner, the first time they are asked, and shared
+    /// by every copy.
+    ///
+    /// The graph's bound it only even-odd: a stretch along the domain's edge
+    /// or a band boundary can be passed twice, bounding nothing, and the
+    /// crease between a riser and the higher plateau lies on them though the
+    /// graph does not reach it. They are not one oriented loop per component
+    /// of the boundary, as a B-rep's are; and a copy's set
+    /// (`Copy.trimLoops`) bounds nothing on its own, for it also needs the
+    /// footprint, which `contains` tests.
+    ///
+    /// Nil where the face has none to give: a parametric surface, whose
+    /// domain is its whole rectangle, and, not built yet, a plateau, a riser
+    /// and a wall.
     public var trimLoops: [[P2<ParamSpace>]]? { loops?.value }
+
+    /// The contours of a field on one copy of the face, clipped to its
+    /// trimmed domain: cut where they cross the face's trim loops or the
+    /// footprint's perimeter where the copy stands, kept where the loops
+    /// hold them even-odd and the footprint holds them
+    /// (`Contour.levels(of:_:over:trimLoops:contains:cuts:)`). On a face with
+    /// no trim loops they are kept where the copy's `contains` holds, a
+    /// segment at a time.
+    public func contours(of field: ScalarField, _ levels: [Double], on copy: Copy)
+        -> [(level: Double, paths: [[P2<ParamSpace>]])] {
+        guard let loops = trimLoops else {
+            return Contour.levels(of: field, levels, over: domain, contains: copy.contains)
+        }
+        return Contour.levels(of: field, levels, over: domain, trimLoops: loops,
+                              contains: copy.footprint?.contains, cuts: copy.footprint?.perimeter ?? [])
+    }
 
     /// One copy of a face: where it is, which way it faces, and how much of
     /// it is there.
@@ -93,15 +118,18 @@ public struct Face: Sendable {
         /// period along.
         public let contains: @Sendable (P2<ParamSpace>) -> Bool
         fileprivate let loops: Computed<[[P2<ParamSpace>]]>?
-        fileprivate let footprint: [[P2<ParamSpace>]]
+        /// The footprint where this copy stands: its perimeter carried back
+        /// into the parameter plane, and whether it holds a point there.
+        fileprivate let footprint: (perimeter: [[P2<ParamSpace>]], contains: @Sendable (P2<ParamSpace>) -> Bool)?
 
         /// The closed curves this copy's trimmed domain ends on: the face's
         /// trim loops and, where a footprint cuts the copy, the footprint's
         /// perimeter where the copy stands, carried back into the parameter
-        /// plane. Which side of each is in the copy is `contains`'s to say,
-        /// as it is where a contour on the copy is cut. Nil where the face's
-        /// are.
-        public var trimLoops: [[P2<ParamSpace>]]? { loops.map { $0.value + footprint } }
+        /// plane. Not intersected: with a footprint they bound nothing
+        /// even-odd, and which side of the perimeter is in the copy is the
+        /// footprint's to say (`Face.contours(of:_:on:)`). Nil where the
+        /// face's are.
+        public var trimLoops: [[P2<ParamSpace>]]? { loops.map { $0.value + (footprint?.perimeter ?? []) } }
 
         /// A jet of the face's map carried into place: its point moved by the
         /// tile, its derivatives turned with it, heights kept.
@@ -126,18 +154,20 @@ public struct Face: Sendable {
     /// A face copied by `tiles`: each copy faces as `outward` says, turned by
     /// its tile, and holds what `contains` says asked with its tile. Its
     /// trim loops are what `trimLoops` makes, once, when they are first
-    /// asked, and `footprint`'s asked with its tile.
+    /// asked, and its footprint `footprint`'s asked with its tile, nil where
+    /// none cuts it.
     public init(id: FaceID, domain: (u: ParamAxis, v: ParamAxis),
                 map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet, outward: Double?,
                 tiles: [Affine2], trimLoops: (@Sendable () -> [[P2<ParamSpace>]])? = nil,
-                footprint: (@Sendable (Affine2) -> [[P2<ParamSpace>]])? = nil,
+                footprint: (@Sendable (Affine2) -> (perimeter: [[P2<ParamSpace>]],
+                                                     contains: @Sendable (P2<ParamSpace>) -> Bool)?)? = nil,
                 contains: @escaping @Sendable (P2<ParamSpace>, Affine2) -> Bool) {
         let loops = trimLoops.map(Computed.init)
         self.id = id; self.domain = domain; self.map = map; self.loops = loops
         copies = tiles.map { tile in
             let turn: Double = tile.a * tile.d - tile.b * tile.c < 0 ? -1 : 1
             return Copy(tile: tile, outward: outward.map { $0 * turn }, contains: { contains($0, tile) },
-                        loops: loops, footprint: footprint?(tile) ?? [])
+                        loops: loops, footprint: footprint?(tile))
         }
     }
 }
@@ -188,7 +218,7 @@ public extension ParametricSurface {
     var face: Face {
         let (u, v) = (self.u, self.v)
         return Face(id: .surface, domain: (u, v), contains: { u.covers($0.x) && v.covers($0.y) },
-                    trimLoops: { [] }, map: map, outward: outward)
+                    map: map, outward: outward)
     }
 }
 
@@ -307,12 +337,13 @@ public extension Surface {
                 surface.graphTrimLoops(tiles: tiles, refine: refine).loops.map { $0.map { P2<ParamSpace>($0.v) } }
             },
             footprint: { tile in
-                guard case .inside(let perimeter) = region, let back = tile.inverse else { return [] }
+                guard case .inside(let perimeter) = region, let back = tile.inverse else { return nil }
                 let corners = perimeter.edges.map { e -> P2<ParamSpace> in
                     let q = back(P3(e.start.x, e.start.y, 0))
                     return P2(q.x, q.y)
                 }
-                return corners.isEmpty ? [] : [corners + [corners[0]]]
+                return (corners.isEmpty ? [] : [corners + [corners[0]]],
+                        { p in region.contains(tile(P3(p.x, p.y, 0)).xy) })
             },
             contains: { p, tile in
                 rectangle.u.covers(p.x) && rectangle.v.covers(p.y)

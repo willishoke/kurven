@@ -385,7 +385,7 @@ public extension Surface {
     /// last sample, and the fixtures hold it to that.
     ///
     /// The contours are the field's (`field(of:refine:ceiling:)`), asked for
-    /// through `Contour.levels(of:_:over:contains:trimLoops:)` as any
+    /// through `Contour.levels(of:_:over:trimLoops:contains:cuts:)` as any
     /// field's are, over the graph's parameter rectangle
     /// (`parameterRectangle`).
     /// Not over its trimmed domain: the restriction says which part of the

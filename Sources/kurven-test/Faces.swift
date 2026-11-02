@@ -479,7 +479,7 @@ private struct Segments {
 private struct TrimTally {
     var open = 0, drawn = 0, drawnOff = 0, worstDrawn = 0.0
     var asked = 0, misplaced = 0, worstMisplaced = 0.0
-    var runs = 0, endsOff = 0, worstEnd = 0.0, samples = 0, misclipped = 0, worstMisclipped = 0.0
+    var runs = 0, endsOff = 0, worstEnd = 0.0, samples = 0, misclipped = 0
     var examples: [String: [String]] = [:]
     mutating func note(_ kind: String, _ what: String) {
         if examples[kind, default: []].count < 3 { examples[kind, default: []].append(what) }
@@ -488,14 +488,15 @@ private struct TrimTally {
 }
 
 /// The graph's trim loops held to the drawing, to membership, and as the
-/// cut of a contour, on every copy. Membership is not asked within `margin`
-/// cells of the loops: they are the truncation edge as drawn, chords between
-/// vertices on |f| = h(x), or the excess grid's marching squares, and
-/// `contains` is |f| < h(x) exactly, or the grid's bilinear surface under
-/// it. Nor, without a refiner, in a cell whose two columns read different
-/// truncation heights: the excess grid interpolates between them there, and
-/// its truncation edge with it, while the surface steps at the band's
-/// boundary.
+/// cut of a contour, on every copy. Membership by the loops is held to
+/// `contains` except within `margin` cells of them: they are the truncation
+/// edge as drawn, chords between vertices on |f| = h(x), or the excess
+/// grid's marching squares, and `contains` is |f| < h(x) exactly, or the
+/// grid's bilinear surface under it. Nor, without a refiner, in a cell whose
+/// two columns read different truncation heights: the excess grid
+/// interpolates between them there, and its truncation edge with it, while
+/// the surface steps at the band's boundary. A contour's clip is held to the
+/// loops themselves, which decide it, to a billionth of a cell.
 private func trimLoops(_ l: Landscape, margin: Double) -> TrimTally? {
     guard let graph = l.faces.first, graph.id == .graph, let loops = graph.trimLoops else { return nil }
     let surface = l.surface
@@ -516,7 +517,15 @@ private func trimLoops(_ l: Landscape, margin: Double) -> TrimTally? {
         }
     }
     var t = TrimTally()
-    t.open = loops.filter { $0.first != $0.last }.count
+    // The open chains as `graphTrimLoops` counts them, and the face's loops
+    // its, with that many open.
+    let reported = surface.graphTrimLoops(tiles: l.tiles, refine: l.refine)
+    t.open = reported.open
+    if reported.loops.map({ $0.map(\.v) }) != loops.map({ $0.map(\.v) })
+        || loops.filter({ $0.first != $0.last }).count != reported.open {
+        t.open += 1
+        t.note("drawn", "the face's loops are not graphTrimLoops', or not as many open")
+    }
 
     // The truncation edge as the layer draws it, replicated and cut to the
     // footprint: each vertex on the loops, carried back by some tile.
@@ -549,26 +558,36 @@ private func trimLoops(_ l: Landscape, margin: Double) -> TrimTally? {
             }
         }
 
-        // A contour on the copy: lines of x and of y across the rectangle.
+        // A contour on the copy: lines of x and of y across the rectangle,
+        // and level sets of |f| about the truncation, which curve and run
+        // along the truncation edge.
         guard let copyLoops = copy.trimLoops else { continue }
         let cut = Segments(copyLoops.map { $0.map(\.v) }, cell: cell)
-        let rectangle = graph.domain
-        let families: [(ScalarField, [Double])] = [
+        let footprint = l.region
+        func held(_ q: SIMD2<Double>) -> Bool {
+            own.inside(q) && footprint.contains(copy.tile(P3(q.x, q.y, 0)).xy)
+        }
+        var families: [(ScalarField, [Double])] = [
             (ScalarField { $0.x }, (1...13).map { real.lo + real.length * (Double($0) - 0.29) / 13 }),
             (ScalarField { $0.y }, (1...9).map { imag.lo + imag.length * (Double($0) - 0.43) / 9 }),
         ]
+        let heights = Set(surface.truncation.bands(from: min(real.lo, real.hi), to: max(real.lo, real.hi))
+            .map(\.height).filter(\.isFinite)).sorted()
+        if let magnitude = surface.field(of: .magnitude, refine: l.refine), !heights.isEmpty {
+            families.append((magnitude, heights.flatMap { h in [0.6, 0.93, 1.07, 1.4].map { $0 * h } }))
+        }
         for (field, levels) in families {
-            let whole = Contour.levels(of: field, levels, over: rectangle)
-            let clipped = Contour.levels(of: field, levels, over: rectangle, contains: copy.contains, trimLoops: copyLoops)
+            let whole = Contour.levels(of: field, levels, over: graph.domain)
+            let clipped = graph.contours(of: field, levels, on: copy)
             let paths = whole.flatMap(\.paths), runs = clipped.flatMap(\.paths)
             let pathEnds = Set(paths.flatMap { [$0[0], $0[$0.count - 1]] })
             let kept = Segments(runs.map { $0.map(\.v) }, cell: cell)
             t.runs += runs.count
             for run in runs {
-                for e in [run[0], run[run.count - 1]] where !pathEnds.contains(e) && !straddles(e.v) {
+                for e in [run[0], run[run.count - 1]] where !pathEnds.contains(e) {
                     let d = cut.distance(e.v, within: cell)
                     if !(d <= tolerance) {
-                        t.endsOff += 1; t.worstEnd = max(t.worstEnd, d)
+                        t.endsOff += 1; t.worstEnd = max(t.worstEnd, d / cell)
                         t.note("clipped", "a run ends at \(e.v), \(d.isFinite ? "\(d / cell)" : "over a") cell(s) off the loops")
                     }
                 }
@@ -577,13 +596,12 @@ private func trimLoops(_ l: Landscape, margin: Double) -> TrimTally? {
                 for (a, b) in zip(path, path.dropFirst()) {
                     for k in 0..<16 {
                         let q = a.v + (b.v - a.v) * ((Double(k) + 0.5) / 16)
-                        guard cut.distance(q, within: margin * cell).isInfinite, !straddles(q) else { continue }
+                        guard cut.distance(q, within: tolerance).isInfinite else { continue }
                         t.samples += 1
                         let onRun = kept.distance(q, within: cell) <= tolerance
-                        if onRun != copy.contains(P2(q)) {
+                        if onRun != held(q) {
                             t.misclipped += 1
-                            t.worstMisclipped = max(t.worstMisclipped, cut.distance(q, within: 10 * cell) / cell)
-                            t.note("clipped", "\(q) on tile \(copy.tile) \(onRun ? "kept" : "cut away"), contains says otherwise")
+                            t.note("clipped", "\(q) on tile \(copy.tile) \(onRun ? "kept" : "cut away"), the loops say otherwise")
                         }
                     }
                 }
@@ -653,10 +671,15 @@ func faceTests() {
                                         surface: hatch.surface, tiles: besides, region: .inside(across)))
         }
         for l in landscapes {
-            // Measured: within 0.015 cells on Γ and 0.043 on the tower, the
-            // refined truncation edge's chords; 0.16 on the hatch fixture,
-            // marching squares' chords under a bilinear surface that curves
-            // within a cell.
+            // How far the loops and `contains` may part: measured, not
+            // bounded. The refiner places each chord of the truncation edge
+            // with its midpoint's distance from |f| = h(x), estimated to first
+            // order, within 0.02 cells (`ContourRefine.tolerance`), which
+            // bounds neither the estimate's error nor the chord away from its
+            // midpoint: 0.015 cells on Γ, 0.043 on the tower. Without a
+            // refiner the loops are marching squares' chords under a bilinear
+            // surface that curves within a cell: 0.16 on the hatch fixture.
+            // The clip is held to the loops, which decide it, with no margin.
             let margin = l.refine == nil ? 0.25 : 0.05
             guard let t = trimLoops(l, margin: margin) else {
                 Check.expect(l.faces.isEmpty, "\(l.name): the graph has trim loops"); continue
@@ -668,9 +691,10 @@ func faceTests() {
                          "\(l.name): a point the loops and the footprint hold is in the graph, and one they do not is out",
                          "\(t.misplaced) of \(t.asked) disagree, worst \(t.worstMisplaced) cells from the loops: \(t.examples("placed"))")
             Check.expect(t.runs > 0 && t.endsOff == 0 && t.samples > 200 && t.misclipped == 0,
-                         "\(l.name): lines of x and y on each copy are cut where they cross its loops, and kept where it holds them",
-                         "\(t.endsOff) of \(t.runs) runs end off the loops (worst \(t.worstEnd)), \(t.misclipped) of \(t.samples) samples misclipped "
-                            + "(worst \(t.worstMisclipped) cells from the loops): \(t.examples("clipped"))")
+                         "\(l.name): lines of x and y and level sets of |f| on each copy are cut where they cross its loops, "
+                            + "and kept where the loops and the footprint hold them",
+                         "\(t.endsOff) of \(t.runs) runs end off the loops (worst \(t.worstEnd) cells), \(t.misclipped) of \(t.samples) "
+                            + "samples misclipped: \(t.examples("clipped"))")
         }
     }
 
@@ -728,6 +752,25 @@ func faceTests() {
         }
     }
 
+    Check.suite("faces: the graph's trim loops say where they are open") {
+        // Recorded, not fixed (bug 8 in the handoff): a plateau that comes
+        // within a column of a band boundary without crossing it. The banded
+        // truncation edge drops the vertices beside the boundary, and with
+        // |f| under the truncation all along it there is nothing on it to
+        // join the ends to, so the plateau's loop is left open, in the
+        // drawing as in the loops. Until the drawing closes it, the loops
+        // say so.
+        let pole = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/(z + 0.03)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                             resolution: 32, truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4)),
+            refine: true)
+        let trim = pole.surface.graphTrimLoops(refine: pole.refine)
+        let open = trim.loops.filter { $0.first != $0.last }
+        Check.expect(trim.open == 1 && open.count == 1,
+                     "a pole's plateau a column short of a band boundary is one open chain, and counted",
+                     "\(trim.open) counted, \(open.count) open: \(open.map { "\($0[0].v) to \($0[$0.count - 1].v)" })")
+    }
+
     Check.suite("faces: a polyhedron face's trim loops are its loops, and a contour cut at them is its hatching") {
         // Hatching clips each line to the face's convex pieces, half-plane by
         // half-plane, and joins the intervals across the diagonals; a contour
@@ -756,8 +799,7 @@ func faceTests() {
                 guard let first = ks.first, let last = ks.last else { continue }
                 let levels = (first...last).map { Double($0) * hatching.spacing }
                 let field = ScalarField { simd_dot($0.v, per) }
-                for (level, runs) in Contour.levels(of: field, levels, over: face.domain,
-                                                    contains: copy.contains, trimLoops: loops) {
+                for (level, runs) in face.contours(of: field, levels, on: copy) {
                     var expected = drawn[Int((level / hatching.spacing).rounded()), default: []]
                     lines += runs.count
                     for run in runs {

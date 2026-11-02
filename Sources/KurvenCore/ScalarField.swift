@@ -64,22 +64,27 @@ public extension Contour {
     /// a level at a time, the levels in parallel. The samples are their own
     /// grid: nothing wraps or is unwrapped there.
     ///
-    /// `contains` says which points of the rectangle lie in the face's
-    /// trimmed domain, and `trimLoops` are the closed curves its boundary
-    /// lies on (`Face.trimLoops`). A path is clipped to the domain exactly,
-    /// as hatching is clipped to a polyhedron face's convex pieces: cut
-    /// wherever a segment of it crosses a trim loop, each piece kept where
-    /// `contains` holds at its middle, and the pieces kept on either side of
-    /// a cut joined. So a run ends on a trim loop wherever the loop crosses
-    /// it, between two vertices or through one, and a hole narrower than a
-    /// step still cuts the path. With no loop across it a path is kept or
-    /// dropped a segment at a time. On a periodic axis `contains` is asked
-    /// at unwrapped coordinates, and must answer the same a period along;
-    /// the loops are met a period along too.
+    /// A path is clipped to a trimmed domain exactly, as hatching is clipped
+    /// to a polyhedron face's convex pieces: cut wherever a segment of it
+    /// crosses one of `trimLoops` or `cuts`, and each piece kept where the
+    /// domain holds its middle. The domain is what `trimLoops` bound
+    /// even-odd (`Face.trimLoops`), read by a ray along +u, and of that what
+    /// `contains` holds, for whatever the loops do not carry -- a copy's
+    /// footprint -- with `cuts` the curves where `contains` changes. The
+    /// pieces kept either side of a cut are joined. So a run ends on a loop
+    /// wherever the loop crosses it, between two vertices or through one,
+    /// and a hole narrower than a step still cuts the path. Where neither
+    /// is given nothing is trimmed; where a domain's boundary is left out of
+    /// the loops and the cuts, a path is kept or dropped a segment at a
+    /// time there. Loops that bound even-odd lie in the plane: no periodic
+    /// axis runs across them. On a periodic axis `contains` is asked at
+    /// unwrapped coordinates, and must answer the same a period along; the
+    /// cuts are met a period along too.
     static func levels(of field: ScalarField, _ levels: [Double],
                        over rectangle: (u: ParamAxis, v: ParamAxis),
+                       trimLoops: [[P2<ParamSpace>]]? = nil,
                        contains: (@Sendable (P2<ParamSpace>) -> Bool)? = nil,
-                       trimLoops: [[P2<ParamSpace>]] = [])
+                       cuts: [[P2<ParamSpace>]] = [])
         -> [(level: Double, paths: [[P2<ParamSpace>]])] {
         let contoured: [(level: Double, paths: [[P2<ParamSpace>]])]
         switch field.contouring {
@@ -92,9 +97,13 @@ public extension Contour {
             }
             contoured = Array(zip(levels, paths))
         }
-        guard let contains else { return contoured }
+        guard trimLoops != nil || contains != nil else { return contoured }
         let (u, v) = rectangle
-        let loops = TrimIndex(trimLoops, periods: (u.period, v.period))
+        let crossed = TrimIndex((trimLoops ?? []) + cuts, periods: (u.period, v.period))
+        let bounding = trimLoops.map { TrimIndex($0, periods: (nil, nil)) }
+        let holds: (P2<ParamSpace>) -> Bool = { p in
+            (bounding?.encloses(p.v) ?? true) && (contains?(p) ?? true)
+        }
         return contoured.map { contour in
             (contour.level, contour.paths.flatMap { path -> [[P2<ParamSpace>]] in
                 guard let first = path.first, let last = path.last, path.count >= 2 else { return [] }
@@ -102,7 +111,7 @@ public extension Contour {
                 // it was unwrapped.
                 let closed = abs(u.difference(last.x, first.x)) <= 1e-12 * u.range.length
                     && abs(v.difference(last.y, first.y)) <= 1e-12 * v.range.length
-                return trimmed(path, closed: closed, contains: contains, loops: loops)
+                return trimmed(path, closed: closed, holds: holds, loops: crossed)
             })
         }
     }
@@ -164,16 +173,16 @@ public extension Contour {
     }
 
     /// The runs of a path inside the trimmed domain: the path cut where it
-    /// crosses a trim loop, segment by segment, each piece kept where
-    /// `contains` holds at its middle, and the pieces kept either side of a
-    /// cut joined into one run, with no vertex at the cut.
+    /// crosses a loop, segment by segment, each piece kept where `holds`
+    /// holds at its middle, and the pieces kept either side of a cut joined
+    /// into one run, with no vertex at the cut.
     ///
     /// A closed path's last vertex is its first, or its first a period
     /// along. Where it is kept through both, the run through its last vertex
     /// and the run through its first are one run, so a loop is not split
     /// where it happens to begin.
     private static func trimmed(_ path: [P2<ParamSpace>], closed: Bool,
-                                contains: (P2<ParamSpace>) -> Bool, loops: TrimIndex) -> [[P2<ParamSpace>]] {
+                                holds: (P2<ParamSpace>) -> Bool, loops: TrimIndex) -> [[P2<ParamSpace>]] {
         var runs: [[P2<ParamSpace>]] = [], run: [P2<ParamSpace>] = []
         // Whether the run under way ends at a cut, and whether the path is
         // kept from its first vertex.
@@ -184,7 +193,7 @@ public extension Contour {
             var from = a
             for (i, to) in (cuts + [b]).enumerated() where to != from {
                 defer { from = to }
-                guard contains(P2(0.5 * (from + to))) else {
+                guard holds(P2(0.5 * (from + to))) else {
                     if run.count >= 2 { runs.append(run) }
                     run = []
                     continue
@@ -210,13 +219,16 @@ public extension Contour {
 }
 
 /// The segments of a face's trim loops, bucketed on a grid over their
-/// bounding box, so a segment of a contour is met only with those near it.
-/// On a periodic axis a segment is met with the loops a period along too.
+/// bounding box, so a segment of a contour, or a ray along +u, is met only
+/// with those near it. On a periodic axis a segment is met with the loops a
+/// period along too.
 struct TrimIndex {
     private let starts: [SIMD2<Double>], ends: [SIMD2<Double>]
     private let lo: SIMD2<Double>, hi: SIMD2<Double>, cell: SIMD2<Double>
     private let columns: Int, rows: Int
     private let buckets: [[Int32]]
+    /// By rows alone, for the ray: each segment once in each row it spans.
+    private let strips: [[Int32]]
     private let periods: (u: Double?, v: Double?)
 
     /// Each loop ends where it begins, or a period along; its segments are
@@ -235,12 +247,32 @@ struct TrimIndex {
         let extent = hi - lo
         cell = SIMD2(extent.x > 0 ? extent.x / Double(n) : 1, extent.y > 0 ? extent.y / Double(n) : 1)
         var buckets = [[Int32]](repeating: [], count: starts.isEmpty ? 0 : n * n)
+        var strips = [[Int32]](repeating: [], count: starts.isEmpty ? 0 : n)
         for s in starts.indices {
             let (i0, j0, i1, j1) = Self.cells(simd_min(starts[s], ends[s]), simd_max(starts[s], ends[s]),
                                               lo: lo, cell: cell, columns: n, rows: n)
-            for j in j0...j1 { for i in i0...i1 { buckets[j * n + i].append(Int32(s)) } }
+            for j in j0...j1 {
+                strips[j].append(Int32(s))
+                for i in i0...i1 { buckets[j * n + i].append(Int32(s)) }
+            }
         }
-        self.buckets = buckets
+        self.buckets = buckets; self.strips = strips
+    }
+
+    /// Whether the loops wind round `p` an odd number of times: a ray from
+    /// it along +u crosses an odd number of their segments, each half open
+    /// in v, so a ray through a vertex counts it once. The loops' own
+    /// plane: no period is applied.
+    func encloses(_ p: SIMD2<Double>) -> Bool {
+        guard !starts.isEmpty, p.y >= lo.y, p.y <= hi.y else { return false }
+        let (_, j, _, _) = Self.cells(p, p, lo: lo, cell: cell, columns: columns, rows: rows)
+        var inside = false
+        for s in strips[j] {
+            let a = starts[Int(s)], b = ends[Int(s)]
+            guard (a.y > p.y) != (b.y > p.y) else { continue }
+            if p.x < a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y) { inside.toggle() }
+        }
+        return inside
     }
 
     private static func cells(_ a: SIMD2<Double>, _ b: SIMD2<Double>, lo: SIMD2<Double>, cell: SIMD2<Double>,
@@ -259,7 +291,11 @@ struct TrimIndex {
     /// along the segment crosses it at its own vertices.
     func crossings(_ p: SIMD2<Double>, _ q: SIMD2<Double>) -> [SIMD2<Double>] {
         guard !starts.isEmpty else { return [] }
-        let qlo = simd_min(p, q), qhi = simd_max(p, q)
+        // A rounding of the coordinates: how far off the segment a loop may
+        // lie and still be met, so a loop along it is met however the two
+        // were rounded.
+        let pad = 1e-12 * max(simd_reduce_max(simd_abs(p)), simd_reduce_max(simd_abs(q)), simd_length(q - p))
+        let qlo = simd_min(p, q) - pad, qhi = simd_max(p, q) + pad
         // The whole periods by which the loops are moved to meet the segment.
         func shifts(_ period: Double?, _ qlo: Double, _ qhi: Double, _ lo: Double, _ hi: Double) -> [Int] {
             guard let period, period > 0 else { return [0] }
@@ -289,7 +325,7 @@ struct TrimIndex {
                     if abs(den) <= 1e-14 * length * simd_length(e) {
                         // Parallel: crossed only where it runs along the
                         // segment, at the loop's own vertices.
-                        guard abs(cross(w, d)) <= 1e-14 * length * max(simd_length(w), length) else { continue }
+                        guard abs(cross(w, d)) <= length * pad else { continue }
                         for x in [a, b] {
                             let t = simd_dot(x - p, d) / dd
                             if t > 0, t < 1 { found.append((t, x)) }
