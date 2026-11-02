@@ -824,8 +824,9 @@ extension Surface {
         }
         // The top of each riser: between the two ends of the lesser
         // band's truncation edge on the boundary, nearest each other in y, at f's
-        // height truncated by the greater band.
-        for (b, ends) in endsOnBoundary {
+        // height truncated by the greater band. In order along x, then y.
+        for b in endsOnBoundary.keys.sorted() {
+            let ends = endsOnBoundary[b] ?? []
             let left = truncation.height(atX: b, from: .left), right = truncation.height(atX: b, from: .right)
             let lesser = min(left, right), greater = max(left, right)
             guard lesser.isFinite, lesser < greater else { continue }
