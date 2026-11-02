@@ -800,6 +800,52 @@ func faceTests() {
                          "\(wrong.count) of \(corners): \(wrong.prefix(3).joined(separator: "; "))")
         }
 
+        // A riser's top is drawn only where the riser stands: on f, every
+        // vertex of a top the truncation edge draws along a band boundary
+        // lies on a riser, and where the footprint holds both sides and |f|
+        // clears the lower band's height, a top is drawn.
+        for l in landscapes where l.refine?.magnitude != nil && l.tiles.count == 1 {
+            guard case .realBands(let bands, _) = l.surface.truncation,
+                  let magnitude = l.refine?.magnitude,
+                  let drawn = l.surface.hatch(.truncationEdge(tiled: true),
+                                              in: Surface.HatchContext(perimeter: nil, region: l.region, tiles: l.tiles),
+                                              refine: l.refine) else { continue }
+            let real = l.surface.domain.real, imag = l.surface.domain.imag
+            let (lo, hi) = (min(real.lo, real.hi), max(real.lo, real.hi))
+            let boundaries = Set(bands.map(\.below)).filter { $0 > lo && $0 < hi }.sorted()
+            let risers = l.faces.filter { if case .riser = $0.id { true } else { false } }
+            let side = 1e-9 * max(abs(real.length), abs(imag.length))
+            var stray: [String] = [], missing: [String] = [], asked = 0
+            let tops = (0..<drawn.count).map { Array(drawn[path: $0]) }.filter { p in
+                p.count >= 2 && boundaries.contains(p[0].x) && p.allSatisfy { $0.x == p[0].x }
+            }
+            for v in tops.joined() {
+                let p = P2<ParamSpace>(v.y, v.z)
+                let held = risers.contains { face in
+                    face.map(p).position.x == v.x && face.copies.contains { $0.contains(p) }
+                }
+                if !held { stray.append("(\(v.x), \(v.y), \(v.z))") }
+            }
+            for b in boundaries {
+                let lesser = min(l.surface.truncation.height(atX: b.nextDown), l.surface.truncation.height(atX: b))
+                guard lesser.isFinite else { continue }
+                for j in 0..<97 {
+                    let y = imag.lo + imag.length * (Double(j) + 0.5) / 97
+                    guard l.region.contains(P2(b - side, y)), l.region.contains(P2(b + side, y)),
+                          magnitude(P2(b, y)) > lesser * (1 + 1e-3) else { continue }
+                    asked += 1
+                    if !tops.contains(where: { p in p[0].x == b && y >= p.map(\.y).min()! && y <= p.map(\.y).max()! }) {
+                        missing.append("(\(b), \(y))")
+                    }
+                }
+            }
+            guard !boundaries.isEmpty else { continue }
+            Check.expect(stray.isEmpty && missing.isEmpty,
+                         "\(l.name): the truncation edge draws a riser's top only where the riser stands, and all of it there",
+                         "\(stray.count) vertices on no riser, \(missing.count) of \(asked) points with no top: "
+                            + (stray.prefix(2) + missing.prefix(2)).joined(separator: ", "))
+        }
+
         // A band boundary on the domain's far edge draws as one a cell beyond
         // it: the band beyond starts outside the domain, and the landscape
         // ends with the band before. The depth pass's grid and truncation-edge

@@ -90,8 +90,7 @@ public extension Surface {
             paths = wallEdges(perimeter, edges: edges, step: step, base: base,
                               tiles: context.tiles, refine: refine)
         case .truncationEdge(let tiled):
-            paths = truncationEdge(tiles: context.tiles, refine: refine)
-            if tiled { paths = Surface.replicate(paths, context.tiles) }
+            paths = drawnTruncationEdge(tiles: context.tiles, tiled: tiled, region: context.region, refine: refine)
         }
         return PolylineSet(paths: Surface.clip(paths, to: context.region))
     }
@@ -643,6 +642,43 @@ extension Surface {
         graphTrimLoops(tiles: tiles, refine: refine).truncationEdge
     }
 
+    /// The truncation edge as its layer draws it: on every tile when
+    /// `tiled`, and in place otherwise, each riser's top kept only where
+    /// the riser stands, where the footprint holds both sides of its
+    /// boundary, read a hair either side of it where the copy stands, as
+    /// `risers(tiles:region:refine:)` reads it. Where the footprint holds one
+    /// side there is no riser: a wall on the boundary rises to the top on
+    /// that side, and a top drawn there would stand over the wall, or along
+    /// its top edge. The cut is at the vertices, as the footprint's is
+    /// (`clip(_:to:)`).
+    func drawnTruncationEdge(tiles: [Affine2], tiled: Bool, region: Region,
+                             refine: ContourRefine?) -> [[P3<WorldSpace>]] {
+        let trim = graphTrimLoops(tiles: tiles, refine: refine)
+        let pieces = trim.truncationEdge.dropLast(trim.riserTops.count)
+        let side = 1e-9 * cell
+        return (tiled ? tiles.map(Optional.some) : [nil]).flatMap { tile -> [[P3<WorldSpace>]] in
+            func placed(_ v: P3<WorldSpace>) -> P3<WorldSpace> { tile.map { $0(v) } ?? v }
+            func held(_ p: P3<WorldSpace>) -> Bool {
+                guard case .inside = region else { return true }
+                return region.contains(placed(p).xy)
+            }
+            var paths = pieces.map { $0.map(placed) }
+            for (b, top) in trim.riserTops {
+                var run: [P3<WorldSpace>] = []
+                for v in top {
+                    if held(P3(b - side, v.y, 0)) && held(P3(b + side, v.y, 0)) {
+                        run.append(placed(v))
+                    } else {
+                        if run.count >= 2 { paths.append(run) }
+                        run = []
+                    }
+                }
+                if run.count >= 2 { paths.append(run) }
+            }
+            return paths
+        }
+    }
+
     /// The graph's trim loops, and the truncation edge drawn on them.
     ///
     /// The truncation edge is the zero level of the grid's excess over the
@@ -666,16 +702,19 @@ extension Surface {
     /// read on the excess grid without a refiner and on f with one. Each
     /// loop ends where it begins; `open` counts the chains that could not
     /// be closed, at an end off the edges with no other end there, which
-    /// are among the loops as they are.
+    /// are among the loops as they are. `riserTops` are the risers' tops,
+    /// which end `truncationEdge`, each with its boundary.
     public func graphTrimLoops(tiles: [Affine2] = [.identity], refine: ContourRefine? = nil)
-        -> (loops: [[P2<DomainSpace>]], truncationEdge: [[P3<WorldSpace>]], open: Int) {
+        -> (loops: [[P2<DomainSpace>]], truncationEdge: [[P3<WorldSpace>]],
+            riserTops: [(at: Double, top: [P3<WorldSpace>])], open: Int) {
         let g = height
         let corner0 = g.position(x: 0, y: 0), corner1 = g.position(x: g.width - 1, y: g.height - 1)
         let rectangle = PlateauLoops.Rectangle(x0: min(corner0.x, corner1.x), x1: max(corner0.x, corner1.x),
                                                y0: min(corner0.y, corner1.y), y1: max(corner0.y, corner1.y))
         let domainEdge = rectangle.corners.map(\.p) + [rectangle.corners[0].p]
-        guard let excess = truncationExcess() else { return ([domainEdge], [], 0) }
+        guard let excess = truncationExcess() else { return ([domainEdge], [], [], 0) }
         var out: [[P3<WorldSpace>]] = []
+        var riserTops: [(at: Double, top: [P3<WorldSpace>])] = []
         var plateaus: [PlateauLoops] = []
         for (_, lines) in Contour.levels(of: excess, [0.0]) {
             if let refine, let magnitude = refine.magnitude {
@@ -700,7 +739,9 @@ extension Surface {
                 case .realBands(let bands, let beyond):
                     var pieces: [Int: [[P2<DomainSpace>]]] = [:]
                     out += bandedTruncationEdge(lines, bands: bands, beyond: beyond, tiles: tiles,
-                                                refine: refine, magnitude: magnitude, pieces: &pieces)
+                                                refine: refine, magnitude: magnitude, pieces: &pieces,
+                                                riserTops: &riserTops)
+                    out += riserTops.map(\.top)
                     let real = domain.real
                     let (lo, hi) = (min(real.lo, real.hi), max(real.lo, real.hi))
                     for span in truncation.bands(from: lo, to: hi) where span.height.isFinite {
@@ -728,7 +769,7 @@ extension Surface {
             plateaus.append(whole)
         }
         let closed = plateaus.map { $0.loops(eps: edgeTolerance) }
-        return ([domainEdge] + closed.flatMap(\.loops), out, closed.reduce(0) { $0 + $1.open })
+        return ([domainEdge] + closed.flatMap(\.loops), out, riserTops, closed.reduce(0) { $0 + $1.open })
     }
 
     /// The truncation edge of a banded truncation, on f. Within a band the truncation edge is the contour
@@ -749,10 +790,12 @@ extension Surface {
     ///
     /// Each placed run, as drawn but on the ground, goes into `pieces`
     /// under its band, as `band(atX:from:)` numbers it; the risers'
-    /// tops do not.
+    /// tops go into `riserTops` instead, each with its boundary, and are not
+    /// among the curves returned.
     func bandedTruncationEdge(_ lines: [[P2<DomainSpace>]], bands: [RealBand], beyond: Double, tiles: [Affine2],
                               refine: ContourRefine, magnitude: ContourRefine.Magnitude,
-                              pieces: inout [Int: [[P2<DomainSpace>]]]) -> [[P3<WorldSpace>]] {
+                              pieces: inout [Int: [[P2<DomainSpace>]]],
+                              riserTops: inout [(at: Double, top: [P3<WorldSpace>])]) -> [[P3<WorldSpace>]] {
         // The boundaries inside the domain: one on its edge has no riser,
         // the band beyond the far edge starting outside the domain.
         let real = domain.real
@@ -921,7 +964,7 @@ extension Surface {
                 }
                 subdivide(a.y, top(a.y), c.y, top(c.y), depth: 0)
                 curve.append(P3(b, c.y, top(c.y)))
-                out.append(curve)
+                riserTops.append((b, curve))
             }
         }
         return out
