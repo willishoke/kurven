@@ -259,6 +259,10 @@ extension Surface {
             abs(height.domain.imag.length) / Double(max(height.height - 1, 1)))
     }
 
+    /// How near the domain's edge a truncation edge's end is taken to lie
+    /// on it: a billionth of a cell.
+    var edgeTolerance: Double { 1e-9 * cell }
+
     /// Where |f| crosses the truncation on the straight segment from `a` to `b`,
     /// given the excess over the truncation at each end: bisection on f to the last
     /// bit, nil when both ends lie on one side. One routine for the top edge
@@ -576,20 +580,54 @@ extension Surface {
                       values: values)
     }
 
-    /// The truncation edge: the zero level of the grid's excess over the truncation,
-    /// at the truncation height. With a refiner it is the contour |f| = h(x)
-    /// placed on f, as the rings are, and an end of it on the domain's edge
-    /// is re-solved by the top edge's own bisection along that edge
-    /// (`truncationCrossing`), so the top edge meets the truncation edge to rounding. A banded
-    /// truncation edge is placed band by band at each band's own level
-    /// (`bandedTruncationEdge`), with the top of each riser.
+    /// The truncation edge, as the graph's trim loops draw it
+    /// (`graphTrimLoops(tiles:refine:)`).
     func truncationEdge(tiles: [Affine2] = [.identity], refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
-        guard let excess = truncationExcess() else { return [] }
+        graphTrimLoops(tiles: tiles, refine: refine).truncationEdge
+    }
+
+    /// The graph's trim loops, and the truncation edge drawn on them.
+    ///
+    /// The truncation edge is the zero level of the grid's excess over the
+    /// truncation, at the truncation height. With a refiner it is the contour
+    /// |f| = h(x) placed on f, as the rings are, and an end of it on the
+    /// domain's edge is re-solved by the top edge's own bisection along that
+    /// edge (`truncationCrossing`), so the top edge meets the truncation edge
+    /// to rounding. A banded truncation edge is placed band by band at each
+    /// band's own level (`bandedTruncationEdge`), with the top of each riser.
+    ///
+    /// The loops are the domain's edge and the plateaus' loops: the
+    /// truncation edge, closed along the domain's edge where a plateau
+    /// reaches it. Without a refiner they are the excess grid's, one set for
+    /// all the bands. With one they are placed band by band, and each band's
+    /// are closed along the band's own edges as well, across the risers: the
+    /// top of a riser lies on the lower band's loops, and where both sides
+    /// of a band boundary are plateau, both bands' loops run along it. The
+    /// loops bound the graph even-odd, a stretch passed twice bounding
+    /// nothing. The truncation edge lies on them, riser tops included; a
+    /// closing stretch is where the domain's or the band's edge is plateau,
+    /// read on the excess grid without a refiner and on f with one. Each
+    /// loop ends where it begins; `open` counts the chains that could not
+    /// be closed, at an end off the edges with no other end there, which
+    /// are among the loops as they are.
+    public func graphTrimLoops(tiles: [Affine2] = [.identity], refine: ContourRefine? = nil)
+        -> (loops: [[P2<DomainSpace>]], truncationEdge: [[P3<WorldSpace>]], open: Int) {
+        let g = height
+        let corner0 = g.position(x: 0, y: 0), corner1 = g.position(x: g.width - 1, y: g.height - 1)
+        let rectangle = PlateauLoops.Rectangle(x0: min(corner0.x, corner1.x), x1: max(corner0.x, corner1.x),
+                                               y0: min(corner0.y, corner1.y), y1: max(corner0.y, corner1.y))
+        let domainEdge = rectangle.corners.map(\.p) + [rectangle.corners[0].p]
+        guard let excess = truncationExcess() else { return ([domainEdge], [], 0) }
         var out: [[P3<WorldSpace>]] = []
+        var plateaus: [PlateauLoops] = []
         for (_, lines) in Contour.levels(of: excess, [0.0]) {
             if let refine, let magnitude = refine.magnitude {
+                @Sendable func plateau(_ truncationHeight: Double) -> @Sendable (P2<DomainSpace>) -> Bool {
+                    { p in !(magnitude(inTile(p, tiles: tiles)) < truncationHeight) }
+                }
                 switch truncation {
                 case .uniform(let truncationHeight) where truncationHeight.isFinite:
+                    var whole = PlateauLoops(rectangle: rectangle, plateau: plateau(truncationHeight))
                     for line in refine.contours(.magnitude, truncationHeight, lines, .infinity) {
                         var line = line
                         for i in Set([0, line.count - 1]) where line.count >= 2 {
@@ -598,21 +636,42 @@ extension Surface {
                             }
                         }
                         out.append(line.map { P3($0.x, $0.y, truncationHeight) })
+                        whole.pieces.append(line)
                     }
+                    plateaus.append(whole)
                     continue
                 case .realBands(let bands, let beyond):
+                    var pieces: [Int: [[P2<DomainSpace>]]] = [:]
                     out += bandedTruncationEdge(lines, bands: bands, beyond: beyond, tiles: tiles,
-                                                refine: refine, magnitude: magnitude)
+                                                refine: refine, magnitude: magnitude, pieces: &pieces)
+                    let real = domain.real
+                    let (lo, hi) = (min(real.lo, real.hi), max(real.lo, real.hi))
+                    for span in truncation.bands(from: lo, to: hi) where span.height.isFinite {
+                        var band = PlateauLoops(
+                            rectangle: PlateauLoops.Rectangle(x0: span.lo == lo ? rectangle.x0 : span.lo,
+                                                              x1: span.hi == hi ? rectangle.x1 : span.hi,
+                                                              y0: rectangle.y0, y1: rectangle.y1),
+                            plateau: plateau(span.height))
+                        // Every placed run lies in the domain under a finite
+                        // truncation, off the band boundaries, so its band
+                        // has a span here.
+                        band.pieces = pieces[span.band] ?? []
+                        plateaus.append(band)
+                    }
                     continue
                 default:
                     break
                 }
             }
+            var whole = PlateauLoops(rectangle: rectangle, plateau: { excess.sample($0) > 0 })
             for line in lines {
                 out.append(line.map { P3($0.x, $0.y, truncation.height(atX: $0.x)) })
+                whole.pieces.append(line)
             }
+            plateaus.append(whole)
         }
-        return out
+        let closed = plateaus.map { $0.loops(eps: edgeTolerance) }
+        return ([domainEdge] + closed.flatMap(\.loops), out, closed.reduce(0) { $0 + $1.open })
     }
 
     /// The truncation edge of a banded truncation, on f. Within a band the truncation edge is the contour
@@ -626,8 +685,13 @@ extension Surface {
     /// in the cells that straddle a boundary are interpolated between two
     /// truncation heights and mean nothing; they are dropped, and the boundary's own
     /// pieces take their place.
+    ///
+    /// Each placed run, as drawn but on the ground, goes into `pieces`
+    /// under its band, as `Truncation.band(atX:)` numbers it; the risers'
+    /// tops do not.
     func bandedTruncationEdge(_ lines: [[P2<DomainSpace>]], bands: [RealBand], beyond: Double, tiles: [Affine2],
-                              refine: ContourRefine, magnitude: ContourRefine.Magnitude) -> [[P3<WorldSpace>]] {
+                              refine: ContourRefine, magnitude: ContourRefine.Magnitude,
+                              pieces: inout [Int: [[P2<DomainSpace>]]]) -> [[P3<WorldSpace>]] {
         let boundaries = bands.map(\.below).sorted()
         let g = height
         let dx = abs(g.domain.real.length) / Double(max(g.width - 1, 1))
@@ -697,6 +761,7 @@ extension Surface {
                         }
                     }
                     out.append(piece.map { P3($0.x, $0.y, run.truncationHeight) })
+                    if let band = truncation.band(atX: run.points[0].x) { pieces[band, default: []].append(piece) }
                 }
             }
         }
@@ -736,7 +801,7 @@ extension Surface {
     func onBoundaryTruncationCrossing(near p: P2<DomainSpace>, tiles: [Affine2],
                                       magnitude: ContourRefine.Magnitude) -> P2<DomainSpace>? {
         let g = height
-        let eps = 1e-9 * cell
+        let eps = edgeTolerance
         let f = g.index(of: p)
         let onRow = abs(p.y - g.domain.imag.lo) <= eps || abs(p.y - g.domain.imag.hi) <= eps
         let onColumn = abs(p.x - g.domain.real.lo) <= eps || abs(p.x - g.domain.real.hi) <= eps
@@ -755,5 +820,116 @@ extension Surface {
             a = g.position(x: i, y: j); b = g.position(x: i, y: j + 1)
         }
         return truncationCrossing(from: a, excess(a), to: b, excess(b), tiles: tiles, magnitude: magnitude)
+    }
+}
+
+// MARK: - the graph's trim loops
+
+/// One set of plateaus' loops as they are closed: the truncation edge's
+/// pieces over a rectangle, the domain or one band of it, joined end to end
+/// along the rectangle's edge wherever the plateau holds it.
+struct PlateauLoops {
+    struct Rectangle {
+        let x0: Double, x1: Double, y0: Double, y1: Double
+
+        var perimeter: Double { 2 * (x1 - x0) + 2 * (y1 - y0) }
+        /// The corners, counter-clockwise from (x0, y0), with the distance
+        /// round the edge to each.
+        var corners: [(s: Double, p: P2<DomainSpace>)] {
+            let w = x1 - x0, h = y1 - y0
+            return [(0, P2(x0, y0)), (w, P2(x1, y0)), (w + h, P2(x1, y1)), (2 * w + h, P2(x0, y1))]
+        }
+
+        /// The distance round the edge, counter-clockwise from (x0, y0), of
+        /// a point within `eps` of it; nil for one off it.
+        func distance(_ p: P2<DomainSpace>, eps: Double) -> Double? {
+            let w = x1 - x0, h = y1 - y0
+            guard p.x >= x0 - eps, p.x <= x1 + eps, p.y >= y0 - eps, p.y <= y1 + eps else { return nil }
+            if abs(p.y - y0) <= eps { return min(max(p.x - x0, 0), w) }
+            if abs(p.x - x1) <= eps { return w + min(max(p.y - y0, 0), h) }
+            if abs(p.y - y1) <= eps { return w + h + min(max(x1 - p.x, 0), w) }
+            if abs(p.x - x0) <= eps { return 2 * w + h + min(max(y1 - p.y, 0), h) }
+            return nil
+        }
+
+        /// The point of the edge a distance round it.
+        func point(_ s: Double) -> P2<DomainSpace> {
+            let w = x1 - x0, h = y1 - y0
+            let s = s.truncatingRemainder(dividingBy: perimeter)
+            if s < w { return P2(x0 + s, y0) }
+            if s < w + h { return P2(x1, y0 + (s - w)) }
+            if s < 2 * w + h { return P2(x1 - (s - w - h), y1) }
+            return P2(x0, y1 - (s - 2 * w - h))
+        }
+    }
+
+    /// The rectangle the pieces are closed along.
+    let rectangle: Rectangle
+    /// Whether a point of the rectangle's edge is plateau.
+    let plateau: @Sendable (P2<DomainSpace>) -> Bool
+    var pieces: [[P2<DomainSpace>]] = []
+
+    /// The pieces joined into loops: a closed piece is a loop of its own; an
+    /// open one ending on the rectangle's edge is joined to the next end
+    /// round it, through the corners between, wherever the plateau holds the
+    /// stretch between, read at its middle; and pieces meeting end to end
+    /// are joined. With no end on the edge the whole edge is a loop where it
+    /// is plateau. Each loop ends where it begins; a chain that cannot be
+    /// closed, at an end off the edge with nothing there, is kept as it is,
+    /// and counted in `open`.
+    func loops(eps: Double) -> (loops: [[P2<DomainSpace>]], open: Int) {
+        var loops: [[P2<DomainSpace>]] = [], open = 0
+        var edges: [[P2<DomainSpace>]] = []
+        for piece in pieces where piece.count >= 2 {
+            if piece.first == piece.last { loops.append(piece) } else { edges.append(piece) }
+        }
+        var ends: [(s: Double, p: P2<DomainSpace>)] = []
+        for piece in edges {
+            for p in [piece[0], piece[piece.count - 1]] {
+                if let s = rectangle.distance(p, eps: eps) { ends.append((s, p)) }
+            }
+        }
+        ends.sort { ($0.s, $0.p.x, $0.p.y) < ($1.s, $1.p.x, $1.p.y) }
+        let perimeter = rectangle.perimeter
+        if ends.isEmpty {
+            if plateau(rectangle.point(0.5 * (rectangle.x1 - rectangle.x0))) {
+                loops.append(rectangle.corners.map(\.p) + [rectangle.corners[0].p])
+            }
+        } else {
+            for k in ends.indices {
+                let a = ends[k], next = ends[(k + 1) % ends.count]
+                let sb = k + 1 < ends.count ? next.s : next.s + perimeter
+                guard sb > a.s, plateau(rectangle.point(0.5 * (a.s + sb))) else { continue }
+                let between = (rectangle.corners + rectangle.corners.map { ($0.s + perimeter, $0.p) })
+                    .filter { $0.s > a.s && $0.s < sb }.map(\.p)
+                edges.append([a.p] + between + [next.p])
+            }
+        }
+        // Chained end to end, each edge once, in the order they come.
+        var at: [P2<DomainSpace>: [Int]] = [:]
+        for (i, e) in edges.enumerated() {
+            at[e[0], default: []].append(i)
+            at[e[e.count - 1], default: []].append(i)
+        }
+        var used = [Bool](repeating: false, count: edges.count)
+        for i in edges.indices where !used[i] {
+            used[i] = true
+            var chain = edges[i]
+            while chain.first != chain.last,
+                  let j = at[chain[chain.count - 1]]?.first(where: { !used[$0] }) {
+                used[j] = true
+                let e = edges[j]
+                chain += (e[0] == chain[chain.count - 1] ? e : e.reversed()).dropFirst()
+            }
+            // Open at the far end: carried back from the near one as far as it goes.
+            while chain.first != chain.last, let j = at[chain[0]]?.first(where: { !used[$0] }) {
+                used[j] = true
+                let e = edges[j]
+                chain = (e[e.count - 1] == chain[0] ? e : e.reversed()).dropLast() + chain
+            }
+            loops.append(chain)
+            if chain.first != chain.last { open += 1 }
+        }
+        return (loops, open)
     }
 }

@@ -222,49 +222,119 @@ func scalarFieldTests() {
                      "placed under the field's tag and the layer's ceiling", "\(calls)")
     }
 
-    Check.suite("fields: a contour is ended where it leaves the trimmed domain") {
+    Check.suite("fields: a contour is cut where it crosses a trim loop, and kept where the loops hold it even-odd") {
         let square = (u: ParamAxis(Interval(lo: -1, hi: 1), periodic: false, samples: 41),
                       v: ParamAxis(Interval(lo: -1, hi: 1), periodic: false, samples: 41))
-        let disc: @Sendable (P2<ParamSpace>) -> Bool = { simd_length($0.v) <= 1 }
-        let chord = Contour.levels(of: ScalarField { $0.x }, [0.5], over: square, contains: disc)[0].paths
-        let ends = chord.first.map { [$0[0], $0[$0.count - 1]].map { abs(simd_length($0.v) - 1) } }
-        Check.expect(chord.count == 1 && (ends?.max() ?? 1) < 1e-12,
-                     "a chord of the disc ends on its circle", "\(chord.count) runs, \(ends ?? [])")
+        /// A regular polygon, as a trim loop, and membership in it, even-odd.
+        func polygon(_ c: SIMD2<Double>, _ r: Double, _ n: Int) -> [P2<ParamSpace>] {
+            let corners = (0..<n).map { k in P2<ParamSpace>(c + r * SIMD2(cos(2 * .pi * Double(k) / Double(n)),
+                                                                         sin(2 * .pi * Double(k) / Double(n)))) }
+            return corners + [corners[0]]
+        }
+        @Sendable func inside(_ p: P2<ParamSpace>, _ loop: [P2<ParamSpace>]) -> Bool {
+            var inside = false
+            for (a, b) in zip(loop, loop.dropFirst()) where (a.y > p.y) != (b.y > p.y) {
+                if p.x < a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y) { inside.toggle() }
+            }
+            return inside
+        }
+        func distance(_ p: P2<ParamSpace>, _ loop: [P2<ParamSpace>]) -> Double {
+            zip(loop, loop.dropFirst()).map { a, b in
+                let d = b.v - a.v, t = max(0, min(1, simd_dot(p.v - a.v, d) / simd_length_squared(d)))
+                return simd_length(p.v - (a.v + t * d))
+            }.min() ?? .infinity
+        }
 
-        // A closed loop cut by a half-plane is one arc, on either side,
-        // whether the loop begins on the cut, inside or outside: the ring
-        // begins at its lowest point, (0, -1/2).
+        let disc = polygon(.zero, 1, 720)
+        let chord = Contour.levels(of: ScalarField { $0.x }, [0.5], over: square, trimLoops: [disc])[0].paths
+        let ends = chord.first.map { [$0[0], $0[$0.count - 1]].map { distance($0, disc) } }
+        Check.expect(chord.count == 1 && (ends?.max() ?? 1) < 1e-15,
+                     "a chord of the disc ends on its loop", "\(chord.count) runs, \(ends ?? [])")
+
+        // A hole narrower than a step, between two of the line's vertices:
+        // x = 0.31 crosses rows a twentieth apart, at Im 0 and 0.05, and the
+        // hole spans 0.005 to 0.045 between them. The square's edge is the
+        // outer loop.
+        let edge = [P2<ParamSpace>(-1, -1), P2(1, -1), P2(1, 1), P2(-1, 1), P2(-1, -1)]
+        let hole = polygon(SIMD2(0.31, 0.025), 0.02, 64)
+        let split = Contour.levels(of: ScalarField { $0.x }, [0.31], over: square, trimLoops: [edge, hole])[0].paths
+        let holeEnds = split.flatMap { [$0[0], $0[$0.count - 1]] }.filter { abs($0.y) < 0.5 }
+        let length = split.map { zip($0, $0.dropFirst()).map { simd_length($1.v - $0.v) }.reduce(0, +) }.reduce(0, +)
+        let across = zip(hole, hole.dropFirst()).compactMap { a, b -> Double? in
+            guard (a.x - 0.31) * (b.x - 0.31) <= 0, a.x != b.x else { return nil }
+            return a.y + (0.31 - a.x) * (b.y - a.y) / (b.x - a.x)
+        }
+        let gap = (across.max() ?? 0) - (across.min() ?? 0)
+        Check.expect(split.count == 2 && holeEnds.count == 2 && holeEnds.allSatisfy { distance($0, hole) < 1e-15 }
+                        && abs(length - (2 - gap)) < 1e-12,
+                     "x = 0.31 on a 41 × 41 square with a hole of radius 0.02 at (0.31, 0.025) is two runs, ended on the hole",
+                     "\(split.count) runs, ends \(holeEnds.map { distance($0, hole) }), \(length) long against \(2 - gap)")
+
+        // Where the loops are chords of a circle, the loops decide, not the
+        // circle: every run of 400 lines across a 24-gon hole ends on it.
+        let gon = polygon(SIMD2(0, 0.013), 0.3, 24)
+        var gonRuns = 0, gonOff = 0.0
+        for k in 0..<400 {
+            let runs = Contour.levels(of: ScalarField { $0.x }, [-0.3 + 0.6 * (Double(k) + 0.5) / 400], over: square,
+                                      trimLoops: [edge, gon])[0].paths
+            for r in runs {
+                gonRuns += 1
+                for e in [r[0], r[r.count - 1]] where abs(e.y) < 0.99 { gonOff = max(gonOff, distance(e, gon)) }
+            }
+        }
+        Check.expect(gonRuns >= 800 && gonOff < 1e-15, "lines across a polygonal hole end on it, every one",
+                     "\(gonRuns) runs, ends up to \(gonOff) off")
+
+        // A boundary that runs along the line, given as a cut with the
+        // membership it bounds: the line is cut where the stretch begins and
+        // ends, not at the vertices either side. Met only along the line, as
+        // the stretch has no side that crosses it.
+        let along: [[P2<ParamSpace>]] = [[P2(0.31, 0.012), P2(0.31, 0.088)]]
+        let aside = Contour.levels(of: ScalarField { $0.x }, [0.31], over: square,
+                                   contains: { !($0.y > 0.012 && $0.y < 0.088) }, cuts: along)[0].paths
+        let asideEnds = aside.flatMap { [$0[0].y, $0[$0.count - 1].y] }.filter { abs($0) < 0.5 }.sorted()
+        Check.expect(aside.count == 2 && asideEnds == [0.012, 0.088],
+                     "a boundary along the line cuts it where the boundary begins and ends", "\(aside.count) runs, ends \(asideEnds)")
+
+        // A closed loop cut by a half-plane, bounded by a rectangle on the
+        // cut, is one arc, on either side, whether the loop begins on the
+        // cut, inside or outside: the ring begins at its lowest point,
+        // (0, -1/2).
         let ring = ScalarField { $0.x * $0.x + $0.y * $0.y }
         let cell = 2.0 / 40
         for cut in [0.0, 0.2, -0.2] {
             for (name, side) in [("right", 1.0), ("left", -1.0)] {
-                let arcs = Contour.levels(of: ring, [0.25], over: square,
-                                          contains: { side * ($0.x - cut) >= 0 })[0].paths
+                let half = [P2<ParamSpace>(cut, -2), P2(cut, 2), P2(cut + 3 * side, 2), P2(cut + 3 * side, -2), P2(cut, -2)]
+                let arcs = Contour.levels(of: ring, [0.25], over: square, trimLoops: [half])[0].paths
                 let ends = arcs.first.map { [$0[0], $0[$0.count - 1]].map { abs($0.x - cut) } }
-                let kept = arcs.joined().allSatisfy { side * ($0.x - cut) >= 0 }
+                // Within a rounding of the cut an end may lie either side.
+                let kept = arcs.allSatisfy { $0.dropFirst().dropLast().allSatisfy { side * ($0.x - cut) >= 0 } }
                 let step = arcs.joined().isEmpty ? 0 : arcs.map { zip($0, $0.dropFirst())
                     .map { simd_length($1.v - $0.v) }.max() ?? 0 }.max()!
-                Check.expect(arcs.count == 1 && (ends?.max() ?? 1) < 1e-12 && kept && step < 2 * cell,
+                Check.expect(arcs.count == 1 && (ends?.max() ?? 1) < 1e-15 && kept && step < 2 * cell,
                              "the \(name) of x = \(cut) on a ring is one arc, ended on the cut",
                              "\(arcs.count) arcs, ends \(ends ?? []) off, longest step \(step / cell) cells")
             }
         }
 
         // A closed contour across the seam whose closing vertex lies a period
-        // past its first, where the domain may answer otherwise by rounding:
-        // v = 1 on the torus, from u = 0 to 2π, where sin 2u is 0 and -4.9e-16.
-        // Kept where sin 2u >= 0 it is two quarters, not one run with a chord
-        // across the quarter between; so too where the loop begins inside
-        // the domain, or outside it.
+        // past its first, cut where its membership changes, through its
+        // vertices: v = 1 on the torus, from u = 0 to 2π, where sin 2u is 0
+        // and -4.9e-16. Kept where sin 2u >= 0 it is two quarters, not one
+        // run with a chord across the quarter between; so too where the loop
+        // begins inside the domain, or outside it. On a torus no loop bounds
+        // anything even-odd, so the domain is `contains`, and the cuts are
+        // lines of u, closed a period along v and met a period along u too.
         let torus = (u: ParamAxis.angle(samples: 40), v: ParamAxis.angle(samples: 30))
-        let quarters: [(String, @Sendable (Double) -> Double)] = [
-            ("sin 2u >= 0, the loop beginning on its boundary", { sin(2 * $0) }),
-            ("cos 2u >= 0, beginning inside", { cos(2 * $0) }),
-            ("-cos 2u >= 0, beginning outside", { -cos(2 * $0) }),
+        let quarters: [(String, @Sendable (Double) -> Double, [Double])] = [
+            ("sin 2u >= 0, the loop beginning on its boundary", { sin(2 * $0) }, [0, 0.5, 1, 1.5]),
+            ("cos 2u >= 0, beginning inside", { cos(2 * $0) }, [0.25, 0.75, 1.25, 1.75]),
+            ("-cos 2u >= 0, beginning outside", { -cos(2 * $0) }, [0.25, 0.75, 1.25, 1.75]),
         ]
-        for (name, g) in quarters {
+        for (name, g, zeros) in quarters {
+            let lines: [[P2<ParamSpace>]] = zeros.map { [P2($0 * .pi, 0), P2($0 * .pi, 2 * .pi)] }
             let runs = Contour.levels(of: ScalarField(period: 2 * .pi) { $0.y }, [1], over: torus,
-                                      contains: { g($0.x) >= 0 })[0].paths
+                                      contains: { g($0.x) >= 0 }, cuts: lines)[0].paths
             let length = runs.map { zip($0, $0.dropFirst()).map { simd_length($1.v - $0.v) }.reduce(0, +) }
                 .reduce(0, +)
             let ends = runs.flatMap { [$0[0], $0[$0.count - 1]] }.map { abs(g($0.x)) }.max() ?? .infinity
@@ -274,5 +344,17 @@ func scalarFieldTests() {
                          "v = 1 kept where \(name) is two quarters, ended on their boundaries",
                          "\(runs.count) runs, \(length / .pi) π long, ends \(ends) off\(repeated ? ", a vertex repeated" : "")")
         }
+
+        // The same lines a quarter cell off the vertices, so each cuts a
+        // segment: u = π/2 + π/80 and so on, met a period along at the seam.
+        let shifted: [Double] = [0.5, 1, 1.5, 2].map { (k: Double) in k * .pi + .pi / 80 }
+        let offLines: [[P2<ParamSpace>]] = shifted.map { [P2($0, 0), P2($0, 2 * .pi)] }
+        let offRuns = Contour.levels(of: ScalarField(period: 2 * .pi) { $0.y }, [1], over: torus,
+                                     contains: { sin(2 * ($0.x - .pi / 80)) >= 0 }, cuts: offLines)[0].paths
+        func offLine(_ x: Double) -> Double { shifted.map { abs(remainder(x - $0, 2 * .pi)) }.min()! }
+        let offEnds = offRuns.flatMap { [$0[0].x, $0[$0.count - 1].x] }.map(offLine).max() ?? .infinity
+        Check.expect(offRuns.count == 2 && offEnds < 1e-14,
+                     "and cut between vertices, a quarter cell off them, it is two quarters ended on the lines",
+                     "\(offRuns.count) runs, ends \(offEnds) off")
     }
 }
