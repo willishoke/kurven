@@ -163,7 +163,7 @@ public struct Heightfield: Sendable {
         if let magnitude = refine?.magnitude {
             let q = surface.inTile(P2<DomainSpace>(p.x, p.y), tiles: tiles)
             let u = magnitude(q)
-            if u.isFinite { return min(u, surface.truncation.height(atX: q.x)) }
+            if u.isFinite { return min(u, surface.truncationHeight(atX: q.x)) }
         }
         return surface.height(at: P2<DomainSpace>(p.x, p.y), tiles: tiles)
     }
@@ -193,7 +193,7 @@ public struct Heightfield: Sendable {
             guard toEnd > 1e-9 * cell, toEnd < toOther else { return nil }
             let u = magnitude(z)
             guard u.isFinite else { return nil }
-            return P3(z.x, z.y, min(u, surface.truncation.height(atX: z.x)))
+            return P3(z.x, z.y, min(u, surface.truncationHeight(atX: z.x)))
         }
         var out = run
         if let z = carried(out[0], other: out[out.count - 1]) { out.insert(z, at: 0) }
@@ -741,7 +741,7 @@ struct GridTraversal: Sendable {
         }
         let (u, slope) = functionSurface(at: q, magnitude: magnitude)
         let cosine = 1 / (1 + simd_dot(slope, slope)).squareRoot()
-        return (u, s.truncation.height(atX: q.x), cosine.isNaN ? 0 : cosine)
+        return (u, s.truncationHeight(atX: q.x), cosine.isNaN ? 0 : cosine)
     }
 
     /// f's height over a point of the fundamental tile and its slope there,
@@ -797,7 +797,7 @@ struct GridTraversal: Sendable {
                 let dq = heightfield.surface.inTile(P2<DomainSpace>(q.x, q.y), tiles: heightfield.tiles)
                 let (u, slope) = functionSurface(at: dq, magnitude: magnitude)
                 let cosine = 1 / (1 + simd_dot(slope, slope)).squareRoot()
-                let truncationHeight = heightfield.surface.truncation.height(atX: dq.x)
+                let truncationHeight = heightfield.surface.truncationHeight(atX: dq.x)
                 return (z - u, z - truncationHeight, cosine.isNaN ? 0 : cosine, d.z - simd_dot(slope, dxy))
             }
             let (interpolated, truncationHeight, cosine) = drawnSurface(at: q)
@@ -1396,7 +1396,7 @@ struct FoldPlacer: Sendable {
         var p = P2<WorldSpace>(v.x, v.y)
         if refined { p = ontoEdge(p) }
         let z = height(p)
-        let truncationHeight = surface.truncation.height(atX: p.x)
+        let truncationHeight = surface.truncationHeight(atX: p.x)
         let inRegion = region.contains(p)
         return Vertex(p: p, z: z, inRegion: inRegion, onGraph: inRegion && z.isFinite && z < truncationHeight)
     }
@@ -1423,7 +1423,7 @@ struct FoldPlacer: Sendable {
             for k in (offsets[i] + 1)..<offsets[i + 1] {
                 let a = vertices[k - 1], b = vertices[k]
                 if onF, a.inRegion, b.inRegion, a.onGraph != b.onGraph,
-                   surface.truncation.height(atX: b.p.x).isFinite { pairs.append(k) }
+                   surface.truncationHeight(atX: b.p.x).isFinite { pairs.append(k) }
             }
         }
         let crossings = Heightfield.parallelMap(pairs, chunk: 1, worker: worker) { w, k -> P3<WorldSpace>? in
@@ -1499,7 +1499,7 @@ struct FoldPlacer: Sendable {
         let p = P2<WorldSpace>(q.x, q.y)
         guard region.contains(p) else { return }
         let z = height(p)
-        guard z.isFinite, z < surface.truncation.height(atX: p.x) - 1e-9 else { return }
+        guard z.isFinite, z < surface.truncationHeight(atX: p.x) - 1e-9 else { return }
         let v = P3<WorldSpace>(p.x, p.y, z)
         // The fold is a curve in space: its departure from the chord is
         // measured there, across and up.
@@ -1590,12 +1590,12 @@ struct FoldPlacer: Sendable {
         }
         func excess(_ t: Double) -> Double {
             let q = onFold(t)
-            return graphHeight(q) - surface.truncation.height(atX: q.x)
+            return graphHeight(q) - surface.truncationHeight(atX: q.x)
         }
         guard excess(0) < 0, excess(1) >= 0 else { return nil }
         let (lo, hi) = bisect(0, 1) { excess($0) < 0 }
         let q = onFold(0.5 * (lo + hi))
-        let truncationHeight = surface.truncation.height(atX: q.x)
+        let truncationHeight = surface.truncationHeight(atX: q.x)
         guard region.contains(q), truncationHeight.isFinite else { return nil }
         return P3(q.x, q.y, truncationHeight)
     }
