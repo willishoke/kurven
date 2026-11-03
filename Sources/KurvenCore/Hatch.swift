@@ -266,9 +266,15 @@ extension Surface {
                         let crossing = forward(P3(x, y, 0))
                         guard backs[0] == backs[1] || tile(under: P2(crossing.x, crossing.y), tiles: tiles).back == back,
                               !met.contains(where: { $0.s == s }) else { continue }
+                        // Carried forward, on the edge: a vertical or a
+                        // horizontal edge keeps its own x or y, which a
+                        // turned tile carries a rounding off.
+                        func onEdge(_ q: P3<WorldSpace>) -> P2<DomainSpace> {
+                            P2(a.p.x == b.p.x ? a.p.x : q.x, a.p.y == b.p.y ? a.p.y : q.y)
+                        }
                         let near = forward(P3(xa < x ? x.nextDown : x, y, 0)), far = forward(P3(xa < x ? x : x.nextDown, y, 0))
                         let (nearSide, farSide): (Truncation.Side, Truncation.Side) = xa < x ? (.left, .right) : (.right, .left)
-                        met.append((s, (P2(near.x, near.y), nil, (x, nearSide)), (P2(far.x, far.y), nil, (x, farSide))))
+                        met.append((s, (onEdge(near), nil, (x, nearSide)), (onEdge(far), nil, (x, farSide))))
                     }
                 }
                 for crossing in met.sorted(by: { $0.s < $1.s }) {

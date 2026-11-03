@@ -279,8 +279,10 @@ private func tiling(_ l: Landscape) -> Tally {
                 expect(P3(v.x, v.y, over + 1e-3 * max(1, abs(over)) + 0.1 * (over - base)), 0)
                 expect(P3(v.x, v.y, base - 0.1 * (top - base)), 0)
                 t.stations += 1
-                // Where it steps, the solid's top either side along the wall.
-                let towards = atFoot.count == 1 ? [inward + (atStart ? d : atEnd ? -d : .zero)] : [inward + d, inward - d]
+                // Where it steps, the solid's top either side along the wall,
+                // on its line: the boundary crosses it at a slant, and a step
+                // in as well can land both reads on one side.
+                let towards = atFoot.count == 1 ? [inward + (atStart ? d : atEnd ? -d : .zero)] : [d, -d]
                 let reads = towards.map { toward -> (solid: Double, slide: Double) in
                     let solid = heightfield.surfaceHeight(at: P2(v.xy.v + side * toward))
                     return (solid, abs(heightfield.surfaceHeight(at: P2(v.xy.v + 2 * side * toward)) - solid))
@@ -544,6 +546,18 @@ private func faceLandscapes() throws -> [Landscape] {
         landscapes.append(Landscape("a tower banded at 4 | 2 in two tiles, the second \(name), walls across the boundary in both, on f",
                                     surface: tower.surface, tiles: [.identity, tile], region: .inside(across),
                                     walls: .perimeter(across, base: -0.5), refine: tower.refine))
+    }
+    // The tower in a second tile turned by an angle, 35° or 20°, written
+    // from cos and sin, on a footprint wholly in it whose right wall is
+    // vertical in space and crosses the boundary's image: the wall's feet
+    // keep its x where its top steps, though the tile carries the step's
+    // point a rounding off it.
+    for (degrees, tx, x) in [(35.0, 13.0, 13.21), (20.0, 7.1, 7.37)] {
+        let (c, s) = (cos(degrees * .pi / 180), sin(degrees * .pi / 180))
+        let walled = footprint([(x - 0.4, -0.5), (x, -0.5), (x, 1.0), (x - 0.4, 1.0)])
+        landscapes.append(Landscape("a tower banded at 4 | 2 in a tile turned by \(Int(degrees))°, a vertical wall across the boundary, on f",
+                                    surface: tower.surface, tiles: [.identity, Affine2(a: c, b: -s, tx: tx, c: s, d: c, ty: 0)],
+                                    region: .inside(walled), walls: .perimeter(walled, base: -0.5), refine: tower.refine))
     }
     let o = gamma.manifest.occluder
     landscapes.append(Landscape("Γ, banded, on f", surface: gamma.surface, tiles: o.tiles, region: o.region,
@@ -888,7 +902,7 @@ func faceTests() {
                 let cell = max(abs(real.length) / Double(l.surface.height.width - 1),
                                abs(l.surface.domain.imag.length) / Double(l.surface.height.height - 1))
                 var vertices = 0, crossings = 0, wrong: [String] = []
-                var steps = [Int](repeating: 0, count: l.tiles.count)
+                var steps = [Int](repeating: 0, count: l.tiles.count), held = steps
                 for (k, edge) in perimeter.edges.enumerated() {
                     guard let drawn = l.surface.hatch(.wallEdges(edges: [k], step: 1, base: base), in: context, refine: l.refine),
                           let face = walls.first(where: { $0.id == .wall(edge: k) }) else { continue }
@@ -913,16 +927,16 @@ func faceTests() {
                             crossings += 1
                             wrong.append("a ramp across \(b) from \(a.v) to \(c.v)")
                         }
-                        // A step: two vertices at one point on a boundary,
-                        // at two heights.
-                        if !apart(a, c), a.z != c.z, boundaries.contains(where: { abs(xa - $0) <= 1e-9 * cell }),
-                           let tile = l.tiles.firstIndex(where: { $0.inverse == back }) {
-                            steps[tile] += 1
-                        }
+                        // Two vertices at one point on a boundary: where the
+                        // wall meets a riser, at the two bands' heights.
+                        guard let tile = l.tiles.firstIndex(where: { $0.inverse == back }) else { continue }
+                        held[tile] += 1
+                        if !apart(a, c), boundaries.contains(where: { abs(xa - $0) <= 1e-9 * cell }) { steps[tile] += 1 }
                     }
                 }
-                // On the tiled towers the walls step on every tile.
-                Check.expect(vertices > 100 && wrong.isEmpty && (l.tiles.count == 1 || steps.allSatisfy { $0 > 0 }),
+                // On the tiled towers the walls meet a riser on every tile
+                // they stand on.
+                Check.expect(vertices > 100 && wrong.isEmpty && (l.tiles.count == 1 || zip(steps, held).allSatisfy { $1 == 0 || $0 > 0 }),
                              "\(l.name): the top edge on f is the wall face's top, and steps where the tile under it crosses a boundary",
                              "\(wrong.count) wrong of \(vertices) vertices, \(crossings) ramps, steps by tile \(steps): "
                                 + wrong.prefix(3).joined(separator: "; "))
