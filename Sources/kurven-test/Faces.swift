@@ -88,6 +88,15 @@ private struct Landscape {
         Heightfield(surface: surface, occluder: .empty, tiles: tiles, region: region, step: 1,
                     refine: refine, walls: walls)
     }
+    /// Whether any sample of the grid is under the truncation: a landscape
+    /// all plateau has no graph to contour or clip.
+    var hasGraph: Bool {
+        let g = surface.height
+        return (0..<g.width).contains { i in
+            let h = surface.truncationHeight(atX: g.position(x: i, y: 0).x)
+            return (0..<g.height).contains { Double(g[i, $0]) < h }
+        }
+    }
 
     init(_ name: String, surface: Surface, tiles: [Affine2] = [.identity], region: Region = .full,
          walls: Walls = .none, refine: ContourRefine? = nil, faces: [Face]? = nil) {
@@ -101,7 +110,7 @@ private struct Landscape {
 /// number of faces, those whose face turns inward, those on the graph whose
 /// normal is not the facing's, and the first failure of each kind.
 private struct Tally {
-    var sampled = 0, wrong = 0, inward = 0, normals = 0, skewed = 0, stations = 0, offTop = 0
+    var sampled = 0, wrong = 0, inward = 0, onGraph = 0, normals = 0, skewed = 0, stations = 0, offTop = 0
     var examples: [String: String] = [:]
     mutating func fail(_ kind: String, _ what: String) { if examples[kind] == nil { examples[kind] = what } }
 }
@@ -173,6 +182,7 @@ private func tiling(_ l: Landscape) -> Tally {
                 let onCrease = abs(m - h) <= 1e-9 * max(1, abs(h))
                 expect(P3(ground.x, ground.y, z), held ? 1 : 0, slack: onCrease ? 1 : 0) { face, n in
                     guard n.z > 0 else { return false }
+                    if face.id == .graph { t.onGraph += 1 }
                     // The facing's differences reach a cell out along the
                     // grid's axes as the tile turns them, and where they
                     // reach ground another tile holds, or is nearest, they
@@ -541,6 +551,20 @@ private func faceLandscapes() throws -> [Landscape] {
                                         walls: .perimeter(walled, base: 0)))
         }
     }
+    // A corner on the seam where a riser ends: |f| = 10 on the unit square
+    // at 1 | 2 across Re z = 1/2, the second tile turned, (x, y) ↦ (1 + y,
+    // 1 - x), a footprint wholly in it with a wall down the seam from
+    // (1, 1/2). There the second tile's riser, along Im z = 1/2 in space,
+    // ends, and both walls leave its boundary in that tile, while through
+    // the first the wall on the seam runs along Re z = 1: the corner's edge
+    // rises to 2, the band below the riser.
+    let unit = Domain(real: Interval(lo: 0, hi: 1), imag: Interval(lo: 0, hi: 1))
+    let flat = Surface(height: Grid2D(width: 21, height: 21, domain: unit, values: [Float](repeating: 10, count: 441)),
+                       phase: nil, truncation: .realBands([RealBand(below: 0.5, height: 1)], beyond: 2))
+    let cornered = footprint([(1, 0.5), (1, 0.1), (1.8, 0.1), (1.8, 0.9), (1.5, 0.9)])
+    landscapes.append(Landscape("|f| = 10 at 1 | 2, a tile turned, a corner on the seam where its riser ends",
+                                surface: flat, tiles: [.identity, Affine2(a: 0, b: 1, tx: 1, c: -1, d: 0, ty: 1)],
+                                region: .inside(cornered), walls: .perimeter(cornered, base: 0)))
     // Γ under its banded truncation, on f: the faces read the function.
     let request = LandscapeRequest(
         expression: "gamma(z)",
@@ -876,7 +900,8 @@ func faceTests() {
                 case .surface, .solid: "other"
                 }
             }.mapValues(\.count).sorted { $0.key < $1.key }.map { "\($0.value) \($0.key)" }.joined(separator: ", ")
-            Check.expect(t.wrong == 0 && t.inward == 0 && t.skewed == 0 && t.sampled > 10_000 && t.normals > 300,
+            Check.expect(t.wrong == 0 && t.inward == 0 && t.skewed == 0 && t.sampled > 10_000
+                            && (t.normals > 300 || t.onGraph == 0),
                          "\(l.name): \(kinds), \(l.tiles.count) tile(s); every point of the boundary in one face, "
                             + "none off it, each face turned out, the graph's normal the facing's",
                          "\(t.wrong) in the wrong number, \(t.inward) facing in, \(t.skewed) of \(t.normals) normals off, "
@@ -994,9 +1019,10 @@ func faceTests() {
             // lower of their tops and on to the higher beside the riser that
             // ends there, unless the higher wall stands on that riser's
             // boundary, in one plane with it: to the top of the wall that
-            // leaves the boundary, the boundary and the leaving read through
-            // the tile under the corner. Read off the walls' own top edges,
-            // on the grid, as the corners are.
+            // leaves the boundary, each wall's leaving read through the tile
+            // under the footprint beside the corner, a hair in from it and
+            // along the wall, since on a seam the corner is two tiles'. Read
+            // off the walls' own top edges, on the grid, as the corners are.
             guard l.refine == nil,
                   let drawn = l.surface.hatch(.wallEdges(edges: Array(perimeter.edges.indices), step: 1, base: base),
                                               in: Surface.HatchContext(perimeter: perimeter, region: .full, tiles: l.tiles))
@@ -1006,14 +1032,18 @@ func faceTests() {
                 let corner = edge.start
                 let previous = (k + perimeter.edges.count - 1) % perimeter.edges.count
                 let here = drawn[path: 2 * k], before = drawn[path: 2 * previous]
-                let back = carriedBack(corner.v, l).back
-                func alongX(_ e: PerimeterEdge) -> Bool {
-                    let d = e.end.v - e.start.v
+                let size = max(abs(l.surface.domain.real.length), abs(l.surface.domain.imag.length))
+                /// Whether wall `e` runs along Re z = const through the tile
+                /// under the footprint beside its end at the corner.
+                func alongX(_ e: Int, atStart: Bool) -> Bool {
+                    let d = perimeter.edges[e].end.v - perimeter.edges[e].start.v
+                    let into = simd_normalize(d) * (atStart ? 1 : -1)
+                    let back = carriedBack(corner.v + 1e-9 * size * (perimeter.inward(e) + into), l).back
                     let carried = SIMD2(back.a * d.x + back.b * d.y, back.c * d.x + back.d * d.y)
                     return abs(carried.x) <= 1e-12 * simd_length(carried)
                 }
-                let walls = [(top: here[here.startIndex].z, alongX: alongX(edge)),
-                             (top: before[before.endIndex - 1].z, alongX: alongX(perimeter.edges[previous]))]
+                let walls = [(top: here[here.startIndex].z, alongX: alongX(k, atStart: true)),
+                             (top: before[before.endIndex - 1].z, alongX: alongX(previous, atStart: false))]
                 let leaving = walls.filter { !$0.alongX }
                 let expected = (leaving.count == 1 ? leaving : walls).map(\.top).max()!
                 guard expected > base else { continue }
@@ -1030,6 +1060,18 @@ func faceTests() {
             Check.expect(corners >= perimeter.edges.count / 2 && wrong.isEmpty,
                          "\(l.name): each corner's edge rises to the walls' tops there, to the leaving wall's beside a riser",
                          "\(wrong.count) of \(corners): \(wrong.prefix(3).joined(separator: "; "))")
+        }
+        // On the seam where the turned tile's riser ends, the corner's edge
+        // reaches 2, the band below the riser in that tile.
+        if let l = landscapes.first(where: { $0.name.hasSuffix("a corner on the seam where its riser ends") }),
+           case .perimeter(let perimeter, let base) = l.walls,
+           let drawn = l.surface.hatch(.wallEdges(edges: Array(perimeter.edges.indices), step: 1, base: base),
+                                       in: Surface.HatchContext(perimeter: perimeter, region: .full, tiles: l.tiles)) {
+            let corner = (2 * perimeter.edges.count..<drawn.count).map { drawn[path: $0] }
+                .first { $0.allSatisfy { $0.xy == P2(1, 0.5) } }
+            let top = corner.map { $0[$0.endIndex - 1].z }
+            Check.expect(top.map { abs($0 - 2) <= 1e-12 } ?? false,
+                         "\(l.name): the corner's edge at (1, 1/2) rises to 2", "to \(top.map { "\($0)" } ?? "nothing")")
         }
 
         // A wall that crosses a band boundary steps there: on f its top edge
@@ -1399,7 +1441,7 @@ func faceTests() {
         // well, read on the domain the copy came from. And an untiled layer,
         // its one copy in place, wherever the footprint cuts the domain.
         let landscapes = try faceLandscapes().filter { l in
-            guard case .inside = l.region else { return false }
+            guard case .inside = l.region, l.hasGraph else { return false }
             return true
         }
         for l in landscapes {
@@ -1500,7 +1542,7 @@ func faceTests() {
     }
 
     Check.suite("faces: the graph's trim loops are its truncation edge, closed, and a contour on it is cut where it crosses them") {
-        var landscapes = try faceLandscapes()
+        var landscapes = try faceLandscapes().filter(\.hasGraph)
         // A tower cut at 2 left of Re z = 1/2 and at 4 beyond, on f: the top
         // of its riser runs past where the graph meets it, flat at 4 between
         // |Im z| = 1/4, along the higher plateau.
