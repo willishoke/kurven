@@ -710,7 +710,7 @@ private func trimLoops(_ l: Landscape, margin: Double) -> TrimTally? {
     var t = TrimTally()
     // The open chains as `graphTrimLoops` counts them, and the face's loops
     // its, with that many open.
-    let reported = surface.graphTrimLoops(tiles: l.tiles, refine: l.refine)
+    let reported = surface.graphTrimLoops(refine: l.refine)
     t.open = reported.open
     if reported.loops.map({ $0.map(\.v) }) != loops.map({ $0.map(\.v) })
         || loops.filter({ $0.first != $0.last }).count != reported.open {
@@ -1326,6 +1326,42 @@ func faceTests() {
         Check.expect(report.isEmpty && carried.allSatisfy { $0 > 0 },
                      "the cone's folds end on the apex on every tile, at its height",
                      "ends on an apex by tile \(carried): \(report.prefix(3).joined(separator: "; "))")
+    }
+
+    Check.suite("faces: the graph's trim loops and its truncation edge are the same in whatever order the tiles are listed") {
+        // Points of the domain are read on the domain, not through the tile
+        // under them: on the domain's edge a second tile's image begins, and
+        // listed first it was the tile under them. On f: 1/(z - 0.95), cut at
+        // 3, its truncation edge ending on the right edge, a second tile
+        // beside it there; a tower banded at 2 | 4, its riser's top, a second
+        // tile beside it or reflected across the right edge.
+        let pole = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/(z - 0.95)", domain: Domain(real: Interval(lo: 0, hi: 1), imag: Interval(lo: -0.5, hi: 0.5)),
+                             resolution: 40, truncation: .uniform(3)),
+            refine: true)
+        let tower = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/(z - 0.5)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                             resolution: 32, truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4)),
+            refine: true)
+        for (name, bundle, tile) in [
+            ("1/(z - 0.95) cut at 3, a tile beside it", pole, Affine2(a: 1, b: 0, tx: 1, c: 0, d: 1, ty: 0)),
+            ("a tower banded at 2 | 4, a tile beside it", tower, Affine2(a: 1, b: 0, tx: 2, c: 0, d: 1, ty: 0)),
+            ("a tower banded at 2 | 4, a tile reflected across its right edge", tower, Affine2(a: -1, b: 0, tx: 3, c: 0, d: 1, ty: 0)),
+        ] {
+            func drawn(_ tiles: [Affine2]) -> (loops: [[P2<ParamSpace>]], edge: [SIMD3<Double>]) {
+                let graph = bundle.surface.faces(tiles: tiles, refine: bundle.refine).first
+                let edge = bundle.surface.hatch(.truncationEdge(tiled: true), in: Surface.HatchContext(perimeter: nil, tiles: tiles),
+                                                refine: bundle.refine)?.vertices.map(\.v) ?? []
+                return (graph?.trimLoops ?? [], edge.sorted { ($0.x, $0.y, $0.z) < ($1.x, $1.y, $1.z) })
+            }
+            let first = drawn([.identity, tile]), second = drawn([tile, .identity])
+            let open = second.loops.filter { $0.first != $0.last }.count + first.loops.filter { $0.first != $0.last }.count
+            Check.expect(!first.loops.isEmpty && first.loops.map { $0.map(\.v) } == second.loops.map { $0.map(\.v) }
+                            && open == 0 && !first.edge.isEmpty && first.edge == second.edge,
+                         "\(name): the trim loops, closed, and the truncation edge on every tile, the identity listed first or second",
+                         "\(open) loops open, loops \(first.loops.map { $0.map(\.v) } == second.loops.map { $0.map(\.v) } ? "the same" : "differ"), "
+                            + "\(first.edge.count) and \(second.edge.count) vertices drawn, \(first.edge == second.edge ? "the same" : "different")")
+        }
     }
 
     Check.suite("restriction: a contour's copy is cut to the footprint where it lands, exactly") {

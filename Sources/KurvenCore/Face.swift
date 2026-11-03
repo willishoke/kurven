@@ -66,7 +66,7 @@ public struct Face: Sendable {
     /// ending where it begins: where a contour on the face is cut, and which
     /// side of each is kept (`contours(of:_:on:)`). A polyhedron face's are
     /// its loops. The graph's are the domain's edge and the plateaus' loops,
-    /// the truncation edge among them (`Surface.graphTrimLoops(tiles:refine:)`),
+    /// the truncation edge among them (`Surface.graphTrimLoops(refine:)`),
     /// placed on f with a refiner, the first time they are asked, and shared
     /// by every copy.
     ///
@@ -313,12 +313,13 @@ public extension Surface {
     /// The graph, where z = |f| under the truncation: over the parameter
     /// rectangle, its trimmed domain where |f| is under the truncation
     /// height, in the footprint. Its trim loops are the domain's edge and the
-    /// plateaus' loops (`graphTrimLoops(tiles:refine:)`), each copy's with
+    /// plateaus' loops (`graphTrimLoops(refine:)`), each copy's with
     /// the footprint's perimeter carried back through its tile. Nil when the
     /// grid is too small to span its domain. Its derivatives are the slope
-    /// the graph's normal is read from (`graphNormal(at:tiles:refine:)`), so
-    /// `du × dv` is the normal the facing reads: f's own, untruncated, with a
-    /// refiner; without one the grid's chords, truncated.
+    /// the graph's normal is read from (`graphNormal(at:tiles:refine:)`), on
+    /// the face's own domain, before a copy moves it, so `du × dv` is the
+    /// normal the facing reads: f's own, untruncated, with a refiner;
+    /// without one the grid's chords, truncated.
     func graph(tiles: [Affine2] = [.identity], region: Region = .full,
                refine: ContourRefine? = nil) -> Face? {
         guard let rectangle = parameterRectangle else { return nil }
@@ -327,13 +328,13 @@ public extension Surface {
         return Face(
             id: .graph, domain: rectangle,
             map: { p in
-                let n = surface.graphNormal(at: P2(p.x, p.y), tiles: tiles, refine: refine)
+                let n = surface.graphNormal(at: P2(p.x, p.y), tiles: [.identity], refine: refine)
                 return SurfaceJet(position: SIMD3(p.x, p.y, magnitude(P2(p.x, p.y))),
                                   du: SIMD3(1, 0, -n.x), dv: SIMD3(0, 1, -n.y))
             },
             outward: 1, tiles: tiles,
             trimLoops: {
-                surface.graphTrimLoops(tiles: tiles, refine: refine).loops.map { $0.map { P2<ParamSpace>($0.v) } }
+                surface.graphTrimLoops(refine: refine).loops.map { $0.map { P2<ParamSpace>($0.v) } }
             },
             footprint: { tile in Surface.footprint(region, on: tile) },
             contains: { p, tile in
