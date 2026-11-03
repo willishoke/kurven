@@ -186,7 +186,9 @@ private func tiling(_ l: Landscape) -> Tally {
                     }) {
                         t.normals += 1
                         let facing = onF ? heightfield.graphNormal(at: ground.xy) : heightfield.normal(at: ground.xy)
-                        let off = simd_length(n - facing) / simd_length(facing)
+                        // Directions: a copy's du × dv is the normal scaled
+                        // by its tile's determinant.
+                        let off = simd_length(simd_normalize(n) - simd_normalize(facing))
                         if !(off <= 1e-9) {
                             t.skewed += 1
                             t.fail("skewed", "the graph's normal at \(ground.v) is \(n), the facing's \(facing)")
@@ -291,7 +293,10 @@ private func tiling(_ l: Landscape) -> Tally {
                     let solid = heightfield.surfaceHeight(at: P2(v.xy.v + side * toward))
                     return (solid, abs(heightfield.surfaceHeight(at: P2(v.xy.v + 2 * side * toward)) - solid))
                 }
-                if reads.allSatisfy(\.solid.isFinite),
+                // Not where the wall crosses a seam, which two copies need
+                // not meet smoothly at: a vertex there is read through either.
+                let crossesSeam = carriedBack(v.xy.v + 1e-6 * size * d, l).back != carriedBack(v.xy.v - 1e-6 * size * d, l).back
+                if reads.allSatisfy(\.solid.isFinite), !crossesSeam,
                    !reads.contains(where: { abs(top - $0.solid) <= 4 * $0.slide + 1e-9 * max(1, abs($0.solid)) }) {
                     t.offTop += 1
                     t.fail("offTop", "wall \(k)'s top at \(v.xy.v) is \(top), the solid's beside it \(reads.map(\.solid))")
@@ -489,6 +494,12 @@ private func faceLandscapes() throws -> [Landscape] {
                                     surface: low, tiles: [.identity, tile], region: .inside(walled),
                                     walls: .perimeter(walled, base: -0.5)))
     }
+    // A second tile sheared and stretched, (x, y) ↦ (x + y/2 + 5, x/5 + 2y):
+    // the facing's slope comes back through the transpose of the tile's
+    // inverse, which is not the tile.
+    landscapes.append(Landscape("the hatch fixture, uniform, a second tile sheared and stretched",
+                                surface: Surface(height: grid, phase: nil, truncation: .uniform(2)),
+                                tiles: [.identity, Affine2(a: 1, b: 0.5, tx: 5, c: 0.2, d: 2, ty: 0)]))
     // The notch from one boundary to the other in a tile turned a quarter,
     // the footprint the notched one's image: the walls on the boundaries'
     // images run along Re z, and at a corner where a riser ends the wall
@@ -582,6 +593,22 @@ private func faceLandscapes() throws -> [Landscape] {
                                     surface: tower.surface, tiles: [.identity, Affine2(a: c, b: -s, tx: tx, c: s, d: c, ty: 0)],
                                     region: .inside(walled), walls: .perimeter(walled, base: -0.5), refine: tower.refine))
     }
+    // A tower at 0.5 | 2 in a tile turned a quarter, (x, y) ↦ (5/2 - y, x),
+    // a wall across the seam at Re z = 1.5: between the two stations either
+    // side of the seam, carried back through the second tile, the wall
+    // crosses the boundary's image at a point the first tile holds, where
+    // it meets no riser.
+    let lowTower = try NativeLandscape.build(
+        LandscapeRequest(expression: "1/(z - 0.5)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                         resolution: 32, truncation: .realBands([RealBand(below: 0.5, height: 0.5)], beyond: 2)),
+        refine: true)
+    let acrossSeam = BoundaryPerimeter(edges: [(0.95, 0.0), (1.95, 1.0), (1.3, 0.95), (0.6, 0.2)].indices.map { k in
+        let c = [(0.95, 0.0), (1.95, 1.0), (1.3, 0.95), (0.6, 0.2)], a = c[k], b = c[(k + 1) % c.count]
+        return PerimeterEdge(start: P2(a.0, a.1), end: P2(b.0, b.1), density: 8)
+    })
+    landscapes.append(Landscape("a tower banded at 0.5 | 2 in a tile turned a quarter, a wall across the seam, on f",
+                                surface: lowTower.surface, tiles: [.identity, Affine2(a: 0, b: -1, tx: 2.5, c: 1, d: 0, ty: 0)],
+                                region: .inside(acrossSeam), walls: .perimeter(acrossSeam, base: -0.5), refine: lowTower.refine))
     let o = gamma.manifest.occluder
     landscapes.append(Landscape("Γ, banded, on f", surface: gamma.surface, tiles: o.tiles, region: o.region,
                                 walls: o.walls, refine: gamma.refine, faces: scene.geometry.faces))
@@ -925,7 +952,7 @@ func faceTests() {
                 let cell = max(abs(real.length) / Double(l.surface.height.width - 1),
                                abs(l.surface.domain.imag.length) / Double(l.surface.height.height - 1))
                 var vertices = 0, crossings = 0, wrong: [String] = []
-                var steps = [Int](repeating: 0, count: l.tiles.count), held = steps
+                var steps = [Int](repeating: 0, count: l.tiles.count)
                 for (k, edge) in perimeter.edges.enumerated() {
                     guard let drawn = l.surface.hatch(.wallEdges(edges: [k], step: 1, base: base), in: context, refine: l.refine),
                           let face = walls.first(where: { $0.id == .wall(edge: k) }) else { continue }
@@ -953,13 +980,12 @@ func faceTests() {
                         // Two vertices at one point on a boundary: where the
                         // wall meets a riser, at the two bands' heights.
                         guard let tile = l.tiles.firstIndex(where: { $0.inverse == back }) else { continue }
-                        held[tile] += 1
                         if !apart(a, c), boundaries.contains(where: { abs(xa - $0) <= 1e-9 * cell }) { steps[tile] += 1 }
+                        // And it steps nowhere else.
+                        else if !apart(a, c), a.z != c.z { wrong.append("a step at \(a.v), on no boundary in the tile under it") }
                     }
                 }
-                // On the tiled towers the walls meet a riser on every tile
-                // they stand on.
-                Check.expect(vertices > 100 && wrong.isEmpty && (l.tiles.count == 1 || zip(steps, held).allSatisfy { $1 == 0 || $0 > 0 }),
+                Check.expect(vertices > 100 && wrong.isEmpty,
                              "\(l.name): the top edge on f is the wall face's top, and steps where the tile under it crosses a boundary",
                              "\(wrong.count) wrong of \(vertices) vertices, \(crossings) ramps, steps by tile \(steps): "
                                 + wrong.prefix(3).joined(separator: "; "))
