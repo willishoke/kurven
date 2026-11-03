@@ -1160,6 +1160,50 @@ func faceTests() {
             }
         }
 
+        // A wall whose stations either side of a seam lie under different
+        // tiles, with a band boundary between them in each: a tower,
+        // 1/(z - 1.4), at 0.5 | 1 across Re z = 1.45, in two tiles, the second
+        // reflected across the right edge, x ↦ 3 - x, so the boundary's image
+        // is Re z = 1.55; a wall along Im z = -1/2 from 0.2 to 2.8 at density
+        // 4, its second station at 1.07 and its third at 1.93. On f its top
+        // edge steps at 1.45 and at 1.55, and between its vertices it is
+        // the solid's top a hair inside the footprint, read every 32nd of
+        // each chord, a chord under two tiles included.
+        let seamTower = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/(z - 1.4)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                             resolution: 32, truncation: .realBands([RealBand(below: 1.45, height: 0.5)], beyond: 1)),
+            refine: true)
+        let straddled = BoundaryPerimeter(edges: [(0.2, -0.5), (2.8, -0.5), (2.8, 0.5), (0.2, 0.5)].indices.map { k in
+            let c = [(0.2, -0.5), (2.8, -0.5), (2.8, 0.5), (0.2, 0.5)], a = c[k], b = c[(k + 1) % c.count]
+            return PerimeterEdge(start: P2(a.0, a.1), end: P2(b.0, b.1), density: 4)
+        })
+        let straddling = Landscape("a tower at 0.5 | 1 in two tiles, the second reflected, a wall across the seam at density 4",
+                                   surface: seamTower.surface, tiles: [.identity, Affine2(a: -1, b: 0, tx: 3, c: 0, d: 1, ty: 0)],
+                                   region: .inside(straddled), walls: .perimeter(straddled, base: -0.5), refine: seamTower.refine)
+        if let drawn = straddling.surface.hatch(.wallEdges(edges: [0], step: 1, base: -0.5),
+                                                in: Surface.HatchContext(perimeter: straddled, region: .full, tiles: straddling.tiles),
+                                                refine: straddling.refine), let tolerance = straddling.refine?.tolerance {
+            let top = Array(drawn[path: 0]), h = straddling.heightfield
+            let cell = 2.0 / 31
+            let steps = zip(top, top.dropFirst()).filter { simd_length($0.0.xy.v - $0.1.xy.v) <= 1e-12 && $0.0.z != $0.1.z }
+                .map { ($0.0.x * 1e4).rounded() / 1e4 }
+            var samples = 0, worst = 0.0, off: [String] = []
+            for (a, c) in zip(top, top.dropFirst()) where simd_length(a.xy.v - c.xy.v) > 1e-12 {
+                for k in 1..<32 {
+                    let t = Double(k) / 32, w = a.xy.v + (c.xy.v - a.xy.v) * t
+                    let solid = h.surfaceHeight(at: P2(w.x, w.y + 1e-9))
+                    guard solid.isFinite else { continue }
+                    samples += 1
+                    let gap = abs(a.z + (c.z - a.z) * t - solid)
+                    worst = max(worst, gap)
+                    if gap > 2 * tolerance * cell { off.append(String(format: "x %.4f: %.4f off", w.x, gap)) }
+                }
+            }
+            Check.expect(steps == [1.45, 1.55] && samples > 100 && off.isEmpty,
+                         "\(straddling.name), on f: its top edge steps at 1.45 and 1.55, and follows the solid between",
+                         "steps at \(steps), \(off.count) of \(samples) points off, worst \(worst): \(off.prefix(3).joined(separator: "; "))")
+        }
+
         // A riser's top is drawn only where the riser stands: on f, every
         // segment of a top the truncation edge draws along a band boundary
         // lies on a riser at its middle, and where the footprint holds both
