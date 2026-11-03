@@ -784,6 +784,30 @@ private func faceLandscapes() throws -> [Landscape] {
     }
     for k in boundaryDrops.indices where !boundaryDrops[k].name.contains("in the second tile") { boundaryDrops[k].dropsAtATileBoundary = true }
     landscapes += boundaryDrops
+    // The higher copy's top steps along a tile boundary: |f| = 10 at
+    // 1 | 2 | 1/2 across Re z = 1/2 and 0.9, the turned copy's bottom edge
+    // stepping at 0.9, which is a grid node of the first copy's right edge,
+    // and the riser between them ends there. The two stops land a rounding
+    // apart, one read on the boundary itself.
+    let stepped = Surface(height: Grid2D(width: 21, height: 21, domain: unit, values: [Float](repeating: 10, count: 441)),
+                          phase: nil, truncation: .realBands([RealBand(below: 0.5, height: 1), RealBand(below: 0.9, height: 2)],
+                                                             beyond: 0.5))
+    var more = [Landscape("|f| = 10 at 1 | 2 | 1/2, a tile turned, the higher copy stepping along the tile boundary at a grid node",
+                          surface: stepped, tiles: [.identity, turnedBeside])]
+    // Three tiles in a row, the middle turned, on a footprint whose edges
+    // run along Im z = 0.2 and 0.8, grid rows, across both tile boundaries:
+    // the riser and its top end on the footprint, not a rounding outside it.
+    // And the same footprint at 0.23 and 0.77, off the grid's rows, where the
+    // riser ends between two nodes.
+    let beside = { (x: Double) in Affine2(a: 1, b: 0, tx: x, c: 0, d: 1, ty: 0) }
+    for (lo, hi) in [(0.2, 0.8), (0.23, 0.77)] {
+        let row = footprint([(0.2, lo), (2.8, lo), (2.8, hi), (0.2, hi)])
+        more.append(Landscape("three tiles in a row, the middle turned, on a footprint from Im z = \(lo) to \(hi), on the grid",
+                              surface: parabola, tiles: [.identity, turnedBeside, beside(2)], region: .inside(row),
+                              walls: .perimeter(row, base: 0)))
+    }
+    for k in more.indices { more[k].dropsAtATileBoundary = true }
+    landscapes += more
     let o = gamma.manifest.occluder
     landscapes.append(Landscape("Γ, banded, on f", surface: gamma.surface, tiles: o.tiles, region: o.region,
                                 walls: o.walls, refine: gamma.refine, faces: scene.geometry.faces))
