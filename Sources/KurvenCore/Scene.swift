@@ -863,11 +863,12 @@ struct GridTraversal: Sendable {
             }
             if reach.isFinite, reach > ta, reach < tb { ts.append(reach) }
         }
-        // Where the line leaves one copy for another across a seam and the
-        // copies' tops there differ, a sample just inside each, read through
-        // its own tile: the sample on the seam itself reads whichever tile
-        // comes first, and between the two the solid drops down a riser, so
-        // a line passing the seam under the higher top is in it.
+        // Where the line leaves one copy for another across a tile boundary
+        // and the copies' tops there differ, a sample just inside each, read
+        // through its own tile: the sample on the tile boundary itself reads
+        // whichever tile comes first, and between the two the solid drops
+        // down a riser, so a line passing the tile boundary under the higher
+        // top is in it.
         for a in passages {
             for b in passages where abs(a.tb - b.ta) <= tEps && b.tb > b.ta {
                 let q = pxy + a.tb * dxy, s = heightfield.surface

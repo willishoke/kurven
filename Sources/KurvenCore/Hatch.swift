@@ -213,7 +213,7 @@ extension Surface {
         /// A point of the edge: `t` of the way along it, nil between the
         /// ends; or where it meets a riser, the riser's boundary in the
         /// domain and the side of it the truncation is read from; or where it
-        /// crosses a seam, the tile it is read through on one side.
+        /// crosses a tile boundary, the tile it is read through on one side.
         typealias Station = (p: P2<DomainSpace>, t: Double?, riser: (x: Double, side: Truncation.Side)?, back: Affine2?)
         /// |f| over a station and the truncation there, both read through
         /// the tile under it, or the station's own.
@@ -240,23 +240,23 @@ extension Surface {
             let t = Double($0) / Double(n - 1)
             return (Surface.point(on: edge, at: t), t, nil, nil)
         }
-        // Where the edge crosses a seam between two nodes, two stations at
-        // the crossing, each read through the tile on its side
-        // (`seamCrossings`): where the copies' tops differ the top steps
-        // there, down a riser, as at a band boundary. One at an end of the
-        // segment, which is read through the other already.
+        // Where the edge crosses a tile boundary between two nodes, two
+        // stations at the crossing, each read through the tile on its side
+        // (`tileBoundaryCrossings`): where the copies' tops differ the top
+        // steps there, down a riser, as at a band boundary. One at an end of
+        // the segment, which is read through the other already.
         if tiles.count > 1 {
-            var withSeams: [Station] = []
+            var withCrossings: [Station] = []
             for (a, b) in zip(stations, stations.dropFirst()) {
-                withSeams.append(a)
-                for crossing in seamCrossings(of: edge, from: a.t ?? 0, to: b.t ?? 1, inward: inward, tiles: tiles) {
+                withCrossings.append(a)
+                for crossing in tileBoundaryCrossings(of: edge, from: a.t ?? 0, to: b.t ?? 1, inward: inward, tiles: tiles) {
                     let p = Surface.point(on: edge, at: crossing.t)
-                    if crossing.t != a.t { withSeams.append((p, crossing.t, nil, crossing.near)) }
-                    if crossing.t != b.t { withSeams.append((p, crossing.t, nil, crossing.far)) }
+                    if crossing.t != a.t { withCrossings.append((p, crossing.t, nil, crossing.near)) }
+                    if crossing.t != b.t { withCrossings.append((p, crossing.t, nil, crossing.far)) }
                 }
             }
-            withSeams.append(stations[stations.count - 1])
-            stations = withSeams
+            withCrossings.append(stations[stations.count - 1])
+            stations = withCrossings
         }
         if magnitudeOfF != nil, case .realBands(let bands, _) = truncation {
             // The boundaries inside the domain, a band that starts on its
@@ -338,14 +338,14 @@ extension Surface {
         return subdividedProfile(withMinima(topEdge, profile: profile), profile: profile, tolerance: refine.tolerance)
     }
 
-    /// Where a wall's edge crosses a seam between `a` and `b` of the way
-    /// along it, in order, each with the tiles either side: the tile under
-    /// the foot at `a` (`wallTile`), its copy of the domain left where the
-    /// edge carried back through it leaves the rectangle, and the tile under
-    /// the edge just beyond, until the one under the foot at `b`. A foot on
-    /// a seam read through the tile on its footprint's side meets it at
-    /// that foot. Nothing for one tile, or a stretch under one.
-    func seamCrossings(of edge: PerimeterEdge, from a: Double, to b: Double, inward: SIMD2<Double>,
+    /// Where a wall's edge crosses a tile boundary between `a` and `b` of the
+    /// way along it, in order, each with the tiles either side: the tile
+    /// under the foot at `a` (`wallTile`), its copy of the domain left where
+    /// the edge carried back through it leaves the rectangle, and the tile
+    /// under the edge just beyond, until the one under the foot at `b`. A
+    /// foot on a tile boundary read through the tile on its footprint's side
+    /// meets it at that foot. Nothing for one tile, or a stretch under one.
+    func tileBoundaryCrossings(of edge: PerimeterEdge, from a: Double, to b: Double, inward: SIMD2<Double>,
                        tiles: [Affine2]) -> [(t: Double, near: Affine2, far: Affine2)] {
         guard tiles.count > 1 else { return [] }
         let along = edge.end.v - edge.start.v, length = simd_length(along)
@@ -362,7 +362,7 @@ extension Surface {
             let pa = Surface.point(on: edge, at: t)
             let qa = back(P3(pa.x, pa.y, 0)), qb = back(P3(pb.x, pb.y, 0))
             // Where the segment leaves the rectangle; at `b` where it does
-            // not, the foot there on the seam.
+            // not, the foot there on the boundary.
             var s = 1.0
             for (u, v, lo, hi) in [(qa.x, qb.x, xlo, xhi), (qa.y, qb.y, ylo, yhi)] where v != u {
                 if v > hi { s = min(s, (hi - u) / (v - u)) }
@@ -748,15 +748,15 @@ extension Surface {
     /// between, and cut at its vertices it went missing where the riser
     /// stands, or ran across a notch where none does.
     ///
-    /// Tiled, the risers' tops at the seams follow, where those risers stand
-    /// (`seamRiserTops(tiles:region:refine:)`).
+    /// Tiled, the risers' tops at the tile boundaries follow, where those
+    /// risers stand (`tileBoundaryRiserTops(tiles:region:refine:)`).
     func drawnTruncationEdge(tiles: [Affine2], tiled: Bool, region: Region,
                              refine: ContourRefine?) -> [[P3<WorldSpace>]] {
         let trim = graphTrimLoops(refine: refine)
         let pieces = trim.truncationEdge.dropLast(trim.riserTops.count)
         let side = 1e-9 * cell
         let magnitude = refine?.magnitude
-        let atSeams = tiled ? seamRiserTops(tiles: tiles, region: region, refine: refine) : []
+        let atTileBoundaries = tiled ? tileBoundaryRiserTops(tiles: tiles, region: region, refine: refine) : []
         return (tiled ? tiles.map(Optional.some) : [nil]).flatMap { tile -> [[P3<WorldSpace>]] in
             func placed(_ v: P3<WorldSpace>) -> P3<WorldSpace> { tile.map { $0(v) } ?? v }
             var paths = Surface.clip(pieces.map { $0.map(placed) }, to: region)
@@ -803,33 +803,34 @@ extension Surface {
                 }
             }
             return paths
-        } + atSeams
+        } + atTileBoundaries
     }
 
-    /// The tops of the risers at the seams (`seamRisers(tiles:region:refine:)`)
-    /// where they stand (`seamStretches`), at the higher of the two copies'
-    /// tops, each read on the seam through its tile (`seamTop`), in world
-    /// space. A top has a vertex at each of the stretch's stops and, with a
-    /// refiner, its chords are subdivided until none departs from the top
-    /// by more than the refiner's tolerance, as a riser's top at a band
+    /// The tops of the risers at the tile boundaries
+    /// (`tileBoundaryRisers(tiles:region:refine:)`) where they stand
+    /// (`tileBoundaryStretches`), at the higher of the two copies' tops, each
+    /// read on the tile boundary through its tile (`tileBoundaryTop`), in
+    /// world space. A top has a vertex at each of the stretch's stops and,
+    /// with a refiner, its chords are subdivided until none departs from the
+    /// top by more than the refiner's tolerance, as a riser's top at a band
     /// boundary is.
-    func seamRiserTops(tiles: [Affine2], region: Region, refine: ContourRefine?) -> [[P3<WorldSpace>]] {
+    func tileBoundaryRiserTops(tiles: [Affine2], region: Region, refine: ContourRefine?) -> [[P3<WorldSpace>]] {
         let magnitude = faceMagnitude(refine)
         var out: [[P3<WorldSpace>]] = []
-        for seam in seams(tiles: tiles) {
-            guard let first = tiles[seam.first].inverse, let second = tiles[seam.second].inverse else { continue }
+        for boundary in tileBoundaries(tiles: tiles) {
+            guard let first = tiles[boundary.first].inverse, let second = tiles[boundary.second].inverse else { continue }
             func tops(_ w: P2<WorldSpace>) -> [Double] {
-                [first, second].map { seamTop(w, back: $0, magnitude: magnitude) }
+                [first, second].map { tileBoundaryTop(w, back: $0, magnitude: magnitude) }
             }
-            let stretches = seamStretches(seam, backs: [first, second], region: region, tops: tops,
+            let stretches = tileBoundaryStretches(boundary, backs: [first, second], region: region, tops: tops,
                                           excess: { q in magnitude(q) - self.truncationHeight(atX: q.x) })
             for stretch in stretches {
                 var curve: [P3<WorldSpace>] = []
                 func vertex(_ s: Double, _ z: Double) -> P3<WorldSpace> {
-                    let w = seam.point(s)
+                    let w = boundary.point(s)
                     return P3(w.x, w.y, z)
                 }
-                func top(_ s: Double) -> Double { tops(seam.point(s)).max() ?? .nan }
+                func top(_ s: Double) -> Double { tops(boundary.point(s)).max() ?? .nan }
                 for (k, stop) in stretch.enumerated() {
                     let z = tops(stop.read).max() ?? .nan
                     if k > 0, let tolerance = refine?.tolerance, refine?.magnitude != nil {
@@ -852,36 +853,37 @@ extension Surface {
         return out
     }
 
-    /// The stretches of a seam a riser stands on: where the footprint holds
-    /// both sides, read a hair either side of the seam, and one copy's top
-    /// stands over the other's (`stands(_:over:)`), `tops` reading each
-    /// copy's over a point of the seam, `backs` the two tiles' inverses.
-    /// Each stretch is its stops in order, the distance `s` along the seam
-    /// and the point its tops are read at, a hair inside the stretch where a
-    /// copy's top steps there. The stops: each copy's grid nodes along the
-    /// seam (every `step`-th); where the footprint's perimeter crosses the
-    /// lines either side of the seam, exactly; where a copy's top steps, at
-    /// a band boundary its side of the domain crosses; where a copy's
+    /// The stretches of a tile boundary a riser stands on: where the
+    /// footprint holds both sides, read a hair either side of the tile
+    /// boundary, and one copy's top stands over the other's
+    /// (`stands(_:over:)`), `tops` reading each copy's over a point of the
+    /// tile boundary, `backs` the two tiles' inverses. Each stretch is its
+    /// stops in order, the distance `s` along the tile boundary and the point
+    /// its tops are read at, a hair inside the stretch where a copy's top
+    /// steps there. The stops: each copy's grid nodes along the tile boundary
+    /// (every `step`-th); where the footprint's perimeter crosses the lines
+    /// either side of the tile boundary, exactly; where a copy's top steps,
+    /// at a band boundary its side of the domain crosses; where a copy's
     /// `excess` over its truncation changes sign; and where the copies' tops
     /// cross, or the riser stops standing otherwise, bisected to the last
-    /// bit. A stretch runs on through a crossing of the tops and breaks
-    /// where a copy's top steps.
-    func seamStretches(_ seam: Seam, backs: [Affine2], region: Region, step: Int = 1,
+    /// bit. A stretch runs on through a crossing of the tops and breaks where
+    /// a copy's top steps.
+    func tileBoundaryStretches(_ boundary: TileBoundary, backs: [Affine2], region: Region, step: Int = 1,
                        tops: (P2<WorldSpace>) -> [Double], excess: (P2<DomainSpace>) -> Double)
         -> [[(s: Double, read: P2<WorldSpace>)]] {
         let side = 1e-9 * cell, nudge = 1e-9 * cell
-        let length = seam.length, n = seam.normal
+        let length = boundary.length, n = boundary.normal
         let g = height
         func held(_ s: Double) -> Bool {
-            let w = seam.point(s).v
+            let w = boundary.point(s).v
             return region.contains(P2(w - side * n)) && region.contains(P2(w + side * n))
         }
         func stands(_ s: Double) -> Bool {
-            let z = tops(seam.point(s))
+            let z = tops(boundary.point(s))
             return held(s) && (Surface.stands(z[0], over: z[1]) || Surface.stands(z[1], over: z[0]))
         }
         func copy(_ k: Int, _ s: Double) -> P2<DomainSpace> {
-            let w = seam.point(s)
+            let w = boundary.point(s)
             return ontoDomain(backs[k](P3(w.x, w.y, 0)).xy)
         }
         var stops: Set<Double> = [0, length]
@@ -906,11 +908,11 @@ extension Surface {
                 }
             }
         }
-        // Where the perimeter crosses the lines either side of the seam,
-        // o + s u, at the edge's p + r e.
+        // Where the perimeter crosses the lines either side of the tile
+        // boundary, o + s u, at the edge's p + r e.
         if case .inside(let perimeter) = region {
-            let u = (seam.end.v - seam.start.v) / length
-            for o in [seam.start.v - side * n, seam.start.v + side * n] {
+            let u = (boundary.end.v - boundary.start.v) / length
+            for o in [boundary.start.v - side * n, boundary.start.v + side * n] {
                 for edge in perimeter.edges {
                     let p = edge.start.v, e = edge.end.v - edge.start.v
                     let det = e.x * u.y - e.y * u.x
@@ -933,9 +935,9 @@ extension Surface {
                     more.append(0.5 * (bracket.holds + bracket.fails))
                 }
             }
-            let (da, dc) = (tops(seam.point(ia)), tops(seam.point(ic)))
+            let (da, dc) = (tops(boundary.point(ia)), tops(boundary.point(ic)))
             if (da[0] - da[1]).isFinite, (dc[0] - dc[1]).isFinite, (da[0] > da[1]) != (dc[0] > dc[1]) {
-                let bracket = bisect(ia, ic) { s in let z = tops(seam.point(s)); return (z[0] > z[1]) == (da[0] > da[1]) }
+                let bracket = bisect(ia, ic) { s in let z = tops(boundary.point(s)); return (z[0] > z[1]) == (da[0] > da[1]) }
                 more.append(0.5 * (bracket.holds + bracket.fails))
             } else if stands(ia) != stands(ic) {
                 let standing = stands(ia)
@@ -948,8 +950,8 @@ extension Surface {
         var open = false
         for (a, c) in zip(all, all.dropFirst()) where c > a {
             guard stands(0.5 * (a + c)) else { open = false; continue }
-            let start = (s: a, read: seam.point(jumps.contains(a) ? a + nudge : a))
-            let end = (s: c, read: seam.point(jumps.contains(c) ? c - nudge : c))
+            let start = (s: a, read: boundary.point(jumps.contains(a) ? a + nudge : a))
+            let end = (s: c, read: boundary.point(jumps.contains(c) ? c - nudge : c))
             if open, !jumps.contains(a) {
                 stretches[stretches.count - 1].append(end)
             } else {

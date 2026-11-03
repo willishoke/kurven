@@ -94,9 +94,9 @@ private struct Landscape {
     let walls: Walls
     let refine: ContourRefine?
     let faces: [Face]
-    /// Whether two copies meet at a seam with different tops where the
+    /// Whether two copies meet at a tile boundary with different tops where the
     /// footprint holds both sides: the solid drops there.
-    var dropsAtASeam = false
+    var dropsAtATileBoundary = false
     var heightfield: Heightfield {
         Heightfield(surface: surface, occluder: .empty, tiles: tiles, region: region, step: 1,
                     refine: refine, walls: walls)
@@ -124,7 +124,7 @@ private struct Landscape {
 /// normal is not the facing's, and the first failure of each kind.
 private struct Tally {
     var sampled = 0, wrong = 0, inward = 0, onGraph = 0, normals = 0, skewed = 0, stations = 0, offTop = 0
-    var seams = 0, drops = 0
+    var boundaryPoints = 0, drops = 0
     var examples: [String: String] = [:]
     mutating func fail(_ kind: String, _ what: String) { if examples[kind] == nil { examples[kind] = what } }
 }
@@ -160,7 +160,7 @@ private func tiling(_ l: Landscape) -> Tally {
 
     /// How many tiles' images of the domain hold a point of the ground. Only
     /// a point one tile holds is asked: the drawing reads a point two hold,
-    /// on a seam or an overlap, through whichever comes first.
+    /// on a tile boundary or an overlap, through whichever comes first.
     func cover(_ w: P3<WorldSpace>) -> Int {
         l.tiles.filter { tile in
             guard let back = tile.inverse else { return false }
@@ -200,8 +200,8 @@ private func tiling(_ l: Landscape) -> Tally {
                     // The facing's differences reach a cell out along the
                     // grid's axes as the tile turns them, and where they
                     // reach ground another tile holds, or is nearest, they
-                    // read that one, across a seam the copies need not meet
-                    // smoothly at.
+                    // read that one, across a tile boundary the copies need
+                    // not meet smoothly at.
                     let reach = [(tile.a * cell.x, tile.c * cell.x), (-tile.a * cell.x, -tile.c * cell.x),
                                  (tile.b * cell.y, tile.d * cell.y), (-tile.b * cell.y, -tile.d * cell.y)]
                     if face.id == .graph, reach.allSatisfy({ r in
@@ -291,12 +291,12 @@ private func tiling(_ l: Landscape) -> Tally {
                 // side of the line, by a rounding.
                 let atFoot = stations.filter { simd_length($0.xy.v - v.xy.v) <= 1e-9 * size }.map(\.z)
                 let lower = atFoot.min() ?? top
-                // Where the wall crosses a seam, two copies meet: a riser
-                // there meets the wall in a crease.
-                let crossesSeam = carriedBack(v.xy.v + 1e-6 * size * d, l).back != carriedBack(v.xy.v - 1e-6 * size * d, l).back
+                // Where the wall crosses a tile boundary, two copies meet: a
+                // riser there meets the wall in a crease.
+                let crossesTileBoundary = carriedBack(v.xy.v + 1e-6 * size * d, l).back != carriedBack(v.xy.v - 1e-6 * size * d, l).back
                 for j in 0..<7 {
                     let z = base + (top - base) * (Double(j) + 0.5) / 7
-                    expect(P3(v.x, v.y, z), 1, slack: atStart || atEnd || z > lower || crossesSeam ? 1 : 0) { face, n in
+                    expect(P3(v.x, v.y, z), 1, slack: atStart || atEnd || z > lower || crossesTileBoundary ? 1 : 0) { face, n in
                         // At a corner, the other wall there is asked from its
                         // own stations.
                         guard case .wall(let e) = face.id, e == k || !(atStart || atEnd) else { return true }
@@ -348,9 +348,10 @@ private func tiling(_ l: Landscape) -> Tally {
                     let solid = heightfield.surfaceHeight(at: P2(v.xy.v + reach * toward))
                     return (solid, abs(heightfield.surfaceHeight(at: P2(v.xy.v + 2 * reach * toward)) - solid))
                 }
-                // Not where the wall crosses a seam, which two copies need
-                // not meet smoothly at: a vertex there is read through either.
-                if reads.allSatisfy(\.solid.isFinite), !crossesSeam,
+                // Not where the wall crosses a tile boundary, which two
+                // copies need not meet smoothly at: a vertex there is read
+                // through either.
+                if reads.allSatisfy(\.solid.isFinite), !crossesTileBoundary,
                    !reads.contains(where: { abs(top - $0.solid) <= 4 * $0.slide + 1e-9 * max(1, abs($0.solid)) }) {
                     t.offTop += 1
                     t.fail("offTop", "wall \(k)'s top at \(v.xy.v) is \(top), the solid's beside it \(reads.map(\.solid))")
@@ -423,16 +424,16 @@ private func tiling(_ l: Landscape) -> Tally {
         }
     }
 
-    // The seams, where two copies meet edge to edge, found on the drawing:
-    // a point of a side of a tile's image whose ground a billionth of the
-    // domain either side one tile holds each, two different ones. Where the
-    // footprint holds both sides and the top read there, through the tile
-    // under each, differs by more than f alone moves, the solid drops: every
-    // point between in one face, a riser facing the lower side; nothing over
-    // the higher, nor inside the solid under the lower. Where they agree,
-    // nothing over the top. Where it holds one side and a wall stands on the
-    // seam, the wall rises to that side's top and no higher: nothing over
-    // it, nor up to the top across the seam.
+    // The tile boundaries, where two copies meet edge to edge, found on the
+    // drawing: a point of a side of a tile's image whose ground a billionth
+    // of the domain either side one tile holds each, two different ones.
+    // Where the footprint holds both sides and the top read there, through
+    // the tile under each, differs by more than f alone moves, the solid
+    // drops: every point between in one face, a riser facing the lower side;
+    // nothing over the higher, nor inside the solid under the lower. Where
+    // they agree, nothing over the top. Where it holds one side and a wall
+    // stands on the tile boundary, the wall rises to that side's top and no
+    // higher: nothing over it, nor up to the top across the boundary.
     let (ylo, yhi) = (min(imag.lo, imag.hi), max(imag.lo, imag.hi))
     let domainCorners = [SIMD2(lo, ylo), SIMD2(hi, ylo), SIMD2(hi, yhi), SIMD2(lo, yhi)]
     for tile in l.tiles where tile.inverse != nil && l.tiles.count > 1 {
@@ -442,9 +443,9 @@ private func tiling(_ l: Landscape) -> Tally {
             let u = simd_normalize(b - a), n = SIMD2(-u.y, u.x)
             for j in 0..<47 {
                 let w = a + (b - a) * ((Double(j) + 0.53) / 47)
-                /// The top `side` off the seam toward `sign`, and the tile
-                /// under it; nil where no one tile holds the ground, or off
-                /// the footprint where it must be `held`.
+                /// The top `side` off the tile boundary toward `sign`, and
+                /// the tile under it; nil where no one tile holds the ground,
+                /// or off the footprint where it must be `held`.
                 func top(_ sign: Double, held: Bool = true) -> (z: Double, back: Affine2, slide: Double)? {
                     let g = P3<WorldSpace>(w.x + sign * side * n.x, w.y + sign * side * n.y, 0)
                     guard cover(g) == 1, !held || l.region.contains(g.xy) else { return nil }
@@ -456,7 +457,7 @@ private func tiling(_ l: Landscape) -> Tally {
                 let foot = P2<WorldSpace>(w)
                 switch (top(-1), top(1)) {
                 case let (left?, right?):
-                    t.seams += 1
+                    t.boundaryPoints += 1
                     let span = (lo: min(left.z, right.z), hi: max(left.z, right.z))
                     let towardLower = left.z < right.z ? -n : n
                     if span.hi - span.lo > 4 * max(left.slide, right.slide) + 1e-9 * max(1, abs(span.hi)) {
@@ -464,7 +465,7 @@ private func tiling(_ l: Landscape) -> Tally {
                         for k in 0..<7 {
                             let z = span.lo + (span.hi - span.lo) * (Double(k) + 0.5) / 7
                             expect(P3(w.x, w.y, z), 1) { face, normal in
-                                guard case .seamRiser = face.id else { return false }
+                                guard case .tileBoundaryRiser = face.id else { return false }
                                 return simd_dot(SIMD2(normal.x, normal.y), towardLower) > 0
                             }
                         }
@@ -638,37 +639,38 @@ private func faceLandscapes() throws -> [Landscape] {
     landscapes.append(Landscape("the hatch fixture, uniform, in four tiles",
                                 surface: Surface(height: grid, phase: nil, truncation: .uniform(2)),
                                 tiles: reflections))
-    // A wall on a seam between two tiles, the second beside the first,
-    // (x, y) ↦ (x + 1, y), or turned a quarter, (x, y) ↦ (1 + y, 1 - x):
-    // |f| = 3(2 Re z - 1)² + 1/5 on the unit square, at 1 | 2 across Re z =
-    // 1/2, so where the seam is the first tile's right edge the band there
-    // is 2 and the second's 1 or its own. On a footprint either side of the
-    // seam, the wall on it reads the tile the footprint is in.
-    let seamGrid = Grid2D(width: 21, height: 21, domain: Domain(real: Interval(lo: 0, hi: 1), imag: Interval(lo: 0, hi: 1)),
+    // A wall on the boundary between two tiles, the second beside the
+    // first, (x, y) ↦ (x + 1, y), or turned a quarter, (x, y) ↦ (1 + y, 1 -
+    // x): |f| = 3(2 Re z - 1)² + 1/5 on the unit square, at 1 | 2 across Re z
+    // = 1/2, so where the tile boundary is the first tile's right edge the
+    // band there is 2 and the second's 1 or its own. On a footprint either
+    // side of the tile boundary, the wall on it reads the tile the footprint
+    // is in.
+    let parabolaGrid = Grid2D(width: 21, height: 21, domain: Domain(real: Interval(lo: 0, hi: 1), imag: Interval(lo: 0, hi: 1)),
                           values: (0..<441).map { k in Float(3 * pow(2 * Double(k % 21) / 20 - 1, 2) + 0.2) })
-    let seamed = Surface(height: seamGrid, phase: nil, truncation: .realBands([RealBand(below: 0.5, height: 1)], beyond: 2))
+    let parabola = Surface(height: parabolaGrid, phase: nil, truncation: .realBands([RealBand(below: 0.5, height: 1)], beyond: 2))
     for (tileName, tile) in [("beside it", Affine2(a: 1, b: 0, tx: 1, c: 0, d: 1, ty: 0)),
                              ("turned", Affine2(a: 0, b: 1, tx: 1, c: -1, d: 0, ty: 1))] {
         for (side, corners) in [("second", [(1.0, 0.2), (1.8, 0.2), (1.8, 0.8), (1.0, 0.8)]),
                                 ("first", [(0.2, 0.2), (1.0, 0.2), (1.0, 0.8), (0.2, 0.8)])] {
             let walled = footprint(corners)
-            landscapes.append(Landscape("a wall on the seam with a tile \(tileName), the footprint in the \(side)",
-                                        surface: seamed, tiles: [.identity, tile], region: .inside(walled),
+            landscapes.append(Landscape("a wall on the tile boundary with a tile \(tileName), the footprint in the \(side)",
+                                        surface: parabola, tiles: [.identity, tile], region: .inside(walled),
                                         walls: .perimeter(walled, base: 0)))
         }
     }
-    // A corner on the seam where a riser ends: |f| = 10 on the unit square
-    // at 1 | 2 across Re z = 1/2, the second tile turned, (x, y) ↦ (1 + y,
-    // 1 - x), a footprint wholly in it with a wall down the seam from
-    // (1, 1/2). There the second tile's riser, along Im z = 1/2 in space,
-    // ends, and both walls leave its boundary in that tile, while through
-    // the first the wall on the seam runs along Re z = 1: the corner's edge
-    // rises to 2, the band below the riser.
+    // A corner on the tile boundary where a riser ends: |f| = 10 on the unit
+    // square at 1 | 2 across Re z = 1/2, the second tile turned, (x, y) ↦ (1
+    // + y, 1 - x), a footprint wholly in it with a wall down the tile
+    // boundary from (1, 1/2). There the second tile's riser, along Im z = 1/2
+    // in space, ends, and both walls leave its boundary in that tile, while
+    // through the first the wall on the tile boundary runs along Re z = 1:
+    // the corner's edge rises to 2, the band below the riser.
     let unit = Domain(real: Interval(lo: 0, hi: 1), imag: Interval(lo: 0, hi: 1))
     let flat = Surface(height: Grid2D(width: 21, height: 21, domain: unit, values: [Float](repeating: 10, count: 441)),
                        phase: nil, truncation: .realBands([RealBand(below: 0.5, height: 1)], beyond: 2))
     let cornered = footprint([(1, 0.5), (1, 0.1), (1.8, 0.1), (1.8, 0.9), (1.5, 0.9)])
-    landscapes.append(Landscape("|f| = 10 at 1 | 2, a tile turned, a corner on the seam where its riser ends",
+    landscapes.append(Landscape("|f| = 10 at 1 | 2, a tile turned, a corner on the tile boundary where its riser ends",
                                 surface: flat, tiles: [.identity, Affine2(a: 0, b: 1, tx: 1, c: -1, d: 0, ty: 1)],
                                 region: .inside(cornered), walls: .perimeter(cornered, base: 0)))
     // A wall leaving the boundary Re z = 1/2 at a slope of 1e-8 against the
@@ -731,56 +733,57 @@ private func faceLandscapes() throws -> [Landscape] {
                                     surface: tower.surface, tiles: [.identity, Affine2(a: c, b: -s, tx: tx, c: s, d: c, ty: 0)],
                                     region: .inside(walled), walls: .perimeter(walled, base: -0.5), refine: tower.refine))
     }
-    // A tower at 0.5 | 2 in a tile turned a quarter, (x, y) ↦ (5/2 - y, x),
-    // a wall across the seam at Re z = 1.5: between the two stations either
-    // side of the seam, carried back through the second tile, the wall
-    // crosses the boundary's image at a point the first tile holds, where
-    // it meets no riser.
+    // A tower at 0.5 | 2 in a tile turned a quarter, (x, y) ↦ (5/2 - y, x), a
+    // wall across the tile boundary at Re z = 1.5: between the two stations
+    // either side of the tile boundary, carried back through the second tile,
+    // the wall crosses the boundary's image at a point the first tile holds,
+    // where it meets no riser.
     let lowTower = try NativeLandscape.build(
         LandscapeRequest(expression: "1/(z - 0.5)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
                          resolution: 32, truncation: .realBands([RealBand(below: 0.5, height: 0.5)], beyond: 2)),
         refine: true)
-    let acrossSeam = BoundaryPerimeter(edges: [(0.95, 0.0), (1.95, 1.0), (1.3, 0.95), (0.6, 0.2)].indices.map { k in
+    let acrossTheBoundary = BoundaryPerimeter(edges: [(0.95, 0.0), (1.95, 1.0), (1.3, 0.95), (0.6, 0.2)].indices.map { k in
         let c = [(0.95, 0.0), (1.95, 1.0), (1.3, 0.95), (0.6, 0.2)], a = c[k], b = c[(k + 1) % c.count]
         return PerimeterEdge(start: P2(a.0, a.1), end: P2(b.0, b.1), density: 8)
     })
-    landscapes.append(Landscape("a tower banded at 0.5 | 2 in a tile turned a quarter, a wall across the seam, on f",
+    landscapes.append(Landscape("a tower banded at 0.5 | 2 in a tile turned a quarter, a wall across the tile boundary, on f",
                                 surface: lowTower.surface, tiles: [.identity, Affine2(a: 0, b: -1, tx: 2.5, c: 1, d: 0, ty: 0)],
-                                region: .inside(acrossSeam), walls: .perimeter(acrossSeam, base: -0.5), refine: lowTower.refine))
-    // Copies that meet at a seam with different tops, the second tile
-    // turned. On the grid, |f| = 3(2 Re z - 1)² + 1/5 at 1 | 2 across
-    // Re z = 1/2, the second tile (x, y) ↦ (1 + y, 1 - x): on the seam the
-    // first copy is at 2, the band over its right edge, and the second
+                                region: .inside(acrossTheBoundary), walls: .perimeter(acrossTheBoundary, base: -0.5), refine: lowTower.refine))
+    // Copies that meet at a tile boundary with different tops, the second
+    // tile turned. On the grid, |f| = 3(2 Re z - 1)² + 1/5 at 1 | 2 across Re
+    // z = 1/2, the second tile (x, y) ↦ (1 + y, 1 - x): on the tile boundary
+    // the first copy is at 2, the band over its right edge, and the second
     // steps from its graph to 1 and to 2 along its bottom edge; on a
-    // footprint across the seam, walls on it, and on the whole of both
-    // tiles. On f, the reviewer's tower, 1/(z - 1.4) at 0.5 | 1 across
+    // footprint across the tile boundary, walls on it, and on the whole of
+    // both tiles. On f, the reviewer's tower, 1/(z - 1.4) at 0.5 | 1 across
     // Re z = 1.45, the second tile (x, y) ↦ (2.5 + y, 0.5 - x), meeting the
     // first along Re z = 1.5: the first copy on its right edge at 1, the
-    // second along its bottom edge under 1/2; on a footprint across the
-    // seam and on one in the second tile alone, with a wall down the seam.
+    // second along its bottom edge under 1/2; on a footprint across the tile
+    // boundary and on one in the second tile alone, with a wall down the
+    // boundary.
     let turnedBeside = Affine2(a: 0, b: 1, tx: 1, c: -1, d: 0, ty: 1)
-    let acrossTheSeam = footprint([(0.2, 0.2), (1.8, 0.2), (1.8, 0.8), (0.2, 0.8)])
-    var seamDrops = [
-        Landscape("copies meeting with different tops, a tile turned, on a footprint across the seam, on the grid",
-                  surface: seamed, tiles: [.identity, turnedBeside], region: .inside(acrossTheSeam),
-                  walls: .perimeter(acrossTheSeam, base: 0)),
+    let acrossTheTileBoundary = footprint([(0.2, 0.2), (1.8, 0.2), (1.8, 0.8), (0.2, 0.8)])
+    var boundaryDrops = [
+        Landscape("copies meeting with different tops, a tile turned, on a footprint across the tile boundary, on the grid",
+                  surface: parabola, tiles: [.identity, turnedBeside], region: .inside(acrossTheTileBoundary),
+                  walls: .perimeter(acrossTheTileBoundary, base: 0)),
         Landscape("copies meeting with different tops, a tile turned, on the grid",
-                  surface: seamed, tiles: [.identity, turnedBeside]),
+                  surface: parabola, tiles: [.identity, turnedBeside]),
     ]
     let reviewersTower = try NativeLandscape.build(
         LandscapeRequest(expression: "1/(z - 1.4)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
                          resolution: 32, truncation: .realBands([RealBand(below: 1.45, height: 0.5)], beyond: 1)),
         refine: true)
     let turnedAt = Affine2(a: 0, b: 1, tx: 2.5, c: -1, d: 0, ty: 0.5)
-    for (name, corners) in [("across the seam", [(0.2, -0.5), (2.8, -0.5), (2.8, 0.5), (0.2, 0.5)]),
-                            ("in the second tile, a wall down the seam", [(1.5, -0.5), (2.8, -0.5), (2.8, 0.5), (1.5, 0.5)])] {
+    for (name, corners) in [("across the tile boundary", [(0.2, -0.5), (2.8, -0.5), (2.8, 0.5), (0.2, 0.5)]),
+                            ("in the second tile, a wall down the tile boundary", [(1.5, -0.5), (2.8, -0.5), (2.8, 0.5), (1.5, 0.5)])] {
         let walled = footprint(corners, density: 17)
-        seamDrops.append(Landscape("the reviewer's tower at 0.5 | 1, a tile turned, on a footprint \(name), on f",
+        boundaryDrops.append(Landscape("the reviewer's tower at 0.5 | 1, a tile turned, on a footprint \(name), on f",
                                    surface: reviewersTower.surface, tiles: [.identity, turnedAt], region: .inside(walled),
                                    walls: .perimeter(walled, base: -0.5), refine: reviewersTower.refine))
     }
-    for k in seamDrops.indices where !seamDrops[k].name.contains("in the second tile") { seamDrops[k].dropsAtASeam = true }
-    landscapes += seamDrops
+    for k in boundaryDrops.indices where !boundaryDrops[k].name.contains("in the second tile") { boundaryDrops[k].dropsAtATileBoundary = true }
+    landscapes += boundaryDrops
     let o = gamma.manifest.occluder
     landscapes.append(Landscape("Γ, banded, on f", surface: gamma.surface, tiles: o.tiles, region: o.region,
                                 walls: o.walls, refine: gamma.refine, faces: scene.geometry.faces))
@@ -1043,7 +1046,7 @@ func faceTests() {
                 switch id {
                 case .graph: "graph"
                 case .plateau: "plateaus"
-                case .riser, .seamRiser: "risers"
+                case .riser, .tileBoundaryRiser: "risers"
                 case .wall: "walls"
                 case .surface, .solid: "other"
                 }
@@ -1053,11 +1056,11 @@ func faceTests() {
                          "\(l.name): \(kinds), \(l.tiles.count) tile(s); every point of the boundary in one face, "
                             + "none off it, each face turned out, the graph's normal the facing's",
                          "\(t.wrong) in the wrong number, \(t.inward) facing in, \(t.skewed) of \(t.normals) normals off, "
-                            + "of \(t.sampled); \(t.drops) of \(t.seams) seam points with a drop: "
+                            + "of \(t.sampled); \(t.drops) of \(t.boundaryPoints) tile boundary points with a drop: "
                             + t.examples.filter { $0.key != "offTop" }.sorted { $0.key < $1.key }.map(\.value).joined(separator: "; "))
-            if l.dropsAtASeam {
-                Check.expect(t.drops > 30, "\(l.name): the solid drops at a seam, and a riser stands there",
-                             "\(t.drops) of \(t.seams) seam points with a drop")
+            if l.dropsAtATileBoundary {
+                Check.expect(t.drops > 30, "\(l.name): the solid drops at a tile boundary, and a riser stands there",
+                             "\(t.drops) of \(t.boundaryPoints) tile boundary points with a drop")
             }
             if case .perimeter = l.walls {
                 Check.expect(t.offTop == 0 && t.stations > 50,
@@ -1067,7 +1070,7 @@ func faceTests() {
         }
         // `Surface.faces` lists them in `FaceID`'s order.
         Check.expect(landscapes.allSatisfy { l in zip(l.faces, l.faces.dropFirst()).allSatisfy { $0.id <= $1.id } },
-                     "the faces come in FaceID's order: graph, plateaus, risers at band boundaries and at seams, walls")
+                     "the faces come in FaceID's order: graph, plateaus, risers at band boundaries and at tile boundaries, walls")
     }
 
     Check.suite("walls: a wall on a band boundary reads its footprint's band, and the far edge the band before it") {
@@ -1112,7 +1115,8 @@ func faceTests() {
                 for k in perimeter.edges.indices {
                     guard let drawn = l.surface.hatch(.wallEdges(edges: [k], step: 1, base: base), in: context) else { continue }
                     let top = Array(drawn[path: 0])
-                    // Two at a point where the wall crosses a seam, in order.
+                    // Two at a point where the wall crosses a tile boundary,
+                    // in order.
                     var seen: [P2<WorldSpace>: Int] = [:]
                     for c in curtain(dense, k, surface: l.surface, base: base, tiles: l.tiles).top {
                         stations += 1
@@ -1140,8 +1144,8 @@ func faceTests() {
                     let top = Array(drawn[path: 0])
                     func apart(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>) -> Bool { simd_length(a.xy.v - b.xy.v) > 1e-9 * cell }
                     let d = simd_normalize(edge.end.v - edge.start.v), size = max(abs(real.length), abs(l.surface.domain.imag.length))
-                    /// Whether the wall crosses a seam at a point.
-                    func onSeam(_ v: P3<WorldSpace>) -> Bool {
+                    /// Whether the wall crosses a tile boundary at a point.
+                    func onTileBoundary(_ v: P3<WorldSpace>) -> Bool {
                         carriedBack(v.xy.v + 1e-6 * size * d, l).back != carriedBack(v.xy.v - 1e-6 * size * d, l).back
                     }
                     for (i, v) in top.enumerated() {
@@ -1153,7 +1157,7 @@ func faceTests() {
                             wrong.append("\(v.xy.v) at \(z), not the wall's top")
                         }
                     }
-                    // Under one tile: across a seam between two, the x
+                    // Under one tile: across a tile boundary between two, the x
                     // carried back jumps.
                     for (a, c) in zip(top, top.dropFirst()) {
                         let (qa, back) = carriedBack(a.xy.v, l), qc = carriedBack(c.xy.v, l)
@@ -1167,10 +1171,10 @@ func faceTests() {
                         // wall meets a riser, at the two bands' heights.
                         guard let tile = l.tiles.firstIndex(where: { $0.inverse == back }) else { continue }
                         if !apart(a, c), boundaries.contains(where: { abs(xa - $0) <= 1e-9 * cell }) { steps[tile] += 1 }
-                        // And it steps nowhere else but at a seam, where two
-                        // copies meet.
-                        else if !apart(a, c), a.z != c.z, !onSeam(a) {
-                            wrong.append("a step at \(a.v), on no boundary in the tile under it, nor on a seam")
+                        // And it steps nowhere else but at a tile boundary,
+                        // where two copies meet.
+                        else if !apart(a, c), a.z != c.z, !onTileBoundary(a) {
+                            wrong.append("a step at \(a.v), on no band boundary in the tile under it, nor on a tile boundary")
                         }
                     }
                 }
@@ -1185,8 +1189,9 @@ func faceTests() {
             // boundary, in one plane with it: to the top of the wall that
             // leaves the boundary, each wall's leaving read through the tile
             // under the footprint beside the corner, a hair in from it and
-            // along the wall, since on a seam the corner is two tiles'. Read
-            // off the walls' own top edges, on the grid, as the corners are.
+            // along the wall, since on a tile boundary the corner is two
+            // tiles'. Read off the walls' own top edges, on the grid, as the
+            // corners are.
             guard l.refine == nil,
                   let drawn = l.surface.hatch(.wallEdges(edges: Array(perimeter.edges.indices), step: 1, base: base),
                                               in: Surface.HatchContext(perimeter: perimeter, region: .full, tiles: l.tiles))
@@ -1225,9 +1230,9 @@ func faceTests() {
                          "\(l.name): each corner's edge rises to the walls' tops there, to the leaving wall's beside a riser",
                          "\(wrong.count) of \(corners): \(wrong.prefix(3).joined(separator: "; "))")
         }
-        // On the seam where the turned tile's riser ends, the corner's edge
-        // reaches 2, the band below the riser in that tile.
-        if let l = landscapes.first(where: { $0.name.hasSuffix("a corner on the seam where its riser ends") }),
+        // On the tile boundary where the turned tile's riser ends, the
+        // corner's edge reaches 2, the band below the riser in that tile.
+        if let l = landscapes.first(where: { $0.name.hasSuffix("a corner on the tile boundary where its riser ends") }),
            case .perimeter(let perimeter, let base) = l.walls,
            let drawn = l.surface.hatch(.wallEdges(edges: Array(perimeter.edges.indices), step: 1, base: base),
                                        in: Surface.HatchContext(perimeter: perimeter, region: .full, tiles: l.tiles)) {
@@ -1286,16 +1291,16 @@ func faceTests() {
             }
         }
 
-        // A wall whose stations either side of a seam lie under different
-        // tiles, with a band boundary between them in each: a tower,
-        // 1/(z - 1.4), at 0.5 | 1 across Re z = 1.45, in two tiles, the second
-        // reflected across the right edge, x ↦ 3 - x, so the boundary's image
-        // is Re z = 1.55; a wall along Im z = -1/2 from 0.2 to 2.8 at density
-        // 4, its second station at 1.07 and its third at 1.93. On f its top
-        // edge steps at 1.45 and at 1.55, and between its vertices it is
-        // the solid's top a hair inside the footprint, read every 32nd of
-        // each chord, a chord under two tiles included.
-        let seamTower = try NativeLandscape.build(
+        // A wall whose stations either side of a tile boundary lie under
+        // different tiles, with a band boundary between them in each: a
+        // tower, 1/(z - 1.4), at 0.5 | 1 across Re z = 1.45, in two tiles,
+        // the second reflected across the right edge, x ↦ 3 - x, so the
+        // boundary's image is Re z = 1.55; a wall along Im z = -1/2 from 0.2
+        // to 2.8 at density 4, its second station at 1.07 and its third at
+        // 1.93. On f its top edge steps at 1.45 and at 1.55, and between its
+        // vertices it is the solid's top a hair inside the footprint, read
+        // every 32nd of each chord, a chord under two tiles included.
+        let straddlingTower = try NativeLandscape.build(
             LandscapeRequest(expression: "1/(z - 1.4)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
                              resolution: 32, truncation: .realBands([RealBand(below: 1.45, height: 0.5)], beyond: 1)),
             refine: true)
@@ -1303,9 +1308,9 @@ func faceTests() {
             let c = [(0.2, -0.5), (2.8, -0.5), (2.8, 0.5), (0.2, 0.5)], a = c[k], b = c[(k + 1) % c.count]
             return PerimeterEdge(start: P2(a.0, a.1), end: P2(b.0, b.1), density: 4)
         })
-        let straddling = Landscape("a tower at 0.5 | 1 in two tiles, the second reflected, a wall across the seam at density 4",
-                                   surface: seamTower.surface, tiles: [.identity, Affine2(a: -1, b: 0, tx: 3, c: 0, d: 1, ty: 0)],
-                                   region: .inside(straddled), walls: .perimeter(straddled, base: -0.5), refine: seamTower.refine)
+        let straddling = Landscape("a tower at 0.5 | 1 in two tiles, the second reflected, a wall across the tile boundary at density 4",
+                                   surface: straddlingTower.surface, tiles: [.identity, Affine2(a: -1, b: 0, tx: 3, c: 0, d: 1, ty: 0)],
+                                   region: .inside(straddled), walls: .perimeter(straddled, base: -0.5), refine: straddlingTower.refine)
         if let drawn = straddling.surface.hatch(.wallEdges(edges: [0], step: 1, base: -0.5),
                                                 in: Surface.HatchContext(perimeter: straddled, region: .full, tiles: straddling.tiles),
                                                 refine: straddling.refine), let tolerance = straddling.refine?.tolerance {
@@ -1330,14 +1335,15 @@ func faceTests() {
                          "steps at \(steps), \(off.count) of \(samples) points off, worst \(worst): \(off.prefix(3).joined(separator: "; "))")
         }
 
-        // Where a wall crosses a seam its top edge on f steps: no chord of it
-        // lies under two tiles, and where the crossing is, two vertices at
-        // one point, each the solid's top a hair along the wall on its own
-        // side, read through the tile under it. Between its vertices it is
-        // the solid's top a hair inside the footprint, read every 32nd of
-        // each chord, within four times the refiner's tolerance: the profile
-        // is subdivided where a chord's midpoint parts from it, five deep,
-        // and beside a pole a chord parts from it by more between.
+        // Where a wall crosses a tile boundary its top edge on f steps: no
+        // chord of it lies under two tiles, and where the crossing is, two
+        // vertices at one point, each the solid's top a hair along the wall
+        // on its own side, read through the tile under it. Between its
+        // vertices it is the solid's top a hair inside the footprint, read
+        // every 32nd of each chord, within four times the refiner's
+        // tolerance: the profile is subdivided where a chord's midpoint parts
+        // from it, five deep, and beside a pole a chord parts from it by more
+        // between.
         for l in landscapes where l.refine?.magnitude != nil && l.tiles.count > 1 {
             guard case .perimeter(let perimeter, let base) = l.walls, let tolerance = l.refine?.tolerance else { continue }
             let h = l.heightfield, real = l.surface.domain.real, imag = l.surface.domain.imag
@@ -1372,14 +1378,14 @@ func faceTests() {
                         let slide = max(abs(solid(a.xy.v - 2 * e * d) - before), abs(solid(a.xy.v + 2 * e * d) - after))
                         if abs(before - after) > 4 * slide + 1e-9 * max(1, abs(before)) { drops += 1 }
                         for (v, z) in [(a, before), (c, after)] where !(abs(v.z - z) <= 4 * slide + 1e-9 * max(1, abs(z))) {
-                            wrong.append("at the seam \(v.xy.v) \(v.z), the solid on its side \(z)")
+                            wrong.append("at the tile boundary \(v.xy.v) \(v.z), the solid on its side \(z)")
                         }
                     }
                 }
             }
-            Check.expect(samples > 300 && wrong.isEmpty && (!l.dropsAtASeam || drops > 0),
-                         "\(l.name): the top edge steps where a wall crosses a seam, and follows the solid between",
-                         "\(steps) steps at a seam, \(drops) down a drop, \(wrong.count) wrong of \(samples) points, worst \(worst): "
+            Check.expect(samples > 300 && wrong.isEmpty && (!l.dropsAtATileBoundary || drops > 0),
+                         "\(l.name): the top edge steps where a wall crosses a tile boundary, and follows the solid between",
+                         "\(steps) steps at a tile boundary, \(drops) down a drop, \(wrong.count) wrong of \(samples) points, worst \(worst): "
                             + wrong.prefix(3).joined(separator: "; "))
         }
 
@@ -1451,15 +1457,15 @@ func faceTests() {
                             + (stray.prefix(2) + missing.prefix(2)).joined(separator: ", "))
         }
 
-        // A riser's top at a seam is drawn only where the riser stands, at
-        // the higher top, and all of it there: tiled, every segment of the
-        // truncation edge drawn along a side of a tile's image that another
-        // tile's image meets has, at its middle, the footprint either side, a
-        // drop between the tops read a hair either side, and the higher top;
-        // and at every point of such a side with a drop, a segment passes
-        // over it at the higher top. On f the top is subdivided to the
-        // refiner's tolerance; on the grid each copy's top is linear between
-        // the vertices.
+        // A riser's top at a tile boundary is drawn only where the riser
+        // stands, at the higher top, and all of it there: tiled, every
+        // segment of the truncation edge drawn along a side of a tile's image
+        // that another tile's image meets has, at its middle, the footprint
+        // either side, a drop between the tops read a hair either side, and
+        // the higher top; and at every point of such a side with a drop, a
+        // segment passes over it at the higher top. On f the top is
+        // subdivided to the refiner's tolerance; on the grid each copy's top
+        // is linear between the vertices.
         for l in landscapes where l.tiles.count > 1 {
             guard let drawn = l.surface.hatch(.truncationEdge(tiled: true),
                                               in: Surface.HatchContext(perimeter: nil, region: l.region, tiles: l.tiles),
@@ -1478,7 +1484,7 @@ func faceTests() {
             /// The drop a point of a side stands over: the tops a hair
             /// either side, through the tile under each, where the footprint
             /// holds both and one tile holds each, two different ones; nil
-            /// where there is no seam, or no drop.
+            /// where there is no tile boundary, or no drop.
             func drop(_ w: SIMD2<Double>, _ n: SIMD2<Double>) -> (lo: Double, hi: Double)? {
                 let reads = [-1.0, 1.0].map { sign -> (z: Double, back: Affine2, slide: Double)? in
                     let g = w + sign * side * n
@@ -1530,9 +1536,9 @@ func faceTests() {
                     if !over { missing.append("\(w), to \(span.hi)") }
                 }
             }
-            Check.expect(stray.isEmpty && missing.isEmpty && (!l.dropsAtASeam || (asked > 30 && segments > 10)),
-                         "\(l.name): the truncation edge draws a riser's top at a seam where the riser stands, at the higher top, and all of it there",
-                         "\(segments) segments along a seam, \(stray.count) stray; \(missing.count) of \(asked) points with no top: "
+            Check.expect(stray.isEmpty && missing.isEmpty && (!l.dropsAtATileBoundary || (asked > 30 && segments > 10)),
+                         "\(l.name): the truncation edge draws a riser's top at a tile boundary where the riser stands, at the higher top, and all of it there",
+                         "\(segments) segments along a tile boundary, \(stray.count) stray; \(missing.count) of \(asked) points with no top: "
                             + (stray.prefix(2) + missing.prefix(2)).joined(separator: "; "))
         }
 
@@ -1617,15 +1623,16 @@ func faceTests() {
         }
     }
 
-    Check.suite("depth: the depth pass's walls step where they cross a seam, and a riser fills the drop between two copies") {
-        // The curtain of a wall that crosses a seam steps there, as its top
-        // edge does: no chord of its top lies under two tiles. And where two
-        // copies meet with different tops, the riser strip the depth pass
-        // draws (`Mesh.seamRisers`) covers the drop between the tops the
-        // depth pass draws a hair either side (`Heightfield.drawnHeight`),
-        // read at seven heights at points along each side of a tile's image
-        // that another tile's image meets; and every triangle of it stands
-        // over a drop, its centroid between the two tops. On the grid.
+    Check.suite("depth: the depth pass's walls step where they cross a tile boundary, and a riser fills the drop between two copies") {
+        // The curtain of a wall that crosses a tile boundary steps there, as
+        // its top edge does: no chord of its top lies under two tiles. And
+        // where two copies meet with different tops, the riser strip the
+        // depth pass draws (`Mesh.tileBoundaryRisers`) covers the drop
+        // between the tops the depth pass draws a hair either side
+        // (`Heightfield.drawnHeight`), read at seven heights at points along
+        // each side of a tile's image that another tile's image meets; and
+        // every triangle of it stands over a drop, its centroid between the
+        // two tops. On the grid.
         for l in try faceLandscapes() where l.tiles.count > 1 && l.refine == nil {
             let real = l.surface.domain.real, imag = l.surface.domain.imag
             let size = max(abs(real.length), abs(imag.length)), side = 1e-9 * size
@@ -1644,7 +1651,7 @@ func faceTests() {
                     }
                 }
             }
-            let mesh = Mesh.seamRisers(of: l.surface, step: 1, region: l.region, tiles: l.tiles)
+            let mesh = Mesh.tileBoundaryRisers(of: l.surface, step: 1, region: l.region, tiles: l.tiles)
             let triangles = mesh.triangles.map { t in (0..<3).map { mesh.vertices[Int(t[$0])].v } }
             /// Whether a point lies on a triangle of the strip, which is
             /// vertical: in its plane and inside it.
@@ -1705,23 +1712,24 @@ func faceTests() {
                 }
             }
             guard chords > 0 || asked > 0 || !triangles.isEmpty else { continue }
-            Check.expect(ramps.isEmpty && uncovered.isEmpty && stray.isEmpty && (!l.dropsAtASeam || (asked > 200 && triangles.count > 10)),
-                         "\(l.name): the curtain steps at a seam, and the riser strip covers each drop and nothing else",
+            Check.expect(ramps.isEmpty && uncovered.isEmpty && stray.isEmpty && (!l.dropsAtATileBoundary || (asked > 200 && triangles.count > 10)),
+                         "\(l.name): the curtain steps at a tile boundary, and the riser strip covers each drop and nothing else",
                          "\(ramps.count) of \(chords) curtain chords under two tiles, \(uncovered.count) of \(asked) points of a drop "
                             + "uncovered, \(stray.count) of \(triangles.count) triangles over no drop: "
                             + (ramps.prefix(1) + uncovered.prefix(2) + stray.prefix(2)).joined(separator: "; "))
         }
     }
 
-    Check.suite("visibility: a line of sight that passes a seam under the higher copy's top is hidden, whichever tile comes first") {
+    Check.suite("visibility: a line of sight that passes a tile boundary under the higher copy's top is hidden, whichever tile comes first") {
         // |f| = max(1/5, 2 - 20(1 - Re z)) on the unit square, steep up to 2
         // at its right edge, the second tile turned, (x, y) ↦ (1 + y, 1 - x),
         // whose bottom edge meets the first's right edge at 1/5: a riser 1.8
         // high faces the second copy. A point on the second copy a hair from
-        // the seam, its line of sight toward -Re z rising 80/3 a unit, passes
-        // the seam at 1 and is over the first copy again a column on: it is
-        // hidden, the riser in its way, with either tile listed first. A
-        // point 1.3 higher passes over the riser and is seen. On the grid.
+        // the tile boundary, its line of sight toward -Re z rising 80/3 a
+        // unit, passes the tile boundary at 1 and is over the first copy
+        // again a column on: it is hidden, the riser in its way, with either
+        // tile listed first. A point 1.3 higher passes over the riser and is
+        // seen. On the grid.
         let unit = Domain(real: Interval(lo: 0, hi: 1), imag: Interval(lo: 0, hi: 1))
         let steep = Surface(height: Grid2D(width: 21, height: 21, domain: unit,
                                            values: (0..<441).map { k in Float(max(0.2, 2 - 20 * (1 - Double(k % 21) / 20))) }),
