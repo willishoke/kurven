@@ -37,7 +37,7 @@ and Emde, *Funktionentafeln*, 1909).
 | grid | The uniform sample grid a surface or a function is evaluated on. | lattice |
 | lattice | A lattice in the mathematical sense: the period lattice of an elliptic function (`PeriodLattice`), Turing's square lattice. | |
 | seam | Where a periodic chart's rectangle is glued to itself. | also tile and chunk boundaries |
-| tile boundary | Where two tiles' copies of a landscape meet edge to edge, each at its own edge of the domain (`Surface.tileBoundaries(tiles:)`). The copies' tops can disagree there, a turned, moved or glide-reflected neighbour's, but not one reflected across the boundary, which reads the same points of the domain; where they disagree a riser stands between them. | seam, in this sense |
+| tile boundary | Where two tiles' copies of a landscape meet edge to edge, each at its own edge of the domain (`Surface.tileBoundaries(tiles:)`). The copies' tops can disagree there, a turned, translated or glide-reflected neighbour's, but not one reflected across the boundary, which reads the same points of the domain; where they disagree a riser stands between them. | seam, in this sense |
 | tubular neighbourhood | The coordinates of a point near a surface: the foot of its normal and its signed distance along it (`TubularNeighbourhood`). | enclosure |
 | normal offset | How far a surface stands off its base surface along the base's normal. | standoff |
 

@@ -426,7 +426,7 @@ public extension Surface {
     /// Each copy's top is read on the tile boundary through its own tile, at
     /// the point of the domain's edge the tile boundary point is the copy of
     /// (`tileBoundaryTop`), and the riser stands where one stands over the
-    /// other (`stands(_:over:)`): a turned, moved or glide-reflected
+    /// other (`stands(_:over:)`): a turned, translated or glide-reflected
     /// neighbour's top can, one reflected across the tile boundary never
     /// does, reading the same points of the domain. As at a band boundary,
     /// it stands where the footprint holds both sides of the tile boundary,
