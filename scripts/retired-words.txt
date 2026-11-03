@@ -39,3 +39,10 @@ PlateSpace
 PlateProjection
 PlateStyle
 SurfacePlate
+# Where two tiles' copies meet is a tile boundary; a seam is where a periodic
+# chart's rectangle is glued to itself, and the bare word cannot be told
+# apart by its spelling. These phrasings can only mean a tile boundary.
+[Ss]eam[ _-]?[Rr]isers?
+[Tt]ile[ _-]?[Ss]eams?
+[Ss]eams? between (?:two )?(?:tiles|copies)
+[Cc]op(?:y|ies) (?:meet|meeting|meets) at (?:a|the) seams?

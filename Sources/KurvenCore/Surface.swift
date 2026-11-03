@@ -236,14 +236,114 @@ public struct Surface: Sendable {
         return best ?? (p, .identity)
     }
 
+    /// A point of the domain's rectangle, or a rounding off it: taken into
+    /// it, and onto an edge within `edgeTolerance` of one. A point of a tile
+    /// boundary carried back through either tile lands a rounding either side
+    /// of the domain's edge, and the far edge reads the band before it only
+    /// on the edge itself.
+    func ontoDomain(_ q: P2<WorldSpace>) -> P2<DomainSpace> {
+        let d = domain, tolerance = edgeTolerance
+        func onto(_ v: Double, _ a: Double, _ b: Double) -> Double {
+            let (lo, hi) = (min(a, b), max(a, b))
+            let c = min(max(v, lo), hi)
+            return abs(c - lo) <= tolerance ? lo : abs(c - hi) <= tolerance ? hi : c
+        }
+        return P2(onto(q.x, d.real.lo, d.real.hi), onto(q.y, d.imag.lo, d.imag.hi))
+    }
+
+    /// Where two tiles' copies of the domain meet edge to edge: the stretch
+    /// of space the two images share along a side of each, with the copies
+    /// on either side of it. Each pair of invertible tiles meets along one
+    /// at most, their images being convex and apart; tiles whose images
+    /// overlap, or touch at a corner, meet along none.
+    struct TileBoundary: Sendable {
+        /// The two tiles, by their place in the list, the lesser first.
+        let first: Int, second: Int
+        /// Where the stretch begins and ends: from its end with the lesser x,
+        /// or y where they agree, so the tile boundary is the same whichever
+        /// tile is listed first.
+        let start: P2<WorldSpace>, end: P2<WorldSpace>
+
+        var length: Double { simd_length(end.v - start.v) }
+        /// The point `s` along the tile boundary from its start, keeping a
+        /// tile boundary's x or y where it runs along an axis.
+        func point(_ s: Double) -> P2<WorldSpace> {
+            let t = s / length
+            return P2(start.x == end.x ? start.x : start.x + (end.x - start.x) * t,
+                      start.y == end.y ? start.y : start.y + (end.y - start.y) * t)
+        }
+        /// The unit normal to the left of the tile boundary's direction.
+        var normal: SIMD2<Double> {
+            let d = (end.v - start.v) / length
+            return SIMD2(-d.y, d.x)
+        }
+    }
+
+    /// The tile boundaries between `tiles`' copies of the domain, in the
+    /// order of their pairs of tiles. A copy's side and another's lie along
+    /// one line within `edgeTolerance`, overlapping by more than that, with
+    /// the copies' centres either side.
+    func tileBoundaries(tiles: [Affine2]) -> [TileBoundary] {
+        guard tiles.count > 1 else { return [] }
+        let d = domain
+        let (xlo, xhi) = (min(d.real.lo, d.real.hi), max(d.real.lo, d.real.hi))
+        let (ylo, yhi) = (min(d.imag.lo, d.imag.hi), max(d.imag.lo, d.imag.hi))
+        let corners = [SIMD2(xlo, ylo), SIMD2(xhi, ylo), SIMD2(xhi, yhi), SIMD2(xlo, yhi)]
+        let centre = 0.5 * SIMD2(xlo + xhi, ylo + yhi)
+        func image(_ tile: Affine2, _ p: SIMD2<Double>) -> SIMD2<Double> { tile(P3<WorldSpace>(p.x, p.y, 0)).xy.v }
+        let tolerance = edgeTolerance
+        var out: [TileBoundary] = []
+        for i in tiles.indices where tiles[i].inverse != nil {
+            for j in tiles.indices where j > i && tiles[j].inverse != nil {
+                let ci = image(tiles[i], centre), cj = image(tiles[j], centre)
+                sides: for e in 0..<4 {
+                    let a = image(tiles[i], corners[e]), b = image(tiles[i], corners[(e + 1) % 4])
+                    let length = simd_length(b - a)
+                    guard length > tolerance else { continue }
+                    let u = (b - a) / length, n = SIMD2(-u.y, u.x)
+                    guard simd_dot(ci - a, n) * simd_dot(cj - a, n) < 0 else { continue }
+                    for f in 0..<4 {
+                        let p = image(tiles[j], corners[f]), q = image(tiles[j], corners[(f + 1) % 4])
+                        guard abs(simd_dot(p - a, n)) <= tolerance, abs(simd_dot(q - a, n)) <= tolerance else { continue }
+                        let sp = simd_dot(p - a, u), sq = simd_dot(q - a, u)
+                        let lo = max(0, min(sp, sq)), hi = min(length, max(sp, sq))
+                        guard hi - lo > tolerance else { continue }
+                        // From the end with the lesser x, or y, whichever
+                        // tile's side it is read along.
+                        let ends = [lo == 0 ? a : a + u * lo, hi == length ? b : a + u * hi]
+                            .sorted { ($0.x, $0.y) < ($1.x, $1.y) }
+                        out.append(TileBoundary(first: i, second: j, start: P2(ends[0]), end: P2(ends[1])))
+                        break sides
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    /// The top of the copy on a tile over a point of a tile boundary, `back`
+    /// the tile's inverse: min(|f|, h(x)) at the point of the domain's edge
+    /// the tile boundary point is the copy of, `magnitude` reading |f| there.
+    func tileBoundaryTop(_ w: P2<WorldSpace>, back: Affine2, magnitude: (P2<DomainSpace>) -> Double) -> Double {
+        let q = ontoDomain(back(P3(w.x, w.y, 0)).xy)
+        return min(magnitude(q), truncationHeight(atX: q.x))
+    }
+
+    /// Whether a copy's top over a tile boundary stands over another's: by
+    /// more than a billionth of the lower, a rounding of the point two tiles
+    /// carry back, as copies reflected across the tile boundary do.
+    static func stands(_ higher: Double, over lower: Double) -> Bool {
+        higher > lower + 1e-9 * max(1, abs(lower))
+    }
+
     /// The height a wall rises to at its foot `p`, `t` of the way along its
     /// edge from `a` to `b`, `inward` its normal into the footprint: the
     /// truncated surface over the foot, read through the tile under it, as
     /// `height(at:tiles:)` reads it, but with the truncation's one-sided
     /// limit from the footprint's side (`Surface.footprintSide`).
     func wallHeight(at p: P2<DomainSpace>, t: Double, from a: P2<WorldSpace>, to b: P2<WorldSpace>,
-                    inward: SIMD2<Double>, tiles: [Affine2]) -> Double {
-        let foot = wallFoot(at: p, t: t, along: b.v - a.v, inward: inward, tiles: tiles)
+                    inward: SIMD2<Double>, tiles: [Affine2], through: Affine2? = nil) -> Double {
+        let foot = wallFoot(at: p, t: t, along: b.v - a.v, inward: inward, tiles: tiles, through: through)
         return min(magnitude(at: foot.point), foot.truncationHeight)
     }
 
@@ -255,18 +355,22 @@ public struct Surface: Sendable {
     /// footprint's side (`Surface.footprintSide`). Every reader of a wall's
     /// top reads it so: the curtain, the top edge, the corners and the wall
     /// face.
+    ///
+    /// A foot where the wall crosses a tile boundary stands on two copies,
+    /// and the top edge reads it through each (`through`): carried back by
+    /// that tile, onto the domain's edge.
     func wallFoot(at p: P2<DomainSpace>, t: Double, along: SIMD2<Double>, inward: SIMD2<Double>,
-                  tiles: [Affine2]) -> (point: P2<DomainSpace>, truncationHeight: Double) {
-        let (q, back) = wallTile(at: p, t: t, along: along, inward: inward, tiles: tiles)
+                  tiles: [Affine2], through: Affine2? = nil) -> (point: P2<DomainSpace>, truncationHeight: Double) {
+        let (q, back) = through.map { back in (ontoDomain(back(P3(p.x, p.y, 0)).xy), back) }
+            ?? wallTile(at: p, t: t, along: along, inward: inward, tiles: tiles)
         let side = Surface.footprintSide(at: t, along: along, inward: inward, back: back)
         return (q, truncationHeight(atX: wallFootX(q.x, at: t, along: along, back: back), from: side))
     }
 
     /// The tile a wall's foot `p` is read through, and the foot carried back
-    /// through it: the tile under the footprint beside the foot, a
-    /// billionth of a cell in along `inward`, and at an end of the wall along
-    /// the wall as well. A wall on a seam between two tiles stands on both;
-    /// it bounds the copy its footprint is in, and the tile under the foot
+    /// through it: the tile under the footprint beside the foot, a billionth
+    /// of a cell in along `inward`, and at an end of the wall along the wall
+    /// as well. A wall on a tile boundary stands on both tiles; it bounds the copy its footprint is in, and the tile under the foot
     /// itself would be whichever comes first.
     func wallTile(at p: P2<DomainSpace>, t: Double, along: SIMD2<Double>, inward: SIMD2<Double>,
                   tiles: [Affine2]) -> (point: P2<DomainSpace>, back: Affine2) {

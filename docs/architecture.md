@@ -20,8 +20,9 @@ here are defined in the [glossary](glossary.md).
 
 **Faces.** A landscape's boundary is the graph, where z = |f(x + iy)|; the
 plateaus, where |f| reaches the truncation height and the surface is cut
-flat; the risers, where a banded truncation steps between two heights; and
-the walls along the window's edges. A torus is one face. A polyhedron's
+flat; the risers, where the top steps, between two bands' heights or at a
+tile boundary where two copies' tops disagree; and the walls along the
+window's edges. A torus is one face. A polyhedron's
 faces are flat, possibly not convex and possibly with holes, and each is
 cut into convex pieces for visibility and hatching (see
 [solids.md](solids.md)). Each is a `Face` (`SceneGeometry.faces`): a map
@@ -34,7 +35,8 @@ loops hold it. Together they tile the solid's
 boundary, its manifold, but for a landscape's sides where it has no walls
 or walls given as a mesh, which describe no face. A tiled landscape's graph
 is one face with a copy on every tile, each turned by its tile and cut to
-the footprint where it stands.
+the footprint where it stands; where two copies meet with different tops,
+a riser stands at the tile boundary between them.
 
 **Curves.** Most curves are level sets of a field on a face: contours of
 |f| and arg f on the graph, coordinate curves on a torus, hatch lines on a

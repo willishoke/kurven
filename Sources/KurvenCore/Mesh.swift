@@ -40,16 +40,21 @@ public extension Mesh<WorldSpace> {
     /// A vertical ruled strip along a boundary polyline, from `base` up to the
     /// surface -- `occluder.wall_curtain`.
     ///
-    /// Derived walls sit at the top edge the *grid* says, where the Python plate's
-    /// dumped walls sit at the top edge the analytic function says. For a bundle
-    /// that ships `Walls.mesh` this is unused; for `Walls.perimeter` it is the
-    /// definition, and the difference between the two is the grid's
-    /// interpolation error, which is a thing to measure rather than assume.
+    /// Derived walls sit at the top edge the *grid* says, where the Python
+    /// plate's dumped walls sit at the top edge the analytic function says.
+    /// For a bundle that ships `Walls.mesh` this is unused; for
+    /// `Walls.perimeter` it is the definition, and the difference between the
+    /// two is the grid's interpolation error, which is a thing to measure
+    /// rather than assume.
     ///
     /// The curtain stands on the footprint's side of its edge: `inward` is
     /// the edge's normal into the footprint, and where the edge stands on a
     /// band boundary, or ends on one, its top is the band's on that side
-    /// (`Surface.wallHeight`), not the band the boundary starts.
+    /// (`Surface.wallHeight`), not the band the boundary starts. Where the
+    /// edge crosses a tile boundary between two samples and the copies' tops
+    /// there differ, it has two more there, one read through the tile on
+    /// each side (`Surface.tileBoundaryCrossings`), so its top steps down the
+    /// riser there rather than ramping across.
     static func wallCurtain(from a: P2<WorldSpace>, to b: P2<WorldSpace>, inward: SIMD2<Double>,
                             samples: Int, surface: Surface, base: Double,
                             tiles: [Affine2] = [.identity]) -> Mesh<WorldSpace> {
@@ -57,12 +62,31 @@ public extension Mesh<WorldSpace> {
         var top: [P3<WorldSpace>] = []
         var bottom: [P3<WorldSpace>] = []
         top.reserveCapacity(samples); bottom.reserveCapacity(samples)
-        for i in 0..<samples {
-            let t = Double(i) / Double(samples - 1)
+        let edge = PerimeterEdge(start: a, end: b, density: samples)
+        func station(_ t: Double, through back: Affine2? = nil) {
             let p = Surface.point(from: a, to: b, at: t)
-            top.append(P3(p.x, p.y, surface.wallHeight(at: p, t: t, from: a, to: b, inward: inward, tiles: tiles)))
+            top.append(P3(p.x, p.y, surface.wallHeight(at: p, t: t, from: a, to: b, inward: inward, tiles: tiles,
+                                                       through: back)))
             bottom.append(P3(p.x, p.y, base))
         }
+        for i in 0..<samples {
+            let t = Double(i) / Double(samples - 1)
+            if i > 0 {
+                let previous = Double(i - 1) / Double(samples - 1)
+                for crossing in surface.tileBoundaryCrossings(of: edge, from: previous, to: t, inward: inward, tiles: tiles) {
+                    let p = Surface.point(from: a, to: b, at: crossing.t)
+                    func top(_ back: Affine2) -> Double {
+                        surface.wallHeight(at: p, t: crossing.t, from: a, to: b, inward: inward, tiles: tiles, through: back)
+                    }
+                    let (near, far) = (top(crossing.near), top(crossing.far))
+                    guard Surface.stands(near, over: far) || Surface.stands(far, over: near) else { continue }
+                    if crossing.t != previous { station(crossing.t, through: crossing.near) }
+                    if crossing.t != t { station(crossing.t, through: crossing.far) }
+                }
+            }
+            station(t)
+        }
+        let samples = top.count
         let n = Int32(samples)
         var tris: [SIMD3<Int32>] = []
         tris.reserveCapacity(2 * (samples - 1))
@@ -81,6 +105,45 @@ public extension Mesh<WorldSpace> {
             return wallCurtain(from: edge.start, to: edge.end, inward: perimeter.inward(k),
                                samples: edge.density, surface: surface, base: base, tiles: tiles)
         })
+    }
+
+    /// The risers at the tile boundaries where two copies meet with different
+    /// tops (`Surface.tileBoundaryRisers(tiles:region:refine:)`), as the
+    /// depth pass draws the copies either side: each copy's top along the
+    /// tile boundary the height its rasterized grid has there
+    /// (`Surface.drawnHeight(at:step:)`), every `step`-th sample, and between
+    /// the two a vertical strip, a pair of triangles between each two stops
+    /// where the riser stands (`Surface.tileBoundaryStretches`). The
+    /// heightfield's instances end at the tile boundary, each at its own top,
+    /// and without the strip the drop between them is a gap the depth pass
+    /// sees through.
+    static func tileBoundaryRisers(of surface: Surface, step: Int, region: Region, tiles: [Affine2]) -> Mesh<WorldSpace> {
+        var vertices: [P3<WorldSpace>] = []
+        var triangles: [SIMD3<Int32>] = []
+        for boundary in surface.tileBoundaries(tiles: tiles) {
+            guard let first = tiles[boundary.first].inverse, let second = tiles[boundary.second].inverse else { continue }
+            let backs = [first, second]
+            func tops(_ w: P2<WorldSpace>) -> [Double] {
+                backs.map { surface.drawnHeight(at: surface.ontoDomain($0(P3(w.x, w.y, 0)).xy), step: step) }
+            }
+            let stretches = surface.tileBoundaryStretches(boundary, backs: backs, region: region, step: step, tops: tops) { q in
+                let drawn = surface.drawnSurface(at: q, step: step)
+                return drawn.interpolated - drawn.truncationHeight
+            }
+            for stretch in stretches {
+                for (a, c) in zip(stretch, stretch.dropFirst()) {
+                    let base = Int32(vertices.count)
+                    for stop in [a, c] {
+                        let w = stop.at, z = tops(stop.read)
+                        vertices.append(P3(w.x, w.y, z.min() ?? .nan))
+                        vertices.append(P3(w.x, w.y, z.max() ?? .nan))
+                    }
+                    triangles.append(SIMD3(base, base + 2, base + 1))
+                    triangles.append(SIMD3(base + 1, base + 2, base + 3))
+                }
+            }
+        }
+        return Mesh(vertices: vertices, triangles: triangles)
     }
 
     /// The truncated surface where a grid cell straddles the truncation: the

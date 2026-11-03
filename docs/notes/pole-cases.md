@@ -28,7 +28,7 @@ each is a picture the pipeline can draw both ways.
   triangulation of the contour vertices, which triangulates the convex hull
   and so spanned the elliptic plate's cutout with phantom triangles that hid
   the front face. A meshed heightfield with wall curtains replaced it, and
-  `MAX` blending tolerates the tile seams, so the cutout is handled by
+  `MAX` blending tolerates the tile boundaries, so the cutout is handled by
   omission (`26f3e05`).
 - **Ink on a steep flank flickers.** The preview tests a line's depth where it
   crosses a pixel against the surface's depth at the pixel's centre, up to

@@ -14,6 +14,11 @@ public enum FaceID: Sendable, Hashable, Comparable {
     /// The riser where a banded truncation steps, at the end of band `band`
     /// toward greater Re z.
     case riser(band: Int)
+    /// The riser at the tile boundary between the copies on two tiles, by
+    /// their place in the tiles: where the copy on `tile` stands over the
+    /// copy on `facing`, and faces it
+    /// (`Surface.tileBoundaryRisers(tiles:region:refine:)`).
+    case tileBoundaryRiser(tile: Int, facing: Int)
     /// The wall along one edge of the walls' perimeter.
     case wall(edge: Int)
     /// A parametric surface's one face.
@@ -34,11 +39,13 @@ public enum FaceID: Sendable, Hashable, Comparable {
 /// of the parameter plane it covers is its *trimmed domain*, bounded by its
 /// trim loops (`trimLoops`), and each copy's `contains` is the domain's point
 /// membership classification (Requicha 1980). A landscape's faces are its
-/// graph, a plateau per band of the truncation, a riser where the truncation
-/// steps between two bands, and a wall along each edge of the walls' perimeter
-/// (`Surface.faces(tiles:region:walls:refine:)`); a parametric surface is
-/// one face (`ParametricSurface.face`); a polyhedron's faces are its loops,
-/// flat (`Solid.face(_:)`). `SceneGeometry.faces` lists a scene's.
+/// graph, a plateau per band of the truncation, a riser wherever the drawn
+/// top drops inside the solid, where the truncation steps between two bands
+/// or two copies meet at a tile boundary with different tops, and a wall
+/// along each edge of the walls' perimeter
+/// (`Surface.faces(tiles:region:walls:refine:)`); a parametric surface is one
+/// face (`ParametricSurface.face`); a polyhedron's faces are its loops, flat
+/// (`Solid.face(_:)`). `SceneGeometry.faces` lists a scene's.
 ///
 /// A face is a view onto the grids and the solids it is read from, and
 /// costs nothing to make: it holds closures, not samples.
@@ -55,20 +62,24 @@ public struct Face: Sendable {
     /// it (`Copy.place`).
     public let map: @Sendable (P2<ParamSpace>) -> SurfaceJet
     /// Where the face is in space. One copy, on the identity, but for a tiled
-    /// landscape's graph, plateaus and risers, which have one per tile, as
+    /// landscape's graph, plateaus and band boundaries' risers, which have
+    /// one per tile, as
     /// the curves on them do (`Occluder.tiles`): contoured once, then
     /// replicated.
     public let copies: [Copy]
     private let loops: Computed<[[P2<ParamSpace>]]>?
 
-    /// The closed curves in the parameter plane that bound the face's
-    /// trimmed domain even-odd, before a copy is cut to the footprint, each
-    /// ending where it begins: where a contour on the face is cut, and which
-    /// side of each is kept (`contours(of:_:on:)`). A polyhedron face's are
-    /// its loops. The graph's are the domain's edge and the plateaus' loops,
-    /// the truncation edge among them (`Surface.graphTrimLoops(refine:)`),
-    /// placed on f with a refiner, the first time they are asked, and shared
-    /// by every copy.
+    /// The closed curves in the parameter plane that bound the face's trimmed
+    /// domain even-odd, before a copy is cut to the footprint, each ending
+    /// where it begins: where a contour on the face is cut, and which side of
+    /// each is kept (`contours(of:_:on:)`). A polyhedron face's are its
+    /// loops. The graph's are the domain's edge and the plateaus' loops, the
+    /// truncation edge among them (`Surface.graphTrimLoops(refine:)`), placed
+    /// on f with a refiner, the first time they are asked, and shared by
+    /// every copy. A copy ends at a tile boundary, which is the domain's
+    /// edge, and the loops are closed along it as a band's are across a
+    /// riser: the top of a riser at a tile boundary lies on them, carried
+    /// back by the higher copy's tile.
     ///
     /// The graph's bound it only even-odd: a stretch along the domain's edge
     /// or a band boundary can be passed twice, bounding nothing, and the
@@ -277,9 +288,10 @@ public extension Heightfield {
 
 public extension Surface {
     /// The faces of the landscape: the graph, a plateau per band of the
-    /// truncation, a riser wherever the truncation steps between two bands,
-    /// and a wall along each edge of the walls' perimeter, in that order.
-    /// Nothing for a grid too small to span its domain.
+    /// truncation, a riser wherever the truncation steps between two bands, a
+    /// riser either way up at each tile boundary where two copies meet, and a
+    /// wall along each edge of the walls' perimeter, in that order. Nothing
+    /// for a grid too small to span its domain.
     ///
     /// The graph, the plateaus and the risers lie over the domain and are
     /// copied by the tiles: contoured once, then replicated, as the curves on
@@ -298,6 +310,7 @@ public extension Surface {
         guard let graph = graph(tiles: tiles, region: region, refine: refine) else { return [] }
         return [graph] + plateaus(tiles: tiles, region: region, refine: refine)
             + risers(tiles: tiles, region: region, refine: refine)
+            + tileBoundaryRisers(tiles: tiles, region: region, refine: refine)
             + self.walls(walls, tiles: tiles, refine: refine)
     }
 
@@ -406,6 +419,62 @@ public extension Surface {
         }
     }
 
+    /// A riser at each tile boundary where two copies meet
+    /// (`tileBoundaries(tiles:)`), one each way up: the vertical face there,
+    /// its parameters the distance along the tile boundary and the height,
+    /// from the lower copy's top up to the higher's, facing the lower copy.
+    /// Each copy's top is read on the tile boundary through its own tile, at
+    /// the point of the domain's edge the tile boundary point is the copy of
+    /// (`tileBoundaryTop`), and the riser stands where one stands over the
+    /// other (`stands(_:over:)`): a turned, translated or glide-reflected
+    /// neighbour's top can, one reflected across the tile boundary never
+    /// does, reading the same points of the domain. As at a band boundary,
+    /// it stands where the footprint holds both sides of the tile boundary,
+    /// read a hair either side of it; where it holds one, a wall on the tile
+    /// boundary bounds the copy its footprint is in (`wallTile`) and rises
+    /// to that copy's top.
+    /// The parameter rectangle runs from 0, under any |f|, to the highest
+    /// truncation, or the grid's highest sample without one.
+    func tileBoundaryRisers(tiles: [Affine2] = [.identity], region: Region = .full,
+                    refine: ContourRefine? = nil) -> [Face] {
+        let magnitude = faceMagnitude(refine)
+        let surface = self
+        let side = 1e-9 * cell
+        let top = truncation.highest.isFinite ? truncation.highest : highestSample
+        return tileBoundaries(tiles: tiles).flatMap { boundary -> [Face] in
+            guard let firstBack = tiles[boundary.first].inverse, let secondBack = tiles[boundary.second].inverse else { return [] }
+            let length = boundary.length, n = boundary.normal
+            let s = ParamAxis(Interval(lo: 0, hi: length), periodic: false,
+                              samples: max(Int((length / surface.cell).rounded(.up)) + 1, 2))
+            let along = (boundary.end.v - boundary.start.v) / length
+            // Which side of the tile boundary the second copy is on: its tile's
+            // image of the domain's centre.
+            let d = domain
+            let centre = tiles[boundary.second](P3(0.5 * (d.real.lo + d.real.hi), 0.5 * (d.imag.lo + d.imag.hi), 0)).xy.v
+            let secondLeft = simd_dot(centre - boundary.start.v, n) > 0
+            return [(boundary.first, firstBack, boundary.second, secondBack, !secondLeft),
+                    (boundary.second, secondBack, boundary.first, firstBack, secondLeft)].map { higher, up, lower, down, lowerRight in
+                Face(
+                    id: .tileBoundaryRiser(tile: higher, facing: lower),
+                    domain: (s, ParamAxis(Interval(lo: 0, hi: max(top, 0)), periodic: false, samples: 2)),
+                    contains: { p in
+                        guard s.covers(p.x) else { return false }
+                        let w = boundary.point(p.x)
+                        guard region.contains(P2(w.v - side * n)), region.contains(P2(w.v + side * n)) else { return false }
+                        let high = surface.tileBoundaryTop(w, back: up, magnitude: magnitude)
+                        let low = surface.tileBoundaryTop(w, back: down, magnitude: magnitude)
+                        return Surface.stands(high, over: low) && p.y >= low && p.y <= high
+                    },
+                    map: { p in
+                        let w = boundary.point(p.x)
+                        return SurfaceJet(position: SIMD3(w.x, w.y, p.y), du: SIMD3(along.x, along.y, 0), dv: SIMD3(0, 0, 1))
+                    },
+                    // du × dv is the right of the tile boundary's direction.
+                    outward: lowerRight ? 1 : -1)
+            }
+        }.sorted { $0.id < $1.id }
+    }
+
     /// A wall along each edge of the perimeter: its parameters the distance
     /// along the edge and the height, from the base up to the top edge, the
     /// truncated surface over the edge read through the tile under it, as
@@ -472,7 +541,7 @@ extension Surface {
     /// |f| at a point of the domain, untruncated, as the faces read it: f's
     /// own with a refiner, the grid's without, and over any truncation
     /// where it is not a number.
-    fileprivate func faceMagnitude(_ refine: ContourRefine?) -> @Sendable (P2<DomainSpace>) -> Double {
+    func faceMagnitude(_ refine: ContourRefine?) -> @Sendable (P2<DomainSpace>) -> Double {
         let grid = self
         let f = refine?.magnitude
         return { p in
@@ -482,7 +551,7 @@ extension Surface {
     }
 
     /// The greatest finite sample of the height grid, or 0.
-    fileprivate var highestSample: Double {
+    var highestSample: Double {
         Double(height.values.lazy.filter(\.isFinite).max() ?? 0)
     }
 }
