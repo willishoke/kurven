@@ -328,12 +328,15 @@ private func tiling(_ l: Landscape) -> Tally {
                         return !pointInPolygon(P2(w + h), corners) && pointInPolygon(P2(w - h), corners)
                     }
                 }
-                // Nothing over the top, nor over the solid in the footprint
+                // Nothing over the top, nor over the solid inside the footprint
                 // within a few times the distance a face is matched to a point
-                // at (`parameter(of:on:_:)`): a riser stands a hair inside a
-                // wall that leaves its boundary at a slant.
+                // at (`parameter(of:on:_:)`), read along the inward normal, and
+                // at an end along the wall too, never on the wall's line: a
+                // riser stands a hair inside a wall that leaves its boundary at
+                // a slant, and a read on the line of a wall on a boundary is
+                // the band across it.
                 let match = 4e-9 * max(1, simd_length(v.v))
-                let near = [SIMD2(1.0, 0), SIMD2(-1, 0), SIMD2(0, 1), SIMD2(0, -1)].map { v.xy.v + match * $0 }
+                let near = ([inward] + (atStart ? [inward + d] : atEnd ? [inward - d] : [])).map { v.xy.v + match * $0 }
                     .filter { l.region.contains(P2($0)) }.map { heightfield.surfaceHeight(at: P2($0)) }.filter(\.isFinite)
                 let over = max(atFoot.max() ?? top, cornerTop[v.xy] ?? top, near.max() ?? top)
                 expect(P3(v.x, v.y, over + 1e-3 * max(1, abs(over)) + 0.1 * (over - base)), 0)
