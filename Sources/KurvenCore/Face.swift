@@ -14,6 +14,10 @@ public enum FaceID: Sendable, Hashable, Comparable {
     /// The riser where a banded truncation steps, at the end of band `band`
     /// toward greater Re z.
     case riser(band: Int)
+    /// The riser at the seam where the copies on two tiles meet, by their
+    /// place in the tiles, where the copy on `higher` stands over the copy
+    /// on `lower`, facing it (`Surface.seamRisers(tiles:region:refine:)`).
+    case seamRiser(higher: Int, lower: Int)
     /// The wall along one edge of the walls' perimeter.
     case wall(edge: Int)
     /// A parametric surface's one face.
@@ -34,8 +38,10 @@ public enum FaceID: Sendable, Hashable, Comparable {
 /// of the parameter plane it covers is its *trimmed domain*, bounded by its
 /// trim loops (`trimLoops`), and each copy's `contains` is the domain's point
 /// membership classification (Requicha 1980). A landscape's faces are its
-/// graph, a plateau per band of the truncation, a riser where the truncation
-/// steps between two bands, and a wall along each edge of the walls' perimeter
+/// graph, a plateau per band of the truncation, a riser wherever the drawn top
+/// drops inside the solid, where the truncation steps between two bands or
+/// two copies meet at a seam with different tops, and a wall along each edge
+/// of the walls' perimeter
 /// (`Surface.faces(tiles:region:walls:refine:)`); a parametric surface is
 /// one face (`ParametricSurface.face`); a polyhedron's faces are its loops,
 /// flat (`Solid.face(_:)`). `SceneGeometry.faces` lists a scene's.
@@ -55,7 +61,8 @@ public struct Face: Sendable {
     /// it (`Copy.place`).
     public let map: @Sendable (P2<ParamSpace>) -> SurfaceJet
     /// Where the face is in space. One copy, on the identity, but for a tiled
-    /// landscape's graph, plateaus and risers, which have one per tile, as
+    /// landscape's graph, plateaus and band boundaries' risers, which have
+    /// one per tile, as
     /// the curves on them do (`Occluder.tiles`): contoured once, then
     /// replicated.
     public let copies: [Copy]
@@ -68,7 +75,10 @@ public struct Face: Sendable {
     /// its loops. The graph's are the domain's edge and the plateaus' loops,
     /// the truncation edge among them (`Surface.graphTrimLoops(refine:)`),
     /// placed on f with a refiner, the first time they are asked, and shared
-    /// by every copy.
+    /// by every copy. A copy ends at a seam, which is the domain's edge,
+    /// and the loops are closed along it as a band's are across a riser: the
+    /// top of a riser at a seam lies on them, carried back by the higher
+    /// copy's tile.
     ///
     /// The graph's bound it only even-odd: a stretch along the domain's edge
     /// or a band boundary can be passed twice, bounding nothing, and the
@@ -278,8 +288,9 @@ public extension Heightfield {
 public extension Surface {
     /// The faces of the landscape: the graph, a plateau per band of the
     /// truncation, a riser wherever the truncation steps between two bands,
-    /// and a wall along each edge of the walls' perimeter, in that order.
-    /// Nothing for a grid too small to span its domain.
+    /// a riser either way up at each seam where two copies meet, and a wall
+    /// along each edge of the walls' perimeter, in that order. Nothing for a
+    /// grid too small to span its domain.
     ///
     /// The graph, the plateaus and the risers lie over the domain and are
     /// copied by the tiles: contoured once, then replicated, as the curves on
@@ -298,6 +309,7 @@ public extension Surface {
         guard let graph = graph(tiles: tiles, region: region, refine: refine) else { return [] }
         return [graph] + plateaus(tiles: tiles, region: region, refine: refine)
             + risers(tiles: tiles, region: region, refine: refine)
+            + seamRisers(tiles: tiles, region: region, refine: refine)
             + self.walls(walls, tiles: tiles, refine: refine)
     }
 
@@ -406,6 +418,59 @@ public extension Surface {
         }
     }
 
+    /// A riser at each seam where two copies meet (`seams(tiles:)`), one
+    /// each way up: the vertical face there, its parameters the distance
+    /// along the seam and the height, from the lower copy's top up to the
+    /// higher's, facing the lower copy. Each copy's top is read on the seam
+    /// through its own tile, at the point of the domain's edge the seam
+    /// point is the copy of (`seamTop`), and the riser stands where one
+    /// stands over the other (`stands(_:over:)`): a turned neighbour's top
+    /// can, a reflection's never does. As at a band boundary, it stands
+    /// where the footprint holds both sides of the seam, read a hair either
+    /// side of it; where it holds one, a wall on the seam bounds the copy its
+    /// footprint is in (`wallTile`) and rises to that copy's top. The
+    /// parameter rectangle runs from 0, under any |f|, to the highest
+    /// truncation, or the grid's highest sample without one.
+    func seamRisers(tiles: [Affine2] = [.identity], region: Region = .full,
+                    refine: ContourRefine? = nil) -> [Face] {
+        let magnitude = faceMagnitude(refine)
+        let surface = self
+        let side = 1e-9 * cell
+        let top = truncation.highest.isFinite ? truncation.highest : highestSample
+        return seams(tiles: tiles).flatMap { seam -> [Face] in
+            guard let firstBack = tiles[seam.first].inverse, let secondBack = tiles[seam.second].inverse else { return [] }
+            let length = seam.length, n = seam.normal
+            let s = ParamAxis(Interval(lo: 0, hi: length), periodic: false,
+                              samples: max(Int((length / surface.cell).rounded(.up)) + 1, 2))
+            let along = (seam.end.v - seam.start.v) / length
+            // Which side of the seam the second copy is on: its tile's
+            // image of the domain's centre.
+            let d = domain
+            let centre = tiles[seam.second](P3(0.5 * (d.real.lo + d.real.hi), 0.5 * (d.imag.lo + d.imag.hi), 0)).xy.v
+            let secondLeft = simd_dot(centre - seam.start.v, n) > 0
+            return [(seam.first, firstBack, seam.second, secondBack, !secondLeft),
+                    (seam.second, secondBack, seam.first, firstBack, secondLeft)].map { higher, up, lower, down, lowerRight in
+                Face(
+                    id: .seamRiser(higher: higher, lower: lower),
+                    domain: (s, ParamAxis(Interval(lo: 0, hi: max(top, 0)), periodic: false, samples: 2)),
+                    contains: { p in
+                        guard s.covers(p.x) else { return false }
+                        let w = seam.point(p.x)
+                        guard region.contains(P2(w.v - side * n)), region.contains(P2(w.v + side * n)) else { return false }
+                        let high = surface.seamTop(w, back: up, magnitude: magnitude)
+                        let low = surface.seamTop(w, back: down, magnitude: magnitude)
+                        return Surface.stands(high, over: low) && p.y >= low && p.y <= high
+                    },
+                    map: { p in
+                        let w = seam.point(p.x)
+                        return SurfaceJet(position: SIMD3(w.x, w.y, p.y), du: SIMD3(along.x, along.y, 0), dv: SIMD3(0, 0, 1))
+                    },
+                    // du × dv is the right of the seam's direction.
+                    outward: lowerRight ? 1 : -1)
+            }
+        }.sorted { $0.id < $1.id }
+    }
+
     /// A wall along each edge of the perimeter: its parameters the distance
     /// along the edge and the height, from the base up to the top edge, the
     /// truncated surface over the edge read through the tile under it, as
@@ -472,7 +537,7 @@ extension Surface {
     /// |f| at a point of the domain, untruncated, as the faces read it: f's
     /// own with a refiner, the grid's without, and over any truncation
     /// where it is not a number.
-    fileprivate func faceMagnitude(_ refine: ContourRefine?) -> @Sendable (P2<DomainSpace>) -> Double {
+    func faceMagnitude(_ refine: ContourRefine?) -> @Sendable (P2<DomainSpace>) -> Double {
         let grid = self
         let f = refine?.magnitude
         return { p in
@@ -482,7 +547,7 @@ extension Surface {
     }
 
     /// The greatest finite sample of the height grid, or 0.
-    fileprivate var highestSample: Double {
+    var highestSample: Double {
         Double(height.values.lazy.filter(\.isFinite).max() ?? 0)
     }
 }

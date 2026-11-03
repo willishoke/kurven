@@ -822,7 +822,8 @@ struct GridTraversal: Sendable {
         // the depth tolerance's reach, which is where occlusion starts to count.
         var ts: [Double] = []
         var strictlyInside = false
-        for grid in grids {
+        var passages: [(ta: Double, tb: Double, back: Affine2)] = []
+        for (grid, back) in zip(grids, backs) {
             let u0 = grid.linear * pxy + grid.offset
             let du = grid.linear * dxy
             var ta = 0.0, tb = tMax
@@ -836,6 +837,7 @@ struct GridTraversal: Sendable {
                 ta = max(ta, min(t1, t2)); tb = min(tb, max(t1, t2))
             }
             guard !misses, ta <= tb, tb.isFinite else { continue }
+            passages.append((ta, tb, back))
             if u0.x > 1e-9, u0.x < grid.extent.x - 1e-9,
                u0.y > 1e-9, u0.y < grid.extent.y - 1e-9 { strictlyInside = true }
             ts.append(ta); ts.append(tb)
@@ -860,6 +862,23 @@ struct GridTraversal: Sendable {
                 }
             }
             if reach.isFinite, reach > ta, reach < tb { ts.append(reach) }
+        }
+        // Where the line leaves one copy for another across a seam and the
+        // copies' tops there differ, a sample just inside each, read through
+        // its own tile: the sample on the seam itself reads whichever tile
+        // comes first, and between the two the solid drops down a riser, so
+        // a line passing the seam under the higher top is in it.
+        for a in passages {
+            for b in passages where abs(a.tb - b.ta) <= tEps && b.tb > b.ta {
+                let q = pxy + a.tb * dxy, s = heightfield.surface
+                let tops = [a.back, b.back].map { back -> Double in
+                    let drawn = surface(at: s.ontoDomain(back(P3(q.x, q.y, 0)).xy))
+                    return min(drawn.interpolated, drawn.truncationHeight)
+                }
+                guard Surface.stands(tops[0], over: tops[1]) || Surface.stands(tops[1], over: tops[0]) else { continue }
+                if a.tb - 2 * tEps > a.ta { ts.append(a.tb - 2 * tEps) }
+                if b.ta + 2 * tEps < b.tb { ts.append(b.ta + 2 * tEps) }
+            }
         }
         guard !ts.isEmpty else { return true }
         ts.sort()
