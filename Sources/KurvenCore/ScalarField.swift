@@ -97,6 +97,19 @@ public extension Contour {
             }
             contoured = Array(zip(levels, paths))
         }
+        return clipped(contoured, over: rectangle, trimLoops: trimLoops, contains: contains, cuts: cuts)
+    }
+
+    /// Level sets already found, clipped to a trimmed domain as
+    /// `levels(of:_:over:trimLoops:contains:cuts:)` clips them: so a family
+    /// contoured once can be clipped to each copy of a face, a copy's
+    /// footprint being where the copy stands.
+    static func clipped(_ contoured: [(level: Double, paths: [[P2<ParamSpace>]])],
+                        over rectangle: (u: ParamAxis, v: ParamAxis),
+                        trimLoops: [[P2<ParamSpace>]]? = nil,
+                        contains: (@Sendable (P2<ParamSpace>) -> Bool)? = nil,
+                        cuts: [[P2<ParamSpace>]] = [])
+        -> [(level: Double, paths: [[P2<ParamSpace>]])] {
         guard trimLoops != nil || contains != nil else { return contoured }
         let (u, v) = rectangle
         let crossed = TrimIndex((trimLoops ?? []) + cuts, periods: (u.period, v.period))

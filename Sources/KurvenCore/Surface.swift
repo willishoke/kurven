@@ -138,9 +138,13 @@ public struct Surface: Sendable {
     /// The outward normal of the truncated surface over a world point of a
     /// tiled landscape: `(-∂h/∂x, -∂h/∂y, 1)`, not normalized, by central
     /// differences a grid spacing wide, the height read through whichever
-    /// tile the point is in. Differences in world coordinates, so a tile's
-    /// reflection is already in them; on a plateau the differences vanish
-    /// and the normal is up.
+    /// tile the point is in. The differences run along the grid's own axes
+    /// as the tile under the point carries them into place, a cell of each
+    /// axis's own length, and the slope they give is carried back into
+    /// world coordinates: so a copy's normal is the copy of the normal, a
+    /// reflected copy's turned with it, and a turned copy's read off the
+    /// grid's chords, not a cell of one axis's length along the other. On a
+    /// plateau the differences vanish and the normal is up.
     ///
     /// With the function (`refine`), the slope is f's own, read by
     /// differences a step small against the cell and large against
@@ -165,12 +169,16 @@ public struct Surface: Sendable {
             let hy = (h(p.x, p.y + step) - h(p.x, p.y - step)) / (2 * step)
             if hx.isFinite, hy.isFinite { return SIMD3(-hx, -hy, 1) }
         }
-        func h(_ x: Double, _ y: Double) -> Double {
-            height(at: P2<DomainSpace>(x, y), tiles: tiles)
+        func h(_ q: SIMD2<Double>) -> Double {
+            height(at: P2<DomainSpace>(q.x, q.y), tiles: tiles)
         }
-        let hx = (h(p.x + dx, p.y) - h(p.x - dx, p.y)) / (2 * dx)
-        let hy = (h(p.x, p.y + dy) - h(p.x, p.y - dy)) / (2 * dy)
-        return SIMD3(-hx, -hy, 1)
+        // The grid's axes in place, and the slope along each.
+        let back = tile(under: P2(p.x, p.y), tiles: tiles).back
+        let forward = back.inverse ?? .identity
+        let u = SIMD2(forward.a, forward.c) * dx, v = SIMD2(forward.b, forward.d) * dy
+        let hu = (h(p.v + u) - h(p.v - u)) / (2 * dx)
+        let hv = (h(p.v + v) - h(p.v - v)) / (2 * dy)
+        return SIMD3(-(back.a * hu + back.c * hv), -(back.b * hu + back.d * hv), 1)
     }
 
     /// The normal of the graph over `p`: f's own slope, untruncated, read as
@@ -235,14 +243,45 @@ public struct Surface: Sendable {
     /// limit from the footprint's side (`Surface.footprintSide`).
     func wallHeight(at p: P2<DomainSpace>, t: Double, from a: P2<WorldSpace>, to b: P2<WorldSpace>,
                     inward: SIMD2<Double>, tiles: [Affine2]) -> Double {
-        let (q, back) = tile(under: p, tiles: tiles)
-        let side = Surface.footprintSide(at: t, along: b.v - a.v, inward: inward, back: back)
-        return min(magnitude(at: q), truncationHeight(atX: wallFootX(q.x, at: t, along: b.v - a.v, back: back), from: side))
+        let foot = wallFoot(at: p, t: t, along: b.v - a.v, inward: inward, tiles: tiles)
+        return min(magnitude(at: foot.point), foot.truncationHeight)
+    }
+
+    /// A wall's foot `p`, `t` of the way along its edge, `along` the edge's
+    /// direction and `inward` its normal into the footprint, as the domain
+    /// reads it: the point of the domain the foot is the image of, carried
+    /// back through the tile its footprint is in (`wallTile`), and the
+    /// truncation over it, read at its x there (`wallFootX`) from the
+    /// footprint's side (`Surface.footprintSide`). Every reader of a wall's
+    /// top reads it so: the curtain, the top edge, the corners and the wall
+    /// face.
+    func wallFoot(at p: P2<DomainSpace>, t: Double, along: SIMD2<Double>, inward: SIMD2<Double>,
+                  tiles: [Affine2]) -> (point: P2<DomainSpace>, truncationHeight: Double) {
+        let (q, back) = wallTile(at: p, t: t, along: along, inward: inward, tiles: tiles)
+        let side = Surface.footprintSide(at: t, along: along, inward: inward, back: back)
+        return (q, truncationHeight(atX: wallFootX(q.x, at: t, along: along, back: back), from: side))
+    }
+
+    /// The tile a wall's foot `p` is read through, and the foot carried back
+    /// through it: the tile under the footprint beside the foot, a
+    /// billionth of a cell in along `inward`, and at an end of the wall along
+    /// the wall as well. A wall on a seam between two tiles stands on both;
+    /// it bounds the copy its footprint is in, and the tile under the foot
+    /// itself would be whichever comes first.
+    func wallTile(at p: P2<DomainSpace>, t: Double, along: SIMD2<Double>, inward: SIMD2<Double>,
+                  tiles: [Affine2]) -> (point: P2<DomainSpace>, back: Affine2) {
+        guard tiles.count > 1 else { return (p, .identity) }
+        let length = simd_length(along)
+        let into = length > 0 ? along / length * (t == 0 ? 1 : t == 1 ? -1 : 0) : .zero
+        let back = tile(under: P2(p.v + edgeTolerance * (inward + into)), tiles: tiles).back
+        let q = back(P3(p.x, p.y, 0))
+        return (P2(q.x, q.y), back)
     }
 
     /// Re z of a wall's foot carried back into the domain by `back`, taken
     /// onto a band boundary within `edgeTolerance` of it where the wall
-    /// stands on a line of Re z or ends: carried back through a tile, a foot
+    /// runs parallel to the imaginary axis, as one standing on a boundary
+    /// does, or ends: carried back through a tile, a foot
     /// on the boundary's image lands a rounding either side of it (the wall
     /// at 4.6 under x ↦ 5 - x comes back at 0.40000000000000036), and would
     /// read the band on whichever side it fell before its footprint's side
@@ -250,18 +289,28 @@ public struct Surface: Sendable {
     /// boundary keeps its x, so the wall steps where it crosses.
     func wallFootX(_ x: Double, at t: Double, along: SIMD2<Double>, back: Affine2) -> Double {
         guard case .realBands(let bands, _) = truncation,
-              t == 0 || t == 1 || back.a * along.x + back.b * along.y == 0 else { return x }
+              t == 0 || t == 1 || Surface.isParallelToImaginaryAxis(along, back: back) else { return x }
         let tolerance = edgeTolerance
         return bands.lazy.map(\.below).first { abs(x - $0) <= tolerance } ?? x
+    }
+
+    /// Whether an edge running along `along` is parallel to the imaginary
+    /// axis once carried back into the domain by `back`: the carried
+    /// direction's part along Re z is a rounding of its length. Not exactly
+    /// zero: a tile written from cos and sin turns a quarter with cos(π/2) =
+    /// 6.1e-17, and a wall on a boundary's image there carries back
+    /// crossing it at that slope.
+    static func isParallelToImaginaryAxis(_ along: SIMD2<Double>, back: Affine2) -> Bool {
+        let carried = SIMD2(back.a * along.x + back.b * along.y, back.c * along.x + back.d * along.y)
+        return abs(carried.x) <= 1e-12 * simd_length(carried)
     }
 
     /// The side of Re z a wall's foot reads the truncation from, at `t` of
     /// the way along its edge, `along` the edge's direction and `inward` its
     /// normal into the footprint, both carried back into the domain by
-    /// `back`: the side the footprint is on. Along a wall that stands on a
-    /// line of Re z, as one on a band boundary does, that is the way `inward`
-    /// points; at an end of a wall that leaves the line, the way the wall
-    /// goes, so its top runs on to its end in its own band. Elsewhere, on a
+    /// `back`: the side the footprint is on. Along a wall parallel to the
+    /// imaginary axis, as one on a band boundary is, that is the way `inward`
+    /// points; at an end of a wall that is not, the way the wall goes, so its top runs on to its end in its own band. Elsewhere, on a
     /// wall that crosses a boundary, the right, as `Truncation.height(atX:)`
     /// reads it, so the wall steps there. The sides differ only on a
     /// boundary.
@@ -269,7 +318,7 @@ public struct Surface: Sendable {
                               back: Affine2) -> Truncation.Side {
         func carried(_ d: SIMD2<Double>) -> Double { back.a * d.x + back.b * d.y }
         let across = carried(along)
-        let x = across == 0 ? carried(inward) : t == 0 ? across : t == 1 ? -across : 0
+        let x = isParallelToImaginaryAxis(along, back: back) ? carried(inward) : t == 0 ? across : t == 1 ? -across : 0
         return x < 0 ? .left : .right
     }
 
@@ -480,7 +529,8 @@ public extension Surface {
     /// (`parameterRectangle`).
     /// Not over its trimmed domain: the restriction says which part of the
     /// domain a layer keeps, and a run is carried to the truncation edge by
-    /// `truncationCrossing`, as below. A phase level of ±π is the branch cut,
+    /// `truncationCrossing`, as below. A layer kept to the footprint is cut
+    /// to it exactly, a tiled layer's copy on each tile where it lands. A phase level of ±π is the branch cut,
     /// where arg f jumps, and the grid has no contour at it. With a refiner
     /// it is drawn once, after the other levels, as one line of curves the
     /// way the Jahnke-Emde plates draw it.
@@ -514,64 +564,90 @@ public extension Surface {
         // field of its own and a second `Contour.levels` call.
         let contoured = Contour.levels(of: scalar, tag.levels(levels), over: rectangle)
 
-        var paths: [[P3<WorldSpace>]] = []
-        for (level, placed) in contoured {
-            for line in placed.map({ $0.map { P2<DomainSpace>($0.v) } }) {
-                // Lifted onto f where the function is at hand: a phase line
-                // lifted to the grid's height stands a chord's error off
-                // the surface the rings, the folds and the top edge are drawn
-                // on, and the test hides it there or shows it floating.
-                var lifted: [P3<WorldSpace>]
-                if policy != .level, let magnitude = refine?.magnitude {
-                    lifted = line.map { p in
-                        let u = magnitude(p)
-                        guard u.isFinite else { return lift([p], policy: policy, level: level)[0] }
-                        return P3(p.x, p.y, policy == .surface ? min(u, truncationHeight(atX: p.x)) : u)
-                    }
-                } else {
-                    lifted = lift(line, policy: policy, level: level)
-                }
-                // A run the refiner carried to a zero of f ends at the zero's
-                // own height. The grid has no sample there: its chord over a
-                // pit's floor bottoms out at the nearest sample's height, a
-                // cell's rise above the zero, and lifting the end to the
-                // chord would hang the fan of phase lines that far above the
-                // top edge that f draws under them. Only an end that *is* a zero,
-                // to rounding against the grid's own height, so a vertex the
-                // grid places a hair under f is left on the drawn surface.
-                if policy != .level, let magnitude = refine?.magnitude, !lifted.isEmpty {
-                    for i in Set([0, lifted.count - 1]) {
-                        let u = magnitude(line[i])
-                        if u.isFinite, u <= 1e-6 * lifted[i].z {
-                            lifted[i] = P3(lifted[i].x, lifted[i].y, u)
+        /// The runs of the contours a restriction keeps, lifted: a path cut
+        /// where a vertex leaves the kept region, and carried to the
+        /// truncation edge where it leaves over the truncation.
+        func kept(_ contoured: [(level: Double, paths: [[P2<ParamSpace>]])], region: Region) -> [[P3<WorldSpace>]] {
+            var paths: [[P3<WorldSpace>]] = []
+            for (level, placed) in contoured {
+                for line in placed.map({ $0.map { P2<DomainSpace>($0.v) } }) {
+                    // Lifted onto f where the function is at hand: a phase line
+                    // lifted to the grid's height stands a chord's error off
+                    // the surface the rings, the folds and the top edge are drawn
+                    // on, and the test hides it there or shows it floating.
+                    var lifted: [P3<WorldSpace>]
+                    if policy != .level, let magnitude = refine?.magnitude {
+                        lifted = line.map { p in
+                            let u = magnitude(p)
+                            guard u.isFinite else { return lift([p], policy: policy, level: level)[0] }
+                            return P3(p.x, p.y, policy == .surface ? min(u, truncationHeight(atX: p.x)) : u)
                         }
-                    }
-                }
-                var run: [P3<WorldSpace>] = []
-                var previous: (vertex: P3<WorldSpace>, admitted: Bool)?
-                for v in lifted {
-                    let admitted = admits(v, restriction, region: region)
-                    if admitted {
-                        if carry, let p = previous, !p.admitted,
-                           let truncationEdge = truncationCrossing(from: v, to: p.vertex),
-                           admits(truncationEdge, restriction, region: region) {
-                            run.append(truncationEdge)
-                        }
-                        run.append(v)
                     } else {
-                        if carry, let p = previous, p.admitted,
-                           let truncationEdge = truncationCrossing(from: p.vertex, to: v),
-                           admits(truncationEdge, restriction, region: region) {
-                            run.append(truncationEdge)
-                        }
-                        if run.count >= 2 { paths.append(run) }
-                        run = []
+                        lifted = lift(line, policy: policy, level: level)
                     }
-                    previous = (v, admitted)
+                    // A run the refiner carried to a zero of f ends at the zero's
+                    // own height. The grid has no sample there: its chord over a
+                    // pit's floor bottoms out at the nearest sample's height, a
+                    // cell's rise above the zero, and lifting the end to the
+                    // chord would hang the fan of phase lines that far above the
+                    // top edge that f draws under them. Only an end that *is* a zero,
+                    // to rounding against the grid's own height, so a vertex the
+                    // grid places a hair under f is left on the drawn surface.
+                    if policy != .level, let magnitude = refine?.magnitude, !lifted.isEmpty {
+                        for i in Set([0, lifted.count - 1]) {
+                            let u = magnitude(line[i])
+                            if u.isFinite, u <= 1e-6 * lifted[i].z {
+                                lifted[i] = P3(lifted[i].x, lifted[i].y, u)
+                            }
+                        }
+                    }
+                    var run: [P3<WorldSpace>] = []
+                    var previous: (vertex: P3<WorldSpace>, admitted: Bool)?
+                    for v in lifted {
+                        let admitted = admits(v, restriction, region: region)
+                        if admitted {
+                            if carry, let p = previous, !p.admitted,
+                               let truncationEdge = truncationCrossing(from: v, to: p.vertex),
+                               admits(truncationEdge, restriction, region: region) {
+                                run.append(truncationEdge)
+                            }
+                            run.append(v)
+                        } else {
+                            if carry, let p = previous, p.admitted,
+                               let truncationEdge = truncationCrossing(from: p.vertex, to: v),
+                               admits(truncationEdge, restriction, region: region) {
+                                run.append(truncationEdge)
+                            }
+                            if run.count >= 2 { paths.append(run) }
+                            run = []
+                        }
+                        previous = (v, admitted)
+                    }
+                    if run.count >= 2 { paths.append(run) }
                 }
-                if run.count >= 2 { paths.append(run) }
             }
+            return paths
         }
+
+        // The footprint is where a copy stands in space, so each copy, on
+        // each tile or in place, is clipped to it there, exactly, as a
+        // face's copy is (`Face.contours(of:_:on:)`): cut where the
+        // footprint's perimeter, carried back through the tile, crosses a
+        // contour, and kept where the footprint holds the copy's point. What
+        // else the restriction asks is read on the domain, where the copy
+        // came from: a band of Re z or Im z is the function's, and the
+        // truncation is read at the point's own x through the tile under it,
+        // which is the domain's.
+        if restriction.requiresFootprint, case .inside = region {
+            return PolylineSet(paths: (tiled ? tiles : [.identity]).flatMap { tile -> [[P3<WorldSpace>]] in
+                guard let footprint = Surface.footprint(region, on: tile) else { return [] }
+                let clipped = Contour.clipped(contoured, over: rectangle, contains: footprint.contains,
+                                              cuts: footprint.perimeter)
+                let paths = kept(clipped, region: .full)
+                return tiled ? paths.map { $0.map { tile($0) } } : paths
+            })
+        }
+        let paths = kept(contoured, region: region)
         guard tiled else { return PolylineSet(paths: paths) }
         // Replicated by the same maps the occluder instances the heightfield
         // with, so a tiled contour cannot drift from the tile it lies on.

@@ -66,7 +66,7 @@ public struct Face: Sendable {
     /// ending where it begins: where a contour on the face is cut, and which
     /// side of each is kept (`contours(of:_:on:)`). A polyhedron face's are
     /// its loops. The graph's are the domain's edge and the plateaus' loops,
-    /// the truncation edge among them (`Surface.graphTrimLoops(tiles:refine:)`),
+    /// the truncation edge among them (`Surface.graphTrimLoops(refine:)`),
     /// placed on f with a refiner, the first time they are asked, and shared
     /// by every copy.
     ///
@@ -313,12 +313,13 @@ public extension Surface {
     /// The graph, where z = |f| under the truncation: over the parameter
     /// rectangle, its trimmed domain where |f| is under the truncation
     /// height, in the footprint. Its trim loops are the domain's edge and the
-    /// plateaus' loops (`graphTrimLoops(tiles:refine:)`), each copy's with
+    /// plateaus' loops (`graphTrimLoops(refine:)`), each copy's with
     /// the footprint's perimeter carried back through its tile. Nil when the
     /// grid is too small to span its domain. Its derivatives are the slope
-    /// the graph's normal is read from (`graphNormal(at:tiles:refine:)`), so
-    /// `du × dv` is the normal the facing reads: f's own, untruncated, with a
-    /// refiner; without one the grid's chords, truncated.
+    /// the graph's normal is read from (`graphNormal(at:tiles:refine:)`), on
+    /// the face's own domain, before a copy moves it, so `du × dv` is the
+    /// normal the facing reads: f's own, untruncated, with a refiner;
+    /// without one the grid's chords, truncated.
     func graph(tiles: [Affine2] = [.identity], region: Region = .full,
                refine: ContourRefine? = nil) -> Face? {
         guard let rectangle = parameterRectangle else { return nil }
@@ -327,23 +328,15 @@ public extension Surface {
         return Face(
             id: .graph, domain: rectangle,
             map: { p in
-                let n = surface.graphNormal(at: P2(p.x, p.y), tiles: tiles, refine: refine)
+                let n = surface.graphNormal(at: P2(p.x, p.y), tiles: [.identity], refine: refine)
                 return SurfaceJet(position: SIMD3(p.x, p.y, magnitude(P2(p.x, p.y))),
                                   du: SIMD3(1, 0, -n.x), dv: SIMD3(0, 1, -n.y))
             },
             outward: 1, tiles: tiles,
             trimLoops: {
-                surface.graphTrimLoops(tiles: tiles, refine: refine).loops.map { $0.map { P2<ParamSpace>($0.v) } }
+                surface.graphTrimLoops(refine: refine).loops.map { $0.map { P2<ParamSpace>($0.v) } }
             },
-            footprint: { tile in
-                guard case .inside(let perimeter) = region, let back = tile.inverse else { return nil }
-                let corners = perimeter.edges.map { e -> P2<ParamSpace> in
-                    let q = back(P3(e.start.x, e.start.y, 0))
-                    return P2(q.x, q.y)
-                }
-                return (corners.isEmpty ? [] : [corners + [corners[0]]],
-                        { p in region.contains(tile(P3(p.x, p.y, 0)).xy) })
-            },
+            footprint: { tile in Surface.footprint(region, on: tile) },
             contains: { p, tile in
                 rectangle.u.covers(p.x) && rectangle.v.covers(p.y)
                     && region.contains(tile(P3(p.x, p.y, 0)).xy)
@@ -444,11 +437,8 @@ public extension Surface {
                 domain: (s, ParamAxis(Interval(lo: base, hi: max(top, base)), periodic: false, samples: 2)),
                 contains: { p in
                     guard s.covers(p.x), p.y >= base else { return false }
-                    let (q, back) = grid.tile(under: foot(p.x), tiles: tiles)
-                    let t = p.x / length
-                    let side = Surface.footprintSide(at: t, along: along, inward: inward, back: back)
-                    return p.y <= min(magnitude(q), grid.truncationHeight(atX: grid.wallFootX(q.x, at: t, along: along, back: back),
-                                                                          from: side))
+                    let top = grid.wallFoot(at: foot(p.x), t: p.x / length, along: along, inward: inward, tiles: tiles)
+                    return p.y <= min(magnitude(top.point), top.truncationHeight)
                 },
                 map: { p in
                     let q = foot(p.x)
@@ -461,6 +451,24 @@ public extension Surface {
 }
 
 extension Surface {
+    /// The footprint where a copy on `tile` stands, in the parameter plane:
+    /// its perimeter carried back through the tile, closed, and whether it
+    /// holds the point of space a point of the plane lands on. Nil where
+    /// there is no footprint. A tile with no inverse carries no perimeter
+    /// back, and the footprint is asked a point at a time.
+    static func footprint(_ region: Region, on tile: Affine2)
+        -> (perimeter: [[P2<ParamSpace>]], contains: @Sendable (P2<ParamSpace>) -> Bool)? {
+        guard case .inside(let perimeter) = region else { return nil }
+        let corners = tile.inverse.map { back in
+            perimeter.edges.map { e -> P2<ParamSpace> in
+                let q = back(P3(e.start.x, e.start.y, 0))
+                return P2(q.x, q.y)
+            }
+        } ?? []
+        return (corners.isEmpty ? [] : [corners + [corners[0]]],
+                { p in region.contains(tile(P3(p.x, p.y, 0)).xy) })
+    }
+
     /// |f| at a point of the domain, untruncated, as the faces read it: f's
     /// own with a refiner, the grid's without, and over any truncation
     /// where it is not a number.

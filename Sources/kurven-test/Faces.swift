@@ -57,6 +57,24 @@ private func outwardNormal(_ face: Face, _ copy: Face.Copy, _ p: P2<ParamSpace>)
     copy.place(face.map(p)).normal * (copy.outward ?? 0)
 }
 
+/// The tile under a world point as the drawing finds it: the one that
+/// carries it back nearest the domain, inside it where any does, and the
+/// point carried back (`Surface.tile(under:tiles:)`).
+private func carriedBack(_ w: SIMD2<Double>, _ l: Landscape) -> (q: SIMD2<Double>, back: Affine2) {
+    guard l.tiles.count > 1 else { return (w, .identity) }
+    let real = l.surface.domain.real, imag = l.surface.domain.imag
+    var best: (q: SIMD2<Double>, back: Affine2) = (w, .identity), nearest = Double.infinity
+    for tile in l.tiles {
+        guard let back = tile.inverse else { continue }
+        let q = back(P3(w.x, w.y, 0)).xy.v
+        let d = max(min(real.lo, real.hi) - q.x, 0) + max(q.x - max(real.lo, real.hi), 0)
+            + max(min(imag.lo, imag.hi) - q.y, 0) + max(q.y - max(imag.lo, imag.hi), 0)
+        if d < nearest { nearest = d; best = (q, back) }
+        if d == 0 { break }
+    }
+    return best
+}
+
 /// A landscape as the faces are built from it, and as the drawing reads it.
 private struct Landscape {
     let name: String
@@ -83,7 +101,7 @@ private struct Landscape {
 /// number of faces, those whose face turns inward, those on the graph whose
 /// normal is not the facing's, and the first failure of each kind.
 private struct Tally {
-    var sampled = 0, wrong = 0, inward = 0, skewed = 0, stations = 0, offTop = 0
+    var sampled = 0, wrong = 0, inward = 0, normals = 0, skewed = 0, stations = 0, offTop = 0
     var examples: [String: String] = [:]
     mutating func fail(_ kind: String, _ what: String) { if examples[kind] == nil { examples[kind] = what } }
 }
@@ -155,18 +173,22 @@ private func tiling(_ l: Landscape) -> Tally {
                 let onCrease = abs(m - h) <= 1e-9 * max(1, abs(h))
                 expect(P3(ground.x, ground.y, z), held ? 1 : 0, slack: onCrease ? 1 : 0) { face, n in
                     guard n.z > 0 else { return false }
-                    // The facing's differences reach a cell out, and where
-                    // they reach ground two tiles hold they read the first,
-                    // which need not be this copy's.
-                    let reach = [(cell.x, 0.0), (-cell.x, 0), (0, cell.y), (0, -cell.y)]
-                    // Through a turned tile the facing's differences run
-                    // along the grid's other axis, a cell of the other
-                    // length, and read another chord; nothing here is about
-                    // that, so the turned layouts leave the normal out.
-                    let turned = l.tiles.contains { $0.a == 0 }
-                    if face.id == .graph, !turned, reach.allSatisfy({ cover(P3(ground.x + $0.0, ground.y + $0.1, 0)) <= 1 }) {
+                    // The facing's differences reach a cell out along the
+                    // grid's axes as the tile turns them, and where they
+                    // reach ground another tile holds, or is nearest, they
+                    // read that one, across a seam the copies need not meet
+                    // smoothly at.
+                    let reach = [(tile.a * cell.x, tile.c * cell.x), (-tile.a * cell.x, -tile.c * cell.x),
+                                 (tile.b * cell.y, tile.d * cell.y), (-tile.b * cell.y, -tile.d * cell.y)]
+                    if face.id == .graph, reach.allSatisfy({ r in
+                        let w = P3<WorldSpace>(ground.x + r.0, ground.y + r.1, 0)
+                        return cover(w) <= 1 && carriedBack(w.xy.v, l).back == tile.inverse
+                    }) {
+                        t.normals += 1
                         let facing = onF ? heightfield.graphNormal(at: ground.xy) : heightfield.normal(at: ground.xy)
-                        let off = simd_length(n - facing) / simd_length(facing)
+                        // Directions: a copy's du × dv is the normal scaled
+                        // by its tile's determinant.
+                        let off = simd_length(simd_normalize(n) - simd_normalize(facing))
                         if !(off <= 1e-9) {
                             t.skewed += 1
                             t.fail("skewed", "the graph's normal at \(ground.v) is \(n), the facing's \(facing)")
@@ -239,25 +261,45 @@ private func tiling(_ l: Landscape) -> Tally {
                 let top = v.z
                 guard top.isFinite, top > base else { continue }
                 let atStart = simd_length(v.xy.v - edge.start.v) < 1e-12, atEnd = simd_length(v.xy.v - edge.end.v) < 1e-12
-                for k in 0..<7 {
-                    let z = base + (top - base) * (Double(k) + 0.5) / 7
-                    expect(P3(v.x, v.y, z), 1, slack: atStart || atEnd ? 1 : 0) { face, n in
-                        guard case .wall = face.id else { return true }
+                // Where the wall crosses a band boundary on f its top steps:
+                // two vertices at one point, each at its own band's height.
+                // Between the two the wall stands on the boundary's line, a
+                // crease with the riser where there is one, and is read either
+                // side of the line, by a rounding.
+                let atFoot = stations.filter { simd_length($0.xy.v - v.xy.v) <= 1e-9 * size }.map(\.z)
+                let lower = atFoot.min() ?? top
+                for j in 0..<7 {
+                    let z = base + (top - base) * (Double(j) + 0.5) / 7
+                    expect(P3(v.x, v.y, z), 1, slack: atStart || atEnd || z > lower ? 1 : 0) { face, n in
+                        // At a corner, the other wall there is asked from its
+                        // own stations.
+                        guard case .wall(let e) = face.id, e == k || !(atStart || atEnd) else { return true }
+                        // Asked a little way in from a corner, where either
+                        // side of the wall may be the other wall's.
+                        let w = v.xy.v + (atStart ? d : atEnd ? -d : .zero) * (10 * eps)
                         let h = simd_normalize(SIMD2(n.x, n.y)) * eps
-                        return !pointInPolygon(P2(v.x + h.x, v.y + h.y), corners)
-                            && pointInPolygon(P2(v.x - h.x, v.y - h.y), corners)
+                        return !pointInPolygon(P2(w + h), corners) && pointInPolygon(P2(w - h), corners)
                     }
                 }
-                let over = max(top, cornerTop[v.xy] ?? top)
+                let over = max(atFoot.max() ?? top, cornerTop[v.xy] ?? top)
                 expect(P3(v.x, v.y, over + 1e-3 * max(1, abs(over)) + 0.1 * (over - base)), 0)
                 expect(P3(v.x, v.y, base - 0.1 * (top - base)), 0)
                 t.stations += 1
-                let toward = inward + (atStart ? d : atEnd ? -d : .zero)
-                let solid = heightfield.surfaceHeight(at: P2(v.xy.v + side * toward))
-                let slide = abs(heightfield.surfaceHeight(at: P2(v.xy.v + 2 * side * toward)) - solid)
-                if solid.isFinite, !(abs(top - solid) <= 4 * slide + 1e-9 * max(1, abs(solid))) {
+                // Where it steps, the solid's top either side along the wall,
+                // on its line: the boundary crosses it at a slant, and a step
+                // in as well can land both reads on one side.
+                let towards = atFoot.count == 1 ? [inward + (atStart ? d : atEnd ? -d : .zero)] : [d, -d]
+                let reads = towards.map { toward -> (solid: Double, slide: Double) in
+                    let solid = heightfield.surfaceHeight(at: P2(v.xy.v + side * toward))
+                    return (solid, abs(heightfield.surfaceHeight(at: P2(v.xy.v + 2 * side * toward)) - solid))
+                }
+                // Not where the wall crosses a seam, which two copies need
+                // not meet smoothly at: a vertex there is read through either.
+                let crossesSeam = carriedBack(v.xy.v + 1e-6 * size * d, l).back != carriedBack(v.xy.v - 1e-6 * size * d, l).back
+                if reads.allSatisfy(\.solid.isFinite), !crossesSeam,
+                   !reads.contains(where: { abs(top - $0.solid) <= 4 * $0.slide + 1e-9 * max(1, abs($0.solid)) }) {
                     t.offTop += 1
-                    t.fail("offTop", "wall \(k)'s top at \(v.xy.v) is \(top), the solid's beside it \(solid)")
+                    t.fail("offTop", "wall \(k)'s top at \(v.xy.v) is \(top), the solid's beside it \(reads.map(\.solid))")
                 }
             }
         }
@@ -427,17 +469,46 @@ private func faceLandscapes() throws -> [Landscape] {
     // side of it.
     let reflected = Affine2(a: -1, b: 0, tx: 5, c: 0, d: 1, ty: 0)
     let turned = Affine2(a: 0, b: -1, tx: 10, c: 1, d: 0, ty: 0.3)
+    // The same two written from an angle, as a manifest that turns a tile
+    // by one would write them: cos(π/2) is 6.1e-17, not 0, and sin(π)
+    // 1.2e-16, so a wall on the boundary's image carries back a rounding off
+    // standing on it.
+    let reflectedByAngle = Affine2(a: cos(.pi), b: sin(.pi), tx: 5, c: sin(.pi), d: -cos(.pi), ty: 0)
+    let turnedByAngle = Affine2(a: cos(.pi / 2), b: -sin(.pi / 2), tx: 10, c: sin(.pi / 2), d: cos(.pi / 2), ty: 0.3)
     for (name, tile, corners) in [
         ("reflected, the footprint on the higher band's side", reflected, [(4.6, -1.0), (5.9, -1.0), (5.9, 1.5), (4.6, 1.5)]),
         ("reflected, the footprint on the lower band's side", reflected, [(3.0, -1.0), (4.6, -1.0), (4.6, 1.5), (3.0, 1.5)]),
         ("turned, the footprint on the higher band's side", turned, [(8.6, -0.5), (10.9, -0.5), (10.9, 0.7), (8.6, 0.7)]),
         ("turned, the footprint on the lower band's side", turned, [(8.6, 0.7), (10.9, 0.7), (10.9, 2.7), (8.6, 2.7)]),
+        ("reflected by an angle, the footprint on the higher band's side", reflectedByAngle,
+         [(4.6, -1.0), (5.9, -1.0), (5.9, 1.5), (4.6, 1.5)]),
+        ("reflected by an angle, the footprint on the lower band's side", reflectedByAngle,
+         [(3.0, -1.0), (4.6, -1.0), (4.6, 1.5), (3.0, 1.5)]),
+        ("turned by an angle, the footprint on the higher band's side", turnedByAngle,
+         [(8.6, -0.5), (10.9, -0.5), (10.9, 0.7), (8.6, 0.7)]),
+        ("turned by an angle, the footprint on the lower band's side", turnedByAngle,
+         [(8.6, 0.7), (10.9, 0.7), (10.9, 2.7), (8.6, 2.7)]),
     ] {
         let walled = footprint(corners)
         landscapes.append(Landscape("the hatch fixture, low bands, a wall on a boundary's image in a tile \(name)",
                                     surface: low, tiles: [.identity, tile], region: .inside(walled),
                                     walls: .perimeter(walled, base: -0.5)))
     }
+    // A second tile sheared and stretched, (x, y) ↦ (x + y/2 + 5, x/5 + 2y):
+    // the facing's slope comes back through the transpose of the tile's
+    // inverse, which is not the tile.
+    landscapes.append(Landscape("the hatch fixture, uniform, a second tile sheared and stretched",
+                                surface: Surface(height: grid, phase: nil, truncation: .uniform(2)),
+                                tiles: [.identity, Affine2(a: 1, b: 0.5, tx: 5, c: 0.2, d: 2, ty: 0)]))
+    // The notch from one boundary to the other in a tile turned a quarter,
+    // the footprint the notched one's image: the walls on the boundaries'
+    // images run along Re z, and at a corner where a riser ends the wall
+    // that leaves the boundary is the one along Im z.
+    let notched = [(-2.0, -1.0), (-1, -1), (-1, 0.6), (0.4, 0.6), (0.4, -1), (2.5, -1), (2.5, 1.5), (-2, 1.5)]
+        .map { turned(P3($0.0, $0.1, 0)) }.map { ($0.x, $0.y) }
+    landscapes.append(Landscape("the hatch fixture, low bands, on a notch from one boundary to the other, in a tile turned",
+                                surface: low, tiles: [.identity, turned], region: .inside(footprint(notched)),
+                                walls: .perimeter(footprint(notched), base: -0.5)))
     // Reflected across both of the domain's far edges into four tiles,
     // three of them reflected or turned: under the low bands, on a
     // footprint across all four with walls on it; and uniform, on all
@@ -451,6 +522,25 @@ private func faceLandscapes() throws -> [Landscape] {
     landscapes.append(Landscape("the hatch fixture, uniform, in four tiles",
                                 surface: Surface(height: grid, phase: nil, truncation: .uniform(2)),
                                 tiles: reflections))
+    // A wall on a seam between two tiles, the second beside the first,
+    // (x, y) ↦ (x + 1, y), or turned a quarter, (x, y) ↦ (1 + y, 1 - x):
+    // |f| = 3(2 Re z - 1)² + 1/5 on the unit square, at 1 | 2 across Re z =
+    // 1/2, so where the seam is the first tile's right edge the band there
+    // is 2 and the second's 1 or its own. On a footprint either side of the
+    // seam, the wall on it reads the tile the footprint is in.
+    let seamGrid = Grid2D(width: 21, height: 21, domain: Domain(real: Interval(lo: 0, hi: 1), imag: Interval(lo: 0, hi: 1)),
+                          values: (0..<441).map { k in Float(3 * pow(2 * Double(k % 21) / 20 - 1, 2) + 0.2) })
+    let seamed = Surface(height: seamGrid, phase: nil, truncation: .realBands([RealBand(below: 0.5, height: 1)], beyond: 2))
+    for (tileName, tile) in [("beside it", Affine2(a: 1, b: 0, tx: 1, c: 0, d: 1, ty: 0)),
+                             ("turned", Affine2(a: 0, b: 1, tx: 1, c: -1, d: 0, ty: 1))] {
+        for (side, corners) in [("second", [(1.0, 0.2), (1.8, 0.2), (1.8, 0.8), (1.0, 0.8)]),
+                                ("first", [(0.2, 0.2), (1.0, 0.2), (1.0, 0.8), (0.2, 0.8)])] {
+            let walled = footprint(corners)
+            landscapes.append(Landscape("a wall on the seam with a tile \(tileName), the footprint in the \(side)",
+                                        surface: seamed, tiles: [.identity, tile], region: .inside(walled),
+                                        walls: .perimeter(walled, base: 0)))
+        }
+    }
     // Γ under its banded truncation, on f: the faces read the function.
     let request = LandscapeRequest(
         expression: "gamma(z)",
@@ -472,6 +562,53 @@ private func faceLandscapes() throws -> [Landscape] {
     landscapes.append(Landscape("a tower banded at 4 | 2, on a footprint holding one side below Im z = 0, on f",
                                 surface: tower.surface, region: .inside(halfNotched),
                                 walls: .perimeter(halfNotched, base: -0.5), refine: tower.refine))
+    // The tower in two tiles, the second reflected across the right edge,
+    // x ↦ 3 - x, or turned a quarter, (x, y) ↦ (5/2 - y, x), on a footprint
+    // across both with walls on it that cross the boundary near the pole,
+    // in the first tile and in the second, where its image is Re z = 5/2 or
+    // Im z = 1/2: |f| is over the lower band's height there, and the walls'
+    // tops step. One of them passes a fifth of a unit from the pole's image,
+    // where |f| rises over the higher band's height too, and its top meets
+    // the plateau.
+    for (name, tile, corners) in [
+        ("reflected", Affine2(a: -1, b: 0, tx: 3, c: 0, d: 1, ty: 0),
+         [(-0.3, -0.2), (2.9, -0.2), (3.2, 0.35), (0.1, 0.3)]),
+        ("turned", Affine2(a: 0, b: -1, tx: 2.5, c: 1, d: 0, ty: 0),
+         [(-0.3, -0.3), (2.2, -0.3), (2.7, -0.25), (2.7, 1.2), (2.25, 1.25), (1.6, 0.3), (0.1, 0.3)]),
+    ] {
+        let across = footprint(corners)
+        landscapes.append(Landscape("a tower banded at 4 | 2 in two tiles, the second \(name), walls across the boundary in both, on f",
+                                    surface: tower.surface, tiles: [.identity, tile], region: .inside(across),
+                                    walls: .perimeter(across, base: -0.5), refine: tower.refine))
+    }
+    // The tower in a second tile turned by an angle, 35° or 20°, written
+    // from cos and sin, on a footprint wholly in it whose right wall is
+    // vertical in space and crosses the boundary's image: the wall's feet
+    // keep its x where its top steps, though the tile carries the step's
+    // point a rounding off it.
+    for (degrees, tx, x) in [(35.0, 13.0, 13.21), (20.0, 7.1, 7.37)] {
+        let (c, s) = (cos(degrees * .pi / 180), sin(degrees * .pi / 180))
+        let walled = footprint([(x - 0.4, -0.5), (x, -0.5), (x, 1.0), (x - 0.4, 1.0)])
+        landscapes.append(Landscape("a tower banded at 4 | 2 in a tile turned by \(Int(degrees))°, a vertical wall across the boundary, on f",
+                                    surface: tower.surface, tiles: [.identity, Affine2(a: c, b: -s, tx: tx, c: s, d: c, ty: 0)],
+                                    region: .inside(walled), walls: .perimeter(walled, base: -0.5), refine: tower.refine))
+    }
+    // A tower at 0.5 | 2 in a tile turned a quarter, (x, y) ↦ (5/2 - y, x),
+    // a wall across the seam at Re z = 1.5: between the two stations either
+    // side of the seam, carried back through the second tile, the wall
+    // crosses the boundary's image at a point the first tile holds, where
+    // it meets no riser.
+    let lowTower = try NativeLandscape.build(
+        LandscapeRequest(expression: "1/(z - 0.5)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                         resolution: 32, truncation: .realBands([RealBand(below: 0.5, height: 0.5)], beyond: 2)),
+        refine: true)
+    let acrossSeam = BoundaryPerimeter(edges: [(0.95, 0.0), (1.95, 1.0), (1.3, 0.95), (0.6, 0.2)].indices.map { k in
+        let c = [(0.95, 0.0), (1.95, 1.0), (1.3, 0.95), (0.6, 0.2)], a = c[k], b = c[(k + 1) % c.count]
+        return PerimeterEdge(start: P2(a.0, a.1), end: P2(b.0, b.1), density: 8)
+    })
+    landscapes.append(Landscape("a tower banded at 0.5 | 2 in a tile turned a quarter, a wall across the seam, on f",
+                                surface: lowTower.surface, tiles: [.identity, Affine2(a: 0, b: -1, tx: 2.5, c: 1, d: 0, ty: 0)],
+                                region: .inside(acrossSeam), walls: .perimeter(acrossSeam, base: -0.5), refine: lowTower.refine))
     let o = gamma.manifest.occluder
     landscapes.append(Landscape("Γ, banded, on f", surface: gamma.surface, tiles: o.tiles, region: o.region,
                                 walls: o.walls, refine: gamma.refine, faces: scene.geometry.faces))
@@ -600,7 +737,7 @@ private func trimLoops(_ l: Landscape, margin: Double) -> TrimTally? {
     var t = TrimTally()
     // The open chains as `graphTrimLoops` counts them, and the face's loops
     // its, with that many open.
-    let reported = surface.graphTrimLoops(tiles: l.tiles, refine: l.refine)
+    let reported = surface.graphTrimLoops(refine: l.refine)
     t.open = reported.open
     if reported.loops.map({ $0.map(\.v) }) != loops.map({ $0.map(\.v) })
         || loops.filter({ $0.first != $0.last }).count != reported.open {
@@ -739,10 +876,10 @@ func faceTests() {
                 case .surface, .solid: "other"
                 }
             }.mapValues(\.count).sorted { $0.key < $1.key }.map { "\($0.value) \($0.key)" }.joined(separator: ", ")
-            Check.expect(t.wrong == 0 && t.inward == 0 && t.skewed == 0 && t.sampled > 10_000,
+            Check.expect(t.wrong == 0 && t.inward == 0 && t.skewed == 0 && t.sampled > 10_000 && t.normals > 300,
                          "\(l.name): \(kinds), \(l.tiles.count) tile(s); every point of the boundary in one face, "
                             + "none off it, each face turned out, the graph's normal the facing's",
-                         "\(t.wrong) in the wrong number, \(t.inward) facing in, \(t.skewed) normals off, "
+                         "\(t.wrong) in the wrong number, \(t.inward) facing in, \(t.skewed) of \(t.normals) normals off, "
                             + "of \(t.sampled): \(t.examples.filter { $0.key != "offTop" }.sorted { $0.key < $1.key }.map(\.value).joined(separator: "; "))")
             if case .perimeter = l.walls {
                 Check.expect(t.offTop == 0 && t.stations > 50,
@@ -785,15 +922,82 @@ func faceTests() {
                 Check.expect(feet > 200 && off.isEmpty, "\(l.name): every foot of a vertical wall stands on its own x",
                              "\(off.count) of \(feet) off: \(off.prefix(3).joined(separator: ", "))")
             }
+            // The top edge reads the truncation as the curtain does: at each
+            // foot's own x, through the tile under it, from the footprint's
+            // side. Without f the two stand on the same stations and agree
+            // at every one, to the bit. With f the top edge is f's, and is
+            // the wall face's top at every vertex but the two of a step,
+            // which stand at one point; and wherever the tile under the wall
+            // carries a band boundary across it, it steps there: no two
+            // consecutive vertices lie either side of the boundary apart.
+            if l.refine == nil {
+                let curtain = Mesh.walls(of: dense, surface: l.surface, base: base, tiles: l.tiles)
+                var stations = 0, wrong: [String] = []
+                for k in perimeter.edges.indices {
+                    guard let drawn = l.surface.hatch(.wallEdges(edges: [k], step: 1, base: base), in: context) else { continue }
+                    let top = Array(drawn[path: 0])
+                    for c in curtain.vertices[(82 * k)..<(82 * k + 41)] {
+                        stations += 1
+                        guard let v = top.first(where: { $0.xy == c.xy }) else { wrong.append("no vertex at \(c.xy.v)"); continue }
+                        if v.z != c.z { wrong.append("\(c.xy.v) at \(v.z), the curtain at \(c.z)") }
+                    }
+                }
+                Check.expect(stations >= 41 * perimeter.edges.count && wrong.isEmpty,
+                             "\(l.name): the top edge is the curtain's top at every station",
+                             "\(wrong.count) of \(stations) off: \(wrong.prefix(3).joined(separator: "; "))")
+            } else if case .realBands(let bands, _) = l.surface.truncation {
+                let walls = l.faces.filter { if case .wall = $0.id { true } else { false } }
+                let real = l.surface.domain.real
+                let boundaries = bands.map(\.below).filter { $0 > min(real.lo, real.hi) && $0 < max(real.lo, real.hi) }
+                let cell = max(abs(real.length) / Double(l.surface.height.width - 1),
+                               abs(l.surface.domain.imag.length) / Double(l.surface.height.height - 1))
+                var vertices = 0, crossings = 0, wrong: [String] = []
+                var steps = [Int](repeating: 0, count: l.tiles.count)
+                for (k, edge) in perimeter.edges.enumerated() {
+                    guard let drawn = l.surface.hatch(.wallEdges(edges: [k], step: 1, base: base), in: context, refine: l.refine),
+                          let face = walls.first(where: { $0.id == .wall(edge: k) }) else { continue }
+                    let top = Array(drawn[path: 0])
+                    func apart(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>) -> Bool { simd_length(a.xy.v - b.xy.v) > 1e-9 * cell }
+                    for (i, v) in top.enumerated() {
+                        guard (i == 0 || apart(top[i - 1], v)) && (i == top.count - 1 || apart(v, top[i + 1])) else { continue }
+                        vertices += 1
+                        let s = simd_length(v.xy.v - edge.start.v), z = v.z, dz = 1e-9 * max(1, abs(z))
+                        let copy = face.copies[0]
+                        if !(copy.contains(P2(s, z - dz)) && !copy.contains(P2(s, z + dz))) {
+                            wrong.append("\(v.xy.v) at \(z), not the wall's top")
+                        }
+                    }
+                    // Under one tile: across a seam between two, the x
+                    // carried back jumps.
+                    for (a, c) in zip(top, top.dropFirst()) {
+                        let (qa, back) = carriedBack(a.xy.v, l), qc = carriedBack(c.xy.v, l)
+                        guard qc.back == back else { continue }
+                        let (xa, xc) = (qa.x, qc.q.x)
+                        for b in boundaries where min(xa, xc) < b - 1e-9 * cell && max(xa, xc) > b + 1e-9 * cell {
+                            crossings += 1
+                            wrong.append("a ramp across \(b) from \(a.v) to \(c.v)")
+                        }
+                        // Two vertices at one point on a boundary: where the
+                        // wall meets a riser, at the two bands' heights.
+                        guard let tile = l.tiles.firstIndex(where: { $0.inverse == back }) else { continue }
+                        if !apart(a, c), boundaries.contains(where: { abs(xa - $0) <= 1e-9 * cell }) { steps[tile] += 1 }
+                        // And it steps nowhere else.
+                        else if !apart(a, c), a.z != c.z { wrong.append("a step at \(a.v), on no boundary in the tile under it") }
+                    }
+                }
+                Check.expect(vertices > 100 && wrong.isEmpty,
+                             "\(l.name): the top edge on f is the wall face's top, and steps where the tile under it crosses a boundary",
+                             "\(wrong.count) wrong of \(vertices) vertices, \(crossings) ramps, steps by tile \(steps): "
+                                + wrong.prefix(3).joined(separator: "; "))
+            }
             // A corner's vertical edge, where two walls meet, rises to the
             // lower of their tops and on to the higher beside the riser that
             // ends there, unless the higher wall stands on that riser's
             // boundary, in one plane with it: to the top of the wall that
-            // leaves the boundary. Read off the walls' own top edges, on the
-            // grid, as the corners are, and on one tile: the top edge reads
-            // the truncation at the world x, and the corners, as the curtain,
-            // at the tile's.
-            guard l.refine == nil, l.tiles.count == 1,
+            // leaves the boundary, the boundary and the leaving read through
+            // the tile under the corner. Read off the walls' own top edges,
+            // on the grid, as the corners are.
+            guard l.refine == nil,
                   let drawn = l.surface.hatch(.wallEdges(edges: Array(perimeter.edges.indices), step: 1, base: base),
                                               in: Surface.HatchContext(perimeter: perimeter, region: .full, tiles: l.tiles))
             else { continue }
@@ -802,9 +1006,14 @@ func faceTests() {
                 let corner = edge.start
                 let previous = (k + perimeter.edges.count - 1) % perimeter.edges.count
                 let here = drawn[path: 2 * k], before = drawn[path: 2 * previous]
-                let walls = [(top: here[here.startIndex].z, alongX: edge.start.x == edge.end.x),
-                             (top: before[before.endIndex - 1].z,
-                              alongX: perimeter.edges[previous].start.x == perimeter.edges[previous].end.x)]
+                let back = carriedBack(corner.v, l).back
+                func alongX(_ e: PerimeterEdge) -> Bool {
+                    let d = e.end.v - e.start.v
+                    let carried = SIMD2(back.a * d.x + back.b * d.y, back.c * d.x + back.d * d.y)
+                    return abs(carried.x) <= 1e-12 * simd_length(carried)
+                }
+                let walls = [(top: here[here.startIndex].z, alongX: alongX(edge)),
+                             (top: before[before.endIndex - 1].z, alongX: alongX(perimeter.edges[previous]))]
                 let leaving = walls.filter { !$0.alongX }
                 let expected = (leaving.count == 1 ? leaving : walls).map(\.top).max()!
                 guard expected > base else { continue }
@@ -1007,6 +1216,286 @@ func faceTests() {
             if loops.loops != loopsPast.loops || loops.open != 0 { differ.append("the graph's trim loops") }
             Check.expect(differ.isEmpty, "\(name): drawn as with the band boundary a cell past the far edge",
                          "differ: \(differ.joined(separator: ", "))")
+        }
+    }
+
+    Check.suite("folds: on tiles under a banded truncation, a fold runs on the graph wherever the facing turns, read through the tile") {
+        // The truncation under a fold is read at the point's own x through
+        // the tile under it, as the surface is: every vertex of a fold lies
+        // on the graph, |f| under the truncation there, or on its
+        // truncation edge; and wherever the facing changes sign between two
+        // points of the graph in the footprint, well under the truncation,
+        // a fold passes between them.
+        // A tower, 1/(z - 1/2), banded on either side of its pole, 4 | 2 and
+        // 2 | 4, in two tiles, the second reflected across the right edge or
+        // turned a quarter, (x, y) ↦ (5/2 - y, x): the truncation under the
+        // second differs from the one at the world x by a band about the
+        // pole's image. On f and on the grid.
+        var landscapes: [Landscape] = []
+        let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        let reflected = Affine2(a: -1, b: 0, tx: 3, c: 0, d: 1, ty: 0), turned = Affine2(a: 0, b: -1, tx: 2.5, c: 1, d: 0, ty: 0)
+        for (left, right, tile, name, onF) in [(4.0, 2.0, reflected, "reflected", true), (2, 4, turned, "turned", true),
+                                               (2, 4, reflected, "reflected", false), (4, 2, turned, "turned", false)] {
+            let tower = try NativeLandscape.build(
+                LandscapeRequest(expression: "1/(z - 0.5)", domain: domain, resolution: 48,
+                                 truncation: .realBands([RealBand(below: 0.5, height: left)], beyond: right)),
+                refine: onF)
+            landscapes.append(Landscape("a tower banded at \(Int(left)) | \(Int(right)) in two tiles, the second \(name), \(onF ? "on f" : "on the grid")",
+                                        surface: tower.surface, tiles: [.identity, tile], refine: tower.refine))
+        }
+        let camera = Camera.oblique(ObliqueProjection(shear: 0, xAngle: -55, zAngle: 30, flipX: false, yScale: nil))
+        // The direction lines of sight travel: the kernel of the view's first
+        // two rows, away from the eye.
+        let m = camera.view.m.columns
+        let rows = (SIMD3(m.0.x, m.1.x, m.2.x), SIMD3(m.0.y, m.1.y, m.2.y), SIMD3(m.0.z, m.1.z, m.2.z))
+        var sight = simd_normalize(simd_cross(rows.0, rows.1))
+        if simd_dot(rows.2, sight) > 0 { sight = -sight }
+        for l in landscapes {
+            let h = l.heightfield, surface = l.surface
+            let real = surface.domain.real, imag = surface.domain.imag
+            let cell = max(abs(real.length) / Double(surface.height.width - 1), abs(imag.length) / Double(surface.height.height - 1))
+            guard case .realBands(let bands, _) = surface.truncation else { continue }
+            let boundaries = bands.map(\.below)
+            func magnitude(_ q: SIMD2<Double>) -> Double {
+                let u = l.refine?.magnitude?(P2(q.x, q.y)) ?? surface.magnitude(at: P2(q.x, q.y))
+                return u.isNaN ? .infinity : u
+            }
+            let folds = h.foldCurves(view: camera.view)
+            var vertices = 0, off: [String] = []
+            for v in folds.vertices {
+                let q = carriedBack(v.xy.v, l).q
+                guard !boundaries.contains(where: { abs(q.x - $0) <= 1e-9 * cell }) else { continue }
+                vertices += 1
+                let top = surface.truncationHeight(atX: q.x)
+                if !(magnitude(q) <= top * (1 + 1e-6)) { off.append("\(v.v), |f| \(magnitude(q)) over \(top)") }
+            }
+            // The facing on a grid of each tile's image, and the folds near
+            // each sign change.
+            let traced = Segments((0..<folds.count).map { folds[path: $0].map(\.xy.v) }, cell: cell)
+            func facing(_ w: SIMD2<Double>) -> Double {
+                let n = l.refine?.magnitude != nil ? h.graphNormal(at: P2(w)) : h.normal(at: P2(w))
+                return -simd_dot(n, sight) / simd_length(n)
+            }
+            var turns = 0, missing: [String] = []
+            for tile in l.tiles {
+                let (nx, ny) = (161, 97)
+                func point(_ i: Int, _ j: Int) -> (p: SIMD2<Double>, w: SIMD2<Double>) {
+                    let p = SIMD2(real.lo + real.length * (Double(i) + 0.37) / Double(nx), imag.lo + imag.length * (Double(j) + 0.61) / Double(ny))
+                    return (p, tile(P3(p.x, p.y, 0)).xy.v)
+                }
+                /// On the graph well under the truncation, away from a band
+                /// boundary, the domain's edge and the footprint's, and held
+                /// by this tile alone.
+                func clear(_ p: SIMD2<Double>, _ w: SIMD2<Double>) -> Bool {
+                    let reach = 2 * cell
+                    guard p.x - reach > min(real.lo, real.hi), p.x + reach < max(real.lo, real.hi),
+                          p.y - reach > min(imag.lo, imag.hi), p.y + reach < max(imag.lo, imag.hi),
+                          !boundaries.contains(where: { abs(p.x - $0) <= reach }),
+                          [SIMD2(reach, 0), SIMD2(-reach, 0), SIMD2(0, reach), SIMD2(0, -reach), .zero]
+                              .allSatisfy({ l.region.contains(P2(w + $0)) }),
+                          carriedBack(w, l).back == tile.inverse else { return false }
+                    return magnitude(p) < 0.98 * surface.truncationHeight(atX: p.x)
+                }
+                for j in 0..<ny {
+                    var previous: (p: SIMD2<Double>, w: SIMD2<Double>, facing: Double)?
+                    for i in 0..<nx {
+                        let (p, w) = point(i, j)
+                        let here = (p, w, facing(w))
+                        defer { previous = here }
+                        guard let a = previous, (a.facing > 0) != (here.2 > 0), clear(a.p, a.w), clear(p, w),
+                              clear(0.5 * (a.p + p), 0.5 * (a.w + w)) else { continue }
+                        turns += 1
+                        let mid = 0.5 * (a.w + w), reach = simd_length(w - a.w) + cell
+                        if traced.distance(mid, within: reach).isInfinite { missing.append("\(mid)") }
+                    }
+                }
+            }
+            Check.expect(vertices > 50 && off.isEmpty && turns > 20 && missing.isEmpty,
+                         "\(l.name): every fold vertex on the graph, and a fold wherever the facing turns on it",
+                         "\(off.count) of \(vertices) vertices on a plateau, \(missing.count) of \(turns) turns with no fold: "
+                            + (off.prefix(2) + missing.prefix(2)).joined(separator: "; "))
+        }
+    }
+
+    Check.suite("folds: a fold that runs into a zero of f ends on it, on every tile") {
+        // A cone, 10(z - 0.3), over Im z in [0, 1], its apex on the domain's
+        // edge, in three tiles, the second reflected across Re z = 1 and the
+        // third turned a quarter, (x, y) ↦ (4 - y, x): its outline runs down
+        // a generator into the apex in each copy, and each copy's fold is
+        // carried onto the apex's image there, at its height, the floor,
+        // where placed alone it stops a hair short.
+        let cone = try NativeLandscape.build(
+            LandscapeRequest(expression: "10*(z - 0.3)", domain: Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: 0, hi: 1)),
+                             resolution: 30, truncation: .uniform(30)),
+            refine: true)
+        let tiles = [Affine2.identity, Affine2(a: -1, b: 0, tx: 2, c: 0, d: 1, ty: 0), Affine2(a: 0, b: -1, tx: 4, c: 1, d: 0, ty: 0)]
+        let h = Heightfield(surface: cone.surface, occluder: .empty, tiles: tiles, region: .full, step: 1, refine: cone.refine)
+        // Under cameras turned every quarter, so each copy shows the apex's
+        // outline under some: every end near an apex is on it, and every
+        // tile has one.
+        var report: [String] = [], carried = [Int](repeating: 0, count: tiles.count)
+        for zAngle in [30.0, 120.0, -150.0, -60.0] {
+            let camera = Camera.oblique(ObliqueProjection(shear: 0, xAngle: -55, zAngle: zAngle, flipX: false, yScale: nil))
+            let folds = h.foldCurves(view: camera.view)
+            let ends = (0..<folds.count).flatMap { k -> [P3<WorldSpace>] in let r = folds[path: k]; return [r[r.startIndex], r[r.endIndex - 1]] }
+            for (k, tile) in tiles.enumerated() {
+                let apex = tile(P3(0.3, 0, 0)).xy.v
+                let near = ends.filter { simd_length($0.xy.v - apex) < 0.2 }
+                let onIt = near.filter { simd_length($0.xy.v - apex) <= 1e-6 && abs($0.z) <= 1e-6 }
+                carried[k] += onIt.count
+                if onIt.count != near.count {
+                    report.append("tile \(k) at \(Int(zAngle))°: \(onIt.count) of \(near.count) ends near the apex on it, nearest "
+                                  + "\(near.map { simd_length($0.xy.v - apex) }.min() ?? .infinity)")
+                }
+            }
+        }
+        Check.expect(report.isEmpty && carried.allSatisfy { $0 > 0 },
+                     "the cone's folds end on the apex on every tile, at its height",
+                     "ends on an apex by tile \(carried): \(report.prefix(3).joined(separator: "; "))")
+    }
+
+    Check.suite("faces: the graph's trim loops and its truncation edge are the same in whatever order the tiles are listed") {
+        // Points of the domain are read on the domain, not through the tile
+        // under them: on the domain's edge a second tile's image begins, and
+        // listed first it was the tile under them. On f: 1/(z - 0.95), cut at
+        // 3, its truncation edge ending on the right edge, a second tile
+        // beside it there; a tower banded at 2 | 4, its riser's top, a second
+        // tile beside it or reflected across the right edge.
+        let pole = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/(z - 0.95)", domain: Domain(real: Interval(lo: 0, hi: 1), imag: Interval(lo: -0.5, hi: 0.5)),
+                             resolution: 40, truncation: .uniform(3)),
+            refine: true)
+        let tower = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/(z - 0.5)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                             resolution: 32, truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4)),
+            refine: true)
+        for (name, bundle, tile) in [
+            ("1/(z - 0.95) cut at 3, a tile beside it", pole, Affine2(a: 1, b: 0, tx: 1, c: 0, d: 1, ty: 0)),
+            ("a tower banded at 2 | 4, a tile beside it", tower, Affine2(a: 1, b: 0, tx: 2, c: 0, d: 1, ty: 0)),
+            ("a tower banded at 2 | 4, a tile reflected across its right edge", tower, Affine2(a: -1, b: 0, tx: 3, c: 0, d: 1, ty: 0)),
+        ] {
+            func drawn(_ tiles: [Affine2]) -> (loops: [[P2<ParamSpace>]], edge: [SIMD3<Double>]) {
+                let graph = bundle.surface.faces(tiles: tiles, refine: bundle.refine).first
+                let edge = bundle.surface.hatch(.truncationEdge(tiled: true), in: Surface.HatchContext(perimeter: nil, tiles: tiles),
+                                                refine: bundle.refine)?.vertices.map(\.v) ?? []
+                return (graph?.trimLoops ?? [], edge.sorted { ($0.x, $0.y, $0.z) < ($1.x, $1.y, $1.z) })
+            }
+            let first = drawn([.identity, tile]), second = drawn([tile, .identity])
+            let open = second.loops.filter { $0.first != $0.last }.count + first.loops.filter { $0.first != $0.last }.count
+            Check.expect(!first.loops.isEmpty && first.loops.map { $0.map(\.v) } == second.loops.map { $0.map(\.v) }
+                            && open == 0 && !first.edge.isEmpty && first.edge == second.edge,
+                         "\(name): the trim loops, closed, and the truncation edge on every tile, the identity listed first or second",
+                         "\(open) loops open, loops \(first.loops.map { $0.map(\.v) } == second.loops.map { $0.map(\.v) } ? "the same" : "differ"), "
+                            + "\(first.edge.count) and \(second.edge.count) vertices drawn, \(first.edge == second.edge ? "the same" : "different")")
+        }
+    }
+
+    Check.suite("restriction: a contour's copy is cut to the footprint where it lands, exactly") {
+        // On tiles whose footprint is not symmetric under the tiling,
+        // reflected and turned: every kept piece of a copy lies in the
+        // footprint where the copy stands, ending on its perimeter or where
+        // the contour ends, and the copy is kept wherever it is in the
+        // footprint, read sixteen times a segment. With a band of Im z as
+        // well, read on the domain the copy came from. And an untiled layer,
+        // its one copy in place, wherever the footprint cuts the domain.
+        let landscapes = try faceLandscapes().filter { l in
+            guard case .inside = l.region else { return false }
+            return true
+        }
+        for l in landscapes {
+          for tiled in [true, false] {
+            let copies = tiled ? l.tiles : [.identity]
+            // Untiled, only where the footprint cuts the domain, holding a
+            // twentieth of it and leaving a twentieth.
+            if !tiled {
+                let d = l.surface.domain
+                let held = (0..<400).filter { k in
+                    l.region.contains(P2(d.real.lo + d.real.length * (Double(k % 20) + 0.5) / 20,
+                                         d.imag.lo + d.imag.length * (Double(k / 20) + 0.5) / 20))
+                }.count
+                guard held >= 20, held <= 380 else { continue }
+            } else if l.tiles.count == 1 {
+                continue
+            }
+            guard case .inside(let perimeter) = l.region else { continue }
+            let surface = l.surface
+            let real = surface.domain.real, imag = surface.domain.imag
+            let size = max(abs(real.length), abs(imag.length))
+            let cell = max(abs(real.length) / Double(surface.height.width - 1), abs(imag.length) / Double(surface.height.height - 1))
+            let tolerance = 1e-9 * size
+            let finite = surface.height.values.filter(\.isFinite).map(Double.init).sorted()
+            let (lo, hi) = (finite[finite.count / 10], min(finite[9 * finite.count / 10], 6))
+            let levels = (1...7).map { lo + (hi - lo) * Double($0) / 8 }
+            let band = (lo: imag.lo + 0.3 * imag.length, hi: imag.lo + 0.7 * imag.length)
+            let outline = Segments([perimeter.edges.map(\.start.v) + [perimeter.edges[0].start.v]], cell: cell)
+            func cover(_ w: SIMD2<Double>) -> Int {
+                l.tiles.filter { tile in
+                    guard let back = tile.inverse else { return false }
+                    let q = back(P3(w.x, w.y, 0))
+                    return q.x >= min(real.lo, real.hi) && q.x <= max(real.lo, real.hi)
+                        && q.y >= min(imag.lo, imag.hi) && q.y <= max(imag.lo, imag.hi)
+                }.count
+            }
+            for (what, restriction, banded) in [
+                ("the footprint", Restriction.footprint, false),
+                ("the footprint and a band of Im z", .intersection([.footprint, .band(axis: .imag, lo: band.lo, hi: band.hi)]), true),
+            ] {
+                func derived(_ r: Restriction) -> PolylineSet<WorldSpace> {
+                    surface.derive(.contour(field: .magnitude, levels: levels, restriction: r, tiled: tiled),
+                                   policy: .magnitude, region: l.region, tiles: l.tiles, refine: l.refine)
+                }
+                let whole = derived(.all), kept = derived(restriction)
+                guard whole.count % copies.count == 0 else {
+                    Check.expect(false, "\(l.name), \(what): the whole contours come a copy per tile"); continue
+                }
+                let perCopy = whole.count / copies.count
+                let wholeVertices = Set(whole.vertices.map(\.xy))
+                let runs = (0..<kept.count).map { kept[path: $0].map(\.xy.v) }
+                let pieces = Segments(runs, cell: cell)
+                var outside: [String] = [], endsOff: [String] = [], misclipped: [String] = []
+                var inSamples = 0, outSamples = 0
+                for run in runs {
+                    for (a, b) in zip(run, run.dropFirst()) {
+                        for k in 0...16 {
+                            let q = a + (b - a) * (Double(k) / 16)
+                            if !l.region.contains(P2(q)), !(outline.distance(q, within: cell) <= tolerance) {
+                                outside.append("\(q)")
+                            }
+                        }
+                    }
+                    for e in [run[0], run[run.count - 1]] where !wholeVertices.contains(P2(e)) {
+                        if !(outline.distance(e, within: cell) <= tolerance) { endsOff.append("\(e)") }
+                    }
+                }
+                for c in 0..<whole.count {
+                    let tile = copies[c / perCopy]
+                    guard let back = tile.inverse else { continue }
+                    let path = whole[path: c].map(\.xy.v)
+                    for (a, b) in zip(path, path.dropFirst()) {
+                        let ya = back(P3(a.x, a.y, 0)).y, yb = back(P3(b.x, b.y, 0)).y
+                        let inBand = { (y: Double) in !banded || (y > band.lo && y < band.hi) }
+                        // Not where a vertex lies on the band's edge, which
+                        // carried back and forth is a rounding either side.
+                        let onEdge = { (y: Double) in banded && min(abs(y - band.lo), abs(y - band.hi)) <= tolerance }
+                        guard inBand(ya) == inBand(yb), !onEdge(ya), !onEdge(yb) else { continue }
+                        for k in 0..<16 {
+                            let q = a + (b - a) * ((Double(k) + 0.5) / 16)
+                            guard outline.distance(q, within: cell).isInfinite || outline.distance(q, within: cell) > 1e-6 * size,
+                                  !tiled || cover(q) == 1 else { continue }
+                            let expected = l.region.contains(P2(q)) && inBand(ya)
+                            if expected { inSamples += 1 } else { outSamples += 1 }
+                            let onPiece = pieces.distance(q, within: cell) <= tolerance
+                            if onPiece != expected { misclipped.append("\(q) on tile \(c / perCopy) \(onPiece ? "kept" : "cut away")") }
+                        }
+                    }
+                }
+                Check.expect(inSamples > 200 && outSamples > 200 && outside.isEmpty && endsOff.isEmpty && misclipped.isEmpty,
+                             "\(l.name), \(tiled ? "tiled" : "untiled"), kept to \(what): each copy cut to the footprint where it lands, exactly",
+                             "\(outside.count) points kept outside, \(endsOff.count) of \(2 * runs.count) ends off the perimeter, "
+                                + "\(misclipped.count) of \(inSamples) in and \(outSamples) out misclipped: "
+                                + (outside.prefix(1) + endsOff.prefix(1) + misclipped.prefix(2)).joined(separator: "; "))
+            }
+          }
         }
     }
 

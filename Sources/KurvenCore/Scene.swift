@@ -180,20 +180,25 @@ public struct Heightfield: Sendable {
     /// An open fold run carried to the zero of f either end leads to, when
     /// the refiner finds one within reach that the run does not already
     /// touch, inside the region: the new vertex is the zero at |f|'s height.
-    /// `cell` is the grid spacing, which is the only length the test of
+    /// The zero is found in the domain, the end carried back through the
+    /// tile under it and the zero carried forward, on whichever tile the run
+    /// lies. `cell` is the grid spacing, which is the only length the test of
     /// "already touches" is measured against, so a scaled drawing carries the
     /// scaled fold.
     func endedAtZeros(_ run: [P3<WorldSpace>], cell: Double) -> [P3<WorldSpace>] {
         guard let refine, let zero = refine.zero, let magnitude = refine.magnitude,
               run.count >= 2, run.first != run.last else { return run }
         func carried(_ end: P3<WorldSpace>, other: P3<WorldSpace>) -> P3<WorldSpace>? {
-            guard let z = zero(P2(end.x, end.y)), region.contains(P2<WorldSpace>(z.x, z.y)) else { return nil }
+            let (q, back) = surface.tile(under: P2(end.x, end.y), tiles: tiles)
+            guard let d = zero(q), let forward = back.inverse else { return nil }
+            let z = forward(P3(d.x, d.y, 0))
+            guard region.contains(z.xy) else { return nil }
             let toEnd = ((z.x - end.x) * (z.x - end.x) + (z.y - end.y) * (z.y - end.y)).squareRoot()
             let toOther = ((z.x - other.x) * (z.x - other.x) + (z.y - other.y) * (z.y - other.y)).squareRoot()
             guard toEnd > 1e-9 * cell, toEnd < toOther else { return nil }
-            let u = magnitude(z)
+            let u = magnitude(d)
             guard u.isFinite else { return nil }
-            return P3(z.x, z.y, min(u, surface.truncationHeight(atX: z.x)))
+            return P3(z.x, z.y, min(u, surface.truncationHeight(atX: d.x)))
         }
         var out = run
         if let z = carried(out[0], other: out[out.count - 1]) { out.insert(z, at: 0) }
@@ -1369,6 +1374,12 @@ struct FoldPlacer: Sendable {
         return len > 0 ? -simd_dot(n, sight) / len : 0
     }
 
+    /// The truncation over a world point, read at its x in the domain,
+    /// through the tile under it, as the surface under it is.
+    func truncationHeight(at p: P2<WorldSpace>) -> Double {
+        surface.truncationHeight(atX: surface.inTile(P2<DomainSpace>(p.x, p.y), tiles: heightfield.tiles).x)
+    }
+
     /// |f| over a world point, untruncated, through its tile; the grid's
     /// height without the function.
     func graphHeight(_ p: P2<WorldSpace>) -> Double {
@@ -1396,7 +1407,7 @@ struct FoldPlacer: Sendable {
         var p = P2<WorldSpace>(v.x, v.y)
         if refined { p = ontoEdge(p) }
         let z = height(p)
-        let truncationHeight = surface.truncationHeight(atX: p.x)
+        let truncationHeight = self.truncationHeight(at: p)
         let inRegion = region.contains(p)
         return Vertex(p: p, z: z, inRegion: inRegion, onGraph: inRegion && z.isFinite && z < truncationHeight)
     }
@@ -1408,7 +1419,8 @@ struct FoldPlacer: Sendable {
     /// at the fold's own crossing of |f| = h(x), so a tower's outline
     /// reaches the truncation and arrives along the fold. On the fundamental
     /// tile, where the function is sampled, each run is then subdivided to
-    /// the refiner's tolerance and carried to the zero it was going to.
+    /// the refiner's tolerance; on every tile it is carried to the zero it
+    /// was going to.
     func place(_ lines: [[P2<DomainSpace>]], fundamental: Bool,
                worker: @Sendable () -> FoldPlacer) -> [[P3<WorldSpace>]] {
         // Every vertex of every line onto the fold.
@@ -1423,7 +1435,7 @@ struct FoldPlacer: Sendable {
             for k in (offsets[i] + 1)..<offsets[i + 1] {
                 let a = vertices[k - 1], b = vertices[k]
                 if onF, a.inRegion, b.inRegion, a.onGraph != b.onGraph,
-                   surface.truncationHeight(atX: b.p.x).isFinite { pairs.append(k) }
+                   truncationHeight(at: b.p).isFinite { pairs.append(k) }
             }
         }
         let crossings = Heightfield.parallelMap(pairs, chunk: 1, worker: worker) { w, k -> P3<WorldSpace>? in
@@ -1448,10 +1460,9 @@ struct FoldPlacer: Sendable {
             }
             close()
         }
-        guard fundamental else { return runs }
-        // Every chord of every run subdivided, then each run's ends carried
-        // to their zeros.
-        if refined, let tolerance = heightfield.refine?.tolerance {
+        // Every chord of every run subdivided, on the fundamental tile, then
+        // each run's ends carried to their zeros, on every tile.
+        if fundamental, refined, let tolerance = heightfield.refine?.tolerance {
             var chords: [SIMD2<Int>] = []
             for (r, run) in runs.enumerated() {
                 for k in 0..<(run.count - 1) { chords.append(SIMD2(r, k)) }
@@ -1499,7 +1510,7 @@ struct FoldPlacer: Sendable {
         let p = P2<WorldSpace>(q.x, q.y)
         guard region.contains(p) else { return }
         let z = height(p)
-        guard z.isFinite, z < surface.truncationHeight(atX: p.x) - 1e-9 else { return }
+        guard z.isFinite, z < truncationHeight(at: p) - 1e-9 else { return }
         let v = P3<WorldSpace>(p.x, p.y, z)
         // The fold is a curve in space: its departure from the chord is
         // measured there, across and up.
@@ -1590,12 +1601,12 @@ struct FoldPlacer: Sendable {
         }
         func excess(_ t: Double) -> Double {
             let q = onFold(t)
-            return graphHeight(q) - surface.truncationHeight(atX: q.x)
+            return graphHeight(q) - self.truncationHeight(at: q)
         }
         guard excess(0) < 0, excess(1) >= 0 else { return nil }
         let (lo, hi) = bisect(0, 1) { excess($0) < 0 }
         let q = onFold(0.5 * (lo + hi))
-        let truncationHeight = surface.truncationHeight(atX: q.x)
+        let truncationHeight = self.truncationHeight(at: q)
         guard region.contains(q), truncationHeight.isFinite else { return nil }
         return P3(q.x, q.y, truncationHeight)
     }
