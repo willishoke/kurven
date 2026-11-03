@@ -200,7 +200,7 @@ extension Surface {
     /// f's too, or the rings end on a fold the top edge parts from.
     ///
     /// The top edge reads the truncation as the curtain does
-    /// (`wallTruncation`): at each point's own x, through the tile under it,
+    /// (`wallFoot`): at each point's own x, through the tile under it,
     /// from the footprint's side, `inward` the edge's normal into it
     /// (`Surface.footprintSide`). A wall standing on a band boundary reads the
     /// band its footprint is in, all along, and a wall ending on one reads its
@@ -217,7 +217,7 @@ extension Surface {
         /// |f| over a station and the truncation there, both read through
         /// the tile under it.
         func read(_ station: Station) -> (u: Double, truncationHeight: Double) {
-            let foot = wallTruncation(at: station.p, t: station.t ?? 0.5, along: along, inward: inward, tiles: tiles)
+            let foot = wallFoot(at: station.p, t: station.t ?? 0.5, along: along, inward: inward, tiles: tiles)
             let truncationHeight = station.riser.map { self.truncationHeight(atX: $0.x, from: $0.side) } ?? foot.truncationHeight
             return (magnitudeOfF.map { $0(foot.point) } ?? magnitude(at: foot.point), truncationHeight)
         }
@@ -501,15 +501,15 @@ extension Surface {
         }
         for corner in corners {
             // Every wall ending at the corner, and its top there; those that
-            // leave the line of Re z the corner stands on in the domain,
-            // through the tile under it, where any does.
+            // are not parallel to the imaginary axis in the domain, through
+            // the tile under the corner, where any is not.
             let back = tile(under: P2(corner.x, corner.y), tiles: tiles).back
             let tops = perimeter.edges.indices.flatMap { k -> [(top: Double, leaves: Bool)] in
                 let e = perimeter.edges[k]
                 return [(e.start, 0.0), (e.end, 1.0)].filter { $0.0 == corner }.map { _, t in
                     (wallHeight(at: P2(corner.x, corner.y), t: t, from: e.start, to: e.end,
                                 inward: perimeter.inward(k), tiles: tiles),
-                     !Surface.standsOnLineOfReZ(e.end.v - e.start.v, back: back))
+                     !Surface.isParallelToImaginaryAxis(e.end.v - e.start.v, back: back))
                 }
             }
             let leaving = tops.filter(\.leaves).map(\.top)

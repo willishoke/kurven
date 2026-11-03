@@ -243,19 +243,19 @@ public struct Surface: Sendable {
     /// limit from the footprint's side (`Surface.footprintSide`).
     func wallHeight(at p: P2<DomainSpace>, t: Double, from a: P2<WorldSpace>, to b: P2<WorldSpace>,
                     inward: SIMD2<Double>, tiles: [Affine2]) -> Double {
-        let foot = wallTruncation(at: p, t: t, along: b.v - a.v, inward: inward, tiles: tiles)
+        let foot = wallFoot(at: p, t: t, along: b.v - a.v, inward: inward, tiles: tiles)
         return min(magnitude(at: foot.point), foot.truncationHeight)
     }
 
-    /// The truncation over a wall's foot `p`, `t` of the way along its edge,
-    /// `along` the edge's direction and `inward` its normal into the
-    /// footprint, and the point of the domain the foot is the image of: the
-    /// foot carried back through the tile under it, the truncation read at
+    /// A wall's foot `p`, `t` of the way along its edge, `along` the edge's
+    /// direction and `inward` its normal into the footprint, as the domain
+    /// reads it: the point of the domain the foot is the image of, carried
+    /// back through the tile under it, and the truncation over it, read at
     /// its x there (`wallFootX`) from the footprint's side
     /// (`Surface.footprintSide`). Every reader of a wall's top reads it so:
     /// the curtain, the top edge, the corners and the wall face.
-    func wallTruncation(at p: P2<DomainSpace>, t: Double, along: SIMD2<Double>, inward: SIMD2<Double>,
-                        tiles: [Affine2]) -> (point: P2<DomainSpace>, truncationHeight: Double) {
+    func wallFoot(at p: P2<DomainSpace>, t: Double, along: SIMD2<Double>, inward: SIMD2<Double>,
+                  tiles: [Affine2]) -> (point: P2<DomainSpace>, truncationHeight: Double) {
         let (q, back) = tile(under: p, tiles: tiles)
         let side = Surface.footprintSide(at: t, along: along, inward: inward, back: back)
         return (q, truncationHeight(atX: wallFootX(q.x, at: t, along: along, back: back), from: side))
@@ -263,7 +263,8 @@ public struct Surface: Sendable {
 
     /// Re z of a wall's foot carried back into the domain by `back`, taken
     /// onto a band boundary within `edgeTolerance` of it where the wall
-    /// stands on a line of Re z or ends: carried back through a tile, a foot
+    /// runs parallel to the imaginary axis, as one standing on a boundary
+    /// does, or ends: carried back through a tile, a foot
     /// on the boundary's image lands a rounding either side of it (the wall
     /// at 4.6 under x ↦ 5 - x comes back at 0.40000000000000036), and would
     /// read the band on whichever side it fell before its footprint's side
@@ -271,18 +272,18 @@ public struct Surface: Sendable {
     /// boundary keeps its x, so the wall steps where it crosses.
     func wallFootX(_ x: Double, at t: Double, along: SIMD2<Double>, back: Affine2) -> Double {
         guard case .realBands(let bands, _) = truncation,
-              t == 0 || t == 1 || Surface.standsOnLineOfReZ(along, back: back) else { return x }
+              t == 0 || t == 1 || Surface.isParallelToImaginaryAxis(along, back: back) else { return x }
         let tolerance = edgeTolerance
         return bands.lazy.map(\.below).first { abs(x - $0) <= tolerance } ?? x
     }
 
-    /// Whether a wall whose edge runs along `along` stands on a line of Re z
-    /// once carried back into the domain by `back`: the carried direction's
-    /// part along Re z is a rounding of its length. Not exactly zero: a
-    /// tile written from cos and sin turns a quarter with cos(π/2) =
+    /// Whether an edge running along `along` is parallel to the imaginary
+    /// axis once carried back into the domain by `back`: the carried
+    /// direction's part along Re z is a rounding of its length. Not exactly
+    /// zero: a tile written from cos and sin turns a quarter with cos(π/2) =
     /// 6.1e-17, and a wall on a boundary's image there carries back
     /// crossing it at that slope.
-    static func standsOnLineOfReZ(_ along: SIMD2<Double>, back: Affine2) -> Bool {
+    static func isParallelToImaginaryAxis(_ along: SIMD2<Double>, back: Affine2) -> Bool {
         let carried = SIMD2(back.a * along.x + back.b * along.y, back.c * along.x + back.d * along.y)
         return abs(carried.x) <= 1e-12 * simd_length(carried)
     }
@@ -290,10 +291,9 @@ public struct Surface: Sendable {
     /// The side of Re z a wall's foot reads the truncation from, at `t` of
     /// the way along its edge, `along` the edge's direction and `inward` its
     /// normal into the footprint, both carried back into the domain by
-    /// `back`: the side the footprint is on. Along a wall that stands on a
-    /// line of Re z, as one on a band boundary does, that is the way `inward`
-    /// points; at an end of a wall that leaves the line, the way the wall
-    /// goes, so its top runs on to its end in its own band. Elsewhere, on a
+    /// `back`: the side the footprint is on. Along a wall parallel to the
+    /// imaginary axis, as one on a band boundary is, that is the way `inward`
+    /// points; at an end of a wall that is not, the way the wall goes, so its top runs on to its end in its own band. Elsewhere, on a
     /// wall that crosses a boundary, the right, as `Truncation.height(atX:)`
     /// reads it, so the wall steps there. The sides differ only on a
     /// boundary.
@@ -301,7 +301,7 @@ public struct Surface: Sendable {
                               back: Affine2) -> Truncation.Side {
         func carried(_ d: SIMD2<Double>) -> Double { back.a * d.x + back.b * d.y }
         let across = carried(along)
-        let x = standsOnLineOfReZ(along, back: back) ? carried(inward) : t == 0 ? across : t == 1 ? -across : 0
+        let x = isParallelToImaginaryAxis(along, back: back) ? carried(inward) : t == 0 ? across : t == 1 ? -across : 0
         return x < 0 ? .left : .right
     }
 
