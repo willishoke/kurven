@@ -1254,18 +1254,33 @@ func faceTests() {
         }
     }
 
-    Check.suite("restriction: a tiled contour's copy is cut to the footprint where it lands, exactly") {
+    Check.suite("restriction: a contour's copy is cut to the footprint where it lands, exactly") {
         // On tiles whose footprint is not symmetric under the tiling,
         // reflected and turned: every kept piece of a copy lies in the
         // footprint where the copy stands, ending on its perimeter or where
         // the contour ends, and the copy is kept wherever it is in the
         // footprint, read sixteen times a segment. With a band of Im z as
-        // well, read on the domain the copy came from.
+        // well, read on the domain the copy came from. And an untiled layer,
+        // its one copy in place, wherever the footprint cuts the domain.
         let landscapes = try faceLandscapes().filter { l in
-            guard l.tiles.count > 1, case .inside = l.region else { return false }
+            guard case .inside = l.region else { return false }
             return true
         }
         for l in landscapes {
+          for tiled in [true, false] {
+            let copies = tiled ? l.tiles : [.identity]
+            // Untiled, only where the footprint cuts the domain, holding a
+            // twentieth of it and leaving a twentieth.
+            if !tiled {
+                let d = l.surface.domain
+                let held = (0..<400).filter { k in
+                    l.region.contains(P2(d.real.lo + d.real.length * (Double(k % 20) + 0.5) / 20,
+                                         d.imag.lo + d.imag.length * (Double(k / 20) + 0.5) / 20))
+                }.count
+                guard held >= 20, held <= 380 else { continue }
+            } else if l.tiles.count == 1 {
+                continue
+            }
             guard case .inside(let perimeter) = l.region else { continue }
             let surface = l.surface
             let real = surface.domain.real, imag = surface.domain.imag
@@ -1290,14 +1305,14 @@ func faceTests() {
                 ("the footprint and a band of Im z", .intersection([.footprint, .band(axis: .imag, lo: band.lo, hi: band.hi)]), true),
             ] {
                 func derived(_ r: Restriction) -> PolylineSet<WorldSpace> {
-                    surface.derive(.contour(field: .magnitude, levels: levels, restriction: r, tiled: true),
+                    surface.derive(.contour(field: .magnitude, levels: levels, restriction: r, tiled: tiled),
                                    policy: .magnitude, region: l.region, tiles: l.tiles, refine: l.refine)
                 }
                 let whole = derived(.all), kept = derived(restriction)
-                guard whole.count % l.tiles.count == 0 else {
+                guard whole.count % copies.count == 0 else {
                     Check.expect(false, "\(l.name), \(what): the whole contours come a copy per tile"); continue
                 }
-                let perCopy = whole.count / l.tiles.count
+                let perCopy = whole.count / copies.count
                 let wholeVertices = Set(whole.vertices.map(\.xy))
                 let runs = (0..<kept.count).map { kept[path: $0].map(\.xy.v) }
                 let pieces = Segments(runs, cell: cell)
@@ -1317,7 +1332,7 @@ func faceTests() {
                     }
                 }
                 for c in 0..<whole.count {
-                    let tile = l.tiles[c / perCopy]
+                    let tile = copies[c / perCopy]
                     guard let back = tile.inverse else { continue }
                     let path = whole[path: c].map(\.xy.v)
                     for (a, b) in zip(path, path.dropFirst()) {
@@ -1327,7 +1342,7 @@ func faceTests() {
                         for k in 0..<16 {
                             let q = a + (b - a) * ((Double(k) + 0.5) / 16)
                             guard outline.distance(q, within: cell).isInfinite || outline.distance(q, within: cell) > 1e-6 * size,
-                                  cover(q) == 1 else { continue }
+                                  !tiled || cover(q) == 1 else { continue }
                             let expected = l.region.contains(P2(q)) && inBand(ya)
                             if expected { inSamples += 1 } else { outSamples += 1 }
                             let onPiece = pieces.distance(q, within: cell) <= tolerance
@@ -1336,11 +1351,12 @@ func faceTests() {
                     }
                 }
                 Check.expect(inSamples > 200 && outSamples > 200 && outside.isEmpty && endsOff.isEmpty && misclipped.isEmpty,
-                             "\(l.name), kept to \(what): each copy cut to the footprint where it lands, exactly",
+                             "\(l.name), \(tiled ? "tiled" : "untiled"), kept to \(what): each copy cut to the footprint where it lands, exactly",
                              "\(outside.count) points kept outside, \(endsOff.count) of \(2 * runs.count) ends off the perimeter, "
                                 + "\(misclipped.count) of \(inSamples) in and \(outSamples) out misclipped: "
                                 + (outside.prefix(1) + endsOff.prefix(1) + misclipped.prefix(2)).joined(separator: "; "))
             }
+          }
         }
     }
 

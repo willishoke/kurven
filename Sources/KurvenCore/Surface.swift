@@ -512,8 +512,8 @@ public extension Surface {
     /// (`parameterRectangle`).
     /// Not over its trimmed domain: the restriction says which part of the
     /// domain a layer keeps, and a run is carried to the truncation edge by
-    /// `truncationCrossing`, as below. A tiled layer's copy on each tile is
-    /// cut to the footprint where it lands, exactly. A phase level of ±π is the branch cut,
+    /// `truncationCrossing`, as below. A layer kept to the footprint is cut
+    /// to it exactly, a tiled layer's copy on each tile where it lands. A phase level of ±π is the branch cut,
     /// where arg f jumps, and the grid has no contour at it. With a refiner
     /// it is drawn once, after the other levels, as one line of curves the
     /// way the Jahnke-Emde plates draw it.
@@ -612,20 +612,22 @@ public extension Surface {
             return paths
         }
 
-        // The footprint is where a copy stands in space, so each tile's copy
-        // is clipped to it there, exactly, as a face's copy is
-        // (`Face.contours(of:_:on:)`): cut where the footprint's perimeter,
-        // carried back through the tile, crosses a contour, and kept where
-        // the footprint holds the copy's point. What else the restriction
-        // asks is read on the domain, where the copy came from: a band of
-        // Re z or Im z is the function's, and the truncation is read at the
-        // point's own x through the tile under it, which is the domain's.
-        if tiled, restriction.requiresFootprint, case .inside = region {
-            return PolylineSet(paths: tiles.flatMap { tile -> [[P3<WorldSpace>]] in
+        // The footprint is where a copy stands in space, so each copy, on
+        // each tile or in place, is clipped to it there, exactly, as a
+        // face's copy is (`Face.contours(of:_:on:)`): cut where the
+        // footprint's perimeter, carried back through the tile, crosses a
+        // contour, and kept where the footprint holds the copy's point. What
+        // else the restriction asks is read on the domain, where the copy
+        // came from: a band of Re z or Im z is the function's, and the
+        // truncation is read at the point's own x through the tile under it,
+        // which is the domain's.
+        if restriction.requiresFootprint, case .inside = region {
+            return PolylineSet(paths: (tiled ? tiles : [.identity]).flatMap { tile -> [[P3<WorldSpace>]] in
                 guard let footprint = Surface.footprint(region, on: tile) else { return [] }
                 let clipped = Contour.clipped(contoured, over: rectangle, contains: footprint.contains,
                                               cuts: footprint.perimeter)
-                return kept(clipped, region: .full).map { $0.map { tile($0) } }
+                let paths = kept(clipped, region: .full)
+                return tiled ? paths.map { $0.map { tile($0) } } : paths
             })
         }
         let paths = kept(contoured, region: region)
