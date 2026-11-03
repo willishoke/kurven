@@ -250,15 +250,32 @@ public struct Surface: Sendable {
     /// A wall's foot `p`, `t` of the way along its edge, `along` the edge's
     /// direction and `inward` its normal into the footprint, as the domain
     /// reads it: the point of the domain the foot is the image of, carried
-    /// back through the tile under it, and the truncation over it, read at
-    /// its x there (`wallFootX`) from the footprint's side
-    /// (`Surface.footprintSide`). Every reader of a wall's top reads it so:
-    /// the curtain, the top edge, the corners and the wall face.
+    /// back through the tile its footprint is in (`wallTile`), and the
+    /// truncation over it, read at its x there (`wallFootX`) from the
+    /// footprint's side (`Surface.footprintSide`). Every reader of a wall's
+    /// top reads it so: the curtain, the top edge, the corners and the wall
+    /// face.
     func wallFoot(at p: P2<DomainSpace>, t: Double, along: SIMD2<Double>, inward: SIMD2<Double>,
                   tiles: [Affine2]) -> (point: P2<DomainSpace>, truncationHeight: Double) {
-        let (q, back) = tile(under: p, tiles: tiles)
+        let (q, back) = wallTile(at: p, t: t, along: along, inward: inward, tiles: tiles)
         let side = Surface.footprintSide(at: t, along: along, inward: inward, back: back)
         return (q, truncationHeight(atX: wallFootX(q.x, at: t, along: along, back: back), from: side))
+    }
+
+    /// The tile a wall's foot `p` is read through, and the foot carried back
+    /// through it: the tile under the footprint beside the foot, a
+    /// billionth of a cell in along `inward`, and at an end of the wall along
+    /// the wall as well. A wall on a seam between two tiles stands on both;
+    /// it bounds the copy its footprint is in, and the tile under the foot
+    /// itself would be whichever comes first.
+    func wallTile(at p: P2<DomainSpace>, t: Double, along: SIMD2<Double>, inward: SIMD2<Double>,
+                  tiles: [Affine2]) -> (point: P2<DomainSpace>, back: Affine2) {
+        guard tiles.count > 1 else { return (p, .identity) }
+        let length = simd_length(along)
+        let into = length > 0 ? along / length * (t == 0 ? 1 : t == 1 ? -1 : 0) : .zero
+        let back = tile(under: P2(p.v + edgeTolerance * (inward + into)), tiles: tiles).back
+        let q = back(P3(p.x, p.y, 0))
+        return (P2(q.x, q.y), back)
     }
 
     /// Re z of a wall's foot carried back into the domain by `back`, taken

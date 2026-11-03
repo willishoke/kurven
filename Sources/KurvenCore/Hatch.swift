@@ -248,7 +248,7 @@ extension Surface {
             var withRisers: [Station] = []
             for (a, b) in zip(stations, stations.dropFirst()) {
                 withRisers.append(a)
-                let backs = [tile(under: a.p, tiles: tiles).back, tile(under: b.p, tiles: tiles).back]
+                let backs = [a, b].map { wallTile(at: $0.p, t: $0.t ?? 0.5, along: along, inward: inward, tiles: tiles).back }
                 var met: [(s: Double, near: Station, far: Station)] = []
                 for back in backs.indices.filter({ $0 == 0 || backs[$0] != backs[0] }).map({ backs[$0] }) {
                     guard let forward = back.inverse else { continue }
@@ -264,7 +264,8 @@ extension Surface {
                         let y = qa.y + (qb.y - qa.y) * s
                         // Met where this tile is the one under it.
                         let crossing = forward(P3(x, y, 0))
-                        guard backs[0] == backs[1] || tile(under: P2(crossing.x, crossing.y), tiles: tiles).back == back,
+                        guard backs[0] == backs[1]
+                                || wallTile(at: P2(crossing.x, crossing.y), t: 0.5, along: along, inward: inward, tiles: tiles).back == back,
                               !met.contains(where: { $0.s == s }) else { continue }
                         // Carried forward, on the edge: a vertical or a
                         // horizontal edge keeps its own x or y, which a
@@ -508,14 +509,14 @@ extension Surface {
         for corner in corners {
             // Every wall ending at the corner, and its top there; those that
             // are not parallel to the imaginary axis in the domain, through
-            // the tile under the corner, where any is not.
-            let back = tile(under: P2(corner.x, corner.y), tiles: tiles).back
+            // the tile the wall reads its foot there through, where any is not.
             let tops = perimeter.edges.indices.flatMap { k -> [(top: Double, leaves: Bool)] in
-                let e = perimeter.edges[k]
+                let e = perimeter.edges[k], along = e.end.v - e.start.v
                 return [(e.start, 0.0), (e.end, 1.0)].filter { $0.0 == corner }.map { _, t in
-                    (wallHeight(at: P2(corner.x, corner.y), t: t, from: e.start, to: e.end,
-                                inward: perimeter.inward(k), tiles: tiles),
-                     !Surface.isParallelToImaginaryAxis(e.end.v - e.start.v, back: back))
+                    let back = wallTile(at: P2(corner.x, corner.y), t: t, along: along, inward: perimeter.inward(k), tiles: tiles).back
+                    return (wallHeight(at: P2(corner.x, corner.y), t: t, from: e.start, to: e.end,
+                                       inward: perimeter.inward(k), tiles: tiles),
+                            !Surface.isParallelToImaginaryAxis(along, back: back))
                 }
             }
             let leaving = tops.filter(\.leaves).map(\.top)

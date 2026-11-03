@@ -175,11 +175,15 @@ private func tiling(_ l: Landscape) -> Tally {
                     guard n.z > 0 else { return false }
                     // The facing's differences reach a cell out along the
                     // grid's axes as the tile turns them, and where they
-                    // reach ground two tiles hold they read the first, which
-                    // need not be this copy's.
+                    // reach ground another tile holds, or is nearest, they
+                    // read that one, across a seam the copies need not meet
+                    // smoothly at.
                     let reach = [(tile.a * cell.x, tile.c * cell.x), (-tile.a * cell.x, -tile.c * cell.x),
                                  (tile.b * cell.y, tile.d * cell.y), (-tile.b * cell.y, -tile.d * cell.y)]
-                    if face.id == .graph, reach.allSatisfy({ cover(P3(ground.x + $0.0, ground.y + $0.1, 0)) <= 1 }) {
+                    if face.id == .graph, reach.allSatisfy({ r in
+                        let w = P3<WorldSpace>(ground.x + r.0, ground.y + r.1, 0)
+                        return cover(w) <= 1 && carriedBack(w.xy.v, l).back == tile.inverse
+                    }) {
                         t.normals += 1
                         let facing = onF ? heightfield.graphNormal(at: ground.xy) : heightfield.normal(at: ground.xy)
                         let off = simd_length(n - facing) / simd_length(facing)
@@ -507,6 +511,25 @@ private func faceLandscapes() throws -> [Landscape] {
     landscapes.append(Landscape("the hatch fixture, uniform, in four tiles",
                                 surface: Surface(height: grid, phase: nil, truncation: .uniform(2)),
                                 tiles: reflections))
+    // A wall on a seam between two tiles, the second beside the first,
+    // (x, y) ↦ (x + 1, y), or turned a quarter, (x, y) ↦ (1 + y, 1 - x):
+    // |f| = 3(2 Re z - 1)² + 1/5 on the unit square, at 1 | 2 across Re z =
+    // 1/2, so where the seam is the first tile's right edge the band there
+    // is 2 and the second's 1 or its own. On a footprint either side of the
+    // seam, the wall on it reads the tile the footprint is in.
+    let seamGrid = Grid2D(width: 21, height: 21, domain: Domain(real: Interval(lo: 0, hi: 1), imag: Interval(lo: 0, hi: 1)),
+                          values: (0..<441).map { k in Float(3 * pow(2 * Double(k % 21) / 20 - 1, 2) + 0.2) })
+    let seamed = Surface(height: seamGrid, phase: nil, truncation: .realBands([RealBand(below: 0.5, height: 1)], beyond: 2))
+    for (tileName, tile) in [("beside it", Affine2(a: 1, b: 0, tx: 1, c: 0, d: 1, ty: 0)),
+                             ("turned", Affine2(a: 0, b: 1, tx: 1, c: -1, d: 0, ty: 1))] {
+        for (side, corners) in [("second", [(1.0, 0.2), (1.8, 0.2), (1.8, 0.8), (1.0, 0.8)]),
+                                ("first", [(0.2, 0.2), (1.0, 0.2), (1.0, 0.8), (0.2, 0.8)])] {
+            let walled = footprint(corners)
+            landscapes.append(Landscape("a wall on the seam with a tile \(tileName), the footprint in the \(side)",
+                                        surface: seamed, tiles: [.identity, tile], region: .inside(walled),
+                                        walls: .perimeter(walled, base: 0)))
+        }
+    }
     // Γ under its banded truncation, on f: the faces read the function.
     let request = LandscapeRequest(
         expression: "gamma(z)",
@@ -1352,7 +1375,10 @@ func faceTests() {
                     for (a, b) in zip(path, path.dropFirst()) {
                         let ya = back(P3(a.x, a.y, 0)).y, yb = back(P3(b.x, b.y, 0)).y
                         let inBand = { (y: Double) in !banded || (y > band.lo && y < band.hi) }
-                        guard inBand(ya) == inBand(yb) else { continue }
+                        // Not where a vertex lies on the band's edge, which
+                        // carried back and forth is a rounding either side.
+                        let onEdge = { (y: Double) in banded && min(abs(y - band.lo), abs(y - band.hi)) <= tolerance }
+                        guard inBand(ya) == inBand(yb), !onEdge(ya), !onEdge(yb) else { continue }
                         for k in 0..<16 {
                             let q = a + (b - a) * ((Double(k) + 0.5) / 16)
                             guard outline.distance(q, within: cell).isInfinite || outline.distance(q, within: cell) > 1e-6 * size,
