@@ -51,10 +51,10 @@ public extension Mesh<WorldSpace> {
     /// the edge's normal into the footprint, and where the edge stands on a
     /// band boundary, or ends on one, its top is the band's on that side
     /// (`Surface.wallHeight`), not the band the boundary starts. Where the
-    /// edge crosses a tile boundary between two samples it has two more
-    /// there, one read through the tile on each side
-    /// (`Surface.tileBoundaryCrossings`), so its top steps down the riser
-    /// there rather than ramping across.
+    /// edge crosses a tile boundary between two samples and the copies' tops
+    /// there differ, it has two more there, one read through the tile on
+    /// each side (`Surface.tileBoundaryCrossings`), so its top steps down the
+    /// riser there rather than ramping across.
     static func wallCurtain(from a: P2<WorldSpace>, to b: P2<WorldSpace>, inward: SIMD2<Double>,
                             samples: Int, surface: Surface, base: Double,
                             tiles: [Affine2] = [.identity]) -> Mesh<WorldSpace> {
@@ -74,6 +74,12 @@ public extension Mesh<WorldSpace> {
             if i > 0 {
                 let previous = Double(i - 1) / Double(samples - 1)
                 for crossing in surface.tileBoundaryCrossings(of: edge, from: previous, to: t, inward: inward, tiles: tiles) {
+                    let p = Surface.point(from: a, to: b, at: crossing.t)
+                    func top(_ back: Affine2) -> Double {
+                        surface.wallHeight(at: p, t: crossing.t, from: a, to: b, inward: inward, tiles: tiles, through: back)
+                    }
+                    let (near, far) = (top(crossing.near), top(crossing.far))
+                    guard Surface.stands(near, over: far) || Surface.stands(far, over: near) else { continue }
                     if crossing.t != previous { station(crossing.t, through: crossing.near) }
                     if crossing.t != t { station(crossing.t, through: crossing.far) }
                 }

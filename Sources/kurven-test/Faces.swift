@@ -85,6 +85,24 @@ private func curtain(_ perimeter: BoundaryPerimeter, _ k: Int, surface: Surface,
     return (Array(all.prefix(all.count / 2)), all)
 }
 
+/// Where a chord on the ground from `a` to `b` passes from one tile to
+/// another, found by bisection on the tile under it a hair `inward`, and
+/// whether `top`, read a hair either side of that point along the chord,
+/// differs by more than it moves there: a drop between two copies.
+private func dropAcross(_ a: SIMD2<Double>, _ b: SIMD2<Double>, inward: SIMD2<Double>, _ l: Landscape,
+                        top: (SIMD2<Double>) -> Double) -> (at: SIMD2<Double>, drops: Bool) {
+    // In from the wall by far less than along it, so a read either side
+    // stays on its side of the boundary whatever the angle between.
+    let size = max(abs(l.surface.domain.real.length), abs(l.surface.domain.imag.length)), e = 1e-9 * size, i = 1e-3 * e * inward
+    func back(_ t: Double) -> Affine2 { carriedBack(a + (b - a) * t + i, l).back }
+    let first = back(1.0 / 32)
+    let bracket = bisect(1.0 / 32, 31.0 / 32) { back($0) == first }
+    let at = a + (b - a) * (0.5 * (bracket.holds + bracket.fails)), d = simd_normalize(b - a)
+    let before = top(at - e * d + i), after = top(at + e * d + i)
+    let slide = max(abs(top(at - 2 * e * d + i) - before), abs(top(at + 2 * e * d + i) - after))
+    return (at, abs(before - after) > 4 * slide + 1e-9 * max(1, abs(before)))
+}
+
 /// A landscape as the faces are built from it, and as the drawing reads it.
 private struct Landscape {
     let name: String
@@ -1375,10 +1393,11 @@ func faceTests() {
                          "steps at \(steps), \(off.count) of \(samples) points off, worst \(worst): \(off.prefix(3).joined(separator: "; "))")
         }
 
-        // Where a wall crosses a tile boundary its top edge on f steps: no
-        // chord of it lies under two tiles, and where the crossing is, two
-        // vertices at one point, each the solid's top a hair along the wall
-        // on its own side, read through the tile under it. Between its
+        // Where a wall crosses a tile boundary and the copies' tops differ,
+        // its top edge on f steps: no chord of it lies under two tiles across
+        // a drop, and where the crossing is, two vertices at one point, each
+        // the solid's top a hair along the wall on its own side, read through
+        // the tile under it. Where the tops agree it does not step. Between its
         // vertices it is the solid's top a hair inside the footprint, read
         // every 32nd of each chord, within four times the refiner's
         // tolerance: the profile is subdivided where a chord's midpoint parts
@@ -1399,8 +1418,9 @@ func faceTests() {
                 for (a, c) in zip(top, top.dropFirst()) {
                     if simd_length(a.xy.v - c.xy.v) > 1e-12 * size {
                         let near = a.xy.v + (c.xy.v - a.xy.v) / 32, far = a.xy.v + (c.xy.v - a.xy.v) * 31 / 32
-                        if carriedBack(near + 1e-9 * size * inward, l).back != carriedBack(far + 1e-9 * size * inward, l).back {
-                            wrong.append("a chord from \(a.v) to \(c.v) under two tiles")
+                        if carriedBack(near + 1e-9 * size * inward, l).back != carriedBack(far + 1e-9 * size * inward, l).back,
+                           dropAcross(a.xy.v, c.xy.v, inward: inward, l, top: { h.surfaceHeight(at: P2($0)) }).drops {
+                            wrong.append("a chord from \(a.v) to \(c.v) across a drop between two tiles")
                         }
                         for j in 1..<32 {
                             let t = Double(j) / 32, w = a.xy.v + (c.xy.v - a.xy.v) * t
@@ -1413,10 +1433,15 @@ func faceTests() {
                         }
                     } else if carriedBack(a.xy.v + 1e-6 * size * d, l).back != carriedBack(a.xy.v - 1e-6 * size * d, l).back {
                         steps += 1
+                        // Along the wall, in from it by far less, so each read
+                        // stays on its side of the boundary.
                         let e = 1e-9 * size
-                        let before = solid(a.xy.v - e * d), after = solid(a.xy.v + e * d)
-                        let slide = max(abs(solid(a.xy.v - 2 * e * d) - before), abs(solid(a.xy.v + 2 * e * d) - after))
-                        if abs(before - after) > 4 * slide + 1e-9 * max(1, abs(before)) { drops += 1 }
+                        func along(_ t: Double) -> Double { h.surfaceHeight(at: P2(a.xy.v + t * e * d + 1e-3 * e * inward)) }
+                        let before = along(-1), after = along(1)
+                        let slide = max(abs(along(-2) - before), abs(along(2) - after))
+                        if abs(before - after) > 4 * slide + 1e-9 * max(1, abs(before)) { drops += 1 } else {
+                            wrong.append("a step at \(a.xy.v), where the copies' tops agree")
+                        }
                         for (v, z) in [(a, before), (c, after)] where !(abs(v.z - z) <= 4 * slide + 1e-9 * max(1, abs(z))) {
                             wrong.append("at the tile boundary \(v.xy.v) \(v.z), the solid on its side \(z)")
                         }
@@ -1427,6 +1452,39 @@ func faceTests() {
                          "\(l.name): the top edge steps where a wall crosses a tile boundary, and follows the solid between",
                          "\(steps) steps at a tile boundary, \(drops) down a drop, \(wrong.count) wrong of \(samples) points, worst \(worst): "
                             + wrong.prefix(3).joined(separator: "; "))
+        }
+
+        // Where a wall crosses a tile boundary and the copies' tops agree, it
+        // draws as on one copy: cn(z, 0.64) over [-K, K] × [0, K'] on f, a
+        // second tile reflected across Re z = K or moved 2K along, |cn| the
+        // same either way, on a footprint across both with walls on it. No
+        // two vertices of a top edge stand at one point, and with the
+        // reflection, whose copies read one point of the domain, the
+        // curtain has no sample past its density.
+        let K = 1.9953027776647292, Kp = 1.7507538029157523
+        let cn = try NativeLandscape.build(
+            LandscapeRequest(expression: "cn(z, 0.64)", domain: Domain(real: Interval(lo: -K, hi: K), imag: Interval(lo: 0, hi: Kp)),
+                             resolution: 100, truncation: .uniform(4)),
+            refine: true)
+        let acrossCn = BoundaryPerimeter(edges: [(-K + 0.3, 0.3), (3 * K - 0.3, 0.3), (3 * K - 0.3, Kp - 0.3), (-K + 0.3, Kp - 0.3)].indices.map { k in
+            let c = [(-K + 0.3, 0.3), (3 * K - 0.3, 0.3), (3 * K - 0.3, Kp - 0.3), (-K + 0.3, Kp - 0.3)], a = c[k], b = c[(k + 1) % c.count]
+            return PerimeterEdge(start: P2(a.0, a.1), end: P2(b.0, b.1), density: 17)
+        })
+        for (name, tile, reflected) in [("reflected", Affine2(a: -1, b: 0, tx: 2 * K, c: 0, d: 1, ty: 0), true),
+                                        ("moved 2K along", Affine2(a: 1, b: 0, tx: 2 * K, c: 0, d: 1, ty: 0), false)] {
+            let tiles = [Affine2.identity, tile]
+            let context = Surface.HatchContext(perimeter: acrossCn, region: .full, tiles: tiles)
+            var vertices = 0, doubled: [String] = [], extra = 0
+            for k in acrossCn.edges.indices {
+                guard let drawn = cn.surface.hatch(.wallEdges(edges: [k], step: 1, base: 0), in: context, refine: cn.refine) else { continue }
+                let top = Array(drawn[path: 0])
+                vertices += top.count
+                for (a, c) in zip(top, top.dropFirst()) where a.xy == c.xy { doubled.append("\(a.xy.v)") }
+                if reflected { extra += curtain(acrossCn, k, surface: cn.surface, base: 0, tiles: tiles).top.count - 17 }
+            }
+            Check.expect(vertices > 100 && doubled.isEmpty && extra == 0,
+                         "cn(z, 0.64), a second tile \(name), walls across both, on f: a wall across the tile boundary, the tops agreeing, draws as on one copy",
+                         "\(doubled.count) points with two vertices, \(extra) curtain samples past the density: \(doubled.prefix(2).joined(separator: "; "))")
         }
 
         // A riser's top is drawn only where the riser stands: on f, every
@@ -1664,8 +1722,10 @@ func faceTests() {
     }
 
     Check.suite("depth: the depth pass's walls step where they cross a tile boundary, and a riser fills the drop between two copies") {
-        // The curtain of a wall that crosses a tile boundary steps there, as
-        // its top edge does: no chord of its top lies under two tiles. And
+        // The curtain of a wall that crosses a tile boundary where the copies'
+        // tops differ steps there, as its top edge does: no chord of its top
+        // lies under two tiles across a drop. Where they agree it does not
+        // step: no two of its samples at one point. And
         // where two copies meet with different tops, the riser strip the
         // depth pass draws (`Mesh.tileBoundaryRisers`) covers the drop
         // between the tops the depth pass draws a hair either side
@@ -1682,10 +1742,19 @@ func faceTests() {
                 for k in perimeter.edges.indices {
                     let top = curtain(perimeter, k, surface: l.surface, base: base, tiles: l.tiles).top
                     let inward = perimeter.inward(k)
+                    let d = simd_normalize(perimeter.edges[k].end.v - perimeter.edges[k].start.v)
+                    for (a, c) in zip(top, top.dropFirst()) where simd_length(a.xy.v - c.xy.v) <= 1e-12 * size {
+                        // Read along the wall either side.
+                        if !dropAcross(a.xy.v - 1e-6 * size * d, a.xy.v + 1e-6 * size * d, inward: inward, l,
+                                       top: { h.surfaceHeight(at: P2($0)) }).drops {
+                            ramps.append("a step at \(a.xy.v) where the copies' tops agree")
+                        }
+                    }
                     for (a, c) in zip(top, top.dropFirst()) where simd_length(a.xy.v - c.xy.v) > 1e-12 * size {
                         chords += 1
                         let near = a.xy.v + (c.xy.v - a.xy.v) / 32, far = a.xy.v + (c.xy.v - a.xy.v) * 31 / 32
-                        if carriedBack(near + side * inward, l).back != carriedBack(far + side * inward, l).back {
+                        if carriedBack(near + side * inward, l).back != carriedBack(far + side * inward, l).back,
+                           dropAcross(a.xy.v, c.xy.v, inward: inward, l, top: { h.surfaceHeight(at: P2($0)) }).drops {
                             ramps.append("\(a.v) to \(c.v)")
                         }
                     }

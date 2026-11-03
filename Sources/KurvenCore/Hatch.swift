@@ -240,19 +240,25 @@ extension Surface {
             let t = Double($0) / Double(n - 1)
             return (Surface.point(on: edge, at: t), t, nil, nil)
         }
-        // Where the edge crosses a tile boundary between two nodes, two
-        // stations at the crossing, each read through the tile on its side
-        // (`tileBoundaryCrossings`): where the copies' tops differ the top
-        // steps there, down a riser, as at a band boundary. One at an end of
-        // the segment, which is read through the other already.
+        // Where the edge crosses a tile boundary between two nodes and the
+        // copies' tops there differ (`stands(_:over:)`), two stations at the
+        // crossing, each read through the tile on its side
+        // (`tileBoundaryCrossings`): the top steps there, down a riser, as at
+        // a band boundary. One at an end of the segment, which is read
+        // through the other already. Where the tops agree, none: the top
+        // runs on across, as it would on one copy.
         if tiles.count > 1 {
             var withCrossings: [Station] = []
             for (a, b) in zip(stations, stations.dropFirst()) {
                 withCrossings.append(a)
                 for crossing in tileBoundaryCrossings(of: edge, from: a.t ?? 0, to: b.t ?? 1, inward: inward, tiles: tiles) {
                     let p = Surface.point(on: edge, at: crossing.t)
-                    if crossing.t != a.t { withCrossings.append((p, crossing.t, nil, crossing.near)) }
-                    if crossing.t != b.t { withCrossings.append((p, crossing.t, nil, crossing.far)) }
+                    let near: Station = (p, crossing.t, nil, crossing.near), far: Station = (p, crossing.t, nil, crossing.far)
+                    let (zn, zf) = (read(near), read(far))
+                    let (tn, tf) = (min(zn.u, zn.truncationHeight), min(zf.u, zf.truncationHeight))
+                    guard Surface.stands(tn, over: tf) || Surface.stands(tf, over: tn) else { continue }
+                    if crossing.t != a.t { withCrossings.append(near) }
+                    if crossing.t != b.t { withCrossings.append(far) }
                 }
             }
             withCrossings.append(stations[stations.count - 1])
