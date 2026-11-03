@@ -331,7 +331,7 @@ public struct Surface: Sendable {
 
     /// Whether a copy's top over a tile boundary stands over another's: by
     /// more than a billionth of the lower, a rounding of the point two tiles
-    /// carry back, as copies a reflection apart do.
+    /// carry back, as copies reflected across the tile boundary do.
     static func stands(_ higher: Double, over lower: Double) -> Bool {
         higher > lower + 1e-9 * max(1, abs(lower))
     }

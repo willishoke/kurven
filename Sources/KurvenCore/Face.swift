@@ -426,11 +426,13 @@ public extension Surface {
     /// Each copy's top is read on the tile boundary through its own tile, at
     /// the point of the domain's edge the tile boundary point is the copy of
     /// (`tileBoundaryTop`), and the riser stands where one stands over the
-    /// other (`stands(_:over:)`): a turned neighbour's top can, a
-    /// reflection's never does. As at a band boundary, it stands where the
-    /// footprint holds both sides of the tile boundary, read a hair either
-    /// side of it; where it holds one, a wall on the tile boundary bounds the
-    /// copy its footprint is in (`wallTile`) and rises to that copy's top.
+    /// other (`stands(_:over:)`): a turned, moved or glide-reflected
+    /// neighbour's top can, one reflected across the tile boundary never
+    /// does, reading the same points of the domain. As at a band boundary,
+    /// it stands where the footprint holds both sides of the tile boundary,
+    /// read a hair either side of it; where it holds one, a wall on the tile
+    /// boundary bounds the copy its footprint is in (`wallTile`) and rises
+    /// to that copy's top.
     /// The parameter rectangle runs from 0, under any |f|, to the highest
     /// truncation, or the grid's highest sample without one.
     func tileBoundaryRisers(tiles: [Affine2] = [.identity], region: Region = .full,
