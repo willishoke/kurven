@@ -844,6 +844,33 @@ private func faceLandscapes() throws -> [Landscape] {
                           tiles: translations.reversed()))
     more[more.count - 2].dropsAtATileBoundary = true
     more[more.count - 1].dropsAtATileBoundary = true
+    // Copies whose tops agree but for rounding: |f| = 1/|z - (1/2 + i/2)|,
+    // softened, on the unit square, with a second tile turned a quarter or
+    // a half about the first's right edge, written from cos and sin, so a
+    // point of the tile boundary comes back through either tile a rounding
+    // apart. No riser stands, and none is drawn.
+    let round = Surface(height: Grid2D(width: 21, height: 21, domain: unit, values: (0..<441).map { k in
+        let x = Double(k % 21) / 20, y = Double(k / 21) / 20
+        return Float(1 / ((x - 0.5) * (x - 0.5) + (y - 0.5) * (y - 0.5) + 0.01).squareRoot())
+    }), phase: nil, truncation: .uniform(100))
+    let (c4, s4, c2, s2) = (cos(Double.pi / 2), sin(Double.pi / 2), cos(Double.pi), sin(Double.pi))
+    for (name, tile) in [("a quarter", Affine2(a: c4, b: s4, tx: 1, c: -s4, d: c4, ty: 1)),
+                         ("a half", Affine2(a: c2, b: -s2, tx: 1 - c2 + 0.5 * s2, c: s2, d: c2, ty: 0.5 - s2 - 0.5 * c2))] {
+        more.append(Landscape("|f| round about the centre, a tile turned \(name) from cos and sin, on the grid", surface: round,
+                              tiles: [.identity, tile]))
+    }
+    // On f, a pole a tenth outside the first copy's right edge, 1/(z - 1.6)
+    // under 20, its top along the tile boundary peaking at 10 between two
+    // grid nodes, where the turned copy's is under 1: the riser's top is f's
+    // profile there, subdivided, not the chord between the nodes.
+    let pole = try NativeLandscape.build(
+        LandscapeRequest(expression: "1/(z - 1.6)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                         resolution: 32, truncation: .uniform(20)),
+        refine: true)
+    var peaked = Landscape("a pole a tenth outside the tile boundary, a tile turned, on f", surface: pole.surface,
+                           tiles: [.identity, Affine2(a: 0, b: 1, tx: 2.5, c: -1, d: 0, ty: 0.5)], refine: pole.refine)
+    peaked.dropsAtATileBoundary = true
+    more.append(peaked)
     landscapes += more
     let o = gamma.manifest.occluder
     landscapes.append(Landscape("Γ, banded, on f", surface: gamma.surface, tiles: o.tiles, region: o.region,
@@ -1830,6 +1857,31 @@ func faceTests() {
                             + "uncovered, \(stray.count) of \(triangles.count) triangles over no drop: "
                             + (ramps.prefix(1) + uncovered.prefix(2) + stray.prefix(2)).joined(separator: "; "))
         }
+    }
+
+    Check.suite("depth: a bundle's occluder holds the risers at its tile boundaries") {
+        // The reviewer's tower, a bundle on f, its manifest given a second
+        // tile turned beside the first: the occluder the depth pass draws
+        // (`KurvenBundle.occluder()`) has every triangle of the riser strip.
+        let bundle = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/(z - 1.4)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                             resolution: 32, truncation: .realBands([RealBand(below: 1.45, height: 0.5)], beyond: 1)),
+            refine: true)
+        var manifest = bundle.manifest
+        manifest.occluder.tiles = [.identity, Affine2(a: 0, b: 1, tx: 2.5, c: -1, d: 0, ty: 0.5)]
+        let tiled = KurvenBundle(url: bundle.url, manifest: manifest, surface: bundle.surface, layers: bundle.layers,
+                                 wallMesh: bundle.wallMesh, refine: bundle.refine)
+        let o = manifest.occluder
+        let strip = Mesh.tileBoundaryRisers(of: tiled.surface, step: o.step, region: o.region, tiles: o.tiles)
+        let occluder = tiled.occluder()
+        func triangles(_ m: Mesh<WorldSpace>) -> Set<[SIMD3<Double>]> {
+            Set(m.triangles.map { t in (0..<3).map { m.vertices[Int(t[$0])].v } })
+        }
+        let held = triangles(occluder)
+        let missing = triangles(strip).filter { !held.contains($0) }
+        Check.expect(strip.triangles.count > 10 && missing.isEmpty,
+                     "the tower's occluder, a tile turned beside it, holds the riser strip at the tile boundary",
+                     "\(missing.count) of \(strip.triangles.count) strip triangles missing")
     }
 
     Check.suite("visibility: a line of sight that passes a tile boundary under the higher copy's top is hidden, whichever tile comes first") {
