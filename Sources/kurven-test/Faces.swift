@@ -291,17 +291,46 @@ private func tiling(_ l: Landscape) -> Tally {
                         return !pointInPolygon(P2(w + h), corners) && pointInPolygon(P2(w - h), corners)
                     }
                 }
-                let over = max(atFoot.max() ?? top, cornerTop[v.xy] ?? top)
+                // Nothing over the top, nor over the solid in the footprint
+                // within a few times the distance a face is matched to a point
+                // at (`parameter(of:on:_:)`): a riser stands a hair inside a
+                // wall that leaves its boundary at a slant.
+                let match = 4e-9 * max(1, simd_length(v.v))
+                let near = [SIMD2(1.0, 0), SIMD2(-1, 0), SIMD2(0, 1), SIMD2(0, -1)].map { v.xy.v + match * $0 }
+                    .filter { l.region.contains(P2($0)) }.map { heightfield.surfaceHeight(at: P2($0)) }.filter(\.isFinite)
+                let over = max(atFoot.max() ?? top, cornerTop[v.xy] ?? top, near.max() ?? top)
                 expect(P3(v.x, v.y, over + 1e-3 * max(1, abs(over)) + 0.1 * (over - base)), 0)
                 expect(P3(v.x, v.y, base - 0.1 * (top - base)), 0)
                 t.stations += 1
                 // Where it steps, the solid's top either side along the wall,
                 // on its line: the boundary crosses it at a slant, and a step
-                // in as well can land both reads on one side.
-                let towards = atFoot.count == 1 ? [inward + (atStart ? d : atEnd ? -d : .zero)] : [d, -d]
+                // in as well can land both reads on one side. Elsewhere beside
+                // the foot in the band the wall reads there: a billionth along
+                // `toward`, or half the foot's distance from a band boundary
+                // it is nearer than that, so the read stays in the wall's
+                // band where the wall runs a hair off the boundary; and at an
+                // end on a boundary of a wall that leaves it, across the
+                // boundary into the band the wall runs on in, its own.
+                var towards = atFoot.count == 1 ? [inward + (atStart ? d : atEnd ? -d : .zero)] : [d, -d]
+                var reach = side
+                if atFoot.count == 1 {
+                    let back = carriedBack(v.xy.v + side * towards[0], l).back
+                    let q = back(P3(v.x, v.y, 0)).xy.v
+                    let along = SIMD2(back.a * d.x + back.b * d.y, back.c * d.x + back.d * d.y)
+                    if let b = boundaries.min(by: { abs(q.x - $0) < abs(q.x - $1) }) {
+                        let apart = abs(q.x - b)
+                        if apart > 1e-12 * size, apart < side {
+                            reach = 0.5 * apart / simd_length(towards[0])
+                        } else if apart <= 1e-12 * size, atStart || atEnd, abs(along.x) > 1e-12 * simd_length(along),
+                                  let forward = back.inverse {
+                            let own = (atStart ? along.x : -along.x) > 0 ? 1.0 : -1.0
+                            towards = [SIMD2(forward.a * own, forward.c * own)]
+                        }
+                    }
+                }
                 let reads = towards.map { toward -> (solid: Double, slide: Double) in
-                    let solid = heightfield.surfaceHeight(at: P2(v.xy.v + side * toward))
-                    return (solid, abs(heightfield.surfaceHeight(at: P2(v.xy.v + 2 * side * toward)) - solid))
+                    let solid = heightfield.surfaceHeight(at: P2(v.xy.v + reach * toward))
+                    return (solid, abs(heightfield.surfaceHeight(at: P2(v.xy.v + 2 * reach * toward)) - solid))
                 }
                 // Not where the wall crosses a seam, which two copies need
                 // not meet smoothly at: a vertex there is read through either.
@@ -314,12 +343,13 @@ private func tiling(_ l: Landscape) -> Tally {
             }
         }
     }
-    /// Whether a wall stands on a point of the ground.
+    /// Whether a wall stands on a point of the ground, as near as a face is
+    /// matched to a point (`parameter(of:on:_:)`).
     func wallStands(_ w: P2<WorldSpace>) -> Bool {
         wallFeet.contains { a, b in
             let d = b.v - a.v
             let s = max(0, min(1, simd_dot(w.v - a.v, d) / simd_length_squared(d)))
-            return simd_length(w.v - (a.v + s * d)) <= 1e-12 * max(1, size)
+            return simd_length(w.v - (a.v + s * d)) <= 4e-9 * max(1, simd_length(w.v))
         }
     }
 
@@ -565,6 +595,14 @@ private func faceLandscapes() throws -> [Landscape] {
     landscapes.append(Landscape("|f| = 10 at 1 | 2, a tile turned, a corner on the seam where its riser ends",
                                 surface: flat, tiles: [.identity, Affine2(a: 0, b: 1, tx: 1, c: -1, d: 0, ty: 1)],
                                 region: .inside(cornered), walls: .perimeter(cornered, base: 0)))
+    // A wall leaving the boundary Re z = 1/2 at a slope of 1e-8 against the
+    // imaginary axis, the footprint to its right: it runs in the band left
+    // of the boundary, and its top is that band's, 1, all along, its end on
+    // the boundary too, where a riser up to 2 stands a hair inside it.
+    let slope = 1e-8
+    let leaving = footprint([(0.5, 0.9), (0.5 - 0.8 * slope, 0.1), (0.9, 0.1), (0.9, 0.9)])
+    landscapes.append(Landscape("|f| = 10 at 1 | 2, a wall leaving the boundary at a slope of 1e-8",
+                                surface: flat, region: .inside(leaving), walls: .perimeter(leaving, base: 0)))
     // Γ under its banded truncation, on f: the faces read the function.
     let request = LandscapeRequest(
         expression: "gamma(z)",
@@ -1072,6 +1110,16 @@ func faceTests() {
             let top = corner.map { $0[$0.endIndex - 1].z }
             Check.expect(top.map { abs($0 - 2) <= 1e-12 } ?? false,
                          "\(l.name): the corner's edge at (1, 1/2) rises to 2", "to \(top.map { "\($0)" } ?? "nothing")")
+        }
+        // A wall leaving the boundary at a slant of 1e-8 runs in the band
+        // left of it, its end on the boundary too: its curtain reads 1 all
+        // along.
+        if let l = landscapes.first(where: { $0.name.hasSuffix("a wall leaving the boundary at a slope of 1e-8") }),
+           case .perimeter(let perimeter, let base) = l.walls {
+            let dense = BoundaryPerimeter(edges: perimeter.edges.map { PerimeterEdge(start: $0.start, end: $0.end, density: 41) })
+            let tops = Mesh.walls(of: dense, surface: l.surface, base: base, tiles: l.tiles).vertices[0..<41].map(\.z)
+            Check.expect(tops.allSatisfy { $0 == 1 }, "\(l.name): its curtain reads 1 all along",
+                         "\(tops.filter { $0 != 1 }.count) of 41 stations not 1: \(Set(tops).sorted())")
         }
 
         // A wall that crosses a band boundary steps there: on f its top edge
