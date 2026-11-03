@@ -839,6 +839,7 @@ extension Surface {
                 func top(_ s: Double) -> Double { tops(boundary.point(s)).max() ?? .nan }
                 for (k, stop) in stretch.enumerated() {
                     let z = tops(stop.read).max() ?? .nan
+                    let at = P3<WorldSpace>(stop.at.x, stop.at.y, z)
                     if k > 0, let tolerance = refine?.tolerance, refine?.magnitude != nil {
                         let a = stretch[k - 1].s, za = curve[curve.count - 1].z
                         func subdivide(_ s0: Double, _ z0: Double, _ s1: Double, _ z1: Double, depth: Int) {
@@ -851,7 +852,7 @@ extension Surface {
                         }
                         subdivide(a, za, stop.s, z, depth: 0)
                     }
-                    curve.append(vertex(stop.s, z))
+                    curve.append(at)
                 }
                 if curve.count >= 2 { out.append(curve) }
             }
@@ -864,11 +865,13 @@ extension Surface {
     /// boundary, and one copy's top stands over the other's
     /// (`stands(_:over:)`), `tops` reading each copy's over a point of the
     /// tile boundary, `backs` the two tiles' inverses. Each stretch is its
-    /// stops in order, the distance `s` along the tile boundary and the point
-    /// its tops are read at: at its ends a hair inside it, since a copy's top
-    /// can step there, or the footprint end. The stops: each copy's grid
+    /// stops in order: the distance `s` along the tile boundary, the point
+    /// `at` it is, and the point its tops are read at, at its ends a hair
+    /// inside it, since a copy's top can step there, or the footprint end. The
+    /// stops: each copy's grid
     /// nodes along the tile boundary (every `step`-th); where the footprint's
-    /// perimeter crosses the lines either side of the tile boundary, exactly;
+    /// perimeter crosses the lines either side of the tile boundary, exactly,
+    /// on the edge itself where the edge or the boundary runs along an axis;
     /// where a copy's top steps, at a band boundary its side of the domain
     /// crosses; where a copy's `excess` over its truncation changes sign; and
     /// where the copies' tops cross, or the riser stops standing otherwise,
@@ -879,7 +882,7 @@ extension Surface {
     /// and breaks where a copy's top steps.
     func tileBoundaryStretches(_ boundary: TileBoundary, backs: [Affine2], region: Region, step: Int = 1,
                                tops: (P2<WorldSpace>) -> [Double], excess: (P2<DomainSpace>) -> Double)
-        -> [[(s: Double, read: P2<WorldSpace>)]] {
+        -> [[(s: Double, at: P2<WorldSpace>, read: P2<WorldSpace>)]] {
         let side = 1e-9 * cell, nudge = 1e-9 * cell
         let length = boundary.length, n = boundary.normal
         let g = height
@@ -897,7 +900,7 @@ extension Surface {
         }
         // Each stop with what it is: a grid node, or bisected, 0; where the
         // footprint ends, 1; where a copy's top steps, 2.
-        var stops: [(s: Double, kind: Int)] = [(0, 0), (length, 0)]
+        var stops: [(s: Double, kind: Int, at: P2<WorldSpace>?)] = [(0, 0, nil), (length, 0, nil)]
         for k in backs.indices {
             let q0 = copy(k, 0), q1 = copy(k, length)
             func along(_ c: Double, _ c0: Double, _ c1: Double) -> Double? {
@@ -906,15 +909,15 @@ extension Surface {
             }
             if q0.x != q1.x {
                 for i in stride(from: 0, to: g.width, by: max(step, 1)) {
-                    if let s = along(g.position(x: i, y: 0).x, q0.x, q1.x) { stops.append((s, 0)) }
+                    if let s = along(g.position(x: i, y: 0).x, q0.x, q1.x) { stops.append((s, 0, nil)) }
                 }
                 if case .realBands(let bands, _) = truncation {
-                    for b in bands { if let s = along(b.below, q0.x, q1.x) { stops.append((s, 2)) } }
+                    for b in bands { if let s = along(b.below, q0.x, q1.x) { stops.append((s, 2, nil)) } }
                 }
             }
             if q0.y != q1.y {
                 for j in stride(from: 0, to: g.height, by: max(step, 1)) {
-                    if let s = along(g.position(x: 0, y: j).y, q0.y, q1.y) { stops.append((s, 0)) }
+                    if let s = along(g.position(x: 0, y: j).y, q0.y, q1.y) { stops.append((s, 0, nil)) }
                 }
             }
         }
@@ -928,15 +931,28 @@ extension Surface {
                     let det = e.x * u.y - e.y * u.x
                     guard det != 0 else { continue }
                     let r = p - o
-                    let s = (e.x * r.y - e.y * r.x) / det, t = (u.x * r.y - u.y * r.x) / det
-                    if t >= 0, t <= 1, s > 0, s < length { stops.append((s, 1)) }
+                    var s = (e.x * r.y - e.y * r.x) / det
+                    let t = (u.x * r.y - u.y * r.x) / det
+                    guard t >= 0, t <= 1 else { continue }
+                    // Along an axis, the crossing's coordinate there is the
+                    // edge's or the boundary's own, not a ratio a rounding
+                    // off it.
+                    var at: P2<WorldSpace>?
+                    if u.x == 0 {
+                        let y = e.y == 0 ? p.y : p.y + t * e.y
+                        at = P2(boundary.start.x, y); s = (y - boundary.start.y) / u.y
+                    } else if u.y == 0 {
+                        let x = e.x == 0 ? p.x : p.x + t * e.x
+                        at = P2(x, boundary.start.y); s = (x - boundary.start.x) / u.x
+                    }
+                    if s > 0, s < length { stops.append((s, 1, at)) }
                 }
             }
         }
         /// The stops in order, those nearer than `nudge` one, of the
         /// greater kind.
-        func merged(_ stops: [(s: Double, kind: Int)]) -> [(s: Double, kind: Int)] {
-            var out: [(s: Double, kind: Int)] = []
+        func merged(_ stops: [(s: Double, kind: Int, at: P2<WorldSpace>?)]) -> [(s: Double, kind: Int, at: P2<WorldSpace>?)] {
+            var out: [(s: Double, kind: Int, at: P2<WorldSpace>?)] = []
             for stop in stops.sorted(by: { $0.s < $1.s }) {
                 if let last = out.last, stop.s - last.s <= nudge {
                     if stop.kind > last.kind { out[out.count - 1] = stop }
@@ -947,7 +963,7 @@ extension Surface {
             return out
         }
         let sorted = merged(stops).map(\.s)
-        var more: [(s: Double, kind: Int)] = []
+        var more: [(s: Double, kind: Int, at: P2<WorldSpace>?)] = []
         for (a, c) in zip(sorted, sorted.dropFirst()) {
             let (ia, ic) = (a + nudge, c - nudge)
             guard ic > ia else { continue }
@@ -955,28 +971,28 @@ extension Surface {
                 let ea = excess(copy(k, ia)), ec = excess(copy(k, ic))
                 if ea.isFinite, ec.isFinite, (ea > 0) != (ec > 0) {
                     let bracket = bisect(ia, ic) { (excess(copy(k, $0)) > 0) == (ea > 0) }
-                    more.append((0.5 * (bracket.holds + bracket.fails), 0))
+                    more.append((0.5 * (bracket.holds + bracket.fails), 0, nil))
                 }
             }
             let (da, dc) = (tops(boundary.point(ia)), tops(boundary.point(ic)))
             if (da[0] - da[1]).isFinite, (dc[0] - dc[1]).isFinite, (da[0] > da[1]) != (dc[0] > dc[1]) {
                 let bracket = bisect(ia, ic) { s in let z = tops(boundary.point(s)); return (z[0] > z[1]) == (da[0] > da[1]) }
-                more.append((0.5 * (bracket.holds + bracket.fails), 0))
+                more.append((0.5 * (bracket.holds + bracket.fails), 0, nil))
             } else if stands(ia) != stands(ic) {
                 let standing = stands(ia)
                 let bracket = bisect(ia, ic) { stands($0) == standing }
-                more.append((0.5 * (bracket.holds + bracket.fails), 0))
+                more.append((0.5 * (bracket.holds + bracket.fails), 0, nil))
             }
         }
         let all = merged(merged(stops) + more)
-        var stretches: [[(s: Double, read: P2<WorldSpace>)]] = []
+        var stretches: [[(s: Double, at: P2<WorldSpace>, read: P2<WorldSpace>)]] = []
         var open = false
         for (a, c) in zip(all, all.dropFirst()) {
             guard stands(0.5 * (a.s + c.s)) else { open = false; continue }
             // Read from within at the stretch's ends; where it runs on, a
             // stop between is read where it is.
-            let start = (s: a.s, read: boundary.point(a.s + nudge))
-            let end = (s: c.s, read: boundary.point(c.s - nudge))
+            let start = (s: a.s, at: a.at ?? boundary.point(a.s), read: boundary.point(a.s + nudge))
+            let end = (s: c.s, at: c.at ?? boundary.point(c.s), read: boundary.point(c.s - nudge))
             if open, a.kind != 2 {
                 stretches[stretches.count - 1][stretches[stretches.count - 1].count - 1].read = boundary.point(a.s)
                 stretches[stretches.count - 1].append(end)

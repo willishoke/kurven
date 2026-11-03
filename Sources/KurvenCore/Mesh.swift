@@ -134,7 +134,7 @@ public extension Mesh<WorldSpace> {
                 for (a, c) in zip(stretch, stretch.dropFirst()) {
                     let base = Int32(vertices.count)
                     for stop in [a, c] {
-                        let w = boundary.point(stop.s), z = tops(stop.read)
+                        let w = stop.at, z = tops(stop.read)
                         vertices.append(P3(w.x, w.y, z.min() ?? .nan))
                         vertices.append(P3(w.x, w.y, z.max() ?? .nan))
                     }

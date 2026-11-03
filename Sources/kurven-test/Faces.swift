@@ -103,6 +103,24 @@ private func dropAcross(_ a: SIMD2<Double>, _ b: SIMD2<Double>, inward: SIMD2<Do
     return (at, abs(before - after) > 4 * slide + 1e-9 * max(1, abs(before)))
 }
 
+/// Whether a point of a tile boundary, `n` the boundary's normal, lies in
+/// the footprint: held a hair either side of the boundary, or on the
+/// perimeter, exactly where the edge runs along an axis; where it slants,
+/// within ten times that hair, since the riser ends where a line a hair
+/// either side of the boundary crosses it.
+private func inFootprint(_ p: SIMD2<Double>, _ region: Region, n: SIMD2<Double>, size: Double) -> Bool {
+    guard case .inside(let perimeter) = region else { return true }
+    let side = 1e-9 * size
+    if region.contains(P2(p - side * n)) && region.contains(P2(p + side * n)) { return true }
+    return perimeter.edges.contains { e in
+        let a = e.start.v, b = e.end.v
+        if a.x == b.x { return p.x == a.x && p.y >= min(a.y, b.y) && p.y <= max(a.y, b.y) }
+        if a.y == b.y { return p.y == a.y && p.x >= min(a.x, b.x) && p.x <= max(a.x, b.x) }
+        let d = b - a, t = max(0, min(1, simd_dot(p - a, d) / simd_length_squared(d)))
+        return simd_length(p - (a + t * d)) <= 10 * side
+    }
+}
+
 /// A landscape as the faces are built from it, and as the drawing reads it.
 private struct Landscape {
     let name: String
@@ -830,6 +848,13 @@ private func faceLandscapes() throws -> [Landscape] {
                               surface: parabola, tiles: [.identity, turnedBeside, beside(2)], region: .inside(row),
                               walls: .perimeter(row, base: 0)))
     }
+    // The reviewer's footprint, from Im z = 0.12, in the cell where the
+    // copies' tops cross, at 0.113: the riser ends on the footprint, not
+    // where the tops meet outside it.
+    let fromTheCrossing = footprint([(0.2, 0.12), (1.8, 0.12), (1.8, 0.8), (0.2, 0.8)])
+    more.append(Landscape("copies meeting with different tops, a tile turned, a footprint from Im z = 0.12 where the tops cross, on the grid",
+                          surface: parabola, tiles: [.identity, turnedBeside], region: .inside(fromTheCrossing),
+                          walls: .perimeter(fromTheCrossing, base: 0)))
     for k in more.indices { more[k].dropsAtATileBoundary = true }
     // Four tiles, each the first moved by a translation, which is not its
     // own inverse, on a footprint over all four with walls on it: a drop
@@ -1639,6 +1664,10 @@ func faceTests() {
             for path in paths {
                 guard let s = sides.first(where: { s in path.allSatisfy { onSide($0.xy.v, s) } }) else { continue }
                 let u = simd_normalize(s.b - s.a), n = SIMD2(-u.y, u.x)
+                // Its ends in the footprint, on its perimeter at the most.
+                for e in [path[0], path[path.count - 1]] where !inFootprint(e.xy.v, l.region, n: n, size: size) {
+                    stray.append("an end at \(e.xy.v) off the footprint")
+                }
                 for (a, c) in zip(path, path.dropFirst()) where simd_length(a.xy.v - c.xy.v) > 1e-12 * size {
                     let m = 0.5 * (a.xy.v + c.xy.v)
                     guard drop(m, n) != nil || l.region.contains(P2(m - side * n)) && l.region.contains(P2(m + side * n)) else {
@@ -1846,6 +1875,10 @@ func faceTests() {
                 let c = (t[0] + t[1] + t[2]) / 3
                 let u = simd_normalize(SIMD2(t[1].x - t[0].x, t[1].y - t[0].y) + SIMD2(t[2].x - t[0].x, t[2].y - t[0].y))
                 let n = SIMD2(-u.y, u.x)
+                // Every corner in the footprint, on its perimeter at the most.
+                for v in t where !inFootprint(SIMD2(v.x, v.y), l.region, n: n, size: size) {
+                    stray.append("a corner at (\(v.x), \(v.y)) off the footprint")
+                }
                 guard let span = drop(SIMD2(c.x, c.y), n), c.z >= span.lo - 1e-9, c.z <= span.hi + 1e-9 else {
                     stray.append("(\(c.x), \(c.y), \(c.z))"); continue
                 }
