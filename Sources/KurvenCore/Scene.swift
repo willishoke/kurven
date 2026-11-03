@@ -147,11 +147,7 @@ public struct Heightfield: Sendable {
                                domain: Domain(real: Interval(lo: lo.x, hi: hi.x),
                                               imag: Interval(lo: lo.y, hi: hi.y)),
                                values: values)
-            // Only on the fundamental tile: the zero is found on the
-            // function, which is sampled there.
-            let fundamental = tile == .identity
-            paths += worker().place(Contour.lines(of: field, level: 0), fundamental: fundamental,
-                                    worker: worker)
+            paths += worker().place(Contour.lines(of: field, level: 0), worker: worker)
         }
         return PolylineSet(paths: paths)
     }
@@ -1437,12 +1433,11 @@ struct FoldPlacer: Sendable {
     /// function at hand the fold is traced on the graph alone and runs on
     /// below the truncation: where a run passes under the truncation edge it ends on the truncation edge,
     /// at the fold's own crossing of |f| = h(x), so a tower's outline
-    /// reaches the truncation and arrives along the fold. On the fundamental
-    /// tile, where the function is sampled, each run is then subdivided to
-    /// the refiner's tolerance; on every tile it is carried to the zero it
-    /// was going to.
-    func place(_ lines: [[P2<DomainSpace>]], fundamental: Bool,
-               worker: @Sendable () -> FoldPlacer) -> [[P3<WorldSpace>]] {
+    /// reaches the truncation and arrives along the fold. Each run is then
+    /// subdivided to the refiner's tolerance and carried to the zero it was
+    /// going to, on every tile: the facing and the height are read through
+    /// the tile under each point.
+    func place(_ lines: [[P2<DomainSpace>]], worker: @Sendable () -> FoldPlacer) -> [[P3<WorldSpace>]] {
         // Every vertex of every line onto the fold.
         var offsets = [0]
         var flat: [P2<DomainSpace>] = []
@@ -1480,9 +1475,9 @@ struct FoldPlacer: Sendable {
             }
             close()
         }
-        // Every chord of every run subdivided, on the fundamental tile, then
-        // each run's ends carried to their zeros, on every tile.
-        if fundamental, refined, let tolerance = heightfield.refine?.tolerance {
+        // Every chord of every run subdivided, then each run's ends carried
+        // to their zeros.
+        if refined, let tolerance = heightfield.refine?.tolerance {
             var chords: [SIMD2<Int>] = []
             for (r, run) in runs.enumerated() {
                 for k in 0..<(run.count - 1) { chords.append(SIMD2(r, k)) }

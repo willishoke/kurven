@@ -2047,6 +2047,77 @@ func faceTests() {
                      "ends on an apex by tile \(carried): \(report.prefix(3).joined(separator: "; "))")
     }
 
+    Check.suite("folds: every chord of a fold lies within the refiner's tolerance of the fold, on every tile") {
+        // The midpoint of each chord, on the graph under the truncation and
+        // off the domain's edge, is within the refiner's tolerance of the
+        // fold: the nearest sign change of the facing along the chord's
+        // normal, bisected, read through the tile under each point as the
+        // facing is. On f, in two tiles, the second reflected, turned a
+        // quarter or beside the first; a fold's chords on a second tile are
+        // as fine as on the first.
+        let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        let camera = Camera.oblique(ObliqueProjection(shear: 0, xAngle: -55, zAngle: 30, flipX: false, yScale: nil))
+        let m = camera.view.m.columns
+        let rows = (SIMD3(m.0.x, m.1.x, m.2.x), SIMD3(m.0.y, m.1.y, m.2.y), SIMD3(m.0.z, m.1.z, m.2.z))
+        var sight = simd_normalize(simd_cross(rows.0, rows.1))
+        if simd_dot(rows.2, sight) > 0 { sight = -sight }
+        for (expression, resolution) in [("2*z*z*z - z", 20), ("1/(z - 0.5) + 0.3*z*z", 24), ("1/(z - 0.5)", 16)] {
+            let bundle = try NativeLandscape.build(
+                LandscapeRequest(expression: expression, domain: domain, resolution: resolution, truncation: .uniform(5)),
+                refine: true)
+            guard let refine = bundle.refine, let magnitude = refine.magnitude else { continue }
+            let surface = bundle.surface
+            let cell = max(abs(domain.real.length) / Double(surface.height.width - 1),
+                           abs(domain.imag.length) / Double(surface.height.height - 1))
+            for (name, tile) in [("reflected", Affine2(a: -1, b: 0, tx: 3, c: 0, d: 1, ty: 0)),
+                                 ("turned", Affine2(a: 0, b: -1, tx: 2.5, c: 1, d: 0, ty: 0)),
+                                 ("beside", Affine2(a: 1, b: 0, tx: 2, c: 0, d: 1, ty: 0))] {
+                let l = Landscape("\(expression) at res \(resolution), a second tile \(name)", surface: surface,
+                                  tiles: [.identity, tile], refine: refine)
+                let h = l.heightfield
+                func facing(_ w: SIMD2<Double>) -> Double {
+                    let n = h.graphNormal(at: P2(w))
+                    return -simd_dot(n, sight) / simd_length(n)
+                }
+                let folds = h.foldCurves(view: camera.view)
+                var chords = [0, 0], worst = [0.0, 0.0], off: [String] = []
+                for k in 0..<folds.count {
+                    let run = Array(folds[path: k])
+                    for (a, c) in zip(run, run.dropFirst()) {
+                        let mid = 0.5 * (a.xy.v + c.xy.v), length = simd_length(c.xy.v - a.xy.v)
+                        guard length > 1e-9 * cell else { continue }
+                        let (q, back) = carriedBack(mid, l)
+                        guard q.x > domain.real.lo + cell, q.x < domain.real.hi - cell,
+                              q.y > domain.imag.lo + cell, q.y < domain.imag.hi - cell,
+                              magnitude(P2(q.x, q.y)) < 0.9 * surface.truncationHeight(atX: q.x) else { continue }
+                        let n = SIMD2(-(c.y - a.y), c.x - a.x) / length
+                        let f0 = facing(mid)
+                        var distance = Double.infinity
+                        for sign in [1.0, -1.0] {
+                            var lo = 0.0, hi = 0.5 * cell * sign
+                            guard (facing(mid + hi * n) > 0) != (f0 > 0) else { continue }
+                            for _ in 0..<60 {
+                                let t = 0.5 * (lo + hi)
+                                if (facing(mid + t * n) > 0) == (f0 > 0) { lo = t } else { hi = t }
+                            }
+                            distance = min(distance, abs(0.5 * (lo + hi)))
+                        }
+                        let t = back == .identity ? 0 : 1
+                        chords[t] += 1
+                        worst[t] = max(worst[t], distance / cell)
+                        if !(distance <= refine.tolerance * cell) {
+                            off.append(String(format: "tile %d at (%.4f, %.4f), %.3f cells", t, mid.x, mid.y, distance / cell))
+                        }
+                    }
+                }
+                Check.expect(chords.allSatisfy { $0 > 30 } && off.isEmpty,
+                             "\(l.name), on f: every chord of a fold within \(refine.tolerance) cells of the fold, on both tiles",
+                             "\(off.count) of \(chords) chords off, worst \(worst.map { String(format: "%.4f", $0) }) cells: "
+                                + off.prefix(3).joined(separator: "; "))
+            }
+        }
+    }
+
     Check.suite("faces: the graph's trim loops and its truncation edge are the same in whatever order the tiles are listed") {
         // Points of the domain are read on the domain, not through the tile
         // under them: on the domain's edge a second tile's image begins, and
