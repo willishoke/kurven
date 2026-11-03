@@ -292,11 +292,14 @@ private func tiling(_ l: Landscape) -> Tally {
                 let atFoot = stations.filter { simd_length($0.xy.v - v.xy.v) <= 1e-9 * size }.map(\.z)
                 let lower = atFoot.min() ?? top
                 // Where the wall crosses a tile boundary, two copies meet: a
-                // riser there meets the wall in a crease.
+                // riser there meets the wall in a crease, and at a copy's top
+                // the copy's face meets both, three faces at a point.
                 let crossesTileBoundary = carriedBack(v.xy.v + 1e-6 * size * d, l).back != carriedBack(v.xy.v - 1e-6 * size * d, l).back
                 for j in 0..<7 {
                     let z = base + (top - base) * (Double(j) + 0.5) / 7
-                    expect(P3(v.x, v.y, z), 1, slack: atStart || atEnd || z > lower || crossesTileBoundary ? 1 : 0) { face, n in
+                    let atACopysTop = crossesTileBoundary && atFoot.contains { abs($0 - z) <= 1e-9 * max(1, abs(z)) }
+                    let slack = atACopysTop ? 2 : atStart || atEnd || z > lower || crossesTileBoundary ? 1 : 0
+                    expect(P3(v.x, v.y, z), 1, slack: slack) { face, n in
                         // At a corner, the other wall there is asked from its
                         // own stations.
                         guard case .wall(let e) = face.id, e == k || !(atStart || atEnd) else { return true }
@@ -807,6 +810,19 @@ private func faceLandscapes() throws -> [Landscape] {
                               walls: .perimeter(row, base: 0)))
     }
     for k in more.indices { more[k].dropsAtATileBoundary = true }
+    // Four tiles, each the first moved by a translation, which is not its
+    // own inverse, on a footprint over all four with walls on it: a drop
+    // at Re z = 1, none at Im z = 1, and where a wall crosses the drop, a
+    // plateau, the riser and the wall meet in one point.
+    let square = footprint([(0.2, 0.2), (1.8, 0.2), (1.8, 1.8), (0.2, 1.8)])
+    let translations = [Affine2.identity, beside(1), Affine2(a: 1, b: 0, tx: 0, c: 0, d: 1, ty: 1),
+                        Affine2(a: 1, b: 0, tx: 1, c: 0, d: 1, ty: 1)]
+    more.append(Landscape("four tiles by translation, on a footprint over all four, on the grid", surface: parabola,
+                          tiles: translations, region: .inside(square), walls: .perimeter(square, base: 0)))
+    more.append(Landscape("four tiles by translation, listed the other way, on the grid", surface: parabola,
+                          tiles: translations.reversed()))
+    more[more.count - 2].dropsAtATileBoundary = true
+    more[more.count - 1].dropsAtATileBoundary = true
     landscapes += more
     let o = gamma.manifest.occluder
     landscapes.append(Landscape("Γ, banded, on f", surface: gamma.surface, tiles: o.tiles, region: o.region,
