@@ -1291,6 +1291,43 @@ func faceTests() {
         }
     }
 
+    Check.suite("folds: a fold that runs into a zero of f ends on it, on every tile") {
+        // A cone, 10(z - 0.3), over Im z in [0, 1], its apex on the domain's
+        // edge, in three tiles, the second reflected across Re z = 1 and the
+        // third turned a quarter, (x, y) ↦ (4 - y, x): its outline runs down
+        // a generator into the apex in each copy, and each copy's fold is
+        // carried onto the apex's image there, at its height, the floor,
+        // where placed alone it stops a hair short.
+        let cone = try NativeLandscape.build(
+            LandscapeRequest(expression: "10*(z - 0.3)", domain: Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: 0, hi: 1)),
+                             resolution: 30, truncation: .uniform(30)),
+            refine: true)
+        let tiles = [Affine2.identity, Affine2(a: -1, b: 0, tx: 2, c: 0, d: 1, ty: 0), Affine2(a: 0, b: -1, tx: 4, c: 1, d: 0, ty: 0)]
+        let h = Heightfield(surface: cone.surface, occluder: .empty, tiles: tiles, region: .full, step: 1, refine: cone.refine)
+        // Under cameras turned every quarter, so each copy shows the apex's
+        // outline under some: every end near an apex is on it, and every
+        // tile has one.
+        var report: [String] = [], carried = [Int](repeating: 0, count: tiles.count)
+        for zAngle in [30.0, 120.0, -150.0, -60.0] {
+            let camera = Camera.oblique(ObliqueProjection(shear: 0, xAngle: -55, zAngle: zAngle, flipX: false, yScale: nil))
+            let folds = h.foldCurves(view: camera.view)
+            let ends = (0..<folds.count).flatMap { k -> [P3<WorldSpace>] in let r = folds[path: k]; return [r[r.startIndex], r[r.endIndex - 1]] }
+            for (k, tile) in tiles.enumerated() {
+                let apex = tile(P3(0.3, 0, 0)).xy.v
+                let near = ends.filter { simd_length($0.xy.v - apex) < 0.2 }
+                let onIt = near.filter { simd_length($0.xy.v - apex) <= 1e-6 && abs($0.z) <= 1e-6 }
+                carried[k] += onIt.count
+                if onIt.count != near.count {
+                    report.append("tile \(k) at \(Int(zAngle))°: \(onIt.count) of \(near.count) ends near the apex on it, nearest "
+                                  + "\(near.map { simd_length($0.xy.v - apex) }.min() ?? .infinity)")
+                }
+            }
+        }
+        Check.expect(report.isEmpty && carried.allSatisfy { $0 > 0 },
+                     "the cone's folds end on the apex on every tile, at its height",
+                     "ends on an apex by tile \(carried): \(report.prefix(3).joined(separator: "; "))")
+    }
+
     Check.suite("restriction: a contour's copy is cut to the footprint where it lands, exactly") {
         // On tiles whose footprint is not symmetric under the tiling,
         // reflected and turned: every kept piece of a copy lies in the

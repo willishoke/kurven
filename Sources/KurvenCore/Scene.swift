@@ -180,20 +180,25 @@ public struct Heightfield: Sendable {
     /// An open fold run carried to the zero of f either end leads to, when
     /// the refiner finds one within reach that the run does not already
     /// touch, inside the region: the new vertex is the zero at |f|'s height.
-    /// `cell` is the grid spacing, which is the only length the test of
+    /// The zero is found in the domain, the end carried back through the
+    /// tile under it and the zero carried forward, on whichever tile the run
+    /// lies. `cell` is the grid spacing, which is the only length the test of
     /// "already touches" is measured against, so a scaled drawing carries the
     /// scaled fold.
     func endedAtZeros(_ run: [P3<WorldSpace>], cell: Double) -> [P3<WorldSpace>] {
         guard let refine, let zero = refine.zero, let magnitude = refine.magnitude,
               run.count >= 2, run.first != run.last else { return run }
         func carried(_ end: P3<WorldSpace>, other: P3<WorldSpace>) -> P3<WorldSpace>? {
-            guard let z = zero(P2(end.x, end.y)), region.contains(P2<WorldSpace>(z.x, z.y)) else { return nil }
+            let (q, back) = surface.tile(under: P2(end.x, end.y), tiles: tiles)
+            guard let d = zero(q), let forward = back.inverse else { return nil }
+            let z = forward(P3(d.x, d.y, 0))
+            guard region.contains(z.xy) else { return nil }
             let toEnd = ((z.x - end.x) * (z.x - end.x) + (z.y - end.y) * (z.y - end.y)).squareRoot()
             let toOther = ((z.x - other.x) * (z.x - other.x) + (z.y - other.y) * (z.y - other.y)).squareRoot()
             guard toEnd > 1e-9 * cell, toEnd < toOther else { return nil }
-            let u = magnitude(z)
+            let u = magnitude(d)
             guard u.isFinite else { return nil }
-            return P3(z.x, z.y, min(u, surface.truncationHeight(atX: z.x)))
+            return P3(z.x, z.y, min(u, surface.truncationHeight(atX: d.x)))
         }
         var out = run
         if let z = carried(out[0], other: out[out.count - 1]) { out.insert(z, at: 0) }
@@ -1414,7 +1419,8 @@ struct FoldPlacer: Sendable {
     /// at the fold's own crossing of |f| = h(x), so a tower's outline
     /// reaches the truncation and arrives along the fold. On the fundamental
     /// tile, where the function is sampled, each run is then subdivided to
-    /// the refiner's tolerance and carried to the zero it was going to.
+    /// the refiner's tolerance; on every tile it is carried to the zero it
+    /// was going to.
     func place(_ lines: [[P2<DomainSpace>]], fundamental: Bool,
                worker: @Sendable () -> FoldPlacer) -> [[P3<WorldSpace>]] {
         // Every vertex of every line onto the fold.
@@ -1454,10 +1460,9 @@ struct FoldPlacer: Sendable {
             }
             close()
         }
-        guard fundamental else { return runs }
-        // Every chord of every run subdivided, then each run's ends carried
-        // to their zeros.
-        if refined, let tolerance = heightfield.refine?.tolerance {
+        // Every chord of every run subdivided, on the fundamental tile, then
+        // each run's ends carried to their zeros, on every tile.
+        if fundamental, refined, let tolerance = heightfield.refine?.tolerance {
             var chords: [SIMD2<Int>] = []
             for (r, run) in runs.enumerated() {
                 for k in 0..<(run.count - 1) { chords.append(SIMD2(r, k)) }
