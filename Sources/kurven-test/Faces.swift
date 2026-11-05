@@ -904,6 +904,9 @@ private func faceLandscapes() throws -> [Landscape] {
 }
 
 
+/// Two poles either side of Re z = 1/2 and a zero between them on it.
+private let holeBesideABoundary = "1/(z - (0.4804 - 0.0550i)) + 1/(z - (0.5196 + 0.0550i))"
+
 // MARK: - the graph's trim loops
 //
 // The graph's trim loops are its truncation edge, closed along the domain's
@@ -2352,6 +2355,17 @@ func faceTests() {
             refine: true)
         landscapes.append(Landscape("the reviewer's tower at 0.5 | 1, on f", surface: reviewersTower.surface,
                                     refine: reviewersTower.refine))
+        // A hole in the plateau within a column of a band boundary, round a
+        // zero on it: seen by the grid's row through the zero, and seen by
+        // none, where it is the refiner's ring.
+        for (re, im) in [((-0.3, 1.5), (-0.5, 0.5)), ((0.3, 1.0), (-1.0, 0.5))] {
+            let hole = try NativeLandscape.build(
+                LandscapeRequest(expression: holeBesideABoundary, domain: Domain(real: Interval(lo: re.0, hi: re.1), imag: Interval(lo: im.0, hi: im.1)),
+                                 resolution: 24, truncation: .realBands([RealBand(below: 0.5, height: 1.5)], beyond: 1.8)),
+                refine: true)
+            landscapes.append(Landscape("a hole round a zero on a band boundary at 1.5 | 1.8 over Re \(re), Im \(im), on f",
+                                        surface: hole.surface, refine: hole.refine))
+        }
         // Uniform on f: 1/(z³ - 1), its three towers cut at 5.
         let cubic = try NativeLandscape.build(
             LandscapeRequest(expression: "1/(z^3 - 1)", domain: Domain(real: Interval(lo: -1.3, hi: 1.6), imag: Interval(lo: -1.2, hi: 1.5)),
@@ -2476,6 +2490,38 @@ func faceTests() {
             Check.expect(trim.open == 0 && open.isEmpty,
                          "\(expression) at res \(resolution): its plateau's loop, a column short of the boundary at Re z = 1/2, is closed",
                          "\(trim.open) counted, \(open.count) open: \(open.map { "\($0[0].v) to \($0[$0.count - 1].v)" })")
+        }
+    }
+
+    Check.suite("faces: a hole within a column of a band boundary is drawn in each band, at its own height, once") {
+        // Round the zero at 1/2 on the boundary Re z = 1/2, at 1.5 | 1.8, the
+        // plateau has a hole a sixteenth of a column across, |f| ≈ 590 |z - 1/2|:
+        // a half disc of radius 0.0026 at 1.5 left of the boundary and one of
+        // 0.0031 at 1.8 right of it. On a window whose row through the zero
+        // sees it on the boundary, and on two whose grid sees nothing there,
+        // where it is the refiner's ring round the zero, seeded once a band
+        // and cut on the boundary, not once a run of the truncation edge, at
+        // that run's level, across it.
+        for (re, im) in [((-0.3, 1.5), (-0.5, 0.5)), ((0.3, 1.0), (-1.0, 0.5)), ((0.0, 1.0), (-0.5, 0.5))] {
+            let built = try NativeLandscape.build(
+                LandscapeRequest(expression: holeBesideABoundary, domain: Domain(real: Interval(lo: re.0, hi: re.1), imag: Interval(lo: im.0, hi: im.1)),
+                                 resolution: 24, truncation: .realBands([RealBand(below: 0.5, height: 1.5)], beyond: 1.8)),
+                refine: true)
+            guard let magnitude = built.refine?.magnitude else { Check.expect(false, "Re \(re), Im \(im): a refiner"); continue }
+            let trim = built.surface.graphTrimLoops(refine: built.refine)
+            let hole = trim.truncationEdge.dropLast(trim.riserTops.count)
+                .filter { p in p.allSatisfy { abs($0.x - 0.5) < 0.05 && abs($0.y) < 0.05 } }
+            let left = hole.filter { p in p.allSatisfy { $0.x <= 0.5 && $0.z == 1.5 } }
+            let right = hole.filter { p in p.allSatisfy { $0.x >= 0.5 && $0.z == 1.8 } }
+            let onBoundary = hole.allSatisfy { p in p.first != p.last && p[0].x == 0.5 && p[p.count - 1].x == 0.5 }
+            let onLevel = hole.joined().allSatisfy { abs(magnitude(P2($0.x, $0.y)) - $0.z) <= 1e-6 * $0.z }
+            Check.expect(hole.count == 2 && left.count == 1 && right.count == 1 && onBoundary && onLevel && trim.open == 0,
+                         "Re \(re), Im \(im): the hole's edge is one half at 1.5 left of the boundary and one at 1.8 right of it, "
+                            + "each ending on the boundary, on its level",
+                         "\(hole.count) pieces: " + hole.map { p in
+                            String(format: "x %.5f to %.5f at %@%@", p.map(\.x).min()!, p.map(\.x).max()!,
+                                   Set(p.map { "\($0.z)" }).sorted().joined(separator: ","), p.first == p.last ? ", closed" : "")
+                         }.joined(separator: "; ") + ", \(trim.open) open")
         }
     }
 

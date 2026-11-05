@@ -1116,7 +1116,9 @@ extension Surface {
     /// lines between those cells are placed by the refiner and joined end to
     /// end to the parts' lines where they meet: on a column beside a cut cell,
     /// where both crossed the same edge from the same two samples, the
-    /// refiner's point standing for both.
+    /// refiner's point standing for both. The rings round the zeros the grid
+    /// could not see are seeded once a band, at its level, and cut to the
+    /// band exactly too.
     ///
     /// Where the truncation steps the surface has a riser, and its top is the
     /// truncation edge there: along the boundary, at f's own height up to the
@@ -1210,9 +1212,7 @@ extension Surface {
                 let truncationHeight = truncationHeight(atX: run[0].x)
                 guard truncationHeight.isFinite, let band = self.band(atX: run[0].x) else { continue }
                 let closed = run.first == run.last
-                let placed = refine.contours(.magnitude, truncationHeight, [run], .infinity)
-                // With the rings at the run's level.
-                let refined = placed + (refine.rings?(truncationHeight, placed) ?? [])
+                let refined = refine.contours(.magnitude, truncationHeight, [run], .infinity)
                 for (index, piece) in refined.enumerated() where piece.count >= 2 {
                     var piece = piece
                     // A closed piece has no ends.
@@ -1221,7 +1221,7 @@ extension Surface {
                         if let q = onBoundaryTruncationCrossing(near: piece[i], magnitude: magnitude) { piece[i] = q }
                     }
                     let ends = (start: closed || index > 0 ? nil : shared(run.first),
-                                end: closed || index != placed.count - 1 ? nil : shared(run.last))
+                                end: closed || index < refined.count - 1 ? nil : shared(run.last))
                     if ends.start == nil && ends.end == nil {
                         emit(piece, band: band, truncationHeight: truncationHeight)
                     } else {
@@ -1320,6 +1320,65 @@ extension Surface {
                         if last.refined && !first.refined { points[0] = points[points.count - 1] } else { points[points.count - 1] = points[0] }
                     }
                     emit(points, band: band, truncationHeight: truncationHeight)
+                }
+            }
+        }
+
+        // Each band's rings, seeded at its level once, given its truncation
+        // edge, and cut to the band where they cross a boundary, exactly: on
+        // the boundary, where |f| reaches the band's level beside the chord's
+        // crossing.
+        if let rings = refine.rings {
+            func onBoundary(_ b: Double, _ q: P2<DomainSpace>, _ p: P2<DomainSpace>, _ truncationHeight: Double) -> P2<DomainSpace> {
+                if q.x == b { return q }
+                if p.x == b { return p }
+                let y = q.y + (p.y - q.y) * (b - q.x) / (p.x - q.x)
+                let reach = abs(p.x - q.x) + abs(p.y - q.y)
+                func excess(_ y: Double) -> Double { mag(P2(b, y)) - truncationHeight }
+                var s = 1e-6 * reach
+                while s <= reach {
+                    for (u, v) in [(y, y + s), (y - s, y)] {
+                        if let c = truncationCrossing(from: P2(b, u), excess(u), to: P2(b, v), excess(v), excess: { mag($0) - truncationHeight }) {
+                            return c
+                        }
+                    }
+                    s *= 2
+                }
+                return P2(b, y)
+            }
+            for span in truncation.bands(from: lo, to: hi) where span.height.isFinite {
+                let truncationHeight = span.height
+                let edges = [span.lo, span.hi].filter { boundaries.contains($0) }
+                func inside(_ p: P2<DomainSpace>) -> Bool {
+                    !(span.lo > lo && p.x < span.lo) && !(span.hi < hi && p.x >= span.hi)
+                }
+                for ring in rings(truncationHeight, pieces[span.band] ?? []) where ring.count >= 2 && ring.contains(where: inside) {
+                    guard !ring.allSatisfy(inside) else { emit(ring, band: span.band, truncationHeight: truncationHeight); continue }
+                    // A closed ring walked from a point outside the band.
+                    var path = ring
+                    if ring.first == ring.last, let s = ring.firstIndex(where: { !inside($0) }) {
+                        path = Array(ring[s..<(ring.count - 1)] + ring[0...s])
+                    }
+                    var part: [P2<DomainSpace>] = []
+                    for (k, p) in path.enumerated() {
+                        if k > 0 {
+                            let q = path[k - 1]
+                            var holds = inside(q)
+                            for b in edges.filter({ (q.x < $0) != (p.x < $0) }).sorted(by: { abs($0 - q.x) < abs($1 - q.x) }) {
+                                let crossing = onBoundary(b, q, p, truncationHeight)
+                                if holds {
+                                    part.append(crossing)
+                                    if part.count >= 2 { emit(part, band: span.band, truncationHeight: truncationHeight) }
+                                    part = []
+                                } else {
+                                    part = [crossing]
+                                }
+                                holds.toggle()
+                            }
+                        }
+                        if inside(p), part.last != p { part.append(p) }
+                    }
+                    if part.count >= 2 { emit(part, band: span.band, truncationHeight: truncationHeight) }
                 }
             }
         }
