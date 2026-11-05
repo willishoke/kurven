@@ -1298,7 +1298,11 @@ public struct ContourRefiner: Sendable {
         }
         // So first look for a sign change: step toward the Newton step,
         // doubling until the residual changes sign or the step reaches the
-        // chord's length.
+        // chord's length. A chord split for its sag alone can lie on the
+        // level set already, as a ray of a pole does, the phase constant
+        // along it and |f| not; its Newton step is then zero, to rounding,
+        // and no doubling makes it longer, so the midpoint is left to
+        // Newton's step below.
         var reach = abs(r / gn)
         let toward: Double = r / gn > 0 ? -1 : 1
         var end: (t: Double, r: Double)?
@@ -1307,7 +1311,7 @@ public struct ContourRefiner: Sendable {
             let rt = res(t)
             guard rt.isFinite, !(cut && abs(rt) > .pi / 2) else { break }
             if rt == 0 || rt.sign != r.sign { end = (t, rt); break }
-            guard reach < chord else { break }
+            guard reach > 0, reach < chord else { break }
             reach *= 2
         }
         var found: P2<DomainSpace>?

@@ -548,6 +548,35 @@ func refinementTests() {
                      "\(twice.layers.map(\.paths.vertices.count)) vs "
                         + "\(cold.layers.map(\.paths.vertices.count))")
     }
+
+    let square = Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: -1, hi: 1))
+
+    Check.suite("refine: a chord on the level set, split for its sag, is placed") {
+        // A phase line through a pole is a ray, the phase constant along it
+        // and |f| not, so a chord of it can be split for its sag alone with
+        // its midpoint already on the level set. The search along its normal
+        // then began from a step of zero, to rounding, and doubled it for
+        // ever: none of these, at a pole of order two, one and three,
+        // finished building. Each is built on a thread of its own against a
+        // deadline, so that the hang, come back, fails the run and does not
+        // stall it.
+        let expressions = ["0.3/(z - 0.2 - 0.1*i)^2", "1/(z - (-0.206 + 0.304*i))",
+                           "0.1/(z - (-0.575 + 0.147*i))^3"]
+        let done = DispatchSemaphore(value: 0)
+        let built = Mutex(0)
+        for expression in expressions {
+            DispatchQueue.global().async {
+                let request = LandscapeRequest(expression: expression, domain: square, resolution: 24)
+                if (try? NativeLandscape.build(request)) != nil { built.withLock { $0 += 1 } }
+                done.signal()
+            }
+        }
+        let deadline = DispatchTime.now() + .seconds(10)
+        let finished = expressions.filter { _ in done.wait(timeout: deadline) == .success }.count
+        Check.expect(finished == expressions.count && built.withLock { $0 } == expressions.count,
+                     "a landscape with such a chord builds in under ten seconds",
+                     "\(finished) of \(expressions.count) finished")
+    }
 }
 
 // MARK: - the numbers in an expression
