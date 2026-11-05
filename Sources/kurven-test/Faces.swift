@@ -2523,10 +2523,14 @@ func faceTests() {
         // sees it on the boundary, and on two whose grid sees nothing there,
         // where it is the refiner's ring round the zero, seeded once a band
         // and cut on the boundary, not once a run of the truncation edge, at
-        // that run's level, across it.
-        for (re, im) in [((-0.3, 1.5), (-0.5, 0.5)), ((0.3, 1.0), (-1.0, 0.5)), ((0.0, 1.0), (-0.5, 0.5))] {
+        // that run's level, across it. And with the zero a thousandth off the
+        // boundary, the poles moved with it, where the ring's chords cross
+        // the boundary between their vertices, and each cut is solved on it.
+        let offTheBoundary = "1/(z - (0.5206 + 0.0650i)) + 1/(z - (0.4814 - 0.0450i))"
+        for (expression, re, im) in [(holeBesideABoundary, (-0.3, 1.5), (-0.5, 0.5)), (holeBesideABoundary, (0.3, 1.0), (-1.0, 0.5)),
+                                     (holeBesideABoundary, (0.0, 1.0), (-0.5, 0.5)), (offTheBoundary, (0.0, 1.0), (-0.5, 0.5))] {
             let built = try NativeLandscape.build(
-                LandscapeRequest(expression: holeBesideABoundary, domain: Domain(real: Interval(lo: re.0, hi: re.1), imag: Interval(lo: im.0, hi: im.1)),
+                LandscapeRequest(expression: expression, domain: Domain(real: Interval(lo: re.0, hi: re.1), imag: Interval(lo: im.0, hi: im.1)),
                                  resolution: 24, truncation: .realBands([RealBand(below: 0.5, height: 1.5)], beyond: 1.8)),
                 refine: true)
             guard let magnitude = built.refine?.magnitude else { Check.expect(false, "Re \(re), Im \(im): a refiner"); continue }
@@ -2538,7 +2542,7 @@ func faceTests() {
             let onBoundary = hole.allSatisfy { p in p.first != p.last && p[0].x == 0.5 && p[p.count - 1].x == 0.5 }
             let onLevel = hole.joined().allSatisfy { abs(magnitude(P2($0.x, $0.y)) - $0.z) <= 1e-6 * $0.z }
             Check.expect(hole.count == 2 && left.count == 1 && right.count == 1 && onBoundary && onLevel && trim.open == 0,
-                         "Re \(re), Im \(im): the hole's edge is one half at 1.5 left of the boundary and one at 1.8 right of it, "
+                         "\(expression == offTheBoundary ? "the zero off the boundary, " : "")Re \(re), Im \(im): the hole's edge is one half at 1.5 left of the boundary and one at 1.8 right of it, "
                             + "each ending on the boundary, on its level",
                          "\(hole.count) pieces: " + hole.map { p in
                             String(format: "x %.5f to %.5f at %@%@", p.map(\.x).min()!, p.map(\.x).max()!,
