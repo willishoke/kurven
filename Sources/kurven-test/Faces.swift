@@ -2567,6 +2567,72 @@ func faceTests() {
                      "\(arcs.count) arcs: \(arcs.map { "\($0.count) vertices" }), \(trim.open) open")
     }
 
+    Check.suite("faces: the truncation edge in a cell a band boundary cuts keeps to |f| = h, within the refiner's tolerance") {
+        // Each chord with its midpoint within a column of a boundary, its
+        // midpoint off the level by the residual over the gradient, in
+        // cells, the refiner's own measure. Round a zero on the boundary
+        // Re z = 0.5223 whose hole at 4, of radius 0.04, is wider than the
+        // part right of it, so the arc leaves the cut cell where the grid
+        // beside it cannot see it: three vertices, 0.45 cells off, before
+        // the chords were taken onto f. Beside a pole within a chord across
+        // its plateau, at 3 | 4 | 1 across Re z = 0.833 and 1.3, where |f|
+        // falls away from the chord on the side the curve is not. And the
+        // hole and the ring above, and the reviewer's tower.
+        let mixed = "(z - (1.1934990849887146 - 0.20536860263116311i))*(z - (1.2234990849887146 - 0.2253686026311631i))"
+            + "/((z - (1.2524804507563325 - 0.078069596745760084i))*(z - (1.399997924755525 + 0.40148084601005929i))^2)"
+        let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        for (name, expression, domain, resolution, bands, beyond) in [
+            ("a zero on the boundary, its hole wider than the part", "1/(z - (0.59724288035304796 - 0.13390328401912382i)) + 1/(z - (0.44728054417818569 - 0.37915093303657482i))",
+             domain, 24, [RealBand(below: 0.5222617122656168, height: 1.5)], 4.0),
+            ("a pole within a chord", mixed, domain, 16, [RealBand(below: 0.8333333333333333, height: 3), RealBand(below: 1.3001429547193402, height: 4)], 1.0),
+            ("the hole round a zero on the boundary", holeBesideABoundary, Domain(real: Interval(lo: -0.3, hi: 1.5), imag: Interval(lo: -0.5, hi: 0.5)),
+             24, [RealBand(below: 0.5, height: 1.5)], 1.8),
+            ("a zero's ring and a cut cell's arc of it", ringBesideABoundary, domain, 16, [RealBand(below: 0.5, height: 1.5)], 1.8),
+            ("the reviewer's tower", "1/(z - 1.4)", domain, 32, [RealBand(below: 1.45, height: 0.5)], 1.0),
+        ] {
+            let built = try NativeLandscape.build(
+                LandscapeRequest(expression: expression, domain: domain, resolution: resolution, truncation: .realBands(bands, beyond: beyond)),
+                refine: true)
+            guard let refine = built.refine, let magnitude = refine.magnitude else { Check.expect(false, "\(name): a refiner"); continue }
+            let surface = built.surface, g = surface.height
+            let dx = abs(g.domain.real.length) / Double(g.width - 1)
+            let cell = max(dx, abs(g.domain.imag.length) / Double(g.height - 1))
+            let trim = surface.graphTrimLoops(refine: refine)
+            var chords = 0, worst = 0.0
+            for piece in trim.truncationEdge.dropLast(trim.riserTops.count) {
+                for (a, b) in zip(piece, piece.dropFirst()) {
+                    let m = P2<DomainSpace>(0.5 * (a.x + b.x), 0.5 * (a.y + b.y))
+                    guard bands.contains(where: { abs(m.x - $0.below) <= dx }) else { continue }
+                    let e = 1e-4 * cell
+                    let gx = (magnitude(P2(m.x + e, m.y)) - magnitude(P2(m.x - e, m.y))) / (2 * e)
+                    let gy = (magnitude(P2(m.x, m.y + e)) - magnitude(P2(m.x, m.y - e))) / (2 * e)
+                    chords += 1
+                    worst = max(worst, abs(magnitude(m) - a.z) / (gx * gx + gy * gy).squareRoot() / cell)
+                }
+            }
+            Check.expect(chords > 1 && worst <= refine.tolerance, "\(name): every chord within a column of a boundary keeps to its level",
+                         String(format: "%d chords, worst %.4f cells off", chords, worst))
+            // And the loops hold the graph there, |f| under the truncation,
+            // read on a lattice a seventh of a cell across, away from them.
+            let loops = Segments(trim.loops.map { $0.map(\.v) }, cell: cell)
+            let real = surface.domain.real, imag = surface.domain.imag
+            var asked = 0, wrong: [String] = []
+            for band in bands {
+                for i in 0..<14 {
+                    for j in 0...Int(abs(imag.length) / cell * 7) {
+                        let p = SIMD2(band.below - dx + (Double(i) + 0.37) * dx / 7, min(imag.lo, imag.hi) + (Double(j) + 0.61) * cell / 7)
+                        guard p.x < max(real.lo, real.hi), p.y < max(imag.lo, imag.hi),
+                              loops.distance(p, within: 0.06 * cell).isInfinite else { continue }
+                        asked += 1
+                        if loops.inside(p) != (magnitude(P2(p)) < surface.truncation.height(atX: p.x)) { wrong.append("\(p)") }
+                    }
+                }
+            }
+            Check.expect(asked > 200 && wrong.isEmpty, "\(name): within a column of a boundary the loops hold |f| < h(x), and only it",
+                         "\(wrong.count) of \(asked) wrong: \(wrong.prefix(3).joined(separator: "; "))")
+        }
+    }
+
     Check.suite("faces: a band narrower than a column, between a boundary and the far edge, has its plateau's loop") {
         // The reviewer's tower, 1/(z - 1.4) at 0.5 | 1 across Re z = 1.45, the
         // far edge at 1.5 and the column before it at 1.435: the band at 1
