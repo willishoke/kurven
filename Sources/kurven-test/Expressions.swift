@@ -516,7 +516,7 @@ func refinementTests() {
                                         solved.withLock { $0[field, default: 0] += 1 }
                                         return inner.contours(field, level, paths, ceiling)
                                     },
-                                    magnitude: inner.magnitude, zero: inner.zero,
+                                    rings: inner.rings, magnitude: inner.magnitude, zero: inner.zero,
                                     tolerance: inner.tolerance).remembering()
         let bundle = KurvenBundle(url: built.url, manifest: built.manifest, surface: built.surface,
                                   layers: built.layers, wallMesh: built.wallMesh, refine: counted)
