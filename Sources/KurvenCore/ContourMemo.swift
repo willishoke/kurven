@@ -20,7 +20,9 @@ public extension ContourRefine {
     /// of the landscape on each step to clip them at a new height: 4.5 s on
     /// zeta, of which 5 ms was the clipping. With it, a restyle places only
     /// the curves it has not placed before -- the truncation edge at the new truncation, the
-    /// magnitude rings at the new levels -- and the rest is a lookup.
+    /// magnitude rings at the new levels -- and the rest is a lookup. The
+    /// rings round the zeros at a level are a function of the level and the
+    /// curves placed there, and are remembered by those.
     ///
     /// The answer for a key is the answer the refiner gives, so the curves are
     /// the same with or without it, to the bit. What it costs is memory:
@@ -42,12 +44,19 @@ public extension ContourRefine {
             let remembered: @Sendable () -> ContourRefine = { f().remembering(in: memo) }
             return remembered
         }
+        var rings: ContourRefine.Rings?
+        if let seeded = self.rings {
+            rings = { level, existing in
+                memo.placed(.magnitude, level, existing, .infinity, rings: true) { seeded(level, existing) }
+            }
+        }
         return ContourRefine(contours: { field, level, paths, ceiling in
                                  let rung = ContourRefine.rung(above: ceiling)
                                  return memo.placed(field, level, paths, rung) {
                                      contours(field, level, paths, rung)
                                  }
                              },
+                             rings: rings,
                              magnitude: magnitude, zero: zero, tolerance: tolerance,
                              fork: forked)
     }
@@ -62,7 +71,10 @@ final class ContourMemo: Sendable {
         /// anyone comparing the answers.
         let level: UInt64
         let ceiling: UInt64
+        /// The paths placed, or for the rings at the level the curves
+        /// already placed there.
         let paths: [[P2<DomainSpace>]]
+        let rings: Bool
     }
 
 
@@ -90,13 +102,14 @@ final class ContourMemo: Sendable {
     }
 
     /// The answer for these paths, solved by `solve` the first time it is
-    /// asked. The lock is held for the lookup and the insert, never for the
+    /// asked; with `rings`, the rings at the level given these curves. The lock is held for the lookup and the insert, never for the
     /// solve: a layer's levels are placed in parallel, and two threads asking
     /// the same new key both solve it, which costs time and never a
     /// different answer.
     func placed(_ field: ContourField, _ level: Double, _ paths: [[P2<DomainSpace>]],
-                _ ceiling: Double, solve: () -> [[P2<DomainSpace>]]) -> [[P2<DomainSpace>]] {
-        let key = Key(field: field, level: level.bitPattern, ceiling: ceiling.bitPattern, paths: paths)
+                _ ceiling: Double, rings: Bool = false,
+                solve: () -> [[P2<DomainSpace>]]) -> [[P2<DomainSpace>]] {
+        let key = Key(field: field, level: level.bitPattern, ceiling: ceiling.bitPattern, paths: paths, rings: rings)
         let found: [[P2<DomainSpace>]]? = table.withLock { t in
             t.clock += 1
             guard var entry = t.entries[key] else { t.misses += 1; return nil }

@@ -486,15 +486,24 @@ public struct ContourRefine: Sendable {
     /// need not be placed. `.infinity` places all of it. It is how |f| and
     /// arg f place their contours as scalar fields: `Surface.field(of:refine:ceiling:)`
     /// builds each a `place` that calls this with the tag and the ceiling
-    /// closed over. It is also how the truncation edge is placed.
+    /// closed over. It is also how the truncation edge is placed. It places
+    /// the paths it is given and nothing more: the rings the grid could not
+    /// see are `Rings`'.
     public typealias Contours = @Sendable (ContourField, Double, [[P2<DomainSpace>]], Double)
         -> [[P2<DomainSpace>]]
+    /// The rings at a level of |f| round the zeros of f that the grid could
+    /// not see, given the curves already placed at that level: a zero one of
+    /// them turns round has its curve. Asked once a level, so a level placed
+    /// in parts, as a banded truncation edge is, has each ring once.
+    public typealias Rings = @Sendable (Double, [[P2<DomainSpace>]]) -> [[P2<DomainSpace>]]
     /// |f| at a domain point, untruncated, as the grid would hold it.
     public typealias Magnitude = @Sendable (P2<DomainSpace>) -> Double
     /// A zero of f within a few cells of a domain point, or nil.
     public typealias Zero = @Sendable (P2<DomainSpace>) -> P2<DomainSpace>?
 
     public let contours: Contours
+    /// Nil for a consumer with no zeros to seed rings from.
+    public let rings: Rings?
     /// With it, the top edge of a cut face gains a vertex at each minimum of |f|
     /// between two grid nodes (`Surface.topEdge`), and a contour that ends on a
     /// zero of f ends at the zero's height (`Surface.derive`). Nil for a
@@ -517,11 +526,11 @@ public struct ContourRefine: Sendable {
     /// forked, a third more. Nil, a refiner that cannot be forked, is shared.
     public let fork: (@Sendable () -> ContourRefine)?
 
-    public init(contours: @escaping Contours, magnitude: Magnitude? = nil,
+    public init(contours: @escaping Contours, rings: Rings? = nil, magnitude: Magnitude? = nil,
                 zero: Zero? = nil, tolerance: Double = 0.02,
                 fork: (@Sendable () -> ContourRefine)? = nil) {
         self.tolerance = tolerance
-        self.contours = contours; self.magnitude = magnitude; self.zero = zero
+        self.contours = contours; self.rings = rings; self.magnitude = magnitude; self.zero = zero
         self.fork = fork
     }
 
@@ -608,7 +617,9 @@ public extension Surface {
             let isCut = tag == .phase && Contour.isCut(level)
             guard let refine else { return isCut ? [] : paths }
             let lines = isCut ? Contour.cut(of: samples) : paths.map { $0.map { P2<DomainSpace>($0.v) } }
-            return refine.contours(tag, level, lines, ceiling).map { $0.map { P2<ParamSpace>($0.v) } }
+            var placed = refine.contours(tag, level, lines, ceiling)
+            if tag == .magnitude, let rings = refine.rings { placed += rings(level, placed) }
+            return placed.map { $0.map { P2<ParamSpace>($0.v) } }
         }
     }
 

@@ -155,10 +155,16 @@ public struct ContourRefiner: Sendable {
     func hook(points: [SingularPoint]) -> ContourRefine {
         let node = node, grid = grid, width = width, height = height
         let tolerance = tolerance, maxDepth = maxDepth, lifted = lifted
+        let zeros = points.filter { $0.order > 0 }.map(\.point)
+        var rings: ContourRefine.Rings?
+        if !zeros.isEmpty {
+            rings = { level, existing in self.seededRings(level: level, zeros: zeros, existing: existing) }
+        }
         return ContourRefine(contours: { field, level, paths, ceiling in
                                  self.refine(field: field, level: level, paths, points: points,
                                              ceiling: ceiling)
                              },
+                             rings: rings,
                              magnitude: { p in self.magnitude(Complex(p.x, p.y)) },
                              zero: { p in self.zero(near: p) },
                              tolerance: tolerance,
@@ -169,9 +175,9 @@ public struct ContourRefiner: Sendable {
                              })
     }
 
-    /// The grid's paths at one level of one field, placed on f; and, for the
-    /// magnitude with the zeros at hand, the rings around each zero that the
-    /// grid could not see (`seededRings`).
+    /// The grid's paths at one level of one field, placed on f. The rings
+    /// round the zeros that the grid could not see are the hook's apart
+    /// (`seededRings`), asked once a level.
     ///
     /// A phase path is placed only where it can be drawn: along the
     /// stretches with a vertex at or under `ceiling`, the height above which
@@ -200,14 +206,7 @@ public struct ContourRefiner: Sendable {
             }
         }
         let all = pieced.flatMap { $0 }
-        guard cut else {
-            var placed = all.map(\.run)
-            let zeros = points.filter { $0.order > 0 }.map(\.point)
-            if field == .magnitude, !zeros.isEmpty {
-                placed += seededRings(level: level, zeros: zeros, existing: placed)
-            }
-            return placed
-        }
+        guard cut else { return all.map(\.run) }
         // The fan at each zero and pole, from the point's normal form: its
         // rays at this level, each followed from the point out to the
         // handoff radius. The grid's pieces are cut back from those discs

@@ -1049,7 +1049,9 @@ extension Surface {
                 switch truncation {
                 case .uniform(let truncationHeight) where truncationHeight.isFinite:
                     var whole = PlateauLoops(rectangle: rectangle, plateau: plateau(truncationHeight))
-                    for line in refine.contours(.magnitude, truncationHeight, lines, .infinity) {
+                    var placed = refine.contours(.magnitude, truncationHeight, lines, .infinity)
+                    placed += refine.rings?(truncationHeight, placed) ?? []
+                    for line in placed {
                         var line = line
                         for i in Set([0, line.count - 1]) where line.count >= 2 {
                             if let q = onBoundaryTruncationCrossing(near: line[i], magnitude: magnitude) {
@@ -1260,14 +1262,19 @@ extension Surface {
             for run in placed where run.points.count >= 2 && run.truncationHeight.isFinite {
                 let band = self.band(atX: run.points[0].x)
                 var across = (start: gap(before: run.from[0]), end: gaps[run.from[run.from.count - 1]].points)
-                var refined = refine.contours(.magnitude, run.truncationHeight, [run.points], .infinity)
+                /// Points placed on f, with the rings at their level.
+                func placed(_ points: [P2<DomainSpace>]) -> [[P2<DomainSpace>]] {
+                    let placed = refine.contours(.magnitude, run.truncationHeight, [points], .infinity)
+                    return placed + (refine.rings?(run.truncationHeight, placed) ?? [])
+                }
+                var refined = placed(run.points)
                 // Joined, it must come back placed, in its band, on its
                 // level; where it does not, its runs are placed apart, as
                 // they were, without the gaps.
                 if run.joined, refined.isEmpty || !refined.joined().allSatisfy({
                     self.band(atX: $0.x) == band && abs(mag($0) - run.truncationHeight) <= 1e-6 * run.truncationHeight
                 }) {
-                    refined = run.from.flatMap { refine.contours(.magnitude, run.truncationHeight, [runs[$0].points], .infinity) }
+                    refined = run.from.flatMap { placed(runs[$0].points) }
                     across = ([], [])
                 }
                 for (index, piece) in refined.enumerated() where piece.count >= 2 {
