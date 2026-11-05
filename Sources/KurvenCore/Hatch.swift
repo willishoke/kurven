@@ -1425,24 +1425,33 @@ extension Surface {
                     !(span.lo > lo && p.x < span.lo) && !(span.hi < hi && p.x >= span.hi)
                 }
                 // A ring is drawn already where the band's truncation edge
-                // runs along it, a vertex within twice the tolerance. Not
-                // where some piece turns round its zero, the refiner's test:
-                // an arc a cut cell drew of a zero's ring in the band beside
-                // turns too little round it, and a loop round two poles and
-                // the zero between them turns round it but is not its ring.
-                let drawn = pieces[span.band] ?? []
-                func runsAlong(_ ring: [P2<DomainSpace>]) -> Bool {
+                // runs along it: nine in ten of its vertices in the band
+                // within twice the tolerance of the edge. Not where some piece
+                // turns round its zero, the refiner's test: an arc a cut cell
+                // drew of a zero's ring in the band beside turns too little
+                // round it, and a loop round two poles and the zero between
+                // them turns round it but is not its ring. Nor where the edge
+                // comes near it at a point: beside a saddle of |f| just over
+                // the band's level, the edge round another zero passes close
+                // to the ring and is not it.
+                let drawn = (pieces[span.band] ?? []).flatMap { p in zip(p, p.dropFirst()).map { ($0.v, $1.v) } }
+                func drawnAlready(_ ring: [P2<DomainSpace>]) -> Bool {
                     let near = 2 * tolerance
-                    let xs = ring.map(\.x), ys = ring.map(\.y)
-                    let (x0, x1, y0, y1) = (xs.min()! - near, xs.max()! + near, ys.min()! - near, ys.max()! + near)
-                    return drawn.joined().contains { v in
-                        v.x >= x0 && v.x <= x1 && v.y >= y0 && v.y <= y1 && zip(ring, ring.dropFirst()).contains { a, b in
-                            let d = b.v - a.v, t = max(0, min(1, simd_dot(v.v - a.v, d) / max(simd_length_squared(d), .leastNormalMagnitude)))
-                            return simd_length(v.v - (a.v + t * d)) <= near
-                        }
+                    let held = (ring.first == ring.last ? ring.dropLast() : ring[...]).filter(inside).map(\.v)
+                    guard let first = held.first else { return false }
+                    let low = held.reduce(first, simd_min) - near, high = held.reduce(first, simd_max) + near
+                    let close = drawn.filter { a, b in
+                        all(simd_max(a, b) .>= low) && all(simd_min(a, b) .<= high)
                     }
+                    let covered = held.filter { v in
+                        close.contains { a, b in
+                            let d = b - a, t = max(0, min(1, simd_dot(v - a, d) / max(simd_length_squared(d), .leastNormalMagnitude)))
+                            return simd_length(v - (a + t * d)) <= near
+                        }
+                    }.count
+                    return 10 * covered >= 9 * held.count
                 }
-                for ring in rings(truncationHeight, []) where ring.count >= 2 && ring.contains(where: inside) && !runsAlong(ring) {
+                for ring in rings(truncationHeight, []) where ring.count >= 2 && ring.contains(where: inside) && !drawnAlready(ring) {
                     guard !ring.allSatisfy(inside) else { emit(ring, band: span.band, truncationHeight: truncationHeight); continue }
                     // A closed ring walked from a point outside the band.
                     var path = ring

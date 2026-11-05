@@ -2571,6 +2571,39 @@ func faceTests() {
                      "\(arcs.count) arcs: \(arcs.map { "\($0.count) vertices" }), \(trim.open) open")
     }
 
+    Check.suite("faces: a zero's ring beside a saddle is drawn, though the edge round another zero passes near it") {
+        // A simple zero at (0.650, 0.014) and a double zero at (0.769, -0.212),
+        // the saddle between them at (0.698, -0.064) where |f| is 1.503, at
+        // 1.5 | 4 across Re z = 0.7214, res 24: the grid sees the double
+        // zero's hole and not the simple zero's. The double zero's edge
+        // passes within a vertex of the simple zero's ring, a different
+        // branch of the level set, and the ring is drawn all the same.
+        let built = try NativeLandscape.build(
+            LandscapeRequest(expression: "353.319490401*(z - (0.650093325017 + 0.014383779377i))*(z - (0.769125500952 - 0.211731000630i))^2"
+                                + "/(z - (0.536334390878 - 0.621521184752i))",
+                             domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)), resolution: 24,
+                             truncation: .realBands([RealBand(below: 0.721440736242, height: 1.5)], beyond: 4)),
+            refine: true)
+        guard let magnitude = built.refine?.magnitude else { Check.expect(false, "a refiner"); return }
+        let trim = built.surface.graphTrimLoops(refine: built.refine)
+        let cell = 2.0 / 23
+        let loops = Segments(trim.loops.map { $0.map(\.v) }, cell: cell)
+        // Round the simple zero, clear of the saddle: the loops hold the
+        // hole, |f| < 1.5, and only it, on a lattice a seventh of a cell
+        // across, away from them.
+        var asked = 0, wrong: [String] = []
+        for i in 0..<10 {
+            for j in 0..<9 {
+                let p = SIMD2(0.6 + (Double(i) + 0.37) * cell / 7, -0.045 + (Double(j) + 0.61) * cell / 7)
+                guard loops.distance(p, within: 0.06 * cell).isInfinite else { continue }
+                asked += 1
+                if loops.inside(p) != (magnitude(P2(p)) < 1.5) { wrong.append("\(p)") }
+            }
+        }
+        Check.expect(asked > 50 && wrong.isEmpty && trim.open == 0, "round the simple zero the loops hold its hole, and only it",
+                     "\(wrong.count) of \(asked) wrong: \(wrong.prefix(3).joined(separator: "; ")), \(trim.open) open")
+    }
+
     Check.suite("faces: the truncation edge in a cell a band boundary cuts keeps to |f| = h, within the refiner's tolerance") {
         // Each chord with its midpoint within a column of a boundary, its
         // midpoint off the level by the residual over the gradient, in
