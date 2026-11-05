@@ -984,7 +984,7 @@ private struct Segments {
 private struct TrimTally {
     var open = 0, drawn = 0, drawnOff = 0, worstDrawn = 0.0
     var asked = 0, misplaced = 0, worstMisplaced = 0.0
-    var runs = 0, endsOff = 0, worstEnd = 0.0, samples = 0, misclipped = 0
+    var runs = 0, endsOff = 0, worstEnd = 0.0, samples = 0, held = 0, misclipped = 0
     var riserAsked = 0, riserMissing = 0
     var examples: [String: [String]] = [:]
     mutating func note(_ kind: String, _ what: String) {
@@ -1131,6 +1131,7 @@ private func trimLoops(_ l: Landscape, margin: Double) -> TrimTally? {
                         let q = a.v + (b.v - a.v) * ((Double(k) + 0.5) / 16)
                         guard cut.distance(q, within: tolerance).isInfinite else { continue }
                         t.samples += 1
+                        if held(q) { t.held += 1 }
                         let onRun = kept.distance(q, within: cell) <= tolerance
                         if onRun != held(q) {
                             t.misclipped += 1
@@ -2297,12 +2298,7 @@ func faceTests() {
     }
 
     Check.suite("faces: the graph's trim loops are its truncation edge, closed, and a contour on it is cut where it crosses them") {
-        // Not the reviewer's tower, whose band boundary, Re z = 1.45, lies
-        // within a column of the domain's far edge: the banded truncation
-        // edge drops the vertices beside a boundary, and its loops part from
-        // `contains` by up to a quarter of a cell there (recorded; the
-        // graph's loops are not what its layouts are here for).
-        var landscapes = try faceLandscapes().filter { $0.hasGraph && !$0.name.hasPrefix("the reviewer's tower") }
+        var landscapes = try faceLandscapes().filter(\.hasGraph)
         // A tower cut at 2 left of Re z = 1/2 and at 4 beyond, on f: the top
         // of its riser runs past where the graph meets it, flat at 4 between
         // |Im z| = 1/4, along the higher plateau.
@@ -2348,6 +2344,14 @@ func faceTests() {
             landscapes.append(Landscape("\(expression) at res \(resolution) banded at 2 | 4, a column short of the boundary, on f",
                                         surface: pole.surface, refine: pole.refine))
         }
+        // The reviewer's tower in one tile: its band at 1, between Re z = 1.45
+        // and the far edge at 1.5, is narrower than a column.
+        let reviewersTower = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/(z - 1.4)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                             resolution: 32, truncation: .realBands([RealBand(below: 1.45, height: 0.5)], beyond: 1)),
+            refine: true)
+        landscapes.append(Landscape("the reviewer's tower at 0.5 | 1, on f", surface: reviewersTower.surface,
+                                    refine: reviewersTower.refine))
         // Uniform on f: 1/(z³ - 1), its three towers cut at 5.
         let cubic = try NativeLandscape.build(
             LandscapeRequest(expression: "1/(z^3 - 1)", domain: Domain(real: Interval(lo: -1.3, hi: 1.6), imag: Interval(lo: -1.2, hi: 1.5)),
@@ -2391,7 +2395,8 @@ func faceTests() {
             Check.expect(t.asked > 1000 && t.misplaced == 0,
                          "\(l.name): a point the loops and the footprint hold is in the graph, and one they do not is out",
                          "\(t.misplaced) of \(t.asked) disagree, worst \(t.worstMisplaced) cells from the loops: \(t.examples("placed"))")
-            Check.expect(t.runs > 0 && t.endsOff == 0 && t.samples > 200 && t.misclipped == 0,
+            // A footprint that holds none of the graph keeps no run of it.
+            Check.expect((t.runs > 0 || t.held == 0) && t.endsOff == 0 && t.samples > 200 && t.misclipped == 0,
                          "\(l.name): lines of x and y and level sets of |f| on each copy are cut where they cross its loops, "
                             + "and kept where the loops and the footprint hold them",
                          "\(t.endsOff) of \(t.runs) runs end off the loops (worst \(t.worstEnd) cells), \(t.misclipped) of \(t.samples) "
@@ -2456,11 +2461,11 @@ func faceTests() {
     Check.suite("faces: the graph's trim loops close a plateau that turns back a column short of a band boundary") {
         // A pole's plateau that comes within a column of a band boundary
         // without crossing it, |f| under the truncation all along the
-        // boundary: the banded truncation edge drops the vertices beside the
-        // boundary, and with nothing on it to join the ends to they are
-        // placed at the plateau's own level instead, so the plateau's loop
-        // closes, in the drawing as in the loops. On a coarse grid, and on a
-        // fine one with the plateau nearer the boundary.
+        // boundary: in the cell the boundary cuts, contoured over the
+        // plateau's own band, its line turns back short of the boundary, so
+        // the plateau's loop closes, in the drawing as in the loops. On a
+        // coarse grid, and on a fine one with the plateau nearer the
+        // boundary.
         for (expression, resolution) in [("1/(z + 0.03)", 32), ("1/(z + 0.01)", 200)] {
             let pole = try NativeLandscape.build(
                 LandscapeRequest(expression: expression, domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
@@ -2474,20 +2479,53 @@ func faceTests() {
         }
     }
 
+    Check.suite("faces: a band narrower than a column, between a boundary and the far edge, has its plateau's loop") {
+        // The reviewer's tower, 1/(z - 1.4) at 0.5 | 1 across Re z = 1.45, the
+        // far edge at 1.5 and the column before it at 1.435: the band at 1
+        // has no column of its own. Its plateau, where |z - 1.4| ≤ 1, is one
+        // loop, and the points between the boundary and the edge are in the
+        // graph where the loops say, away from them, read on a lattice a
+        // fifth of a column across.
+        let tower = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/(z - 1.4)", domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                             resolution: 32, truncation: .realBands([RealBand(below: 1.45, height: 0.5)], beyond: 1)),
+            refine: true)
+        let trim = tower.surface.graphTrimLoops(refine: tower.refine)
+        let own = trim.loops.filter { loop in loop.first == loop.last && loop.allSatisfy { $0.x >= 1.45 } }
+        Check.expect(trim.open == 0 && own.count == 1 && (own.first.map { $0.map(\.y).max()! - $0.map(\.y).min()! } ?? 0) > 1.99,
+                     "the narrow band's plateau is one closed loop, from Im z = -0.9987 to 0.9987",
+                     "\(own.count) loops in the band, \(trim.open) open")
+        guard let graph = tower.surface.faces(tiles: [.identity], region: .full, walls: .none, refine: tower.refine).first,
+              graph.id == .graph, let loops = graph.trimLoops else { Check.expect(false, "the graph has trim loops"); return }
+        let cell = 2.0 / 31
+        let segments = Segments(loops.map { $0.map(\.v) }, cell: cell)
+        var asked = 0, wrong = 0, example = ""
+        for i in 0..<5 {
+            for j in 0..<160 {
+                let p = SIMD2(1.45 + 0.05 * (Double(i) + 0.5) / 5, -1 + 2 * (Double(j) + 0.5) / 160)
+                guard segments.distance(p, within: 0.05 * cell).isInfinite else { continue }
+                asked += 1
+                if segments.inside(p) != graph.copies[0].contains(P2(p)) {
+                    wrong += 1
+                    if example.isEmpty { example = "\(p): the loops say \(segments.inside(p))" }
+                }
+            }
+        }
+        Check.expect(asked > 600 && wrong == 0, "between the boundary and the far edge, a point is in the graph where its loops hold it",
+                     "\(wrong) of \(asked) disagree \(example)")
+    }
+
     Check.suite("faces: a pole beside a band boundary, at every resolution, has its truncation edge on its own band's level") {
         // Poles 1/(z - c) along Re c from -0.2 to 1.2, Im c wandering within
         // 0.13 of the axis, beside the boundary Re z = 1/2 under 2 | 4 and
         // 4 | 2, at six resolutions: their plateaus cross the boundary, end
         // on it, or turn back short of it within a column. Every vertex of
         // the placed truncation edge, off the boundary, is in the band at its
-        // own x and on |f| = that band's height. Open chains: 237 on main
-        // 1ae3d87 over the 492; four remain, at the coarsest grids, where
-        // the higher band's plateau turns back a column short of the
-        // boundary and the grid's line runs through the dropped cells into
-        // the lower band's plateau, which crosses it, so no run of its own
-        // band lies across the gap to join it to.
+        // own x and on |f| = that band's height, and the graph's loops close.
+        // Open chains: 237 on main 1ae3d87 over the 492, and four on f6ea42f,
+        // at the coarsest grids, where the higher band's plateau turns back
+        // a column short of the boundary into the lower band's line.
         let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
-        let knownOpen: Set<String> = ["2|4 res 24 c 0.78", "2|4 res 32 c 0.78", "4|2 res 24 c 0.22", "4|2 res 32 c 0.22"]
         var cases = 0, wrong = 0, off = 0, examples: [String] = [], open: [String: Int] = [:]
         for (left, right) in [(2.0, 4.0), (4.0, 2.0)] {
             for resolution in [24, 32, 48, 64, 100, 200] {
@@ -2516,8 +2554,7 @@ func faceTests() {
         Check.expect(cases == 492 && wrong == 0 && off == 0,
                      "every vertex of 492 poles' truncation edges lies in the band at its x, on |f| = that band's height",
                      "\(wrong) in the wrong band, \(off) off the level: \(examples.joined(separator: "; "))")
-        Check.expect(Set(open.keys).isSubset(of: knownOpen) && open.values.allSatisfy { $0 == 1 },
-                     "and no more open chains than the four known, a plateau turning back into another band's line",
+        Check.expect(open.isEmpty, "and none of their loops is open",
                      "open: \(open.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" })")
     }
 
