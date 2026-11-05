@@ -918,6 +918,8 @@ private func faceLandscapes() throws -> [Landscape] {
 
 /// Two poles either side of Re z = 1/2 and a zero between them on it.
 private let holeBesideABoundary = "1/(z - (0.4804 - 0.0550i)) + 1/(z - (0.5196 + 0.0550i))"
+/// Two poles above and below a zero just left of Re z = 1/2.
+private let ringBesideABoundary = "1/(z - (0.482 + 0.0853333i)) + 1/(z - (0.482 - 0.2146667i))"
 
 // MARK: - the graph's trim loops
 //
@@ -2378,6 +2380,14 @@ func faceTests() {
             landscapes.append(Landscape("a hole round a zero on a band boundary at 1.5 | 1.8 over Re \(re), Im \(im), on f",
                                         surface: hole.surface, refine: hole.refine))
         }
+        // A zero's ring at 1.8 reaching over the boundary from the band
+        // beside, a cut cell drawing an arc of it.
+        let ring = try NativeLandscape.build(
+            LandscapeRequest(expression: ringBesideABoundary, domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                             resolution: 16, truncation: .realBands([RealBand(below: 0.5, height: 1.5)], beyond: 1.8)),
+            refine: true)
+        landscapes.append(Landscape("a zero's ring over a band boundary from the band beside, at 1.5 | 1.8, on f",
+                                    surface: ring.surface, refine: ring.refine))
         // Uniform on f: 1/(z³ - 1), its three towers cut at 5.
         let cubic = try NativeLandscape.build(
             LandscapeRequest(expression: "1/(z^3 - 1)", domain: Domain(real: Interval(lo: -1.3, hi: 1.6), imag: Interval(lo: -1.2, hi: 1.5)),
@@ -2535,6 +2545,26 @@ func faceTests() {
                                    Set(p.map { "\($0.z)" }).sorted().joined(separator: ","), p.first == p.last ? ", closed" : "")
                          }.joined(separator: "; ") + ", \(trim.open) open")
         }
+    }
+
+    Check.suite("faces: a zero's ring is drawn once where a cell a band boundary cuts drew an arc of it") {
+        // A zero at Re z = 0.482, a column's sixth left of the boundary
+        // Re z = 1/2 at res 16, between poles 0.15 above and below it, at
+        // 1.5 | 1.8: its hole at 1.8, of radius 0.021, reaches over the
+        // boundary, and the cut cell's part right of it draws that arc, which
+        // turns too little round the zero for the refiner to leave it its
+        // ring. The ring cut to the band drew it again, and the arc and the
+        // ring between nearly the same ends left a loop open.
+        let built = try NativeLandscape.build(
+            LandscapeRequest(expression: ringBesideABoundary, domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)),
+                             resolution: 16, truncation: .realBands([RealBand(below: 0.5, height: 1.5)], beyond: 1.8)),
+            refine: true)
+        let trim = built.surface.graphTrimLoops(refine: built.refine)
+        let arcs = trim.truncationEdge.dropLast(trim.riserTops.count)
+            .filter { p in p.allSatisfy { $0.x >= 0.5 && $0.z == 1.8 && abs($0.x - 0.482) < 0.05 && abs($0.y + 0.0647) < 0.05 } }
+        Check.expect(trim.open == 0 && arcs.count == 1 && arcs.allSatisfy { $0[0].x == 0.5 && $0[$0.count - 1].x == 0.5 },
+                     "the arc right of the boundary is drawn once, from the boundary to the boundary, and the loops close",
+                     "\(arcs.count) arcs: \(arcs.map { "\($0.count) vertices" }), \(trim.open) open")
     }
 
     Check.suite("faces: a band narrower than a column, between a boundary and the far edge, has its plateau's loop") {

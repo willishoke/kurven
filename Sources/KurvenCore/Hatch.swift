@@ -1117,8 +1117,9 @@ extension Surface {
     /// end to the parts' lines where they meet: on a column beside a cut cell,
     /// where both crossed the same edge from the same two samples, the
     /// refiner's point standing for both. The rings round the zeros the grid
-    /// could not see are seeded once a band, at its level, and cut to the
-    /// band exactly too.
+    /// could not see are seeded once a band, at its level, and those the
+    /// band's truncation edge does not already draw are cut to the band
+    /// exactly too.
     ///
     /// Where the truncation steps the surface has a riser, and its top is the
     /// truncation edge there: along the boundary, at f's own height up to the
@@ -1324,10 +1325,10 @@ extension Surface {
             }
         }
 
-        // Each band's rings, seeded at its level once, given its truncation
-        // edge, and cut to the band where they cross a boundary, exactly: on
-        // the boundary, where |f| reaches the band's level beside the chord's
-        // crossing.
+        // Each band's rings, seeded at its level once, those its truncation
+        // edge does not already draw, cut to the band where they cross a
+        // boundary, exactly: on the boundary, where |f| reaches the band's
+        // level beside the chord's crossing.
         if let rings = refine.rings {
             func onBoundary(_ b: Double, _ q: P2<DomainSpace>, _ p: P2<DomainSpace>, _ truncationHeight: Double) -> P2<DomainSpace> {
                 if q.x == b { return q }
@@ -1352,7 +1353,25 @@ extension Surface {
                 func inside(_ p: P2<DomainSpace>) -> Bool {
                     !(span.lo > lo && p.x < span.lo) && !(span.hi < hi && p.x >= span.hi)
                 }
-                for ring in rings(truncationHeight, pieces[span.band] ?? []) where ring.count >= 2 && ring.contains(where: inside) {
+                // A ring is drawn already where the band's truncation edge
+                // runs along it, a vertex within twice the tolerance. Not
+                // where some piece turns round its zero, the refiner's test:
+                // an arc a cut cell drew of a zero's ring in the band beside
+                // turns too little round it, and a loop round two poles and
+                // the zero between them turns round it but is not its ring.
+                let drawn = pieces[span.band] ?? []
+                func runsAlong(_ ring: [P2<DomainSpace>]) -> Bool {
+                    let near = 2 * tolerance
+                    let xs = ring.map(\.x), ys = ring.map(\.y)
+                    let (x0, x1, y0, y1) = (xs.min()! - near, xs.max()! + near, ys.min()! - near, ys.max()! + near)
+                    return drawn.joined().contains { v in
+                        v.x >= x0 && v.x <= x1 && v.y >= y0 && v.y <= y1 && zip(ring, ring.dropFirst()).contains { a, b in
+                            let d = b.v - a.v, t = max(0, min(1, simd_dot(v.v - a.v, d) / max(simd_length_squared(d), .leastNormalMagnitude)))
+                            return simd_length(v.v - (a.v + t * d)) <= near
+                        }
+                    }
+                }
+                for ring in rings(truncationHeight, []) where ring.count >= 2 && ring.contains(where: inside) && !runsAlong(ring) {
                     guard !ring.allSatisfy(inside) else { emit(ring, band: span.band, truncationHeight: truncationHeight); continue }
                     // A closed ring walked from a point outside the band.
                     var path = ring
