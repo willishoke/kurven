@@ -502,7 +502,9 @@ public struct ContourRefine: Sendable {
     public typealias Zero = @Sendable (P2<DomainSpace>) -> P2<DomainSpace>?
 
     public let contours: Contours
-    /// Nil for a consumer with no zeros to seed rings from.
+    /// Nil for a consumer with no zeros to seed rings from. Given at every
+    /// construction, so a wrapper that hands on `contours` decides about
+    /// these too.
     public let rings: Rings?
     /// With it, the top edge of a cut face gains a vertex at each minimum of |f|
     /// between two grid nodes (`Surface.topEdge`), and a contour that ends on a
@@ -526,7 +528,7 @@ public struct ContourRefine: Sendable {
     /// forked, a third more. Nil, a refiner that cannot be forked, is shared.
     public let fork: (@Sendable () -> ContourRefine)?
 
-    public init(contours: @escaping Contours, rings: Rings? = nil, magnitude: Magnitude? = nil,
+    public init(contours: @escaping Contours, rings: Rings?, magnitude: Magnitude? = nil,
                 zero: Zero? = nil, tolerance: Double = 0.02,
                 fork: (@Sendable () -> ContourRefine)? = nil) {
         self.tolerance = tolerance

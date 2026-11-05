@@ -175,7 +175,7 @@ func scalarFieldTests() {
         let unmoved = ContourRefine(contours: { field, level, paths, ceiling in
             asked.withLock { $0.append("\(field) \(level) \(ceiling)") }
             return paths
-        })
+        }, rings: nil)
         func inParameters(_ paths: [[P2<DomainSpace>]]) -> [[P2<ParamSpace>]] {
             paths.map { $0.map { P2<ParamSpace>($0.v) } }
         }
