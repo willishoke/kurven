@@ -1043,26 +1043,56 @@ public struct ContourRefiner: Sendable {
     /// neighbourhood and lands on a value a million times smaller than at
     /// `p`, so that a step toward a far-off root, or a stall at a critical
     /// point, is not mistaken for one.
+    ///
+    /// At a root of order m, Newton's step shrinks only by (m − 1)/m each
+    /// time, so a root of order three or more is not reached in forty
+    /// steps, and by then it is nearer than the central difference's step,
+    /// which no longer sees its slope. So an iteration still going after
+    /// forty reads the derivative over a step small against its last, takes
+    /// two more of Newton's steps, whose ratio says the order, and finishes
+    /// by Schröder's step, m times Newton's, which converges at a root of
+    /// order m as Newton's does at a simple one.
     func root(near p: P2<DomainSpace>, of g: (Complex) -> Complex) -> P2<DomainSpace>? {
         var z = Complex(p.x, p.y)
         let g0 = g(z)
         guard g0.isFinite, g0.magnitude > 0 else { return nil }
-        let h = 1e-6 * cell
-        for _ in 0..<40 {
+        /// One step from z, m times Newton's, its derivative read over h;
+        /// the step's length, or nil when it leaves the neighbourhood.
+        func step(times m: Double, over h: Double) -> Double? {
             let gz = g(z)
             guard gz.isFinite else { return nil }
             let d = (g(z + h) - g(z - h)) / (2 * h)
             guard d.isFinite, d.squaredMagnitude > 0 else { return nil }
-            let step = gz / d
+            var step = gz / d
+            if m != 1 { step = Complex(m * step.re, m * step.im) }
             guard step.isFinite else { return nil }
             z = z - step
             guard Complex(z.re - p.x, z.im - p.y).magnitude <= Self.reach * cell else { return nil }
-            if step.magnitude <= 1e-12 * cell {
-                let at = g(z)
-                guard at.isFinite, at.magnitude <= 1e-6 * g0.magnitude else { return nil }
-                let q = P2<DomainSpace>(z.re, z.im)
-                return inWindow(q) ? q : nil
+            return step.magnitude
+        }
+        /// z, when g there is a million times smaller than at p.
+        func accepted() -> P2<DomainSpace>? {
+            let at = g(z)
+            guard at.isFinite, at.magnitude <= 1e-6 * g0.magnitude else { return nil }
+            let q = P2<DomainSpace>(z.re, z.im)
+            return inWindow(q) ? q : nil
+        }
+        let h = 1e-6 * cell
+        var last = 0.0
+        for _ in 0..<40 {
+            guard let s = step(times: 1, over: h) else { return nil }
+            if s <= 1e-12 * cell { return accepted() }
+            last = s
+        }
+        var m = 1.0
+        for k in 0..<12 {
+            guard let s = step(times: m, over: max(min(h, 1e-3 * last), 1e-10 * cell)) else { return nil }
+            if s <= 1e-12 * cell { return accepted() }
+            if k == 1 {
+                m = (1 / (1 - s / last)).rounded()
+                guard m.isFinite, m >= 2 else { return nil }
             }
+            last = s
         }
         return nil
     }

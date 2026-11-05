@@ -577,6 +577,37 @@ func refinementTests() {
                      "a landscape with such a chord builds in under ten seconds",
                      "\(finished) of \(expressions.count) finished")
     }
+
+    Check.suite("refine: a zero or pole of order more than one is found") {
+        // Newton's step toward a root of order m shrinks by (m − 1)/m, so
+        // one of order three or more was never reached in its forty steps,
+        // and the phase lines crept toward it instead: without a truncation,
+        // at 24², 0.1/z³ took 4.7 s and 0.03/(z - c)⁴ 48 s.
+        let cases: [(expression: String, points: [(x: Double, y: Double, order: Int)])] = [
+            ("0.3/(z - 0.2 - 0.13*i)^2", [(0.2, 0.13, -2)]),
+            ("0.1/(z - 0.2 - 0.13*i)^3", [(0.2, 0.13, -3)]),
+            ("0.03/(z - 0.2 - 0.13*i)^4", [(0.2, 0.13, -4)]),
+            ("(z - 0.2 - 0.13*i)^3", [(0.2, 0.13, 3)]),
+            // And the zero between them: 0.2 w² + 0.3 w - 0.12 = 0, w = z - c.
+            ("0.3/(z - 0.2 - 0.13*i)^2 + 0.2/(z - 0.6 - 0.13*i)",
+             [(0.2, 0.13, -2), (0.6, 0.13, -1), (0.2 + (0.186.squareRoot() - 0.3) / 0.4, 0.13, 1)]),
+        ]
+        for (expression, expected) in cases {
+            let request = LandscapeRequest(expression: expression, domain: square, resolution: 24)
+            let refiner = NativeLandscape.refiner(for: try NativeLandscape.build(request, refine: false))!
+            let found = refiner.singularPoints()
+            let matched = expected.allSatisfy { e in
+                found.contains { s in
+                    s.order == e.order && abs(s.point.x - e.x) <= 1e-9 * refiner.cell
+                        && abs(s.point.y - e.y) <= 1e-9 * refiner.cell
+                }
+            }
+            Check.expect(matched && found.count == expected.count,
+                         "\(expression): \(expected.map { "order \($0.order)" }.joined(separator: ", "))",
+                         found.map { String(format: "order %d at %.12f%+.12fi", $0.order, $0.point.x, $0.point.y) }
+                            .joined(separator: ", "))
+        }
+    }
 }
 
 // MARK: - the numbers in an expression
