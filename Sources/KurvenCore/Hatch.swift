@@ -1077,9 +1077,9 @@ extension Surface {
                                                               x1: span.hi == hi ? rectangle.x1 : span.hi,
                                                               y0: rectangle.y0, y1: rectangle.y1),
                             plateau: plateau(span.height))
-                        // Every placed run lies in the domain under a finite
-                        // truncation, off the band boundaries, so its band
-                        // has a span here.
+                        // Every placed piece is filed under a band of finite
+                        // truncation that the domain holds, its ends on that
+                        // band's edges at most, so its band has a span here.
                         band.pieces = pieces[span.band] ?? []
                         plateaus.append(band)
                     }
@@ -1181,7 +1181,7 @@ extension Surface {
         var stretches: [Int: (truncationHeight: Double, stretches: [Stretch])] = [:]
         /// A run's end on a column beside a cut cell, where a part's line
         /// meets it.
-        func shared(_ p: P2<DomainSpace>?) -> P2<DomainSpace>? {
+        func meetsPart(_ p: P2<DomainSpace>?) -> P2<DomainSpace>? {
             guard let p, cut.contains(where: { p.x == $0.lo || p.x == $0.hi }) else { return nil }
             return p
         }
@@ -1220,8 +1220,8 @@ extension Surface {
                         let i = atStart ? 0 : piece.count - 1
                         if let q = onBoundaryTruncationCrossing(near: piece[i], magnitude: magnitude) { piece[i] = q }
                     }
-                    let ends = (start: closed || index > 0 ? nil : shared(run.first),
-                                end: closed || index < refined.count - 1 ? nil : shared(run.last))
+                    let ends = (start: closed || index > 0 ? nil : meetsPart(run.first),
+                                end: closed || index < refined.count - 1 ? nil : meetsPart(run.last))
                     if ends.start == nil && ends.end == nil {
                         emit(piece, band: band, truncationHeight: truncationHeight)
                     } else {
@@ -1272,11 +1272,11 @@ extension Surface {
                     } ?? interpolated(a, b)
                 }
                 // A line's end on a column of the band, where a run meets it.
-                func shared(_ p: P2<DomainSpace>) -> P2<DomainSpace>? {
+                func meetsRun(_ p: P2<DomainSpace>) -> P2<DomainSpace>? {
                     sides.contains { $0.column != nil && $0.x == p.x } ? p : nil
                 }
                 for (grid, placed) in zip(graded, solved) {
-                    let ends = grid.first == grid.last ? (nil, nil) : (shared(grid[0]), shared(grid[grid.count - 1]))
+                    let ends = grid.first == grid.last ? (nil, nil) : (meetsRun(grid[0]), meetsRun(grid[grid.count - 1]))
                     if ends.0 == nil && ends.1 == nil {
                         emit(placed, band: band, truncationHeight: truncationHeight)
                     } else {
