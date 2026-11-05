@@ -1240,13 +1240,16 @@ extension Surface {
         /// normal, the nearest crossing toward the level within the band,
         /// between `l` and `r`, and the halves likewise, five deep. The curve
         /// can leave the cut cell where the grid beside it cannot see it, as
-        /// round a zero on the boundary whose hole is wider than the part.
+        /// round a zero on the boundary whose hole is wider than the part. It
+        /// can leave the band too, through a boundary between two rows: the
+        /// line is then broken there, at the level's two crossings of the
+        /// boundary either side of where the search met it, into pieces.
         func subdivided(_ line: [P2<DomainSpace>], truncationHeight h: Double,
-                        within l: Double, _ r: Double) -> [P2<DomainSpace>] {
-            guard let first = line.first else { return line }
+                        within l: Double, _ r: Double) -> [[P2<DomainSpace>]] {
+            guard let first = line.first else { return [] }
             func excess(_ p: P2<DomainSpace>) -> Double { mag(p) - h }
             let step = 1e-4 * cell
-            var out = [first]
+            var pieces = [[first]]
             func subdivide(_ a: P2<DomainSpace>, _ b: P2<DomainSpace>, depth: Int) {
                 let chord = simd_length(b.v - a.v)
                 guard depth < 5, chord > 1e-9 * cell else { return }
@@ -1263,25 +1266,37 @@ extension Surface {
                 // a chord's length, and no further than the band's edges.
                 let left = SIMD2(a.y - b.y, b.x - a.x) / chord
                 let toward = e > 0 ? -left : left
-                let farthest = toward.x == 0 ? chord : min(chord, ((toward.x > 0 ? r : l) - m.x) / toward.x)
-                var reach = abs(e) / slope, q: P2<DomainSpace>?
+                let edge = toward.x > 0 ? r : l
+                let farthest = toward.x == 0 ? chord : min(chord, (edge - m.x) / toward.x)
+                var reach = abs(e) / slope, q: P2<DomainSpace>?, end = m
                 while reach > 0, q == nil {
-                    let t = min(reach, farthest)
-                    let end = P2<DomainSpace>(m.v + t * toward)
+                    end = P2<DomainSpace>(m.v + min(reach, farthest) * toward)
                     q = truncationCrossing(from: m, e, to: end, excess(end), excess: excess)
                     guard reach < farthest else { break }
                     reach *= 2
                 }
-                guard let q else { return }
-                subdivide(a, q, depth: depth + 1)
-                out.append(q)
-                subdivide(q, b, depth: depth + 1)
+                if let q {
+                    subdivide(a, q, depth: depth + 1)
+                    pieces[pieces.count - 1].append(q)
+                    subdivide(q, b, depth: depth + 1)
+                } else if farthest < chord, end.x == edge, boundaries.contains(edge),
+                          let ca = truncationCrossing(from: end, excess(end), to: P2(edge, a.y), excess(P2(edge, a.y)), excess: excess),
+                          let cb = truncationCrossing(from: end, excess(end), to: P2(edge, b.y), excess(P2(edge, b.y)), excess: excess) {
+                    subdivide(a, ca, depth: depth + 1)
+                    pieces[pieces.count - 1].append(ca)
+                    pieces.append([cb])
+                    subdivide(cb, b, depth: depth + 1)
+                }
             }
             for (a, b) in zip(line, line.dropFirst()) {
                 subdivide(a, b, depth: 0)
-                out.append(b)
+                pieces[pieces.count - 1].append(b)
             }
-            return out
+            // A closed line broken is open, from one break to the next.
+            if line.first == line.last, pieces.count > 1 {
+                pieces[0] = pieces.removeLast() + pieces[0].dropFirst()
+            }
+            return pieces.filter { $0.count >= 2 }
         }
 
         // The cut cells, band by band.
@@ -1330,12 +1345,15 @@ extension Surface {
                 for (grid, solved) in zip(graded, solved) {
                     let placed = subdivided(solved, truncationHeight: truncationHeight,
                                             within: boundaries.last { $0 <= l } ?? lo, boundaries.first { $0 >= r } ?? hi)
-                    let ends = grid.first == grid.last ? (nil, nil) : (meetsRun(grid[0]), meetsRun(grid[grid.count - 1]))
-                    if ends.0 == nil && ends.1 == nil {
-                        emit(placed, band: band, truncationHeight: truncationHeight)
-                    } else {
-                        stretches[band, default: (truncationHeight, [])].stretches
-                            .append(Stretch(points: placed, ends: ends, refined: false))
+                    for (k, piece) in placed.enumerated() {
+                        let ends = grid.first == grid.last ? (nil, nil)
+                            : (k == 0 ? meetsRun(grid[0]) : nil, k == placed.count - 1 ? meetsRun(grid[grid.count - 1]) : nil)
+                        if ends.0 == nil && ends.1 == nil {
+                            emit(piece, band: band, truncationHeight: truncationHeight)
+                        } else {
+                            stretches[band, default: (truncationHeight, [])].stretches
+                                .append(Stretch(points: piece, ends: ends, refined: false))
+                        }
                     }
                 }
             }

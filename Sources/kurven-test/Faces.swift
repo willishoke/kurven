@@ -2580,8 +2580,10 @@ func faceTests() {
         // beside it cannot see it: three vertices, 0.45 cells off, before
         // the chords were taken onto f. Beside a pole within a chord across
         // its plateau, at 3 | 4 | 1 across Re z = 0.833 and 1.3, where |f|
-        // falls away from the chord on the side the curve is not. And the
-        // hole and the ring above, and the reviewer's tower.
+        // falls away from the chord on the side the curve is not. Where a
+        // pole's plateau at 3, right of Re z = -0.4238, crosses that boundary
+        // between two rows and comes back, the line broken on the boundary.
+        // And the hole and the ring above, and the reviewer's tower.
         let mixed = "(z - (1.1934990849887146 - 0.20536860263116311i))*(z - (1.2234990849887146 - 0.2253686026311631i))"
             + "/((z - (1.2524804507563325 - 0.078069596745760084i))*(z - (1.399997924755525 + 0.40148084601005929i))^2)"
         let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
@@ -2589,6 +2591,8 @@ func faceTests() {
             ("a zero on the boundary, its hole wider than the part", "1/(z - (0.59724288035304796 - 0.13390328401912382i)) + 1/(z - (0.44728054417818569 - 0.37915093303657482i))",
              domain, 24, [RealBand(below: 0.5222617122656168, height: 1.5)], 4.0),
             ("a pole within a chord", mixed, domain, 16, [RealBand(below: 0.8333333333333333, height: 3), RealBand(below: 1.3001429547193402, height: 4)], 1.0),
+            ("a plateau leaving its band between two rows", "1/(z - (-0.095946946980314418 - 0.0047827152763062486i))",
+             domain, 16, [RealBand(below: -0.42375125887220094, height: 1.2)], 3.0),
             ("the hole round a zero on the boundary", holeBesideABoundary, Domain(real: Interval(lo: -0.3, hi: 1.5), imag: Interval(lo: -0.5, hi: 0.5)),
              24, [RealBand(below: 0.5, height: 1.5)], 1.8),
             ("a zero's ring and a cut cell's arc of it", ringBesideABoundary, domain, 16, [RealBand(below: 0.5, height: 1.5)], 1.8),
@@ -2625,7 +2629,7 @@ func faceTests() {
                 for i in 0..<14 {
                     for j in 0...Int(abs(imag.length) / cell * 7) {
                         let p = SIMD2(band.below - dx + (Double(i) + 0.37) * dx / 7, min(imag.lo, imag.hi) + (Double(j) + 0.61) * cell / 7)
-                        guard p.x < max(real.lo, real.hi), p.y < max(imag.lo, imag.hi),
+                        guard p.x > min(real.lo, real.hi), p.x < max(real.lo, real.hi), p.y < max(imag.lo, imag.hi),
                               loops.distance(p, within: 0.06 * cell).isInfinite else { continue }
                         asked += 1
                         if loops.inside(p) != (magnitude(P2(p)) < surface.truncation.height(atX: p.x)) { wrong.append("\(p)") }
