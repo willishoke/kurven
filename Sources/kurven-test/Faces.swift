@@ -884,6 +884,18 @@ private func faceLandscapes() throws -> [Landscape] {
         more.append(Landscape("|f| round about the centre, a tile turned \(name) from cos and sin, on the grid", surface: round,
                               tiles: [.identity, tile]))
     }
+    // Copies whose tops differ by a millionth: |f| = 1 + x(1 - x) on the unit
+    // square, its first column a millionth higher, with a second tile
+    // beside the first. A drop a thousand times the rounding `stands`
+    // forgives is a riser all the same.
+    let millionth = Surface(height: Grid2D(width: 21, height: 21, domain: unit, values: (0..<441).map { k in
+        let x = Double(k % 21) / 20
+        return Float(1 + x * (1 - x) + (k % 21 == 0 ? 1e-6 : 0))
+    }), phase: nil, truncation: .uniform(100))
+    var differing = Landscape("copies whose tops differ by a millionth at a tile boundary, the second beside the first, on the grid",
+                              surface: millionth, tiles: [.identity, beside(1)])
+    differing.dropsAtATileBoundary = true
+    more.append(differing)
     // On f, a pole a tenth outside the first copy's right edge, 1/(z - 1.6)
     // under 20, its top along the tile boundary peaking at 10 between two
     // grid nodes, where the turned copy's is under 1: the riser's top is f's
