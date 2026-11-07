@@ -249,8 +249,10 @@ public extension SceneGeometry {
     ///
     /// On a landscape the contours of |f| and arg f, and curves given their
     /// roles, lie on the graph, and over the truncation, lifted onto it, on
-    /// a plateau; a wall's hatching and edges on the walls; a plateau's
-    /// hatching on the plateaus. On a parametric surface every curve but an
+    /// a plateau; a wall's hatching and edges on the walls, the hatching on
+    /// the risers too, which the walls' test reads; a plateau's hatching on
+    /// the plateaus. The truncation edge, with the risers' tops and bottoms,
+    /// is a crease. On a parametric surface every curve but an
     /// outline lies on its one face. On a polyhedron its hatching lies on
     /// its faces.
     func face(of spec: LayerSpec) -> FaceKind? {

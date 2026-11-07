@@ -414,8 +414,13 @@ func wallFaceTests() {
             let h = Heightfield(surface: surface, occluder: .empty, tiles: layout.tiles, region: layout.region,
                                 step: 1, walls: .perimeter(layout.walls, base: 0))
             let context = Surface.HatchContext(perimeter: layout.walls, region: layout.region, tiles: layout.tiles)
-            let hatch = surface.hatch(.wallHatching(edges: Array(layout.walls.edges.indices), spacing: 0.1, step: 0.1),
-                                      in: context)!
+            // The walls' strokes, from the floor: where the second tile's top
+            // stands over the first's at the box edge they meet on, a riser
+            // stands over the wall there, and its hatching, a hair onto the
+            // lower side, rises from its bottom (`riserFaceTests`).
+            let both = surface.hatch(.wallHatching(edges: Array(layout.walls.edges.indices), spacing: 0.1, step: 0.1),
+                                     in: context)!
+            let hatch = PolylineSet(paths: (0..<both.count).map { Array(both[path: $0]) }.filter { $0[0].z == 0 })
             // Each edge's outward normal, from the perimeter's turn.
             let area = layout.walls.signedArea
             let normals = layout.walls.edges.map { e -> SIMD3<Double> in

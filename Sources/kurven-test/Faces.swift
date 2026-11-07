@@ -1078,12 +1078,24 @@ private func trimLoops(_ l: Landscape, margin: Double) -> TrimTally? {
     }
 
     // The truncation edge as the layer draws it, replicated and cut to the
-    // footprint: each vertex on the loops, carried back by some tile.
+    // footprint: each vertex on the loops, carried back by some tile. Less
+    // the risers' bottoms it draws with it, which lie on the lower
+    // plateau's loops, not the graph's: a hair, a billionth of a cell, onto
+    // the lower side of a band boundary or a tile boundary the loops run
+    // along, each vertex within two hairs of them, and on them at most where
+    // another loop meets the riser.
     let context = Surface.HatchContext(perimeter: nil, region: l.region, tiles: l.tiles)
     if let drawn = surface.hatch(.truncationEdge(tiled: true), in: context, refine: l.refine) {
-        for v in drawn.vertices {
+        func distance(_ v: P3<WorldSpace>) -> Double {
+            l.tiles.compactMap { $0.inverse }.map { own.distance($0(v).xy.v, within: cell) }.min() ?? .infinity
+        }
+        let paths = (0..<drawn.count).map { Array(drawn[path: $0]) }.filter { path in
+            let d = path.map(distance)
+            return !(d.allSatisfy { $0 < 2 * tolerance } && d.contains { $0 > 0.5 * tolerance })
+        }
+        for v in paths.joined() {
             t.drawn += 1
-            let d = l.tiles.compactMap { $0.inverse }.map { own.distance($0(v).xy.v, within: cell) }.min() ?? .infinity
+            let d = distance(v)
             if !(d <= tolerance) {
                 t.drawnOff += 1; t.worstDrawn = max(t.worstDrawn, d)
                 t.note("drawn", "drawn vertex \(v.v) \(d.isFinite ? "\(d / cell)" : "over a") cell(s) off the loops")
@@ -1267,9 +1279,14 @@ func faceTests() {
                     if let drawn = l.surface.hatch(.wallEdges(edges: [k], step: 1, base: base), in: context, refine: l.refine) {
                         vertices += drawn[path: 0] + drawn[path: 1]
                     }
+                    // The walls' hatching, less the risers' it draws with it,
+                    // which stand on their own lines, a hair onto the lower
+                    // side, and rise from a riser's bottom, not the base.
                     let strokes = Hatching(angle: HatchedFaces.wallAngle, spacing: 0.02)
-                    vertices += l.surface.hatch(.hatching(strokes, faces: .walls(edges: [k], trim: false, base: base, topOffset: 0)),
-                                                in: context, refine: l.refine)?.vertices ?? []
+                    if let hatch = l.surface.hatch(.hatching(strokes, faces: .walls(edges: [k], trim: false, base: base, topOffset: 0)),
+                                                   in: context, refine: l.refine) {
+                        vertices += (0..<hatch.count).map { Array(hatch[path: $0]) }.filter { $0[0].z == base }.joined()
+                    }
                     for v in vertices {
                         feet += 1
                         if v.x != x, off.count < 3 { off.append("\(v.x) on Re z = \(x)") } else if v.x != x { off.append("") }
@@ -1679,9 +1696,10 @@ func faceTests() {
         // that another tile's image meets has, at its middle, the footprint
         // either side, a drop between the tops read a hair either side, and
         // the higher top; and at every point of such a side with a drop, a
-        // segment passes over it at the higher top. On f the top is
-        // subdivided to the refiner's tolerance; on the grid each copy's top
-        // is linear between the vertices.
+        // segment passes over it at the higher top. Its bottom likewise, at
+        // the lower top, a hair off the side itself. On f each edge is
+        // subdivided to the refiner's tolerance;
+        // on the grid each copy's top is linear between the vertices.
         for l in landscapes where l.tiles.count > 1 {
             guard let drawn = l.surface.hatch(.truncationEdge(tiled: true),
                                               in: Surface.HatchContext(perimeter: nil, region: l.region, tiles: l.tiles),
@@ -1723,10 +1741,11 @@ func faceTests() {
                 return simd_length(v - (s.a + t * d)) <= 1e-9 * size
             }
             var segments = 0, stray: [String] = [], asked = 0, missing: [String] = []
-            var along: [(a: P3<WorldSpace>, c: P3<WorldSpace>)] = []
+            var along: [(a: P3<WorldSpace>, c: P3<WorldSpace>)] = [], under: [(a: P3<WorldSpace>, c: P3<WorldSpace>)] = []
             for path in paths {
                 guard let s = sides.first(where: { s in path.allSatisfy { onSide($0.xy.v, s) } }) else { continue }
                 let u = simd_normalize(s.b - s.a), n = SIMD2(-u.y, u.x)
+                let bottom = path.allSatisfy { abs(simd_dot($0.xy.v - s.a, n)) > 1e-12 * size }
                 // Its ends in the footprint, on its perimeter at the most.
                 for e in [path[0], path[path.count - 1]] where !inFootprint(e.xy.v, l.region, n: n, size: size) {
                     stray.append("an end at \(e.xy.v) off the footprint")
@@ -1737,9 +1756,16 @@ func faceTests() {
                         stray.append("\(m) off the footprint"); continue
                     }
                     segments += 1
-                    along.append((a, c))
                     guard let span = drop(m, n) else { stray.append("\(m) over no drop"); continue }
-                    if !(abs(0.5 * (a.z + c.z) - span.hi) <= bound) { stray.append("\(m) at \(0.5 * (a.z + c.z)), the higher top \(span.hi)") }
+                    if bottom {
+                        under.append((a, c))
+                        if !(abs(0.5 * (a.z + c.z) - span.lo) <= bound) {
+                            stray.append("a bottom at \(m) at \(0.5 * (a.z + c.z)), the lower top \(span.lo)")
+                        }
+                    } else {
+                        along.append((a, c))
+                        if !(abs(0.5 * (a.z + c.z) - span.hi) <= bound) { stray.append("\(m) at \(0.5 * (a.z + c.z)), the higher top \(span.hi)") }
+                    }
                 }
             }
             for s in sides {
@@ -1748,17 +1774,20 @@ func faceTests() {
                     let w = s.a + (s.b - s.a) * ((Double(j) + 0.53) / 47)
                     guard let span = drop(w, n) else { continue }
                     asked += 1
-                    let over = along.contains { a, c in
-                        let d = c.xy.v - a.xy.v, t = simd_dot(w - a.xy.v, d) / simd_length_squared(d)
-                        return t >= 0 && t <= 1 && simd_length(w - (a.xy.v + t * d)) <= 1e-9 * size
-                            && abs(a.z + (c.z - a.z) * t - span.hi) <= bound
+                    func passes(_ edge: [(a: P3<WorldSpace>, c: P3<WorldSpace>)], at z: Double) -> Bool {
+                        edge.contains { a, c in
+                            let d = c.xy.v - a.xy.v, t = simd_dot(w - a.xy.v, d) / simd_length_squared(d)
+                            return t >= 0 && t <= 1 && simd_length(w - (a.xy.v + t * d)) <= 1e-9 * size
+                                && abs(a.z + (c.z - a.z) * t - z) <= bound
+                        }
                     }
-                    if !over { missing.append("\(w), to \(span.hi)") }
+                    if !passes(along, at: span.hi) { missing.append("\(w), to \(span.hi)") }
+                    if !passes(under, at: span.lo) { missing.append("\(w), its bottom at \(span.lo)") }
                 }
             }
             Check.expect(stray.isEmpty && missing.isEmpty && (!l.dropsAtATileBoundary || (asked > 30 && segments > 10)),
-                         "\(l.name): the truncation edge draws a riser's top at a tile boundary where the riser stands, at the higher top, and all of it there",
-                         "\(segments) segments along a tile boundary, \(stray.count) stray; \(missing.count) of \(asked) points with no top: "
+                         "\(l.name): the truncation edge draws a riser's top and bottom at a tile boundary where the riser stands, at the higher top and the lower, and all of it there",
+                         "\(segments) segments along a tile boundary, \(stray.count) stray; \(missing.count) of \(asked) points with no top or bottom: "
                             + (stray.prefix(2) + missing.prefix(2)).joined(separator: "; "))
         }
 

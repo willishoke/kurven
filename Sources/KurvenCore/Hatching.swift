@@ -142,7 +142,11 @@ public enum HatchedFaces: Sendable, Equatable {
     /// coordinates (distance along its edge, height) the lines are vertical,
     /// `wallAngle`, from `base` to the top edge plus `topOffset`, each its two
     /// ends (`Surface.vertical`). A line stands at each end of a wall; `trim`
-    /// leaves those two out.
+    /// leaves those two out. The risers are hatched with the walls, vertical
+    /// faces of the solid as the walls are, every one whichever edges are
+    /// listed: lines at whole gaps along the line each stands on, from its
+    /// bottom edge to its top plus `topOffset`, `trim` leaving out the
+    /// line's ends (`Surface.riserHatchLines`).
     case walls(edges: [Int], trim: Bool, base: Double, topOffset: Double)
     /// A truncated heightfield's plateaus. In domain coordinates the lines
     /// run along the real axis (angle 0) or the imaginary axis (angle π/2,

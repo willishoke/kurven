@@ -477,10 +477,15 @@ func topEdgeTests() {
         func f(_ v: P3<WorldSpace>) -> Double { 1 / ((v.x - 0.5) * (v.x - 0.5) + v.y * v.y).squareRoot() }
         var leftOff = 0.0, rightOff = 0.0, riserOff = 0.0, left = 0, right = 0, risers = 0
         var leftEnds: [Double] = [], rightEnds: [Double] = [], riserEnds: [Double] = []
+        var bottoms: [[P3<WorldSpace>]] = []
         for i in 0..<truncationEdge.count {
             let p = Array(truncationEdge[path: i])
             let onRiser = p.allSatisfy { abs($0.x - 0.5) < 1e-12 }
-            if onRiser {
+            // The riser's bottom stands a hair onto the lower side, a
+            // billionth of a cell.
+            if p.allSatisfy({ $0.x < 0.5 && 0.5 - $0.x < 1e-9 }) {
+                bottoms.append(p)
+            } else if onRiser {
                 risers += 1
                 for v in p { riserOff = max(riserOff, abs(v.z - min(f(v), 4))) }
                 riserEnds += [p.first!.y, p.last!.y]
@@ -513,6 +518,10 @@ func topEdgeTests() {
         Check.expect(risers == 1 && se < 1e-9 && riserOff < 1e-9,
                      "and the riser's top runs along the boundary from one left end to the other, at min(|f|, 4)",
                      String(format: "%d pieces, ends off by %.1e, heights off by %.1e", risers, se, riserOff))
+        let bottomEnds = bottoms.flatMap { [$0[0].y, $0[$0.count - 1].y] }.map { abs(abs($0) - 0.5) }.max() ?? .infinity
+        Check.expect(bottoms.count == 1 && bottomEnds < 1e-9 && bottoms.joined().allSatisfy { $0.z == 2 },
+                     "and its bottom under it at 2, on the lower band's side, from one end to the other",
+                     String(format: "%d pieces, ends off by %.1e", bottoms.count, bottomEnds))
         var sag = 0.0
         for i in 0..<truncationEdge.count {
             let p = Array(truncationEdge[path: i])

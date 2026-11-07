@@ -79,6 +79,11 @@ public extension Surface {
             paths = wallHatchLines(perimeter, edges: edges, spacing: hatching.spacing,
                                    trim: trim, base: base, topOffset: top,
                                    tiles: context.tiles, refine: refine)
+            // The risers are vertical faces of the solid as the walls are,
+            // and are hatched with them, cut to the footprint already.
+            return PolylineSet(paths: Surface.clip(paths, to: context.region)
+                + riserHatchLines(spacing: hatching.spacing, trim: trim, topOffset: top,
+                                  tiles: context.tiles, region: context.region, refine: refine))
         case .hatching(let hatching, .plateaus(let tiled)):
             // Decoding holds the angle to an axis; one built in code at any
             // other draws nothing.
@@ -90,7 +95,8 @@ public extension Surface {
             paths = wallEdges(perimeter, edges: edges, base: base,
                               tiles: context.tiles, refine: refine)
         case .truncationEdge(let tiled):
-            // Cut to the footprint already, the risers' tops exactly.
+            // Cut to the footprint already, the risers' tops and bottoms
+            // exactly.
             return PolylineSet(paths: drawnTruncationEdge(tiles: context.tiles, tiled: tiled,
                                                           region: context.region, refine: refine))
         }
@@ -750,44 +756,87 @@ extension Surface {
     }
 
     /// The truncation edge as its layer draws it: on every tile when
-    /// `tiled`, and in place otherwise, cut to the footprint, each riser's
-    /// top kept only where the riser stands, where the footprint holds both
-    /// sides of its boundary, read a hair either side of it where the copy
-    /// stands, as `risers(tiles:region:refine:)` reads it. Where the
-    /// footprint holds one side there is no riser: a wall on the boundary
-    /// rises to the top on that side, and a top drawn there would stand over
-    /// the wall, or along its top edge.
+    /// `tiled`, and in place otherwise, cut to the footprint, with each
+    /// riser's top and bottom edges where the riser stands
+    /// (`bandRiserStretches(_:tile:region:refine:)`). Tiled, the edges of
+    /// the risers at the tile boundaries follow, where those risers stand
+    /// (`tileBoundaryRiserStretches(tiles:region:refine:)`).
     ///
     /// The placed pieces are cut at their vertices, as every layer is
-    /// (`clip(_:to:)`). A riser's top is cut exactly, where the footprint's
-    /// perimeter crosses the two lines either side of its boundary, its
-    /// height read there: a flat top has a vertex at each end and nothing
-    /// between, and cut at its vertices it went missing where the riser
-    /// stands, or ran across a notch where none does.
-    ///
-    /// Tiled, the risers' tops at the tile boundaries follow, where those
-    /// risers stand (`tileBoundaryRiserTops(tiles:region:refine:)`).
+    /// (`clip(_:to:)`).
     func drawnTruncationEdge(tiles: [Affine2], tiled: Bool, region: Region,
                              refine: ContourRefine?) -> [[P3<WorldSpace>]] {
         let trim = graphTrimLoops(refine: refine)
         let pieces = trim.truncationEdge.dropLast(trim.riserTops.count)
-        let side = 1e-9 * cell
-        let magnitude = refine?.magnitude
-        let atTileBoundaries = tiled ? tileBoundaryRiserTops(tiles: tiles, region: region, refine: refine) : []
+        let atTileBoundaries = tiled ? tileBoundaryRiserStretches(tiles: tiles, region: region, refine: refine) : []
         return (tiled ? tiles.map(Optional.some) : [nil]).flatMap { tile -> [[P3<WorldSpace>]] in
             func placed(_ v: P3<WorldSpace>) -> P3<WorldSpace> { tile.map { $0(v) } ?? v }
-            var paths = Surface.clip(pieces.map { $0.map(placed) }, to: region)
-            guard case .inside(let perimeter) = region else {
-                return paths + trim.riserTops.map { $0.top.map(placed) }
+            return Surface.clip(pieces.map { $0.map(placed) }, to: region)
+                + bandRiserStretches(trim.riserTops, tile: tile, region: region, refine: refine).flatMap { [$0.top, $0.bottom] }
+        } + atTileBoundaries.flatMap { [$0.top, $0.bottom] }
+    }
+
+    /// One stretch of a riser where it stands, in place: what the truncation
+    /// edge's layer draws of it, its top and bottom edges, and what the
+    /// walls' hatching needs to hatch it.
+    struct RiserStretch {
+        /// Where the riser meets the face above: the higher top.
+        var top: [P3<WorldSpace>]
+        /// Where it meets the face below: the lower top, a hair onto the
+        /// lower side, so that the line of sight from it starts outside the
+        /// higher side's solid.
+        var bottom: [P3<WorldSpace>]
+        /// The line the riser stands on, from end to end: its length, and
+        /// the point `t` of the way along it. A band boundary across the
+        /// domain, or a tile boundary.
+        var length: Double
+        var point: (Double) -> P2<WorldSpace>
+        /// The stretch's part of the line, as fractions of the way along it.
+        var lo: Double, hi: Double
+        /// The riser's outward normal at a point of the line, in the ground
+        /// plane: toward the lower side.
+        var lower: (P2<WorldSpace>) -> SIMD2<Double>
+    }
+
+    /// The risers at the band boundaries on the copy on `tile`, or in place
+    /// for nil, from their tops (`graphTrimLoops(refine:)`), a stretch at a
+    /// time: where each stands, where the footprint holds both sides of its
+    /// boundary, read a hair either side of it where the copy stands, as
+    /// `risers(tiles:region:refine:)` reads it. Where the footprint holds
+    /// one side there is no riser: a wall on the boundary rises to the top
+    /// on that side, and an edge drawn there would stand over the wall, or
+    /// along its top edge.
+    ///
+    /// A stretch is cut exactly, where the footprint's perimeter crosses the
+    /// two lines either side of its boundary, the top's height read there:
+    /// a flat top has a vertex at each end and nothing between, and cut at
+    /// its vertices it went missing where the riser stands, or ran across a
+    /// notch where none does. Its bottom is at the lesser band's height,
+    /// under each of the top's vertices.
+    func bandRiserStretches(_ riserTops: [(at: Double, top: [P3<WorldSpace>])], tile: Affine2?, region: Region,
+                            refine: ContourRefine?) -> [RiserStretch] {
+        guard !riserTops.isEmpty else { return [] }
+        let side = 1e-9 * cell
+        let magnitude = refine?.magnitude
+        let g = height
+        let corner0 = g.position(x: 0, y: 0), corner1 = g.position(x: g.width - 1, y: g.height - 1)
+        let (y0, y1) = (min(corner0.y, corner1.y), max(corner0.y, corner1.y))
+        func placed(_ v: P3<WorldSpace>) -> P3<WorldSpace> { tile.map { $0(v) } ?? v }
+        var out: [RiserStretch] = []
+        for (b, top) in riserTops {
+            guard let first = top.first, let last = top.last else { continue }
+            let left = truncation.height(atX: b, from: .left), right = truncation.height(atX: b, from: .right)
+            let lesser = min(left, right), greater = max(left, right)
+            func height(_ y: Double) -> Double {
+                guard let magnitude else { return first.z }
+                let u = magnitude(P2(b, y))
+                return min(u.isNaN ? .infinity : u, greater)
             }
-            for (b, top) in trim.riserTops {
-                guard let first = top.first, let last = top.last, first.y < last.y else { continue }
-                let greater = max(truncation.height(atX: b, from: .left), truncation.height(atX: b, from: .right))
-                func height(_ y: Double) -> Double {
-                    guard let magnitude else { return first.z }
-                    let u = magnitude(P2(b, y))
-                    return min(u.isNaN ? .infinity : u, greater)
-                }
+            // The stretches the footprint holds on both sides of the
+            // boundary: with no footprint, the whole top.
+            var stretches: [(lo: Double, hi: Double)] = []
+            if case .inside(let perimeter) = region {
+                guard first.y < last.y else { continue }
                 // Where the perimeter crosses the lines a hair either side
                 // of the boundary, in the copy's place: w(y) = o + y d.
                 var stops = [first.y, last.y]
@@ -807,68 +856,153 @@ extension Surface {
                     region.contains(placed(P3(b - side, y, 0)).xy) && region.contains(placed(P3(b + side, y, 0)).xy)
                 }
                 // The stretches between the stops the footprint holds on
-                // both sides, run together, each drawn from its first stop to
-                // its last through the top's vertices between.
-                var stretches: [(lo: Double, hi: Double)] = []
+                // both sides, run together.
                 for (a, c) in zip(stops, stops.dropFirst()) where c > a && holds(0.5 * (a + c)) {
                     if let last = stretches.last, last.hi == a { stretches[stretches.count - 1].hi = c } else { stretches.append((a, c)) }
                 }
-                for (lo, hi) in stretches {
-                    let start = lo == first.y ? first : P3<WorldSpace>(b, lo, height(lo))
-                    let end = hi == last.y ? last : P3<WorldSpace>(b, hi, height(hi))
-                    paths.append(([start] + top.filter { $0.y > lo && $0.y < hi } + [end]).map(placed))
-                }
+            } else {
+                stretches = [(first.y, last.y)]
             }
-            return paths
-        } + atTileBoundaries
+            // The lower side, its line a hair from the boundary, and the
+            // way out of the riser toward it in the copy's place, square to
+            // the placed boundary.
+            let x = left < right ? b - side : b + side
+            let a = placed(P3(b, y0, 0)).xy.v, c = placed(P3(b, y1, 0)).xy.v
+            let along = simd_normalize(c - a)
+            let across = placed(P3(left < right ? b - 1 : b + 1, y0, 0)).xy.v - a
+            let outward = SIMD2(along.y, -along.x) * (simd_dot(SIMD2(along.y, -along.x), across) < 0 ? -1 : 1)
+            for (lo, hi) in stretches {
+                // Drawn from its first stop to its last through the top's
+                // vertices between.
+                let piece = lo == first.y && hi == last.y ? top
+                    : [lo == first.y ? first : P3<WorldSpace>(b, lo, height(lo))] + top.filter { $0.y > lo && $0.y < hi }
+                        + [hi == last.y ? last : P3<WorldSpace>(b, hi, height(hi))]
+                out.append(RiserStretch(
+                    top: piece.map(placed), bottom: piece.map { placed(P3(x, $0.y, lesser)) },
+                    length: y1 - y0,
+                    point: { t in
+                        let p = Surface.point(from: P2(b, y0), to: P2(b, y1), at: t)
+                        return placed(P3(p.x, p.y, 0)).xy
+                    },
+                    lo: (lo - y0) / (y1 - y0), hi: (hi - y0) / (y1 - y0), lower: { _ in outward }))
+            }
+        }
+        return out
     }
 
-    /// The tops of the risers at the tile boundaries
+    /// The risers at the tile boundaries
     /// (`tileBoundaryRisers(tiles:region:refine:)`) where they stand
-    /// (`tileBoundaryStretches`), at the higher of the two copies' tops, each
-    /// read on the tile boundary through its tile (`tileBoundaryTop`), in
-    /// world space. A top has a vertex at each of the stretch's stops and,
-    /// with a refiner, its chords are subdivided at their midpoints until
-    /// none departs there from the top by more than the refiner's
-    /// tolerance, seven deep. Unlike a riser's top at a band boundary
-    /// (`bandedTruncationEdge`), it seeks no minimum of |f| between two
-    /// stops, so a dip whose midpoints all stand on the higher top is drawn
-    /// across.
-    func tileBoundaryRiserTops(tiles: [Affine2], region: Region, refine: ContourRefine?) -> [[P3<WorldSpace>]] {
+    /// (`tileBoundaryStretches`), a stretch at a time, in world space: its
+    /// top at the higher of the two copies' tops, its bottom at the lower, a
+    /// hair onto the lower copy's side, each read on the tile boundary
+    /// through its tile (`tileBoundaryTop`). Each edge has a vertex at each
+    /// of the stretch's stops and, with a refiner, its chords are subdivided
+    /// at their midpoints until none departs there from its top by more than
+    /// the refiner's tolerance, seven deep. Unlike a riser's top at a band
+    /// boundary (`bandedTruncationEdge`), it seeks no minimum of |f| between
+    /// two stops, so a dip whose midpoints all stand on the higher top is
+    /// drawn across. A stretch runs on through a crossing of the copies'
+    /// tops, where the riser turns to face the other way: its bottom and
+    /// its outward normal follow the lower copy.
+    func tileBoundaryRiserStretches(tiles: [Affine2], region: Region, refine: ContourRefine?) -> [RiserStretch] {
         let magnitude = faceMagnitude(refine)
-        var out: [[P3<WorldSpace>]] = []
+        let side = 1e-9 * cell
+        let d = domain
+        let centre = P3<WorldSpace>(0.5 * (d.real.lo + d.real.hi), 0.5 * (d.imag.lo + d.imag.hi), 0)
+        var out: [RiserStretch] = []
         for boundary in tileBoundaries(tiles: tiles) {
             guard let first = tiles[boundary.first].inverse, let second = tiles[boundary.second].inverse else { continue }
             func tops(_ w: P2<WorldSpace>) -> [Double] {
                 [first, second].map { tileBoundaryTop(w, back: $0, magnitude: magnitude) }
             }
+            // Which side of the tile boundary each copy is on: its tile's
+            // image of the domain's centre.
+            let n = boundary.normal
+            let sides = [boundary.first, boundary.second].map { k -> SIMD2<Double> in
+                simd_dot(tiles[k](centre).xy.v - boundary.start.v, n) > 0 ? n : -n
+            }
+            let lower: (P2<WorldSpace>) -> SIMD2<Double> = { w in
+                let z = tops(w)
+                return z[1] < z[0] ? sides[1] : sides[0]
+            }
             let stretches = tileBoundaryStretches(boundary, backs: [first, second], region: region, tops: tops,
                                           excess: { q in magnitude(q) - self.truncationHeight(atX: q.x) })
             for stretch in stretches {
-                var curve: [P3<WorldSpace>] = []
-                func vertex(_ s: Double, _ z: Double) -> P3<WorldSpace> {
-                    let w = boundary.point(s)
-                    return P3(w.x, w.y, z)
-                }
-                func top(_ s: Double) -> Double { tops(boundary.point(s)).max() ?? .nan }
-                for (k, stop) in stretch.enumerated() {
-                    let z = tops(stop.read).max() ?? .nan
-                    let at = P3<WorldSpace>(stop.at.x, stop.at.y, z)
-                    if k > 0, let tolerance = refine?.tolerance, refine?.magnitude != nil {
-                        let a = stretch[k - 1].s, za = curve[curve.count - 1].z
-                        func subdivide(_ s0: Double, _ z0: Double, _ s1: Double, _ z1: Double, depth: Int) {
-                            guard depth < 7, s1 - s0 > 1e-9 * cell else { return }
-                            let sm = 0.5 * (s0 + s1), zm = top(sm)
-                            guard zm.isFinite, abs(zm - 0.5 * (z0 + z1)) > tolerance * cell else { return }
-                            subdivide(s0, z0, sm, zm, depth: depth + 1)
-                            curve.append(vertex(sm, zm))
-                            subdivide(sm, zm, s1, z1, depth: depth + 1)
-                        }
-                        subdivide(a, za, stop.s, z, depth: 0)
+                /// The edge at one copy's top, the one `pick` takes of the two.
+                func edge(_ pick: ([Double]) -> Double) -> [P3<WorldSpace>] {
+                    var curve: [P3<WorldSpace>] = []
+                    func vertex(_ s: Double, _ z: Double) -> P3<WorldSpace> {
+                        let w = boundary.point(s)
+                        return P3(w.x, w.y, z)
                     }
-                    curve.append(at)
+                    func top(_ s: Double) -> Double { pick(tops(boundary.point(s))) }
+                    for (k, stop) in stretch.enumerated() {
+                        let z = pick(tops(stop.read))
+                        let at = P3<WorldSpace>(stop.at.x, stop.at.y, z)
+                        if k > 0, let tolerance = refine?.tolerance, refine?.magnitude != nil {
+                            let a = stretch[k - 1].s, za = curve[curve.count - 1].z
+                            func subdivide(_ s0: Double, _ z0: Double, _ s1: Double, _ z1: Double, depth: Int) {
+                                guard depth < 7, s1 - s0 > 1e-9 * cell else { return }
+                                let sm = 0.5 * (s0 + s1), zm = top(sm)
+                                guard zm.isFinite, abs(zm - 0.5 * (z0 + z1)) > tolerance * cell else { return }
+                                subdivide(s0, z0, sm, zm, depth: depth + 1)
+                                curve.append(vertex(sm, zm))
+                                subdivide(sm, zm, s1, z1, depth: depth + 1)
+                            }
+                            subdivide(a, za, stop.s, z, depth: 0)
+                        }
+                        curve.append(at)
+                    }
+                    return curve
                 }
-                if curve.count >= 2 { out.append(curve) }
+                let top = edge { $0.max() ?? .nan }
+                guard top.count >= 2, let start = stretch.first, let end = stretch.last else { continue }
+                let bottom = edge { $0.min() ?? .nan }.map { v -> P3<WorldSpace> in
+                    let o = side * lower(P2(v.x, v.y))
+                    return P3(v.x + o.x, v.y + o.y, v.z)
+                }
+                let length = boundary.length
+                out.append(RiserStretch(top: top, bottom: bottom, length: length, point: { boundary.point($0 * length) },
+                                        lo: start.s / length, hi: end.s / length, lower: lower))
+            }
+        }
+        return out
+    }
+
+    /// The hatch lines on the risers, as on the walls
+    /// (`wallHatchLines`): vertical, from a riser's bottom edge up to its
+    /// top, plus `topOffset`, a hair onto the lower side, at whole gaps
+    /// along the line it stands on, `trim` leaving out the line's two ends,
+    /// and kept where the riser stands. A band boundary's line runs across
+    /// the domain, as the plateaus' hatching divides it, so a plateau's
+    /// lines along Re z meet a riser's on its edges at the same spacing. On
+    /// every tile, each copy cut to the footprint where it stands, as the
+    /// walls stand on the footprint's perimeter wherever it is; and at the
+    /// tile boundaries. A band boundary's only with a refiner, as their
+    /// tops are drawn (`graphTrimLoops(refine:)`); a tile boundary's either
+    /// way.
+    func riserHatchLines(spacing: Double, trim: Bool, topOffset: Double, tiles: [Affine2], region: Region,
+                         refine: ContourRefine?) -> [[P3<WorldSpace>]] {
+        let banded: Bool
+        if case .realBands = truncation, refine?.magnitude != nil { banded = true } else { banded = false }
+        guard banded || tiles.count > 1 else { return [] }
+        let riserTops = banded ? graphTrimLoops(refine: refine).riserTops : []
+        let stretches = tiles.flatMap { bandRiserStretches(riserTops, tile: $0, region: region, refine: refine) }
+            + tileBoundaryRiserStretches(tiles: tiles, region: region, refine: refine)
+        let side = 1e-9 * cell
+        var out: [[P3<WorldSpace>]] = []
+        for riser in stretches {
+            let n = Surface.strokeCount(length: riser.length, spacing: spacing)
+            for k in trim ? Array(1..<max(n - 1, 1)) : Array(0..<n) {
+                let t = Double(k) / Double(max(n - 1, 1))
+                guard t >= riser.lo, t <= riser.hi else { continue }
+                let w = riser.point(t)
+                guard let top = topEdgeHeight(of: riser.top, at: P2(w.x, w.y)),
+                      let base = topEdgeHeight(of: riser.bottom, at: P2(w.x, w.y)) else { continue }
+                let o = side * riser.lower(w)
+                if let stroke = Surface.vertical(x: w.x + o.x, y: w.y + o.y, base: base, top: top + topOffset) {
+                    out.append(stroke)
+                }
             }
         }
         return out
