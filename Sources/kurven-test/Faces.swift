@@ -2842,28 +2842,50 @@ func faceTests() {
 
     Check.suite("faces: a riser's top follows f through a dip narrower than its stretch") {
         // Every vertex of each riser's top, and seven points along each
-        // chord, within the refiner's tolerance of min(|f|, h) on the
-        // boundary, h the greater band's. Two poles either side of Im z =
+        // chord, within three quarters of the refiner's tolerance of
+        // min(|f|, h) on the boundary, h the greater band's: the top is
+        // subdivided to half of it, and a chord's midpoint, where that is
+        // measured, is not always where it departs furthest. Two poles either side of Im z =
         // 0, 1/(z - 0.49 - 0.1i) + 1/(z - 0.49 + 0.1i), at 0.8 | 4 across
         // Re z = 1/2: between them |f| dips to 1.98 under the greater band's
         // 4, on a stretch whose ends are on the greater plateau, and a top
         // subdivided by midpoints only, which all stood on that plateau, was
-        // drawn flat across at 4 (on main 3bb44f1, 1.656 over f). And a
-        // tower, 1/(z - 0.45) at 2 | 4.
-        for (name, expression, domain, resolution, band, beyond) in [
-            ("two poles with a dip between", "1/(z-0.49-0.1*i)+1/(z-0.49+0.1*i)",
-             Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1.3)), 60, RealBand(below: 0.5, height: 0.8), 4.0),
-            ("a tower", "1/(z-0.45)", Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)), 200,
-             RealBand(below: 0.5, height: 2), 4.0),
-        ] {
+        // drawn flat across at 4 (on main 3bb44f1, 1.656 over f). At five
+        // resolutions and with the window moved along Im z four ways, since
+        // where the dip's bottom falls among the rows decides how its chords
+        // are cut: beside the zero of f at 0.49, a hundredth of the way from
+        // the boundary, |f| on it turns as sharply as a hyperbola at its
+        // vertex: on the previous head of this branch, its chords stopped
+        // five halvings deep, up to 3.6 times the tolerance off f. Two
+        // narrower dips, the poles 0.06 and 0.04 apart, a hair from the
+        // boundary, under a greater band at 40: up to 47 times. And a tower,
+        // 1/(z - 0.45) at 2 | 4.
+        let dip = "1/(z-0.49-0.1*i)+1/(z-0.49+0.1*i)"
+        let window = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1.3))
+        var cases: [(name: String, expression: String, domain: Domain, resolution: Int, band: RealBand, beyond: Double)] = []
+        for resolution in [55, 60, 70, 80, 100] {
+            cases.append(("two poles with a dip between, res \(resolution)", dip, window, resolution,
+                          RealBand(below: 0.5, height: 0.8), 4))
+        }
+        for shift in [0.003, 0.007, 0.011, 0.017] {
+            cases.append(("two poles with a dip between, res 60, Im z moved \(shift)", dip,
+                          Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1 + shift, hi: 1.3 + shift)), 60,
+                          RealBand(below: 0.5, height: 0.8), 4))
+        }
+        for (apart, expression) in [(0.06, "1/(z-0.495-0.03*i)+1/(z-0.495+0.03*i)"), (0.04, "1/(z-0.497-0.02*i)+1/(z-0.497+0.02*i)")] {
+            cases.append(("two poles \(apart) apart, res 60", expression, window, 60, RealBand(below: 0.5, height: 0.8), 40))
+        }
+        cases.append(("a tower", "1/(z-0.45)", Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)), 200,
+                      RealBand(below: 0.5, height: 2), 4))
+        for c in cases {
             let built = try NativeLandscape.build(
-                LandscapeRequest(expression: expression, domain: domain, resolution: resolution,
-                                 truncation: .realBands([band], beyond: beyond)),
+                LandscapeRequest(expression: c.expression, domain: c.domain, resolution: c.resolution,
+                                 truncation: .realBands([c.band], beyond: c.beyond)),
                 refine: true)
-            guard let refine = built.refine, let magnitude = refine.magnitude else { Check.expect(false, "\(name): a refiner"); continue }
+            guard let refine = built.refine, let magnitude = refine.magnitude else { Check.expect(false, "\(c.name): a refiner"); continue }
             let surface = built.surface, g = surface.height
             let cell = max(abs(g.domain.real.length) / Double(g.width - 1), abs(g.domain.imag.length) / Double(g.height - 1))
-            let greater = max(band.height, beyond)
+            let greater = max(c.band.height, c.beyond)
             let trim = surface.graphTrimLoops(refine: refine)
             var points = 0, worst = 0.0, off: [String] = []
             for (b, top) in trim.riserTops {
@@ -2874,12 +2896,13 @@ func faceTests() {
                         guard d.isFinite else { continue }
                         points += 1
                         if abs(d) > abs(worst) { worst = d }
-                        if !(abs(d) <= refine.tolerance * cell) { off.append(String(format: "(%.4f, %.4f, %.4f) %+.4f", b, y, z, d)) }
+                        if !(abs(d) <= 0.75 * refine.tolerance * cell) { off.append(String(format: "(%.4f, %.4f, %.4f) %+.6f", b, y, z, d)) }
                     }
                 }
             }
-            Check.expect(points > 50 && off.isEmpty, "\(name): every point of a riser's top within \(refine.tolerance) cells of f's height there",
-                         String(format: "%d of %d points off, worst %+.4f: ", off.count, points, worst) + off.prefix(3).joined(separator: "; "))
+            Check.expect(points > 50 && off.isEmpty, "\(c.name): every point of a riser's top within three quarters of the tolerance of f's height there",
+                         String(format: "%d of %d points off, worst %.2f of the tolerance: ", off.count, points, abs(worst) / (refine.tolerance * cell))
+                            + off.prefix(3).joined(separator: "; "))
         }
     }
 

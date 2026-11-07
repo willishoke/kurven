@@ -424,17 +424,18 @@ extension Surface {
 
     /// The top edge with f's profile between its vertices: each chord's
     /// midpoint is taken onto the profile where the chord departs from it
-    /// by more than `tolerance` cells, and the halves likewise, five deep.
+    /// by more than `tolerance` cells, and the halves likewise, `maxDepth`
+    /// deep: five for a wall's top edge.
     /// The top edge is a function of the distance along its straight edge, so
     /// the vertices keep their order. `profile` is the truncated surface
     /// over a point of the edge, as the top edge reads it.
     func subdividedProfile(_ topEdge: [P3<WorldSpace>], profile: (P2<DomainSpace>) -> Double,
-                           tolerance: Double) -> [P3<WorldSpace>] {
+                           tolerance: Double, maxDepth: Int = 5) -> [P3<WorldSpace>] {
         guard topEdge.count >= 2 else { return topEdge }
         let cell = self.cell
         func subdivide(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>, depth: Int,
                        into out: inout [P3<WorldSpace>]) {
-            guard depth < 5, a.z.isFinite, b.z.isFinite else { return }
+            guard depth < maxDepth, a.z.isFinite, b.z.isFinite else { return }
             // The two vertices either side of a riser stand at one point.
             guard abs(a.x - b.x) + abs(a.y - b.y) > 1e-9 * cell else { return }
             let mid = P2<DomainSpace>(0.5 * (a.x + b.x), 0.5 * (a.y + b.y))
@@ -820,9 +821,12 @@ extension Surface {
     /// (`tileBoundaryStretches`), at the higher of the two copies' tops, each
     /// read on the tile boundary through its tile (`tileBoundaryTop`), in
     /// world space. A top has a vertex at each of the stretch's stops and,
-    /// with a refiner, its chords are subdivided until none departs from the
-    /// top by more than the refiner's tolerance, as a riser's top at a band
-    /// boundary is.
+    /// with a refiner, its chords are subdivided at their midpoints until
+    /// none departs there from the top by more than the refiner's
+    /// tolerance, seven deep. Unlike a riser's top at a band boundary
+    /// (`bandedTruncationEdge`), it seeks no minimum of |f| between two
+    /// stops, so a dip whose midpoints all stand on the higher top is drawn
+    /// across.
     func tileBoundaryRiserTops(tiles: [Affine2], region: Region, refine: ContourRefine?) -> [[P3<WorldSpace>]] {
         let magnitude = faceMagnitude(refine)
         var out: [[P3<WorldSpace>]] = []
@@ -1532,8 +1536,14 @@ extension Surface {
                     .sorted()
                 var nodes: [P3<WorldSpace>] = []
                 for y in ys where nodes.last?.y != y { nodes.append(P3(b, y, top(y))) }
+                // To half the tolerance, so the curve meets it with room: a
+                // chord's midpoint is not always where it departs furthest.
+                // And ten halvings deep, a thousandth of a row: beside a
+                // zero of f a hair from the boundary, |f| along it turns as
+                // sharply as a hyperbola at its vertex, and at the top
+                // edge's five the chords stopped short there.
                 let curve = subdividedProfile(withMinima(nodes, profile: profile), profile: profile,
-                                              tolerance: refine.tolerance)
+                                              tolerance: 0.5 * refine.tolerance, maxDepth: 10)
                 riserTops.append((b, curve))
             }
         }
