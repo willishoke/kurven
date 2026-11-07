@@ -346,12 +346,12 @@ public struct ContourRefiner: Sendable {
     }
 
     /// The zeros and poles of f in the window, each with its order and
-    /// leading coefficient. The order is the linear curve of arg f round a
+    /// leading coefficient. The order is the winding number of f round a
     /// small circle about the point, small against the distance to any
     /// other; the coefficient is the mean of f(z) / (z − point)^order round
-    /// a smaller one. A point whose linear curve does not agree with the way it
-    /// was found, or round which f is not finite and nonzero, is left out,
-    /// and its lines are then carried onto it as before (`ended`).
+    /// a smaller one. A point whose winding number does not agree with the
+    /// way it was found, or round which f is not finite and nonzero, is left
+    /// out, and its lines are then carried onto it as before (`ended`).
     public func singularPoints() -> [SingularPoint] {
         let found = zeros().map { ($0, 1) } + poles().map { ($0, -1) }
         var out: [SingularPoint] = []
@@ -593,7 +593,7 @@ public struct ContourRefiner: Sendable {
     }
 
     /// How far round `z` the path turns, in radians: ±2π for a loop round it.
-    static func linearCurves(_ path: [P2<DomainSpace>], around z: P2<DomainSpace>) -> Double {
+    static func turn(_ path: [P2<DomainSpace>], around z: P2<DomainSpace>) -> Double {
         var total = 0.0
         for (a, b) in zip(path, path.dropFirst()) {
             let ta = atan2(a.y - z.y, a.x - z.x), tb = atan2(b.y - z.y, b.x - z.x)
@@ -626,7 +626,7 @@ public struct ContourRefiner: Sendable {
                 lowest = min(lowest, magnitude(Complex(grid.real.lo + Double(ci) * dx, grid.imag.lo + Double(cj) * dy)))
             }
             guard level < lowest else { continue }
-            guard !existing.contains(where: { abs(Self.linearCurves($0, around: z0)) > .pi / 2 }) else { continue }
+            guard !existing.contains(where: { abs(Self.turn($0, around: z0)) > .pi / 2 }) else { continue }
             let c = Complex(z0.x, z0.y)
             let h = 1e-6 * cell
             let d = (value(c + h) - value(c - h)) / (2 * h)
