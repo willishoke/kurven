@@ -2226,10 +2226,14 @@ func faceTests() {
         // two bands' heights, and placed at the height of the band its x
         // landed in: on main 3bb44f1, tails up to 1.50 over the tower's top
         // and hanging under gamma's. A tower, 1/(z - 0.45) at 2 | 4 across
-        // Re z = 1/2, and gamma under three bands.
+        // Re z = 1/2, and gamma under three bands. And the tower at res 201,
+        // where the boundary is a column of the grid and a contour's vertex
+        // lies on it: the step at the vertex went unseen, and the run was
+        // solved straight across it, up to 1.31 over the top.
         let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
         for (name, expression, domain, resolution, bands, beyond) in [
             ("a tower", "1/(z-0.45)", domain, 200, [RealBand(below: 0.5, height: 2)], 4.0),
+            ("a tower, its boundary on a column", "1/(z-0.45)", domain, 201, [RealBand(below: 0.5, height: 2)], 4.0),
             ("gamma under three bands", "gamma(z)", Domain(real: Interval(lo: -4.5, hi: 4.5), imag: Interval(lo: -2.5, hi: 2.5)), 600,
              [RealBand(below: -2.5, height: 0.5), RealBand(below: -1.5, height: 1), RealBand(below: 0.5, height: 1.5)], 2.5),
         ] {
