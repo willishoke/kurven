@@ -311,11 +311,16 @@ public struct Heightfield: Sendable {
     ///   and the far edge of a drawing is in plain view over a wall that
     ///   faces away. A vertex at the surface's height is tested by the
     ///   traversal alone, which hides it exactly when the surface in front of
-    ///   it does.
+    ///   it does. The risers are vertical faces too, hatched with the walls:
+    ///   a point of a riser's hatching is tested by the riser
+    ///   (`riserFacing(sight:slack:)`), as one on a wall below its top edge
+    ///   is by the wall.
     /// - **The plateaus**, flat and facing up.
     /// - **No face**: a crease or anything else, tested by the traversal
     ///   alone, since such curves lie where no one face's facing is the
-    ///   curves'.
+    ///   curves'. A riser's bottom edge, drawn with the truncation edge, is
+    ///   a valley seen only where the riser faces the eye, and is tested as
+    ///   a point in the riser.
     ///
     /// `resolution` is how finely a run's end is placed, as a length in the
     /// view plane; zero, to the last bit.
@@ -334,7 +339,8 @@ public struct Heightfield: Sendable {
             }, stop: stop)
         case .wall:
             let traversal = GridTraversal(self, view: view, depthTolerance: depthTolerance)
-            let facing = wallFacing(sight: sight, slack: 1e-6 * traversal.cell)
+            let slack = 1e-6 * traversal.cell
+            let facing = wallFacing(sight: sight, slack: slack)
             let cell = traversal.cell
             @Sendable func onTopEdge(_ hf: Heightfield, _ p: P3<WorldSpace>) -> Bool {
                 let h = hf.surfaceHeight(at: P2(p.x, p.y))
@@ -359,11 +365,19 @@ public struct Heightfield: Sendable {
             // more than once. Tested where it stands, a point on a notch
             // strictly over the domain is under the surface there, and the
             // stroke was hidden whole.
+            //
+            // A point that lies in a riser is tested by the riser, as a
+            // point on a wall below its top edge is by the wall:
+            // it lies on the riser's plane, a hair onto the lower side, and
+            // its bottom, at the lower top, would read as on the top edge.
             return Self.visibleRuns(of: paths, folds: false, worker: {
                 let m = traversal.forked(), h = m.heightfield
-                return Tests(facing: { p in onTopEdge(h, p) ? nil : facing(p) },
-                             clear: { p in onTopEdge(h, p) ? m.isClear(p) : m.unoccluded(p, forgiven: false) },
-                             lift: { a, b, q in onTopEdge(h, a) && onTopEdge(h, b) ? h.onSurface(q) : q })
+                let risers = h.riserFacing(sight: sight, slack: slack)
+                return Tests(facing: { p in risers(p) ?? (onTopEdge(h, p) ? nil : facing(p)) },
+                             clear: { p in risers(p) == nil && onTopEdge(h, p) ? m.isClear(p) : m.unoccluded(p, forgiven: false) },
+                             lift: { a, b, q in
+                                 risers(a) == nil && risers(b) == nil && onTopEdge(h, a) && onTopEdge(h, b) ? h.onSurface(q) : q
+                             })
             }, stop: stop)
         case .plateau:
             let traversal = GridTraversal(self, view: view, depthTolerance: depthTolerance)
@@ -374,9 +388,11 @@ public struct Heightfield: Sendable {
             }, stop: stop)
         case .riser, .surface, .solid, nil:
             let traversal = GridTraversal(self, view: view, depthTolerance: depthTolerance)
+            let slack = 1e-6 * traversal.cell
             return Self.visibleRuns(of: paths, folds: false, worker: {
                 let m = traversal.forked()
-                return Tests(facing: { _ in nil }, clear: { m.isClear($0) })
+                let risers = m.heightfield.riserFacing(sight: sight, slack: slack)
+                return Tests(facing: risers, clear: { p in risers(p) == nil ? m.isClear(p) : m.unoccluded(p, forgiven: false) })
             }, stop: stop)
         }
     }
@@ -429,6 +445,94 @@ public struct Heightfield: Sendable {
                 if wall.facesEye { facesEye = true }
             }
             return facesEye ? 1 : (onAnyWall ? -1 : nil)
+        }
+    }
+
+    /// The facing of the risers a point lies in, for lines
+    /// of sight along `sight`: positive where one of them faces the eye,
+    /// negative where all face away, nil where it lies in none. Each riser
+    /// is flat and faces the lower side (`Surface.risers(tiles:region:refine:)`,
+    /// `Surface.tileBoundaryRisers(tiles:region:refine:)`): a band boundary's
+    /// on every copy, turned by its tile, and a tile boundary's toward
+    /// whichever copy's top is lower there.
+    ///
+    /// A point lies in one where the riser stands, a hair onto the lower
+    /// side of its line, as its bottom edge and hatching are drawn
+    /// (`Surface.RiserStretch`), within `slack` of the line, and from the
+    /// lower top up to the higher, as they are drawn: to the refiner's
+    /// tolerance, the bottom on a copy's graph at a tile boundary and the top
+    /// a hatch line rises to. Its bottom edge is in it: a valley, where the
+    /// riser meets the face below, seen only where both face the eye, and
+    /// the face below is a plateau, facing up, or the lower copy's graph,
+    /// which the traversal hides where it turns away. Its top is not, nor
+    /// anything on the line itself: the top is a crease, seen over a riser
+    /// that faces away where the face above faces the eye, and on the line
+    /// stand too the truncation edge's ends at the riser, a wall's top edge
+    /// stepping across it, and a wall's vertical edge at a corner on a tile
+    /// boundary.
+    func riserFacing(sight: SIMD3<Double>, slack: Double) -> @Sendable (P3<WorldSpace>) -> Double? {
+        let s = surface, region = self.region
+        let magnitude = s.faceMagnitude(refine)
+        let cell = s.cell, side = 1e-9 * s.cell, drawn = (refine?.tolerance ?? 0) * s.cell
+        // The band boundaries the truncation steps at inside the domain,
+        // each with the way the riser there faces along Re z.
+        let g = s.height
+        let corner0 = g.position(x: 0, y: 0), corner1 = g.position(x: g.width - 1, y: g.height - 1)
+        let (y0, y1) = (min(corner0.y, corner1.y), max(corner0.y, corner1.y))
+        let real = s.domain.real
+        let spans = s.truncation.bands(from: min(real.lo, real.hi), to: max(real.lo, real.hi))
+        let steps = zip(spans, spans.dropFirst()).compactMap { left, right -> (b: Double, lesser: Double, greater: Double, toward: Double)? in
+            let lesser = min(left.height, right.height), greater = max(left.height, right.height)
+            guard lesser.isFinite, lesser < greater else { return nil }
+            return (left.hi, lesser, greater, left.height > right.height ? 1 : -1)
+        }
+        let copies = tiles.compactMap { tile in tile.inverse.map { (tile: tile, back: $0) } }
+        // The tile boundaries, each with its copies' inverses and the side
+        // each copy is on: its tile's image of the domain's centre.
+        let d = s.domain
+        let centre = P3<WorldSpace>(0.5 * (d.real.lo + d.real.hi), 0.5 * (d.imag.lo + d.imag.hi), 0)
+        let boundaries = s.tileBoundaries(tiles: tiles).compactMap { boundary -> (Surface.TileBoundary, [Affine2], [SIMD2<Double>])? in
+            guard let first = tiles[boundary.first].inverse, let second = tiles[boundary.second].inverse else { return nil }
+            let n = boundary.normal
+            return (boundary, [first, second], [boundary.first, boundary.second].map { k in
+                simd_dot(tiles[k](centre).xy.v - boundary.start.v, n) > 0 ? n : -n
+            })
+        }
+        return { p in
+            var inAny = false, facesEye = false
+            let eps = 1e-9 * max(cell, abs(p.z))
+            for (tile, back) in copies {
+                let q = back(P3<WorldSpace>(p.x, p.y, 0))
+                for step in steps where q.y >= y0 && q.y <= y1 {
+                    let off = (q.x - step.b) * step.toward
+                    guard off >= 0.5 * side, off <= slack,
+                          region.contains(tile(P3(step.b - side, q.y, 0)).xy),
+                          region.contains(tile(P3(step.b + side, q.y, 0)).xy) else { continue }
+                    let top = min(magnitude(P2(step.b, q.y)), step.greater)
+                    guard p.z >= step.lesser - eps, p.z <= top + max(eps, drawn) else { continue }
+                    // Square to the copy's boundary: the gradient of the
+                    // domain's x in space.
+                    let outward = step.toward * simd_normalize(SIMD2(back.a, back.b))
+                    inAny = true
+                    if -(outward.x * sight.x + outward.y * sight.y) > 0 { facesEye = true }
+                }
+            }
+            for (boundary, backs, sides) in boundaries {
+                let length = boundary.length, n = boundary.normal
+                let r = SIMD2(p.x, p.y) - boundary.start.v
+                let along = simd_dot(r, (boundary.end.v - boundary.start.v) / length)
+                guard along >= 0, along <= length, abs(simd_dot(r, n)) <= slack else { continue }
+                let w = boundary.point(along)
+                guard region.contains(P2(w.v - side * n)), region.contains(P2(w.v + side * n)) else { continue }
+                let z = backs.map { s.tileBoundaryTop(w, back: $0, magnitude: magnitude) }
+                let (low, high) = (min(z[0], z[1]), max(z[0], z[1]))
+                let outward = z[1] < z[0] ? sides[1] : sides[0]
+                guard simd_dot(r, outward) >= 0.5 * side, Surface.stands(high, over: low),
+                      p.z >= low - max(eps, drawn), p.z <= high + max(eps, drawn) else { continue }
+                inAny = true
+                if -(outward.x * sight.x + outward.y * sight.y) > 0 { facesEye = true }
+            }
+            return facesEye ? 1 : (inAny ? -1 : nil)
         }
     }
 
