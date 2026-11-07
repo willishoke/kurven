@@ -139,13 +139,12 @@ extension Surface {
     /// piece ends from the two ends alone. A vertex every step of height was a vertex a
     /// cell up to |f|, which untruncated has no bound.
     ///
-    /// Exact on one tile with its walls on the outer boundary: a line of sight
-    /// from a wall that faces the eye leaves the footprint at once. Where it
-    /// meets terrain -- another copy, across a notch -- it is not: the
-    /// traversal forgives a point inside terrain the curve was not placed on,
-    /// to within the depth tolerance, so the verdict along the stroke need not
-    /// turn only once. Testing a wall's curves by the face they lie on would
-    /// make it exact.
+    /// One piece whether the line of sight leaves the footprint at once or
+    /// meets terrain -- another copy, across a notch -- since the traversal
+    /// forgives a point on a wall below its top edge nothing
+    /// (`Heightfield.visibleCurves(_:on:view:depthTolerance:resolution:)`):
+    /// forgiven the depth tolerance inside terrain the stroke was not placed
+    /// on, the verdict along a stroke turned more than once.
     static func vertical(x: Double, y: Double, base: Double, top: Double) -> [P3<WorldSpace>]? {
         guard top > base else { return nil }
         return [P3(x, y, base), P3(x, y, top)]

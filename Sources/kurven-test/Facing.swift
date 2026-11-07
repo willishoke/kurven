@@ -447,6 +447,176 @@ func wallFaceTests() {
             }
         }
     }
+
+    // Where a wall's line of sight meets terrain -- the next copy, from a
+    // wall on a tile boundary, or the far side of a notch -- the terrain hides
+    // the wall's hatch from its bottom up. What it hides of the stroke at a
+    // point of the wall is everything below the greatest of h(q(t)) - t d_z
+    // along the line of sight, q(t) its footprint and h the drawn height
+    // there: the highest the terrain stands over the line, carried back down
+    // it. The walk reads that a five-hundredth of a unit at a time, then a
+    // hundred-thousandth around every sample within reach of the greatest;
+    // h is linear over each triangle, so the reach is its steepest slope
+    // over the coarse step. Each stroke on a wall that faces the eye, tested
+    // from its two ends and at 256 vertices, keeps one run from there to its
+    // top, under every camera of the stress orbit. A run that starts within a
+    // thousandth of the top is a stub where the top edge, which is on the
+    // surface, is forgiven the depth tolerance's reach, and counts as nothing
+    // kept.
+    //
+    // Across a notch, one disagreement is allowed, and counted: the
+    // traversal keeps more than the walk where the terrain stands highest
+    // over the line at the footprint's edge, since it does not visit the
+    // line's crossings of the footprint's perimeter, and a crossing it visits
+    // on the perimeter is inside or out by the even-odd rule's rounding.
+    Check.suite("walls: a stroke is hidden up to where the walk up the line of sight meets terrain, on abutting copies and across a notch") {
+        func perimeter(_ corners: [P2<WorldSpace>]) -> BoundaryPerimeter {
+            BoundaryPerimeter(edges: corners.indices.map {
+                PerimeterEdge(start: corners[$0], end: corners[($0 + 1) % corners.count], density: 9)
+            })
+        }
+        var layouts: [(name: String, h: Heightfield, walls: BoundaryPerimeter)] = []
+        for seed: UInt64 in [3, 17, 41] {
+            // A tile, the next copy to its right and the next above it: two of
+            // its walls stand on tile boundaries.
+            let small = randomHeightfield(cells: 8, seed: seed, truncation: Truncation.none).surface
+            let d = small.domain
+            let box = perimeter([P2(d.real.lo, d.imag.lo), P2(d.real.hi, d.imag.lo),
+                                 P2(d.real.hi, d.imag.hi), P2(d.real.lo, d.imag.hi)])
+            let tiles = [Affine2.identity, Affine2(a: 1, b: 0, tx: d.real.length, c: 0, d: 1, ty: 0),
+                         Affine2(a: 1, b: 0, tx: 0, c: 0, d: 1, ty: d.imag.length)]
+            layouts.append(("seed \(seed), abutting copies",
+                            Heightfield(surface: small, occluder: .empty, tiles: tiles, step: 1,
+                                        walls: .perimeter(box, base: 0)), box))
+            // A footprint with a notch cut into its far side, walled all round,
+            // the notch along grid lines: inside a cell a wall's top edge
+            // follows the surface's interpolated height, not the drawn
+            // triangles, and the traversal hides it at its start.
+            let fine = randomHeightfield(cells: 16, seed: seed, truncation: Truncation.none).surface
+            let notched = perimeter([P2(-1, -1.5), P2(1, -1.5), P2(1, 0.5), P2(0.25, 0.5),
+                                     P2(0.25, -0.5), P2(-0.25, -0.5), P2(-0.25, 0.5), P2(-1, 0.5)])
+            layouts.append(("seed \(seed), a notch",
+                            Heightfield(surface: fine, occluder: .empty, tiles: [.identity], region: .inside(notched),
+                                        step: 1, walls: .perimeter(notched, base: 0)), notched))
+        }
+        for layout in layouts {
+            let h = layout.h, dom = h.surface.domain
+            let context = Surface.HatchContext(perimeter: layout.walls, region: h.region, tiles: h.tiles)
+            let hatch = h.surface.hatch(.wallHatching(edges: Array(layout.walls.edges.indices), spacing: 0.1, step: 0.1,
+                                                      trim: true, base: 0, topOffset: 0), in: context)!
+            let dense = PolylineSet(paths: (0..<hatch.count).map { i -> [P3<WorldSpace>] in
+                let p = Array(hatch[path: i]), a = p[0], b = p[p.count - 1]
+                return (0...256).map { j in j == 256 ? b : P3(a.v + (b.v - a.v) * (Double(j) / 256)) }
+            })
+            // Each edge's outward normal, from the perimeter's turn.
+            let area = layout.walls.signedArea
+            let normals = layout.walls.edges.map { e -> SIMD2<Double> in
+                let along = simd_normalize(e.end.v - e.start.v)
+                return (area < 0 ? -1 : 1) * SIMD2(along.y, -along.x)
+            }
+            func wall(_ at: SIMD2<Double>) -> Int? {
+                layout.walls.edges.indices.first { k in
+                    let e = layout.walls.edges[k]
+                    let along = e.end.v - e.start.v, r = at - e.start.v
+                    let t = simd_dot(r, along) / simd_dot(along, along)
+                    return t > -1e-9 && t < 1 + 1e-9 && simd_length(r - t * along) < 1e-9
+                }
+            }
+            /// The drawn height over a point of the terrain, in the footprint
+            /// and on a copy of the domain; nil elsewhere.
+            func terrain(_ q: SIMD2<Double>) -> Double? {
+                let w = P2<WorldSpace>(q.x, q.y)
+                guard h.region.contains(w), h.tiles.contains(where: { tile in
+                    guard let back = tile.inverse else { return false }
+                    let u = back(P3<WorldSpace>(q.x, q.y, 0))
+                    return u.x >= dom.real.lo && u.x <= dom.real.hi && u.y >= dom.imag.lo && u.y <= dom.imag.hi
+                }) else { return nil }
+                return h.drawnHeight(at: w)
+            }
+            var highest = 0.0, steepest = 0.0
+            let g = h.surface.height
+            let dx = dom.real.length / Double(g.width - 1), dy = dom.imag.length / Double(g.height - 1)
+            for j in 0..<g.height {
+                for i in 0..<g.width {
+                    let z = Double(g[i, j])
+                    highest = max(highest, z)
+                    if i + 1 < g.width { steepest = max(steepest, abs(Double(g[i + 1, j]) - z) / dx) }
+                    if j + 1 < g.height { steepest = max(steepest, abs(Double(g[i, j + 1]) - z) / dy) }
+                }
+            }
+            var compared = 0, partly = 0, wrong = 0, explained = 0
+            var example = ""
+            for (name, view) in stressCameras() {
+                let d = -view.projectionDirection, dxy = SIMD2(d.x, d.y)
+                /// The height below which terrain hides the stroke at `at`,
+                /// or its base; and where on the line's footprint the terrain
+                /// stands highest over it.
+                func hiddenBelow(_ at: SIMD2<Double>, base: Double) -> (height: Double, at: SIMD2<Double>?) {
+                    let coarse = 2e-3, fine = 1e-5
+                    let reach = 2 * (2.0.squareRoot() * steepest * simd_length(dxy) + abs(d.z)) * coarse
+                    func value(_ t: Double) -> Double? { terrain(at + t * dxy).map { $0 - t * d.z } }
+                    var samples: [(t: Double, value: Double)] = []
+                    var best = base, tBest: Double?, t = fine
+                    while highest - t * d.z > best - reach, t * simd_length(dxy) < 10 {
+                        if let v = value(t) { samples.append((t, v)); if v > best { best = v; tBest = t } }
+                        t += coarse
+                    }
+                    for s in samples where s.value > best - reach {
+                        var u = max(s.t - coarse, fine)
+                        while u < s.t + coarse {
+                            if let v = value(u), v > best { best = v; tBest = u }
+                            u += fine
+                        }
+                    }
+                    return (best, tBest.map { at + $0 * dxy })
+                }
+                // Each kept run, by the stroke it lies on.
+                func runs(_ set: PolylineSet<WorldSpace>) -> [SIMD2<Double>: [(lo: Double, hi: Double)]] {
+                    var out: [SIMD2<Double>: [(lo: Double, hi: Double)]] = [:]
+                    for i in 0..<set.count {
+                        let p = Array(set[path: i])
+                        out[SIMD2(p[0].x, p[0].y), default: []].append((p[0].z, p[p.count - 1].z))
+                    }
+                    return out
+                }
+                let two = runs(h.visibleWallCurves(hatch, view: view, depthTolerance: 0.02))
+                let many = runs(h.visibleWallCurves(dense, view: view, depthTolerance: 0.02))
+                for i in 0..<hatch.count {
+                    let p = Array(hatch[path: i]), at = SIMD2(p[0].x, p[0].y)
+                    let base = p[0].z, top = p[p.count - 1].z
+                    // A wall seen edge-on is left out: its line of sight runs along
+                    // the domain's edge, in and out of the terrain by rounding.
+                    guard let k = wall(at), simd_dot(normals[k], dxy) > 1e-6 else { continue }
+                    let (below, highestAt) = hiddenBelow(at, base: base)
+                    compared += 1
+                    let atEdge = layout.walls.edges.contains { e in
+                        guard let q = highestAt, h.region != .full else { return false }
+                        let along = e.end.v - e.start.v
+                        let t = min(max(simd_dot(q - e.start.v, along) / simd_dot(along, along), 0), 1)
+                        return simd_length(q - e.start.v - t * along) < 1e-4
+                    }
+                    if below > base + 1e-3, below < top - 1e-3 { partly += 1 }
+                    for (kind, kept) in [("two ends", two[at] ?? []), ("256 vertices", many[at] ?? [])] {
+                        let runs = kept.filter { $0.lo < top - 1e-3 }
+                        let agree = below < top - 1e-3
+                            ? runs.count == 1 && abs(runs[0].lo - below) < 1e-3 && abs(runs[0].hi - top) < 1e-3
+                            : runs.isEmpty
+                        if !agree {
+                            if atEdge, (runs.first?.lo ?? top) < below { explained += 1; continue }
+                            wrong += 1
+                            if example.isEmpty {
+                                example = String(format: "; e.g. %@, %@, at (%.3f, %.3f) hidden below %.4f, kept %@", name, kind,
+                                                 at.x, at.y, below, kept.map { String(format: "%.4f to %.4f", $0.lo, $0.hi) }.joined(separator: ", "))
+                            }
+                        }
+                    }
+                }
+            }
+            Check.expect(wrong == 0 && partly > 10,
+                         "\(layout.name): a stroke on a wall that faces the eye keeps what the walk sees",
+                         "\(wrong) disagree, of \(compared) strokes each tested twice; \(explained) at the footprint's edge; \(partly) partly hidden\(example)")
+        }
+    }
 }
 
 // MARK: - curves on a plateau are tested by the plateau
