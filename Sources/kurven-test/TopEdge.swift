@@ -674,7 +674,7 @@ func topEdgeTests() {
         // surface layer less what cannot be seen.
         let folds = h.visibleFolds(view: view, depthTolerance: scene.depthTolerance)
         let visible: [(layer: Layer, paths: PolylineSet<WorldSpace>)] = scene.layers.map {
-            ($0, h.visibleSurfaceCurves($0.paths, view: view, depthTolerance: scene.depthTolerance))
+            ($0, h.visibleCurves($0.paths, on: .graph, view: view, depthTolerance: scene.depthTolerance))
         }
         // The pit is a bowl: the graph is convex there, so the solid under
         // it is hollow, and a line of sight tangent to the graph -- which is

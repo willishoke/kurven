@@ -4,10 +4,10 @@ import KurvenCore
 
 // MARK: - the occlusion tests
 //
-// Each kind of solid's occlusion test, asked as a scene asks it, through
-// `OcclusionTest`, and held to a brute-force cast of the line of sight
-// against the same solid: a polyhedron's pieces as triangles, a landscape's
-// drawn triangles, the round torus's tube walked in small steps. Where a
+// Each kind of solid's occlusion test, asked through `OcclusionTest`, and
+// held to a brute-force cast of the line of sight against the same solid: a
+// polyhedron's pieces as triangles, a landscape's drawn triangles, the round
+// torus's tube walked in small steps. Where a
 // nudge across the line of sight changes the cast's answer, the line grazes
 // the solid and rounding decides; those points are left out.
 
@@ -50,7 +50,7 @@ func occlusionTests() {
             var compared = 0, wrong = 0, undecided = 0, seen = 0
             var example = ""
             for (camera, view) in stressCameras() {
-                let test = SceneGeometry.solid(s).occlusionTest(view: view, depthTolerance: 0)!
+                let test: any OcclusionTest = s.occlusion(view: view)
                 let d = -view.projectionDirection
                 for (p, own, plane) in points {
                     func cast(_ q: SIMD3<Double>) -> Bool {
@@ -93,7 +93,7 @@ func occlusionTests() {
         }
         var compared = 0, wrong = 0, undecided = 0, seen = 0
         for (_, view) in stressCameras() {
-            let test = SceneGeometry.heightfield(field).occlusionTest(view: view, depthTolerance: 0)!
+            let test: any OcclusionTest = HeightfieldVisibility(heightfield: field, view: view, depthTolerance: 0)
             let toward = -view.projectionDirection
             for p in points {
                 func cast(_ q: SIMD3<Double>) -> Bool { firstHit(mesh, from: q, along: toward, after: 1e-10) == nil }
@@ -125,7 +125,7 @@ func occlusionTests() {
         compared = 0; wrong = 0; undecided = 0; seen = 0
         for view in [testCamera(elevation: -60, azimuth: 30), testCamera(elevation: -20, azimuth: 70),
                      testCamera(elevation: -35, azimuth: -20, shear: 0.5)] {
-            let test = SceneGeometry.parametric(torus).occlusionTest(view: view, depthTolerance: 0)!
+            let test: any OcclusionTest = SphereTracing(torus, sight: view.projectionDirection)!
             let toward = -view.projectionDirection
             var onSurface: [SIMD3<Double>] = []
             while onSurface.count < 200 {
@@ -153,8 +153,7 @@ func occlusionTests() {
         // A surface with no tubular neighbourhood has no occlusion test: the
         // coordinate image stands in for one.
         let bare = ParametricSurface(u: torus.u, v: torus.v, encloses: true, map: torus.map)
-        Check.expect(SceneGeometry.parametric(bare).occlusionTest(view: testCamera(elevation: -60, azimuth: 30),
-                                                                   depthTolerance: 0) == nil,
+        Check.expect(SphereTracing(bare, sight: testCamera(elevation: -60, azimuth: 30).projectionDirection) == nil,
                      "a parametric surface with no tubular neighbourhood has none")
     }
 }

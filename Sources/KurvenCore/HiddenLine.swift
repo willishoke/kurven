@@ -27,7 +27,7 @@ import simd
 /// The second is the traversal up the line of sight (`GridTraversal`): the exact
 /// question the depth buffer approximates per pixel, asked per vertex with
 /// no pixel in it.
-public struct HeightfieldVisibility: Sendable {
+public struct HeightfieldVisibility: OcclusionTest {
     public let heightfield: Heightfield
     public let depthTolerance: Double
     /// The direction lines of sight travel, in world space.
@@ -63,15 +63,6 @@ public struct HeightfieldVisibility: Sendable {
     /// The depth tolerance as a distance along the line of sight: an occluder must
     /// stand in front of the curves by more than this.
     public var toleranceAlongProjection: Double { traversal.reach }
-
-    /// Where along the straight segment `a -> b` over the plane the surface
-    /// turns edge-on, as a fraction of the way; nil when both ends face the
-    /// same way. Bisection on the normal, to the last bit of the fraction.
-    public func foldCrossing(from a: P2<WorldSpace>, _ fa: Double,
-                             to b: P2<WorldSpace>, _ fb: Double) -> Double? {
-        guard (fa > 0) != (fb > 0) else { return nil }
-        return KurvenCore.foldCrossing(fa, fb) { facing(P2(a.v + (b.v - a.v) * $0)) }
-    }
 }
 
 /// Where along a segment a face turns edge-on, as a fraction of the way,

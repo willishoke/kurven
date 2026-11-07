@@ -1999,9 +1999,9 @@ func faceTests() {
         let r0 = SIMD3(0.0, 1, 0), r1 = simd_normalize(simd_cross(toward, r0))
         let view = Transform<WorldSpace, ViewSpace>(rows: (r0, r1, toward))
         for (name, tiles) in [("the identity first", [Affine2.identity, turned]), ("the turned tile first", [turned, .identity])] {
-            let h = Heightfield(surface: steep, occluder: .empty, tiles: tiles, region: .full, step: 1)
-            let behind = h.visibleCurves(PolylineSet(paths: [[P3(1.03, 0.5, 0.2), P3(1.03, 0.45, 0.2)]]), view: view, depthTolerance: 1e-6)
-            let over = h.visibleCurves(PolylineSet(paths: [[P3(1.03, 0.5, 1.5), P3(1.03, 0.45, 1.5)]]), view: view, depthTolerance: 1e-6)
+            let h = Heightfield(surface: steep, occluder: .empty, tiles: tiles, region: .full, step: 1, walls: .none)
+            let behind = h.visibleCurves(PolylineSet(paths: [[P3(1.03, 0.5, 0.2), P3(1.03, 0.45, 0.2)]]), on: nil, view: view, depthTolerance: 1e-6)
+            let over = h.visibleCurves(PolylineSet(paths: [[P3(1.03, 0.5, 1.5), P3(1.03, 0.45, 1.5)]]), on: nil, view: view, depthTolerance: 1e-6)
             Check.expect(behind.vertices.isEmpty && over.vertices.count == 2,
                          "\(name): a point behind the riser is hidden, and one over it seen",
                          "\(behind.vertices.count) of 2 behind seen, \(over.vertices.count) of 2 over seen")
@@ -2118,7 +2118,8 @@ func faceTests() {
                              resolution: 30, truncation: .uniform(30)),
             refine: true)
         let tiles = [Affine2.identity, Affine2(a: -1, b: 0, tx: 2, c: 0, d: 1, ty: 0), Affine2(a: 0, b: -1, tx: 4, c: 1, d: 0, ty: 0)]
-        let h = Heightfield(surface: cone.surface, occluder: .empty, tiles: tiles, region: .full, step: 1, refine: cone.refine)
+        let h = Heightfield(surface: cone.surface, occluder: .empty, tiles: tiles, region: .full, step: 1,
+                            refine: cone.refine, walls: .none)
         // Under cameras turned every quarter, so each copy shows the apex's
         // outline under some: every end near an apex is on it, and every
         // tile has one.

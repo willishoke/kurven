@@ -30,7 +30,7 @@ func facingTests() {
         let grid = Grid2D(width: nx, height: ny, domain: domain, values: values)
         let surface = Surface(height: grid, phase: nil, truncation: .none)
         let field = Heightfield(surface: surface, occluder: Mesh(vertices: [], triangles: []),
-                                tiles: [.identity], step: 1)
+                                tiles: [.identity], step: 1, walls: .none)
 
         // A camera whose line of sight crosses the ridge: of the two drawing
         // turns, the one that looks more along x.
@@ -57,7 +57,8 @@ func facingTests() {
         }])
         let projected = curves.mapped(camera.view)
         let scene = Scene(surface: surface, occluder: Mesh(vertices: [], triangles: []),
-                          tiles: [.identity], step: 1, layers: [], camera: camera, depthTolerance: 0.02)
+                          tiles: [.identity], step: 1, layers: [], camera: camera, depthTolerance: 0.02,
+                          walls: .none)
         guard let bounds = scene.viewBounds() else {
             Check.expect(false, "the ridge has bounds"); return
         }
@@ -67,7 +68,7 @@ func facingTests() {
                                empty: -.infinity)
         let byDepth = HiddenLine.clip(projected, against: empty, depthTolerance: 0.02)
         // An infinite depth tolerance disarms the traversal: the facing alone decides.
-        let cut = field.visibleSurfaceCurves(curves, view: camera.view, depthTolerance: .infinity).mapped(camera.view)
+        let cut = field.visibleCurves(curves, on: .graph, view: camera.view, depthTolerance: .infinity).mapped(camera.view)
         Check.expect(byDepth.count == 1 && byDepth.vertices.count == curves.vertices.count,
                      "tested by depth alone, the whole path is kept")
 
@@ -106,7 +107,7 @@ func facingTests() {
         // With the traversal armed, the far lower slope -- facing the eye again, but
         // behind the ridge from where the eye is -- goes too: the line of sight
         // from it passes under the top edge.
-        let visible = field.visibleSurfaceCurves(curves, view: camera.view, depthTolerance: 0.02).mapped(camera.view)
+        let visible = field.visibleCurves(curves, on: .graph, view: camera.view, depthTolerance: 0.02).mapped(camera.view)
         let lastKept = visible.vertices.last.map { simd_length($0.v - expected[0].v) } ?? .infinity
         Check.expect(visible.count == 1 && lastKept < 2e-3,
                      "tested by the solid as well, only the near graph remains, up to the first fold",
@@ -138,7 +139,7 @@ func foldCurveTests() {
         let surface = Surface(height: Grid2D(width: nx, height: ny, domain: domain, values: values),
                               phase: nil, truncation: .none)
         let field = Heightfield(surface: surface, occluder: Mesh(vertices: [], triangles: []),
-                                tiles: [.identity], step: 1)
+                                tiles: [.identity], step: 1, walls: .none)
         let cameras = [0.0, 90.0].map {
             Camera.oblique(ObliqueProjection(shear: 0, xAngle: -55, zAngle: $0, flipX: false, yScale: nil))
         }

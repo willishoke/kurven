@@ -31,12 +31,17 @@ public struct Heightfield: Sendable {
     /// bundle: the fold curves are carried to its zeros.
     public let refine: ContourRefine?
     /// The walls as the manifest gives them: a perimeter they stand on, which
-    /// is their faces (`faces`), or a mesh, already in `occluder`.
+    /// is their faces (`faces`), or a mesh, already in `occluder`. Strokes on
+    /// a wall are tested by the facing of the wall they stand on only where
+    /// the walls are a perimeter; given none or a mesh, by the traversal
+    /// alone, and a wall facing away shows its hatching.
     public let walls: Walls
 
+    /// `walls` has no default, so that a heightfield built in code says what
+    /// its wall strokes are tested by (`walls`).
     public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],
                 region: Region = .full, step: Int, refine: ContourRefine? = nil,
-                walls: Walls = .none) {
+                walls: Walls) {
         self.surface = surface; self.occluder = occluder; self.tiles = tiles
         self.region = region; self.step = step; self.refine = refine; self.walls = walls
     }
@@ -373,25 +378,6 @@ public struct Heightfield: Sendable {
         visibleCurves(paths, on: .wall, view: view, depthTolerance: depthTolerance, resolution: resolution)
     }
 
-    /// Curves that lie on the surface itself -- the contours of |f| and arg f,
-    /// lifted onto it -- less what cannot be seen:
-    /// `visibleCurves(_:on:view:depthTolerance:resolution:)` on the graph.
-    public func visibleSurfaceCurves(_ paths: PolylineSet<WorldSpace>,
-                                     view: Transform<WorldSpace, ViewSpace>,
-                                     depthTolerance: Double) -> PolylineSet<WorldSpace> {
-        visibleCurves(paths, on: .graph, view: view, depthTolerance: depthTolerance)
-    }
-
-    /// Any other curves -- the truncation edge of a truncation, a dumped
-    /// scaffold -- less what the solid hides: tested by the traversal alone,
-    /// since such curves lie on a crease or where the surface's facing is not
-    /// the curves'.
-    public func visibleCurves(_ paths: PolylineSet<WorldSpace>,
-                              view: Transform<WorldSpace, ViewSpace>,
-                              depthTolerance: Double) -> PolylineSet<WorldSpace> {
-        visibleCurves(paths, on: nil, view: view, depthTolerance: depthTolerance)
-    }
-
     /// How squarely the surface faces the viewer over `p`, for lines of
     /// sight along `sight`: positive facing, negative facing away, zero on a
     /// fold. The truncated surface's (`normal(at:)`).
@@ -403,17 +389,22 @@ public struct Heightfield: Sendable {
     /// The facing of the walls a point lies in, for lines of sight along
     /// `sight`: positive where one of them faces the eye, negative where it
     /// lies in walls that all face away, nil where it lies in none. Each wall
-    /// is a face (`Surface.walls(_:tiles:refine:)`), flat, facing as its
-    /// outward normal does, and a point lies in it when it stands within
-    /// `slack` of its foot, the edge of the perimeter it stands on, between
-    /// the edge's ends.
+    /// is flat and faces as its face's outward normal does
+    /// (`Surface.walls(_:tiles:refine:)`), read straight off the perimeter
+    /// edge it stands on rather than through the face, whose height range
+    /// can cost a scan of the grid; a point lies in it when it stands within
+    /// `slack` of that edge, between its ends. Only walls given as a
+    /// perimeter are faces: with none, or a mesh, no point lies in a wall.
     func wallFacing(sight: SIMD3<Double>, slack: Double) -> @Sendable (P3<WorldSpace>) -> Double? {
-        let walls = surface.walls(self.walls, tiles: tiles, refine: refine).map { face in
-            let copy = face.copies[0]
-            let foot = copy.place(face.map(P2(face.domain.u.range.lo, face.domain.v.range.lo)))
-            let outward = (copy.outward ?? 1) * foot.normal
-            return (start: SIMD2(foot.position.x, foot.position.y), along: SIMD2(foot.du.x, foot.du.y),
-                    length: face.domain.u.range.hi, facesEye: -simd_dot(outward, sight) > 0)
+        guard case .perimeter(let perimeter, _) = self.walls else { return { _ in nil } }
+        let turn: Double = perimeter.signedArea < 0 ? -1 : 1
+        let walls = perimeter.edges.compactMap { edge -> (start: SIMD2<Double>, along: SIMD2<Double>, length: Double, facesEye: Bool)? in
+            let along = edge.end.v - edge.start.v, length = simd_length(along)
+            guard length > 0 else { return nil }
+            let u = along / length
+            // du × dv of the wall's face, du along the edge and dv up.
+            let outward = turn * SIMD3(u.y, -u.x, 0)
+            return (edge.start.v, u, length, -simd_dot(outward, sight) > 0)
         }
         return { p in
             var onAnyWall = false, facesEye = false
@@ -1110,11 +1101,12 @@ public struct Scene: Sendable {
     /// Zero, the default and a bake's, places them to the last bit.
     public var resolution: Double = 0
 
-    /// A heightfield scene.
+    /// A heightfield scene. `walls` has no default: the scene's wall strokes
+    /// are tested by the walls it is given (`Heightfield.walls`).
     public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],
                 region: Region = .full, step: Int, layers: [Layer], camera: Camera,
                 mode: PreviewMode = .drawing, depthTolerance: Double, refine: ContourRefine? = nil,
-                walls: Walls = .none) {
+                walls: Walls) {
         self.init(content: ContentID(), curves: ContentID(),
                   geometry: .heightfield(Heightfield(surface: surface, occluder: occluder,
                                                      tiles: tiles, region: region, step: step,
@@ -1218,12 +1210,14 @@ public struct Scene: Sendable {
     /// between it and the eye. The kind of face is the layer's
     /// (`SceneGeometry.face(of:)`); where its facing changes sign along a
     /// segment, the segment is cut on the fold by bisection on it; and what
-    /// stands in front is the scene's occlusion test (`OcclusionTest`): grid
-    /// traversal through a landscape
+    /// stands in front is decided by the scene's kind of occlusion test, one
+    /// of the `OcclusionTest`s, asked here as its own type: grid traversal
+    /// through a landscape, at the depth tolerance the layer's face asks for
     /// (`Heightfield.visibleCurves(_:on:view:depthTolerance:resolution:)`),
-    /// sphere tracing round a surface with a tubular neighbourhood, and a
-    /// polyhedron's pieces, in their segment form, for its edges and hatching
-    /// (`Solid.visibleEdges`, `Solid.visibleHatching`). The coordinate image,
+    /// sphere tracing round a surface with a tubular neighbourhood
+    /// (`SurfaceVisibility`), and a polyhedron's pieces in their segment form,
+    /// for its edges and hatching (`Solid.visibleEdges`,
+    /// `Solid.visibleHatching`). The coordinate image,
     /// `image`, tests a parametric surface's curves only where it has no
     /// tubular neighbourhood: a point is seen when the surface in front of it
     /// is its own neighbourhood (`SurfaceVisibility`), and its fold crossings

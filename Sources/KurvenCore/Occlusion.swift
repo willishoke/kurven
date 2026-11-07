@@ -14,6 +14,12 @@ import simd
 /// it says whether a point is the front-most of its own surface, nothing
 /// about any other solid, and only to its resolution
 /// (`SurfaceVisibility.isFrontMost`).
+///
+/// A landscape's is public as `HeightfieldVisibility`, which asks the
+/// traversal. Each scene's visibility asks its test as its own type
+/// (`Scene.visible(_:depthTolerance:image:)`); the protocol is what a scene
+/// of several solids will ask them through, and what the `occlusion:`
+/// suite holds each of them to a ray cast by.
 public protocol OcclusionTest: Sendable {
     /// Whether nothing of this solid stands on the open ray from `p` toward the eye.
     func isClear(_ p: P3<WorldSpace>) -> Bool
@@ -79,24 +85,12 @@ extension Solid.Occlusion: OcclusionTest {
     /// The point form: the segment form asked of the segment from `p` to
     /// itself, which a piece hides whole or not at all. A piece through `p`
     /// stands in front of it by nothing, and a piece seen edge-on hides
-    /// nothing, as on a segment.
+    /// nothing, as on a segment. Nothing draws with it yet: a polyhedron's
+    /// edges and hatching are tested by the segment form, and the point form
+    /// is for a scene of several solids, held to a ray cast meanwhile by the
+    /// `occlusion:` suite.
     public func isClear(_ p: P3<WorldSpace>) -> Bool {
         let q = view(p)
         return hidden(from: q, to: q, excluding: { _ in false }).isEmpty
-    }
-}
-
-public extension SceneGeometry {
-    /// The solid's occlusion test along `view`'s lines of sight: grid
-    /// traversal through a landscape, forgiving a point the depth tolerance
-    /// under its own surface, sphere tracing round a surface with a tubular
-    /// neighbourhood, a polyhedron's pieces. Nil for a parametric surface with
-    /// none, whose curves the coordinate image tests.
-    func occlusionTest(view: Transform<WorldSpace, ViewSpace>, depthTolerance: Double) -> (any OcclusionTest)? {
-        switch self {
-        case .heightfield(let h): GridTraversal(h, view: view, depthTolerance: depthTolerance)
-        case .parametric(let s): SphereTracing(s, sight: view.projectionDirection)
-        case .solid(let s): s.occlusion(view: view)
-        }
     }
 }

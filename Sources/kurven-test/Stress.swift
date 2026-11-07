@@ -310,7 +310,7 @@ func randomHeightfield(cells: Int, seed: UInt64, truncation: Truncation, amplitu
     for k in values.indices { values[k] = Float(rng.next(0, amplitude)) }
     let surface = Surface(height: Grid2D(width: n, height: n, domain: domain, values: values),
                           phase: nil, truncation: truncation)
-    return Heightfield(surface: surface, occluder: .empty, tiles: [.identity], step: 1)
+    return Heightfield(surface: surface, occluder: .empty, tiles: [.identity], step: 1, walls: .none)
 }
 
 /// The cameras the stress tests orbit through: from nearly overhead to a
@@ -381,8 +381,8 @@ func stressTests() {
         let vis = HeightfieldVisibility(heightfield: h, view: steepScene.camera.view, depthTolerance: steepScene.depthTolerance)
         var kept = 0.0, facingOnly = 0.0, buried = 0, behind = 0
         for layer in steepScene.layers where layer.spec.clipped && steepScene.geometry.face(of: layer.spec) == .graph {
-            kept += h.visibleSurfaceCurves(layer.paths, view: steepScene.camera.view, depthTolerance: steepScene.depthTolerance).totalLength
-            facingOnly += h.visibleSurfaceCurves(layer.paths, view: steepScene.camera.view, depthTolerance: .infinity).totalLength
+            kept += h.visibleCurves(layer.paths, on: .graph, view: steepScene.camera.view, depthTolerance: steepScene.depthTolerance).totalLength
+            facingOnly += h.visibleCurves(layer.paths, on: .graph, view: steepScene.camera.view, depthTolerance: .infinity).totalLength
             for v in layer.paths.vertices where vis.facing(v.xy) > 0 && !vis.isClear(v) {
                 if v.z < h.drawnHeight(at: v.xy) { buried += 1 } else { behind += 1 }
             }
@@ -410,7 +410,7 @@ func stressTests() {
         // test's solid is f (below).
         let withF = scene.heightfield!
         let h = Heightfield(surface: withF.surface, occluder: withF.occluder, tiles: withF.tiles,
-                            region: withF.region, step: withF.step)
+                            region: withF.region, step: withF.step, walls: withF.walls)
         let view = scene.camera.view
         let mesh = drawnTriangles(h, base: 0)
         let vis = HeightfieldVisibility(heightfield: h, view: view, depthTolerance: scene.depthTolerance)
@@ -612,7 +612,7 @@ func stressTests() {
         for (name, second) in [("reflected", Affine2(a: -1, b: 0, tx: 2, c: 0, d: 1, ty: 0)),
                                ("turned", Affine2(a: 0, b: -1, tx: 2, c: 1, d: 0, ty: 0))] {
             let h = Heightfield(surface: base.surface, occluder: .empty, tiles: [.identity, second],
-                                step: 1, refine: base.refine)
+                                step: 1, refine: base.refine, walls: .none)
             let rng = SplitMix(seed: 5)
             var points: [P3<WorldSpace>] = []
             while points.count < 120 {
@@ -780,7 +780,7 @@ func stressTests() {
             }
             let field = Heightfield(surface: Surface(height: Grid2D(width: n, height: n, domain: domain, values: values),
                                                      phase: nil, truncation: .none),
-                                    occluder: .empty, tiles: [.identity], step: 1)
+                                    occluder: .empty, tiles: [.identity], step: 1, walls: .none)
             let vis = HeightfieldVisibility(heightfield: field, view: view, depthTolerance: 0)
             let rng = SplitMix(seed: UInt64(cells))
             let cell = 3.0 / Double(cells)

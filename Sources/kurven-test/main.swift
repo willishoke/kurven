@@ -1248,7 +1248,7 @@ func previewTests() {
         func scene(_ layer: Layer, depthTolerance: Double) -> Scene {
             Scene(surface: surface, occluder: Mesh(vertices: [], triangles: []),
                   tiles: [.identity], step: 1, layers: [layer], camera: orbit.camera,
-                  depthTolerance: depthTolerance)
+                  depthTolerance: depthTolerance, walls: .none)
         }
         guard let bounds = scene(strokes(under: 0), depthTolerance: 0).quickBounds() else {
             Check.expect(false, "the plane has bounds"); return
