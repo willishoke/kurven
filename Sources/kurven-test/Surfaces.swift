@@ -660,6 +660,86 @@ func foldTests() {
     }
 }
 
+/// The sheets of a parametric surface on a line of sight, found by brute
+/// force, with no image in it.
+///
+/// Every grid cell whose box in view, widened by half, holds the line of
+/// sight is solved onto it by Newton's method from the cell's centre, and
+/// gives the sheet over that cell where the solve settles within a cell and
+/// a half of the centre. The cells are binned by their boxes, so a line of
+/// sight asks only the cells about it.
+struct SheetSearch: Sendable {
+    let surface: ParametricSurface
+    let view: Transform<WorldSpace, ViewSpace>
+    let boxes: [(lo: SIMD2<Double>, hi: SIMD2<Double>)]
+    let bins: [[Int32]]
+    let lo: SIMD2<Double>, size: SIMD2<Double>
+    static let count = 400
+
+    init(_ surface: ParametricSurface, view: Transform<WorldSpace, ViewSpace>) {
+        self.surface = surface; self.view = view
+        let nu = surface.u.samples, n = SheetSearch.count
+        let grid = surface.positions.map { view($0) }
+        var boxes: [(lo: SIMD2<Double>, hi: SIMD2<Double>)] = []
+        for j in 0..<surface.v.cells {
+            for i in 0..<surface.u.cells {
+                var lo = SIMD2(Double.infinity, .infinity), hi = -lo
+                for (a, b) in [(i, j), (i + 1, j), (i, j + 1), (i + 1, j + 1)] {
+                    let q = grid[surface.v.sample(b) * nu + surface.u.sample(a)]
+                    lo = simd_min(lo, SIMD2(q.x, q.y)); hi = simd_max(hi, SIMD2(q.x, q.y))
+                }
+                boxes.append((lo - 0.5 * (hi - lo), hi + 0.5 * (hi - lo)))
+            }
+        }
+        let lo = boxes.map(\.lo).reduce(SIMD2(Double.infinity, .infinity)) { simd_min($0, $1) }
+        let hi = boxes.map(\.hi).reduce(-SIMD2(Double.infinity, .infinity)) { simd_max($0, $1) }
+        let size = (hi - lo) / Double(n)
+        var bins = [[Int32]](repeating: [], count: n * n)
+        for (k, box) in boxes.enumerated() {
+            let b0 = simd_clamp(SIMD2<Int>((box.lo - lo) / size), SIMD2(0, 0), SIMD2(n - 1, n - 1))
+            let b1 = simd_clamp(SIMD2<Int>((box.hi - lo) / size), SIMD2(0, 0), SIMD2(n - 1, n - 1))
+            for by in b0.y...b1.y { for bx in b0.x...b1.x { bins[by * n + bx].append(Int32(k)) } }
+        }
+        self.boxes = boxes; self.bins = bins; self.lo = lo; self.size = size
+    }
+
+    /// The view depth of the nearest sheet on the line of sight through `p`
+    /// other than the neighbourhood of coordinate `own`, the sheets within
+    /// two grid cells of it; minus infinity where there is none.
+    func nearest(through p: P2<ViewSpace>, besides own: P2<ParamSpace>) -> Double {
+        let n = SheetSearch.count, cu = surface.u.cells
+        let du = surface.u.spacing, dv = surface.v.spacing
+        let scale = max(abs(p.x), abs(p.y), 1)
+        let b = (SIMD2(p.x, p.y) - lo) / size
+        guard b.x >= 0, b.y >= 0, b.x < Double(n), b.y < Double(n) else { return -.infinity }
+        var nearest = -Double.infinity
+        for k in bins[Int(b.y) * n + Int(b.x)] {
+            let box = boxes[Int(k)]
+            guard p.x >= box.lo.x, p.x <= box.hi.x, p.y >= box.lo.y, p.y <= box.hi.y else { continue }
+            let centre = SIMD2(surface.u.coordinate(Int(k) % cu) + 0.5 * du,
+                               surface.v.coordinate(Int(k) / cu) + 0.5 * dv)
+            var c = centre, at = P3<ViewSpace>(p.x, p.y, 0), settled = false
+            for _ in 0..<40 {
+                let jet = surface.map(P2(c))
+                at = view(P3<WorldSpace>(jet.position))
+                let r = SIMD2(at.x - p.x, at.y - p.y)
+                if simd_length(r) < 1e-12 * scale { settled = true; break }
+                let a = view(P3<WorldSpace>(jet.position + jet.du)).v - at.v
+                let e = view(P3<WorldSpace>(jet.position + jet.dv)).v - at.v
+                let det = a.x * e.y - a.y * e.x
+                guard det != 0, det.isFinite else { break }
+                c -= SIMD2(r.x * e.y - r.y * e.x, a.x * r.y - a.y * r.x) / det
+                if abs(c.x - centre.x) > 3 * du || abs(c.y - centre.y) > 3 * dv { break }
+            }
+            guard settled, abs(c.x - centre.x) <= 1.5 * du, abs(c.y - centre.y) <= 1.5 * dv,
+                  abs(surface.u.difference(c.x, own.x)) > 2 * du
+                    || abs(surface.v.difference(c.y, own.y)) > 2 * dv else { continue }
+            nearest = max(nearest, at.z)
+        }
+        return nearest
+    }
+}
+
 func creaseTests() {
     Check.suite("surfaces: a truncation edge is a crease, drawn once and seen where either face is") {
         // sn in relief, truncated and floored, so that each pole is a chimney
@@ -787,6 +867,70 @@ func creaseTests() {
                      "the baked truncation edge is the convex edge's visible length, to its turning chords",
                      String(format: "%.4f vs %.4f, %+.1f px of %.1f", baked.strokes.totalLength, truth,
                             excess / px, slack / px + 2))
+    }
+
+    Check.suite("surfaces: in relief past its reach, the truncation edge is hidden only by a sheet in front of it") {
+        // sn in relief at amplitude 0.4 stands 0.4 × 3 = 1.2 off the torus
+        // at the truncation, past its reach of 1: the surface passes through
+        // itself, bounds no solid, and the coordinate image decides what is
+        // in front. Along the truncation edge the image's chords fall a few
+        // pixels short of the crease, and the pixels round a vertex there can
+        // hold only the sheet behind it: at resolution 3000 that hid twenty
+        // vertices with nothing in front of them.
+        let drawing = try PeriodicTorus.jacobiSN(modulus: 0.64, major: 2, minor: 1, resolution: 600,
+                                                 grid: 1024, truncated: true, turn: 0)
+            .relief(amplitude: 0.4, reach: 1)
+        let surface = drawing.surface
+        let truncationEdge = drawing.layers.first { $0.spec.name == "truncation edge" }!
+        let paths = truncationEdge.paths, coords = paths.coords!
+        let camera = Camera.oblique(SurfaceRequest.projection)
+        let points = coords.map { camera.view(P3<WorldSpace>(surface.map($0).position)) }
+        // Seen, by brute force: no other sheet nearer the eye by more than a millionth.
+        let search = SheetSearch(surface, view: camera.view)
+        let front = Heightfield.parallelMap(Array(coords.indices), chunk: 8) {
+            search.nearest(through: points[$0].xy, besides: coords[$0])
+        }
+        let seen = zip(points, front).map { $0.z + 1e-6 >= $1 }
+        let scene = Scene(surface: surface, layers: [truncationEdge], camera: camera, depthTolerance: 0)
+        let renderer = try MetalRenderer()
+        for resolution in [1500, 3000, 6000] {
+            let baked = try renderer.bake(scene, options: BakeOptions(resolution: resolution))
+            let vis = SurfaceVisibility(surface: surface, image: baked.surface!, view: camera.view)
+            let px = baked.depth.frame.unitsPerPixel.max()
+            let kept = Heightfield.parallelMap(Array(coords.indices), chunk: 8) {
+                vis.isVisible(points[$0], at: coords[$0])
+            }
+            let hidden = coords.indices.filter { seen[$0] && !kept[$0] }
+            let label = "resolution \(resolution)"
+            Check.expect(surface.outward == nil && !vis.tracesSpheres && seen.contains(true) && hidden.isEmpty,
+                         "\(label): no truncation edge vertex is hidden with nothing in front of it",
+                         "\(hidden.count) of \(seen.filter { $0 }.count) seen by brute force"
+                            + (hidden.first.map { String(format: ", e.g. (%.5f, %.5f)", coords[$0].x, coords[$0].y) } ?? ""))
+            // Nor kept with a sheet in front of it, except near that sheet's
+            // outline: within two pixels, or within a grid cell, measured in
+            // view at the vertex, since the image draws each sheet as the
+            // grid's chords. Found by asking the brute force at the eight
+            // neighbours that far away, at the vertex's depth. This is the
+            // image's own resolution, and the fix must not swing past it.
+            let wronglyKept = coords.indices.filter { !seen[$0] && kept[$0] }
+            let unexplained = wronglyKept.filter { k in
+                let jet = surface.map(coords[k])
+                let cell = [jet.du * surface.u.spacing, jet.dv * surface.v.spacing].map { d in
+                    let q = camera.view(P3<WorldSpace>(jet.position + d))
+                    return simd_length(SIMD2(q.x - points[k].x, q.y - points[k].y))
+                }.max()!
+                let reach = max(2 * px, cell)
+                let around = [(1.0, 0.0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+                return around.allSatisfy { dx, dy in
+                    let q = P2<ViewSpace>(points[k].x + reach * dx, points[k].y + reach * dy)
+                    return points[k].z + 1e-6 < search.nearest(through: q, besides: coords[k])
+                }
+            }
+            Check.expect(unexplained.isEmpty,
+                         "\(label): none is kept with a sheet in front of it, but beside that sheet's outline",
+                         "\(wronglyKept.count) kept that brute force hides, \(unexplained.count) farther than two pixels and a grid cell"
+                            + (unexplained.first.map { String(format: ", e.g. (%.5f, %.5f)", coords[$0].x, coords[$0].y) } ?? ""))
+        }
     }
 }
 

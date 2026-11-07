@@ -99,26 +99,67 @@ public struct SurfaceVisibility: Sendable {
     /// `facing` decides it. Nothing drawn in all nine pixels: nothing in
     /// front. Outside the frame: occluded, as `DepthImage.depth(under:)` has
     /// it.
-    public func isFrontMost(_ c: P2<ParamSpace>, at p: P2<ViewSpace>) -> Bool {
+    ///
+    /// A pixel holding another sheet hides the point only where that sheet
+    /// is in front of it. The image draws each sheet as its grid, a chord of
+    /// the surface, and along a crease on a sheet bent sharply in view the
+    /// chord can fall pixels short of the crease, so that all nine pixels
+    /// hold only what lies behind it. So each such pixel's sheet is followed
+    /// from the pixel's coordinate onto the point's line of sight
+    /// (`sheet(at:liesBehind:)`), and the point is seen if every one of them
+    /// meets it behind the point.
+    public func isFrontMost(_ c: P2<ParamSpace>, at p: P3<ViewSpace>) -> Bool {
         guard let image else { preconditionFailure("the front-most test needs the coordinate image") }
         let frame = image.frame
-        let i = frame.index(of: p)
+        let i = frame.index(of: p.xy)
         guard i.x >= 0, i.x < frame.rows, i.y >= 0, i.y < frame.cols else { return false }
-        var covered = false
+        var others: [P2<ParamSpace>] = []
         for dr in -1...1 {
             for dc in -1...1 {
                 let r = i.x + dr, col = i.y + dc
                 guard r >= 0, r < frame.rows, col >= 0, col < frame.cols,
                       let q = image.coordinate(row: r, col: col) else { continue }
-                covered = true
                 let f = footprint(row: r, col: col)
                 if abs(surface.u.difference(q.x, c.x)) <= 2 * f.x + surface.u.spacing,
                    abs(surface.v.difference(q.y, c.y)) <= 2 * f.y + surface.v.spacing {
                     return true
                 }
+                others.append(q)
             }
         }
-        return !covered
+        return others.allSatisfy { sheet(at: $0, liesBehind: p) }
+    }
+
+    /// Whether the sheet through surface coordinate `q` meets the line of
+    /// sight through view point `p` behind `p`.
+    ///
+    /// Newton's method on the map followed by the view, from `q`, for the
+    /// coordinate whose view x and y are `p`'s; the sheet's depth there
+    /// decides. A solve that leaves the two grid cells about `q`, or the
+    /// rectangle along a bounded axis, has found some other sheet or none,
+    /// and so does one that does not settle: either way the sheet is not
+    /// shown to be behind, and hides the point as the image has it.
+    func sheet(at q: P2<ParamSpace>, liesBehind p: P3<ViewSpace>) -> Bool {
+        let scale = max(abs(p.x), abs(p.y), abs(p.z), 1)
+        func near(_ axis: ParamAxis, _ x: Double, _ x0: Double) -> Bool {
+            abs(axis.difference(x, x0)) <= 2 * axis.spacing
+                && (axis.periodic || (x >= axis.range.lo && x <= axis.range.hi))
+        }
+        var c = q.v
+        for _ in 0..<30 {
+            let jet = surface.map(P2(c))
+            let at = view(P3<WorldSpace>(jet.position))
+            let r = SIMD2(at.x - p.x, at.y - p.y)
+            if simd_length(r) <= 1e-12 * scale { return at.z < p.z - 1e-9 * scale }
+            // The columns of the Jacobian, the map's partials carried into the view.
+            let a = view(P3<WorldSpace>(jet.position + jet.du)).v - at.v
+            let b = view(P3<WorldSpace>(jet.position + jet.dv)).v - at.v
+            let det = a.x * b.y - a.y * b.x
+            guard det != 0, det.isFinite else { return false }
+            c -= SIMD2(r.x * b.y - r.y * b.x, a.x * r.y - a.y * r.x) / det
+            guard near(surface.u, c.x, q.x), near(surface.v, c.y, q.y) else { return false }
+        }
+        return false
     }
 
     /// Whether nothing of the solid stands between the surface point `q` and
@@ -136,7 +177,7 @@ public struct SurfaceVisibility: Sendable {
     func isVisible(_ p: P3<ViewSpace>, at c: P2<ParamSpace>, facing f: Double?) -> Bool {
         if let f, f <= 0 { return false }
         if tracesSpheres { return isClear(surface.map(c).position) }
-        return isFrontMost(c, at: p.xy)
+        return isFrontMost(c, at: p)
     }
 
     /// Curves at surface coordinate `c`, placed by the map: whether it is seen,
@@ -146,7 +187,7 @@ public struct SurfaceVisibility: Sendable {
         let world = surface.map(c).position
         let p = view(P3<WorldSpace>(world))
         if !onFolds, let f = facing(c), f <= 0 { return (false, p) }
-        return (tracesSpheres ? isClear(world) : isFrontMost(c, at: p.xy), p)
+        return (tracesSpheres ? isClear(world) : isFrontMost(c, at: p), p)
     }
 
     /// The point of a crease beside `c`, a point of the chord between two of
@@ -264,7 +305,7 @@ public extension HiddenLine {
                 let pa = paths.vertices[k - 1], pb = paths.vertices[k]
                 let v = P3<ViewSpace>(pa.v + (pb.v - pa.v) * t)
                 let c = P2<ParamSpace>(a.v + (b.v - a.v) * t)
-                return (v, visibility.isFrontMost(c, at: v.xy))
+                return (v, visibility.isFrontMost(c, at: v))
             }
         var cut = [(at: P3<ViewSpace>, seen: Bool)?](repeating: nil, count: n)
         for (i, k) in changes.enumerated() { cut[k] = cuts[i] }
