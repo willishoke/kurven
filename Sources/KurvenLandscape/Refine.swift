@@ -765,7 +765,8 @@ public struct ContourRefiner: Sendable {
     /// its ray by bisection, the loop subdivided to the tolerance like any
     /// other, and cut to the window where it leaves it, each crossing solved
     /// along the window's edge. A level the grid did see -- a path already
-    /// turning round the zero -- is left to the grid.
+    /// turning round the zero -- is left to the grid, and a ring round two
+    /// zeros is seeded from the first.
     func seededRings(level: Double, zeros: [P2<DomainSpace>],
                      existing: [[P2<DomainSpace>]]) -> [[P2<DomainSpace>]] {
         guard level > 0, level.isFinite else { return [] }
@@ -779,7 +780,7 @@ public struct ContourRefiner: Sendable {
                 lowest = min(lowest, magnitude(Complex(grid.real.lo + Double(ci) * dx, grid.imag.lo + Double(cj) * dy)))
             }
             guard level < lowest else { continue }
-            guard !existing.contains(where: { abs(Self.turn($0, around: z0)) > .pi / 2 }) else { continue }
+            guard !(existing + out).contains(where: { abs(Self.turn($0, around: z0)) > .pi / 2 }) else { continue }
             let c = Complex(z0.x, z0.y)
             let h = 1e-6 * cell
             let d = (value(c + h) - value(c - h)) / (2 * h)

@@ -2607,6 +2607,35 @@ func faceTests() {
                      "\(wrong.count) of \(asked) wrong: \(wrong.prefix(3).joined(separator: "; ")), \(trim.open) open")
     }
 
+    Check.suite("faces: one ring is drawn round two zeros in one hole") {
+        // Zeros at (0.307, -0.144) and (0.348, -0.146), half a cell apart at
+        // res 24, under 4 right of Re z = 0.1141: the hole |f| < 4 holds
+        // both, and the grid sees neither. Each zero's ring is the same
+        // curve; drawn from both, the loop was there twice and held nothing.
+        let built = try NativeLandscape.build(
+            LandscapeRequest(expression: "4119.1074405*(z - (0.307498198308-0.144345961027i))*(z - (0.348393843985-0.145720969539i))"
+                                + "/(z - (0.764249524783+0.504053378065i))",
+                             domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)), resolution: 24,
+                             truncation: .realBands([RealBand(below: 0.114094111388, height: 2)], beyond: 4)),
+            refine: true)
+        guard let magnitude = built.refine?.magnitude else { Check.expect(false, "a refiner"); return }
+        let trim = built.surface.graphTrimLoops(refine: built.refine)
+        let cell = 2.0 / 23
+        let loops = Segments(trim.loops.map { $0.map(\.v) }, cell: cell)
+        var asked = 0, wrong: [String] = []
+        for i in 0..<9 {
+            for j in 0..<7 {
+                let p = SIMD2(0.28 + (Double(i) + 0.37) * cell / 7, -0.18 + (Double(j) + 0.61) * cell / 7)
+                guard loops.distance(p, within: 0.06 * cell).isInfinite else { continue }
+                asked += 1
+                if loops.inside(p) != (magnitude(P2(p)) < 4) { wrong.append("\(p)") }
+            }
+        }
+        let rings = trim.truncationEdge.filter { $0.allSatisfy { abs($0.x - 0.33) < 0.05 && abs($0.y + 0.145) < 0.05 } }
+        Check.expect(asked > 40 && wrong.isEmpty && rings.count == 1 && trim.open == 0, "the loops hold the hole round both zeros, drawn once",
+                     "\(rings.count) rings, \(wrong.count) of \(asked) wrong: \(wrong.prefix(3).joined(separator: "; ")), \(trim.open) open")
+    }
+
     Check.suite("faces: the truncation edge in a cell a band boundary cuts keeps to |f| = h, within the refiner's tolerance") {
         // Each chord with its midpoint within a column of a boundary, its
         // midpoint off the level by the residual over the gradient, in
