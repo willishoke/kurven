@@ -23,22 +23,30 @@ import simd
 /// a few milliseconds of this.
 public extension Surface {
     /// What the hatching needs beyond the grids: where the walls stand, what
-    /// the footprint is, and how the landscape is tiled.
+    /// the footprint is, how the landscape is tiled, and where the risers'
+    /// edges are drawn.
     struct HatchContext: Sendable {
         public var perimeter: BoundaryPerimeter?
         public var region: Region
         public var tiles: [Affine2]
+        /// Where the truncation edge's layer draws the risers' edges, and so
+        /// where the walls' hatching hatches the risers: on every tile, true;
+        /// in place, false; nil where no layer draws them.
+        public var riserEdgesTiled: Bool?
 
         public init(perimeter: BoundaryPerimeter?, region: Region = .full,
-                    tiles: [Affine2] = [.identity]) {
+                    tiles: [Affine2] = [.identity], riserEdgesTiled: Bool? = nil) {
             self.perimeter = perimeter; self.region = region; self.tiles = tiles
+            self.riserEdgesTiled = riserEdgesTiled
         }
 
         /// The context a manifest describes. The wall kinds hatch the perimeter
         /// the walls are *derived* from, referenced rather than repeated -- so a
         /// bundle whose walls are a dumped mesh has no perimeter to hatch, and
-        /// says so by deriving nothing.
-        public init(_ occluder: Occluder) {
+        /// says so by deriving nothing. The risers' edges are drawn where
+        /// `layers`' truncation edges draw them: on every tile if one of them
+        /// is tiled.
+        public init(_ occluder: Occluder, layers: [LayerSpec]) {
             if case .perimeter(let p, _) = occluder.walls {
                 perimeter = p
             } else {
@@ -46,6 +54,11 @@ public extension Surface {
             }
             region = occluder.region
             tiles = occluder.tiles
+            let tiled = layers.compactMap { spec -> Bool? in
+                if case .truncationEdge(let tiled) = spec.source { return tiled }
+                return nil
+            }
+            riserEdgesTiled = tiled.isEmpty ? nil : tiled.contains(true)
         }
     }
 
@@ -53,10 +66,11 @@ public extension Surface {
     ///
     /// The one place that knows which kinds of description exist, so a reader,
     /// a re-derivation after an edit and a bake all produce the same strokes
-    /// for the same spec.
-    func curves(_ spec: LayerSpec, occluder: Occluder,
+    /// for the same spec. `layers` are the scene's, which say where the
+    /// risers' edges are drawn, and so where the walls' hatching hatches them.
+    func curves(_ spec: LayerSpec, occluder: Occluder, layers: [LayerSpec],
                 refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
-        if let hatched = hatch(spec.source, in: HatchContext(occluder), refine: refine) {
+        if let hatched = hatch(spec.source, in: HatchContext(occluder, layers: layers), refine: refine) {
             return hatched
         }
         return derive(spec.source, policy: spec.heightPolicy,
@@ -80,10 +94,13 @@ public extension Surface {
                                    trim: trim, base: base, topOffset: top,
                                    tiles: context.tiles, refine: refine)
             // The risers are vertical faces of the solid as the walls are,
-            // and are hatched with them, cut to the footprint already.
+            // and a layer that hatches every wall hatches them too, where
+            // their edges are drawn, cut to the footprint already. One that
+            // picks some walls picks no riser.
+            guard Set(edges).isSuperset(of: perimeter.edges.indices), let tiled = context.riserEdgesTiled else { break }
             return PolylineSet(paths: Surface.clip(paths, to: context.region)
                 + riserHatchLines(spacing: hatching.spacing, trim: trim, topOffset: top,
-                                  tiles: context.tiles, region: context.region, refine: refine))
+                                  tiles: context.tiles, tiled: tiled, region: context.region, refine: refine))
         case .hatching(let hatching, .plateaus(let tiled)):
             // Decoding holds the angle to an axis; one built in code at any
             // other draws nothing.
@@ -791,8 +808,11 @@ extension Surface {
         /// domain, or a tile boundary.
         var length: Double
         var point: (Double) -> P2<WorldSpace>
-        /// The stretch's part of the line, as fractions of the way along it.
+        /// The stretch's part of the line, as fractions of the way along it,
+        /// and whether it begins the run of stretches there, rather than
+        /// starting where another ends.
         var lo: Double, hi: Double
+        var opens = true
         /// The riser's outward normal at a point of the line, in the ground
         /// plane: toward the lower side.
         var lower: (P2<WorldSpace>) -> SIMD2<Double>
@@ -927,7 +947,7 @@ extension Surface {
             }
             let stretches = tileBoundaryStretches(boundary, backs: [first, second], region: region, tops: tops,
                                           excess: { q in magnitude(q) - self.truncationHeight(atX: q.x) })
-            for stretch in stretches {
+            for (k, stretch) in stretches.enumerated() {
                 /// The edge at one copy's top, the one `pick` takes of the two.
                 func edge(_ pick: ([Double]) -> Double) -> [P3<WorldSpace>] {
                     var curve: [P3<WorldSpace>] = []
@@ -962,8 +982,11 @@ extension Surface {
                     return P3(v.x + o.x, v.y + o.y, v.z)
                 }
                 let length = boundary.length
+                // Where a copy's top steps the stretch before ends where
+                // this one starts.
+                let follows = k > 0 && stretches[k - 1].last?.s == start.s
                 out.append(RiserStretch(top: top, bottom: bottom, length: length, point: { boundary.point($0 * length) },
-                                        lo: start.s / length, hi: end.s / length, lower: lower))
+                                        lo: start.s / length, hi: end.s / length, opens: !follows, lower: lower))
             }
         }
         return out
@@ -975,27 +998,35 @@ extension Surface {
     /// along the line it stands on, `trim` leaving out the line's two ends,
     /// and kept where the riser stands. A band boundary's line runs across
     /// the domain, as the plateaus' hatching divides it, so a plateau's
-    /// lines along Re z meet a riser's on its edges at the same spacing. On
-    /// every tile, each copy cut to the footprint where it stands, as the
-    /// walls stand on the footprint's perimeter wherever it is; and at the
-    /// tile boundaries. A band boundary's only with a refiner, as their
-    /// tops are drawn (`graphTrimLoops(refine:)`); a tile boundary's either
-    /// way.
-    func riserHatchLines(spacing: Double, trim: Bool, topOffset: Double, tiles: [Affine2], region: Region,
-                         refine: ContourRefine?) -> [[P3<WorldSpace>]] {
+    /// lines along Re z meet a riser's on its edges at the same spacing.
+    ///
+    /// Where the truncation edge's layer draws the risers' edges
+    /// (`drawnTruncationEdge(tiles:tiled:region:refine:)`): on every tile when
+    /// `tiled`, each copy cut to the footprint where it stands, and at the
+    /// tile boundaries; in place otherwise. A band boundary's only with a
+    /// refiner, as their tops are drawn (`graphTrimLoops(refine:)`); a tile
+    /// boundary's either way.
+    ///
+    /// A stretch holds the lines from its start to its end, but for one at
+    /// its start where another ends: at a tile boundary a stretch breaks
+    /// where a copy's top steps, and the next starts there
+    /// (`tileBoundaryStretches`), and a line on that stop is the first's.
+    func riserHatchLines(spacing: Double, trim: Bool, topOffset: Double, tiles: [Affine2], tiled: Bool,
+                         region: Region, refine: ContourRefine?) -> [[P3<WorldSpace>]] {
         let banded: Bool
         if case .realBands = truncation, refine?.magnitude != nil { banded = true } else { banded = false }
-        guard banded || tiles.count > 1 else { return [] }
+        guard banded || (tiled && tiles.count > 1) else { return [] }
         let riserTops = banded ? graphTrimLoops(refine: refine).riserTops : []
-        let stretches = tiles.flatMap { bandRiserStretches(riserTops, tile: $0, region: region, refine: refine) }
-            + tileBoundaryRiserStretches(tiles: tiles, region: region, refine: refine)
+        let stretches = (tiled ? tiles.map(Optional.some) : [nil]).flatMap {
+            bandRiserStretches(riserTops, tile: $0, region: region, refine: refine)
+        } + (tiled ? tileBoundaryRiserStretches(tiles: tiles, region: region, refine: refine) : [])
         let side = 1e-9 * cell
         var out: [[P3<WorldSpace>]] = []
         for riser in stretches {
             let n = Surface.strokeCount(length: riser.length, spacing: spacing)
             for k in trim ? Array(1..<max(n - 1, 1)) : Array(0..<n) {
                 let t = Double(k) / Double(max(n - 1, 1))
-                guard t >= riser.lo, t <= riser.hi else { continue }
+                guard t > riser.lo || riser.opens, t <= riser.hi else { continue }
                 let w = riser.point(t)
                 guard let top = topEdgeHeight(of: riser.top, at: P2(w.x, w.y)),
                       let base = topEdgeHeight(of: riser.bottom, at: P2(w.x, w.y)) else { continue }

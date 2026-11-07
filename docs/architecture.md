@@ -155,11 +155,13 @@ lines along an axis across the plateaus (`Hatch.swift`). Both are the same
 `Hatching` value laid on different faces (`HatchedFaces`), and the spacing
 is rounded on each face to a whole number of gaps, so a plateau's hatch
 lines meet the walls' at a corner. `wallEdges` draws each wall's top,
-bottom and vertical edges. The walls' hatching hatches the risers too,
-vertical faces of the solid as the walls are: a line at each whole gap
-along the line a riser stands on, from its bottom edge up to its top, so
-a plateau's lines along Re z turn up a riser where they meet it. The
-truncation edge's layer draws each riser's top and bottom edges.
+bottom and vertical edges. The truncation edge's layer draws each riser's
+top and bottom edges, and a hatching laid on every wall hatches the risers
+too, vertical faces of the solid as the walls are, on the tiles where
+their edges are drawn: a line at each whole gap along the line a riser
+stands on, from its bottom edge up to its top, so a plateau's lines along
+Re z turn up a riser where they meet it. A hatching laid on some walls
+hatches no riser.
 
 **Visibility.** The solid is the region under the truncated graph, down to
 the floor, closed by the walls. Every clipped layer is tested per vertex

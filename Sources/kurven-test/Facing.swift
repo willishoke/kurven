@@ -682,10 +682,11 @@ func riserFaceTests() {
             let g = surface.height
             let cell = max(abs(g.domain.real.length) / Double(g.width - 1), abs(g.domain.imag.length) / Double(g.height - 1))
             let tolerance = refine.tolerance * cell
-            let context = Surface.HatchContext(perimeter: c.walls, region: c.region, tiles: c.tiles)
+            let tiled = c.tiles.count > 1
+            let context = Surface.HatchContext(perimeter: c.walls, region: c.region, tiles: c.tiles, riserEdgesTiled: tiled)
             let hatch = surface.hatch(.wallHatching(edges: Array(c.walls.edges.indices), spacing: 0.07, step: 0.07),
                                       in: context, refine: refine)!
-            let edges = surface.hatch(.truncationEdge(tiled: true), in: context, refine: refine)!
+            let edges = surface.hatch(.truncationEdge(tiled: tiled), in: context, refine: refine)!
             /// A billionth of a cell onto the lower side of the riser's line,
             /// Re z = `at`, which is to its left in all four.
             func onLowerSide(_ v: P3<WorldSpace>) -> Bool { v.x < c.at && c.at - v.x < 1e-9 * cell * 2 }
@@ -726,6 +727,76 @@ func riserFaceTests() {
         }
     }
 
+    Check.suite("risers: a hatching on every wall hatches the risers, on the tiles where their edges are drawn") {
+        // The tower at 2 | 4 as a bundle draws it: one wall hatching on all
+        // four walls, and the truncation edge, in place. A riser's line is
+        // counted by where it stands: in place, a hair left of Re z = 1/2;
+        // on a second tile beside the first, of 5/2; at the tile boundary
+        // between, of 3/2.
+        let window = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        let built = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/(z - 0.45)", domain: window, resolution: 48,
+                             truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4)),
+            refine: true)
+        let g = built.surface.height
+        let cell = max(window.real.length / Double(g.width - 1), window.imag.length / Double(g.height - 1))
+        /// The wall hatching's lines on each riser, under `manifest`.
+        func risers(_ manifest: Manifest) throws -> (inPlace: Int, second: Int, between: Int) {
+            let bundle = KurvenBundle(url: built.url, manifest: manifest, surface: built.surface, refine: built.refine)
+            let hatch = try bundle.layer("wall_hatch").paths
+            let feet = (0..<hatch.count).map { hatch[path: $0].first! }
+            func on(_ x: Double) -> Int { feet.filter { x - $0.x > 0.5e-9 * cell && x - $0.x < 2e-9 * cell }.count }
+            return (on(0.5), on(2.5), on(1.5))
+        }
+        func with(_ edit: (inout Manifest) -> Void) -> Manifest {
+            var m = built.manifest
+            edit(&m)
+            return m
+        }
+        func walls(_ edges: [Int]) -> (inout Manifest) -> Void {
+            { m in
+                for k in m.layers.indices {
+                    if case .hatching(let hatching, .walls(_, let trim, let base, let top)) = m.layers[k].source {
+                        m.layers[k].source = .hatching(hatching, faces: .walls(edges: edges, trim: trim, base: base, topOffset: top))
+                    }
+                }
+            }
+        }
+        func truncationEdge(tiled: Bool?) -> (inout Manifest) -> Void {
+            { m in
+                m.layers = m.layers.compactMap { spec in
+                    guard case .truncationEdge = spec.source else { return spec }
+                    guard let tiled else { return nil }
+                    var spec = spec
+                    spec.source = .truncationEdge(tiled: tiled)
+                    return spec
+                }
+            }
+        }
+        func beside(_ m: inout Manifest) {
+            m.occluder.tiles = [.identity, Affine2(a: 1, b: 0, tx: 2, c: 0, d: 1, ty: 0)]
+        }
+        let all = try risers(built.manifest)
+        Check.expect(all.inPlace > 30 && all.second == 0 && all.between == 0,
+                     "every wall hatched, the truncation edge in place: the riser, in place", "\(all)")
+        let listed = try risers(with(walls([3, 2, 1, 0, 2])))
+        Check.expect(listed.inPlace == all.inPlace, "every wall listed in another order, one twice: the same riser lines",
+                     "\(listed)")
+        for edges in [[0, 2], [1], []] {
+            let some = try risers(with(walls(edges)))
+            Check.expect(some.inPlace == 0, "walls \(edges) hatched: no riser", "\(some)")
+        }
+        let none = try risers(with(truncationEdge(tiled: nil)))
+        Check.expect(none.inPlace == 0, "no truncation edge drawn: no riser", "\(none)")
+        let untiled = try risers(with { m in beside(&m) })
+        Check.expect(untiled.inPlace == all.inPlace && untiled.second == 0 && untiled.between == 0,
+                     "two tiles, the truncation edge in place: the riser in place, none on the second tile or between them",
+                     "\(untiled)")
+        let tiled = try risers(with { m in beside(&m); truncationEdge(tiled: true)(&m) })
+        Check.expect(tiled.inPlace == all.inPlace && tiled.second == all.inPlace && tiled.between > 30,
+                     "two tiles, the truncation edge tiled: the riser on both, and the one between them", "\(tiled)")
+    }
+
     // Where a riser faces away, the solid on its higher side stands between
     // its hatching and bottom edge and the eye, a hair along the line of
     // sight; where it faces the eye, what stands in front hides them from the
@@ -741,52 +812,86 @@ func riserFaceTests() {
     // sees it and dropped where it is under the solid by a thousandth, under
     // every camera of the stress orbit. A riser seen edge-on is left out, as
     // a wall is: its line of sight runs along it, a hair from its plane. On a
-    // tower, on Γ with three risers, and on the tower in two tiles side by
-    // side, both copies' risers and the one at the tile boundary between.
+    // tower, and mirrored, on Γ with three risers, and on the tower in two tiles, the
+    // second beside the first and then turned, both copies' risers and the
+    // one at the tile boundary between; and on the grid, on random terrain in
+    // abutting copies, where the traversal's skin is the drawing's depth
+    // tolerance and a riser can be lower than it.
     Check.suite("risers: a riser's hatching and bottom edge are hidden up to where the walk up the line of sight meets the solid") {
         let window = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
         let tower = LandscapeRequest(expression: "1/(z - 0.45)", domain: window, resolution: 100,
                                      truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4))
+        // The tower mirrored, the higher band on the left: the traversal's
+        // sample on a band boundary reads the band beyond it, here the
+        // lower, and where |f| falls under a bottom's height within a column
+        // of the boundary, no sample finds the higher side's solid in front
+        // of the bottom; the riser's facing hides it.
+        let mirrored = LandscapeRequest(expression: "1/(z - 0.55)", domain: window, resolution: 100,
+                                        truncation: .realBands([RealBand(below: 0.5, height: 4)], beyond: 2))
         let gamma = LandscapeRequest(expression: "gamma(z)", domain: Domain(real: Interval(lo: -4.5, hi: 4.5), imag: Interval(lo: -2.5, hi: 2.5)),
                                      resolution: 180,
                                      truncation: .realBands([RealBand(below: -2.5, height: 0.5), RealBand(below: -1.5, height: 1),
                                                              RealBand(below: 0.5, height: 1.5)], beyond: 2.5))
-        let side = Affine2(a: 1, b: 0, tx: 2, c: 0, d: 1, ty: 0)
-        let landscapes: [(name: String, request: LandscapeRequest, tiles: [Affine2], spacing: Double)] = [
-            ("a tower at 2 | 4", tower, [.identity], 0.025),
-            ("Γ at 0.5 | 1 | 1.5 | 2.5", gamma, [.identity], 0.1),
-            ("a tower at 2 | 4 in two tiles side by side", tower, [.identity, side], 0.05),
+        let side = Affine2(a: 1, b: 0, tx: 2, c: 0, d: 1, ty: 0), turned = Affine2(a: 0, b: -1, tx: 2.5, c: 1, d: 0, ty: -0.5)
+        typealias Line = (o: SIMD2<Double>, n: SIMD2<Double>)
+        var landscapes: [(name: String, surface: Surface, refine: ContourRefine?, tiles: [Affine2], tileBoundaries: [Line],
+                          spacing: Double)] = []
+        let onF: [(String, LandscapeRequest, [Affine2], [Line], Double)] = [
+            ("a tower at 2 | 4", tower, [.identity], [], 0.025),
+            ("a tower at 4 | 2, the higher band on the left", mirrored, [.identity], [], 0.025),
+            ("Γ at 0.5 | 1 | 1.5 | 2.5", gamma, [.identity], [], 0.1),
+            ("a tower at 2 | 4 in two tiles side by side", tower, [.identity, side], [(SIMD2(1.5, 0), SIMD2(1, 0))], 0.05),
+            ("a tower at 2 | 4 in two tiles, the second turned", tower, [.identity, turned], [(SIMD2(1.5, 0), SIMD2(1, 0))], 0.05),
         ]
+        for (name, request, tiles, lines, spacing) in onF {
+            let built = try NativeLandscape.build(request, refine: true)
+            landscapes.append((name, built.surface, built.refine, tiles, lines, spacing))
+        }
+        // On the grid the traversal forgives a point on the surface the
+        // drawing's depth tolerance, a skin a riser's own curves are not
+        // forgiven: random terrain on a tile and the next copies to its right
+        // and above it, as the walls' walk has it, with risers all along the
+        // two tile boundaries, some lower than the skin.
+        for seed: UInt64 in [3, 17] {
+            let terrain = randomHeightfield(cells: 8, seed: seed, truncation: Truncation.none).surface
+            let d = terrain.domain
+            landscapes.append(("seed \(seed), abutting copies, on the grid", terrain, nil,
+                               [.identity, Affine2(a: 1, b: 0, tx: d.real.length, c: 0, d: 1, ty: 0),
+                                Affine2(a: 1, b: 0, tx: 0, c: 0, d: 1, ty: d.imag.length)],
+                               [(SIMD2(d.real.hi, 0), SIMD2(1, 0)), (SIMD2(0, d.imag.hi), SIMD2(0, 1))], 0.1))
+        }
         var partly = 0
         for l in landscapes {
-            let built = try NativeLandscape.build(l.request, refine: true)
-            guard let refine = built.refine, let magnitude = refine.magnitude else { Check.expect(false, "\(l.name): a refiner"); continue }
-            let surface = built.surface, dom = surface.domain, g = surface.height
+            let refine = l.refine, magnitude = l.refine?.magnitude
+            let surface = l.surface, dom = surface.domain, g = surface.height
             let (lo, hi) = (min(dom.real.lo, dom.real.hi), max(dom.real.lo, dom.real.hi))
             let (ylo, yhi) = (min(dom.imag.lo, dom.imag.hi), max(dom.imag.lo, dom.imag.hi))
             let box = riserPerimeter([(lo, ylo), (hi, ylo), (hi, yhi), (lo, yhi)])
             let h = Heightfield(surface: surface, occluder: .empty, tiles: l.tiles, region: .full, step: 1,
                                 refine: refine, walls: .perimeter(box, base: 0))
-            let context = Surface.HatchContext(perimeter: box, region: .full, tiles: l.tiles)
+            let context = Surface.HatchContext(perimeter: box, region: .full, tiles: l.tiles, riserEdgesTiled: true)
             let cell = max(abs(dom.real.length) / Double(g.width - 1), abs(dom.imag.length) / Double(g.height - 1))
-            // The lines the risers stand on, carried into place: the band
-            // boundaries the truncation steps at inside the domain, on every
-            // copy, and the tile boundary.
-            var boundaries: [(back: Affine2, x: Double)] = []
+            // The lines the risers stand on, in place: the band boundaries
+            // the truncation steps at inside the domain, on every copy, and
+            // the tile boundaries.
+            var lines: [Line] = l.tileBoundaries
             if case .realBands(let bands, _) = surface.truncation {
                 for b in bands.map(\.below) where b > lo && b < hi {
-                    for tile in l.tiles { if let back = tile.inverse { boundaries.append((back, b)) } }
+                    // Square to the copy's boundary: the gradient of the
+                    // domain's x, carried back.
+                    for tile in l.tiles {
+                        if let back = tile.inverse { lines.append((tile(P3(b, 0, 0)).xy.v, simd_normalize(SIMD2(back.a, back.b)))) }
+                    }
                 }
             }
-            if l.tiles.count > 1 { boundaries.append((.identity, 1.5)) }
             /// The riser a point stands a hair onto a side of, a billionth
             /// of a cell, as its curves stand, not a rounding: its line's
-            /// normal in place, the gradient of the domain's x carried back.
+            /// normal.
             func riser(_ v: P3<WorldSpace>) -> SIMD2<Double>? {
-                boundaries.first { line in
-                    let d = abs(line.back(v).x - line.x)
+                lines.first { line in
+                    let d = abs(simd_dot(SIMD2(v.x, v.y) - line.o, line.n))
                     return d > 0.5e-9 * cell && d < 2e-9 * cell
-                }.map { simd_normalize(SIMD2($0.back.a, $0.back.b)) }
+                }?.n
             }
             func onRiser(_ v: P3<WorldSpace>) -> Bool { riser(v) != nil }
             let hatch = surface.hatch(.wallHatching(edges: [0, 1, 2, 3], spacing: l.spacing, step: l.spacing),
@@ -807,6 +912,9 @@ func riserFaceTests() {
                     guard let back = tile.inverse else { continue }
                     let p = back(P3<WorldSpace>(q.x, q.y, 0))
                     guard p.x >= lo, p.x <= hi, p.y >= ylo, p.y <= yhi else { continue }
+                    // On the grid, the drawn triangles, through the tile
+                    // under the point.
+                    guard let magnitude else { return h.drawnHeight(at: P2(q.x, q.y)) }
                     let u = magnitude(P2(p.x, p.y))
                     best = max(best ?? -.infinity, min(u.isNaN ? .infinity : u, surface.truncationHeight(atX: p.x)))
                 }
@@ -903,7 +1011,7 @@ func riserFaceTests() {
                     let across = riser(v).map { n in [-4.0, 4.0].compactMap { top(SIMD2(v.x, v.y) + $0 * 1e-9 * cell * n) }.max() ?? v.z } ?? v.z
                     let onEdge = l.tiles.compactMap(\.inverse).contains { back in
                         let q = back(v)
-                        return abs(q.y - ylo) <= 1e-12 || abs(q.y - yhi) <= 1e-12
+                        return abs(q.y - ylo) <= 1e-12 || abs(q.y - yhi) <= 1e-12 || abs(q.x - lo) <= 1e-12 || abs(q.x - hi) <= 1e-12
                     }
                     guard across > v.z + 1e-3, !onEdge else { continue }
                     let over = hiddenBelow(SIMD2(v.x, v.y), base: v.z) - v.z

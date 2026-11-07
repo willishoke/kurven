@@ -312,7 +312,7 @@ public struct Heightfield: Sendable {
     ///   faces away. A vertex at the surface's height is tested by the
     ///   traversal alone, which hides it exactly when the surface in front of
     ///   it does. The risers are vertical faces too, hatched with the walls:
-    ///   a point that lies in a riser below its top is tested by the riser
+    ///   a point of a riser's hatching is tested by the riser
     ///   (`riserFacing(sight:slack:)`), as one on a wall below its top edge
     ///   is by the wall.
     /// - **The plateaus**, flat and facing up.
@@ -366,8 +366,8 @@ public struct Heightfield: Sendable {
             // strictly over the domain is under the surface there, and the
             // stroke was hidden whole.
             //
-            // A point that lies in a riser below its top is tested by the
-            // riser, as a point on a wall below its top edge is by the wall:
+            // A point that lies in a riser is tested by the riser, as a
+            // point on a wall below its top edge is by the wall:
             // it lies on the riser's plane, a hair onto the lower side, and
             // its bottom, at the lower top, would read as on the top edge.
             return Self.visibleRuns(of: paths, folds: false, worker: {
@@ -448,7 +448,7 @@ public struct Heightfield: Sendable {
         }
     }
 
-    /// The facing of the risers a point lies in below their tops, for lines
+    /// The facing of the risers a point lies in, for lines
     /// of sight along `sight`: positive where one of them faces the eye,
     /// negative where all face away, nil where it lies in none. Each riser
     /// is flat and faces the lower side (`Surface.risers(tiles:region:refine:)`,
@@ -459,9 +459,9 @@ public struct Heightfield: Sendable {
     /// A point lies in one where the riser stands, a hair onto the lower
     /// side of its line, as its bottom edge and hatching are drawn
     /// (`Surface.RiserStretch`), within `slack` of the line, and from the
-    /// lower top up to, but not at, the higher; at a tile boundary from the
-    /// refiner's tolerance under the lower top, to which a bottom edge on a
-    /// copy's graph is drawn. Its bottom edge is in it: a valley, where the
+    /// lower top up to the higher, as they are drawn: to the refiner's
+    /// tolerance, the bottom on a copy's graph at a tile boundary and the top
+    /// a hatch line rises to. Its bottom edge is in it: a valley, where the
     /// riser meets the face below, seen only where both face the eye, and
     /// the face below is a plateau, facing up, or the lower copy's graph,
     /// which the traversal hides where it turns away. Its top is not, nor
@@ -509,7 +509,7 @@ public struct Heightfield: Sendable {
                           region.contains(tile(P3(step.b - side, q.y, 0)).xy),
                           region.contains(tile(P3(step.b + side, q.y, 0)).xy) else { continue }
                     let top = min(magnitude(P2(step.b, q.y)), step.greater)
-                    guard p.z >= step.lesser - eps, p.z < top - eps else { continue }
+                    guard p.z >= step.lesser - eps, p.z <= top + max(eps, drawn) else { continue }
                     // Square to the copy's boundary: the gradient of the
                     // domain's x in space.
                     let outward = step.toward * simd_normalize(SIMD2(back.a, back.b))
@@ -528,7 +528,7 @@ public struct Heightfield: Sendable {
                 let (low, high) = (min(z[0], z[1]), max(z[0], z[1]))
                 let outward = z[1] < z[0] ? sides[1] : sides[0]
                 guard simd_dot(r, outward) >= 0.5 * side, Surface.stands(high, over: low),
-                      p.z >= low - max(eps, drawn), p.z < high - eps else { continue }
+                      p.z >= low - max(eps, drawn), p.z <= high + max(eps, drawn) else { continue }
                 inAny = true
                 if -(outward.x * sight.x + outward.y * sight.y) > 0 { facesEye = true }
             }

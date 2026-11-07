@@ -53,7 +53,7 @@ public struct KurvenBundle: Sendable {
         self.init(url: url, manifest: manifest, surface: surface,
                   layers: manifest.layers.map {
                       Layer(spec: $0, paths: surface.curves($0, occluder: manifest.occluder,
-                                                            refine: refine))
+                                                            layers: manifest.layers, refine: refine))
                   },
                   wallMesh: nil, refine: refine)
     }
@@ -143,7 +143,8 @@ public struct KurvenBundle: Sendable {
                 // trades its layer files for, and what makes the levels, the
                 // hatch spacing and the truncation editable.
                 layers.append(Layer(spec: spec,
-                                    paths: surface.curves(spec, occluder: manifest.occluder)))
+                                    paths: surface.curves(spec, occluder: manifest.occluder,
+                                                          layers: manifest.layers)))
                 continue
             }
             let v = try NPY.read(contentsOf: file(files.vertices))
@@ -199,7 +200,7 @@ public extension KurvenBundle {
             return Layer(spec: spec, paths: existing?.paths ?? .empty)
         }
         return Layer(spec: spec, paths: surface.curves(spec, occluder: manifest.occluder,
-                                                       refine: refine))
+                                                       layers: manifest.layers, refine: refine))
     }
 
     /// The same grids under a different manifest.
