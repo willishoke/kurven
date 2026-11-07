@@ -812,9 +812,10 @@ struct GridTraversal: Sendable {
         /// With the function, the sample also carries the rate the gap over
         /// f changes along the line, from the same three evaluations, for
         /// finding where the gap peaks or dips between two crossings.
-        /// Through a reflected tile the slope's sign flips with the
-        /// reflection; only its product with the line's direction is needed,
-        /// and both are read in the same frame.
+        /// The slope is f's, read in the domain, so the line's direction is
+        /// carried back into the domain through the tile under the point
+        /// before the two are multiplied: a reflected or turned copy's line
+        /// runs another way across f than across the world.
         let magnitude = heightfield.refine?.magnitude
         typealias Sample = (overTriangle: Double, overTruncation: Double, cosine: Double, rate: Double)
         func gaps(_ t: Double) -> Sample? {
@@ -822,11 +823,12 @@ struct GridTraversal: Sendable {
             guard heightfield.region.contains(P2<WorldSpace>(q.x, q.y)) else { return nil }
             let z = p.z + t * d.z
             if let magnitude {
-                let dq = heightfield.surface.inTile(P2<DomainSpace>(q.x, q.y), tiles: heightfield.tiles)
+                let (dq, back) = heightfield.surface.tile(under: P2<DomainSpace>(q.x, q.y), tiles: heightfield.tiles)
                 let (u, slope) = functionSurface(at: dq, magnitude: magnitude)
                 let cosine = 1 / (1 + simd_dot(slope, slope)).squareRoot()
                 let truncationHeight = heightfield.surface.truncationHeight(atX: dq.x)
-                return (z - u, z - truncationHeight, cosine.isNaN ? 0 : cosine, d.z - simd_dot(slope, dxy))
+                let along = SIMD2(back.a * dxy.x + back.b * dxy.y, back.c * dxy.x + back.d * dxy.y)
+                return (z - u, z - truncationHeight, cosine.isNaN ? 0 : cosine, d.z - simd_dot(slope, along))
             }
             let (interpolated, truncationHeight, cosine) = drawnSurface(at: q)
             return (z - interpolated, z - truncationHeight, cosine, 0)

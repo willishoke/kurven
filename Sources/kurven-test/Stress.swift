@@ -596,6 +596,62 @@ func stressTests() {
         }
     }
 
+    Check.suite("stress: on a reflected or a turned tile the traversal on f is the walk up the line of sight") {
+        // Two poles of a smooth bump on a grid of eight, so that the line of
+        // sight dips under f between crossings, where only the search of
+        // each interval, bracketed by the rate the gap changes, finds it.
+        // On a second tile that rate is f's slope along the line carried
+        // back into the domain, the frame the slope is read in. The walk:
+        // f's own top under the line, a five-thousandth of a unit at a time,
+        // and the least gap it saw; a point is compared where that is clear
+        // of zero by a ten-thousandth.
+        let domain = Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: -1, hi: 1))
+        let bundle = try NativeLandscape.build(LandscapeRequest(expression: "0.3/((z - 0.4)^2 + 0.01) + exp(z)",
+                                                                domain: domain, resolution: 8, truncation: .uniform(4)))
+        let base = Scene(bundle: bundle, preset: bundle.manifest.presets[0]).heightfield!
+        for (name, second) in [("reflected", Affine2(a: -1, b: 0, tx: 2, c: 0, d: 1, ty: 0)),
+                               ("turned", Affine2(a: 0, b: -1, tx: 2, c: 1, d: 0, ty: 0))] {
+            let h = Heightfield(surface: base.surface, occluder: .empty, tiles: [.identity, second],
+                                step: 1, refine: base.refine)
+            let rng = SplitMix(seed: 5)
+            var points: [P3<WorldSpace>] = []
+            while points.count < 120 {
+                let x = rng.next(-1, 3), y = rng.next(-1, 1)
+                let z = h.surfaceHeight(at: P2(x, y))
+                guard z.isFinite else { continue }
+                points.append(P3(x, y, z + rng.next(0.001, 0.3)))
+            }
+            var compared = 0, wrong = 0, seen = 0
+            var example = ""
+            for (camera, view) in stressCameras() {
+                let vis = HeightfieldVisibility(heightfield: h, view: view, depthTolerance: 0)
+                let d = -view.projectionDirection
+                for p in points {
+                    var t = 0.0, least = Double.infinity
+                    while t < 20 {
+                        let q = p.v + t * d
+                        if q.z > 4.01 { break }
+                        if q.x >= -1, q.x <= 3, q.y >= -1, q.y <= 1 {
+                            least = min(least, q.z - h.surfaceHeight(at: P2(q.x, q.y)))
+                        }
+                        t += 2e-4
+                    }
+                    guard abs(least) > 1e-4 else { continue }
+                    compared += 1
+                    if least > 0 { seen += 1 }
+                    if vis.isClear(p) != (least > 0) {
+                        wrong += 1
+                        if example.isEmpty {
+                            example = String(format: " e.g. %@ at (%.4f, %.4f, %.4f), least gap %.1e", camera, p.x, p.y, p.z, least)
+                        }
+                    }
+                }
+            }
+            Check.expect(wrong == 0 && compared > 2000 && seen > compared / 10 && seen < compared,
+                         "\(name): the traversal and the walk agree", "\(wrong) of \(compared) disagree, \(seen) clear\(example)")
+        }
+    }
+
     Check.suite("stress: on a 4x4 grid the traversal is the brute-force ray cast, exactly") {
         // Heights drawn at random on a grid of four cells a side: every
         // cell is a different slope, every crossing is a crease, and no
