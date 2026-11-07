@@ -2621,7 +2621,10 @@ func faceTests() {
         // between two rows and comes back, the line broken on the boundary.
         // The hole round a zero on a boundary that is a column, between two
         // poles within a cell of it, and round one on a boundary that is not,
-        // a pole in its cell: the grid's nodes see neither zero. And the
+        // a pole in its cell: the grid's nodes see neither zero. Beside a
+        // zero whose hole joins the graph past the boundary, a chord left of
+        // it, along whose normal |f| turns back short of the level toward
+        // Newton's step and reaches it the other way, past the zero. And the
         // hole and the ring above, and the reviewer's tower.
         let mixed = "(z - (1.1934990849887146 - 0.20536860263116311i))*(z - (1.2234990849887146 - 0.2253686026311631i))"
             + "/((z - (1.2524804507563325 - 0.078069596745760084i))*(z - (1.399997924755525 + 0.40148084601005929i))^2)"
@@ -2636,6 +2639,9 @@ func faceTests() {
              domain, 20, [RealBand(below: 0.5526315789473684, height: 3)], 1.8),
             ("a zero in a pole's cell", "1/(z - (0.42240022182367271-0.40227584782117776i)) + 1/(z - (0.37140972304490555-0.48709752678493168i))",
              domain, 20, [RealBand(below: 0.3969049724342891, height: 3)], 4),
+            ("a chord beside a zero", "(z - (0.40691152265074942-0.15224404800258995i))"
+                + "/((z - (0.62359753483716163-0.13770458918473533i))*(z - (0.57445433013745983-0.14044013384631204i)))",
+             domain, 16, [RealBand(below: 0.45369534601865147, height: 1.5)], 4),
             ("the hole round a zero on the boundary", holeBesideABoundary, Domain(real: Interval(lo: -0.3, hi: 1.5), imag: Interval(lo: -0.5, hi: 0.5)),
              24, [RealBand(below: 0.5, height: 1.5)], 1.8),
             ("a zero's ring and a cut cell's arc of it", ringBesideABoundary, domain, 16, [RealBand(below: 0.5, height: 1.5)], 1.8),

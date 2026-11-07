@@ -1485,17 +1485,19 @@ public struct ContourRefiner: Sendable {
         // along it and |f| not; its Newton step is then zero, to rounding,
         // and no doubling makes it longer, so the midpoint is left to
         // Newton's step below.
-        var reach = abs(r / gn)
-        let toward: Double = r / gn > 0 ? -1 : 1
-        var end: (t: Double, r: Double)?
-        while true {
-            let t = toward * min(reach, chord)
-            let rt = res(t)
-            guard rt.isFinite, !(cut && abs(rt) > .pi / 2) else { break }
-            if rt == 0 || rt.sign != r.sign { end = (t, rt); break }
-            guard reach > 0, reach < chord else { break }
-            reach *= 2
+        func bracket(toward: Double) -> (t: Double, r: Double)? {
+            var reach = abs(r / gn)
+            while true {
+                let t = toward * min(reach, chord)
+                let rt = res(t)
+                guard rt.isFinite, !(cut && abs(rt) > .pi / 2) else { return nil }
+                if rt == 0 || rt.sign != r.sign { return (t, rt) }
+                guard reach > 0, reach < chord else { return nil }
+                reach *= 2
+            }
         }
+        let toward: Double = r / gn > 0 ? -1 : 1
+        let end = bracket(toward: toward)
         var found: P2<DomainSpace>?
         if let end {
             // A bracket, and Brent's method within it, whose multiplicity
@@ -1541,6 +1543,14 @@ public struct ContourRefiner: Sendable {
                 t0 = t1; r0 = r1; t1 = t2
             }
             if found == nil, let best, converged(best.q, best.r) { found = best.q }
+        }
+        // Nor that way: a level of |f| can lie the other way, past a zero
+        // between the chord and the level set, |f| falling to it before it
+        // rises, while toward Newton's step |f| turns back short of the
+        // level. A phase line's other side past a zero is another ray.
+        if found == nil, !cut, let other = bracket(toward: -toward),
+           let t = Root.brent(res, 0, other.t, fa: r, fb: other.r, xtol: 1e-10 * cell) {
+            found = along(t)
         }
         guard let point = found else { return }
         subdivide(a, point, level: level, g: g, cut: cut, depth: depth + 1, into: &runs)
