@@ -29,8 +29,8 @@ HEAVIEST_PX = 0.5
 # The bake's viewBox is tight to the strokes; a plate sits on its page with this
 # much paper on every side, as a fraction of the drawing's width.
 MARGIN = 0.1
-# The landscape hatches the plateaus and walls at about seventy lines along the
-# window's longer side; the plates hatch them this much closer.
+# The landscape hatches the plateaus, walls and risers at about seventy lines
+# along the window's longer side; the plates hatch them this much closer.
 HATCH = 0.75
 # How far, in README pixels, a thinned polyline may stray from the bake's.
 SIMPLIFY_PX = 0.05
@@ -64,7 +64,7 @@ def landscape(work, name, expression, re_, im, res, truncation, cameras):
                     for key, projection in cameras.items()]
     for layer in m["layers"]:
         source = layer["source"]
-        if source["kind"] == "hatching" and source["faces"]["kind"] in ("plateaus", "walls"):
+        if source["kind"] == "hatching" and source["faces"]["kind"] in ("plateaus", "walls", "risers"):
             source["spacing"] *= HATCH
     path.write_text(json.dumps(m, indent=1))
     return bundle
