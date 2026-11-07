@@ -57,7 +57,9 @@ public extension Contour {
     /// its first vertex, as a coordinate curve does. A circle-valued field's
     /// difference is taken the short way round, and it jumps by a period at
     /// the level opposite; an edge whose two samples differ by more than
-    /// half a period is that jump, and has no crossing.
+    /// half a period is that jump, and has no crossing. A level the field
+    /// takes all along a bounded side of the rectangle draws nothing along it:
+    /// the side is the face's edge.
     ///
     /// A field with a routine of its own is contoured on its samples, by
     /// marching squares at each level, and the paths handed to the routine,
@@ -168,10 +170,35 @@ public extension Contour {
                 if excess(value(P2(bracket.holds))) == 0 { return P2(bracket.holds) }
                 return P2(0.5 * (bracket.holds + bracket.fails))
             }
-            return paths.map { unwrapped($0, u.period, v.period) }
+            return paths.flatMap { offEdges(unwrapped($0, u.period, v.period), rectangle) }
         }
 
         return zip(levels, Heightfield.parallelMap(levels, chunk: 1, lines)).map { ($0, $1) }
+    }
+
+    /// A path less its segments along a bounded side of the rectangle, cut
+    /// there. The rectangle is open: a level its field takes all along a side
+    /// draws nothing there, at the lower end of an axis as at the upper, since
+    /// the side is the face's edge, as a polyhedron's hatching leaves a line
+    /// along a side of its face to the edge (`Solid.hatchLines(_:onFace:)`).
+    /// Marching squares counts a sample on the level as under it, so a level
+    /// at an axis's lower end drew the side, and one at its upper end nothing.
+    private static func offEdges(_ path: [P2<ParamSpace>], _ rectangle: (u: ParamAxis, v: ParamAxis))
+        -> [[P2<ParamSpace>]] {
+        func along(_ axis: ParamAxis, _ a: Double, _ b: Double) -> Bool {
+            guard !axis.periodic, a == b else { return false }
+            return a == axis.range.lo || a == axis.range.hi || a == axis.coordinate(0) || a == axis.coordinate(axis.cells)
+        }
+        var runs: [[P2<ParamSpace>]] = [], run: [P2<ParamSpace>] = []
+        for p in path {
+            if let q = run.last, along(rectangle.u, q.x, p.x) || along(rectangle.v, q.y, p.y) {
+                if run.count >= 2 { runs.append(run) }
+                run = []
+            }
+            run.append(p)
+        }
+        if run.count >= 2 { runs.append(run) }
+        return runs
     }
 
     /// A path whose every step is the short way round a periodic axis.

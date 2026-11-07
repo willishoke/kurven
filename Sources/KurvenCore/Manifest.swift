@@ -663,18 +663,21 @@ public enum LayerSource: Sendable, Equatable {
             }
             let faces = try LayerSource.landscapeFaces(o, "LayerSource.contour")
             if let why = faces.unsupported(field) { throw ManifestError.unsupported(why) }
-            self = .contour(field: field,
-                            levels: try o.doubles("levels", "LayerSource.contour"),
-                            restriction: try Restriction(json: o.value("restriction", "LayerSource.contour")),
-                            faces: faces)
+            let restriction = try Restriction(json: o.value("restriction", "LayerSource.contour"))
+            if restriction.requiresBelowTruncation, faces.kind != .graph {
+                throw ManifestError.unsupported("belowTruncation on the \(faces.name): it is membership in the graph, "
+                                                + "and holds nothing of another face")
+            }
+            self = .contour(field: field, levels: try o.doubles("levels", "LayerSource.contour"),
+                            restriction: restriction, faces: faces)
         case "hatching":
             let faces = try LayerSource.landscapeFaces(o, "LayerSource.hatching")
-            if faces.kind == .wall || faces.kind == .riser, o["step"] != nil { throw LayerSource.wallStep }
+            if o["step"] != nil { throw LayerSource.landscapeStep }
             let hatching = try Hatching(fields: o)
             if let why = faces.unsupported(hatching) { throw ManifestError.unsupported(why) }
             self = .hatching(hatching, faces: faces)
         case "wallEdges":
-            if o["step"] != nil { throw LayerSource.wallStep }
+            if o["step"] != nil { throw LayerSource.wallEdgesStep }
             self = .wallEdges(
                 edges: try o.ints("edges", "LayerSource.wallEdges"),
                 base: (try? o.double("base", "LayerSource.wallEdges")) ?? 0)
@@ -715,10 +718,14 @@ public enum LayerSource: Sendable, Equatable {
         }
     }
 
-    /// A wall's or a riser's line is its two ends, so there is no step along
-    /// it to write (schema 3).
-    private static let wallStep = ManifestError.unsupported(
-        "a step on walls or risers: a line there is its two ends, and schema 3 writes none")
+    /// A wall's or a riser's hatch line is its two ends, and a plateau's has
+    /// a vertex at each grid line, so there is no step along one to write
+    /// (schema 3); nor along a wall's edges.
+    private static let landscapeStep = ManifestError.unsupported(
+        "a step on a landscape's hatching: a line is its two ends on a wall or a riser, and has a vertex "
+            + "at each grid line on a plateau, so schema 3 writes none")
+    private static let wallEdgesStep = ManifestError.unsupported(
+        "a step on wall edges: an edge up a corner is its two ends, and schema 3 writes none")
 
     public var json: JSONValue {
         switch self {
@@ -732,8 +739,8 @@ public enum LayerSource: Sendable, Equatable {
             .object(hatching.fields.merging(["kind": .string("hatching"), "faces": faces.json]) { $1 }
                 .filter { key, _ in
                     switch faces {
-                    case .walls, .risers: key != "step"
-                    case .graph, .plateaus, .surface, .solid: true
+                    case .graph, .plateaus, .walls, .risers: key != "step"
+                    case .surface, .solid: true
                     }
                 })
         case .wallEdges(let edges, let base):

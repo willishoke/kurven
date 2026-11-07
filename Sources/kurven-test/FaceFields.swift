@@ -185,7 +185,161 @@ func faceFieldTests() {
                 if (try? LayerSource(json: source.json)) == source { accepted += 1 }
             }
         }
-        Check.expect(accepted == 12, "u, v and the height on the graph, the plateaus, walls and risers round-trip",
-                     "\(accepted) of 12")
+        Check.expect(accepted == 11, "u, v and the height on the graph, the plateaus, walls and risers round-trip, but the height on the plateaus",
+                     "\(accepted) of 11")
+        Check.expectThrows("refuses the height on the plateaus, constant on each") {
+            try decode(.contour(field: .height, levels: [2], restriction: .all, faces: .plateaus(tiled: false)))
+        }
+        for faces in [FaceSelector.plateaus(tiled: false), .walls(edges: [0], endLines: false, base: 0, topOffset: 0),
+                      .risers(tiled: false, endLines: false)] {
+            Check.expectThrows("refuses belowTruncation, membership in the graph, on the \(faces.name)") {
+                try decode(.contour(field: .u, levels: [1], restriction: .intersection([.footprint, .belowTruncation]),
+                                    faces: faces))
+            }
+        }
+        /// A layer source's JSON with one key of `faces`, or of the source, set.
+        func with(_ source: LayerSource, faces key: String? = nil, _ k: String, _ v: JSONValue) throws {
+            var o = try source.json.object("source")
+            if let key {
+                var f = try o.value(key, "source").object("faces")
+                f[k] = v
+                o[key] = .object(f)
+            } else {
+                o[k] = v
+            }
+            _ = try LayerSource(json: .object(o))
+        }
+        do {
+            try with(.wallHatching(edges: [0], spacing: 0.1), faces: "faces", "trim", .bool(false))
+            Check.expect(false, "refuses trim on walls, naming endLines", "decoded")
+        } catch {
+            Check.expect("\(error)".contains("endLines") && "\(error)".contains("opposite"),
+                         "refuses trim on walls, naming endLines and the opposite sense", "\(error)")
+        }
+        Check.expectThrows("refuses topOffset on risers") {
+            try with(.riserHatching(spacing: 0.1), faces: "faces", "topOffset", .double(0))
+        }
+        Check.expectThrows("refuses a step on the plateaus' hatching, which reads none") {
+            try with(.plateauHatching(axis: .real, spacing: 0.1), "step", .double(0.1))
+        }
+        Check.expect((try? LayerSource.plateauHatching(axis: .real, spacing: 0.1).json.object("s"))?["step"] == nil,
+                     "a plateau's hatching writes no step")
+    }
+
+    Check.suite("face fields: a level on the parameter rectangle's edge draws nothing there, at either end") {
+        let front = FaceSelector.walls(edges: [0], endLines: false, base: 0, topOffset: 0)
+        let counts = [paths(.v, [-1], .graph(tiled: false)).count, paths(.v, [1], .graph(tiled: false)).count,
+                      paths(.u, [-0.5], .graph(tiled: false)).count, paths(.u, [1.5], .graph(tiled: false)).count,
+                      paths(.u, [0], front).count, paths(.u, [2], front).count, paths(.height, [0], front).count]
+        Check.expect(counts.allSatisfy { $0 == 0 }, "Im z = ∓1 and Re z = -1/2, 3/2 on the graph, s = 0 and 2 and the base on a wall: none",
+                     "\(counts)")
+        Check.expect(paths(.v, [-1 + 2.0 / 47], .graph(tiled: false)).count == 1,
+                     "a level along the first row of samples inside: one line")
+    }
+
+    Check.suite("face fields: a restriction holds a face's contour as membership, read where each copy came from") {
+        // On the graph, below the truncation is the graph itself; on walls
+        // and risers standing on the footprint's edge, the footprint holds
+        // all of them.
+        for (field, levels) in [(ContourField.u, [-0.25, 0.25, 0.3, 1.0]), (.v, [-0.6, 0.1, 0.2])] {
+            let all = paths(field, levels, .graph(tiled: false))
+            let below = surface.contours(of: field, levels, on: .graph(tiled: false), restriction: .belowTruncation,
+                                         in: context, refine: refine)
+            Check.expect(below == all && !all.isEmpty, "\(field.rawValue) on the graph: belowTruncation is all of it, ends on the truncation edge included",
+                         "\(below.joined().count) vertices of \(all.joined().count)")
+        }
+        let box = built.manifest.occluder.walls
+        guard case .perimeter(let perimeter, _) = box else { Check.expect(false, "the tower has walls"); return }
+        let footprinted = Surface.HatchContext(perimeter: perimeter, region: .inside(perimeter), tiles: [.identity])
+        for (name, faces, field, levels) in [("walls", FaceSelector.walls(edges: [0, 1, 2, 3], endLines: false, base: 0, topOffset: 0), ContourField.height, [0.3, 0.8]),
+                                             ("walls", .walls(edges: [0, 1, 2, 3], endLines: false, base: 0, topOffset: 0), .u, [0.3, 1.1]),
+                                             ("risers", .risers(tiled: false, endLines: false), .height, [3]),
+                                             ("risers", .risers(tiled: false, endLines: false), .u, [0.6, 1])] {
+            let all = surface.contours(of: field, levels, on: faces, restriction: .all, in: footprinted, refine: refine)
+            let kept = surface.contours(of: field, levels, on: faces, restriction: .footprint, in: footprinted, refine: refine)
+            Check.expect(kept == all && !all.isEmpty, "\(field.rawValue) on the \(name): the footprint holds all of it, on its edge",
+                         "\(kept.joined().count) vertices of \(all.joined().count)")
+        }
+        // On copies: cn(z, 0.64) over [-K, K] × [0, K'], cut at 4, and a
+        // second copy reflected across Re z = K; the tower cut at 2 | 4 and
+        // a second copy beside it. A band of Re z is read on the domain each
+        // copy came from, so it keeps the same lines on every copy, as it
+        // does arg f's.
+        let K = 1.9953027776647292, Kp = 1.7507538029157523
+        do {
+            let cn = try NativeLandscape.build(
+                LandscapeRequest(expression: "cn(z, 0.64)", domain: Domain(real: Interval(lo: -K, hi: K), imag: Interval(lo: 0, hi: Kp)),
+                                 resolution: 80, truncation: .uniform(4)),
+                refine: true)
+            let reflected = Surface.HatchContext(perimeter: nil, tiles: [.identity, Affine2(a: -1, b: 0, tx: 2 * K, c: 0, d: 1, ty: 0)])
+            let band = Restriction.band(axis: .real, lo: -1, hi: 1.2)
+            func copies(_ ps: [[P3<WorldSpace>]]) -> (Int, Int) { (ps.filter { $0[0].x < K }.count, ps.filter { $0[0].x > K }.count) }
+            for (name, faces, field, levels) in [("graph", FaceSelector.graph(tiled: true), ContourField.u, [-0.5, 0.5]),
+                                                 ("plateaus", .plateaus(tiled: true), .u, [-0.1, 0.05])] {
+                let all = copies(cn.surface.contours(of: field, levels, on: faces, restriction: .all, in: reflected, refine: cn.refine))
+                let kept = copies(cn.surface.contours(of: field, levels, on: faces, restriction: band, in: reflected, refine: cn.refine))
+                Check.expect(kept == all && all.0 > 0 && all.0 == all.1,
+                             "u on the \(name) of cn and its reflection, in a band holding the levels: every copy's lines",
+                             "\(kept) of \(all)")
+            }
+            let phase = cn.surface.derive(.contour(field: .phase, levels: [0.5], restriction: band, faces: .graph(tiled: true)),
+                                          policy: .magnitude, region: .full, tiles: reflected.tiles, refine: cn.refine)
+            let u = cn.surface.contours(of: .u, [-0.5, 0.5], on: .graph(tiled: true), restriction: band, in: reflected, refine: cn.refine)
+            let phaseCopies = Set((0..<phase.count).map { phase[path: $0].first!.x > K })
+            Check.expect(phaseCopies == Set(u.map { $0[0].x > K }) && phaseCopies.count == 2,
+                         "the copies a band keeps of u are the copies it keeps of arg f", "\(phaseCopies)")
+        } catch {
+            Check.expect(false, "cn builds", "\(error)")
+        }
+        let beside = Surface.HatchContext(perimeter: nil, tiles: [.identity, Affine2(a: 1, b: 0, tx: 2, c: 0, d: 1, ty: 0)])
+        let atRisers = { (r: Restriction) in
+            surface.contours(of: .height, [3], on: .risers(tiled: true, endLines: false), restriction: r, in: beside, refine: refine)
+                .map { $0[0].x < 1 ? 0 : $0[0].x < 2 ? 1 : 2 }
+        }
+        let all = atRisers(.all), kept = atRisers(.band(axis: .real, lo: 0, hi: 1))
+        Check.expect(kept.filter { $0 != 1 }.count == all.filter { $0 != 1 }.count && Set(kept).isSuperset(of: [0, 2]),
+                     "the height on the tower's risers and its copy's, in a band round Re z = 1/2: both copies' risers",
+                     "\(kept) of \(all)")
+    }
+
+    Check.suite("face fields: a truncation turned banded hatches the risers, as a banded landscape's layers do") {
+        // As the app's truncation control sets it (`setTruncation`): the
+        // tower built uniform, then cut in bands, gains the banded build's
+        // riser hatching after its wall hatching; turned uniform again, it
+        // loses it.
+        let request = LandscapeRequest(expression: "1/(z - 0.45)", domain: window, resolution: 48,
+                                       truncation: .uniform(4))
+        do {
+            let uniform = try NativeLandscape.build(request, refine: false).manifest.layers
+            let bands = Truncation.realBands([RealBand(below: 0.5, height: 2)], beyond: 4)
+            let banded = built.manifest.layers
+            let turned = NativeLandscape.riserHatching(uniform, walls: 4, truncation: bands)
+            let names = turned.map(\.name)
+            Check.expect(!uniform.contains { $0.name == "riser_hatch" }
+                            && turned.first { $0.name == "riser_hatch" } == banded.first { $0.name == "riser_hatch" }
+                            && names.firstIndex(of: "riser_hatch") == names.firstIndex(of: "wall_hatch").map { $0 + 1 },
+                         "banded: the banded build's riser hatching, after the wall hatching", "\(names)")
+            Check.expect(NativeLandscape.riserHatching(turned, walls: 4, truncation: bands) == turned,
+                         "banded again: the same layers")
+            Check.expect(NativeLandscape.riserHatching(turned, walls: 4, truncation: .uniform(4)) == uniform,
+                         "uniform again: the uniform build's layers")
+            var some = uniform
+            for k in some.indices {
+                if case .hatching(let h, .walls(_, let e, let b, let t)) = some[k].source {
+                    some[k].source = .hatching(h, faces: .walls(edges: [0, 2], endLines: e, base: b, topOffset: t))
+                }
+            }
+            Check.expect(NativeLandscape.riserHatching(some, walls: 4, truncation: bands) == some,
+                         "banded, with some walls hatched: no riser hatching added")
+            var restyled = built.manifest
+            restyled.truncation = .uniform(4)
+            restyled.layers = turned
+            restyled.truncation = bands
+            let bundle = KurvenBundle(url: built.url, manifest: restyled, surface: built.surface, refine: built.refine)
+            Check.expect((try? bundle.layer("riser_hatch").paths.count) ?? 0 > 30, "and it hatches the riser",
+                         "\((try? bundle.layer("riser_hatch").paths.count) ?? -1) lines")
+        } catch {
+            Check.expect(false, "the uniform tower builds", "\(error)")
+        }
     }
 }

@@ -125,8 +125,12 @@ A `contour` or a `hatching` names the faces it lies on (`FaceSelector`):
 `graph`, `plateaus`, `walls` or `risers` in a manifest, each copied to every
 tile when `tiled` (the walls stand in space). A contour is of |f| or arg f on
 the graph, or of a face's coordinates `u` and `v` or its height on any of the
-four. Plateau hatching is the contours of the coordinate across its lines on
-the plateaus, at levels that divide the domain into whole gaps. Wall and
+four, but the height on a plateau, which is constant. A restriction on one
+of these is membership, read on the domain each copy came from: below the
+truncation is the graph, and the footprint holds every face, each cut to it
+already. A level on the edge of a face's parameter rectangle draws nothing
+there: that is the face's edge. Plateau hatching is the contours of the
+coordinate across its lines on the plateaus, at levels that divide the domain into whole gaps. Wall and
 riser hatching keep their own routine: their lines are at whole gaps along
 each wall or riser, so the levels differ from one to the next, and a line
 stands on its wall's foot as the corners do. `endLines` adds the lines at a
@@ -134,11 +138,12 @@ wall's or a riser's two ends.
 
 The hatchings are the same `Hatching` value that hatches a polyhedron's faces
 ([solids.md](solids.md)), laid on different faces, and a manifest reads them
-by one rule. `step`, the distance between a line's vertices, may be left out
-and is then the spacing. A wall's or a riser's line is its two ends, since
-what hides it is one piece from its bottom up, so a manifest writes no step
-there; a plateau's has a vertex wherever it crosses a grid line, and the step
-is not read. The angle is π/2 on a wall or a riser and 0 or π/2 on a plateau,
+by one rule. `step`, the distance between a line's vertices, is not read on
+a landscape's faces, so a manifest writes none and refuses one: a wall's or
+a riser's line is its two ends, since what hides it is one piece from its
+bottom up, and a plateau's has a vertex wherever it crosses a grid line. A
+wall's `trim`, renamed `endLines` with the opposite sense, is refused too.
+The angle is π/2 on a wall or a riser and 0 or π/2 on a plateau,
 to within a thousandth of a radian, and the tone is uniform at one width;
 anything else is refused, and so is hatching on a solid's faces or a curved
 face, since a manifest holds a landscape.

@@ -3,24 +3,21 @@ import simd
 
 /// Deriving the hatching: the curves that shade a wall, a riser and a plateau.
 ///
-/// `kurven/hatch.py` is the definition of all four kinds and this is the
-/// consumer's implementation of it; `tests/fixtures/hatch` holds the two to each
-/// other on the same grid, the same perimeter and the same truncations. Where they
-/// necessarily differ is the *height*: Python has f and evaluates it, this has
-/// the grid and interpolates it, so a stroke's top sits at the grid's top edge
-/// rather than the function's. That difference is the grid's interpolation
-/// error, half a cell's rise at most -- and a whole cell's rise where a zero of
-/// f lies between two samples, since the grid's chord over a pit bottoms out at
-/// the nearer sample. So with a refiner in play the top edge gains a vertex at
-/// every minimum of |f| between two nodes, solved on f, and the hatch stands
-/// under it (`topEdge(of:tiles:refine:)`). The fixtures compare the grid's
-/// answer, with no refiner.
+/// `tests/fixtures/hatch` pins every kind on one small grid, perimeter and
+/// pair of truncations, derived from the grid alone, with no refiner, so a
+/// stroke's top sits at the grid's top edge rather than f's. That difference
+/// is the grid's interpolation error, half a cell's rise at most -- and a
+/// whole cell's rise where a zero of f lies between two samples, since the
+/// grid's chord over a pit bottoms out at the nearer sample. So with a
+/// refiner in play the top edge gains a vertex at every minimum of |f|
+/// between two nodes, solved on f, and the hatch stands under it
+/// (`topEdge(of:tiles:refine:)`).
 ///
 /// Why this is here at all, rather than a list of strokes in the bundle: the truncation
 /// is a slider. Moving it moves every plateau, which moves every plateau hatch line and
 /// every truncation edge and re-cuts every wall stroke at the new top edge. Shipping the answer
-/// would make the slider a round trip to Python; shipping the question makes it
-/// a few milliseconds of this.
+/// would make the slider a new bundle; shipping the question makes it a few
+/// milliseconds of this.
 public extension Surface {
     /// What the hatching needs beyond the grids: where the walls stand and
     /// how far down, what the footprint is, and how the landscape is tiled.
@@ -840,6 +837,9 @@ extension Surface {
         /// The riser's outward normal at a point of the line, in the ground
         /// plane: toward the lower side.
         var lower: (P2<WorldSpace>) -> SIMD2<Double>
+        /// The map back to the domain at a point of the line, through the
+        /// tile of the copy the riser faces there: where a restriction is read.
+        var back: (P2<WorldSpace>) -> Affine2
     }
 
     /// The risers at the band boundaries on the copy on `tile`, or in place
@@ -928,7 +928,8 @@ extension Surface {
                         let p = Surface.point(from: P2(b, y0), to: P2(b, y1), at: t)
                         return placed(P3(p.x, p.y, 0)).xy
                     },
-                    lo: (lo - y0) / (y1 - y0), hi: (hi - y0) / (y1 - y0), lower: { _ in outward }))
+                    lo: (lo - y0) / (y1 - y0), hi: (hi - y0) / (y1 - y0), lower: { _ in outward },
+                    back: { _ in tile?.inverse ?? .identity }))
             }
         }
         return out
@@ -1010,7 +1011,11 @@ extension Surface {
                 // this one starts.
                 let follows = k > 0 && stretches[k - 1].last?.s == start.s
                 out.append(RiserStretch(top: top, bottom: bottom, length: length, point: { boundary.point($0 * length) },
-                                        lo: start.s / length, hi: end.s / length, opens: !follows, lower: lower))
+                                        lo: start.s / length, hi: end.s / length, opens: !follows, lower: lower,
+                                        back: { w in
+                                            let z = tops(w)
+                                            return z[1] < z[0] ? second : first
+                                        }))
             }
         }
         return out

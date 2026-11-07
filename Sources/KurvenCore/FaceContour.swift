@@ -15,44 +15,61 @@ public extension Surface {
     /// lifted to |f|; on the plateaus cut where each ends
     /// (`plateauContours(of:_:refine:)`); on a wall or a riser cut at its top
     /// and bottom edges as drawn, a riser's a hair onto its lower side, as its
-    /// hatching stands. Copied to every tile where the faces are `tiled`, and
-    /// kept where `restriction` admits each vertex, a run cut where one is not.
-    /// Nothing for |f| and arg f, which `derive` draws, nor on a parametric
-    /// surface's or a solid's faces, which a landscape has none of.
+    /// hatching stands. Copied to every tile where the faces are `tiled`.
+    /// Kept where `restriction` holds at each vertex, a run cut where it does
+    /// not, read as membership (`holds(_:at:onGraph:)`) at the point of the
+    /// domain the vertex came from, before a copy moves it, as `derive` reads
+    /// a band. Nothing for |f| and arg f, which `derive` draws, nor on a
+    /// parametric surface's or a solid's faces, which a landscape has none of.
     func contours(of field: ContourField, _ levels: [Double], on faces: FaceSelector,
                   restriction: Restriction, in context: HatchContext,
                   refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         guard !field.isFieldOfF, !levels.isEmpty else { return [] }
-        let paths: [[P3<WorldSpace>]]
         switch faces {
         case .graph(let tiled):
-            paths = graphContours(of: field, levels, tiles: tiled ? context.tiles : [.identity],
-                                  region: context.region, refine: refine)
+            return graphContours(of: field, levels, tiles: tiled ? context.tiles : [.identity],
+                                 region: context.region, restriction: restriction, refine: refine)
         case .plateaus(let tiled):
-            let placed = plateauContours(of: field, levels, refine: refine)
-            paths = Surface.clip(tiled ? Surface.replicate(placed, context.tiles) : placed, to: context.region)
+            let placed = Surface.restricted(plateauContours(of: field, levels, refine: refine), restriction,
+                                            onGraph: false) { $0.xy.v }
+            return Surface.clip(tiled ? Surface.replicate(placed, context.tiles) : placed, to: context.region)
         case .walls(let edges, _, _, _):
             guard let perimeter = context.perimeter else { return [] }
-            paths = wallContours(of: field, levels, perimeter, edges: edges, base: context.base,
-                                 tiles: context.tiles, refine: refine)
+            return wallContours(of: field, levels, perimeter, edges: edges, base: context.base,
+                                tiles: context.tiles, restriction: restriction, refine: refine)
         case .risers(let tiled, _):
-            paths = riserContours(of: field, levels, tiles: context.tiles, tiled: tiled,
-                                  region: context.region, refine: refine)
+            return riserContours(of: field, levels, tiles: context.tiles, tiled: tiled,
+                                 region: context.region, restriction: restriction, refine: refine)
         case .surface, .solid:
             return []
         }
-        return restricted(paths, restriction, region: context.region)
     }
 
-    /// The runs of `paths` whose every vertex `restriction` admits.
-    func restricted(_ paths: [[P3<WorldSpace>]], _ restriction: Restriction,
-                    region: Region) -> [[P3<WorldSpace>]] {
+    /// Whether a contour on a face holds a point under `restriction`, read
+    /// at `p`, the point of the domain it came from, as membership (D6). A
+    /// face is cut to the footprint where it stands already, so `.footprint`
+    /// holds all of it; `.belowTruncation` is membership in the graph, so it
+    /// holds all of the graph and nothing of another face; a band holds what
+    /// it bounds, open.
+    static func holds(_ restriction: Restriction, at p: SIMD2<Double>, onGraph: Bool) -> Bool {
+        switch restriction {
+        case .all, .footprint: true
+        case .belowTruncation: onGraph
+        case .band(let axis, let lo, let hi): axis == .real ? p.x > lo && p.x < hi : p.y > lo && p.y < hi
+        case .intersection(let all): all.allSatisfy { holds($0, at: p, onGraph: onGraph) }
+        }
+    }
+
+    /// The runs of `paths` at whose every vertex `restriction` holds, read at
+    /// the point of the domain `domain` carries it to.
+    static func restricted(_ paths: [[P3<WorldSpace>]], _ restriction: Restriction, onGraph: Bool,
+                           domain: (P3<WorldSpace>) -> SIMD2<Double>) -> [[P3<WorldSpace>]] {
         guard restriction != .all else { return paths }
         var out: [[P3<WorldSpace>]] = []
         for path in paths {
             var run: [P3<WorldSpace>] = []
             for v in path {
-                if admits(v, restriction, region: region) {
+                if holds(restriction, at: domain(v), onGraph: onGraph) {
                     run.append(v)
                 } else {
                     if run.count >= 2 { out.append(run) }
@@ -68,9 +85,10 @@ public extension Surface {
     /// each copy's clipped to its trimmed domain (`Face.contours(of:_:on:)`):
     /// cut where they cross the truncation edge, the domain's edge or the
     /// footprint where the copy stands. Lifted to |f|, f's own with a
-    /// refiner, and carried to the copy's tile.
-    func graphContours(of field: ContourField, _ levels: [Double], tiles: [Affine2],
-                       region: Region, refine: ContourRefine?) -> [[P3<WorldSpace>]] {
+    /// refiner, restricted where they lie in the domain, and carried to the
+    /// copy's tile.
+    func graphContours(of field: ContourField, _ levels: [Double], tiles: [Affine2], region: Region,
+                       restriction: Restriction = .all, refine: ContourRefine?) -> [[P3<WorldSpace>]] {
         guard let face = graph(tiles: tiles, region: region, refine: refine) else { return [] }
         let magnitude = faceMagnitude(refine)
         let scalar = ScalarField { p in
@@ -81,9 +99,10 @@ public extension Surface {
             }
         }
         return face.copies.flatMap { copy in
-            face.contours(of: scalar, levels, on: copy).flatMap(\.paths).map { path in
-                path.map { p in copy.tile(P3<WorldSpace>(p.x, p.y, magnitude(P2(p.x, p.y)))) }
+            let lifted = face.contours(of: scalar, levels, on: copy).flatMap(\.paths).map { path in
+                path.map { p in P3<WorldSpace>(p.x, p.y, magnitude(P2(p.x, p.y))) }
             }
+            return Surface.restricted(lifted, restriction, onGraph: true) { $0.xy.v }.map { $0.map { copy.tile($0) } }
         }
     }
 
@@ -94,8 +113,10 @@ public extension Surface {
     /// (`topEdge(of:inward:tiles:refine:)`). A line of u is vertical, from
     /// the base to the top edge; one of the height horizontal, where the top
     /// edge stands over it.
+    /// A restriction is read at the foot's point of the domain, through the
+    /// tile under it.
     func wallContours(of field: ContourField, _ levels: [Double], _ perimeter: BoundaryPerimeter,
-                      edges: [Int], base: Double, tiles: [Affine2],
+                      edges: [Int], base: Double, tiles: [Affine2], restriction: Restriction = .all,
                       refine: ContourRefine?) -> [[P3<WorldSpace>]] {
         let ceiling = truncation.highest.isFinite ? truncation.highest : highestSample
         var out: [[P3<WorldSpace>]] = []
@@ -103,13 +124,18 @@ public extension Surface {
             let edge = perimeter.edges[index]
             let along = edge.end.v - edge.start.v, length = simd_length(along)
             guard length > 0 else { continue }
-            let top = topEdge(of: edge, inward: perimeter.inward(index), tiles: tiles, refine: refine).map {
+            let inward = perimeter.inward(index)
+            let top = topEdge(of: edge, inward: inward, tiles: tiles, refine: refine).map {
                 P2<ParamSpace>(simd_dot($0.xy.v - edge.start.v, along) / length, $0.z.isFinite ? min($0.z, ceiling) : ceiling)
             }
-            out += verticalFaceContours(of: field, levels, spacing: length / Double(max(edge.density, 2) - 1),
+            let placed = verticalFaceContours(of: field, levels, spacing: length / Double(max(edge.density, 2) - 1),
                                         bottom: [P2(0, base), P2(length, base)], top: top) { s, z in
                 let p = edge.start.v + along * (s / length)
                 return P3(p.x, p.y, z)
+            }
+            out += Surface.restricted(placed, restriction, onGraph: false) { v in
+                let t = simd_dot(v.xy.v - edge.start.v, along) / (length * length)
+                return wallTile(at: P2(v.x, v.y), t: t, along: along, inward: inward, tiles: tiles).point.v
             }
         }
         return out
@@ -120,9 +146,12 @@ public extension Surface {
     /// (`riserStretches(tiles:tiled:region:refine:)`): over each stretch, cut
     /// at its trim loop, its top and bottom edges as the truncation edge's
     /// layer draws them, and its ends; each vertex a hair onto the lower side,
-    /// as the riser's hatching and bottom edge stand.
+    /// as the riser's hatching and bottom edge stand. A restriction is read
+    /// at the point of the domain under it, through the tile of the copy the
+    /// riser faces there.
     func riserContours(of field: ContourField, _ levels: [Double], tiles: [Affine2], tiled: Bool,
-                       region: Region, refine: ContourRefine?) -> [[P3<WorldSpace>]] {
+                       region: Region, restriction: Restriction = .all,
+                       refine: ContourRefine?) -> [[P3<WorldSpace>]] {
         let side = 1e-9 * cell
         var out: [[P3<WorldSpace>]] = []
         for riser in riserStretches(tiles: tiles, tiled: tiled, region: region, refine: refine) {
@@ -132,11 +161,14 @@ public extension Surface {
             func onLine(_ v: P3<WorldSpace>) -> P2<ParamSpace> {
                 P2(simd_dot(v.xy.v - start, d) / dd * riser.length, v.z)
             }
-            out += verticalFaceContours(of: field, levels, spacing: cell,
-                                        bottom: riser.bottom.map(onLine), top: riser.top.map(onLine)) { s, z in
+            let placed = verticalFaceContours(of: field, levels, spacing: cell,
+                                              bottom: riser.bottom.map(onLine), top: riser.top.map(onLine)) { s, z in
                 let w = riser.point(s / riser.length)
                 let o = side * riser.lower(w)
                 return P3(w.x + o.x, w.y + o.y, z)
+            }
+            out += Surface.restricted(placed, restriction, onGraph: false) { v in
+                riser.back(P2(v.x, v.y))(P3(v.x, v.y, 0)).xy.v
             }
         }
         return out

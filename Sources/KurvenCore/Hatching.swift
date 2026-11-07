@@ -21,9 +21,9 @@ public struct Hatching: Sendable, Equatable {
     /// The distance between successive vertices along a line, or readings
     /// of its tone, in world units. On a solid the tone is read every
     /// `step`, and a change of width narrower than this can fall between two
-    /// readings. On a wall or a riser a line is its two ends, and a manifest
-    /// writes no step there; on a plateau a line has a vertex wherever it
-    /// crosses a grid line, and the step is not read.
+    /// readings. On a wall or a riser a line is its two ends, and on a
+    /// plateau it has a vertex wherever it crosses a grid line, so the step
+    /// is not read on a landscape's faces, and a manifest writes none.
     /// The spacing by default, on every face, so the tone is read as finely
     /// as it is drawn, and no finer than `finestStep` of it.
     public var step: Double
@@ -231,12 +231,17 @@ public enum FaceSelector: Sendable, Equatable {
 
     /// Why a contour of `field` cannot lie on these faces, or nil when it
     /// can. |f| and arg f are the graph's, and a surface's that f is drawn
-    /// on; the coordinates and the height are every face's. On walls and
+    /// on; the coordinates are every face's, and the height every face's but
+    /// a plateau's, where it is constant and has no level set. On walls and
     /// risers the hatching's placement is left at its defaults.
     public func unsupported(_ field: ContourField) -> String? {
         switch (field, self) {
         case (.magnitude, .graph), (.magnitude, .surface), (.phase, .graph), (.phase, .surface),
-             (.u, _), (.v, _), (.height, _):
+             (.u, _), (.v, _):
+            break
+        case (.height, .plateaus):
+            return "a contour of the height on the plateaus: it is constant on each, and has no level set"
+        case (.height, _):
             break
         case (.magnitude, _), (.phase, _):
             return "a contour of \(field.rawValue) lies on the graph, not on the \(name)"
@@ -259,11 +264,17 @@ public enum FaceSelector: Sendable, Equatable {
         case "plateaus":
             self = .plateaus(tiled: try o.bool("tiled", "FaceSelector.plateaus", default: false))
         case "walls":
+            if o["trim"] != nil {
+                throw ManifestError.unsupported("trim on walls: renamed endLines, with the opposite sense (schema 3)")
+            }
             self = .walls(edges: try o.ints("edges", "FaceSelector.walls"),
                           endLines: try o.bool("endLines", "FaceSelector.walls", default: false),
                           base: o.optionalDouble("base") ?? 0,
                           topOffset: o.optionalDouble("topOffset") ?? 0)
         case "risers":
+            if o["topOffset"] != nil {
+                throw ManifestError.unsupported("topOffset on risers: a riser's lines run from its bottom edge to its top")
+            }
             self = .risers(tiled: try o.bool("tiled", "FaceSelector.risers", default: false),
                            endLines: try o.bool("endLines", "FaceSelector.risers", default: false))
         case "surface":

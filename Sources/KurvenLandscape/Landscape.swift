@@ -167,22 +167,43 @@ public enum NativeLandscape {
             LayerSpec(name: "wall_hatch", role: .scaffold,
                       source: .wallHatching(edges: edges, spacing: spacing),
                       width: 0.25, heightPolicy: .surface),
-        ]
-        // A banded truncation steps at its band boundaries, and the risers
-        // there are hatched as the walls are.
-        if case .realBands = truncation {
-            layers.append(LayerSpec(name: "riser_hatch", role: .scaffold,
-                                    source: .riserHatching(spacing: spacing),
-                                    width: 0.25, heightPolicy: .surface))
-        }
-        layers += [
             // The outline and inner fold curves, derived per camera: the
             // bounding curves along the curved edges, as the walls' edges are
             // along the straight ones.
             LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                       width: 0.4, heightPolicy: .surface),
         ]
-        return layers
+        return riserHatching(layers, walls: edges.count, truncation: truncation)
+    }
+
+    /// The layers under `truncation`, a hatching on the risers added or
+    /// taken away. A banded truncation steps at its band boundaries, and the
+    /// risers there are hatched as the walls are: by `riser_hatch`, after the
+    /// first hatching on every wall, at its spacing and in its style, unless
+    /// a layer hatches the risers already. Under any other truncation there
+    /// are no band risers, and a `riser_hatch` in place goes. `walls` is how
+    /// many walls the perimeter has, nil when they are not a perimeter, and
+    /// then no wall hatching is on every wall.
+    public static func riserHatching(_ layers: [LayerSpec], walls: Int?, truncation: Truncation) -> [LayerSpec] {
+        guard case .realBands = truncation else {
+            return layers.filter { spec in
+                guard spec.name == "riser_hatch", case .hatching(_, .risers(tiled: false, _)) = spec.source else { return true }
+                return false
+            }
+        }
+        guard let walls, !layers.contains(where: { if case .hatching(_, .risers) = $0.source { true } else { false } }),
+              let i = layers.firstIndex(where: { spec in
+                  guard case .hatching(_, .walls(let edges, _, _, _)) = spec.source else { return false }
+                  return Set(edges).isSuperset(of: 0..<walls)
+              }),
+              case .hatching(let hatching, .walls(_, let endLines, _, _)) = layers[i].source else { return layers }
+        let wall = layers[i]
+        var out = layers
+        out.insert(LayerSpec(name: "riser_hatch", role: wall.role,
+                             source: .riserHatching(spacing: hatching.spacing, endLines: endLines),
+                             width: wall.width, heightPolicy: wall.heightPolicy, color: wall.color, clipped: wall.clipped),
+                   at: i + 1)
+        return out
     }
 
     // MARK: sampling
