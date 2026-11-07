@@ -2523,12 +2523,15 @@ func faceTests() {
         // sees it on the boundary, and on two whose grid sees nothing there,
         // where it is the refiner's ring round the zero, seeded once a band
         // and cut on the boundary, not once a run of the truncation edge, at
-        // that run's level, across it. And with the zero a thousandth off the
+        // that run's level, across it. On [-0.5, 1.5] x [-1, 1], where the
+        // zero is at the centre of a cell with the poles, and no node is
+        // the least of |f| beside it. And with the zero a thousandth off the
         // boundary, the poles moved with it, where the ring's chords cross
         // the boundary between their vertices, and each cut is solved on it.
         let offTheBoundary = "1/(z - (0.5206 + 0.0650i)) + 1/(z - (0.4814 - 0.0450i))"
         for (expression, re, im) in [(holeBesideABoundary, (-0.3, 1.5), (-0.5, 0.5)), (holeBesideABoundary, (0.3, 1.0), (-1.0, 0.5)),
-                                     (holeBesideABoundary, (0.0, 1.0), (-0.5, 0.5)), (offTheBoundary, (0.0, 1.0), (-0.5, 0.5))] {
+                                     (holeBesideABoundary, (0.0, 1.0), (-0.5, 0.5)), (holeBesideABoundary, (-0.5, 1.5), (-1.0, 1.0)),
+                                     (offTheBoundary, (0.0, 1.0), (-0.5, 0.5))] {
             let built = try NativeLandscape.build(
                 LandscapeRequest(expression: expression, domain: Domain(real: Interval(lo: re.0, hi: re.1), imag: Interval(lo: im.0, hi: im.1)),
                                  resolution: 24, truncation: .realBands([RealBand(below: 0.5, height: 1.5)], beyond: 1.8)),
@@ -2616,7 +2619,10 @@ func faceTests() {
         // falls away from the chord on the side the curve is not. Where a
         // pole's plateau at 3, right of Re z = -0.4238, crosses that boundary
         // between two rows and comes back, the line broken on the boundary.
-        // And the hole and the ring above, and the reviewer's tower.
+        // The hole round a zero on a boundary that is a column, between two
+        // poles within a cell of it, and round one on a boundary that is not,
+        // a pole in its cell: the grid's nodes see neither zero. And the
+        // hole and the ring above, and the reviewer's tower.
         let mixed = "(z - (1.1934990849887146 - 0.20536860263116311i))*(z - (1.2234990849887146 - 0.2253686026311631i))"
             + "/((z - (1.2524804507563325 - 0.078069596745760084i))*(z - (1.399997924755525 + 0.40148084601005929i))^2)"
         let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
@@ -2626,6 +2632,10 @@ func faceTests() {
             ("a pole within a chord", mixed, domain, 16, [RealBand(below: 0.8333333333333333, height: 3), RealBand(below: 1.3001429547193402, height: 4)], 1.0),
             ("a plateau leaving its band between two rows", "1/(z - (-0.095946946980314418 - 0.0047827152763062486i))",
              domain, 16, [RealBand(below: -0.42375125887220094, height: 1.2)], 3.0),
+            ("a zero on a column between two poles", "1/(z - (0.59076180115334842-0.093833748934804229i)) + 1/(z - (0.5145013567413883-0.13573974784644616i))",
+             domain, 20, [RealBand(below: 0.5526315789473684, height: 3)], 1.8),
+            ("a zero in a pole's cell", "1/(z - (0.42240022182367271-0.40227584782117776i)) + 1/(z - (0.37140972304490555-0.48709752678493168i))",
+             domain, 20, [RealBand(below: 0.3969049724342891, height: 3)], 4),
             ("the hole round a zero on the boundary", holeBesideABoundary, Domain(real: Interval(lo: -0.3, hi: 1.5), imag: Interval(lo: -0.5, hi: 0.5)),
              24, [RealBand(below: 0.5, height: 1.5)], 1.8),
             ("a zero's ring and a cut cell's arc of it", ringBesideABoundary, domain, 16, [RealBand(below: 0.5, height: 1.5)], 1.8),
