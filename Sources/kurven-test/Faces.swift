@@ -2840,6 +2840,49 @@ func faceTests() {
         }
     }
 
+    Check.suite("faces: a riser's top follows f through a dip narrower than its stretch") {
+        // Every vertex of each riser's top, and seven points along each
+        // chord, within the refiner's tolerance of min(|f|, h) on the
+        // boundary, h the greater band's. Two poles either side of Im z =
+        // 0, 1/(z - 0.49 - 0.1i) + 1/(z - 0.49 + 0.1i), at 0.8 | 4 across
+        // Re z = 1/2: between them |f| dips to 1.98 under the greater band's
+        // 4, on a stretch whose ends are on the greater plateau, and a top
+        // subdivided by midpoints only, which all stood on that plateau, was
+        // drawn flat across at 4 (on main 3bb44f1, 1.656 over f). And a
+        // tower, 1/(z - 0.45) at 2 | 4.
+        for (name, expression, domain, resolution, band, beyond) in [
+            ("two poles with a dip between", "1/(z-0.49-0.1*i)+1/(z-0.49+0.1*i)",
+             Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1.3)), 60, RealBand(below: 0.5, height: 0.8), 4.0),
+            ("a tower", "1/(z-0.45)", Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)), 200,
+             RealBand(below: 0.5, height: 2), 4.0),
+        ] {
+            let built = try NativeLandscape.build(
+                LandscapeRequest(expression: expression, domain: domain, resolution: resolution,
+                                 truncation: .realBands([band], beyond: beyond)),
+                refine: true)
+            guard let refine = built.refine, let magnitude = refine.magnitude else { Check.expect(false, "\(name): a refiner"); continue }
+            let surface = built.surface, g = surface.height
+            let cell = max(abs(g.domain.real.length) / Double(g.width - 1), abs(g.domain.imag.length) / Double(g.height - 1))
+            let greater = max(band.height, beyond)
+            let trim = surface.graphTrimLoops(refine: refine)
+            var points = 0, worst = 0.0, off: [String] = []
+            for (b, top) in trim.riserTops {
+                for (p, q) in zip(top, top.dropFirst()) {
+                    for s in 0...8 {
+                        let t = Double(s) / 8, y = p.y + t * (q.y - p.y), z = p.z + t * (q.z - p.z)
+                        let u = magnitude(P2(b, y)), d = z - min(u.isNaN ? .infinity : u, greater)
+                        guard d.isFinite else { continue }
+                        points += 1
+                        if abs(d) > abs(worst) { worst = d }
+                        if !(abs(d) <= refine.tolerance * cell) { off.append(String(format: "(%.4f, %.4f, %.4f) %+.4f", b, y, z, d)) }
+                    }
+                }
+            }
+            Check.expect(points > 50 && off.isEmpty, "\(name): every point of a riser's top within \(refine.tolerance) cells of f's height there",
+                         String(format: "%d of %d points off, worst %+.4f: ", off.count, points, worst) + off.prefix(3).joined(separator: "; "))
+        }
+    }
+
     Check.suite("faces: a band narrower than a column, between a boundary and the far edge, has its plateau's loop") {
         // The reviewer's tower, 1/(z - 1.4) at 0.5 | 1 across Re z = 1.45, the
         // far edge at 1.5 and the column before it at 1.435: the band at 1
