@@ -75,7 +75,7 @@ struct LineGeometry {
             }
             var vertices: [KVLineVertex] = []
             var paths = layer.paths
-            if let s = scene.parametric, isTestedExactly(layer, in: scene) {
+            if scene.parametric != nil, isTestedExactly(layer, in: scene) {
                 // A sphere-traced surface's strokes at rest are the bake's: the folds
                 // on the exact fold, and every vertex tested by sphere tracing
                 // against the solid. Per fragment against the coordinate
@@ -84,8 +84,7 @@ struct LineGeometry {
                 // flipped between the near sheet and the one behind it,
                 // which at a fold is everywhere. The draft is drawn from the
                 // surface strokes, not from here.
-                paths = draft ? PolylineSet(paths: [])
-                    : Self.sphereTraced(layer, on: s, view: scene.camera.view, creases: scene.creases)
+                paths = draft ? PolylineSet(paths: []) : Self.sphereTraced(layer, in: scene)
             } else if case .foldCurves = layer.spec.source, let h = scene.heightfield {
                 // At rest the folds are the bake's: every vertex moved onto
                 // the exact fold of f before sphere tracing tests it against f.
@@ -145,25 +144,12 @@ struct LineGeometry {
         return VisibleLines(layers: layers, resolution: resolution)
     }
 
-    /// A layer of a sphere-traced surface's strokes, as the bake tests it: what of it
-    /// the solid leaves in sight, in world space for the stroke shader.
-    static func sphereTraced(_ layer: Layer, on surface: ParametricSurface,
-                             view: Transform<WorldSpace, ViewSpace>,
-                             creases: [[P2<ParamSpace>]] = []) -> PolylineSet<WorldSpace> {
-        let paths: PolylineSet<WorldSpace>, folds: Bool
-        if case .foldCurves = layer.spec.source {
-            paths = surface.foldCurves(sight: view.projectionDirection, creases: creases)
-            folds = true
-        } else {
-            paths = layer.paths
-            folds = false
-        }
-        // An outline lies on a fold or a crease, where the normal says
-        // nothing: sphere tracing alone tests it, as the bake does.
-        let visibility = SurfaceVisibility(sphereTracing: surface, view: view)
-        let seen = HiddenLine.clip(paths.mapped(view), on: visibility,
-                                   onFolds: layer.spec.role == .outline,
-                                   onCrease: layer.spec.role == .outline && !folds)
+    /// A layer of a sphere-traced surface's strokes, as the bake tests it
+    /// (`Scene.visible(_:depthTolerance:image:)`): what of it the solid
+    /// leaves in sight, in world space for the stroke shader.
+    static func sphereTraced(_ layer: Layer, in scene: Scene) -> PolylineSet<WorldSpace> {
+        let view = scene.camera.view
+        let seen = scene.visible(layer).first?.1 ?? .empty
         return PolylineSet(vertices: seen.vertices.map { view.inverse(P3<ViewSpace>($0.v)) },
                            offsets: seen.offsets)
     }

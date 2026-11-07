@@ -1199,63 +1199,99 @@ public struct Scene: Sendable {
     }
 
     /// Every layer's curves in view space, in declaration (draw) order, tested
-    /// for this camera wherever the geometry can test it exactly.
+    /// for this camera: `visible(_:depthTolerance:image:)` of each.
+    public func visibleLayers(depthTolerance: Double? = nil,
+                              image: SurfaceImage? = nil) -> [(Layer, PolylineSet<ViewSpace>)] {
+        layers.flatMap { visible($0, depthTolerance: depthTolerance, image: image) }
+    }
+
+    /// A layer's curves in view space, tested for this camera wherever the
+    /// geometry can test them: the one rule of visibility. A point of a curve
+    /// is seen when the face under it faces the eye and nothing stands
+    /// between it and the eye. The kind of face is the layer's
+    /// (`SceneGeometry.face(of:)`); where its facing changes sign along a
+    /// segment, the segment is cut on the fold by bisection on it; and what
+    /// stands in front is the scene's occlusion test (`OcclusionTest`): grid
+    /// traversal through a landscape (`Heightfield.visibleCurves(_:on:view:depthTolerance:resolution:)`),
+    /// sphere tracing round a surface with a tubular neighbourhood, and a
+    /// polyhedron's pieces, in their segment form, for its edges and hatching
+    /// (`Solid.visibleEdges`, `Solid.visibleHatching`). The coordinate image,
+    /// `image`, tests a parametric surface's curves only where it has no
+    /// tubular neighbourhood: a point is seen when the surface in front of it
+    /// is its own neighbourhood (`SurfaceVisibility`), and its fold crossings
+    /// are cut on the exact facing. A parametric surface's curves that carry
+    /// no coordinates fall back to the image's depth, at `depthTolerance`.
+    /// No depth buffer has any other part in it, so the drawing is a function
+    /// of the geometry and the camera, never of a resolution.
     ///
     /// Curves that depend on the camera -- the fold curves of a surface, of
-    /// either kind, and the edges of a solid -- is derived here, for this
-    /// camera, rather than carried. On a heightfield every clipped layer is
-    /// tested here, by the facing of what it lies on and by the solid
-    /// (`GridTraversal`), and the depth buffer has no part in it: the drawing is
-    /// a function of the geometry and the camera, never of a resolution. A
-    /// parametric surface's curves are tested by the bake, which has the
-    /// surface's coordinate image; its fold curves come tested by
-    /// construction. This is the bake's work, not the preview's: it is a
-    /// traversal per vertex, and the preview keeps its depth test. `depthTolerance` is
-    /// the hidden-line depth tolerance to test by; the scene's own when not given.
-    public func visibleLayers(depthTolerance: Double? = nil) -> [(Layer, PolylineSet<ViewSpace>)] {
+    /// either kind, and the edges of a solid -- are derived here, for this
+    /// camera, rather than carried. A solid's hatching comes back as one layer
+    /// per width step, at that fraction of the width. An unclipped layer is
+    /// drawn whole, and so is a parametric surface's with neither a tubular
+    /// neighbourhood nor an image. This is the bake's work, not the
+    /// preview's: it is a traversal per vertex, and the preview keeps its
+    /// depth test but for the strokes a camera's move changes. `depthTolerance`
+    /// is the hidden-line depth tolerance to test by; the scene's own when not
+    /// given.
+    public func visible(_ layer: Layer, depthTolerance: Double? = nil,
+                        image: SurfaceImage? = nil) -> [(Layer, PolylineSet<ViewSpace>)] {
         let view = camera.view
         let depthTolerance = depthTolerance ?? self.depthTolerance
-        return layers.flatMap { layer -> [(Layer, PolylineSet<ViewSpace>)] in
-            switch geometry {
-            case .parametric(let s):
-                if case .foldCurves = layer.spec.source {
-                    return [(layer, s.foldCurves(sight: view.projectionDirection, creases: creases).mapped(view))]
-                }
-                return [(layer, layer.paths.mapped(view))]
-            case .heightfield(let h):
-                let visible: PolylineSet<WorldSpace>
-                if case .foldCurves = layer.spec.source {
-                    visible = h.visibleFolds(view: view, depthTolerance: depthTolerance)
-                } else if !layer.spec.clipped {
-                    visible = layer.paths
-                } else {
-                    visible = h.visibleCurves(layer.paths, on: geometry.face(of: layer.spec), view: view,
-                                              depthTolerance: depthTolerance)
-                }
-                return [(layer, visible.mapped(view))]
-            case .solid(let s):
-                if case .edges = layer.spec.source, layer.spec.clipped {
-                    return [(layer, s.visibleEdges(view: view).mapped(view))]
-                }
-                if case .hatching(let hatching, .solid) = layer.spec.source {
-                    // One layer per width step, at that fraction of the
-                    // width: every hatch line when unclipped, the visible
-                    // spans otherwise.
-                    let steps = layer.spec.clipped
-                        ? s.visibleHatching(hatching, view: view)
-                        : s.hatchLinesByWidth(hatching).map {
-                            let all = PolylineSet(paths: $0.lines.map(\.path))
-                            return (widthStep: $0.widthStep, all: all, visible: all)
-                        }
-                    return steps.map { w, all, drawn in
-                        var spec = layer.spec
-                        spec.width = layer.spec.width * Double(w) / Double(hatching.widthSteps)
-                        if hatching.widthSteps > 1 { spec.name = "\(layer.spec.name) \(w)/\(hatching.widthSteps)" }
-                        return (Layer(spec: spec, paths: all), drawn.mapped(view))
-                    }
-                }
-                return [(layer, layer.paths.mapped(view))]
+        let folds: Bool
+        if case .foldCurves = layer.spec.source { folds = true } else { folds = false }
+        switch geometry {
+        case .parametric(let s):
+            let projected = (folds ? s.foldCurves(sight: view.projectionDirection, creases: creases)
+                                   : layer.paths).mapped(view)
+            guard layer.spec.clipped else { return [(layer, projected)] }
+            let visibility = image.map { SurfaceVisibility(surface: s, image: $0, view: view) }
+                ?? (s.neighbourhood != nil ? SurfaceVisibility(sphereTracing: s, view: view) : nil)
+            let clipped: PolylineSet<PageSpace>
+            if let visibility, projected.coords != nil {
+                // On no face is on a fold or a crease, where the normal
+                // says nothing.
+                let onFolds = geometry.face(of: layer.spec) == nil
+                clipped = HiddenLine.clip(projected, on: visibility, onFolds: onFolds, onCrease: onFolds && !folds)
+            } else if let image {
+                clipped = HiddenLine.clip(projected, against: image.depth, depthTolerance: depthTolerance)
+            } else {
+                return [(layer, projected)]
             }
+            return [(layer, PolylineSet(vertices: clipped.vertices.map { P3($0.v) }, offsets: clipped.offsets))]
+        case .heightfield(let h):
+            let visible: PolylineSet<WorldSpace>
+            if folds {
+                visible = h.visibleFolds(view: view, depthTolerance: depthTolerance)
+            } else if !layer.spec.clipped {
+                visible = layer.paths
+            } else {
+                visible = h.visibleCurves(layer.paths, on: geometry.face(of: layer.spec), view: view,
+                                          depthTolerance: depthTolerance)
+            }
+            return [(layer, visible.mapped(view))]
+        case .solid(let s):
+            if case .edges = layer.spec.source, layer.spec.clipped {
+                return [(layer, s.visibleEdges(view: view).mapped(view))]
+            }
+            if case .hatching(let hatching, .solid) = layer.spec.source {
+                // One layer per width step, at that fraction of the
+                // width: every hatch line when unclipped, the visible
+                // spans otherwise.
+                let steps = layer.spec.clipped
+                    ? s.visibleHatching(hatching, view: view)
+                    : s.hatchLinesByWidth(hatching).map {
+                        let all = PolylineSet(paths: $0.lines.map(\.path))
+                        return (widthStep: $0.widthStep, all: all, visible: all)
+                    }
+                return steps.map { w, all, drawn in
+                    var spec = layer.spec
+                    spec.width = layer.spec.width * Double(w) / Double(hatching.widthSteps)
+                    if hatching.widthSteps > 1 { spec.name = "\(layer.spec.name) \(w)/\(hatching.widthSteps)" }
+                    return (Layer(spec: spec, paths: all), drawn.mapped(view))
+                }
+            }
+            return [(layer, layer.paths.mapped(view))]
         }
     }
 

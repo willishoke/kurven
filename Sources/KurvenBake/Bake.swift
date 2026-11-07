@@ -145,38 +145,15 @@ public extension MetalRenderer {
             image = whole
         }
 
-        let visibility = scene.parametric.flatMap { s in
-            image.map { SurfaceVisibility(surface: s, image: $0, view: scene.camera.view) }
-        }
-        var layers: [(style: Style, paths: PolylineSet<PageSpace>)] = []
-        for (layer, projected) in scene.visibleLayers(depthTolerance: depthTolerance) {
-            let clipped: PolylineSet<PageSpace>
-            if !layer.spec.clipped {
-                clipped = HiddenLine.pass(projected)
-            } else if let visibility, projected.coords != nil {
-                // Curves that know where on the surface they lie are tested by
-                // that, with no depth tolerance in it. An outline lies on a fold or
-                // a crease, where the normal says nothing.
-                let outline = layer.spec.role == .outline
-                let folds: Bool
-                if case .foldCurves = layer.spec.source { folds = true } else { folds = false }
-                clipped = HiddenLine.clip(projected, on: visibility, onFolds: outline,
-                                          onCrease: outline && !folds)
-            } else if visibility != nil {
-                // Curves on a parametric surface that carry no coordinates
-                // fall back to depth, at the depth tolerance.
-                clipped = HiddenLine.clip(projected, against: depth, depthTolerance: depthTolerance)
-            } else {
-                // A heightfield's curves come tested by the facing of what they
-                // lie on and by the solid (`GridTraversal`); a solid's edges by
-                // their faces (`Solid.visibleEdges`). Neither consults the
-                // depth buffer, which is why the drawing is the same at every
-                // resolution: the buffer is rendered for the `depth` output
-                // and the outline, and for nothing the drawing depends on.
-                clipped = HiddenLine.pass(projected)
+        // Every layer comes tested by its face and the scene's occlusion
+        // test (`Scene.visible(_:depthTolerance:image:)`). The buffer is
+        // rendered for the `depth` output and the outline; the drawing reads
+        // it, as the coordinate image, only for a parametric surface with no
+        // exact test, and only there depends on the resolution.
+        var layers: [(style: Style, paths: PolylineSet<PageSpace>)] =
+            scene.visibleLayers(depthTolerance: depthTolerance, image: image).map { layer, visible in
+                (Style(layer.spec), HiddenLine.pass(visible))
             }
-            layers.append((Style(layer.spec), clipped))
-        }
         if let width = options.outline {
             layers.append((Style(color: "#000000", width: width), depth.outline()))
         }

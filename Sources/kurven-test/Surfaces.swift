@@ -512,6 +512,23 @@ func rayCastLength(_ curves: PolylineSet<WorldSpace>, on surface: ParametricSurf
 }
 
 func surfaceBakeTests() {
+    Check.suite("bake: `surface sn` bakes the same SVG at resolutions 1000 and 3000") {
+        // The drawing `kurven-cli surface sn` bakes, with its defaults: every
+        // curve on the round torus is tested by its facing and sphere
+        // tracing, and no pixel decides any of it.
+        var request = SurfaceRequest(.sn(modulus: 0.64, major: 2, minor: 1, grid: 600))
+        request.grid = 1024
+        request.style = SurfaceRequest.Style(lines: 0.3, trajectory: 0.08, folds: 0.6, linearCurves: 0.3)
+        let scene = try SurfaceDrawing.build(request).scene(camera: .oblique(SurfaceRequest.projection))
+        let renderer = try MetalRenderer()
+        let svgs = try [1000, 3000].map { r in
+            SVG.render(try renderer.bake(scene, options: BakeOptions(resolution: r)).strokes)
+        }
+        let strokes = svgs[0].components(separatedBy: "<polyline").count - 1
+        Check.expect(strokes > 100 && svgs[0] == svgs[1], "the two SVGs are one, byte for byte",
+                     "\(strokes) strokes, \(svgs[0].utf8.count) and \(svgs[1].utf8.count) bytes")
+    }
+
     Check.suite("bake: a parametric scene bakes its curves by where it lies on the surface") {
         let renderer = try MetalRenderer()
         let torus = ParametricSurface.torus(major: 2, minor: 1, samples: (512, 256))
@@ -570,6 +587,21 @@ func surfaceBakeTests() {
                      "curves without coordinates falls back to the depth test",
                      String(format: "%.3f%% off by depth, %.3f%% by coordinate",
                             100 * depthError, 100 * error))
+
+        // With no tubular neighbourhood there is no exact test, and the
+        // coordinate image the bake renders stands in for one: the bake
+        // draws what clipping by that image draws.
+        let unbounded = ParametricSurface(u: torus.u, v: torus.v, encloses: true, map: torus.map)
+        let byImage = try renderer.bake(Scene(surface: unbounded, layers: scene.layers, camera: camera,
+                                              depthTolerance: 0.03),
+                                        options: BakeOptions(resolution: 2400, tiles: 1))
+        let clipped = HiddenLine.clip(curves.mapped(camera.view),
+                                      on: SurfaceVisibility(surface: unbounded, image: byImage.surface!,
+                                                            view: camera.view))
+        let imageError = abs(byImage.strokes.totalLength - truth) / truth
+        Check.expect(byImage.strokes.layers.first?.paths == clipped && imageError < 0.01,
+                     "a surface with no tubular neighbourhood bakes by its coordinate image",
+                     String(format: "%d strokes, %.3f%% off the ray-cast", byImage.strokes.pathCount, 100 * imageError))
     }
 }
 
