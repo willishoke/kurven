@@ -512,9 +512,9 @@ func refinementTests() {
         let built = try NativeLandscape.build(request)
         let inner = built.refine!
         let solved = Mutex([ContourField: Int]())
-        let counted = ContourRefine(contours: { field, level, paths, ceiling in
+        let counted = ContourRefine(contours: { field, level, paths, ceiling, span in
                                         solved.withLock { $0[field, default: 0] += 1 }
-                                        return inner.contours(field, level, paths, ceiling)
+                                        return inner.contours(field, level, paths, ceiling, span)
                                     },
                                     rings: inner.rings, magnitude: inner.magnitude, zero: inner.zero,
                                     tolerance: inner.tolerance).remembering()
@@ -604,6 +604,69 @@ func refinementTests() {
             }
             Check.expect(matched && found.count == expected.count,
                          "\(expression): \(expected.map { "order \($0.order)" }.joined(separator: ", "))",
+                         found.map { String(format: "order %d at %.12f%+.12fi", $0.order, $0.point.x, $0.point.y) }
+                            .joined(separator: ", "))
+        }
+    }
+
+    Check.suite("refine: by an accumulation of zeros or poles, each order is read round the point alone") {
+        // sin(1/z) has simple zeros at 1/(k pi), crowding to 0 closer than
+        // the grid resolves; 1/sin(1/z) has simple poles there. A circle half
+        // a cell across, or a quarter of the way to the nearest point found,
+        // held others that were not found: zeros came out of order 6, 9 and
+        // 13, and a fan of that many rays was drawn from each.
+        let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        for (expression, sign) in [("sin(1/z)", 1), ("1/sin(1/z)", -1)] {
+            let shape = NativeLandscape.gridShape(domain, resolution: 400)
+            let refiner = ContourRefiner(try KurvenMath.Expression.compile(expression), domain: domain,
+                                         width: shape.nReal, height: shape.nImag)
+            let found = refiner.singularPoints()
+            let other = found.filter { $0.order != sign }
+            Check.expect(found.count > 50 && other.isEmpty, "\(expression): every point found is of order \(sign)",
+                         "\(found.count) found, \(other.count) not: " + other.prefix(3).map {
+                             String(format: "order %d at %.6f%+.6fi", $0.order, $0.point.x, $0.point.y)
+                         }.joined(separator: ", "))
+        }
+    }
+
+    Check.suite("refine: a zero or pole the grid's nodes do not see is found, by the winding number of its cell") {
+        // 1/(z - p) + 1/(z - q) has its zero midway between its poles. With
+        // the poles within a cell of each other no node beside the zero is
+        // the least of |f| among its neighbours: bug 9's, 0.117 apart at res
+        // 24, the zero at the centre of a cell, found on one window and not
+        // on [-0.5, 1.5] x [-1, 1]; one on the column Re z = 0.5526 at res
+        // 20, where neither pole was found either; and one sharing its cell
+        // with a pole, so that the cell's winding number is zero, the other
+        // pole found and left out, of order 0 round a circle that holds the
+        // zero too. And a zero whose least node Newton steps out of reach
+        // from, past the two poles beside it, at res 16.
+        let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        func pair(_ p: (Double, Double), _ q: (Double, Double)) -> [(x: Double, y: Double, order: Int)] {
+            [(p.0, p.1, -1), (q.0, q.1, -1), ((p.0 + q.0) / 2, (p.1 + q.1) / 2, 1)]
+        }
+        let cases: [(expression: String, resolution: Int, points: [(x: Double, y: Double, order: Int)])] = [
+            ("1/(z - (0.4804 - 0.0550i)) + 1/(z - (0.5196 + 0.0550i))", 24, pair((0.4804, -0.055), (0.5196, 0.055))),
+            ("1/(z - (0.59076180115334842-0.093833748934804229i)) + 1/(z - (0.5145013567413883-0.13573974784644616i))", 20,
+             pair((0.59076180115334842, -0.093833748934804229), (0.5145013567413883, -0.13573974784644616))),
+            ("1/(z - (0.42240022182367271-0.40227584782117776i)) + 1/(z - (0.37140972304490555-0.48709752678493168i))", 20,
+             pair((0.42240022182367271, -0.40227584782117776), (0.37140972304490555, -0.48709752678493168))),
+            ("(z - (0.40691152265074942-0.15224404800258995i))"
+                + "/((z - (0.62359753483716163-0.13770458918473533i))*(z - (0.57445433013745983-0.14044013384631204i)))", 16,
+             [(0.40691152265074942, -0.15224404800258995, 1), (0.62359753483716163, -0.13770458918473533, -1),
+              (0.57445433013745983, -0.14044013384631204, -1)]),
+        ]
+        for (expression, resolution, expected) in cases {
+            let request = LandscapeRequest(expression: expression, domain: domain, resolution: resolution)
+            let refiner = NativeLandscape.refiner(for: try NativeLandscape.build(request, refine: false))!
+            let found = refiner.singularPoints()
+            let matched = expected.allSatisfy { e in
+                found.contains { s in
+                    s.order == e.order && abs(s.point.x - e.x) <= 1e-9 * refiner.cell
+                        && abs(s.point.y - e.y) <= 1e-9 * refiner.cell
+                }
+            }
+            Check.expect(matched && found.count == expected.count,
+                         "\(expression) at res \(resolution): \(expected.map { "order \($0.order)" }.joined(separator: ", "))",
                          found.map { String(format: "order %d at %.12f%+.12fi", $0.order, $0.point.x, $0.point.y) }
                             .joined(separator: ", "))
         }

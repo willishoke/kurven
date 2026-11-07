@@ -1049,7 +1049,7 @@ extension Surface {
                 switch truncation {
                 case .uniform(let truncationHeight) where truncationHeight.isFinite:
                     var whole = PlateauLoops(rectangle: rectangle, plateau: plateau(truncationHeight))
-                    var placed = refine.contours(.magnitude, truncationHeight, lines, .infinity)
+                    var placed = refine.contours(.magnitude, truncationHeight, lines, .infinity, ContourRefine.everywhere)
                     placed += refine.rings?(truncationHeight, placed) ?? []
                     for line in placed {
                         var line = line
@@ -1214,7 +1214,10 @@ extension Surface {
                 let truncationHeight = truncationHeight(atX: run[0].x)
                 guard truncationHeight.isFinite, let band = self.band(atX: run[0].x) else { continue }
                 let closed = run.first == run.last
-                let refined = refine.contours(.magnitude, truncationHeight, [run], .infinity)
+                // Kept to its band, between the boundaries either side.
+                let x = run[0].x
+                let span = (boundaries.last { $0 <= x } ?? -.infinity)...(boundaries.first { $0 > x } ?? .infinity)
+                let refined = refine.contours(.magnitude, truncationHeight, [run], .infinity, span)
                 for (index, piece) in refined.enumerated() where piece.count >= 2 {
                     var piece = piece
                     // A closed piece has no ends.
@@ -1451,6 +1454,19 @@ extension Surface {
                     }.count
                     return 10 * covered >= 9 * held.count
                 }
+                // And a part of a ring cut to the band, ending on the boundary
+                // where a piece drawn in the band ends at both of its ends, is
+                // that piece: the level set crosses the boundary there once.
+                // Beside a saddle the grid's line can be the ring's curve
+                // drawn off it, as a chord across the zero's hole.
+                func endsDrawn(_ part: [P2<DomainSpace>]) -> Bool {
+                    let near = 2 * tolerance, a = part[0].v, b = part[part.count - 1].v
+                    return (pieces[span.band] ?? []).contains { p in
+                        let s = p[0].v, e = p[p.count - 1].v
+                        return (simd_distance(a, s) <= near && simd_distance(b, e) <= near)
+                            || (simd_distance(a, e) <= near && simd_distance(b, s) <= near)
+                    }
+                }
                 for ring in rings(truncationHeight, []) where ring.count >= 2 && ring.contains(where: inside) && !drawnAlready(ring) {
                     guard !ring.allSatisfy(inside) else { emit(ring, band: span.band, truncationHeight: truncationHeight); continue }
                     // A closed ring walked from a point outside the band.
@@ -1467,7 +1483,7 @@ extension Surface {
                                 let crossing = onBoundary(b, q, p, truncationHeight)
                                 if holds {
                                     part.append(crossing)
-                                    if part.count >= 2 { emit(part, band: span.band, truncationHeight: truncationHeight) }
+                                    if part.count >= 2, !endsDrawn(part) { emit(part, band: span.band, truncationHeight: truncationHeight) }
                                     part = []
                                 } else {
                                     part = [crossing]
@@ -1477,7 +1493,7 @@ extension Surface {
                         }
                         if inside(p), part.last != p { part.append(p) }
                     }
-                    if part.count >= 2 { emit(part, band: span.band, truncationHeight: truncationHeight) }
+                    if part.count >= 2, !endsDrawn(part) { emit(part, band: span.band, truncationHeight: truncationHeight) }
                 }
             }
         }

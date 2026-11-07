@@ -486,11 +486,15 @@ public struct ContourRefine: Sendable {
     /// need not be placed. `.infinity` places all of it. It is how |f| and
     /// arg f place their contours as scalar fields: `Surface.field(of:refine:ceiling:)`
     /// builds each a `place` that calls this with the tag and the ceiling
-    /// closed over. It is also how the truncation edge is placed. It places
-    /// the paths it is given and nothing more: the rings the grid could not
-    /// see are `Rings`'.
-    public typealias Contours = @Sendable (ContourField, Double, [[P2<DomainSpace>]], Double)
+    /// closed over. It is also how the truncation edge is placed, and the
+    /// last argument is for that: the span of Re z the curves are kept to, a
+    /// band's for a run of a banded truncation edge, otherwise `everywhere`.
+    /// It places the paths it is given and nothing more: the rings the grid
+    /// could not see are `Rings`'.
+    public typealias Contours = @Sendable (ContourField, Double, [[P2<DomainSpace>]], Double, ClosedRange<Double>)
         -> [[P2<DomainSpace>]]
+    /// The span of Re z that keeps a curve nowhere.
+    public static let everywhere = -Double.infinity...Double.infinity
     /// The rings at a level of |f| round the zeros of f that the grid could
     /// not see, given the curves already placed at that level: a zero one of
     /// them turns round has its curve. Asked once a level, so a level placed
@@ -619,7 +623,7 @@ public extension Surface {
             let isCut = tag == .phase && Contour.isCut(level)
             guard let refine else { return isCut ? [] : paths }
             let lines = isCut ? Contour.cut(of: samples) : paths.map { $0.map { P2<DomainSpace>($0.v) } }
-            var placed = refine.contours(tag, level, lines, ceiling)
+            var placed = refine.contours(tag, level, lines, ceiling, ContourRefine.everywhere)
             if tag == .magnitude, let rings = refine.rings { placed += rings(level, placed) }
             return placed.map { $0.map { P2<ParamSpace>($0.v) } }
         }

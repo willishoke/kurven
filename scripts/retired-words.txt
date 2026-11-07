@@ -31,7 +31,7 @@ Fill(?! [a-z])
 [Pp]itch
 [Ss]ilhouettes?
 # Linear curves on a torus, not the winding number.
-[Ww]indings?(?! numbers?)
+[Ww]indings?(?! ?[Nn]umbers?)
 [Pp]arameter[ -]?[Ll]ines?
 [Ff]old[ -]?[Ll]ines?
 [Ii]nk

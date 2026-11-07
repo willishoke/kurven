@@ -2523,12 +2523,15 @@ func faceTests() {
         // sees it on the boundary, and on two whose grid sees nothing there,
         // where it is the refiner's ring round the zero, seeded once a band
         // and cut on the boundary, not once a run of the truncation edge, at
-        // that run's level, across it. And with the zero a thousandth off the
+        // that run's level, across it. On [-0.5, 1.5] x [-1, 1], where the
+        // zero is at the centre of a cell with the poles, and no node is
+        // the least of |f| beside it. And with the zero a thousandth off the
         // boundary, the poles moved with it, where the ring's chords cross
         // the boundary between their vertices, and each cut is solved on it.
         let offTheBoundary = "1/(z - (0.5206 + 0.0650i)) + 1/(z - (0.4814 - 0.0450i))"
         for (expression, re, im) in [(holeBesideABoundary, (-0.3, 1.5), (-0.5, 0.5)), (holeBesideABoundary, (0.3, 1.0), (-1.0, 0.5)),
-                                     (holeBesideABoundary, (0.0, 1.0), (-0.5, 0.5)), (offTheBoundary, (0.0, 1.0), (-0.5, 0.5))] {
+                                     (holeBesideABoundary, (0.0, 1.0), (-0.5, 0.5)), (holeBesideABoundary, (-0.5, 1.5), (-1.0, 1.0)),
+                                     (offTheBoundary, (0.0, 1.0), (-0.5, 0.5))] {
             let built = try NativeLandscape.build(
                 LandscapeRequest(expression: expression, domain: Domain(real: Interval(lo: re.0, hi: re.1), imag: Interval(lo: im.0, hi: im.1)),
                                  resolution: 24, truncation: .realBands([RealBand(below: 0.5, height: 1.5)], beyond: 1.8)),
@@ -2604,6 +2607,110 @@ func faceTests() {
                      "\(wrong.count) of \(asked) wrong: \(wrong.prefix(3).joined(separator: "; ")), \(trim.open) open")
     }
 
+    Check.suite("faces: one ring is drawn round two zeros in one hole") {
+        // Zeros at (0.307, -0.144) and (0.348, -0.146), half a cell apart at
+        // res 24, under 4 right of Re z = 0.1141: the hole |f| < 4 holds
+        // both, and the grid sees neither. Each zero's ring is the same
+        // curve; drawn from both, the loop was there twice and held nothing.
+        let built = try NativeLandscape.build(
+            LandscapeRequest(expression: "4119.1074405*(z - (0.307498198308-0.144345961027i))*(z - (0.348393843985-0.145720969539i))"
+                                + "/(z - (0.764249524783+0.504053378065i))",
+                             domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)), resolution: 24,
+                             truncation: .realBands([RealBand(below: 0.114094111388, height: 2)], beyond: 4)),
+            refine: true)
+        guard let magnitude = built.refine?.magnitude else { Check.expect(false, "a refiner"); return }
+        let trim = built.surface.graphTrimLoops(refine: built.refine)
+        let cell = 2.0 / 23
+        let loops = Segments(trim.loops.map { $0.map(\.v) }, cell: cell)
+        var asked = 0, wrong: [String] = []
+        for i in 0..<9 {
+            for j in 0..<7 {
+                let p = SIMD2(0.28 + (Double(i) + 0.37) * cell / 7, -0.18 + (Double(j) + 0.61) * cell / 7)
+                guard loops.distance(p, within: 0.06 * cell).isInfinite else { continue }
+                asked += 1
+                if loops.inside(p) != (magnitude(P2(p)) < 4) { wrong.append("\(p)") }
+            }
+        }
+        let rings = trim.truncationEdge.filter { $0.allSatisfy { abs($0.x - 0.33) < 0.05 && abs($0.y + 0.145) < 0.05 } }
+        Check.expect(asked > 40 && wrong.isEmpty && rings.count == 1 && trim.open == 0, "the loops hold the hole round both zeros, drawn once",
+                     "\(rings.count) rings, \(wrong.count) of \(asked) wrong: \(wrong.prefix(3).joined(separator: "; ")), \(trim.open) open")
+    }
+
+    Check.suite("faces: a ring's part in a band is left out where the band's edge already joins its ends") {
+        // Zeros at (0.725, 0.146) and (0.826, 0.076) beside the saddle between
+        // them, under 3 | 4 across Re z = 0.7606, res 24. Right of the
+        // boundary the cut cell's line joins the two points where the hole
+        // round the second zero meets it, by a chord across the hole; the
+        // grid sees nothing beyond. That zero's ring, cut to the band, joins
+        // the same two points, and the band's loop, met there by both, was
+        // left open.
+        let built = try NativeLandscape.build(
+            LandscapeRequest(expression: "595.849573804*(z - (0.724529786873+0.145657568132i))*(z - (0.825622995430+0.075733727046i))"
+                                + "/(z - (0.294022667147+0.587508313898i))",
+                             domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)), resolution: 24,
+                             truncation: .realBands([RealBand(below: 0.760571784330, height: 3)], beyond: 4)),
+            refine: true)
+        let trim = built.surface.graphTrimLoops(refine: built.refine)
+        let open = trim.loops.filter { $0.first != $0.last }
+        Check.expect(trim.open == 0 && open.isEmpty, "the band's loops close",
+                     "\(trim.open) counted, \(open.count) open: \(open.map { "\($0[0].v) to \($0[$0.count - 1].v)" })")
+    }
+
+    Check.suite("faces: a chord is taken past a zero only off its own run, and within its band") {
+        // Beside a saddle the grid's line round two zeros cuts across between
+        // them, and past the lower zero lies an arc the line already runs
+        // along: at 2 | 4 across Re z = 0.4114, zeros at (0.564, 0.278) and
+        // (0.550, 0.205). Round one zero, at 2 | 2.5 across Re z = 0.5330,
+        // the grid's loop is four vertices, and past the zero lies the arc
+        // its far chord stands for: zero at (0.840, -0.068). A chord placed
+        // there doubled the line back over itself, and the loops dropped a
+        // stretch of the hole: the lattice within it, a fourteenth of a cell
+        // across, away from the loops. And at 2 | 2.5 across Re z = 0.7120,
+        // past a zero by the boundary the band at 2.5 found its level left
+        // of it, in the band at 2: every vertex of each band's truncation
+        // edge lies in its band.
+        let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        let cell = 2.0 / 23
+        for (name, expression, bands, beyond, x, y) in [
+            ("the lower zero's hole", "948.115004635*(z - (0.563659351434+0.277678080119i))*(z - (0.550062724850+0.205189440392i))"
+                + "/(z - (0.856142777298+0.772831571274i))", [RealBand(below: 0.411407161624, height: 2)], 4.0,
+             (0.52, 0.585), (0.183, 0.212)),
+            ("the hole of a four-vertex loop", "416.937178124*(z - (0.840040450901-0.068301508238i))*(z - (0.716014763340-0.121761607551i))"
+                + "/(z - (0.113910517434+0.575219223905i))", [RealBand(below: 0.532950907488, height: 2)], 2.5,
+             (0.81, 0.87), (-0.11, -0.035)),
+        ] {
+            let built = try NativeLandscape.build(
+                LandscapeRequest(expression: expression, domain: domain, resolution: 24, truncation: .realBands(bands, beyond: beyond)),
+                refine: true)
+            guard let magnitude = built.refine?.magnitude else { Check.expect(false, "\(name): a refiner"); continue }
+            let trim = built.surface.graphTrimLoops(refine: built.refine)
+            let loops = Segments(trim.loops.map { $0.map(\.v) }, cell: cell)
+            let h = built.surface.truncation.height(atX: x.0)
+            var asked = 0, wrong: [String] = []
+            for i in 0...Int((x.1 - x.0) / cell * 14) {
+                for j in 0...Int((y.1 - y.0) / cell * 14) {
+                    let p = SIMD2(x.0 + Double(i) * cell / 14, y.0 + Double(j) * cell / 14)
+                    guard loops.distance(p, within: 0.06 * cell).isInfinite else { continue }
+                    asked += 1
+                    if loops.inside(p) != (magnitude(P2(p)) < h) { wrong.append("\(p)") }
+                }
+            }
+            Check.expect(asked > 20 && wrong.isEmpty, "\(name): the loops hold it",
+                         "\(wrong.count) of \(asked) wrong: \(wrong.prefix(3).joined(separator: "; "))")
+        }
+        let b = 0.711993911036
+        let built = try NativeLandscape.build(
+            LandscapeRequest(expression: "1703.90688736*(z - (0.732858379215+0.011300545905i))*(z - (0.811553422942-0.149386716774i))^2"
+                                + "/(z - (0.183946050532+0.373413325442i))",
+                             domain: domain, resolution: 24, truncation: .realBands([RealBand(below: b, height: 2)], beyond: 2.5)),
+            refine: true)
+        let trim = built.surface.graphTrimLoops(refine: built.refine)
+        let outside = trim.truncationEdge.dropLast(trim.riserTops.count).joined()
+            .filter { v in v.z == 2.5 ? v.x < b : v.x > b }
+        Check.expect(trim.open == 0 && outside.isEmpty, "each band's truncation edge keeps to its band",
+                     "\(outside.count) vertices outside: \(outside.prefix(3).map { "\($0.v)" }), \(trim.open) open")
+    }
+
     Check.suite("faces: the truncation edge in a cell a band boundary cuts keeps to |f| = h, within the refiner's tolerance") {
         // Each chord with its midpoint within a column of a boundary, its
         // midpoint off the level by the residual over the gradient, in
@@ -2616,7 +2723,13 @@ func faceTests() {
         // falls away from the chord on the side the curve is not. Where a
         // pole's plateau at 3, right of Re z = -0.4238, crosses that boundary
         // between two rows and comes back, the line broken on the boundary.
-        // And the hole and the ring above, and the reviewer's tower.
+        // The hole round a zero on a boundary that is a column, between two
+        // poles within a cell of it, and round one on a boundary that is not,
+        // a pole in its cell: the grid's nodes see neither zero. Beside a
+        // zero whose hole joins the graph past the boundary, a chord left of
+        // it, along whose normal |f| turns back short of the level toward
+        // Newton's step and reaches it the other way, past the zero. And the
+        // hole and the ring above, and the reviewer's tower.
         let mixed = "(z - (1.1934990849887146 - 0.20536860263116311i))*(z - (1.2234990849887146 - 0.2253686026311631i))"
             + "/((z - (1.2524804507563325 - 0.078069596745760084i))*(z - (1.399997924755525 + 0.40148084601005929i))^2)"
         let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
@@ -2626,6 +2739,13 @@ func faceTests() {
             ("a pole within a chord", mixed, domain, 16, [RealBand(below: 0.8333333333333333, height: 3), RealBand(below: 1.3001429547193402, height: 4)], 1.0),
             ("a plateau leaving its band between two rows", "1/(z - (-0.095946946980314418 - 0.0047827152763062486i))",
              domain, 16, [RealBand(below: -0.42375125887220094, height: 1.2)], 3.0),
+            ("a zero on a column between two poles", "1/(z - (0.59076180115334842-0.093833748934804229i)) + 1/(z - (0.5145013567413883-0.13573974784644616i))",
+             domain, 20, [RealBand(below: 0.5526315789473684, height: 3)], 1.8),
+            ("a zero in a pole's cell", "1/(z - (0.42240022182367271-0.40227584782117776i)) + 1/(z - (0.37140972304490555-0.48709752678493168i))",
+             domain, 20, [RealBand(below: 0.3969049724342891, height: 3)], 4),
+            ("a chord beside a zero", "(z - (0.40691152265074942-0.15224404800258995i))"
+                + "/((z - (0.62359753483716163-0.13770458918473533i))*(z - (0.57445433013745983-0.14044013384631204i)))",
+             domain, 16, [RealBand(below: 0.45369534601865147, height: 1.5)], 4),
             ("the hole round a zero on the boundary", holeBesideABoundary, Domain(real: Interval(lo: -0.3, hi: 1.5), imag: Interval(lo: -0.5, hi: 0.5)),
              24, [RealBand(below: 0.5, height: 1.5)], 1.8),
             ("a zero's ring and a cut cell's arc of it", ringBesideABoundary, domain, 16, [RealBand(below: 0.5, height: 1.5)], 1.8),

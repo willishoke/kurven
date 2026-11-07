@@ -90,6 +90,9 @@ and Emde, *Funktionentafeln*, 1909).
   is an edge, and edge is the word there.
 - **wall**: plain and unambiguous; "lateral face" is the formal term.
 - **level**: the value of a contour, and only that.
+- **winding number**: of a closed curve round a point, and of f round
+  one, its zeros less its poles inside (the argument principle). The
+  straight lines through a torus are linear curves, never windings.
 - **trajectory**, **tile**, **window**, **occluder**, **footprint**, `Cover`: already standard.
 - **margin**: the paper round a drawing on its page (`SVG.render`, the
   framing, the gallery). The hidden-line margin, which was a depth, is the

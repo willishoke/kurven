@@ -47,13 +47,15 @@ public extension ContourRefine {
         var rings: ContourRefine.Rings?
         if let seeded = self.rings {
             rings = { level, existing in
-                memo.placed(.magnitude, level, existing, .infinity, rings: true) { seeded(level, existing) }
+                memo.placed(.magnitude, level, existing, .infinity, ContourRefine.everywhere, rings: true) {
+                    seeded(level, existing)
+                }
             }
         }
-        return ContourRefine(contours: { field, level, paths, ceiling in
+        return ContourRefine(contours: { field, level, paths, ceiling, span in
                                  let rung = ContourRefine.rung(above: ceiling)
-                                 return memo.placed(field, level, paths, rung) {
-                                     contours(field, level, paths, rung)
+                                 return memo.placed(field, level, paths, rung, span) {
+                                     contours(field, level, paths, rung, span)
                                  }
                              },
                              rings: rings,
@@ -71,6 +73,7 @@ final class ContourMemo: Sendable {
         /// anyone comparing the answers.
         let level: UInt64
         let ceiling: UInt64
+        let span: SIMD2<UInt64>
         /// The paths placed, or for the rings at the level the curves
         /// already placed there.
         let paths: [[P2<DomainSpace>]]
@@ -107,9 +110,10 @@ final class ContourMemo: Sendable {
     /// the same new key both solve it, which costs time and never a
     /// different answer.
     func placed(_ field: ContourField, _ level: Double, _ paths: [[P2<DomainSpace>]],
-                _ ceiling: Double, rings: Bool = false,
+                _ ceiling: Double, _ span: ClosedRange<Double>, rings: Bool = false,
                 solve: () -> [[P2<DomainSpace>]]) -> [[P2<DomainSpace>]] {
-        let key = Key(field: field, level: level.bitPattern, ceiling: ceiling.bitPattern, paths: paths, rings: rings)
+        let key = Key(field: field, level: level.bitPattern, ceiling: ceiling.bitPattern,
+                      span: SIMD2(span.lowerBound.bitPattern, span.upperBound.bitPattern), paths: paths, rings: rings)
         let found: [[P2<DomainSpace>]]? = table.withLock { t in
             t.clock += 1
             guard var entry = t.entries[key] else { t.misses += 1; return nil }
