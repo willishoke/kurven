@@ -624,6 +624,314 @@ func wallFaceTests() {
     }
 }
 
+// MARK: - curves on a riser are tested by the riser
+//
+// A riser is a vertical face of the solid, as a wall is: the walls' hatching
+// hatches it, and the truncation edge's layer draws its bottom edge with its
+// top. Both stand a hair onto the lower side, and a point on them is tested
+// by the riser's facing and then by the traversal, forgiven nothing.
+
+/// A perimeter through the corners, in order.
+private func riserPerimeter(_ corners: [(Double, Double)]) -> BoundaryPerimeter {
+    BoundaryPerimeter(edges: corners.indices.map { k in
+        let a = corners[k], b = corners[(k + 1) % corners.count]
+        return PerimeterEdge(start: P2(a.0, a.1), end: P2(b.0, b.1), density: 9)
+    })
+}
+
+func riserFaceTests() {
+    Check.suite("risers: a riser's hatching and bottom edge lie on it, from its bottom to its top, where it stands") {
+        // 1/(z - 1/2) over Re [-1/2, 3/2], Im [-1, 1], at 2 left of Re z = 1/2
+        // and 4 beyond: the riser stands where |f| = 1/|Im z| reaches 2 on the
+        // boundary, |Im z| ≤ 1/2, from 2 up to min(1/|Im z|, 4). Hatched at
+        // 0.07, the boundary is 29 whole gaps across the domain, as the
+        // plateaus divide it, so a line stands at each Im z = -1 + 2k/29 the
+        // riser holds, none at its ends. On a footprint with a notch cut
+        // from Im z = 0.2 back it stands to 0.2, and on one that ends at the
+        // boundary nowhere: the wall there rises to the top. And 1/(z -
+        // 0.45) cut at 4, in two tiles side by side, the second translated
+        // by 2: at Re z = 3/2 the second's top, 1/|0.95 - i Im z|, stands
+        // over the first's, 1/|1.05 + i Im z|, all along the tile boundary,
+        // and the riser between them faces the first.
+        let window = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        let tower = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/(z - 0.5)", domain: window, resolution: 48,
+                             truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4)),
+            refine: true)
+        let pair = try NativeLandscape.build(
+            LandscapeRequest(expression: "1/(z - 0.45)", domain: window, resolution: 48, truncation: .uniform(4)),
+            refine: true)
+        let box = riserPerimeter([(-0.5, -1), (1.5, -1), (1.5, 1), (-0.5, 1)])
+        let notched = riserPerimeter([(-0.5, -1), (1.5, -1), (1.5, 1), (0.7, 1), (0.7, 0.2), (0.3, 0.2), (0.3, 1), (-0.5, 1)])
+        let half = riserPerimeter([(-0.5, -1), (0.5, -1), (0.5, 1), (-0.5, 1)])
+        let side = Affine2(a: 1, b: 0, tx: 2, c: 0, d: 1, ty: 0)
+        func towerTop(_ y: Double) -> Double { min(1 / abs(y), 4) }
+        let cases: [(name: String, built: KurvenBundle, walls: BoundaryPerimeter, region: Region, tiles: [Affine2],
+                     at: Double, stands: (lo: Double, hi: Double)?, bottom: (Double) -> Double, top: (Double) -> Double)] = [
+            ("a tower at 2 | 4", tower, box, .full, [.identity], 0.5, (-0.5, 0.5), { _ in 2 }, towerTop),
+            ("a tower at 2 | 4, a notch cut from Im z = 0.2 back", tower, notched, .inside(notched), [.identity], 0.5,
+             (-0.5, 0.2), { _ in 2 }, towerTop),
+            ("a tower at 2 | 4, the footprint ending at the boundary", tower, half, .inside(half), [.identity], 0.5,
+             nil, { _ in 2 }, towerTop),
+            ("two tiles side by side meeting with different tops", pair, box, .full, [.identity, side], 1.5, (-1, 1),
+             { 1 / hypot(1.05, $0) }, { 1 / hypot(0.95, $0) }),
+        ]
+        for c in cases {
+            let surface = c.built.surface
+            guard let refine = c.built.refine else { Check.expect(false, "\(c.name): a refiner"); continue }
+            let g = surface.height
+            let cell = max(abs(g.domain.real.length) / Double(g.width - 1), abs(g.domain.imag.length) / Double(g.height - 1))
+            let tolerance = refine.tolerance * cell
+            let context = Surface.HatchContext(perimeter: c.walls, region: c.region, tiles: c.tiles)
+            let hatch = surface.hatch(.wallHatching(edges: Array(c.walls.edges.indices), spacing: 0.07, step: 0.07),
+                                      in: context, refine: refine)!
+            let edges = surface.hatch(.truncationEdge(tiled: true), in: context, refine: refine)!
+            /// A billionth of a cell onto the lower side of the riser's line,
+            /// Re z = `at`, which is to its left in all four.
+            func onLowerSide(_ v: P3<WorldSpace>) -> Bool { v.x < c.at && c.at - v.x < 1e-9 * cell * 2 }
+            /// Exactly on a wall: on the line of a perimeter edge, all of
+            /// whose edges run along an axis.
+            func onWall(_ v: P3<WorldSpace>) -> Bool {
+                c.walls.edges.contains { e in
+                    e.start.x == e.end.x ? v.x == e.start.x && v.y >= min(e.start.y, e.end.y) && v.y <= max(e.start.y, e.end.y)
+                                         : v.y == e.start.y && v.x >= min(e.start.x, e.end.x) && v.x <= max(e.start.x, e.end.x)
+                }
+            }
+            let strokes = (0..<hatch.count).map { Array(hatch[path: $0]) }
+            let risers = strokes.filter { $0.allSatisfy(onLowerSide) }
+            let strays = strokes.filter { p in !p.allSatisfy(onWall) && !p.allSatisfy(onLowerSide) }
+            let n = 30
+            let gaps: [Double] = (1..<(n - 1)).map { k -> Double in -1 + 2 * Double(k) / Double(n - 1) }
+            let wanted: [Double] = c.stands.map { s in gaps.filter { $0 > s.lo && $0 < s.hi } } ?? []
+            var off: [String] = []
+            for p in risers where !(p.count == 2 && p[0].y == p[1].y
+                                     && abs(p[0].z - c.bottom(p[0].y)) <= tolerance && abs(p[1].z - c.top(p[0].y)) <= tolerance) {
+                off.append(String(format: "Im z = %.4f from %.6f to %.6f", p[0].y, p[0].z, p[p.count - 1].z))
+            }
+            let at = risers.map { $0[0].y }.sorted()
+            let placed = at.count == wanted.count && zip(at, wanted).allSatisfy { abs($0 - $1) <= 1e-12 }
+            Check.expect(placed && off.isEmpty && strays.isEmpty,
+                         "\(c.name): a hatch line at each whole gap the riser holds, from its bottom to its top, a hair onto the lower side",
+                         "\(risers.count) lines, \(wanted.count) wanted, \(off.count) not from bottom to top, \(strays.count) on neither a wall nor the riser"
+                            + (off.isEmpty ? "" : ": " + off.prefix(3).joined(separator: ", ")))
+            let bottoms = (0..<edges.count).map { Array(edges[path: $0]) }.filter { $0.allSatisfy(onLowerSide) }
+            let bottomOff = bottoms.joined().map { abs($0.z - c.bottom($0.y)) }.max() ?? 0
+            let ends = bottoms.map { ($0[0].y, $0[$0.count - 1].y) }
+            let spans = c.stands.map { s in ends.count == 1 && abs(ends[0].0 - s.lo) <= 1e-9 && abs(ends[0].1 - s.hi) <= 1e-9 }
+                ?? ends.isEmpty
+            Check.expect(spans && bottomOff <= tolerance,
+                         "\(c.name): its bottom edge runs where it stands, at the lower top, a hair onto the lower side",
+                         "\(bottoms.count) bottoms, from \(ends.map { String(format: "%.6f to %.6f", $0.0, $0.1) }), "
+                            + String(format: "off the lower top by %.2e", bottomOff))
+        }
+    }
+
+    // Where a riser faces away, the solid on its higher side stands between
+    // its hatching and bottom edge and the eye, a hair along the line of
+    // sight; where it faces the eye, what stands in front hides them from the
+    // bottom up. What the solid hides of a vertical line at a point is
+    // everything below the greatest of h(q(t)) - t d_z along the line of
+    // sight, q(t) its footprint and h the solid's top there: min(|f|, h(x))
+    // on the copy under it, the greater where two meet. A point is seen when
+    // that is not above it. The walk reads that a five-hundredth of a unit at
+    // a time, then a hundred-thousandth around each greatest within reach of
+    // the best, as the walls' walk does (`wallFaceTests`). A hatch line,
+    // tested from its two ends and at 256 vertices, keeps one run from there
+    // to its top, or none; each vertex of a bottom edge is kept where the walk
+    // sees it and dropped where it is under the solid by a thousandth, under
+    // every camera of the stress orbit. A riser seen edge-on is left out, as
+    // a wall is: its line of sight runs along it, a hair from its plane. On a
+    // tower, on Γ with three risers, and on the tower in two tiles side by
+    // side, both copies' risers and the one at the tile boundary between.
+    Check.suite("risers: a riser's hatching and bottom edge are hidden up to where the walk up the line of sight meets the solid") {
+        let window = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        let tower = LandscapeRequest(expression: "1/(z - 0.45)", domain: window, resolution: 100,
+                                     truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4))
+        let gamma = LandscapeRequest(expression: "gamma(z)", domain: Domain(real: Interval(lo: -4.5, hi: 4.5), imag: Interval(lo: -2.5, hi: 2.5)),
+                                     resolution: 180,
+                                     truncation: .realBands([RealBand(below: -2.5, height: 0.5), RealBand(below: -1.5, height: 1),
+                                                             RealBand(below: 0.5, height: 1.5)], beyond: 2.5))
+        let side = Affine2(a: 1, b: 0, tx: 2, c: 0, d: 1, ty: 0)
+        let landscapes: [(name: String, request: LandscapeRequest, tiles: [Affine2], spacing: Double)] = [
+            ("a tower at 2 | 4", tower, [.identity], 0.025),
+            ("Γ at 0.5 | 1 | 1.5 | 2.5", gamma, [.identity], 0.1),
+            ("a tower at 2 | 4 in two tiles side by side", tower, [.identity, side], 0.05),
+        ]
+        var partly = 0
+        for l in landscapes {
+            let built = try NativeLandscape.build(l.request, refine: true)
+            guard let refine = built.refine, let magnitude = refine.magnitude else { Check.expect(false, "\(l.name): a refiner"); continue }
+            let surface = built.surface, dom = surface.domain, g = surface.height
+            let (lo, hi) = (min(dom.real.lo, dom.real.hi), max(dom.real.lo, dom.real.hi))
+            let (ylo, yhi) = (min(dom.imag.lo, dom.imag.hi), max(dom.imag.lo, dom.imag.hi))
+            let box = riserPerimeter([(lo, ylo), (hi, ylo), (hi, yhi), (lo, yhi)])
+            let h = Heightfield(surface: surface, occluder: .empty, tiles: l.tiles, region: .full, step: 1,
+                                refine: refine, walls: .perimeter(box, base: 0))
+            let context = Surface.HatchContext(perimeter: box, region: .full, tiles: l.tiles)
+            let cell = max(abs(dom.real.length) / Double(g.width - 1), abs(dom.imag.length) / Double(g.height - 1))
+            // The lines the risers stand on, carried into place: the band
+            // boundaries the truncation steps at inside the domain, on every
+            // copy, and the tile boundary.
+            var boundaries: [(back: Affine2, x: Double)] = []
+            if case .realBands(let bands, _) = surface.truncation {
+                for b in bands.map(\.below) where b > lo && b < hi {
+                    for tile in l.tiles { if let back = tile.inverse { boundaries.append((back, b)) } }
+                }
+            }
+            if l.tiles.count > 1 { boundaries.append((.identity, 1.5)) }
+            /// The riser a point stands a hair onto a side of, a billionth
+            /// of a cell, as its curves stand, not a rounding: its line's
+            /// normal in place, the gradient of the domain's x carried back.
+            func riser(_ v: P3<WorldSpace>) -> SIMD2<Double>? {
+                boundaries.first { line in
+                    let d = abs(line.back(v).x - line.x)
+                    return d > 0.5e-9 * cell && d < 2e-9 * cell
+                }.map { simd_normalize(SIMD2($0.back.a, $0.back.b)) }
+            }
+            func onRiser(_ v: P3<WorldSpace>) -> Bool { riser(v) != nil }
+            let hatch = surface.hatch(.wallHatching(edges: [0, 1, 2, 3], spacing: l.spacing, step: l.spacing),
+                                      in: context, refine: refine)!
+            let edges = surface.hatch(.truncationEdge(tiled: true), in: context, refine: refine)!
+            let strokes = (0..<hatch.count).map { Array(hatch[path: $0]) }.filter { $0.allSatisfy(onRiser) }
+            let bottoms = (0..<edges.count).map { Array(edges[path: $0]) }.filter { $0.allSatisfy(onRiser) }
+            let ends = PolylineSet(paths: strokes)
+            let dense = PolylineSet(paths: strokes.map { p in
+                (0...256).map { j in j == 256 ? p[1] : P3<WorldSpace>(p[0].v + (p[1].v - p[0].v) * (Double(j) / 256)) }
+            })
+            let bottomSet = PolylineSet(paths: bottoms)
+            /// The solid's top over a point of the plane: on the copy under
+            /// it, the greater where two meet; nil off every copy.
+            func top(_ q: SIMD2<Double>) -> Double? {
+                var best: Double?
+                for tile in l.tiles {
+                    guard let back = tile.inverse else { continue }
+                    let p = back(P3<WorldSpace>(q.x, q.y, 0))
+                    guard p.x >= lo, p.x <= hi, p.y >= ylo, p.y <= yhi else { continue }
+                    let u = magnitude(P2(p.x, p.y))
+                    best = max(best ?? -.infinity, min(u.isNaN ? .infinity : u, surface.truncationHeight(atX: p.x)))
+                }
+                return best
+            }
+            // The steepest the truncated top rises between two samples in
+            // one band, and the highest it stands.
+            var highest = 0.0, steepest = 0.0
+            let dx = dom.real.length / Double(g.width - 1), dy = dom.imag.length / Double(g.height - 1)
+            func truncated(_ i: Int, _ j: Int) -> Double {
+                min(Double(g[i, j]), surface.truncationHeight(atX: g.position(x: i, y: 0).x))
+            }
+            for j in 0..<g.height {
+                for i in 0..<g.width {
+                    let z = truncated(i, j), x = g.position(x: i, y: 0).x
+                    guard z.isFinite else { continue }
+                    highest = max(highest, z)
+                    if i + 1 < g.width, surface.truncationHeight(atX: g.position(x: i + 1, y: 0).x) == surface.truncationHeight(atX: x) {
+                        steepest = max(steepest, abs(truncated(i + 1, j) - z) / abs(dx))
+                    }
+                    if j + 1 < g.height { steepest = max(steepest, abs(truncated(i, j + 1) - z) / abs(dy)) }
+                }
+            }
+            let extent = Double(l.tiles.count) * max(abs(dom.real.length), abs(dom.imag.length)) * 2
+            var strokesCompared = 0, whole = 0, kept = 0, wrong = 0
+            var vertices = 0, seen = 0, hidden = 0, wrongVertices = 0
+            var example = ""
+            for (name, view) in stressCameras() {
+                let d = -view.projectionDirection, dxy = SIMD2(d.x, d.y)
+                /// The height below which the solid hides a vertical line at
+                /// `at`, or `base`.
+                func hiddenBelow(_ at: SIMD2<Double>, base: Double) -> Double {
+                    let coarse = 2e-3, fine = 1e-5
+                    let reach = 2 * (2 * 2.0.squareRoot() * steepest * simd_length(dxy) + abs(d.z)) * coarse
+                    func value(_ t: Double) -> Double? { top(at + t * dxy).map { $0 - t * d.z } }
+                    var samples: [(t: Double, value: Double)] = []
+                    var best = base, t = fine
+                    while highest - t * d.z > best - reach, t * simd_length(dxy) < extent {
+                        if let v = value(t) { samples.append((t, v)); best = max(best, v) }
+                        t += coarse
+                    }
+                    // Around each greatest of the samples within reach of the
+                    // best, finely: a riser's step lies between two samples.
+                    for (k, s) in samples.enumerated() where s.value > best - reach
+                        && (k == 0 || s.value >= samples[k - 1].value) && (k + 1 == samples.count || s.value >= samples[k + 1].value) {
+                        var u = max(s.t - coarse, fine)
+                        while u < s.t + coarse {
+                            if let v = value(u), v > best { best = v }
+                            u += fine
+                        }
+                    }
+                    return best
+                }
+                func runs(_ set: PolylineSet<WorldSpace>) -> [SIMD2<Double>: [(lo: Double, hi: Double)]] {
+                    var out: [SIMD2<Double>: [(lo: Double, hi: Double)]] = [:]
+                    for i in 0..<set.count {
+                        let p = Array(set[path: i])
+                        out[SIMD2(p[0].x, p[0].y), default: []].append((p[0].z, p[p.count - 1].z))
+                    }
+                    return out
+                }
+                // As the walls' hatching layer and the truncation edge's
+                // test them (`SceneGeometry.face(of:)`).
+                let two = runs(h.visibleCurves(ends, on: .wall, view: view, depthTolerance: 0.02))
+                let many = runs(h.visibleCurves(dense, on: .wall, view: view, depthTolerance: 0.02))
+                func edgeOn(_ v: P3<WorldSpace>) -> Bool { riser(v).map { abs(simd_dot($0, dxy)) <= 1e-6 } ?? true }
+                for p in strokes where !edgeOn(p[0]) {
+                    let at = SIMD2(p[0].x, p[0].y), base = p[0].z, top = p[1].z
+                    let below = hiddenBelow(at, base: base)
+                    strokesCompared += 1
+                    if below > base + 1e-3, below < top - 1e-3 { partly += 1 }
+                    if below >= top - 1e-3 { whole += 1 } else { kept += 1 }
+                    for (kind, got) in [("two ends", two[at] ?? []), ("256 vertices", many[at] ?? [])] {
+                        let runs = got.filter { $0.lo < top - 1e-3 }
+                        let agree = below < top - 1e-3
+                            ? runs.count == 1 && abs(runs[0].lo - below) < 1e-3 && abs(runs[0].hi - top) < 1e-3
+                            : runs.isEmpty
+                        if !agree {
+                            wrong += 1
+                            if example.isEmpty {
+                                example = String(format: "; e.g. %@, %@, a line at (%.4f, %.4f) hidden below %.4f, kept %@", name, kind,
+                                                 at.x, at.y, below, got.map { String(format: "%.4f to %.4f", $0.lo, $0.hi) }.joined(separator: ", "))
+                            }
+                        }
+                    }
+                }
+                let keptBottoms = Set(h.visibleCurves(bottomSet, on: nil, view: view, depthTolerance: 0.02).vertices.map(\.v))
+                for v in bottoms.joined() where !edgeOn(v) {
+                    // Where the riser has no height its bottom is its top,
+                    // and a vertex there seen alone is no run to draw; nor
+                    // where it ends on the window's edge, from which a line
+                    // of sight leaves the solid at once, and its neighbours'
+                    // do not.
+                    let across = riser(v).map { n in [-4.0, 4.0].compactMap { top(SIMD2(v.x, v.y) + $0 * 1e-9 * cell * n) }.max() ?? v.z } ?? v.z
+                    let onEdge = l.tiles.compactMap(\.inverse).contains { back in
+                        let q = back(v)
+                        return abs(q.y - ylo) <= 1e-12 || abs(q.y - yhi) <= 1e-12
+                    }
+                    guard across > v.z + 1e-3, !onEdge else { continue }
+                    let over = hiddenBelow(SIMD2(v.x, v.y), base: v.z) - v.z
+                    vertices += 1
+                    if over > 1e-3 {
+                        hidden += 1
+                        if keptBottoms.contains(v.v) {
+                            wrongVertices += 1
+                            if example.isEmpty { example = String(format: "; e.g. %@, a bottom's vertex at (%.4f, %.4f, %.4f) under the solid by %.4f, kept", name, v.x, v.y, v.z, over) }
+                        }
+                    } else if over <= 1e-7 {
+                        seen += 1
+                        if !keptBottoms.contains(v.v) {
+                            wrongVertices += 1
+                            if example.isEmpty { example = String(format: "; e.g. %@, a bottom's vertex at (%.4f, %.4f, %.4f) in view, dropped", name, v.x, v.y, v.z) }
+                        }
+                    }
+                }
+            }
+            Check.expect(wrong == 0 && wrongVertices == 0 && whole > 100 && kept > 100 && seen > 100 && hidden > 100,
+                         "\(l.name): a riser's hatching and bottom edge keep what the walk up the line of sight sees",
+                         "\(wrong) of \(strokesCompared) lines disagree, each tested twice (\(whole) hidden whole, \(kept) kept); "
+                            + "\(wrongVertices) of \(vertices) bottom vertices (\(seen) seen, \(hidden) hidden)\(example)")
+        }
+        Check.expect(partly > 10, "and some lines are hidden in part, from the bottom up", "\(partly) partly hidden")
+    }
+}
+
 // MARK: - curves on a plateau are tested by the plateau
 //
 // A plateau is flat and faces up: seen from above its hatching is tested by
