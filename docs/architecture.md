@@ -195,6 +195,9 @@ line runs through the pit's own material.
 **Curves on a wall** are tested by the wall they lie on, the wall face
 whose foot they stand on: a wall that faces away hides its hatching, and
 its top edge, which is on the surface, is tested by the traversal alone.
+Below the top edge a point lies on the wall exactly, so the traversal
+forgives it nothing: any terrain its line of sight enters, another copy's
+or across a notch, hides it.
 
 **The depth buffer** is still drawn, and the realtime preview uses it: the
 preview tests each stroke fragment against the depth pass, with the depth

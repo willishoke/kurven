@@ -348,9 +348,21 @@ public struct Heightfield: Sendable {
             // and the far edge of a drawing came out from behind a tower with
             // a stub missing beside the outline's cusp. Visible on the
             // surface, the chord's points are top edge points.
+            //
+            // Below the top edge a point lies on the wall's plane exactly,
+            // with no interpolation gap to forgive, so the traversal forgives
+            // it nothing: it is on the solid's boundary, its line is outside
+            // from the start, and any terrain it enters hides it. Forgiven,
+            // the line from a wall on a tile boundary or across a notch passed
+            // through the terrain in front within its skin, or short of the
+            // depth tolerance's reach, and the verdict along a stroke turned
+            // more than once. Tested where it stands, a point on a notch
+            // strictly over the domain is under the surface there, and the
+            // stroke was hidden whole.
             return Self.visibleRuns(of: paths, folds: false, worker: {
                 let m = traversal.forked(), h = m.heightfield
-                return Tests(facing: { p in onTopEdge(h, p) ? nil : facing(p) }, clear: { m.isClear($0) },
+                return Tests(facing: { p in onTopEdge(h, p) ? nil : facing(p) },
+                             clear: { p in onTopEdge(h, p) ? m.isClear(p) : m.unoccluded(p, forgiven: false) },
                              lift: { a, b, q in onTopEdge(h, a) && onTopEdge(h, b) ? h.onSurface(q) : q })
             }, stop: stop)
         case .plateau:
@@ -646,9 +658,10 @@ public struct Heightfield: Sendable {
 /// through its notch -- hides what is behind it, as it should.
 ///
 /// A point strictly over the domain is tested where it stands as well. A
-/// point on a wall -- at the domain's edge -- is on the solid's boundary
-/// and is tested only from where the line goes next, so the bottom edge of a wall
-/// that faces the eye, whose line leaves the domain at once, is seen.
+/// point on a wall -- at the domain's edge, or on a notch in the footprint
+/// strictly over it -- is on the solid's boundary and is tested only from
+/// where the line goes next, so the bottom edge of a wall that faces the eye,
+/// whose line leaves the solid at once, is seen.
 ///
 /// Built once per camera, since it scans the samples for the solid's extent
 /// and inverts the tiles.
@@ -784,10 +797,13 @@ struct GridTraversal: Sendable {
         return (u.isNaN ? .infinity : u, SIMD2(hx, hy))
     }
 
-    /// Whether nothing of the solid stands between `p` and the eye. With
+    /// Whether nothing of the solid stands between `p` and the eye. A point
+    /// not `forgiven` lies on a wall exactly, with no interpolation gap to
+    /// forgive: it is on the solid's boundary, not tested where it stands,
+    /// and outside from the start, so anything its line enters hides it. With
     /// `trace`, every sample the traversal takes and what it made of it, for
     /// asking why a vertex is hidden.
-    func unoccluded(_ p: P3<WorldSpace>, trace: ((String) -> Void)? = nil) -> Bool {
+    func unoccluded(_ p: P3<WorldSpace>, forgiven: Bool = true, trace: ((String) -> Void)? = nil) -> Bool {
         let d = toward
         let pxy = SIMD2(p.x, p.y), dxy = SIMD2(d.x, d.y)
         // How far up the line there can be anything: once above the highest
@@ -913,14 +929,15 @@ struct GridTraversal: Sendable {
         // for as long as it has not yet been outside -- the line is
         // forgiven the depth tolerance perpendicular to the triangle over it. Once it
         // has been outside, being inside at or beyond the depth tolerance's reach is
-        // occlusion.
-        var outsideYet = false
+        // occlusion. A point not forgiven has been outside from the start, and
+        // being inside anywhere is occlusion.
+        var outsideYet = !forgiven
         var startForgiven = false
         /// Hidden at `t`, tested under a triangle of the given cosine; `g` is
         /// the gap there, nil beyond the region (outside, then).
         func hidden(_ t: Double, _ g: Sample?, cosine: Double) -> Bool {
             var visible = t > tEps
-            if !visible, strictlyInside, !startForgiven { visible = true; startForgiven = true }
+            if !visible, forgiven, strictlyInside, !startForgiven { visible = true; startForgiven = true }
             // At the start, a point on the surface to rounding is in its own
             // surface's neighbourhood, not outside it. Further along, a line
             // under the surface by rounding alone is not inside it: the last
@@ -951,9 +968,10 @@ struct GridTraversal: Sendable {
                 return false
             }
             if outsideYet {
+                let occluded = !forgiven || t + tEps >= reach
                 trace?(String(format: "t %.4g cells: inside by %.3e (below the truncation by %.3e) after being outside, reach %.4g cells: %@",
-                              t / cell, -g.overTriangle, -g.overTruncation, reach / cell, t + tEps >= reach ? "hidden" : "forgiven"))
-                return t + tEps >= reach
+                              t / cell, -g.overTriangle, -g.overTruncation, reach / cell, occluded ? "hidden" : "forgiven"))
+                return occluded
             }
             let depth = g.overTriangle > g.overTruncation ? g.overTriangle * cosine : g.overTruncation
             trace?(String(format: "t %.4g cells: inside by %.3e in its own surface's neighbourhood, depth %.3e, depth tolerance %.3e: %@",
