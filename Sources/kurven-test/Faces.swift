@@ -2636,6 +2636,26 @@ func faceTests() {
                      "\(rings.count) rings, \(wrong.count) of \(asked) wrong: \(wrong.prefix(3).joined(separator: "; ")), \(trim.open) open")
     }
 
+    Check.suite("faces: a ring's part in a band is left out where the band's edge already joins its ends") {
+        // Zeros at (0.725, 0.146) and (0.826, 0.076) beside the saddle between
+        // them, under 3 | 4 across Re z = 0.7606, res 24. Right of the
+        // boundary the cut cell's line joins the two points where the hole
+        // round the second zero meets it, by a chord across the hole; the
+        // grid sees nothing beyond. That zero's ring, cut to the band, joins
+        // the same two points, and the band's loop, met there by both, was
+        // left open.
+        let built = try NativeLandscape.build(
+            LandscapeRequest(expression: "595.849573804*(z - (0.724529786873+0.145657568132i))*(z - (0.825622995430+0.075733727046i))"
+                                + "/(z - (0.294022667147+0.587508313898i))",
+                             domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1)), resolution: 24,
+                             truncation: .realBands([RealBand(below: 0.760571784330, height: 3)], beyond: 4)),
+            refine: true)
+        let trim = built.surface.graphTrimLoops(refine: built.refine)
+        let open = trim.loops.filter { $0.first != $0.last }
+        Check.expect(trim.open == 0 && open.isEmpty, "the band's loops close",
+                     "\(trim.open) counted, \(open.count) open: \(open.map { "\($0[0].v) to \($0[$0.count - 1].v)" })")
+    }
+
     Check.suite("faces: the truncation edge in a cell a band boundary cuts keeps to |f| = h, within the refiner's tolerance") {
         // Each chord with its midpoint within a column of a boundary, its
         // midpoint off the level by the residual over the gradient, in
