@@ -796,6 +796,10 @@ struct GridTraversal: Sendable {
     /// height read (`Surface.inTile`, with the inverses taken once).
     let backs: [Affine2]
     let step: Int
+    /// The band boundaries Re z = b the truncation steps at inside the
+    /// domain, each as a level of the grid's u, with the lesser and greater
+    /// band heights either side: a riser on every copy.
+    let steps: [(b: Double, level: Double, lesser: Double, greater: Double)]
 
     init(_ heightfield: Heightfield, view: Transform<WorldSpace, ViewSpace>, depthTolerance: Double) {
         self.heightfield = heightfield
@@ -813,6 +817,13 @@ struct GridTraversal: Sendable {
         let dy = g.domain.imag.length / Double(max(g.height - 1, 1)) * Double(step)
         let cell = max(abs(dx), abs(dy))
         self.cell = cell
+        let real = g.domain.real
+        let spans = heightfield.surface.truncation.bands(from: min(real.lo, real.hi), to: max(real.lo, real.hi))
+        self.steps = zip(spans, spans.dropFirst()).compactMap { left, right in
+            let lesser = min(left.height, right.height), greater = max(left.height, right.height)
+            guard lesser.isFinite, lesser < greater else { return nil }
+            return (left.hi, (left.hi - real.lo) / dx, lesser, greater)
+        }
         // The depth tolerance forgives a curve its distance from the solid it is
         // tested against. Against the grid that is the chord's departure
         // from f, the drawing's depth tolerance. Against f it is the refiner's own
@@ -964,6 +975,20 @@ struct GridTraversal: Sendable {
         var ts: [Double] = []
         var strictlyInside = false
         var passages: [(ta: Double, tb: Double, back: Affine2)] = []
+        // Where the line passes through a band boundary's riser: it crosses
+        // Re z = b between the two sides' tops there, under the higher and
+        // over the lower. The sample on the boundary reads the band beyond
+        // it, and the solid steps up the riser between it and its neighbours,
+        // so the line is in the solid at the crossing, however soon it
+        // leaves: each is tested there, as the gap over the higher side's
+        // top. (At a tile boundary the samples just inside each copy read
+        // both sides.) Not where the line starts on the riser's line, within
+        // half a billionth of a cell, as `Heightfield.riserFacing(sight:slack:)`
+        // counts it -- a riser's top, a truncation edge's end at it, a wall's
+        // top edge stepping across it -- which its own riser does not hide.
+        var risers: [(t: Double, gap: Sample)] = []
+        let s = heightfield.surface, region = heightfield.region
+        let side = 1e-9 * s.cell, zEps = 1e-9 * cell
         for (grid, back) in zip(grids, backs) {
             let u0 = grid.linear * pxy + grid.offset
             let du = grid.linear * dxy
@@ -1003,6 +1028,22 @@ struct GridTraversal: Sendable {
                 }
             }
             if reach.isFinite, reach > ta, reach < tb { ts.append(reach) }
+            // A band boundary Re z = b in this copy's domain, crossed at a
+            // point carried back through its tile: the riser there stands
+            // from min(|f|, h) on the lesser band's side to min(|f|, h) on
+            // the greater's, where the footprint holds both sides.
+            let start = back(P3<WorldSpace>(p.x, p.y, 0))
+            let normal = simd_normalize(SIMD2(back.a, back.b))
+            for step in steps where abs(du.x) > 1e-15 && abs(start.x - step.b) >= 0.5 * side {
+                let t = (step.level - u0.x) / du.x
+                guard t > ta, t < tb, t > tEps else { continue }
+                let q = pxy + t * dxy, z = p.z + t * d.z
+                guard region.contains(P2(q - side * normal)), region.contains(P2(q + side * normal)) else { continue }
+                let drawn = surface(at: s.ontoDomain(P2(step.b, back(P3<WorldSpace>(q.x, q.y, 0)).y)))
+                guard z > min(drawn.interpolated, step.lesser) + zEps,
+                      z < min(drawn.interpolated, step.greater) - zEps else { continue }
+                risers.append((t, (z - drawn.interpolated, z - step.greater, drawn.cosine, 0)))
+            }
         }
         // Where the line leaves one copy for another across a tile boundary
         // and the copies' tops there differ, a sample just inside each, read
@@ -1012,7 +1053,7 @@ struct GridTraversal: Sendable {
         // top is in it.
         for a in passages {
             for b in passages where abs(a.tb - b.ta) <= tEps && b.tb > b.ta {
-                let q = pxy + a.tb * dxy, s = heightfield.surface
+                let q = pxy + a.tb * dxy
                 let tops = [a.back, b.back].map { back -> Double in
                     let drawn = surface(at: s.ontoDomain(back(P3(q.x, q.y, 0)).xy))
                     return min(drawn.interpolated, drawn.truncationHeight)
@@ -1022,6 +1063,7 @@ struct GridTraversal: Sendable {
                 if b.ta + 2 * tEps < b.tb { ts.append(b.ta + 2 * tEps) }
             }
         }
+        risers.sort { $0.t < $1.t }
         guard !ts.isEmpty else { return true }
         ts.sort()
         var unique: [Double] = []
@@ -1084,6 +1126,7 @@ struct GridTraversal: Sendable {
         }
         trace?(String(format: "from (%.4f, %.4f, %.4f), %d samples to %.4g cells", p.x, p.y, p.z, ts.count, (ts.last ?? 0) / cell))
         var previousMiddle: Sample?
+        var nextRiser = 0
         for k in 0..<ts.count {
             let t = ts[k], g = values[k]
             // A point on a grid line lies under two triangles: tested by
@@ -1099,6 +1142,14 @@ struct GridTraversal: Sendable {
                 }
             } else if hidden(t, g, cosine: g?.cosine ?? 1) { return false }
             previousMiddle = middle
+            // The risers crossed here: each on a band boundary, and so a
+            // sample of its own, or one within rounding.
+            while nextRiser < risers.count, risers[nextRiser].t <= t + tEps {
+                let (tr, gr) = risers[nextRiser]
+                trace?(String(format: "t %.4g cells: through a riser", tr / cell))
+                if hidden(tr, gr, cosine: gr.cosine) { return false }
+                nextRiser += 1
+            }
             // With the function, a dip of f under the line between this
             // crossing and the next: where the gap over f falls at one end
             // and rises at the other it has a least value between, found by
