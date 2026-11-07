@@ -44,8 +44,7 @@ public struct HeightfieldVisibility: Sendable {
     /// How squarely the surface faces the viewer over `p`: positive facing,
     /// negative facing away, zero on a fold.
     public func facing(_ p: P2<WorldSpace>) -> Double {
-        let n = heightfield.normal(at: p)
-        return -simd_dot(n, sight) / simd_length(n)
+        heightfield.facing(at: p, sight: sight)
     }
 
     /// Whether nothing of the solid stands between `p` and the eye, to
@@ -71,15 +70,23 @@ public struct HeightfieldVisibility: Sendable {
     public func foldCrossing(from a: P2<WorldSpace>, _ fa: Double,
                              to b: P2<WorldSpace>, _ fb: Double) -> Double? {
         guard (fa > 0) != (fb > 0) else { return nil }
-        var lo = 0.0, hi = 1.0
-        let frontAtLo = fa > 0
-        while hi - lo > 1e-13 {
-            let mid = 0.5 * (lo + hi)
-            let f = facing(P2(a.v + (b.v - a.v) * mid))
-            if (f > 0) == frontAtLo { lo = mid } else { hi = mid }
-        }
-        return 0.5 * (lo + hi)
+        return KurvenCore.foldCrossing(fa, fb) { facing(P2(a.v + (b.v - a.v) * $0)) }
     }
+}
+
+/// Where along a segment a face turns edge-on, as a fraction of the way,
+/// given that the facing at its ends, `fa` and `fb`, differs in sign:
+/// bisection on the exact facing at a fraction, to the last bit. The facing
+/// is continuous along the segment and its sign is all that is asked of it,
+/// so nothing faster is also as certain.
+func foldCrossing(_ fa: Double, _ fb: Double, facing: (Double) -> Double) -> Double {
+    var lo = 0.0, hi = 1.0
+    let frontAtLo = fa > 0
+    while hi - lo > 1e-13 {
+        let mid = 0.5 * (lo + hi)
+        if (facing(mid) > 0) == frontAtLo { lo = mid } else { hi = mid }
+    }
+    return 0.5 * (lo + hi)
 }
 
 public enum HiddenLine {

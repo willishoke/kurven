@@ -377,6 +377,37 @@ func wallCurveTests() {
     }
 }
 
+// MARK: - curves on a plateau are tested by the plateau
+//
+// A plateau is flat and faces up: seen from above its hatching is tested by
+// the traversal alone, and seen from below, behind the solid it bounds, none
+// of it shows, whatever the traversal says.
+
+func plateauCurveTests() {
+    Check.suite("plateaus: the hatching on a plateau is tested by the plateau") {
+        let preset = Catalog.native.preset("rgamma")!
+        let bundle = try NativeLandscape.build(LandscapeRequest(preset: preset, resolution: 240))
+        let scene = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
+        let h = scene.heightfield!
+        let hatch = scene.layers.first { $0.spec.name == "plateau_hatch" }!
+        Check.expect(scene.geometry.face(of: hatch.spec) == .plateau && hatch.paths.count > 0,
+                     "the plateau hatching lies on the plateaus", "\(hatch.paths.count) lines")
+        let above = scene.camera.view
+        let onPlateaus = h.visibleCurves(hatch.paths, on: .plateau, view: above, depthTolerance: scene.depthTolerance)
+        let alone = h.visibleCurves(hatch.paths, on: nil, view: above, depthTolerance: scene.depthTolerance)
+        Check.expect(onPlateaus.count > 0 && onPlateaus.vertices == alone.vertices && onPlateaus.offsets == alone.offsets,
+                     "seen from above, what the traversal alone keeps", "\(onPlateaus.count) runs")
+        let below = testCamera(elevation: 120, azimuth: 30)
+        Check.expect(below.projectionDirection.z > 0, "a camera under the landscape looks up")
+        // With the traversal disarmed, on the grid, so that the facing alone
+        // decides.
+        let fromBelow = h.onGrid.visibleCurves(hatch.paths, on: .plateau, view: below, depthTolerance: .infinity)
+        let disarmed = h.onGrid.visibleCurves(hatch.paths, on: nil, view: below, depthTolerance: .infinity)
+        Check.expect(fromBelow.count == 0 && disarmed.count > 0, "seen from below, nothing, by the facing alone",
+                     "\(fromBelow.count) runs; the disarmed traversal alone keeps \(disarmed.count)")
+    }
+}
+
 // MARK: - a vertical stroke on a wall is its two ends
 //
 // A wall's hatch lines and its corners' vertical edges had a vertex every step

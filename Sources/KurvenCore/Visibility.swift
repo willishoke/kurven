@@ -191,14 +191,7 @@ public struct SurfaceVisibility: Sendable {
     func foldCrossing(from a: P2<ParamSpace>, _ fa: Double,
                       to b: P2<ParamSpace>, _ fb: Double) -> Double? {
         guard (fa > 0) != (fb > 0) else { return nil }
-        var lo = 0.0, hi = 1.0
-        let frontAtLo = fa > 0
-        while hi - lo > 1e-13 {
-            let mid = 0.5 * (lo + hi)
-            let f = facing(P2(a.v + (b.v - a.v) * mid)) ?? 0
-            if (f > 0) == frontAtLo { lo = mid } else { hi = mid }
-        }
-        return 0.5 * (lo + hi)
+        return KurvenCore.foldCrossing(fa, fb) { facing(P2(a.v + (b.v - a.v) * $0)) ?? 0 }
     }
 }
 
