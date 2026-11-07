@@ -196,13 +196,14 @@ public struct ContourRefiner: Sendable {
             under.ceiling = ceiling
             return under.refine(field: field, level: theta, paths, points: points, ceiling: ceiling)
         }
+        let zeros = points.filter { $0.order > 0 }.map(\.point)
         // Every path snapped and subdivided into its pieces.
         var pieced = [[Piece]](repeating: [], count: paths.count)
         pieced.withUnsafeMutableBufferPointer { buffer in
             // Each iteration writes only its own slot, so sharing is safe.
             nonisolated(unsafe) let base = buffer.baseAddress!
             DispatchQueue.concurrentPerform(iterations: paths.count) { i in
-                base[i] = pieces(of: paths[i], level: level, g: g, cut: cut, ceiling: ceiling)
+                base[i] = pieces(of: paths[i], level: level, g: g, cut: cut, ceiling: ceiling, zeros: zeros)
             }
         }
         let all = pieced.flatMap { $0 }
@@ -284,13 +285,6 @@ public struct ContourRefiner: Sendable {
                 if b != a { segments[b, default: []].append((i, k)) }
             }
         }
-        func distance(_ p: P2<DomainSpace>, _ a: P2<DomainSpace>, _ b: P2<DomainSpace>) -> Double {
-            let abx = b.x - a.x, aby = b.y - a.y
-            let l2 = abx * abx + aby * aby
-            let t = l2 > 0 ? min(max(((p.x - a.x) * abx + (p.y - a.y) * aby) / l2, 0), 1) : 0
-            let qx = a.x + t * abx - p.x, qy = a.y + t * aby - p.y
-            return (qx * qx + qy * qy).squareRoot()
-        }
         func covered(_ i: Int) -> Bool {
             let r = runs[i]
             return r.allSatisfy { p in
@@ -301,7 +295,7 @@ public struct ContourRefiner: Sendable {
                             let other = runs[s.run]
                             guard other.count > r.count || (other.count == r.count && s.run < i)
                             else { continue }
-                            if distance(p, other[s.at], other[s.at + 1]) <= near { return true }
+                            if Self.distance(p, other[s.at], other[s.at + 1]) <= near { return true }
                         }
                     }
                 }
@@ -381,6 +375,15 @@ public struct ContourRefiner: Sendable {
 
     static func apart(_ a: P2<DomainSpace>, _ b: P2<DomainSpace>) -> Double {
         ((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)).squareRoot()
+    }
+
+    /// The distance from `p` to the segment `a`-`b`.
+    static func distance(_ p: P2<DomainSpace>, _ a: P2<DomainSpace>, _ b: P2<DomainSpace>) -> Double {
+        let abx = b.x - a.x, aby = b.y - a.y
+        let l2 = abx * abx + aby * aby
+        let t = l2 > 0 ? min(max(((p.x - a.x) * abx + (p.y - a.y) * aby) / l2, 0), 1) : 0
+        let qx = a.x + t * abx - p.x, qy = a.y + t * aby - p.y
+        return (qx * qx + qy * qy).squareRoot()
     }
 
     // MARK: the normal form at a zero or pole
@@ -883,14 +886,14 @@ public struct ContourRefiner: Sendable {
     /// curve, so they are not followed on f (`traced`) or carried to a zero.
     func pieces(of path: [P2<DomainSpace>], level: Double,
                 g: @Sendable (Complex) -> Double, cut: Bool,
-                ceiling: Double = .infinity) -> [Piece] {
+                ceiling: Double = .infinity, zeros: [P2<DomainSpace>] = []) -> [Piece] {
         guard path.count >= 2 else { return [] }
-        guard ceiling.isFinite else { return placed(path, level: level, g: g, cut: cut) }
+        guard ceiling.isFinite else { return placed(path, level: level, g: g, cut: cut, zeros: zeros) }
         let n = path.count - 1
         // Not over: a vertex where |f| is not a number is the snap's to test.
         let low = path.map { p in !(magnitude(Complex(p.x, p.y)) > ceiling) }
         let wanted = (0..<n).map { low[$0] || low[$0 + 1] }
-        if !wanted.contains(false) { return placed(path, level: level, g: g, cut: cut) }
+        if !wanted.contains(false) { return placed(path, level: level, g: g, cut: cut, zeros: zeros) }
         guard wanted.contains(true) else { return [] }
         var vertices = path, want = wanted
         let closed = path.first == path.last
@@ -907,7 +910,7 @@ public struct ContourRefiner: Sendable {
             var e = k
             while e < n && want[e] { e += 1 }
             out += placed(Array(vertices[k...e]), level: level, g: g, cut: cut,
-                          followStart: !closed && k == 0, followEnd: !closed && e == n)
+                          followStart: !closed && k == 0, followEnd: !closed && e == n, zeros: zeros)
             k = e
         }
         return out
@@ -916,14 +919,16 @@ public struct ContourRefiner: Sendable {
     /// A run of grid vertices placed on f, in pieces. `followStart` and
     /// `followEnd` say whether the path's own ends are the curve's, to be
     /// followed on f and carried to a zero or pole, or a cut at the ceiling;
-    /// an end made by a split is always the curve's.
+    /// an end made by a split is always the curve's. A magnitude line's chord
+    /// is sought past the `zeros` (`subdivide`).
     func placed(_ path: [P2<DomainSpace>], level: Double,
                 g: @Sendable (Complex) -> Double, cut: Bool,
-                followStart: Bool = true, followEnd: Bool = true) -> [Piece] {
+                followStart: Bool = true, followEnd: Bool = true, zeros: [P2<DomainSpace>] = []) -> [Piece] {
         guard path.count >= 2 else { return [] }
         let closed = path.first == path.last
         var snapped = path.map { snap($0, level: level, g: g, cut: cut) }
         if closed { snapped[snapped.count - 1] = snapped[0] }
+        let past = cut || zeros.isEmpty ? nil : (run: snapped.compactMap { $0 }, zeros: zeros)
         // The runs: a new one begins at a dropped wrap vertex and wherever a
         // chord could not be placed on the level set (`subdivide`), so that
         // nothing is drawn between two vertices the curve does not join.
@@ -936,7 +941,7 @@ public struct ContourRefiner: Sendable {
                 continue
             }
             if let previous {
-                subdivide(previous, vertex, level: level, g: g, cut: cut, depth: 0, into: &runs)
+                subdivide(previous, vertex, level: level, g: g, cut: cut, depth: 0, past: past, into: &runs)
             }
             runs[runs.count - 1].append(vertex)
             previous = vertex
@@ -1399,6 +1404,7 @@ public struct ContourRefiner: Sendable {
     /// by and is kept.
     func subdivide(_ a: P2<DomainSpace>, _ b: P2<DomainSpace>, level: Double,
                    g: @Sendable (Complex) -> Double, cut: Bool, depth: Int,
+                   past: (run: [P2<DomainSpace>], zeros: [P2<DomainSpace>])? = nil,
                    into runs: inout [[P2<DomainSpace>]]) {
         func unplaced() { runs.append([]) }
         let mid = P2<DomainSpace>((a.x + b.x) / 2, (a.y + b.y) / 2)
@@ -1545,18 +1551,45 @@ public struct ContourRefiner: Sendable {
             }
             if found == nil, let best, converged(best.q, best.r) { found = best.q }
         }
-        // Nor that way: a level of |f| can lie the other way, past a zero
-        // between the chord and the level set, |f| falling to it before it
-        // rises, while toward Newton's step |f| turns back short of the
-        // level. A phase line's other side past a zero is another ray.
-        if found == nil, !cut, let other = bracket(toward: -toward),
+        // Nor that way: a level of |f| can lie the other way, round the far
+        // side of a zero, |f| falling to it and rising past it, while toward
+        // Newton's step |f| turns back short of the level. The chord then
+        // crosses the zero's hole, |f| under the level at its midpoint.
+        // Sought only past one of `past`'s zeros, in the strip the chord
+        // sweeps along its normal out to the point found, and kept only
+        // where it is reached without crossing the run: past another chord
+        // of the run it is on an arc the run already traverses, as round a
+        // zero whose hole the grid drew, and a chord placed there would
+        // double the run back over itself. A phase line's other side past a
+        // zero is another ray, and is not sought.
+        if found == nil, let past, r < 0, let other = bracket(toward: -toward),
            let t = Root.brent(res, 0, other.t, fa: r, fb: other.r, xtol: 1e-10 * cell) {
-            found = along(t)
+            let q = along(t)
+            /// Which side of the line from s to e p lies on, by sign.
+            func side(_ p: P2<DomainSpace>, _ s: P2<DomainSpace>, _ e: P2<DomainSpace>) -> Double {
+                (e.x - s.x) * (p.y - s.y) - (e.y - s.y) * (p.x - s.x)
+            }
+            /// Whether z lies in the strip the chord sweeps out to q.
+            func between(_ z: P2<DomainSpace>) -> Bool {
+                let across = ((z.x - a.x) * (b.x - a.x) + (z.y - a.y) * (b.y - a.y)) / chord
+                let out = ((z.x - mid.x) * nx + (z.y - mid.y) * ny) * (t > 0 ? 1 : -1)
+                return across >= 0 && across <= chord && out >= 0 && out <= abs(t)
+            }
+            /// Whether the segment from the chord's midpoint to q crosses u-v,
+            /// a segment of the run other than the one the chord lies on.
+            func crosses(_ u: P2<DomainSpace>, _ v: P2<DomainSpace>) -> Bool {
+                guard Self.distance(mid, u, v) > 1e-9 * cell else { return false }
+                return (side(u, mid, q) > 0) != (side(v, mid, q) > 0) && (side(mid, u, v) > 0) != (side(q, u, v) > 0)
+            }
+            if past.zeros.contains(where: between),
+               !zip(past.run, past.run.dropFirst()).contains(where: crosses) {
+                found = q
+            }
         }
         guard let point = found else { return }
-        subdivide(a, point, level: level, g: g, cut: cut, depth: depth + 1, into: &runs)
+        subdivide(a, point, level: level, g: g, cut: cut, depth: depth + 1, past: past, into: &runs)
         runs[runs.count - 1].append(point)
-        subdivide(point, b, level: level, g: g, cut: cut, depth: depth + 1, into: &runs)
+        subdivide(point, b, level: level, g: g, cut: cut, depth: depth + 1, past: past, into: &runs)
     }
 
     /// The gradient of g at p, by central differences at a step that is small

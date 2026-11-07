@@ -2656,6 +2656,47 @@ func faceTests() {
                      "\(trim.open) counted, \(open.count) open: \(open.map { "\($0[0].v) to \($0[$0.count - 1].v)" })")
     }
 
+    Check.suite("faces: a chord is taken past a zero only off its own run") {
+        // Beside a saddle the grid's line round two zeros cuts across between
+        // them, and past the lower zero lies an arc the line already runs
+        // along: at 2 | 4 across Re z = 0.4114, zeros at (0.564, 0.278) and
+        // (0.550, 0.205). Round one zero, at 2 | 2.5 across Re z = 0.5330,
+        // the grid's loop is four vertices, and past the zero lies the arc
+        // its far chord stands for: zero at (0.840, -0.068). A chord placed
+        // there doubled the line back over itself, and the loops dropped a
+        // stretch of the hole: the lattice within it, a fourteenth of a cell
+        // across, away from the loops.
+        let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        let cell = 2.0 / 23
+        for (name, expression, bands, beyond, x, y) in [
+            ("the lower zero's hole", "948.115004635*(z - (0.563659351434+0.277678080119i))*(z - (0.550062724850+0.205189440392i))"
+                + "/(z - (0.856142777298+0.772831571274i))", [RealBand(below: 0.411407161624, height: 2)], 4.0,
+             (0.52, 0.585), (0.183, 0.212)),
+            ("the hole of a four-vertex loop", "416.937178124*(z - (0.840040450901-0.068301508238i))*(z - (0.716014763340-0.121761607551i))"
+                + "/(z - (0.113910517434+0.575219223905i))", [RealBand(below: 0.532950907488, height: 2)], 2.5,
+             (0.81, 0.87), (-0.11, -0.035)),
+        ] {
+            let built = try NativeLandscape.build(
+                LandscapeRequest(expression: expression, domain: domain, resolution: 24, truncation: .realBands(bands, beyond: beyond)),
+                refine: true)
+            guard let magnitude = built.refine?.magnitude else { Check.expect(false, "\(name): a refiner"); continue }
+            let trim = built.surface.graphTrimLoops(refine: built.refine)
+            let loops = Segments(trim.loops.map { $0.map(\.v) }, cell: cell)
+            let h = built.surface.truncation.height(atX: x.0)
+            var asked = 0, wrong: [String] = []
+            for i in 0...Int((x.1 - x.0) / cell * 14) {
+                for j in 0...Int((y.1 - y.0) / cell * 14) {
+                    let p = SIMD2(x.0 + Double(i) * cell / 14, y.0 + Double(j) * cell / 14)
+                    guard loops.distance(p, within: 0.06 * cell).isInfinite else { continue }
+                    asked += 1
+                    if loops.inside(p) != (magnitude(P2(p)) < h) { wrong.append("\(p)") }
+                }
+            }
+            Check.expect(asked > 20 && wrong.isEmpty, "\(name): the loops hold it",
+                         "\(wrong.count) of \(asked) wrong: \(wrong.prefix(3).joined(separator: "; "))")
+        }
+    }
+
     Check.suite("faces: the truncation edge in a cell a band boundary cuts keeps to |f| = h, within the refiner's tolerance") {
         // Each chord with its midpoint within a column of a boundary, its
         // midpoint off the level by the residual over the gradient, in
