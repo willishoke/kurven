@@ -540,6 +540,37 @@ func topEdgeTests() {
         Check.expect(topEdge.allSatisfy { $0.z <= min(f($0), $0.x < 0.5 ? 2 : 4) + 1e-9 }, "and none rises above its band's truncation")
     }
 
+    Check.suite("banded truncation edge: a wall's top edge steps at a riser between the band heights, and no higher") {
+        // 1/(z - 0.45) over Re [-1/2, 3/2], Im [-1, 1], truncated at 1/2 for
+        // Re z < 1/2 and at 4 beyond. Where the front and back walls meet the
+        // boundary |f| = 1/|0.05 ± i| ≈ 0.999 lies between the two, so the
+        // top edge steps there from 1/2 to |f|: the truncation, not |f|,
+        // changes across the step, and the top edge reaches neither band's
+        // truncation on it.
+        let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        let request = LandscapeRequest(expression: "1/(z - 0.45)", domain: domain, resolution: 32,
+                                       truncation: .realBands([RealBand(below: 0.5, height: 0.5)], beyond: 4))
+        let bundle = try NativeLandscape.build(request, refine: true)
+        func f(_ v: P3<WorldSpace>) -> Double { 1 / ((v.x - 0.45) * (v.x - 0.45) + v.y * v.y).squareRoot() }
+        let top = 1 / (0.05 * 0.05 + 1).squareRoot()
+        let wallEdges = try bundle.layer("wall_edges").paths
+        for y in [-1.0, 1.0] {
+            var topEdge: [P3<WorldSpace>] = []
+            for i in 0..<wallEdges.count {
+                let p = Array(wallEdges[path: i])
+                if p.allSatisfy({ abs($0.y - y) < 1e-9 }), Set(p.map { $0.z }).count > 1, p.count > topEdge.count { topEdge = p }
+            }
+            let atRiser = topEdge.filter { abs($0.x - 0.5) < 1e-9 }
+            Check.expect(atRiser.count == 2 && atRiser.contains { $0.x < 0.5 } && atRiser.contains { $0.x >= 0.5 }
+                         && atRiser.allSatisfy { abs($0.z - min(f($0), $0.x < 0.5 ? 0.5 : 4)) < 1e-9 },
+                         "at Im z = \(y) the top edge has two vertices on the riser, at 1/2 and at |f| there",
+                         "\(atRiser.count) vertices, heights \(atRiser.map { String(format: "%.4f", $0.z) })")
+            let highest = topEdge.map(\.z).max() ?? .infinity
+            Check.expect(highest <= top + 1e-9, "and none above the higher side's top there, |f| = \(String(format: "%.4f", top))",
+                         String(format: "highest %.4f", highest))
+        }
+    }
+
     Check.suite("banded truncation edge: a riser's top that reaches the domain's edge is drawn to it") {
         // The tower 1/(z - 1/2) at 2 | 4 again, over Im [-0.3, 1]: the band
         // at 2 holds the boundary Re z = 1/2 from Im z = -1/2, off the
