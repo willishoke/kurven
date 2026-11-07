@@ -31,12 +31,17 @@ public struct Heightfield: Sendable {
     /// bundle: the fold curves are carried to its zeros.
     public let refine: ContourRefine?
     /// The walls as the manifest gives them: a perimeter they stand on, which
-    /// is their faces (`faces`), or a mesh, already in `occluder`.
+    /// is their faces (`faces`), or a mesh, already in `occluder`. Strokes on
+    /// a wall are tested by the facing of the wall they stand on only where
+    /// the walls are a perimeter; given none or a mesh, by the traversal
+    /// alone, and a wall facing away shows its hatching.
     public let walls: Walls
 
+    /// `walls` has no default, so that a heightfield built in code says what
+    /// its wall strokes are tested by (`walls`).
     public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],
                 region: Region = .full, step: Int, refine: ContourRefine? = nil,
-                walls: Walls = .none) {
+                walls: Walls) {
         self.surface = surface; self.occluder = occluder; self.tiles = tiles
         self.region = region; self.step = step; self.refine = refine; self.walls = walls
     }
@@ -208,7 +213,8 @@ public struct Heightfield: Sendable {
     /// pixel, and the pixel's value is the near side's, in front of the fold
     /// by far more than any depth tolerance. It is tested by the solid instead: a fold
     /// vertex is hidden when the line of sight from it to the eye passes under
-    /// the surface (`GridTraversal`). `depthTolerance` is the drawing's hidden-line
+    /// the surface (`GridTraversal`), and its facing, zero by construction,
+    /// is not asked. `depthTolerance` is the drawing's hidden-line
     /// depth tolerance, which keeps a vertex on the surface it belongs to from hiding
     /// behind that surface's own rounding.
     ///
@@ -219,15 +225,16 @@ public struct Heightfield: Sendable {
     /// tolerance, almost on the top edge.
     ///
     /// `resolution` is how finely a fold's end behind the solid is placed,
-    /// as a length in the view plane (`runs(of:)`); zero, to the last bit.
+    /// as a length in the view plane (`visibleRuns(of:folds:worker:stop:)`);
+    /// zero, to the last bit.
     public func visibleFolds(view: Transform<WorldSpace, ViewSpace>, depthTolerance: Double,
                              refined: Bool = true, resolution: Double = 0) -> PolylineSet<WorldSpace> {
         let folds = foldCurves(view: view, refined: refined)
         guard !folds.vertices.isEmpty else { return folds }
         let traversal = GridTraversal(self, view: view, depthTolerance: surfaceDepthTolerance(depthTolerance))
-        return Self.runs(of: folds, worker: {
+        return Self.visibleRuns(of: folds, folds: false, worker: {
             let m = traversal.forked(), h = m.heightfield
-            return (holds: { m.unoccluded(h.onSurface($0)) }, lift: { _, _, q in q })
+            return Tests(facing: { _ in nil }, clear: { m.isClear(h.onSurface($0)) })
         }, stop: Self.stop(resolution, view))
     }
 
@@ -270,245 +277,264 @@ public struct Heightfield: Sendable {
         return z.isFinite ? P3(p.x, p.y, z) : p
     }
 
-    /// Curves that lie in a cut face -- the wall's hatch and its outline --
-    /// less what cannot be seen. A wall is a plane the oblique camera often
-    /// sees nearly edge-on, and the depth buffer cannot test curves on such a
-    /// face: one pixel spans the whole receding wall, keeps the near side's
-    /// depth, and erases most of the hatch, leaving spots. So wall curves are
-    /// tested as the folds are: hidden where the wall it lies in faces away
-    /// from the eye -- it is then behind the solid the wall bounds -- and
-    /// otherwise hidden only where the line of sight from it passes under the
-    /// surface. A vertical edge at a corner lies in two walls and shows if either
-    /// does. Which wall a vertex lies in is read off its position against
-    /// the box of each tile, since every wall of a described landscape
-    /// stands on a tile's edge.
+    /// The curves on one kind of face that can be seen, the landscape's one
+    /// rule for every layer (`Scene.visible(_:depthTolerance:image:)`): a
+    /// point is seen when the face under it faces the eye and nothing of the
+    /// solid stands between it and the eye (`GridTraversal`). `face` is what
+    /// the curves lie on (`SceneGeometry.face(of:)`), and says which facing
+    /// is read:
     ///
-    /// The top edge is the exception: it is the surface's own edge as much as
-    /// the wall's top, and the far edge of a drawing is in plain view over a
-    /// wall that faces away. A vertex at the surface's height is tested by
-    /// the traversal alone, which hides it exactly when the surface in front of
-    /// it does.
+    /// - **The graph.** The surface bounds the solid under it, so where it
+    ///   faces away from the eye the curves on it are hidden, full stop, and
+    ///   no depth tolerance has a say: this is the test a depth tolerance
+    ///   cannot make, since where a steep graph turns away its back lies
+    ///   within the depth tolerance of its front for a stretch, and the other
+    ///   family of contours would show through there as ticks along the
+    ///   outline. The facing is the truncated surface's (`normal(at:)`), so a
+    ///   curve lifted over the truncation reads its plateau's. A segment that
+    ///   crosses a fold is cut on the fold itself, found by bisection on the
+    ///   facing -- the same facing the fold curves are traced from, so a
+    ///   contour ends where the outline is drawn -- and the new vertex
+    ///   belongs to the run on the visible side, tested by the traversal
+    ///   alone, since on the fold the facing is zero by construction. The
+    ///   curves are tested on f where the function is at hand (`onSurface`),
+    ///   with the depth tolerance as rounding.
+    /// - **The walls.** A wall is a plane the oblique camera often sees
+    ///   nearly edge-on, and the depth buffer cannot test curves on such a
+    ///   face: one pixel spans the whole receding wall, keeps the near side's
+    ///   depth, and erases most of the hatch, leaving spots. A point on a
+    ///   wall that faces away is behind the solid the wall bounds. A vertical
+    ///   edge at a corner lies in two walls and shows if either does. Which
+    ///   walls a point lies in is read off the walls' faces: those whose foot
+    ///   it stands on (`wallFacing(sight:slack:)`). The top edge is the
+    ///   exception: it is the surface's own edge as much as the wall's top,
+    ///   and the far edge of a drawing is in plain view over a wall that
+    ///   faces away. A vertex at the surface's height is tested by the
+    ///   traversal alone, which hides it exactly when the surface in front of
+    ///   it does.
+    /// - **The plateaus**, flat and facing up.
+    /// - **No face**: a crease or anything else, tested by the traversal
+    ///   alone, since such curves lie where no one face's facing is the
+    ///   curves'.
+    ///
+    /// `resolution` is how finely a run's end is placed, as a length in the
+    /// view plane; zero, to the last bit.
+    public func visibleCurves(_ paths: PolylineSet<WorldSpace>, on face: FaceKind?,
+                              view: Transform<WorldSpace, ViewSpace>,
+                              depthTolerance: Double, resolution: Double = 0) -> PolylineSet<WorldSpace> {
+        guard !paths.vertices.isEmpty else { return paths }
+        let sight = view.projectionDirection
+        let stop = Self.stop(resolution, view)
+        switch face {
+        case .graph:
+            let traversal = GridTraversal(self, view: view, depthTolerance: surfaceDepthTolerance(depthTolerance))
+            return Self.visibleRuns(of: paths, folds: true, worker: {
+                let m = traversal.forked(), h = m.heightfield
+                return Tests(facing: { h.facing(at: $0.xy, sight: sight) }, clear: { m.isClear(h.onSurface($0)) })
+            }, stop: stop)
+        case .wall:
+            let traversal = GridTraversal(self, view: view, depthTolerance: depthTolerance)
+            let facing = wallFacing(sight: sight, slack: 1e-6 * traversal.cell)
+            let cell = traversal.cell
+            @Sendable func onTopEdge(_ hf: Heightfield, _ p: P3<WorldSpace>) -> Bool {
+                let h = hf.surfaceHeight(at: P2(p.x, p.y))
+                return p.z >= h - 1e-9 * max(cell, abs(h))
+            }
+            // A top edge run ends where the traversal turns along the top
+            // edge itself: the chord between two top edge vertices lies under
+            // a concave top edge, and a point under the top edge is in the
+            // wall, which, facing away, is never admitted -- so bisected along
+            // the chord the run began at the next vertex, half a cell late,
+            // and the far edge of a drawing came out from behind a tower with
+            // a stub missing beside the outline's cusp. Visible on the
+            // surface, the chord's points are top edge points.
+            return Self.visibleRuns(of: paths, folds: false, worker: {
+                let m = traversal.forked(), h = m.heightfield
+                return Tests(facing: { p in onTopEdge(h, p) ? nil : facing(p) }, clear: { m.isClear($0) },
+                             lift: { a, b, q in onTopEdge(h, a) && onTopEdge(h, b) ? h.onSurface(q) : q })
+            }, stop: stop)
+        case .plateau:
+            let traversal = GridTraversal(self, view: view, depthTolerance: depthTolerance)
+            let up = -sight.z
+            return Self.visibleRuns(of: paths, folds: false, worker: {
+                let m = traversal.forked()
+                return Tests(facing: { _ in up }, clear: { m.isClear($0) })
+            }, stop: stop)
+        case .riser, .surface, .solid, nil:
+            let traversal = GridTraversal(self, view: view, depthTolerance: depthTolerance)
+            return Self.visibleRuns(of: paths, folds: false, worker: {
+                let m = traversal.forked()
+                return Tests(facing: { _ in nil }, clear: { m.isClear($0) })
+            }, stop: stop)
+        }
+    }
+
+    /// Curves that lie in a cut face -- the wall's hatch and its outline --
+    /// less what cannot be seen: `visibleCurves(_:on:view:depthTolerance:resolution:)`
+    /// on the walls.
     public func visibleWallCurves(_ paths: PolylineSet<WorldSpace>,
                                   view: Transform<WorldSpace, ViewSpace>,
                                   depthTolerance: Double, resolution: Double = 0) -> PolylineSet<WorldSpace> {
-        guard !paths.vertices.isEmpty else { return paths }
-        let sight = view.projectionDirection
-        let traversal = GridTraversal(self, view: view, depthTolerance: depthTolerance)
-        let d = surface.domain
-        let slack = 1e-6 * traversal.cell
-        let boxes: [(lo: SIMD2<Double>, hi: SIMD2<Double>)] = tiles.map { tile in
-            let corners = [(d.real.lo, d.imag.lo), (d.real.hi, d.imag.lo),
-                           (d.real.lo, d.imag.hi), (d.real.hi, d.imag.hi)]
-                .map { tile(P3<WorldSpace>($0.0, $0.1, 0)) }
-            return (SIMD2(corners.map(\.x).min()!, corners.map(\.y).min()!),
-                    SIMD2(corners.map(\.x).max()!, corners.map(\.y).max()!))
-        }
-        let cell = traversal.cell
-        /// Whether the point is tested by the traversal at all: on the top edge, in
-        /// a wall that faces the eye, or in no wall. Curves that stands in no
-        /// wall is left to the traversal alone.
-        @Sendable func onTopEdge(_ hf: Heightfield, _ p: P3<WorldSpace>) -> Bool {
-            let h = hf.surfaceHeight(at: P2(p.x, p.y))
-            return p.z >= h - 1e-9 * max(cell, abs(h))
-        }
-        @Sendable func admitted(_ hf: Heightfield, _ p: P3<WorldSpace>) -> Bool {
-            let onTopEdge = onTopEdge(hf, p)
-            var onAnyWall = false, facesEye = false
-            for box in boxes {
-                let walls: [(on: Bool, outward: SIMD3<Double>)] = [
-                    (abs(p.x - box.lo.x) <= slack, SIMD3(-1, 0, 0)),
-                    (abs(p.x - box.hi.x) <= slack, SIMD3(1, 0, 0)),
-                    (abs(p.y - box.lo.y) <= slack, SIMD3(0, -1, 0)),
-                    (abs(p.y - box.hi.y) <= slack, SIMD3(0, 1, 0)),
-                ]
-                for wall in walls where wall.on {
-                    onAnyWall = true
-                    if -simd_dot(wall.outward, sight) > 0 { facesEye = true }
-                }
-            }
-            return onTopEdge || facesEye || !onAnyWall
-        }
-        // A top edge run ends where the traversal turns along the top edge itself: the
-        // chord between two top edge vertices lies under a concave top edge, and a
-        // point under the top edge is in the wall, which, facing away, is
-        // never admitted -- so bisected along the chord the run began at
-        // the next vertex, half a cell late, and the far edge of a drawing
-        // came out from behind a tower with a stub missing beside the
-        // outline's cusp. Visible on the surface, the chord's points are
-        // top edge points.
-        return Self.runs(of: paths, worker: {
-            let m = traversal.forked(), h = m.heightfield
-            return (holds: { p in admitted(h, p) && m.unoccluded(p) },
-                    lift: { a, b, q in onTopEdge(h, a) && onTopEdge(h, b) ? h.onSurface(q) : q })
-        }, bisectable: { a, b in admitted(self, a) && admitted(self, b) },
-           stop: Self.stop(resolution, view))
+        visibleCurves(paths, on: .wall, view: view, depthTolerance: depthTolerance, resolution: resolution)
     }
 
-    /// Curves that lie on the surface itself -- the contours of |f| and arg f,
-    /// lifted onto it -- less what cannot be seen.
+    /// How squarely the surface faces the viewer over `p`, for lines of
+    /// sight along `sight`: positive facing, negative facing away, zero on a
+    /// fold. The truncated surface's (`normal(at:)`).
+    func facing(at p: P2<WorldSpace>, sight: SIMD3<Double>) -> Double {
+        let n = normal(at: p)
+        return -simd_dot(n, sight) / simd_length(n)
+    }
+
+    /// The facing of the walls a point lies in, for lines of sight along
+    /// `sight`: positive where one of them faces the eye, negative where it
+    /// lies in walls that all face away, nil where it lies in none. Each wall
+    /// is flat and faces as its face's outward normal does
+    /// (`Surface.walls(_:tiles:refine:)`), read straight off the perimeter
+    /// edge it stands on rather than through the face, whose height range
+    /// can cost a scan of the grid; a point lies in it when it stands within
+    /// `slack` of that edge, between its ends. Only walls given as a
+    /// perimeter are faces: with none, or a mesh, no point lies in a wall.
+    func wallFacing(sight: SIMD3<Double>, slack: Double) -> @Sendable (P3<WorldSpace>) -> Double? {
+        guard case .perimeter(let perimeter, _) = self.walls else { return { _ in nil } }
+        let turn: Double = perimeter.signedArea < 0 ? -1 : 1
+        let walls = perimeter.edges.compactMap { edge -> (start: SIMD2<Double>, along: SIMD2<Double>, length: Double, facesEye: Bool)? in
+            let along = edge.end.v - edge.start.v, length = simd_length(along)
+            guard length > 0 else { return nil }
+            let u = along / length
+            // du × dv of the wall's face, du along the edge and dv up.
+            let outward = turn * SIMD3(u.y, -u.x, 0)
+            return (edge.start.v, u, length, -simd_dot(outward, sight) > 0)
+        }
+        return { p in
+            var onAnyWall = false, facesEye = false
+            for wall in walls {
+                let r = SIMD2(p.x, p.y) - wall.start
+                let s = simd_dot(r, wall.along)
+                guard s >= -slack, s <= wall.length + slack,
+                      abs(r.x * wall.along.y - r.y * wall.along.x) <= slack else { continue }
+                onAnyWall = true
+                if wall.facesEye { facesEye = true }
+            }
+            return facesEye ? 1 : (onAnyWall ? -1 : nil)
+        }
+    }
+
+    /// What a worker thread tests the points of curves by: the facing of
+    /// the face under a point, positive toward the eye, nil where no face's
+    /// facing has a say; whether nothing of the solid stands between it and
+    /// the eye; and where the curve between two vertices runs, as a point of
+    /// their chord is lifted onto it, for the bisection of a run's end: for
+    /// most curves the chord itself.
+    struct Tests {
+        var facing: (P3<WorldSpace>) -> Double?
+        var clear: (P3<WorldSpace>) -> Bool
+        var lift: (P3<WorldSpace>, P3<WorldSpace>, P3<WorldSpace>) -> P3<WorldSpace> = { _, _, q in q }
+    }
+
+    /// The runs of each path that can be seen: a point is seen where its
+    /// face does not face away (`Tests.facing`) and it is clear
+    /// (`Tests.clear`). Paths are split where a vertex is not seen; runs
+    /// shorter than two vertices draw nothing and are dropped. Every vertex
+    /// is tested in parallel, since the traversal behind it is the
+    /// expensive part of a bake.
     ///
-    /// Two tests, as a parametric surface has. The surface bounds the solid
-    /// under it, so where it faces away from the eye the curves on it are hidden,
-    /// full stop, and no depth tolerance has a say: this is the test a depth depth tolerance
-    /// cannot make, since where a steep graph turns away its back lies within
-    /// the depth tolerance of its front for a stretch, and the other family of
-    /// contours would show through there as ticks along the outline.
-    /// Where it faces the eye, the curves are hidden exactly where the sight
-    /// line from it passes under the surface in front (`GridTraversal`). A
-    /// segment that crosses a fold is cut on the fold itself, found by
-    /// bisection on the normal -- the same facing the fold curves are traced
-    /// from, so a contour ends where the outline is drawn -- and the new
-    /// vertex belongs to the run on the visible side, tested by the traversal
-    /// alone, since on the fold the facing is zero by construction.
-    public func visibleSurfaceCurves(_ paths: PolylineSet<WorldSpace>,
-                                     view: Transform<WorldSpace, ViewSpace>,
-                                     depthTolerance: Double) -> PolylineSet<WorldSpace> {
-        guard !paths.vertices.isEmpty else { return paths }
-        let vis = HeightfieldVisibility(heightfield: self, view: view, depthTolerance: surfaceDepthTolerance(depthTolerance))
+    /// On a curved face (`folds`) the facing is continuous along a curve,
+    /// and a segment whose ends face opposite ways is cut on the fold
+    /// between them, by bisection on the facing; the vertex there belongs to
+    /// the run on the visible side and is tested by occlusion alone. On a
+    /// flat face a change of facing along a segment is a change of face.
+    ///
+    /// Where a run ends between a seen point and one the occlusion test
+    /// hides, it ends where the test turns, found by bisection along the
+    /// segment to the last bit, or to `stop` of it (`stop(_:_:)`): a ring
+    /// passing behind a top edge ends on the top edge as drawn, not at its
+    /// last vertex in front of it. Not where the facing hides a point: a
+    /// back-facing vertex's run already ends on the fold, and a test of where
+    /// a vertex *is* -- in a wall that faces the eye, on the top edge --
+    /// does not turn at a point of the segment, and bisecting it would draw
+    /// the sliver of a stroke between the top edge as drawn and f. The
+    /// bisection asks occlusion alone on a curved face, and on a flat one the
+    /// whole test.
+    ///
+    /// The tests are each worker thread's own, made by `worker` once a thread
+    /// (`parallelMap(_:chunk:worker:_:)`): a traversal forked for the thread
+    /// shares nothing of f with the others.
+    static func visibleRuns(of paths: PolylineSet<WorldSpace>, folds: Bool,
+                            worker: @Sendable () -> Tests,
+                            stop: @Sendable (P3<WorldSpace>, P3<WorldSpace>) -> Double = { _, _ in 0 })
+        -> PolylineSet<WorldSpace>
+    {
         let vertices = paths.vertices
-        let facing = Self.parallelMap(vertices) { vis.facing(P2($0.x, $0.y)) }
+        // A few vertices to a thread at a time, and one crossing: a test that
+        // traverses a line of sight on f is milliseconds a vertex, and at the
+        // default chunk a fold of a thousand vertices was four threads' work.
+        let tested = parallelMap(vertices, chunk: 4, worker: worker) { w, v -> (facing: Double?, seen: Bool) in
+            let facing = w.facing(v)
+            return (facing, (facing.map { $0 > 0 } ?? true) && w.clear(v))
+        }
         // The segments whose ends face opposite ways, each cut on the fold.
         var crossing: [Int] = []
-        for path in 0..<paths.count {
-            for k in (paths.offsets[path] + 1)..<paths.offsets[path + 1]
-            where (facing[k - 1] > 0) != (facing[k] > 0) { crossing.append(k) }
-        }
-        let onFold = Self.parallelMap(crossing) { k -> P3<WorldSpace>? in
-            let a = vertices[k - 1], b = vertices[k]
-            guard let t = vis.foldCrossing(from: a.xy, facing[k - 1], to: b.xy, facing[k]) else {
-                return nil
+        if folds {
+            for path in 0..<paths.count {
+                for k in (paths.offsets[path] + 1)..<paths.offsets[path + 1] {
+                    if let fa = tested[k - 1].facing, let fb = tested[k].facing, (fa > 0) != (fb > 0) {
+                        crossing.append(k)
+                    }
+                }
             }
-            return P3(a.v + (b.v - a.v) * t)
         }
-        var fold = [P3<WorldSpace>?](repeating: nil, count: vertices.count)
+        let onFold = parallelMap(crossing, chunk: 1, worker: worker) { w, k -> (v: P3<WorldSpace>, seen: Bool) in
+            let a = vertices[k - 1], b = vertices[k]
+            let t = foldCrossing(tested[k - 1].facing!, tested[k].facing!) {
+                w.facing(P3(a.v + (b.v - a.v) * $0)) ?? 0
+            }
+            let v = P3<WorldSpace>(a.v + (b.v - a.v) * t)
+            return (v, w.clear(v))
+        }
+        var fold = [(v: P3<WorldSpace>, seen: Bool)?](repeating: nil, count: vertices.count)
         for (i, k) in crossing.enumerated() { fold[k] = onFold[i] }
-        let clear = Self.parallelMap(Array(vertices.indices)) { k in
-            facing[k] > 0 && vis.isClear(self.onSurface(vertices[k]))
-        }
-        let foldClear = Self.parallelMap(fold) { $0.map { vis.isClear(self.onSurface($0)) } ?? false }
 
         // The sequence each path is tested as: its vertices with the fold
-        // crossings between them, each with its verdict and whether the
-        // traversal alone decided it (a back-facing vertex is hidden by the
-        // fold, and the run already ends on the fold crossing).
-        var sequence: [[(v: P3<WorldSpace>, visible: Bool, byTraversal: Bool)]] = []
+        // crossings between them, each with its verdict and whether occlusion
+        // alone decided it.
+        typealias Item = (v: P3<WorldSpace>, seen: Bool, byOcclusion: Bool)
+        var sequence: [[Item]] = []
         for path in 0..<paths.count {
-            var seq: [(v: P3<WorldSpace>, visible: Bool, byTraversal: Bool)] = []
+            var seq: [Item] = []
             for k in paths.offsets[path]..<paths.offsets[path + 1] {
-                if let f = fold[k] { seq.append((f, foldClear[k], true)) }
-                seq.append((vertices[k], clear[k], facing[k] > 0))
+                if let f = fold[k] { seq.append((f.v, f.seen, true)) }
+                seq.append((vertices[k], tested[k].seen, tested[k].facing.map { $0 > 0 } ?? true))
             }
             sequence.append(seq)
         }
-        // Where a run ends between a visible point and one the traversal hides,
-        // it ends where the traversal turns, by bisection along the segment: a
-        // ring passing behind a top edge ends on the top edge as drawn, not a
-        // segment short of it.
         var crossings: [(path: Int, k: Int)] = []
         for (i, seq) in sequence.enumerated() {
-            for k in 1..<max(seq.count, 1) where seq[k - 1].visible != seq[k].visible
-                && (seq[k - 1].visible ? seq[k].byTraversal : seq[k - 1].byTraversal) {
+            for k in 1..<max(seq.count, 1) where seq[k - 1].seen != seq[k].seen
+                && (seq[k - 1].seen ? seq[k].byOcclusion : seq[k - 1].byOcclusion) {
                 crossings.append((i, k))
             }
         }
-        let visibilitySequence = sequence
-        let turned = Self.parallelMap(crossings) { c -> P3<WorldSpace>? in
-            let a = visibilitySequence[c.path][c.k - 1], b = visibilitySequence[c.path][c.k]
-            return Self.turning(from: a.v, a.visible, to: b.v, holds: { vis.isClear(self.onSurface($0)) })
+        let tests = sequence
+        let turned = parallelMap(crossings, chunk: 1, worker: worker) { w, c -> P3<WorldSpace>? in
+            let a = tests[c.path][c.k - 1], b = tests[c.path][c.k]
+            let holds: (P3<WorldSpace>) -> Bool = folds ? w.clear
+                : { p in (w.facing(p).map { $0 > 0 } ?? true) && w.clear(p) }
+            return Self.turning(from: a.v, a.seen, to: b.v, holds: holds, until: stop(a.v, b.v)) {
+                w.lift(a.v, b.v, $0)
+            }
         }
         var turn: [[P3<WorldSpace>?]] = sequence.map { [P3<WorldSpace>?](repeating: nil, count: $0.count) }
         for (i, c) in crossings.enumerated() { turn[c.path][c.k] = turned[i] }
 
         var out: [[P3<WorldSpace>]] = []
-        var run: [P3<WorldSpace>] = []
         for (i, seq) in sequence.enumerated() {
+            var run: [P3<WorldSpace>] = []
             for (k, item) in seq.enumerated() {
-                if item.visible {
-                    if let t = turn[i][k] { run.append(t) }
+                if let t = turn[i][k] { run.append(t) }
+                if item.seen {
                     run.append(item.v)
                 } else {
-                    if let t = turn[i][k] { run.append(t) }
-                    if run.count >= 2 { out.append(run) }
-                    run = []
-                }
-            }
-            if run.count >= 2 { out.append(run) }
-            run = []
-        }
-        return PolylineSet(paths: out)
-    }
-
-    /// Any other curves -- the truncation edge of a truncation, the hatch across it, a dumped
-    /// scaffold -- less what the solid hides: tested by the traversal alone,
-    /// since such curves lie on a crease or a flat top where the surface's
-    /// facing is not the curves'.
-    public func visibleCurves(_ paths: PolylineSet<WorldSpace>,
-                              view: Transform<WorldSpace, ViewSpace>,
-                              depthTolerance: Double) -> PolylineSet<WorldSpace> {
-        guard !paths.vertices.isEmpty else { return paths }
-        let traversal = GridTraversal(self, view: view, depthTolerance: depthTolerance)
-        return Self.runs(of: paths, worker: {
-            let m = traversal.forked()
-            return (holds: { m.unoccluded($0) }, lift: { _, _, q in q })
-        })
-    }
-
-    /// The runs of each path whose vertices pass `holds`, split where one
-    /// does not; runs shorter than two vertices draw nothing and are dropped.
-    /// `holds` is asked of every vertex in parallel, since the traversal behind it
-    /// is the expensive part of a bake.
-    ///
-    /// Where a run ends between a kept vertex and a dropped one, it ends
-    /// where `holds` turns, found by bisection along the segment to the last
-    /// bit: a ring passing behind a top edge ends on the top edge as drawn, not at
-    /// its last vertex in front of it. Only across a segment `bisectable`
-    /// admits: the traversal's verdict turns at a point of the segment, but a
-    /// test of where the vertex *is* -- in a wall that faces the eye, on the
-    /// top edge -- does not, and bisecting it would draw the sliver of a stroke
-    /// between the top edge as drawn and f.
-    /// `lift` places a point of the chord `a -> b` where the curves between
-    /// the two vertices actually runs, for the bisection of a run's end:
-    /// for most curves the chord itself. `stop` is the fraction of the segment
-    /// the bisection may stop at (`stop(_:_:)`): none, by default.
-    ///
-    /// `holds` and `lift` are each worker thread's own, made by `worker` once
-    /// a thread (`parallelMap(_:chunk:worker:_:)`): a traversal forked for the
-    /// thread shares nothing of f with the others.
-    static func runs(of paths: PolylineSet<WorldSpace>,
-                     worker: @Sendable () -> (holds: Predicate, lift: Lift),
-                     bisectable: @Sendable (P3<WorldSpace>, P3<WorldSpace>) -> Bool = { _, _ in true },
-                     stop: @Sendable (P3<WorldSpace>, P3<WorldSpace>) -> Double = { _, _ in 0 })
-        -> PolylineSet<WorldSpace>
-    {
-        // A few vertices to a thread at a time, and one crossing: a predicate that
-        // traverses a line of sight on f is milliseconds a vertex, and at the
-        // default chunk a fold of a thousand vertices was four threads' work.
-        let kept = parallelMap(paths.vertices, chunk: 4, worker: worker) { w, v in w.holds(v) }
-        let vertices = paths.vertices
-        var crossings: [Int] = []
-        for path in 0..<paths.count {
-            for k in (paths.offsets[path] + 1)..<paths.offsets[path + 1]
-            where kept[k - 1] != kept[k] && bisectable(vertices[k - 1], vertices[k]) {
-                crossings.append(k)
-            }
-        }
-        let turned = parallelMap(crossings, chunk: 1, worker: worker) { w, k -> P3<WorldSpace>? in
-            let a = vertices[k - 1], b = vertices[k]
-            return Self.turning(from: a, kept[k - 1], to: b, holds: w.holds, until: stop(a, b)) {
-                w.lift(a, b, $0)
-            }
-        }
-        var turn = [P3<WorldSpace>?](repeating: nil, count: vertices.count)
-        for (i, k) in crossings.enumerated() { turn[k] = turned[i] }
-        var out: [[P3<WorldSpace>]] = []
-        for i in 0..<paths.count {
-            var run: [P3<WorldSpace>] = []
-            for k in paths.offsets[i]..<paths.offsets[i + 1] {
-                if kept[k] {
-                    if let t = turn[k] { run.append(t) }
-                    run.append(paths.vertices[k])
-                } else {
-                    if let t = turn[k] { run.append(t) }
                     if run.count >= 2 { out.append(run) }
                     run = []
                 }
@@ -517,16 +543,13 @@ public struct Heightfield: Sendable {
         }
         return PolylineSet(paths: out)
     }
-
-    typealias Predicate = @Sendable (P3<WorldSpace>) -> Bool
-    typealias Lift = @Sendable (P3<WorldSpace>, P3<WorldSpace>, P3<WorldSpace>) -> P3<WorldSpace>
 
     /// Where `holds` turns on the segment from `a` to `b`, given it holds at
     /// `a` iff `keptA`: bisection to the last bit of the fraction, or to
     /// `until` of it, returning the last point at which it still holds on
     /// the kept side.
     static func turning(from a: P3<WorldSpace>, _ keptA: Bool, to b: P3<WorldSpace>,
-                        holds: @Sendable (P3<WorldSpace>) -> Bool, until: Double = 0,
+                        holds: (P3<WorldSpace>) -> Bool, until: Double = 0,
                         lift: (P3<WorldSpace>) -> P3<WorldSpace> = { $0 }) -> P3<WorldSpace>? {
         var lo = 0.0, hi = 1.0
         while hi - lo > max(until, 1e-13) {
@@ -785,9 +808,10 @@ struct GridTraversal: Sendable {
         /// With the function, the sample also carries the rate the gap over
         /// f changes along the line, from the same three evaluations, for
         /// finding where the gap peaks or dips between two crossings.
-        /// Through a reflected tile the slope's sign flips with the
-        /// reflection; only its product with the line's direction is needed,
-        /// and both are read in the same frame.
+        /// The slope is f's, read in the domain, so the line's direction is
+        /// carried back into the domain through the tile under the point
+        /// before the two are multiplied: a reflected or turned copy's line
+        /// runs another way across f than across the world.
         let magnitude = heightfield.refine?.magnitude
         typealias Sample = (overTriangle: Double, overTruncation: Double, cosine: Double, rate: Double)
         func gaps(_ t: Double) -> Sample? {
@@ -795,11 +819,12 @@ struct GridTraversal: Sendable {
             guard heightfield.region.contains(P2<WorldSpace>(q.x, q.y)) else { return nil }
             let z = p.z + t * d.z
             if let magnitude {
-                let dq = heightfield.surface.inTile(P2<DomainSpace>(q.x, q.y), tiles: heightfield.tiles)
+                let (dq, back) = heightfield.surface.tile(under: P2<DomainSpace>(q.x, q.y), tiles: heightfield.tiles)
                 let (u, slope) = functionSurface(at: dq, magnitude: magnitude)
                 let cosine = 1 / (1 + simd_dot(slope, slope)).squareRoot()
                 let truncationHeight = heightfield.surface.truncationHeight(atX: dq.x)
-                return (z - u, z - truncationHeight, cosine.isNaN ? 0 : cosine, d.z - simd_dot(slope, dxy))
+                let along = SIMD2(back.a * dxy.x + back.b * dxy.y, back.c * dxy.x + back.d * dxy.y)
+                return (z - u, z - truncationHeight, cosine.isNaN ? 0 : cosine, d.z - simd_dot(slope, along))
             }
             let (interpolated, truncationHeight, cosine) = drawnSurface(at: q)
             return (z - interpolated, z - truncationHeight, cosine, 0)
@@ -1076,11 +1101,12 @@ public struct Scene: Sendable {
     /// Zero, the default and a bake's, places them to the last bit.
     public var resolution: Double = 0
 
-    /// A heightfield scene.
+    /// A heightfield scene. `walls` has no default: the scene's wall strokes
+    /// are tested by the walls it is given (`Heightfield.walls`).
     public init(surface: Surface, occluder: Mesh<WorldSpace>, tiles: [Affine2],
                 region: Region = .full, step: Int, layers: [Layer], camera: Camera,
                 mode: PreviewMode = .drawing, depthTolerance: Double, refine: ContourRefine? = nil,
-                walls: Walls = .none) {
+                walls: Walls) {
         self.init(content: ContentID(), curves: ContentID(),
                   geometry: .heightfield(Heightfield(surface: surface, occluder: occluder,
                                                      tiles: tiles, region: region, step: step,
@@ -1172,66 +1198,102 @@ public struct Scene: Sendable {
     }
 
     /// Every layer's curves in view space, in declaration (draw) order, tested
-    /// for this camera wherever the geometry can test it exactly.
+    /// for this camera: `visible(_:depthTolerance:image:)` of each.
+    public func visibleLayers(depthTolerance: Double? = nil,
+                              image: SurfaceImage? = nil) -> [(Layer, PolylineSet<ViewSpace>)] {
+        layers.flatMap { visible($0, depthTolerance: depthTolerance, image: image) }
+    }
+
+    /// A layer's curves in view space, tested for this camera wherever the
+    /// geometry can test them: the one rule of visibility. A point of a curve
+    /// is seen when the face under it faces the eye and nothing stands
+    /// between it and the eye. The kind of face is the layer's
+    /// (`SceneGeometry.face(of:)`); where its facing changes sign along a
+    /// segment, the segment is cut on the fold by bisection on it; and what
+    /// stands in front is decided by the scene's kind of occlusion test, one
+    /// of the `OcclusionTest`s, asked here as its own type: grid traversal
+    /// through a landscape, at the depth tolerance the layer's face asks for
+    /// (`Heightfield.visibleCurves(_:on:view:depthTolerance:resolution:)`),
+    /// sphere tracing round a surface with a tubular neighbourhood
+    /// (`SurfaceVisibility`), and a polyhedron's pieces in their segment form,
+    /// for its edges and hatching (`Solid.visibleEdges`,
+    /// `Solid.visibleHatching`). The coordinate image,
+    /// `image`, tests a parametric surface's curves only where it has no
+    /// tubular neighbourhood: a point is seen when the surface in front of it
+    /// is its own neighbourhood (`SurfaceVisibility`), and its fold crossings
+    /// are cut on the exact facing. A parametric surface's curves that carry
+    /// no coordinates fall back to the image's depth, at `depthTolerance`.
+    /// No depth buffer has any other part in it, so the drawing is a function
+    /// of the geometry and the camera, never of a resolution.
     ///
     /// Curves that depend on the camera -- the fold curves of a surface, of
-    /// either kind, and the edges of a solid -- is derived here, for this
-    /// camera, rather than carried. On a heightfield every clipped layer is
-    /// tested here, by the facing of what it lies on and by the solid
-    /// (`GridTraversal`), and the depth buffer has no part in it: the drawing is
-    /// a function of the geometry and the camera, never of a resolution. A
-    /// parametric surface's curves are tested by the bake, which has the
-    /// surface's coordinate image; its fold curves come tested by
-    /// construction. This is the bake's work, not the preview's: it is a
-    /// traversal per vertex, and the preview keeps its depth test. `depthTolerance` is
-    /// the hidden-line depth tolerance to test by; the scene's own when not given.
-    public func visibleLayers(depthTolerance: Double? = nil) -> [(Layer, PolylineSet<ViewSpace>)] {
+    /// either kind, and the edges of a solid -- are derived here, for this
+    /// camera, rather than carried. A solid's hatching comes back as one layer
+    /// per width step, at that fraction of the width. An unclipped layer is
+    /// drawn whole, and so is a parametric surface's with neither a tubular
+    /// neighbourhood nor an image. This is the bake's work, not the
+    /// preview's: it is a traversal per vertex, and the preview keeps its
+    /// depth test but for the strokes a camera's move changes. `depthTolerance`
+    /// is the hidden-line depth tolerance to test by; the scene's own when not
+    /// given.
+    public func visible(_ layer: Layer, depthTolerance: Double? = nil,
+                        image: SurfaceImage? = nil) -> [(Layer, PolylineSet<ViewSpace>)] {
         let view = camera.view
         let depthTolerance = depthTolerance ?? self.depthTolerance
-        return layers.flatMap { layer -> [(Layer, PolylineSet<ViewSpace>)] in
-            switch geometry {
-            case .parametric(let s):
-                if case .foldCurves = layer.spec.source {
-                    return [(layer, s.foldCurves(sight: view.projectionDirection, creases: creases).mapped(view))]
-                }
-                return [(layer, layer.paths.mapped(view))]
-            case .heightfield(let h):
-                let visible: PolylineSet<WorldSpace>
-                if case .foldCurves = layer.spec.source {
-                    visible = h.visibleFolds(view: view, depthTolerance: depthTolerance)
-                } else if !layer.spec.clipped {
-                    visible = layer.paths
-                } else if layer.spec.source.liesOnWall {
-                    visible = h.visibleWallCurves(layer.paths, view: view, depthTolerance: depthTolerance)
-                } else if layer.spec.liesOnSurface {
-                    visible = h.visibleSurfaceCurves(layer.paths, view: view, depthTolerance: depthTolerance)
-                } else {
-                    visible = h.visibleCurves(layer.paths, view: view, depthTolerance: depthTolerance)
-                }
-                return [(layer, visible.mapped(view))]
-            case .solid(let s):
-                if case .edges = layer.spec.source, layer.spec.clipped {
-                    return [(layer, s.visibleEdges(view: view).mapped(view))]
-                }
-                if case .hatching(let hatching, .solid) = layer.spec.source {
-                    // One layer per width step, at that fraction of the
-                    // width: every hatch line when unclipped, the visible
-                    // spans otherwise.
-                    let steps = layer.spec.clipped
-                        ? s.visibleHatching(hatching, view: view)
-                        : s.hatchLinesByWidth(hatching).map {
-                            let all = PolylineSet(paths: $0.lines.map(\.path))
-                            return (widthStep: $0.widthStep, all: all, visible: all)
-                        }
-                    return steps.map { w, all, drawn in
-                        var spec = layer.spec
-                        spec.width = layer.spec.width * Double(w) / Double(hatching.widthSteps)
-                        if hatching.widthSteps > 1 { spec.name = "\(layer.spec.name) \(w)/\(hatching.widthSteps)" }
-                        return (Layer(spec: spec, paths: all), drawn.mapped(view))
-                    }
-                }
-                return [(layer, layer.paths.mapped(view))]
+        let folds: Bool
+        if case .foldCurves = layer.spec.source { folds = true } else { folds = false }
+        switch geometry {
+        case .parametric(let s):
+            let projected = (folds ? s.foldCurves(sight: view.projectionDirection, creases: creases)
+                                   : layer.paths).mapped(view)
+            guard layer.spec.clipped else { return [(layer, projected)] }
+            let visibility = image.map { SurfaceVisibility(surface: s, image: $0, view: view) }
+                ?? (s.neighbourhood != nil ? SurfaceVisibility(sphereTracing: s, view: view) : nil)
+            let clipped: PolylineSet<PageSpace>
+            if let visibility, projected.coords != nil {
+                // On no face is on a fold or a crease, where the normal
+                // says nothing.
+                let onFolds = geometry.face(of: layer.spec) == nil
+                clipped = HiddenLine.clip(projected, on: visibility, onFolds: onFolds, onCrease: onFolds && !folds)
+            } else if let image {
+                clipped = HiddenLine.clip(projected, against: image.depth, depthTolerance: depthTolerance)
+            } else {
+                return [(layer, projected)]
             }
+            return [(layer, PolylineSet(vertices: clipped.vertices.map { P3($0.v) }, offsets: clipped.offsets))]
+        case .heightfield(let h):
+            let visible: PolylineSet<WorldSpace>
+            if folds {
+                visible = h.visibleFolds(view: view, depthTolerance: depthTolerance)
+            } else if !layer.spec.clipped {
+                visible = layer.paths
+            } else {
+                visible = h.visibleCurves(layer.paths, on: geometry.face(of: layer.spec), view: view,
+                                          depthTolerance: depthTolerance)
+            }
+            return [(layer, visible.mapped(view))]
+        case .solid(let s):
+            if case .edges = layer.spec.source, layer.spec.clipped {
+                return [(layer, s.visibleEdges(view: view).mapped(view))]
+            }
+            if case .hatching(let hatching, .solid) = layer.spec.source {
+                // One layer per width step, at that fraction of the
+                // width: every hatch line when unclipped, the visible
+                // spans otherwise.
+                let steps = layer.spec.clipped
+                    ? s.visibleHatching(hatching, view: view)
+                    : s.hatchLinesByWidth(hatching).map {
+                        let all = PolylineSet(paths: $0.lines.map(\.path))
+                        return (widthStep: $0.widthStep, all: all, visible: all)
+                    }
+                return steps.map { w, all, drawn in
+                    var spec = layer.spec
+                    spec.width = layer.spec.width * Double(w) / Double(hatching.widthSteps)
+                    if hatching.widthSteps > 1 { spec.name = "\(layer.spec.name) \(w)/\(hatching.widthSteps)" }
+                    return (Layer(spec: spec, paths: all), drawn.mapped(view))
+                }
+            }
+            return [(layer, layer.paths.mapped(view))]
         }
     }
 

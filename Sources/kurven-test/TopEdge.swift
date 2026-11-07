@@ -626,7 +626,7 @@ func topEdgeTests() {
         var fewer = 0
         var pairs = [(h.visibleFolds(view: view, depthTolerance: scene.depthTolerance),
                       h.visibleFolds(view: view, depthTolerance: scene.depthTolerance, resolution: resolution))]
-        for layer in scene.layers where layer.spec.source.liesOnWall && layer.spec.clipped {
+        for layer in scene.layers where scene.geometry.face(of: layer.spec) == .wall && layer.spec.clipped {
             pairs.append((h.visibleWallCurves(layer.paths, view: view, depthTolerance: scene.depthTolerance),
                           h.visibleWallCurves(layer.paths, view: view, depthTolerance: scene.depthTolerance,
                                               resolution: resolution)))
@@ -674,7 +674,7 @@ func topEdgeTests() {
         // surface layer less what cannot be seen.
         let folds = h.visibleFolds(view: view, depthTolerance: scene.depthTolerance)
         let visible: [(layer: Layer, paths: PolylineSet<WorldSpace>)] = scene.layers.map {
-            ($0, h.visibleSurfaceCurves($0.paths, view: view, depthTolerance: scene.depthTolerance))
+            ($0, h.visibleCurves($0.paths, on: .graph, view: view, depthTolerance: scene.depthTolerance))
         }
         // The pit is a bowl: the graph is convex there, so the solid under
         // it is hollow, and a line of sight tangent to the graph -- which is
@@ -738,7 +738,7 @@ func topEdgeTests() {
         // the grid used to leave short.
         var worst = 0.0, ends = 0, worstTopEdge = 0.0, byTraversal = 0
         var kinds = (edge: 0, truncationHeight: 0, zero: 0)
-        for (layer, paths) in visible where layer.spec.liesOnSurface {
+        for (layer, paths) in visible where layer.spec.clipped && scene.geometry.face(of: layer.spec) == .graph {
             for i in 0..<paths.count {
                 let p = paths[path: i]
                 for end in [p.first!, p.last!] {

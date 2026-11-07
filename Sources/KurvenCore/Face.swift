@@ -27,6 +27,25 @@ public enum FaceID: Sendable, Hashable, Comparable {
     case solid(face: Int)
 }
 
+/// A kind of face, as `FaceID` names it less which one: what a layer's
+/// curves lie on (`SceneGeometry.face(of:)`).
+public enum FaceKind: Sendable, Hashable {
+    case graph, plateau, riser, wall, surface, solid
+}
+
+public extension FaceID {
+    var kind: FaceKind {
+        switch self {
+        case .graph: .graph
+        case .plateau: .plateau
+        case .riser, .tileBoundaryRiser: .riser
+        case .wall: .wall
+        case .surface: .surface
+        case .solid: .solid
+        }
+    }
+}
+
 /// A face in the boundary-representation sense (Mäntylä 1988): a region of
 /// one smooth surface, flat or curved, bounded by loops. A solid's faces
 /// together are its manifold, the surface it is bounded by, in boundary
@@ -217,6 +236,37 @@ public extension SceneGeometry {
         case .heightfield(let h): h.faces
         case .parametric(let s): [s.face]
         case .solid(let s): s.faces.indices.map(s.face)
+        }
+    }
+
+    /// The kind of face a layer's curves lie on, which is what their
+    /// visibility is read from: the facing of that face under each point,
+    /// then the scene's occlusion test (`Scene.visible(_:depthTolerance:image:)`).
+    /// Nil for curves on no one face, tested by occlusion alone: a fold,
+    /// edge-on by construction; a crease between two faces, as an outline, a
+    /// truncation edge and a polyhedron's edges are; anything else stored
+    /// with nothing said of where it lies.
+    ///
+    /// On a landscape the contours of |f| and arg f, and curves given their
+    /// roles, lie on the graph, and over the truncation, lifted onto it, on
+    /// a plateau; a wall's hatching and edges on the walls; a plateau's
+    /// hatching on the plateaus. On a parametric surface every curve but an
+    /// outline lies on its one face. On a polyhedron its hatching lies on
+    /// its faces.
+    func face(of spec: LayerSpec) -> FaceKind? {
+        if case .foldCurves = spec.source { return nil }
+        switch self {
+        case .heightfield:
+            switch spec.source {
+            case .hatching(_, .walls), .wallEdges: return .wall
+            case .hatching(_, .plateaus): return .plateau
+            default: return spec.role == .magnitude || spec.role == .phase ? .graph : nil
+            }
+        case .parametric:
+            return spec.role == .outline ? nil : .surface
+        case .solid:
+            if case .hatching(_, .solid) = spec.source { return .solid }
+            return nil
         }
     }
 }

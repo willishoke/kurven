@@ -876,7 +876,7 @@ func bench(_ args: Args) throws {
     time("folds traced and tested on the grid") {
         grid.visibleFolds(view: view, depthTolerance: base.depthTolerance, refined: false).vertices.count
     }
-    for layer in base.layers where layer.spec.source.liesOnWall && layer.spec.clipped {
+    for layer in base.layers where base.geometry.face(of: layer.spec) == .wall && layer.spec.clipped {
         if h.refine != nil {
             time("\(layer.spec.name) tested on f") {
                 h.visibleWallCurves(layer.paths, view: view, depthTolerance: base.depthTolerance).vertices.count

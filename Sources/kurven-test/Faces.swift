@@ -1163,6 +1163,51 @@ private func trimLoops(_ l: Landscape, margin: Double) -> TrimTally? {
 }
 
 func faceTests() {
+    Check.suite("faces: each layer says the kind of face its curves lie on") {
+        func faces(_ scene: Scene) -> [String: FaceKind?] {
+            Dictionary(uniqueKeysWithValues: scene.layers.map { ($0.spec.name, scene.geometry.face(of: $0.spec)) })
+        }
+        func listed(_ faces: [String: FaceKind?]) -> String {
+            faces.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value.map { "\($0)" } ?? "none")" }.joined(separator: ", ")
+        }
+        let camera = Camera.oblique(ObliqueProjection(shear: 0, xAngle: -55, zAngle: 30, flipX: false, yScale: nil))
+        let bundle = try KurvenBundle.read(at: Fixtures.url("contract/landscape.kurven"))
+        let landscape = faces(Scene(bundle: bundle, preset: bundle.manifest.presets[0]))
+        let onLandscape: [String: FaceKind?] = [
+            "mag_major": .graph, "truncation_edge": nil, "plateau_hatch": .plateau, "plateau_hatch_tiled": .plateau,
+            "wall_edges": .wall, "wall_hatch": .wall, "folds": nil,
+        ]
+        Check.expect(landscape == onLandscape,
+                     "a landscape: contours on the graph, hatching on the plateaus and walls, the walls' edges on the walls; the truncation edge and the folds on none",
+                     listed(landscape))
+        let sn = try PeriodicTorus.jacobiSN(modulus: 0.64)
+        let outline = Layer(spec: LayerSpec(name: "truncation edge", role: .outline,
+                                            source: .contour(field: .magnitude, levels: [2], restriction: .all, tiled: false),
+                                            width: 1, heightPolicy: .surface), paths: .empty)
+        // Folds are edge-on whatever their role.
+        let folds = Layer(spec: LayerSpec(name: "folds drawn as scaffold", role: .scaffold, source: .foldCurves,
+                                          width: 1, heightPolicy: .surface), paths: .empty)
+        let torus = faces(Scene(surface: sn.surface, layers: sn.layers + [outline, folds], camera: camera,
+                                depthTolerance: 0))
+        let onTorus: [String: FaceKind?] = [
+            "mag_major": .surface, "mag_minor": .surface, "ang_major": .surface, "ang_minor": .surface,
+            "folds": nil, "truncation edge": nil, "folds drawn as scaffold": nil,
+        ]
+        Check.expect(torus == onTorus,
+                     "a parametric surface: every curve on its one face but the folds and an outline",
+                     listed(torus))
+        let frame = Solid.frame(outer: 2, inner: 1, depth: 0.6)
+        let hatching = Hatching(angle: 0.5, spacing: 0.1)
+        let solid = faces(Scene(solid: frame, layers: [
+            Layer(spec: LayerSpec(name: "edges", role: .outline, source: .edges, width: 1, heightPolicy: .surface),
+                  paths: frame.edgePaths),
+            Layer(spec: LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching, faces: .solid),
+                                  width: 1, heightPolicy: .surface), paths: frame.hatchPaths(hatching)),
+        ], camera: camera))
+        Check.expect(solid == ["edges": nil, "hatching": .solid],
+                     "a polyhedron: its hatching on its faces, its edges on none", listed(solid))
+    }
+
     Check.suite("faces: a landscape's faces tile its boundary, and each face's map returns its points") {
         let landscapes = try faceLandscapes()
 
@@ -1954,9 +1999,9 @@ func faceTests() {
         let r0 = SIMD3(0.0, 1, 0), r1 = simd_normalize(simd_cross(toward, r0))
         let view = Transform<WorldSpace, ViewSpace>(rows: (r0, r1, toward))
         for (name, tiles) in [("the identity first", [Affine2.identity, turned]), ("the turned tile first", [turned, .identity])] {
-            let h = Heightfield(surface: steep, occluder: .empty, tiles: tiles, region: .full, step: 1)
-            let behind = h.visibleCurves(PolylineSet(paths: [[P3(1.03, 0.5, 0.2), P3(1.03, 0.45, 0.2)]]), view: view, depthTolerance: 1e-6)
-            let over = h.visibleCurves(PolylineSet(paths: [[P3(1.03, 0.5, 1.5), P3(1.03, 0.45, 1.5)]]), view: view, depthTolerance: 1e-6)
+            let h = Heightfield(surface: steep, occluder: .empty, tiles: tiles, region: .full, step: 1, walls: .none)
+            let behind = h.visibleCurves(PolylineSet(paths: [[P3(1.03, 0.5, 0.2), P3(1.03, 0.45, 0.2)]]), on: nil, view: view, depthTolerance: 1e-6)
+            let over = h.visibleCurves(PolylineSet(paths: [[P3(1.03, 0.5, 1.5), P3(1.03, 0.45, 1.5)]]), on: nil, view: view, depthTolerance: 1e-6)
             Check.expect(behind.vertices.isEmpty && over.vertices.count == 2,
                          "\(name): a point behind the riser is hidden, and one over it seen",
                          "\(behind.vertices.count) of 2 behind seen, \(over.vertices.count) of 2 over seen")
@@ -2073,7 +2118,8 @@ func faceTests() {
                              resolution: 30, truncation: .uniform(30)),
             refine: true)
         let tiles = [Affine2.identity, Affine2(a: -1, b: 0, tx: 2, c: 0, d: 1, ty: 0), Affine2(a: 0, b: -1, tx: 4, c: 1, d: 0, ty: 0)]
-        let h = Heightfield(surface: cone.surface, occluder: .empty, tiles: tiles, region: .full, step: 1, refine: cone.refine)
+        let h = Heightfield(surface: cone.surface, occluder: .empty, tiles: tiles, region: .full, step: 1,
+                            refine: cone.refine, walls: .none)
         // Under cameras turned every quarter, so each copy shows the apex's
         // outline under some: every end near an apex is on it, and every
         // tile has one.

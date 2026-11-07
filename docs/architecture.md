@@ -51,8 +51,8 @@ surface coordinate.
 eye and nothing stands between it and the eye. The first test is a sign:
 n · d < 0 for the outward normal n and the projection direction d, which
 points away from the viewer. A point on a face turned away has a line of
-sight that has already entered the solid. The second is an occlusion test,
-one for each kind of solid:
+sight that has already entered the solid. The second is an occlusion test
+(`OcclusionTest`), one for each kind of solid:
 
 | solid | occlusion test |
 |---|---|
@@ -64,7 +64,10 @@ one for each kind of solid:
 Where visibility changes along a segment, the segment is cut there by
 bisection on the exact test, not at a pixel. Every test but the coordinate
 image has no resolution in it: a bake with a 64-pixel depth buffer and one
-with a 4096-pixel buffer write the same strokes, byte for byte.
+with a 4096-pixel buffer write the same strokes, byte for byte. One function
+tests every layer of every scene (`Scene.visible`): the facing of the kind
+of face its curves lie on (`SceneGeometry.face(of:)`), then the scene's test;
+a fold or a crease lies on no one face and is tested by occlusion alone.
 
 **Projection.** An oblique parallel projection (`Camera.oblique`), as the
 plates use. See [below](#the-oblique-projection).
@@ -189,9 +192,9 @@ to it, and a run that climbs the graph ended at its own crossing of the
 truncation edge. A fold inside a pit is never drawn, because its tangent
 line runs through the pit's own material.
 
-**Curves on a wall** are tested by the wall they lie on: a wall that faces
-away hides its hatching, and its top edge, which is on the surface, is
-tested by the traversal alone.
+**Curves on a wall** are tested by the wall they lie on, the wall face
+whose foot they stand on: a wall that faces away hides its hatching, and
+its top edge, which is on the surface, is tested by the traversal alone.
 
 **The depth buffer** is still drawn, and the realtime preview uses it: the
 preview tests each stroke fragment against the depth pass, with the depth

@@ -310,7 +310,7 @@ func randomHeightfield(cells: Int, seed: UInt64, truncation: Truncation, amplitu
     for k in values.indices { values[k] = Float(rng.next(0, amplitude)) }
     let surface = Surface(height: Grid2D(width: n, height: n, domain: domain, values: values),
                           phase: nil, truncation: truncation)
-    return Heightfield(surface: surface, occluder: .empty, tiles: [.identity], step: 1)
+    return Heightfield(surface: surface, occluder: .empty, tiles: [.identity], step: 1, walls: .none)
 }
 
 /// The cameras the stress tests orbit through: from nearly overhead to a
@@ -380,9 +380,9 @@ func stressTests() {
         let h = steepScene.heightfield!
         let vis = HeightfieldVisibility(heightfield: h, view: steepScene.camera.view, depthTolerance: steepScene.depthTolerance)
         var kept = 0.0, facingOnly = 0.0, buried = 0, behind = 0
-        for layer in steepScene.layers where layer.spec.liesOnSurface {
-            kept += h.visibleSurfaceCurves(layer.paths, view: steepScene.camera.view, depthTolerance: steepScene.depthTolerance).totalLength
-            facingOnly += h.visibleSurfaceCurves(layer.paths, view: steepScene.camera.view, depthTolerance: .infinity).totalLength
+        for layer in steepScene.layers where layer.spec.clipped && steepScene.geometry.face(of: layer.spec) == .graph {
+            kept += h.visibleCurves(layer.paths, on: .graph, view: steepScene.camera.view, depthTolerance: steepScene.depthTolerance).totalLength
+            facingOnly += h.visibleCurves(layer.paths, on: .graph, view: steepScene.camera.view, depthTolerance: .infinity).totalLength
             for v in layer.paths.vertices where vis.facing(v.xy) > 0 && !vis.isClear(v) {
                 if v.z < h.drawnHeight(at: v.xy) { buried += 1 } else { behind += 1 }
             }
@@ -410,7 +410,7 @@ func stressTests() {
         // test's solid is f (below).
         let withF = scene.heightfield!
         let h = Heightfield(surface: withF.surface, occluder: withF.occluder, tiles: withF.tiles,
-                            region: withF.region, step: withF.step)
+                            region: withF.region, step: withF.step, walls: withF.walls)
         let view = scene.camera.view
         let mesh = drawnTriangles(h, base: 0)
         let vis = HeightfieldVisibility(heightfield: h, view: view, depthTolerance: scene.depthTolerance)
@@ -427,7 +427,7 @@ func stressTests() {
         var pit = (total: 0, traversal: 0, cast: 0, depth: 0)
         let clock = ContinuousClock()
         let elapsed = clock.measure {
-            for layer in scene.layers where layer.spec.liesOnSurface {
+            for layer in scene.layers where layer.spec.clipped && scene.geometry.face(of: layer.spec) == .graph {
                 let vertices = layer.paths.vertices
                 let facing = vertices.map { vis.facing($0.xy) > 0 }
                 let traversal = vertices.map { vis.isClear($0) }
@@ -473,7 +473,7 @@ func stressTests() {
         var totalF = 0, traversalF = 0, castF = 0, disagreeF = 0
         var examples = ""
         let elapsedF = clock.measure {
-            for layer in scene.layers where layer.spec.liesOnSurface {
+            for layer in scene.layers where layer.spec.clipped && scene.geometry.face(of: layer.spec) == .graph {
                 let vertices = layer.paths.vertices
                 let facing = vertices.map { visF.facing($0.xy) > 0 }
                 let traversal = vertices.map { visF.isClear($0) }
@@ -565,9 +565,18 @@ func stressTests() {
                 }
                 return ContourRefine(contours: { _, _, lines, _, _ in lines }, rings: nil, magnitude: magnitude, zero: zero)
             }
+            // The walls the wall strokes are tested by, on the perimeter scaled.
+            let walls: Walls
+            if case .perimeter(let p, let base) = h.walls {
+                walls = .perimeter(BoundaryPerimeter(edges: p.edges.map {
+                    PerimeterEdge(start: P2($0.start.v * s), end: P2($0.end.v * s), density: $0.density)
+                }), base: base * s)
+            } else {
+                walls = h.walls
+            }
             let scaled = Scene(surface: surface, occluder: occluder, tiles: h.tiles, region: h.region,
                                step: h.step, layers: layers, camera: scene.camera, depthTolerance: scene.depthTolerance * s,
-                               refine: refine)
+                               refine: refine, walls: walls)
             let visibleScaled = scaled.visibleLayers()
             var worst = 0.0, structure = true
             for ((layer, a), (_, b)) in zip(visible, visibleScaled) {
@@ -584,6 +593,62 @@ func stressTests() {
             Check.expect(structure && worst < 1e-6,
                          "x\(s): every layer is the drawing scaled, vertex for vertex",
                          String(format: "worst |Δ| / scale %.1e over %d layers", worst, visible.count))
+        }
+    }
+
+    Check.suite("stress: on a reflected or a turned tile the traversal on f is the walk up the line of sight") {
+        // Two poles of a smooth bump on a grid of eight, so that the line of
+        // sight dips under f between crossings, where only the search of
+        // each interval, bracketed by the rate the gap changes, finds it.
+        // On a second tile that rate is f's slope along the line carried
+        // back into the domain, the frame the slope is read in. The walk:
+        // f's own top under the line, a five-thousandth of a unit at a time,
+        // and the least gap it saw; a point is compared where that is clear
+        // of zero by a ten-thousandth.
+        let domain = Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: -1, hi: 1))
+        let bundle = try NativeLandscape.build(LandscapeRequest(expression: "0.3/((z - 0.4)^2 + 0.01) + exp(z)",
+                                                                domain: domain, resolution: 8, truncation: .uniform(4)))
+        let base = Scene(bundle: bundle, preset: bundle.manifest.presets[0]).heightfield!
+        for (name, second) in [("reflected", Affine2(a: -1, b: 0, tx: 2, c: 0, d: 1, ty: 0)),
+                               ("turned", Affine2(a: 0, b: -1, tx: 2, c: 1, d: 0, ty: 0))] {
+            let h = Heightfield(surface: base.surface, occluder: .empty, tiles: [.identity, second],
+                                step: 1, refine: base.refine, walls: .none)
+            let rng = SplitMix(seed: 5)
+            var points: [P3<WorldSpace>] = []
+            while points.count < 120 {
+                let x = rng.next(-1, 3), y = rng.next(-1, 1)
+                let z = h.surfaceHeight(at: P2(x, y))
+                guard z.isFinite else { continue }
+                points.append(P3(x, y, z + rng.next(0.001, 0.3)))
+            }
+            var compared = 0, wrong = 0, seen = 0
+            var example = ""
+            for (camera, view) in stressCameras() {
+                let vis = HeightfieldVisibility(heightfield: h, view: view, depthTolerance: 0)
+                let d = -view.projectionDirection
+                for p in points {
+                    var t = 0.0, least = Double.infinity
+                    while t < 20 {
+                        let q = p.v + t * d
+                        if q.z > 4.01 { break }
+                        if q.x >= -1, q.x <= 3, q.y >= -1, q.y <= 1 {
+                            least = min(least, q.z - h.surfaceHeight(at: P2(q.x, q.y)))
+                        }
+                        t += 2e-4
+                    }
+                    guard abs(least) > 1e-4 else { continue }
+                    compared += 1
+                    if least > 0 { seen += 1 }
+                    if vis.isClear(p) != (least > 0) {
+                        wrong += 1
+                        if example.isEmpty {
+                            example = String(format: " e.g. %@ at (%.4f, %.4f, %.4f), least gap %.1e", camera, p.x, p.y, p.z, least)
+                        }
+                    }
+                }
+            }
+            Check.expect(wrong == 0 && compared > 2000 && seen > compared / 10 && seen < compared,
+                         "\(name): the traversal and the walk agree", "\(wrong) of \(compared) disagree, \(seen) clear\(example)")
         }
     }
 
@@ -715,7 +780,7 @@ func stressTests() {
             }
             let field = Heightfield(surface: Surface(height: Grid2D(width: n, height: n, domain: domain, values: values),
                                                      phase: nil, truncation: .none),
-                                    occluder: .empty, tiles: [.identity], step: 1)
+                                    occluder: .empty, tiles: [.identity], step: 1, walls: .none)
             let vis = HeightfieldVisibility(heightfield: field, view: view, depthTolerance: 0)
             let rng = SplitMix(seed: UInt64(cells))
             let cell = 3.0 / Double(cells)

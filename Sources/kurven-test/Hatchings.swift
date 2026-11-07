@@ -369,7 +369,9 @@ func hatchingTests() {
             Check.expect(h.step == h.spacing, "a step left out is the spacing on \(faces)", "step \(h.step)")
         }
         let written = try source(walls, angle: "1.5708")
-        Check.expect(written.liesOnWall, "π/2 written as 1.5708 decodes as vertical on a wall")
+        let onWall: Bool
+        if case .hatching(_, .walls) = written { onWall = true } else { onWall = false }
+        Check.expect(onWall, "π/2 written as 1.5708 decodes as vertical on a wall")
         Check.expect(try source(plateaus, angle: "1.5708").plateauHatchAxis == .imag
                         && source(plateaus, angle: "0.0001").plateauHatchAxis == .real,
                      "and on a plateau it is along the imaginary axis, as a near 0 is along the real")

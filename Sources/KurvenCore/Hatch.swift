@@ -135,8 +135,8 @@ extension Surface {
     /// at every elevation `Orbit` allows, so lowering a point lowers its line
     /// of sight into the solid: what is hidden of a vertical stroke is one
     /// piece from its bottom up, and the bake, which bisects between a hidden
-    /// vertex and a kept one (`Heightfield.runs`), finds where that piece ends
-    /// from the two ends alone. A vertex every step of height was a vertex a
+    /// vertex and a kept one (`Heightfield.visibleRuns`), finds where that
+    /// piece ends from the two ends alone. A vertex every step of height was a vertex a
     /// cell up to |f|, which untruncated has no bound.
     ///
     /// Exact on one tile with its walls on the outer boundary: a line of sight

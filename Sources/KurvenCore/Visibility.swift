@@ -32,11 +32,15 @@ public struct SurfaceVisibility: Sendable {
     public let view: Transform<WorldSpace, ViewSpace>
     /// The direction lines of sight travel, in world space.
     public let sight: SIMD3<Double>
+    /// The occlusion test, where the surface has a tubular neighbourhood;
+    /// nil where the coordinate image stands in for one.
+    public let tracing: SphereTracing?
 
     public init(surface: ParametricSurface, image: SurfaceImage,
                 view: Transform<WorldSpace, ViewSpace>) {
         self.surface = surface; self.image = image; self.view = view
         self.sight = view.projectionDirection
+        self.tracing = SphereTracing(surface, sight: sight)
     }
 
     /// Visibility by sphere tracing alone, with no image: for a surface with an
@@ -45,11 +49,12 @@ public struct SurfaceVisibility: Sendable {
         precondition(surface.neighbourhood != nil, "only a surface with a tubular neighbourhood is tested by sphere tracing alone")
         self.surface = surface; self.image = nil; self.view = view
         self.sight = view.projectionDirection
+        self.tracing = SphereTracing(surface, sight: sight)
     }
 
     /// Whether the curves are tested by sphere tracing against the solid, or by the
     /// coordinate image.
-    public var tracesSpheres: Bool { surface.neighbourhood != nil }
+    public var tracesSpheres: Bool { tracing != nil }
 
     /// Positive facing the eye, negative facing away, nil on a surface that
     /// bounds no solid.
@@ -117,42 +122,10 @@ public struct SurfaceVisibility: Sendable {
     }
 
     /// Whether nothing of the solid stands between the surface point `q` and
-    /// the eye: sphere tracing.
-    ///
-    /// Up the line of sight from `q`, stepping by the gap over the solid's
-    /// Lipschitz constant, which cannot reach the solid, until the line has
-    /// left the ball that holds it. Above the shell the gap is at least the
-    /// height over it, and that is the step, with no normal offset asked. The
-    /// first step is a small fraction of the solid's size: the curves lie on
-    /// the surface to rounding, where the gap is zero and says nothing, and
-    /// from a point facing the eye the line is outside from there on. On a
-    /// fold the line is tangent, and the gap grows or shrinks with the
-    /// surface's curvature along it: a convex fold is seen, a concave one
-    /// lies behind the surface it folds into, and the first step decides
-    /// which. A step shorter than that fraction is never taken, so an
-    /// occluder thinner than it along the line can be stepped over; it is a
-    /// hundred-thousandth of the solid, under any pixel.
+    /// the eye: sphere tracing (`SphereTracing`). Clear, with no
+    /// neighbourhood to trace: the coordinate image is asked instead.
     public func isClear(_ q: SIMD3<Double>) -> Bool {
-        guard let e = surface.neighbourhood else { return true }
-        let d = -sight
-        let o = q - e.centre
-        let b = simd_dot(o, d), c = simd_dot(o, o) - e.radius * e.radius
-        let disc = b * b - c
-        guard disc > 0 else { return true }
-        let exit = -b + disc.squareRoot()
-        let eps = 1e-9 * e.radius, least = 1e-5 * e.radius
-        var t = least
-        while t < exit {
-            let p = q + t * d
-            let (coord, distance) = e.foot(p)
-            let over = distance - e.above
-            if over > least { t += over; continue }
-            if distance < -e.below - eps { return false }
-            let gap = distance - e.normalOffset(coord)
-            if gap < -eps { return false }
-            t += max(gap / e.lipschitz, least)
-        }
-        return true
+        tracing?.isClear(P3(q)) ?? true
     }
 
     /// Curves at view point `p`, lying on the surface at `c`.
@@ -218,14 +191,7 @@ public struct SurfaceVisibility: Sendable {
     func foldCrossing(from a: P2<ParamSpace>, _ fa: Double,
                       to b: P2<ParamSpace>, _ fb: Double) -> Double? {
         guard (fa > 0) != (fb > 0) else { return nil }
-        var lo = 0.0, hi = 1.0
-        let frontAtLo = fa > 0
-        while hi - lo > 1e-13 {
-            let mid = 0.5 * (lo + hi)
-            let f = facing(P2(a.v + (b.v - a.v) * mid)) ?? 0
-            if (f > 0) == frontAtLo { lo = mid } else { hi = mid }
-        }
-        return 0.5 * (lo + hi)
+        return KurvenCore.foldCrossing(fa, fb) { facing(P2(a.v + (b.v - a.v) * $0)) ?? 0 }
     }
 }
 
