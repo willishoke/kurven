@@ -123,12 +123,12 @@ layer kinds:
 The hatchings are the same `Hatching` value that hatches a polyhedron's faces
 ([solids.md](solids.md)), laid on different faces, and a manifest reads them
 by one rule. `step`, the distance between a line's vertices, may be left out
-on any face and is then the spacing; a wall's lines take a vertex every
-`step` of height, and a plateau's take one wherever they cross a grid line,
-so the step is not read there. The angle is π/2 on a wall and 0 or π/2 on a
-plateau, to within a thousandth of a radian, and the tone is uniform at one
-width; anything else is refused, and so is hatching on a solid's faces,
-since a manifest holds a heightfield.
+on any face and is then the spacing. It is not read on walls or plateaus: a
+wall's line is its two ends, since what hides it is one piece from its bottom
+up, and a plateau's has a vertex wherever it crosses a grid line. The angle
+is π/2 on a wall and 0 or π/2 on a plateau, to within a thousandth of a
+radian, and the tone is uniform at one width; anything else is refused, and
+so is hatching on a solid's faces, since a manifest holds a heightfield.
 
 ## Two speeds of edit
 

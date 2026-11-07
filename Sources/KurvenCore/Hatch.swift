@@ -77,7 +77,7 @@ public extension Surface {
         case .hatching(let hatching, .walls(let edges, let trim, let base, let top)):
             guard let perimeter = context.perimeter else { return .empty }
             paths = wallHatchLines(perimeter, edges: edges, spacing: hatching.spacing,
-                                   step: hatching.step, trim: trim, base: base, topOffset: top,
+                                   trim: trim, base: base, topOffset: top,
                                    tiles: context.tiles, refine: refine)
         case .hatching(let hatching, .plateaus(let tiled)):
             // Decoding holds the angle to an axis; one built in code at any
@@ -85,9 +85,9 @@ public extension Surface {
             guard let axis = DomainAxis(angle: hatching.angle) else { return .empty }
             paths = plateauHatchLines(axis: axis, spacing: hatching.spacing, refine: refine)
             if tiled { paths = Surface.replicate(paths, context.tiles) }
-        case .wallEdges(let edges, let step, let base):
+        case .wallEdges(let edges, _, let base):
             guard let perimeter = context.perimeter else { return .empty }
-            paths = wallEdges(perimeter, edges: edges, step: step, base: base,
+            paths = wallEdges(perimeter, edges: edges, base: base,
                               tiles: context.tiles, refine: refine)
         case .truncationEdge(let tiled):
             // Cut to the footprint already, the risers' tops exactly.
@@ -128,21 +128,27 @@ extension Surface {
         P2(a.x == b.x ? a.x : a.x * (1 - t) + b.x * t, a.y * (1 - t) + b.y * t)
     }
 
-    /// One vertical stroke, subdivided every `step`.
+    /// One vertical stroke: its two ends.
     ///
-    /// Not a two-point segment. The bake clips per vertex, so a stroke whose
-    /// middle is behind a ridge and whose ends are not would be drawn straight
-    /// through it.
-    static func vertical(x: Double, y: Double, base: Double, top: Double,
-                         step: Double) -> [P3<WorldSpace>]? {
+    /// A vertex between them would test nothing the ends do not. The solid is
+    /// everything under the surface, and a line of sight rises toward the eye
+    /// at every elevation `Orbit` allows, so lowering a point lowers its line
+    /// of sight into the solid: what is hidden of a vertical stroke is one
+    /// piece from its bottom up, and the bake, which bisects between a hidden
+    /// vertex and a kept one (`Heightfield.runs`), finds where that piece ends
+    /// from the two ends alone. A vertex every step of height was a vertex a
+    /// cell up to |f|, which untruncated has no bound.
+    ///
+    /// Exact on one tile with its walls on the outer boundary: a line of sight
+    /// from a wall that faces the eye leaves the footprint at once. Where it
+    /// meets terrain -- another copy, across a notch -- it is not: the
+    /// traversal forgives a point inside terrain the curve was not placed on,
+    /// to within the depth tolerance, so the verdict along the stroke need not
+    /// turn only once. Testing a wall's curves by the face they lie on would
+    /// make it exact.
+    static func vertical(x: Double, y: Double, base: Double, top: Double) -> [P3<WorldSpace>]? {
         guard top > base else { return nil }
-        var steps = 1
-        if step.isFinite, step > 0 {
-            steps = max(1, Int(((top - base) / step).rounded(.up)))
-        }
-        return (0...steps).map { j in
-            P3(x, y, base + (top - base) * Double(j) / Double(steps))
-        }
+        return [P3(x, y, base), P3(x, y, top)]
     }
 
     /// Split each path at the region boundary, keeping the runs inside -- the
@@ -520,7 +526,7 @@ extension Surface {
     }
 
     func wallHatchLines(_ perimeter: BoundaryPerimeter, edges: [Int], spacing: Double,
-                        step: Double, trim: Bool, base: Double, topOffset: Double,
+                        trim: Bool, base: Double, topOffset: Double,
                         tiles: [Affine2], refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         var out: [[P3<WorldSpace>]] = []
         for index in edges where index >= 0 && index < perimeter.edges.count {
@@ -535,8 +541,7 @@ extension Surface {
                 let top = (topEdge.flatMap { topEdgeHeight(of: $0, at: p) }
                            ?? wallHeight(at: p, t: t, from: edge.start, to: edge.end, inward: inward, tiles: tiles))
                     + topOffset
-                if let stroke = Surface.vertical(x: p.x, y: p.y, base: base,
-                                                 top: top, step: step) {
+                if let stroke = Surface.vertical(x: p.x, y: p.y, base: base, top: top) {
                     out.append(stroke)
                 }
             }
@@ -553,7 +558,7 @@ extension Surface {
     /// wall on the boundary: the edge rises to the top of the wall that
     /// leaves, past the other's between it and the riser, or short of it,
     /// where the riser and the wall on the boundary are one plane.
-    func wallEdges(_ perimeter: BoundaryPerimeter, edges: [Int], step: Double,
+    func wallEdges(_ perimeter: BoundaryPerimeter, edges: [Int],
                    base: Double, tiles: [Affine2],
                    refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         var out: [[P3<WorldSpace>]] = []
@@ -588,8 +593,7 @@ extension Surface {
             let leaving = tops.filter(\.leaves).map(\.top)
             let top = (leaving.count == 1 ? leaving : tops.map(\.top)).max()
                 ?? height(at: P2<DomainSpace>(corner.x, corner.y), tiles: tiles)
-            if let verticalEdge = Surface.vertical(x: corner.x, y: corner.y, base: base,
-                                                   top: top, step: step) {
+            if let verticalEdge = Surface.vertical(x: corner.x, y: corner.y, base: base, top: top) {
                 out.append(verticalEdge)
             }
         }

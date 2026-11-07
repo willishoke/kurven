@@ -21,11 +21,10 @@ public struct Hatching: Sendable, Equatable {
     /// The distance between successive vertices along a line, or readings
     /// of its tone, in world units. On a solid the tone is read every
     /// `step`, and a change of width narrower than this can fall between two
-    /// readings; on a wall a line has a vertex every `step` of height; on a
-    /// plateau a line has a vertex wherever it crosses a grid line and the
-    /// step is not read. The spacing by default, on every face, so the tone
-    /// is read as finely as it is drawn, and no finer than `finestStep` of
-    /// it.
+    /// readings. On a wall a line is its two ends, and on a plateau it has a
+    /// vertex wherever it crosses a grid line; on neither is the step read.
+    /// The spacing by default, on every face, so the tone is read as finely
+    /// as it is drawn, and no finer than `finestStep` of it.
     public var step: Double
     public var tone: Tone
     /// How many widths a line can have. One: a line is drawn at the layer's
@@ -141,8 +140,8 @@ public struct Hatching: Sendable, Equatable {
 public enum HatchedFaces: Sendable, Equatable {
     /// A heightfield's walls along the listed perimeter edges. In a wall's
     /// coordinates (distance along its edge, height) the lines are vertical,
-    /// `wallAngle`, from `base` to the top edge plus `topOffset`, with a
-    /// vertex every `step` of height. A line stands at each end of a wall; `trim`
+    /// `wallAngle`, from `base` to the top edge plus `topOffset`, each its two
+    /// ends (`Surface.vertical`). A line stands at each end of a wall; `trim`
     /// leaves those two out.
     case walls(edges: [Int], trim: Bool, base: Double, topOffset: Double)
     /// A truncated heightfield's plateaus. In domain coordinates the lines
