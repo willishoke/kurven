@@ -1163,6 +1163,51 @@ private func trimLoops(_ l: Landscape, margin: Double) -> TrimTally? {
 }
 
 func faceTests() {
+    Check.suite("faces: each layer says the kind of face its curves lie on") {
+        func faces(_ scene: Scene) -> [String: FaceKind?] {
+            Dictionary(uniqueKeysWithValues: scene.layers.map { ($0.spec.name, scene.geometry.face(of: $0.spec)) })
+        }
+        func listed(_ faces: [String: FaceKind?]) -> String {
+            faces.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value.map { "\($0)" } ?? "none")" }.joined(separator: ", ")
+        }
+        let camera = Camera.oblique(ObliqueProjection(shear: 0, xAngle: -55, zAngle: 30, flipX: false, yScale: nil))
+        let bundle = try KurvenBundle.read(at: Fixtures.url("contract/landscape.kurven"))
+        let landscape = faces(Scene(bundle: bundle, preset: bundle.manifest.presets[0]))
+        let onLandscape: [String: FaceKind?] = [
+            "mag_major": .graph, "truncation_edge": nil, "plateau_hatch": .plateau, "plateau_hatch_tiled": .plateau,
+            "wall_edges": .wall, "wall_hatch": .wall, "folds": nil,
+        ]
+        Check.expect(landscape == onLandscape,
+                     "a landscape: contours on the graph, hatching on the plateaus and walls, the walls' edges on the walls; the truncation edge and the folds on none",
+                     listed(landscape))
+        let sn = try PeriodicTorus.jacobiSN(modulus: 0.64)
+        let outline = Layer(spec: LayerSpec(name: "truncation edge", role: .outline,
+                                            source: .contour(field: .magnitude, levels: [2], restriction: .all, tiled: false),
+                                            width: 1, heightPolicy: .surface), paths: .empty)
+        // Folds are edge-on whatever their role.
+        let folds = Layer(spec: LayerSpec(name: "folds drawn as scaffold", role: .scaffold, source: .foldCurves,
+                                          width: 1, heightPolicy: .surface), paths: .empty)
+        let torus = faces(Scene(surface: sn.surface, layers: sn.layers + [outline, folds], camera: camera,
+                                depthTolerance: 0))
+        let onTorus: [String: FaceKind?] = [
+            "mag_major": .surface, "mag_minor": .surface, "ang_major": .surface, "ang_minor": .surface,
+            "folds": nil, "truncation edge": nil, "folds drawn as scaffold": nil,
+        ]
+        Check.expect(torus == onTorus,
+                     "a parametric surface: every curve on its one face but the folds and an outline",
+                     listed(torus))
+        let frame = Solid.frame(outer: 2, inner: 1, depth: 0.6)
+        let hatching = Hatching(angle: 0.5, spacing: 0.1)
+        let solid = faces(Scene(solid: frame, layers: [
+            Layer(spec: LayerSpec(name: "edges", role: .outline, source: .edges, width: 1, heightPolicy: .surface),
+                  paths: frame.edgePaths),
+            Layer(spec: LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching, faces: .solid),
+                                  width: 1, heightPolicy: .surface), paths: frame.hatchPaths(hatching)),
+        ], camera: camera))
+        Check.expect(solid == ["edges": nil, "hatching": .solid],
+                     "a polyhedron: its hatching on its faces, its edges on none", listed(solid))
+    }
+
     Check.suite("faces: a landscape's faces tile its boundary, and each face's map returns its points") {
         let landscapes = try faceLandscapes()
 

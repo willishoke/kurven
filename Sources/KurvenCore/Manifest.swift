@@ -633,17 +633,6 @@ public enum LayerSource: Sendable, Equatable {
     /// exactly where something else hides them (`Solid.visibleEdges`).
     case edges
 
-    /// Curves that lie on a wall: its hatching and its edges. On a
-    /// heightfield they are tested by the wall they lie on and by the solid
-    /// (`Heightfield.visibleWallCurves`), never by the depth buffer, which
-    /// cannot test a curve on a face it sees edge-on.
-    public var liesOnWall: Bool {
-        switch self {
-        case .hatching(_, .walls), .wallEdges: true
-        default: false
-        }
-    }
-
     public init(json: JSONValue) throws {
         let o = try json.object("LayerSource")
         switch try o.string("kind", "LayerSource") {
@@ -768,17 +757,6 @@ public struct LayerSpec: Sendable, Equatable {
     /// False for curves that lie *in* the occluding geometry -- a cut-face hatch,
     /// which a depth test would half erase.
     public var clipped: Bool
-
-    /// Whether the curves lie on the heightfield's own surface: the contours of
-    /// |f| and arg f, lifted onto it -- by any height policy, since a
-    /// magnitude contour at its level and a phase line at |f| are on the
-    /// surface as surely as curves lifted by the grid. Such curves can be tested by
-    /// which way the surface faces under it, as well as by depth. The
-    /// scaffold -- truncation edges, hatches, outlines -- sits on creases and walls,
-    /// where the surface's facing is not the curves'.
-    public var liesOnSurface: Bool {
-        clipped && (role == .magnitude || role == .phase)
-    }
 
     public init(name: String, role: LayerRole, source: LayerSource,
                 width: Double, heightPolicy: HeightPolicy,

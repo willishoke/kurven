@@ -33,7 +33,7 @@ struct LineGeometry {
         }
         guard scene.heightfield != nil else { return false }
         if case .foldCurves = layer.spec.source { return true }
-        return layer.spec.source.liesOnWall && layer.spec.clipped
+        return scene.geometry.face(of: layer.spec) == .wall && layer.spec.clipped
     }
 
     /// Whether the scene has strokes that are tested for the camera: a
@@ -98,7 +98,7 @@ struct LineGeometry {
                     ? h.onGrid.foldCurves(view: scene.camera.view, refined: false)
                     : h.visibleFolds(view: scene.camera.view, depthTolerance: scene.depthTolerance,
                                      resolution: scene.resolution)
-            } else if layer.spec.source.liesOnWall, layer.spec.clipped, !draft,
+            } else if scene.geometry.face(of: layer.spec) == .wall, layer.spec.clipped, !draft,
                       let h = scene.heightfield {
                 paths = h.visibleWallCurves(layer.paths, view: scene.camera.view, depthTolerance: scene.depthTolerance,
                                             resolution: scene.resolution)
@@ -109,7 +109,7 @@ struct LineGeometry {
             // per vertex, in parallel: zeta's contours have six hundred
             // thousand, and each normal is four height reads.
             var normals: [SIMD3<Float>]?
-            if let h = scene.heightfield, layer.spec.liesOnSurface {
+            if let h = scene.heightfield, layer.spec.clipped, scene.geometry.face(of: layer.spec) == .graph {
                 let points = paths.vertices
                 var out = [SIMD3<Float>](repeating: .zero, count: points.count)
                 let chunk = 4096, n = points.count
@@ -412,7 +412,7 @@ public extension MetalRenderer {
                 // hatches, and a depth test would erase about half of it. A
                 // heightfield's folds and wall strokes were tested on the way in,
                 // unless this frame is a draft, which leaves them to the test.
-                var visible = scene.heightfield != nil && layer.spec.source.liesOnWall
+                var visible = scene.heightfield != nil && scene.geometry.face(of: layer.spec) == .wall
                 if case .foldCurves = layer.spec.source { visible = true }
                 if options.draft { visible = false }
                 shading.depthTolerance = layer.spec.clipped && !visible ? Float(scene.depthTolerance) : .infinity

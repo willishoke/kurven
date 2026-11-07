@@ -380,7 +380,7 @@ func stressTests() {
         let h = steepScene.heightfield!
         let vis = HeightfieldVisibility(heightfield: h, view: steepScene.camera.view, depthTolerance: steepScene.depthTolerance)
         var kept = 0.0, facingOnly = 0.0, buried = 0, behind = 0
-        for layer in steepScene.layers where layer.spec.liesOnSurface {
+        for layer in steepScene.layers where layer.spec.clipped && steepScene.geometry.face(of: layer.spec) == .graph {
             kept += h.visibleSurfaceCurves(layer.paths, view: steepScene.camera.view, depthTolerance: steepScene.depthTolerance).totalLength
             facingOnly += h.visibleSurfaceCurves(layer.paths, view: steepScene.camera.view, depthTolerance: .infinity).totalLength
             for v in layer.paths.vertices where vis.facing(v.xy) > 0 && !vis.isClear(v) {
@@ -427,7 +427,7 @@ func stressTests() {
         var pit = (total: 0, traversal: 0, cast: 0, depth: 0)
         let clock = ContinuousClock()
         let elapsed = clock.measure {
-            for layer in scene.layers where layer.spec.liesOnSurface {
+            for layer in scene.layers where layer.spec.clipped && scene.geometry.face(of: layer.spec) == .graph {
                 let vertices = layer.paths.vertices
                 let facing = vertices.map { vis.facing($0.xy) > 0 }
                 let traversal = vertices.map { vis.isClear($0) }
@@ -473,7 +473,7 @@ func stressTests() {
         var totalF = 0, traversalF = 0, castF = 0, disagreeF = 0
         var examples = ""
         let elapsedF = clock.measure {
-            for layer in scene.layers where layer.spec.liesOnSurface {
+            for layer in scene.layers where layer.spec.clipped && scene.geometry.face(of: layer.spec) == .graph {
                 let vertices = layer.paths.vertices
                 let facing = vertices.map { visF.facing($0.xy) > 0 }
                 let traversal = vertices.map { visF.isClear($0) }

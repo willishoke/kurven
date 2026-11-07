@@ -1201,9 +1201,9 @@ public struct Scene: Sendable {
                     visible = h.visibleFolds(view: view, depthTolerance: depthTolerance)
                 } else if !layer.spec.clipped {
                     visible = layer.paths
-                } else if layer.spec.source.liesOnWall {
+                } else if geometry.face(of: layer.spec) == .wall {
                     visible = h.visibleWallCurves(layer.paths, view: view, depthTolerance: depthTolerance)
-                } else if layer.spec.liesOnSurface {
+                } else if geometry.face(of: layer.spec) == .graph {
                     visible = h.visibleSurfaceCurves(layer.paths, view: view, depthTolerance: depthTolerance)
                 } else {
                     visible = h.visibleCurves(layer.paths, view: view, depthTolerance: depthTolerance)
