@@ -2215,6 +2215,80 @@ func faceTests() {
         }
     }
 
+    Check.suite("faces: a contour or a fold carried to the truncation edge across a band boundary ends on the drawn top") {
+        // Every vertex of the refined contour layers and of the folds under
+        // each preset, and seven points along each chord, lies on the drawn
+        // top min(|f|, h(x)) -- on a band boundary the higher side's, the
+        // riser's top -- within the refiner's tolerance: in height, or on
+        // the graph across the plane, the residual over the gradient, in
+        // cells. A run carried to the truncation edge across a band
+        // boundary was interpolated straight across the step, between the
+        // two bands' heights, and placed at the height of the band its x
+        // landed in: on main 3bb44f1, tails up to 1.50 over the tower's top
+        // and hanging under gamma's. A tower, 1/(z - 0.45) at 2 | 4 across
+        // Re z = 1/2, and gamma under three bands.
+        let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        for (name, expression, domain, resolution, bands, beyond) in [
+            ("a tower", "1/(z-0.45)", domain, 200, [RealBand(below: 0.5, height: 2)], 4.0),
+            ("gamma under three bands", "gamma(z)", Domain(real: Interval(lo: -4.5, hi: 4.5), imag: Interval(lo: -2.5, hi: 2.5)), 600,
+             [RealBand(below: -2.5, height: 0.5), RealBand(below: -1.5, height: 1), RealBand(below: 0.5, height: 1.5)], 2.5),
+        ] {
+            let built = try NativeLandscape.build(
+                LandscapeRequest(expression: expression, domain: domain, resolution: resolution,
+                                 truncation: .realBands(bands, beyond: beyond)))
+            guard let refine = built.refine, let magnitude = refine.magnitude else { Check.expect(false, "\(name): a refiner"); continue }
+            let surface = built.surface, g = surface.height
+            let cell = max(abs(g.domain.real.length) / Double(g.width - 1), abs(g.domain.imag.length) / Double(g.height - 1))
+            /// How far a point lies off the drawn top: in height, and in
+            /// cells across the plane where the top is the graph.
+            func off(_ v: P3<WorldSpace>) -> (height: Double, cells: Double) {
+                let u = magnitude(P2(v.x, v.y)), f = u.isNaN ? Double.infinity : u
+                let onBoundary = bands.contains { abs(v.x - $0.below) <= 1e-9 * cell }
+                let h = (onBoundary ? [.left, .right] : [.right] as [Truncation.Side])
+                    .map { surface.truncationHeight(atX: v.x, from: $0) }.max()!
+                let d = v.z - min(f, h)
+                guard f < h else { return (d, .infinity) }
+                let e = 1e-4 * cell
+                let gx = (magnitude(P2(v.x + e, v.y)) - magnitude(P2(v.x - e, v.y))) / (2 * e)
+                let gy = (magnitude(P2(v.x, v.y + e)) - magnitude(P2(v.x, v.y - e))) / (2 * e)
+                return (d, abs(d) / (gx * gx + gy * gy).squareRoot() / cell)
+            }
+            func measure(_ what: String, _ paths: PolylineSet<WorldSpace>) {
+                var points = 0, above = 0.0, below = 0.0, wrong: [String] = []
+                for k in 0..<paths.count {
+                    let run = Array(paths[path: k])
+                    for (a, b) in zip(run, run.dropFirst()) {
+                        for s in 0...8 {
+                            let t = Double(s) / 8
+                            let v = P3<WorldSpace>(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y), a.z + t * (b.z - a.z))
+                            let (d, cells) = off(v)
+                            guard d.isFinite else { continue }
+                            points += 1
+                            above = max(above, d); below = min(below, d)
+                            if !(abs(d) <= refine.tolerance * cell || cells <= refine.tolerance) {
+                                wrong.append(String(format: "(%.4f, %.4f, %.4f) %+.4f", v.x, v.y, v.z, d))
+                            }
+                        }
+                    }
+                }
+                Check.expect(points > 100 && wrong.isEmpty, "\(name): \(what) on the drawn top, within \(refine.tolerance) cells",
+                             String(format: "%d of %d points off, as far as %+.4f and %+.4f: ", wrong.count, points, above, below)
+                                + wrong.prefix(3).joined(separator: "; "))
+            }
+            for layer in built.layers {
+                guard case .contour = layer.spec.source else { continue }
+                measure("every point of \(layer.spec.name)", layer.paths)
+            }
+            guard let h = Scene(bundle: built, preset: built.manifest.presets[0]).heightfield else {
+                Check.expect(false, "\(name): a heightfield"); continue
+            }
+            for zAngle in [-90.0, 90, -20, -160] {
+                let camera = Camera.oblique(ObliqueProjection(shear: 0.5, xAngle: -55, zAngle: zAngle, flipX: true, yScale: nil))
+                measure("every point of the folds seen from \(Int(zAngle))°", h.foldCurves(view: camera.view))
+            }
+        }
+    }
+
     Check.suite("faces: the graph's trim loops and its truncation edge are the same in whatever order the tiles are listed") {
         // Points of the domain are read on the domain, not through the tile
         // under them: on the domain's edge a second tile's image begins, and

@@ -1700,6 +1700,17 @@ struct FoldPlacer: Sendable {
         }
         guard excess(0) < 0, excess(1) >= 0 else { return nil }
         let (lo, hi) = bisect(0, 1) { excess($0) < 0 }
+        // Where the excess jumps rather than crosses zero, the truncation
+        // steps between two bands under the fold: it leaves the graph up a
+        // riser, and ends on the riser's top, at the graph's own height on
+        // the graph's side, not down at the lesser band's plateau.
+        let below = onFold(lo), above = onFold(hi)
+        let near = self.truncationHeight(at: below), far = self.truncationHeight(at: above)
+        if near.isFinite, far.isFinite, near != far {
+            let z = graphHeight(below)
+            guard region.contains(below), z.isFinite, z < near else { return nil }
+            return P3(below.x, below.y, z)
+        }
         let q = onFold(0.5 * (lo + hi))
         let truncationHeight = self.truncationHeight(at: q)
         guard region.contains(q), truncationHeight.isFinite else { return nil }

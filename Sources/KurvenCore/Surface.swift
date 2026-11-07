@@ -585,9 +585,57 @@ public extension Surface {
     /// Solved on the lifted heights, linearly: that is the same interpolation
     /// the truncation edge is contoured by, so the crossing lands on the drawn truncation edge to
     /// within a cell's bend.
-    func truncationCrossing(from a: P3<WorldSpace>, to b: P3<WorldSpace>) -> P3<WorldSpace>? {
+    ///
+    /// Where a band boundary lies between them the truncation steps there,
+    /// and the segment is followed band by band from `a`, each band's
+    /// truncation constant: it reaches the truncation inside a band, solved
+    /// as above in that band, or it reaches a boundary under its own band's
+    /// truncation and over the next one's, and ends there, at its own
+    /// height, on the riser's top -- where the graph meets the riser, not
+    /// on either plateau. `height` is f's height there, where the caller
+    /// has the function; the segment's own otherwise. The end is placed on
+    /// `a`'s side of the boundary, a rounding short of it going right, since
+    /// the boundary belongs to the band right of it, so it is read in `a`'s
+    /// band.
+    func truncationCrossing(from a: P3<WorldSpace>, to b: P3<WorldSpace>,
+                            height: ContourRefine.Magnitude? = nil) -> P3<WorldSpace>? {
         let ea = a.z - truncationHeight(atX: a.x), eb = b.z - truncationHeight(atX: b.x)
         guard ea.isFinite, eb.isFinite, ea <= 0, eb > 0 else { return nil }
+        if case .realBands = truncation, a.x != b.x {
+            let rightward = a.x < b.x
+            let spans = truncation.bands(from: min(a.x, b.x), to: max(a.x, b.x))
+            if spans.count > 1 {
+                let ordered = rightward ? spans : spans.reversed()
+                /// The point of the segment at `x`.
+                func at(_ x: Double) -> P3<WorldSpace> {
+                    let t = (x - a.x) / (b.x - a.x)
+                    return P3(x, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t)
+                }
+                var start = a
+                for (k, span) in ordered.enumerated() {
+                    let last = k == ordered.count - 1
+                    // The near side of the boundary this band ends at.
+                    let end = last ? b : at(rightward ? span.hi.nextDown : span.lo)
+                    let es = start.z - span.height, ee = end.z - span.height
+                    guard es.isFinite, ee.isFinite else { return nil }
+                    if ee > 0 {
+                        let t = es <= 0 ? es / (es - ee) : 0
+                        let x = start.x + (end.x - start.x) * t
+                        // Kept in this band, where the solve lands a
+                        // rounding past its end.
+                        let kept = rightward ? min(x, end.x) : max(x, end.x)
+                        return P3(kept, start.y + (end.y - start.y) * t, span.height)
+                    }
+                    guard !last else { return nil }
+                    if end.z > ordered[k + 1].height {
+                        let z = height?(P2(end.x, end.y)) ?? end.z
+                        return P3(end.x, end.y, z.isFinite ? min(z, span.height) : end.z)
+                    }
+                    start = end
+                }
+                return nil
+            }
+        }
         let t = ea / (ea - eb)
         let x = a.x + (b.x - a.x) * t
         return P3(x, a.y + (b.y - a.y) * t, truncationHeight(atX: x))
@@ -662,6 +710,9 @@ public extension Surface {
             return .empty
         }
         let carry = refine != nil && restriction.requiresBelowTruncation
+        // A run carried onto a riser's top ends at f's own height there, as
+        // its vertices are lifted; a level line at its level.
+        let riserHeight = policy == .level ? nil : refine?.magnitude
         // Curves lifted to |f| and kept below the truncation are cut away wherever |f|
         // is above it, so the refiner need not place it there: on zeta and
         // 1/Γ that was nineteen phase vertices of every twenty. A tenth over
@@ -728,14 +779,14 @@ public extension Surface {
                         let admitted = admits(v, restriction, region: region)
                         if admitted {
                             if carry, let p = previous, !p.admitted,
-                               let truncationEdge = truncationCrossing(from: v, to: p.vertex),
+                               let truncationEdge = truncationCrossing(from: v, to: p.vertex, height: riserHeight),
                                admits(truncationEdge, restriction, region: region) {
                                 run.append(truncationEdge)
                             }
                             run.append(v)
                         } else {
                             if carry, let p = previous, p.admitted,
-                               let truncationEdge = truncationCrossing(from: p.vertex, to: v),
+                               let truncationEdge = truncationCrossing(from: p.vertex, to: v, height: riserHeight),
                                admits(truncationEdge, restriction, region: region) {
                                 run.append(truncationEdge)
                             }
