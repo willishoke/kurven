@@ -377,6 +377,77 @@ func wallCurveTests() {
     }
 }
 
+// MARK: - a wall is its face, wherever it stands
+//
+// Which walls a point lies in is read off the walls' faces, not off the
+// tiles' boxes: a wall on a notch in the footprint stands on no box's edge,
+// and a box's edge where two tiles meet is no wall's. With the traversal
+// disarmed, the facing alone decides, and a stroke is kept exactly when a
+// wall it stands on faces the eye.
+
+func wallFaceTests() {
+    Check.suite("walls: a stroke on a wall is tested by the wall it stands on, on a notch and at a tile boundary") {
+        let index = try Fixtures.json("hatch/index.json")
+        let shape = try index.value("shape", "hatch").object("hatch.shape")
+        let grid = Grid2D(width: try shape.int("nx", "hatch.shape"), height: try shape.int("ny", "hatch.shape"),
+                          domain: try Domain(json: index.value("domain", "hatch")),
+                          values: try NPY.read(contentsOf: Fixtures.url("hatch/height.npy")).floats())
+        let surface = Surface(height: grid, phase: nil, truncation: .uniform(2))
+        func perimeter(_ corners: [(Double, Double)]) -> BoundaryPerimeter {
+            BoundaryPerimeter(edges: corners.indices.map { k in
+                let a = corners[k], b = corners[(k + 1) % corners.count]
+                return PerimeterEdge(start: P2(a.0, a.1), end: P2(b.0, b.1), density: 9)
+            })
+        }
+        let box = perimeter([(-2, -1), (2.5, -1), (2.5, 1.5), (-2, 1.5)])
+        let notched = perimeter([(-2, -1), (0.5, -1), (0.5, 0), (1.5, 0), (1.5, -1), (2.5, -1), (2.5, 1.5), (-2, 1.5)])
+        let clockwise = perimeter([(-2, 1.5), (2.5, 1.5), (2.5, -1), (1.5, -1), (1.5, 0), (0.5, 0), (0.5, -1), (-2, -1)])
+        let layouts: [(name: String, walls: BoundaryPerimeter, region: Region, tiles: [Affine2])] = [
+            ("a notch cut from the front", notched, .inside(notched), [.identity]),
+            ("the notched footprint walked clockwise", clockwise, .inside(clockwise), [.identity]),
+            // The first tile's walls, and a second tile beside it: the box
+            // edge they meet on is the first tile's right wall alone.
+            ("a second tile beside the first", box, .full, [.identity, Affine2(a: 1, b: 0, tx: 4.5, c: 0, d: 1, ty: 0)]),
+        ]
+        for layout in layouts {
+            let h = Heightfield(surface: surface, occluder: .empty, tiles: layout.tiles, region: layout.region,
+                                step: 1, walls: .perimeter(layout.walls, base: 0))
+            let context = Surface.HatchContext(perimeter: layout.walls, region: layout.region, tiles: layout.tiles)
+            let hatch = surface.hatch(.wallHatching(edges: Array(layout.walls.edges.indices), spacing: 0.1, step: 0.1),
+                                      in: context)!
+            // Each edge's outward normal, from the perimeter's turn.
+            let area = layout.walls.signedArea
+            let normals = layout.walls.edges.map { e -> SIMD3<Double> in
+                let d = simd_normalize(e.end.v - e.start.v)
+                return (area < 0 ? -1 : 1) * SIMD3(d.y, -d.x, 0)
+            }
+            func on(_ k: Int, _ v: P3<WorldSpace>) -> Bool {
+                let e = layout.walls.edges[k]
+                let along = e.end.v - e.start.v, r = SIMD2(v.x, v.y) - e.start.v
+                let t = simd_dot(r, along) / simd_dot(along, along)
+                return t > -1e-9 && t < 1 + 1e-9 && simd_length(r - t * along) < 1e-9
+            }
+            for (name, view) in [("from the left", testCamera(elevation: -55, azimuth: -60)),
+                                 ("from the right", testCamera(elevation: -55, azimuth: 150))] {
+                let sight = view.projectionDirection
+                let kept = h.onGrid.visibleWallCurves(hatch, view: view, depthTolerance: .infinity)
+                var wanted = 0, facingAway = 0
+                for i in 0..<hatch.count {
+                    let p = Array(hatch[path: i])
+                    let walls = layout.walls.edges.indices.filter { k in p.allSatisfy { on(k, $0) } }
+                    if walls.contains(where: { -simd_dot(normals[$0], sight) > 0 }) { wanted += 1 } else { facingAway += 1 }
+                }
+                let strays = kept.vertices.filter { v in
+                    !layout.walls.edges.indices.contains { on($0, v) && -simd_dot(normals[$0], sight) > 0 }
+                }
+                Check.expect(kept.count == wanted && strays.isEmpty && facingAway > 0,
+                             "\(layout.name), seen \(name): every stroke on a wall that faces the eye, and none on one that faces away",
+                             "\(kept.count) of \(hatch.count) strokes kept, \(wanted) wanted, \(facingAway) facing away, \(strays.count) stray vertices")
+            }
+        }
+    }
+}
+
 // MARK: - curves on a plateau are tested by the plateau
 //
 // A plateau is flat and faces up: seen from above its hatching is tested by

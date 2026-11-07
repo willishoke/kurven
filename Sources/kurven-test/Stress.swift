@@ -565,9 +565,18 @@ func stressTests() {
                 }
                 return ContourRefine(contours: { _, _, lines, _, _ in lines }, rings: nil, magnitude: magnitude, zero: zero)
             }
+            // The walls the wall strokes are tested by, on the perimeter scaled.
+            let walls: Walls
+            if case .perimeter(let p, let base) = h.walls {
+                walls = .perimeter(BoundaryPerimeter(edges: p.edges.map {
+                    PerimeterEdge(start: P2($0.start.v * s), end: P2($0.end.v * s), density: $0.density)
+                }), base: base * s)
+            } else {
+                walls = h.walls
+            }
             let scaled = Scene(surface: surface, occluder: occluder, tiles: h.tiles, region: h.region,
                                step: h.step, layers: layers, camera: scene.camera, depthTolerance: scene.depthTolerance * s,
-                               refine: refine)
+                               refine: refine, walls: walls)
             let visibleScaled = scaled.visibleLayers()
             var worst = 0.0, structure = true
             for ((layer, a), (_, b)) in zip(visible, visibleScaled) {

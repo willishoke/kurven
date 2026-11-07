@@ -298,9 +298,8 @@ public struct Heightfield: Sendable {
     ///   depth, and erases most of the hatch, leaving spots. A point on a
     ///   wall that faces away is behind the solid the wall bounds. A vertical
     ///   edge at a corner lies in two walls and shows if either does. Which
-    ///   walls a point lies in is read off its position against the box of
-    ///   each tile, since every wall of a described landscape stands on a
-    ///   tile's edge. The top edge is the exception: it is the surface's own
+    ///   walls a point lies in is read off the walls' faces: those whose foot
+    ///   it stands on (`wallFacing(sight:slack:)`). The top edge is the exception: it is the surface's own
     ///   edge as much as the wall's top, and the far edge of a drawing is in
     ///   plain view over a wall that faces away. A vertex at the surface's
     ///   height is tested by the traversal alone, which hides it exactly
@@ -398,31 +397,28 @@ public struct Heightfield: Sendable {
 
     /// The facing of the walls a point lies in, for lines of sight along
     /// `sight`: positive where one of them faces the eye, negative where it
-    /// lies in walls that all face away, nil where it lies in none. A point
-    /// lies in a wall when it stands within `slack` of the line of an edge
-    /// of a tile's box.
+    /// lies in walls that all face away, nil where it lies in none. Each wall
+    /// is a face (`Surface.walls(_:tiles:refine:)`), flat, facing as its
+    /// outward normal does, and a point lies in it when it stands within
+    /// `slack` of its foot, the edge of the perimeter it stands on, between
+    /// the edge's ends.
     func wallFacing(sight: SIMD3<Double>, slack: Double) -> @Sendable (P3<WorldSpace>) -> Double? {
-        let d = surface.domain
-        let boxes: [(lo: SIMD2<Double>, hi: SIMD2<Double>)] = tiles.map { tile in
-            let corners = [(d.real.lo, d.imag.lo), (d.real.hi, d.imag.lo),
-                           (d.real.lo, d.imag.hi), (d.real.hi, d.imag.hi)]
-                .map { tile(P3<WorldSpace>($0.0, $0.1, 0)) }
-            return (SIMD2(corners.map(\.x).min()!, corners.map(\.y).min()!),
-                    SIMD2(corners.map(\.x).max()!, corners.map(\.y).max()!))
+        let walls = surface.walls(self.walls, tiles: tiles, refine: refine).map { face in
+            let copy = face.copies[0]
+            let foot = copy.place(face.map(P2(face.domain.u.range.lo, face.domain.v.range.lo)))
+            let outward = (copy.outward ?? 1) * foot.normal
+            return (start: SIMD2(foot.position.x, foot.position.y), along: SIMD2(foot.du.x, foot.du.y),
+                    length: face.domain.u.range.hi, facesEye: -simd_dot(outward, sight) > 0)
         }
         return { p in
             var onAnyWall = false, facesEye = false
-            for box in boxes {
-                let walls: [(on: Bool, outward: SIMD3<Double>)] = [
-                    (abs(p.x - box.lo.x) <= slack, SIMD3(-1, 0, 0)),
-                    (abs(p.x - box.hi.x) <= slack, SIMD3(1, 0, 0)),
-                    (abs(p.y - box.lo.y) <= slack, SIMD3(0, -1, 0)),
-                    (abs(p.y - box.hi.y) <= slack, SIMD3(0, 1, 0)),
-                ]
-                for wall in walls where wall.on {
-                    onAnyWall = true
-                    if -simd_dot(wall.outward, sight) > 0 { facesEye = true }
-                }
+            for wall in walls {
+                let r = SIMD2(p.x, p.y) - wall.start
+                let s = simd_dot(r, wall.along)
+                guard s >= -slack, s <= wall.length + slack,
+                      abs(r.x * wall.along.y - r.y * wall.along.x) <= slack else { continue }
+                onAnyWall = true
+                if wall.facesEye { facesEye = true }
             }
             return facesEye ? 1 : (onAnyWall ? -1 : nil)
         }
