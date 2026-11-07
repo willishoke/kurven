@@ -1038,6 +1038,327 @@ func riserFaceTests() {
         }
         Check.expect(partly > 10, "and some lines are hidden in part, from the bottom up", "\(partly) partly hidden")
     }
+
+    // A line of sight that crosses a riser's line between the two tops
+    // there, over the lower and under the higher, passes through the solid,
+    // however soon it comes out on the higher side. The walk up the line of
+    // sight (`SolidWalk`) reads the greatest of h(q(t)) - z(t), as above, and
+    // the solid closed at each riser's line it crosses: at the higher top.
+    // Under every camera of the stress orbit, every vertex of the plateau
+    // hatching, the contours and the wall edges that is kept, and whose line
+    // of sight crosses a riser's line below the highest top, is under the
+    // solid by no more than the depth tolerance; and none dropped is in
+    // plain view of the walk, under the solid by no more than a millionth,
+    // on a face turned to the eye: a plateau seen from above, the graph
+    // facing the eye by a margin, a wall's top edge. On the dip, two
+    // poles at 0.49 ± 0.1i whose truncation steps from 0.8 to 4 at Re z =
+    // 1/2, where a line of sight passes into the higher band a hair beyond
+    // the boundary and under its top, between two grid columns; on the tower
+    // in two tiles, the second beside the first and then turned; and on Γ
+    // with three risers.
+    Check.suite("risers: no stroke is drawn through a riser, and none is hidden that the walk up the line of sight sees") {
+        let window = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        let dip = LandscapeRequest(expression: "1/(z - 0.49 - 0.1*i) + 1/(z - 0.49 + 0.1*i)",
+                                   domain: Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1.3)), resolution: 60,
+                                   truncation: .realBands([RealBand(below: 0.5, height: 0.8)], beyond: 4))
+        let tower = LandscapeRequest(expression: "1/(z - 0.45)", domain: window, resolution: 60,
+                                     truncation: .realBands([RealBand(below: 0.5, height: 2)], beyond: 4))
+        let gamma = LandscapeRequest(expression: "gamma(z)", domain: Domain(real: Interval(lo: -4.5, hi: 4.5), imag: Interval(lo: -2.5, hi: 2.5)),
+                                     resolution: 120,
+                                     truncation: .realBands([RealBand(below: -2.5, height: 0.5), RealBand(below: -1.5, height: 1),
+                                                             RealBand(below: 0.5, height: 1.5)], beyond: 2.5))
+        let side = Affine2(a: 1, b: 0, tx: 2, c: 0, d: 1, ty: 0), turned = Affine2(a: 0, b: -1, tx: 2.5, c: 1, d: 0, ty: -0.5)
+        let cases: [(name: String, request: LandscapeRequest, tiles: [Affine2])] = [
+            ("the dip at 0.8 | 4", dip, [.identity]),
+            ("a tower at 2 | 4 in two tiles side by side", tower, [.identity, side]),
+            ("a tower at 2 | 4 in two tiles, the second turned", tower, [.identity, turned]),
+            ("Γ at 0.5 | 1 | 1.5 | 2.5", gamma, [.identity]),
+        ]
+        let depthTolerance = 0.02
+        for c in cases {
+            let built = try NativeLandscape.build(c.request, refine: true)
+            guard let magnitude = built.refine?.magnitude else { Check.expect(false, "\(c.name): a refiner"); continue }
+            // On two tiles the walls stand round both copies, and every layer
+            // is drawn on both.
+            var manifest = built.manifest
+            manifest.occluder.tiles = c.tiles
+            if c.tiles.count > 1 { manifest.occluder.walls = .perimeter(riserPerimeter([(-0.5, -1), (3.5, -1), (3.5, 1), (-0.5, 1)]), base: 0) }
+            for k in manifest.layers.indices where c.tiles.count > 1 {
+                switch manifest.layers[k].source {
+                case .contour(let field, let levels, let restriction, _):
+                    manifest.layers[k].source = .contour(field: field, levels: levels, restriction: restriction, tiled: true)
+                case .hatching(let hatching, .plateaus): manifest.layers[k].source = .hatching(hatching, faces: .plateaus(tiled: true))
+                case .truncationEdge: manifest.layers[k].source = .truncationEdge(tiled: true)
+                default: break
+                }
+            }
+            let bundle = KurvenBundle(url: built.url, manifest: manifest, surface: built.surface, refine: built.refine)
+            let h = Heightfield(surface: bundle.surface, occluder: bundle.occluder(), tiles: c.tiles,
+                                region: manifest.occluder.region, step: manifest.occluder.step, refine: bundle.refine,
+                                walls: manifest.occluder.walls)
+            let walk = SolidWalk(surface: bundle.surface, magnitude: magnitude, tiles: c.tiles)
+            let layers: [(layer: Layer, face: FaceKind)] = try [("plateau_hatch", FaceKind.plateau), ("wall_edges", .wall)].map {
+                (try bundle.layer($0.0), $0.1)
+            } + bundle.layers.filter { $0.spec.role == .magnitude || $0.spec.role == .phase }.map { ($0, .graph) }
+            var kept = 0, under = 0, dropped = 0, seen = 0
+            var worst = 0.0, underExample = "", seenExample = ""
+            for (name, view) in stressCameras() {
+                let d = -view.projectionDirection
+                for (layer, face) in layers {
+                    let visible = h.visibleCurves(layer.paths, on: face, view: view, depthTolerance: depthTolerance)
+                    // The curves' own vertices, not the ends of runs bisected
+                    // to where the verdict turns: a line through a riser's
+                    // corner at the domain's edge is in the solid on one side
+                    // of it and clear on the other.
+                    let keptSet = Set(visible.vertices.map(\.v))
+                    let keptVertices = Array(keptSet.intersection(layer.paths.vertices.map(\.v))).map { P3<WorldSpace>($0) }
+                    let depths = Heightfield.parallelMap(keptVertices, chunk: 64) { p -> Double? in
+                        // A wall seen edge-on is left out: its line of sight
+                        // runs along it, in and out of the solid by rounding.
+                        let ts = walk.crossings(p, d).filter { $0 >= 1e-7 }
+                        return ts.isEmpty || walk.edgeOn(p, d) ? nil : walk.depth(p, d, crossings: ts)
+                    }
+                    for (p, depth) in zip(keptVertices, depths) {
+                        guard let depth else { continue }
+                        kept += 1
+                        if depth > worst { worst = depth }
+                        if depth > depthTolerance {
+                            under += 1
+                            if underExample.isEmpty {
+                                underExample = String(format: "; e.g. %@, %@, (%.4f, %.4f, %.4f) under the solid by %.4f, kept",
+                                                      name, layer.spec.name, p.x, p.y, p.z, depth)
+                            }
+                        }
+                    }
+                    // What is dropped and faces the eye: a plateau seen from
+                    // above, the graph facing the eye by a margin, off the
+                    // truncation edge, and a wall's top edge off the domain's
+                    // corners. Not a vertex on or a hair from a riser's line,
+                    // which the traversal and the walk each read from their
+                    // own side.
+                    let candidates = Array(Set(layer.paths.vertices.map(\.v)).subtracting(keptSet)).map { P3<WorldSpace>($0) }
+                    let verdicts = Heightfield.parallelMap(candidates, chunk: 64) { p -> Double? in
+                        let all = walk.crossings(p, d)
+                        guard !all.isEmpty, !walk.besideRiser(p) else { return nil }
+                        switch face {
+                        case .plateau: guard d.z > 1e-3 else { return nil }
+                        case .graph: guard walk.graphFacing(p, d).map({ $0 > 0.05 }) ?? false else { return nil }
+                        default:
+                            guard let top = walk.top(SIMD2(p.x, p.y)), abs(p.z - top) <= 1e-9 * max(1, abs(top)),
+                                  !walk.atCorner(p) else { return nil }
+                        }
+                        return walk.depth(p, d, crossings: all)
+                    }
+                    for (p, depth) in zip(candidates, verdicts) {
+                        guard let depth else { continue }
+                        dropped += 1
+                        if depth <= 1e-6 {
+                            seen += 1
+                            if seenExample.isEmpty {
+                                seenExample = String(format: "; e.g. %@, %@, (%.4f, %.4f, %.4f) in plain view, dropped", name, layer.spec.name, p.x, p.y, p.z)
+                            }
+                        }
+                    }
+                }
+            }
+            Check.expect(under == 0 && seen == 0 && kept > 1000 && dropped > 100,
+                         "\(c.name): what is drawn and what is dropped where a line of sight crosses a riser agree with the walk",
+                         String(format: "%d of %d kept vertices under the solid by more than the depth tolerance, worst %.4f%@; ",
+                                under, kept, worst, underExample)
+                            + "\(seen) of \(dropped) dropped on a face turned to the eye in plain view\(seenExample)")
+        }
+    }
+}
+
+/// The walk up a line of sight over a landscape on its tiles, for the riser
+/// suites: the solid's top, closed, h(q) = min(|f|, h(x)) on the copy under q,
+/// the greater where two meet and the greater band's height on a band
+/// boundary, and how far under it a point lies along its line of sight.
+private struct SolidWalk: Sendable {
+    let surface: Surface
+    let magnitude: ContourRefine.Magnitude
+    let backs: [Affine2]
+    let x: (lo: Double, hi: Double), y: (lo: Double, hi: Double)
+    /// The band boundaries the truncation steps at, each with the greater
+    /// height either side.
+    let steps: [(b: Double, greater: Double)]
+    /// The copies' bounding box in the plane.
+    let box: (lo: SIMD2<Double>, hi: SIMD2<Double>)
+    /// The highest the truncated top stands, and the steepest it rises
+    /// between two samples in one band.
+    let highest: Double, steepest: Double
+
+    init(surface: Surface, magnitude: @escaping ContourRefine.Magnitude, tiles: [Affine2]) {
+        self.surface = surface
+        self.magnitude = magnitude
+        backs = tiles.compactMap(\.inverse)
+        let dom = surface.domain, g = surface.height
+        x = (min(dom.real.lo, dom.real.hi), max(dom.real.lo, dom.real.hi))
+        y = (min(dom.imag.lo, dom.imag.hi), max(dom.imag.lo, dom.imag.hi))
+        let spans = surface.truncation.bands(from: x.lo, to: x.hi)
+        steps = zip(spans, spans.dropFirst()).compactMap { l, r in l.height != r.height ? (l.hi, max(l.height, r.height)) : nil }
+        var lo = SIMD2(Double.infinity, .infinity), hi = -lo
+        for tile in tiles {
+            for (cx, cy) in [(x.lo, y.lo), (x.hi, y.lo), (x.lo, y.hi), (x.hi, y.hi)] {
+                let w = tile(P3<WorldSpace>(cx, cy, 0)).xy.v
+                lo = simd_min(lo, w); hi = simd_max(hi, w)
+            }
+        }
+        box = (lo, hi)
+        var highest = 0.0, steepest = 0.0
+        let dx = dom.real.length / Double(g.width - 1), dy = dom.imag.length / Double(g.height - 1)
+        func truncated(_ i: Int, _ j: Int) -> Double {
+            min(Double(g[i, j]), surface.truncationHeight(atX: g.position(x: i, y: 0).x))
+        }
+        for j in 0..<g.height {
+            for i in 0..<g.width {
+                let z = truncated(i, j), xi = g.position(x: i, y: 0).x
+                guard z.isFinite else { continue }
+                highest = max(highest, z)
+                if i + 1 < g.width, surface.truncationHeight(atX: g.position(x: i + 1, y: 0).x) == surface.truncationHeight(atX: xi) {
+                    steepest = max(steepest, abs(truncated(i + 1, j) - z) / abs(dx))
+                }
+                if j + 1 < g.height { steepest = max(steepest, abs(truncated(i, j + 1) - z) / abs(dy)) }
+            }
+        }
+        self.highest = highest; self.steepest = steepest
+    }
+
+    /// Whether a point of the domain lies in it, to a rounding.
+    func inDomain(_ p: P3<WorldSpace>, _ e: Double = 1e-12) -> Bool {
+        p.x >= x.lo - e && p.x <= x.hi + e && p.y >= y.lo - e && p.y <= y.hi + e
+    }
+
+    /// The solid's top over a point of the plane, closed; nil off every copy.
+    func top(_ q: SIMD2<Double>) -> Double? {
+        var best: Double?
+        for back in backs {
+            let p = back(P3<WorldSpace>(q.x, q.y, 0))
+            guard inDomain(p) else { continue }
+            let px = min(max(p.x, x.lo), x.hi), py = min(max(p.y, y.lo), y.hi)
+            let u = magnitude(P2(px, py))
+            let h = steps.first { abs($0.b - px) <= 1e-12 }?.greater ?? surface.truncationHeight(atX: px)
+            best = max(best ?? -.infinity, min(u.isNaN ? .infinity : u, h))
+        }
+        return best
+    }
+
+    /// How squarely the graph faces along `d` at a point of it, through the
+    /// copy it lies on: the normal by differences either side, the lesser of
+    /// the two, so that a crease faces neither way; nil off every copy or on
+    /// a plateau.
+    func graphFacing(_ p: P3<WorldSpace>, _ d: SIMD3<Double>) -> Double? {
+        guard let back = backs.first(where: { inDomain($0(p), 1e-9) }) else { return nil }
+        let e = 1e-6
+        func height(_ q: SIMD2<Double>) -> Double? {
+            let w = back(P3<WorldSpace>(q.x, q.y, 0))
+            guard inDomain(w, 1e-9) else { return nil }
+            let u = magnitude(P2(w.x, w.y))
+            return u < surface.truncationHeight(atX: w.x) - 1e-6 ? u : nil
+        }
+        let at = SIMD2(p.x, p.y)
+        guard let u = height(at) else { return nil }
+        var least = Double.infinity
+        for s in [-1.0, 1.0] {
+            guard let ux = height(at + SIMD2(s * e, 0)), let uy = height(at + SIMD2(0, s * e)) else { return nil }
+            let n = SIMD3(-(ux - u) / (s * e), -(uy - u) / (s * e), 1)
+            least = min(least, simd_dot(n, d) / simd_length(n))
+        }
+        return least
+    }
+
+    /// Whether `p` lies on the domain's edge on a copy, a wall, and its line
+    /// of sight runs along it.
+    func edgeOn(_ p: P3<WorldSpace>, _ d: SIMD3<Double>) -> Bool {
+        backs.contains { back in
+            let o = back(p), r = SIMD2(back.a * d.x + back.b * d.y, back.c * d.x + back.d * d.y)
+            let e = 1e-9
+            return inDomain(o, e) && ((abs(o.x - x.lo) <= e || abs(o.x - x.hi) <= e) && abs(r.x) <= 1e-6
+                                      || (abs(o.y - y.lo) <= e || abs(o.y - y.hi) <= e) && abs(r.y) <= 1e-6)
+        }
+    }
+
+    /// Whether `p` stands at a corner of the domain on a copy, where its top
+    /// edge meets a vertical edge and the walls' facing has the say.
+    func atCorner(_ p: P3<WorldSpace>) -> Bool {
+        backs.contains { back in
+            let o = back(p), e = 1e-9
+            return (abs(o.x - x.lo) <= e || abs(o.x - x.hi) <= e) && (abs(o.y - y.lo) <= e || abs(o.y - y.hi) <= e)
+        }
+    }
+
+    /// Whether `p` lies on or a hair from a riser's line, a millionth: a
+    /// band boundary on a copy, or a copy's edge where another meets it. The
+    /// traversal and the walk each read such a point from their own side.
+    func besideRiser(_ p: P3<WorldSpace>) -> Bool {
+        let e = 1e-6
+        let on = backs.filter { inDomain($0(p), e) }
+        return on.contains { back in
+            let o = back(p)
+            return steps.contains { abs(o.x - $0.b) <= e }
+                || on.count > 1 && (abs(o.x - x.lo) <= e || abs(o.x - x.hi) <= e || abs(o.y - y.lo) <= e || abs(o.y - y.hi) <= e)
+        }
+    }
+
+    /// Where the line of sight from `p` along `d` crosses a riser's line
+    /// below the highest top: a band boundary on a copy, or the edge of a
+    /// copy where another meets it.
+    func crossings(_ p: P3<WorldSpace>, _ d: SIMD3<Double>) -> [Double] {
+        var out: [Double] = []
+        for back in backs {
+            let o = back(P3<WorldSpace>(p.x, p.y, 0))
+            let r = SIMD2(back.a * d.x + back.b * d.y, back.c * d.x + back.d * d.y)
+            var lines: [(axis: Int, level: Double, edge: Bool)] = steps.map { (0, $0.b, false) }
+            lines += [(0, x.lo, true), (0, x.hi, true), (1, y.lo, true), (1, y.hi, true)]
+            for line in lines where abs(r[line.axis]) > 1e-15 {
+                let t = (line.level - (line.axis == 0 ? o.x : o.y)) / r[line.axis]
+                guard t > 0, p.z + t * d.z < highest else { continue }
+                let w = P3<WorldSpace>(o.x + t * r.x, o.y + t * r.y, 0)
+                guard inDomain(w, 1e-9) else { continue }
+                if line.edge {
+                    let q = P3<WorldSpace>(p.x + t * d.x, p.y + t * d.y, 0)
+                    guard backs.filter({ inDomain($0(q), 1e-9) }).count > 1 else { continue }
+                }
+                out.append(t)
+            }
+        }
+        return out
+    }
+
+    /// How far under the solid `p` lies along its line of sight `d`: the
+    /// greatest of h(q(t)) - z(t), less p.z, read a five-hundredth of a unit
+    /// at a time from a hundred-thousandth on, then a hundred-thousandth at
+    /// a time around each greatest within reach of the best, and at each of
+    /// `crossings`, where the closed top is the higher side's. A riser's step
+    /// lies between two samples, and a line through its top corner is in the
+    /// solid for less than any step.
+    func depth(_ p: P3<WorldSpace>, _ d: SIMD3<Double>, crossings: [Double]) -> Double {
+        let at = SIMD2(p.x, p.y), dxy = SIMD2(d.x, d.y)
+        let coarse = 2e-3, fine = 1e-5
+        let reach = 2 * (2 * 2.0.squareRoot() * steepest * simd_length(dxy) + abs(d.z)) * coarse
+        // Where the line's footprint leaves the copies' bounding box.
+        var end = Double.infinity
+        for axis in 0..<2 where abs(dxy[axis]) > 1e-15 {
+            end = min(end, ((dxy[axis] > 0 ? box.hi[axis] : box.lo[axis]) - at[axis]) / dxy[axis])
+        }
+        func value(_ t: Double) -> Double? { top(at + t * dxy).map { $0 - t * d.z } }
+        var samples: [(t: Double, value: Double)] = []
+        var best = p.z, t = fine
+        while highest - t * d.z > best - reach, t <= end + coarse {
+            if let v = value(t) { samples.append((t, v)); best = max(best, v) }
+            t += coarse
+        }
+        for (k, s) in samples.enumerated() where s.value > best - reach
+            && (k == 0 || s.value >= samples[k - 1].value) && (k + 1 == samples.count || s.value >= samples[k + 1].value) {
+            var u = max(s.t - coarse, fine)
+            while u < s.t + coarse {
+                if let v = value(u), v > best { best = v }
+                u += fine
+            }
+        }
+        for t in crossings { if let v = value(t), v > best { best = v } }
+        return best - p.z
+    }
 }
 
 // MARK: - curves on a plateau are tested by the plateau

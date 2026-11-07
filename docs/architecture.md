@@ -178,7 +178,9 @@ the floor, closed by the walls. Every clipped layer is tested per vertex
   the function at hand it reads f at the crossings and searches each
   interval between them for the point where the line comes closest to the
   surface. Nothing is sampled: a sliver thinner than any step is still a
-  crossing.
+  crossing. Where it crosses a band boundary it meets the riser there
+  exactly: a line that passes Re z = b between the two sides' tops is in
+  the solid, however soon it comes out on the higher side.
 
 The depth tolerance means two things, kept apart. A point of a curve lies
 on the modulus surface, and the drawn triangles miss that surface by an
