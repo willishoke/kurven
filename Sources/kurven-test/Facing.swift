@@ -376,3 +376,61 @@ func wallCurveTests() {
                      "\(drawn.count) strokes drawn, \(visible.count) tested")
     }
 }
+
+// MARK: - a vertical stroke on a wall is its two ends
+//
+// A wall's hatch lines and its corners' vertical edges had a vertex every step
+// of height, a vertex a cell up to |f|; untruncated, exp(10z) on a grid of 16
+// put fourteen million on the walls, and exp(z²) and sin(30z) asked for more
+// memory than there is. No vertex between the ends is needed: the solid is
+// everything under the surface and every line of sight rises toward the eye,
+// so what is hidden of a vertical stroke is one piece from its bottom up, and
+// the bake bisects to where it ends.
+
+func wallStrokeTests() {
+    Check.suite("walls: a vertical stroke is its two ends, however high |f| stands") {
+        // Untruncated, at sizes the subdivision every step survives, so that
+        // this cannot itself run out of memory: hundreds of thousands of
+        // vertices on the walls there, where two a stroke is dozens.
+        let cases: [(expression: String, half: Double, spacing: Double)] = [
+            ("exp(10*z)", 1, 0.5), ("exp(z^2)", 3, 1.5), ("sin(30*z)", 0.3, 0.15),
+        ]
+        for c in cases {
+            let domain = Domain(real: Interval(lo: -c.half, hi: c.half), imag: Interval(lo: -c.half, hi: c.half))
+            let bundle = try NativeLandscape.build(LandscapeRequest(
+                expression: c.expression, domain: domain, resolution: 8, truncation: Truncation.none,
+                spacing: c.spacing))
+            let g = bundle.surface.height
+            let cell = max(domain.real.length / Double(g.width - 1), domain.imag.length / Double(g.height - 1))
+            let highest = g.values.map(Double.init).max() ?? 0
+            Check.expect(highest > 1000 * cell, "\(c.expression): the walls rise a thousand cells and more",
+                         String(format: "max |f| %.4g, a cell %.3g", highest, cell))
+            // The budget reads the number of strokes and nothing of |f|: two
+            // vertices a hatch line, and two a corner's vertical edge.
+            let hatch = bundle.layers.first { $0.spec.name == "wall_hatch" }!.paths
+            Check.expect(hatch.count > 0 && hatch.vertices.count <= 2 * hatch.count,
+                         "\(c.expression): the wall hatch has two vertices a line",
+                         "\(hatch.vertices.count) vertices on \(hatch.count) lines")
+            let edges = bundle.layers.first { $0.spec.name == "wall_edges" }!.paths
+            let verticals = (0..<edges.count).map { Array(edges[path: $0]) }.filter { p in
+                p.allSatisfy { $0.x == p[0].x && $0.y == p[0].y }
+            }
+            let corners = verticals.reduce(0) { $0 + $1.count }
+            Check.expect(verticals.count == 4 && corners <= 2 * verticals.count,
+                         "\(c.expression): and each corner's vertical edge two",
+                         "\(corners) vertices on \(verticals.count) vertical edges")
+        }
+    }
+
+    Check.suite("walls: every camera navigation reaches sees from above the floor's plane") {
+        var lowest = Double.infinity
+        for elevation in stride(from: -Orbit.elevationLimit.degrees, through: Orbit.elevationLimit.degrees, by: 0.5) {
+            for azimuth in stride(from: 0.0, to: 360, by: 15) {
+                var orbit = Orbit(matching: NativeLandscape.projection)
+                orbit.elevation = Angle(degrees: elevation); orbit.azimuth = Angle(degrees: azimuth)
+                lowest = min(lowest, -orbit.camera.view.projectionDirection.z)
+            }
+        }
+        Check.expect(lowest > 0, "a line of sight rises toward the eye", "least rise \(lowest)")
+    }
+}

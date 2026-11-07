@@ -605,8 +605,8 @@ public enum LayerSource: Sendable, Equatable {
     /// and `tests/fixtures/hatch` pins them.
     case hatching(Hatching, faces: HatchedFaces)
     /// The edges of the listed walls: each one's top and bottom edges, and a
-    /// vertical edge at each distinct corner, with a vertex every `step` of
-    /// height.
+    /// vertical edge at each distinct corner, its two ends. `step` is ignored,
+    /// and goes at schema 3.
     case wallEdges(edges: [Int], step: Double, base: Double)
     /// The truncation edge: where the graph meets the plateaus, the level
     /// set |f| = h(x).
@@ -729,7 +729,7 @@ public enum LayerSource: Sendable, Equatable {
     }
 
     /// Vertical hatching on the walls along `edges`, a line every `spacing`
-    /// along each wall with a vertex every `step` of height.
+    /// along each wall, each line its two ends. `step` is ignored on a wall.
     public static func wallHatching(edges: [Int], spacing: Double, step: Double, trim: Bool = true,
                                     base: Double = 0, topOffset: Double = 0) -> LayerSource {
         .hatching(Hatching(angle: HatchedFaces.wallAngle, spacing: spacing, step: step),
