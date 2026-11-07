@@ -235,7 +235,7 @@ extension Surface {
         }
         var topEdge: [P3<WorldSpace>] = []
         topEdge.reserveCapacity(n)
-        var previous: (p: P2<DomainSpace>, excess: Double)?
+        var previous: (p: P2<DomainSpace>, excess: Double, riser: (x: Double, side: Truncation.Side)?)?
         // The nodes along the edge; with the function, where the edge meets a
         // riser between two nodes, two vertices there as well, one either
         // side of the boundary at its own band's height -- the boundary
@@ -320,12 +320,19 @@ extension Surface {
             let p = station.p
             let (u, truncationHeight) = read(station)
             let excess = u - truncationHeight
-            if let a = previous, excess.isFinite, a.excess.isFinite, a.p.x != p.x || a.p.y != p.y {
+            // No crossing between the two stations either side of one riser:
+            // they stand a rounding step apart, and what changes between them
+            // is the truncation, not |f|, so the top steps there from one to
+            // the other and reaches neither band's truncation between.
+            let acrossRiser = previous?.riser != nil && previous?.riser?.x == station.riser?.x
+                && previous?.riser?.side != station.riser?.side
+            if let a = previous, excess.isFinite, a.excess.isFinite, a.p.x != p.x || a.p.y != p.y, !acrossRiser {
                 let here: (p: P2<DomainSpace>, excess: Double) = (p, excess)
+                let there: (p: P2<DomainSpace>, excess: Double) = (a.p, a.excess)
                 var under: (p: P2<DomainSpace>, excess: Double)?
                 var over: (p: P2<DomainSpace>, excess: Double)?
-                if a.excess <= 0 && excess > 0 { under = a; over = here }
-                if excess <= 0 && a.excess > 0 { under = here; over = a }
+                if a.excess <= 0 && excess > 0 { under = there; over = here }
+                if excess <= 0 && a.excess > 0 { under = here; over = there }
                 if let under, let over {
                     if magnitudeOfF != nil {
                         if let q = truncationCrossing(from: under.p, under.excess, to: over.p, over.excess,
@@ -343,7 +350,7 @@ extension Surface {
                 }
             }
             topEdge.append(P3(p.x, p.y, min(u, truncationHeight)))
-            previous = (p, excess)
+            previous = (p, excess, station.riser)
         }
         guard let refine, refine.magnitude != nil else { return topEdge }
         return subdividedProfile(withMinima(topEdge, profile: profile), profile: profile, tolerance: refine.tolerance)
