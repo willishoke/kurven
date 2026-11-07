@@ -220,7 +220,8 @@ public struct Heightfield: Sendable {
     /// tolerance, almost on the top edge.
     ///
     /// `resolution` is how finely a fold's end behind the solid is placed,
-    /// as a length in the view plane (`visibleRuns(of:folds:worker:stop:)`); zero, to the last bit.
+    /// as a length in the view plane (`visibleRuns(of:folds:worker:stop:)`);
+    /// zero, to the last bit.
     public func visibleFolds(view: Transform<WorldSpace, ViewSpace>, depthTolerance: Double,
                              refined: Bool = true, resolution: Double = 0) -> PolylineSet<WorldSpace> {
         let folds = foldCurves(view: view, refined: refined)
@@ -272,10 +273,11 @@ public struct Heightfield: Sendable {
     }
 
     /// The curves on one kind of face that can be seen, the landscape's one
-    /// rule for every layer (`Scene.visibleLayers`): a point is seen when
-    /// the face under it faces the eye and nothing of the solid stands
-    /// between it and the eye (`GridTraversal`). `face` is what the curves
-    /// lie on (`SceneGeometry.face(of:)`), and says which facing is read:
+    /// rule for every layer (`Scene.visible(_:depthTolerance:image:)`): a
+    /// point is seen when the face under it faces the eye and nothing of the
+    /// solid stands between it and the eye (`GridTraversal`). `face` is what
+    /// the curves lie on (`SceneGeometry.face(of:)`), and says which facing
+    /// is read:
     ///
     /// - **The graph.** The surface bounds the solid under it, so where it
     ///   faces away from the eye the curves on it are hidden, full stop, and
@@ -299,11 +301,12 @@ public struct Heightfield: Sendable {
     ///   wall that faces away is behind the solid the wall bounds. A vertical
     ///   edge at a corner lies in two walls and shows if either does. Which
     ///   walls a point lies in is read off the walls' faces: those whose foot
-    ///   it stands on (`wallFacing(sight:slack:)`). The top edge is the exception: it is the surface's own
-    ///   edge as much as the wall's top, and the far edge of a drawing is in
-    ///   plain view over a wall that faces away. A vertex at the surface's
-    ///   height is tested by the traversal alone, which hides it exactly
-    ///   when the surface in front of it does.
+    ///   it stands on (`wallFacing(sight:slack:)`). The top edge is the
+    ///   exception: it is the surface's own edge as much as the wall's top,
+    ///   and the far edge of a drawing is in plain view over a wall that
+    ///   faces away. A vertex at the surface's height is tested by the
+    ///   traversal alone, which hides it exactly when the surface in front of
+    ///   it does.
     /// - **The plateaus**, flat and facing up.
     /// - **No face**: a crease or anything else, tested by the traversal
     ///   alone, since such curves lie where no one face's facing is the
@@ -362,7 +365,8 @@ public struct Heightfield: Sendable {
     }
 
     /// Curves that lie in a cut face -- the wall's hatch and its outline --
-    /// less what cannot be seen: `visibleCurves(_:on:view:depthTolerance:resolution:)` on the walls.
+    /// less what cannot be seen: `visibleCurves(_:on:view:depthTolerance:resolution:)`
+    /// on the walls.
     public func visibleWallCurves(_ paths: PolylineSet<WorldSpace>,
                                   view: Transform<WorldSpace, ViewSpace>,
                                   depthTolerance: Double, resolution: Double = 0) -> PolylineSet<WorldSpace> {
@@ -370,7 +374,8 @@ public struct Heightfield: Sendable {
     }
 
     /// Curves that lie on the surface itself -- the contours of |f| and arg f,
-    /// lifted onto it -- less what cannot be seen: `visibleCurves(_:on:view:depthTolerance:resolution:)` on the graph.
+    /// lifted onto it -- less what cannot be seen:
+    /// `visibleCurves(_:on:view:depthTolerance:resolution:)` on the graph.
     public func visibleSurfaceCurves(_ paths: PolylineSet<WorldSpace>,
                                      view: Transform<WorldSpace, ViewSpace>,
                                      depthTolerance: Double) -> PolylineSet<WorldSpace> {
@@ -1214,7 +1219,8 @@ public struct Scene: Sendable {
     /// (`SceneGeometry.face(of:)`); where its facing changes sign along a
     /// segment, the segment is cut on the fold by bisection on it; and what
     /// stands in front is the scene's occlusion test (`OcclusionTest`): grid
-    /// traversal through a landscape (`Heightfield.visibleCurves(_:on:view:depthTolerance:resolution:)`),
+    /// traversal through a landscape
+    /// (`Heightfield.visibleCurves(_:on:view:depthTolerance:resolution:)`),
     /// sphere tracing round a surface with a tubular neighbourhood, and a
     /// polyhedron's pieces, in their segment form, for its edges and hatching
     /// (`Solid.visibleEdges`, `Solid.visibleHatching`). The coordinate image,

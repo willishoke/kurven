@@ -108,8 +108,8 @@ public enum HiddenLine {
         return PolylineSet(paths: out)
     }
 
-    /// Curves that are not depth-tested: unclipped curves, and every layer of a
-    /// heightfield or a solid, which arrives already tested by its geometry
+    /// Curves that are not depth-tested: every layer the bake draws, which
+    /// arrives already tested by its face and its scene's occlusion test
     /// (`Scene.visibleLayers`). Passing it through this rather than casting
     /// keeps "which space am I in" a decision the type system witnesses.
     public static func pass(_ paths: PolylineSet<ViewSpace>) -> PolylineSet<PageSpace> {

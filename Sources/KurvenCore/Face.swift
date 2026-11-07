@@ -241,9 +241,9 @@ public extension SceneGeometry {
 
     /// The kind of face a layer's curves lie on, which is what their
     /// visibility is read from: the facing of that face under each point,
-    /// then the scene's occlusion test (`Scene.visibleLayers`). Nil for
-    /// curves on no one face, tested by occlusion alone: a fold, edge-on by
-    /// construction; a crease between two faces, as an outline, a
+    /// then the scene's occlusion test (`Scene.visible(_:depthTolerance:image:)`).
+    /// Nil for curves on no one face, tested by occlusion alone: a fold,
+    /// edge-on by construction; a crease between two faces, as an outline, a
     /// truncation edge and a polyhedron's edges are; anything else stored
     /// with nothing said of where it lies.
     ///
