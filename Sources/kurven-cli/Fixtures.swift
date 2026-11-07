@@ -378,9 +378,11 @@ enum GoldenFixtures {
 
     // MARK: landscapes
 
-    /// Three landscapes built natively with every layer a description. One
+    /// Four landscapes built natively with every layer a description. One
     /// leaves the truncation to the rule, one says where to cut and how densely
-    /// to hatch, and one is typed rather than chosen from the catalog.
+    /// to hatch, one is typed rather than chosen from the catalog, and one is
+    /// banded, a tower whose plateau a band boundary crosses, so a riser
+    /// stands in it.
     static func landscapes(_ dir: URL) throws {
         try directory(dir)
         let catalog = Catalog.native
@@ -395,6 +397,12 @@ enum GoldenFixtures {
             ("landscape_cubic", spaced),
             ("landscape_typed", LandscapeRequest(expression: "sin(z)/z", domain: sin.domain,
                                                  resolution: 48)),
+            ("landscape_tower", LandscapeRequest(expression: "1/(z - 0.45)",
+                                                 domain: Domain(real: Interval(lo: -0.5, hi: 1.5),
+                                                                imag: Interval(lo: -1, hi: 1)),
+                                                 resolution: 48,
+                                                 truncation: .realBands([RealBand(below: 0.5, height: 2)],
+                                                                        beyond: 4))),
         ]
         var entries: [JSONValue] = []
         for (stem, spec) in specs {
