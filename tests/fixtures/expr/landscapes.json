@@ -71,6 +71,37 @@
     "spacing": null,
     "truncation": null
    }
+  },
+  {
+   "bundle": "landscape_tower.kurven",
+   "layers": 9,
+   "spec": {
+    "domain": {
+     "imag": {
+      "hi": 1.0,
+      "lo": -1.0
+     },
+     "real": {
+      "hi": 1.5,
+      "lo": -0.5
+     }
+    },
+    "expression": "1/(z - 0.45)",
+    "layers": null,
+    "name": "",
+    "resolution": 48,
+    "spacing": null,
+    "truncation": {
+     "bands": [
+      {
+       "below": 0.5,
+       "height": 2.0
+      }
+     ],
+     "beyond": 4.0,
+     "kind": "realBands"
+    }
+   }
   }
  ]
 }
