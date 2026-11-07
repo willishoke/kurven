@@ -172,7 +172,7 @@ func scalarFieldTests() {
                               phase: Grid2D(width: m, height: m, domain: domain, values: phases),
                               truncation: .uniform(0.8))
         let asked = Mutex([String]())
-        let unmoved = ContourRefine(contours: { field, level, paths, ceiling in
+        let unmoved = ContourRefine(contours: { field, level, paths, ceiling, _ in
             asked.withLock { $0.append("\(field) \(level) \(ceiling)") }
             return paths
         }, rings: nil)

@@ -132,7 +132,7 @@ func truncationTests() {
         let rampTruncation = 3.5
         let s = Surface(height: ramp, phase: phase, truncation: .uniform(rampTruncation))
         let source = LayerSource.contour(field: .phase, levels: [0], restriction: .belowTruncation, tiled: false)
-        let identity = ContourRefine(contours: { _, _, paths, _ in paths }, rings: nil)
+        let identity = ContourRefine(contours: { _, _, paths, _, _ in paths }, rings: nil)
 
         let plain = s.derive(source, policy: .magnitude, region: .full, tiles: [.identity])
         let carried = s.derive(source, policy: .magnitude, region: .full, tiles: [.identity],

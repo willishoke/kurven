@@ -1049,7 +1049,7 @@ extension Surface {
                 switch truncation {
                 case .uniform(let truncationHeight) where truncationHeight.isFinite:
                     var whole = PlateauLoops(rectangle: rectangle, plateau: plateau(truncationHeight))
-                    var placed = refine.contours(.magnitude, truncationHeight, lines, .infinity)
+                    var placed = refine.contours(.magnitude, truncationHeight, lines, .infinity, ContourRefine.everywhere)
                     placed += refine.rings?(truncationHeight, placed) ?? []
                     for line in placed {
                         var line = line
@@ -1214,7 +1214,10 @@ extension Surface {
                 let truncationHeight = truncationHeight(atX: run[0].x)
                 guard truncationHeight.isFinite, let band = self.band(atX: run[0].x) else { continue }
                 let closed = run.first == run.last
-                let refined = refine.contours(.magnitude, truncationHeight, [run], .infinity)
+                // Kept to its band, between the boundaries either side.
+                let x = run[0].x
+                let span = (boundaries.last { $0 <= x } ?? -.infinity)...(boundaries.first { $0 > x } ?? .infinity)
+                let refined = refine.contours(.magnitude, truncationHeight, [run], .infinity, span)
                 for (index, piece) in refined.enumerated() where piece.count >= 2 {
                     var piece = piece
                     // A closed piece has no ends.

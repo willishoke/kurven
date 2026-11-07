@@ -512,9 +512,9 @@ func refinementTests() {
         let built = try NativeLandscape.build(request)
         let inner = built.refine!
         let solved = Mutex([ContourField: Int]())
-        let counted = ContourRefine(contours: { field, level, paths, ceiling in
+        let counted = ContourRefine(contours: { field, level, paths, ceiling, span in
                                         solved.withLock { $0[field, default: 0] += 1 }
-                                        return inner.contours(field, level, paths, ceiling)
+                                        return inner.contours(field, level, paths, ceiling, span)
                                     },
                                     rings: inner.rings, magnitude: inner.magnitude, zero: inner.zero,
                                     tolerance: inner.tolerance).remembering()

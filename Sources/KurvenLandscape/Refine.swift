@@ -68,8 +68,12 @@ public struct ContourRefiner: Sendable {
     public var lifted: Bool
     /// The height above which the curves are cut away, past which no line is
     /// followed or seeded: set for the duration of a
-    /// `refine(field:level:_:points:ceiling:)` call from its ceiling.
+    /// `refine(field:level:_:points:ceiling:span:)` call from its ceiling.
     var ceiling: Double = .infinity
+    /// The span of Re z a magnitude line is kept to where it is sought past a
+    /// zero (`subdivide`): a band's, for a run of a banded truncation edge.
+    /// Set for the duration of a `refine` call, like the ceiling.
+    var span = ContourRefine.everywhere
 
     /// The expression f was compiled from, for a fork to compile again.
     let node: KurvenMath.Expression.Node
@@ -160,9 +164,9 @@ public struct ContourRefiner: Sendable {
         if !zeros.isEmpty {
             rings = { level, existing in self.seededRings(level: level, zeros: zeros, existing: existing) }
         }
-        return ContourRefine(contours: { field, level, paths, ceiling in
+        return ContourRefine(contours: { field, level, paths, ceiling, span in
                                  self.refine(field: field, level: level, paths, points: points,
-                                             ceiling: ceiling)
+                                             ceiling: ceiling, span: span)
                              },
                              rings: rings,
                              magnitude: { p in self.magnitude(Complex(p.x, p.y)) },
@@ -185,16 +189,18 @@ public struct ContourRefiner: Sendable {
     /// level, and wholly below the truncation or wholly over it.
     public func refine(field: ContourField, level theta: Double,
                        _ paths: [[P2<DomainSpace>]], points: [SingularPoint] = [],
-                       ceiling: Double = .infinity) -> [[P2<DomainSpace>]] {
+                       ceiling: Double = .infinity, span: ClosedRange<Double> = ContourRefine.everywhere)
+        -> [[P2<DomainSpace>]] {
         let (g, level) = self.field(field, level: theta)
         let cut = field == .phase
         let ceiling = cut ? ceiling : .infinity
-        // Nothing is followed or seeded above this call's ceiling: a copy of
-        // the refiner carries it.
-        guard self.ceiling == ceiling else {
+        // Nothing is followed or seeded above this call's ceiling, nor sought
+        // outside its span: a copy of the refiner carries them.
+        guard self.ceiling == ceiling, self.span == span else {
             var under = self
             under.ceiling = ceiling
-            return under.refine(field: field, level: theta, paths, points: points, ceiling: ceiling)
+            under.span = span
+            return under.refine(field: field, level: theta, paths, points: points, ceiling: ceiling, span: span)
         }
         let zeros = points.filter { $0.order > 0 }.map(\.point)
         // Every path snapped and subdivided into its pieces.
@@ -1560,8 +1566,10 @@ public struct ContourRefiner: Sendable {
         // where it is reached without crossing the run: past another chord
         // of the run it is on an arc the run already traverses, as round a
         // zero whose hole the grid drew, and a chord placed there would
-        // double the run back over itself. A phase line's other side past a
-        // zero is another ray, and is not sought.
+        // double the run back over itself. And only within the span: a
+        // band's edge past a zero by its boundary is the other band's. A
+        // phase line's other side past a zero is another ray, and is not
+        // sought.
         if found == nil, let past, r < 0, let other = bracket(toward: -toward),
            let t = Root.brent(res, 0, other.t, fa: r, fb: other.r, xtol: 1e-10 * cell) {
             let q = along(t)
@@ -1581,7 +1589,7 @@ public struct ContourRefiner: Sendable {
                 guard Self.distance(mid, u, v) > 1e-9 * cell else { return false }
                 return (side(u, mid, q) > 0) != (side(v, mid, q) > 0) && (side(mid, u, v) > 0) != (side(q, u, v) > 0)
             }
-            if past.zeros.contains(where: between),
+            if span.contains(q.x), past.zeros.contains(where: between),
                !zip(past.run, past.run.dropFirst()).contains(where: crosses) {
                 found = q
             }
@@ -1706,7 +1714,7 @@ public extension NativeLandscape {
             // The grid's paths as `Surface.derive` hands them to a refiner,
             // the branch cut once as the zero level of the turned phase: the
             // field under a refiner that moves nothing.
-            let unmoved = ContourRefine(contours: { _, _, paths, _ in paths }, rings: nil)
+            let unmoved = ContourRefine(contours: { _, _, paths, _, _ in paths }, rings: nil)
             guard let rectangle = bundle.surface.parameterRectangle,
                   let grid = bundle.surface.field(of: field, refine: unmoved) else { continue }
             var contoured: [(level: Double, paths: [[P2<DomainSpace>]])] = []

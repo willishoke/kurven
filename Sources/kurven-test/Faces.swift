@@ -2656,7 +2656,7 @@ func faceTests() {
                      "\(trim.open) counted, \(open.count) open: \(open.map { "\($0[0].v) to \($0[$0.count - 1].v)" })")
     }
 
-    Check.suite("faces: a chord is taken past a zero only off its own run") {
+    Check.suite("faces: a chord is taken past a zero only off its own run, and within its band") {
         // Beside a saddle the grid's line round two zeros cuts across between
         // them, and past the lower zero lies an arc the line already runs
         // along: at 2 | 4 across Re z = 0.4114, zeros at (0.564, 0.278) and
@@ -2665,7 +2665,10 @@ func faceTests() {
         // its far chord stands for: zero at (0.840, -0.068). A chord placed
         // there doubled the line back over itself, and the loops dropped a
         // stretch of the hole: the lattice within it, a fourteenth of a cell
-        // across, away from the loops.
+        // across, away from the loops. And at 2 | 2.5 across Re z = 0.7120,
+        // past a zero by the boundary the band at 2.5 found its level left
+        // of it, in the band at 2: every vertex of each band's truncation
+        // edge lies in its band.
         let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
         let cell = 2.0 / 23
         for (name, expression, bands, beyond, x, y) in [
@@ -2695,6 +2698,17 @@ func faceTests() {
             Check.expect(asked > 20 && wrong.isEmpty, "\(name): the loops hold it",
                          "\(wrong.count) of \(asked) wrong: \(wrong.prefix(3).joined(separator: "; "))")
         }
+        let b = 0.711993911036
+        let built = try NativeLandscape.build(
+            LandscapeRequest(expression: "1703.90688736*(z - (0.732858379215+0.011300545905i))*(z - (0.811553422942-0.149386716774i))^2"
+                                + "/(z - (0.183946050532+0.373413325442i))",
+                             domain: domain, resolution: 24, truncation: .realBands([RealBand(below: b, height: 2)], beyond: 2.5)),
+            refine: true)
+        let trim = built.surface.graphTrimLoops(refine: built.refine)
+        let outside = trim.truncationEdge.dropLast(trim.riserTops.count).joined()
+            .filter { v in v.z == 2.5 ? v.x < b : v.x > b }
+        Check.expect(trim.open == 0 && outside.isEmpty, "each band's truncation edge keeps to its band",
+                     "\(outside.count) vertices outside: \(outside.prefix(3).map { "\($0.v)" }), \(trim.open) open")
     }
 
     Check.suite("faces: the truncation edge in a cell a band boundary cuts keeps to |f| = h, within the refiner's tolerance") {
