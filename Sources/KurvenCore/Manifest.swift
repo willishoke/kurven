@@ -36,10 +36,13 @@ public enum ManifestError: Error, CustomStringConvertible, Equatable {
     }
 }
 
-/// Schema 2 took the standard names (truncation, restriction, step,
-/// coordinate curves, ...) and one hatching kind for every face. Schema 1 is
-/// refused, not translated: there are no bundles outside this repository.
-public let kurvenSchema = 2
+/// Schema 3 names the face a contour or a hatching lies on (`FaceSelector`),
+/// risers among them, and contours a face's coordinates and height as well
+/// as |f| and arg f. Schema 2 took the standard names (truncation,
+/// restriction, step, coordinate curves, ...) and one hatching kind for
+/// every face. Older schemas are refused, not translated: there are no
+/// bundles outside this repository.
+public let kurvenSchema = 3
 /// The axis convention every bundle states about itself. A bundle that says
 /// anything else is not readable by this code, and saying so up front is the
 /// whole point of writing it into the file.
@@ -492,9 +495,17 @@ public enum HeightPolicy: String, Sendable, CaseIterable {
     case surface, level, magnitude
 }
 
-/// Which grid a derived layer contours.
+/// Which field of its faces a contour layer is a level set of: |f| or arg f
+/// on the graph, or on any face a coordinate of its parameter rectangle, `u`
+/// and `v`, or its height. On the graph and a plateau u and v are Re z and
+/// Im z, and the height |f| and h(x); on a wall and a riser, (s, z), the
+/// distance along the line it stands on and the height, which is z again.
+/// A parametric surface and a polyhedron face expose their own.
 public enum ContourField: String, Sendable, CaseIterable {
-    case magnitude, phase
+    case magnitude, phase, u, v, height
+
+    /// Whether this is one of f's fields, placed by the refiner.
+    public var isFieldOfF: Bool { self == .magnitude || self == .phase }
 }
 
 /// An axis of the domain: the real or the imaginary.
@@ -526,7 +537,9 @@ public indirect enum Restriction: Sendable, Equatable {
     /// Inside `occluder.region`: the same polygon the heightfield is cut to,
     /// referenced rather than repeated.
     case footprint
-    /// Where |f| is below the truncation: on the graph, off the plateaus.
+    /// Where |f| is below the truncation: membership in the graph, off the
+    /// plateaus. It also carries a contour of |f| or arg f that leaves over
+    /// the truncation to the truncation edge (`Surface.derive`).
     case belowTruncation
     case band(axis: DomainAxis, lo: Double, hi: Double)
     case intersection([Restriction])
@@ -592,22 +605,25 @@ public indirect enum Restriction: Sendable, Equatable {
 /// shrinks a bundle from megabytes of vertices to a list of numbers.
 public enum LayerSource: Sendable, Equatable {
     case file(vertices: String, offsets: String)
-    /// Level sets of `field` at `levels`, lifted by the layer's height
-    /// policy, restricted by `restriction`, and replicated once per occluder
-    /// tile when `tiled`.
-    case contour(field: ContourField, levels: [Double], restriction: Restriction, tiled: Bool)
-    /// Hatching (`Hatching`) laid on `faces`: a heightfield's walls or
-    /// plateaus, or every face of a solid, which a scene carries and a
-    /// manifest refuses: a manifest is a heightfield's. The heightfield's hatchings are
+    /// Level sets of `field` at `levels` on `faces`, restricted by
+    /// `restriction`, and replicated once per occluder tile where the faces
+    /// are `tiled`. |f| and arg f lie on the graph and are lifted by the
+    /// layer's height policy, over the truncation onto a plateau unless the
+    /// restriction keeps them below it; a coordinate or the height lies on
+    /// its face, where the face puts it
+    /// (`Surface.contours(of:_:on:restriction:in:refine:)`).
+    case contour(field: ContourField, levels: [Double], restriction: Restriction, faces: FaceSelector)
+    /// Hatching (`Hatching`) laid on `faces`: a landscape's walls, risers
+    /// or plateaus, or every face of a solid, which a scene carries and a
+    /// manifest refuses: a manifest is a landscape's. The landscape's hatchings are
     /// descriptions rather than stored curves for the same reason contours
     /// are: dragging the truncation moves every plateau, and a plateau that
     /// moves is a different set of hatch lines. `Hatch.swift` derives them,
     /// and `tests/fixtures/hatch` pins them.
-    case hatching(Hatching, faces: HatchedFaces)
+    case hatching(Hatching, faces: FaceSelector)
     /// The edges of the listed walls: each one's top and bottom edges, and a
-    /// vertical edge at each distinct corner, its two ends. `step` is ignored,
-    /// and goes at schema 3.
-    case wallEdges(edges: [Int], step: Double, base: Double)
+    /// vertical edge at each distinct corner, its two ends.
+    case wallEdges(edges: [Int], base: Double)
     /// The truncation edge: where the graph meets the plateaus, the level
     /// set |f| = h(x).
     case truncationEdge(tiled: Bool)
@@ -645,23 +661,22 @@ public enum LayerSource: Sendable, Equatable {
                 throw ManifestError.unknownKind(fieldText, of: "ContourField",
                                                 known: ContourField.allCases.map(\.rawValue))
             }
+            let faces = try LayerSource.landscapeFaces(o, "LayerSource.contour")
+            if let why = faces.unsupported(field) { throw ManifestError.unsupported(why) }
             self = .contour(field: field,
                             levels: try o.doubles("levels", "LayerSource.contour"),
                             restriction: try Restriction(json: o.value("restriction", "LayerSource.contour")),
-                            tiled: try o.bool("tiled", "LayerSource.contour", default: false))
+                            faces: faces)
         case "hatching":
-            let faces = try HatchedFaces(json: o.value("faces", "LayerSource.hatching"))
-            if faces == .solid {
-                throw ManifestError.unsupported("hatching on a solid's faces: a manifest holds a heightfield, "
-                                                + "hatched on its walls and plateaus")
-            }
+            let faces = try LayerSource.landscapeFaces(o, "LayerSource.hatching")
+            if faces.kind == .wall || faces.kind == .riser, o["step"] != nil { throw LayerSource.wallStep }
             let hatching = try Hatching(fields: o)
             if let why = faces.unsupported(hatching) { throw ManifestError.unsupported(why) }
             self = .hatching(hatching, faces: faces)
         case "wallEdges":
+            if o["step"] != nil { throw LayerSource.wallStep }
             self = .wallEdges(
                 edges: try o.ints("edges", "LayerSource.wallEdges"),
-                step: try o.double("step", "LayerSource.wallEdges"),
                 base: (try? o.double("base", "LayerSource.wallEdges")) ?? 0)
         case "truncationEdge":
             self = .truncationEdge(tiled: try o.bool("tiled", "LayerSource.truncationEdge",
@@ -687,20 +702,43 @@ public enum LayerSource: Sendable, Equatable {
                                                     "edges"])
         }
     }
+
+    /// The faces a contour or a hatching in a manifest names: a landscape's.
+    private static func landscapeFaces(_ o: [String: JSONValue], _ what: String) throws -> FaceSelector {
+        let faces = try FaceSelector(json: o.value("faces", what))
+        switch faces {
+        case .graph, .plateaus, .walls, .risers:
+            return faces
+        case .surface, .solid:
+            throw ManifestError.unsupported("a layer on a \(faces.name)'s faces: a manifest holds a landscape, "
+                                            + "with a graph, plateaus, walls and risers")
+        }
+    }
+
+    /// A wall's or a riser's line is its two ends, so there is no step along
+    /// it to write (schema 3).
+    private static let wallStep = ManifestError.unsupported(
+        "a step on walls or risers: a line there is its two ends, and schema 3 writes none")
+
     public var json: JSONValue {
         switch self {
         case .file(let v, let o):
             .object(["kind": .string("file"), "vertices": .string(v), "offsets": .string(o)])
-        case .contour(let field, let levels, let restriction, let tiled):
+        case .contour(let field, let levels, let restriction, let faces):
             .object(["kind": .string("contour"), "field": .string(field.rawValue),
                      "levels": .array(levels.map(JSONValue.double)),
-                     "restriction": restriction.json, "tiled": .bool(tiled)])
+                     "restriction": restriction.json, "faces": faces.json])
         case .hatching(let hatching, let faces):
-            .object(hatching.fields.merging(["kind": .string("hatching"), "faces": faces.json]) { $1 })
-        case .wallEdges(let edges, let step, let base):
+            .object(hatching.fields.merging(["kind": .string("hatching"), "faces": faces.json]) { $1 }
+                .filter { key, _ in
+                    switch faces {
+                    case .walls, .risers: key != "step"
+                    case .graph, .plateaus, .surface, .solid: true
+                    }
+                })
+        case .wallEdges(let edges, let base):
             .object(["kind": .string("wallEdges"),
-                     "edges": .array(edges.map { .int($0) }),
-                     "step": .double(step), "base": .double(base)])
+                     "edges": .array(edges.map { .int($0) }), "base": .double(base)])
         case .truncationEdge(let tiled):
             .object(["kind": .string("truncationEdge"), "tiled": .bool(tiled)])
         case .coordinateCurves(let u, let v):
@@ -718,11 +756,18 @@ public enum LayerSource: Sendable, Equatable {
     }
 
     /// Vertical hatching on the walls along `edges`, a line every `spacing`
-    /// along each wall, each line its two ends. `step` is ignored on a wall.
-    public static func wallHatching(edges: [Int], spacing: Double, step: Double, trim: Bool = true,
+    /// along each wall, each line its two ends.
+    public static func wallHatching(edges: [Int], spacing: Double, endLines: Bool = false,
                                     base: Double = 0, topOffset: Double = 0) -> LayerSource {
-        .hatching(Hatching(angle: HatchedFaces.wallAngle, spacing: spacing, step: step),
-                  faces: .walls(edges: edges, trim: trim, base: base, topOffset: topOffset))
+        .hatching(Hatching(angle: FaceSelector.wallAngle, spacing: spacing),
+                  faces: .walls(edges: edges, endLines: endLines, base: base, topOffset: topOffset))
+    }
+
+    /// Vertical hatching on the risers, as on the walls: a line every
+    /// `spacing` along each, from its bottom edge to its top.
+    public static func riserHatching(spacing: Double, tiled: Bool = false, endLines: Bool = false) -> LayerSource {
+        .hatching(Hatching(angle: FaceSelector.wallAngle, spacing: spacing),
+                  faces: .risers(tiled: tiled, endLines: endLines))
     }
 
     /// Hatching on the plateaus along one axis of the domain, a line every

@@ -311,10 +311,11 @@ public struct Heightfield: Sendable {
     ///   and the far edge of a drawing is in plain view over a wall that
     ///   faces away. A vertex at the surface's height is tested by the
     ///   traversal alone, which hides it exactly when the surface in front of
-    ///   it does. The risers are vertical faces too, hatched with the walls:
-    ///   a point of a riser's hatching is tested by the riser
-    ///   (`riserFacing(sight:slack:)`), as one on a wall below its top edge
-    ///   is by the wall.
+    ///   it does.
+    /// - **The risers**, vertical faces too, by the same test: a point that
+    ///   lies in a riser, as its hatching does, a hair onto the lower side,
+    ///   is tested by the riser (`riserFacing(sight:slack:)`), as one on a
+    ///   wall below its top edge is by the wall.
     /// - **The plateaus**, flat and facing up.
     /// - **No face**: a crease or anything else, tested by the traversal
     ///   alone, since such curves lie where no one face's facing is the
@@ -337,7 +338,7 @@ public struct Heightfield: Sendable {
                 let m = traversal.forked(), h = m.heightfield
                 return Tests(facing: { h.facing(at: $0.xy, sight: sight) }, clear: { m.isClear(h.onSurface($0)) })
             }, stop: stop)
-        case .wall:
+        case .wall, .riser:
             let traversal = GridTraversal(self, view: view, depthTolerance: depthTolerance)
             let slack = 1e-6 * traversal.cell
             let facing = wallFacing(sight: sight, slack: slack)
@@ -386,7 +387,7 @@ public struct Heightfield: Sendable {
                 let m = traversal.forked()
                 return Tests(facing: { _ in up }, clear: { m.isClear($0) })
             }, stop: stop)
-        case .riser, .surface, .solid, nil:
+        case .surface, .solid, nil:
             let traversal = GridTraversal(self, view: view, depthTolerance: depthTolerance)
             let slack = 1e-6 * traversal.cell
             return Self.visibleRuns(of: paths, folds: false, worker: {

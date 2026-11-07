@@ -47,7 +47,7 @@ enum Fixtures {
 func contractTests() {
     Check.suite("contract: every fixture manifest round trips byte for byte") {
         let bundles = Fixtures.contractBundles
-        Check.expect(bundles.count == 4, "four fixture bundles are present",
+        Check.expect(bundles.count == 5, "five fixture bundles are present",
                      "found \(bundles.count)")
         for b in bundles {
             let text = try String(contentsOf: b.appendingPathComponent("manifest.json"),
@@ -97,9 +97,26 @@ func contractTests() {
         Check.expectThrows("rejects schema 1, whose names schema 2 replaced") {
             _ = try Manifest(json: mutated { $0["schema"] = .int(1) })
         }
+        do {
+            _ = try Manifest(json: mutated { $0["schema"] = .int(2) })
+            Check.expect(false, "rejects schema 2, whose layers name no face", "decoded")
+        } catch let error as ManifestError {
+            Check.expect(error == .unsupportedSchema(2, supported: 3) && "\(error)" == "manifest: schema 2 is not the supported 3",
+                         "rejects schema 2, whose layers name no face, saying so", "\(error)")
+        }
+        Check.expectThrows("rejects a step on a wall's hatching: a line there is its two ends") {
+            var o = try LayerSource.wallHatching(edges: [0], spacing: 0.1).json.object("source")
+            o["step"] = .double(0.1)
+            _ = try LayerSource(json: .object(o))
+        }
+        Check.expectThrows("rejects a step on a wall's edges") {
+            var o = try LayerSource.wallEdges(edges: [0], base: 0).json.object("source")
+            o["step"] = .double(0.1)
+            _ = try LayerSource(json: .object(o))
+        }
         Check.expectThrows("rejects hatching on walls that is not vertical") {
             let hatching = LayerSource.hatching(Hatching(angle: 0.3, spacing: 0.1),
-                                                faces: .walls(edges: [0], trim: true, base: 0, topOffset: 0))
+                                                faces: .walls(edges: [0], endLines: false, base: 0, topOffset: 0))
             _ = try LayerSource(json: hatching.json)
         }
         Check.expectThrows("rejects a tone other than uniform on plateaus") {
@@ -752,6 +769,40 @@ func hatchTests() {
     // them stands where a wall across it stands a stroke, so the hatching turns
     // the corner instead of missing it. 0.3 does not divide the fixture's
     // width, which is the case the rule exists for.
+    // Plateau hatching is defined by its expansion: the contours of Im z, for
+    // lines along the real axis, or of Re z, on the plateaus, at levels that
+    // divide the domain across into whole gaps, the two on its edges left
+    // out. Written out here rather than asked of `plateauHatching`, and held
+    // to the committed strokes bit for bit.
+    Check.suite("hatch: a plateau's hatching is the contours of a coordinate on the plateaus, bit for bit") {
+        let truncation = try index.value("truncation", "hatch").object("hatch.truncations")
+        let occluder = Occluder(step: 1, tiles: [.identity], walls: .perimeter(perimeter, base: 0), base: 0)
+        for case .object(let c) in try index.array("cases", "hatch") {
+            let name = try c.string("name", "hatch.case")
+            guard case .hatching(let hatching, .plateaus(let tiled)) = try LayerSource(json: c.value("source", "hatch.case")),
+                  let axis = DomainAxis(angle: hatching.angle) else { continue }
+            let across = axis == .real ? grid.domain.imag : grid.domain.real
+            let n = Int(((across.hi - across.lo) / hatching.spacing + 0.5).rounded(.down)) + 1
+            let levels = (1..<(n - 1)).map { across.lo + (across.hi - across.lo) * Double($0) / Double(n - 1) }
+            let spec = LayerSpec(name: name, role: .scaffold,
+                                 source: .contour(field: axis == .real ? .v : .u, levels: levels, restriction: .all,
+                                                  faces: .plateaus(tiled: tiled)),
+                                 width: 0.2, heightPolicy: .level)
+            let surface = Surface(
+                height: grid, phase: nil,
+                truncation: try Truncation(json: truncation.value(try c.string("truncation", "hatch.case"),
+                                                "hatch.truncations")))
+            let contours = surface.curves(spec, occluder: occluder)
+            let verts = try NPY.read(contentsOf:
+                Fixtures.url("hatch/" + c.string("vertices", "hatch.case"))).rows3().map { P3<WorldSpace>($0) }
+            let offsets = try NPY.read(contentsOf:
+                Fixtures.url("hatch/" + c.string("offsets", "hatch.case"))).ints()
+            Check.expect(contours.vertices == verts && contours.offsets == offsets,
+                         "\(name): the contours of \(axis == .real ? "v" : "u") at \(levels.count) levels on the plateaus",
+                         "\(contours.count) paths, \(contours.vertices.count) vertices; committed \(offsets.count - 1), \(verts.count)")
+        }
+    }
+
     Check.suite("hatch: a plateau's hatching divides its width and meets the walls") {
         let truncation = try index.value("truncation", "hatch").object("hatch.truncations")
         let surface = Surface(height: grid, phase: nil,
@@ -781,8 +832,8 @@ func hatchTests() {
             perimeter.edges[$0].start.x == perimeter.edges[$0].end.x
         }
         for i in crossing {
-            guard let wall = surface.hatch(.wallHatching(edges: [i], spacing: spacing, step: 0.5,
-                                                         trim: true, base: 0, topOffset: 0),
+            guard let wall = surface.hatch(.wallHatching(edges: [i], spacing: spacing,
+                                                         endLines: false, base: 0, topOffset: 0),
                                            in: context) else {
                 Check.expect(false, "the wall on edge \(i) derives")
                 continue
@@ -1309,6 +1360,7 @@ coreTests()
 navigationTests()
 contourTests()
 scalarFieldTests()
+faceFieldTests()
 hatchTests()
 restyleTests()
 truncationTests()

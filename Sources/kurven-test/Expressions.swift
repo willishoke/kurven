@@ -335,6 +335,8 @@ func refinementTests() {
                 Check.expect(r.refinedVertex.max < 1e-3,
                              "\(what): and the refined vertices are all on the level set",
                              String(format: "max %.1e cells, was %.1f", r.refinedVertex.max, r.gridVertex.max))
+            case .u, .v, .height:
+                Check.expect(false, "\(what): only f's fields are refined")
             }
             Check.expect(r.refineSeconds < 1.0, "\(what): in reasonable time",
                          String(format: "%.1f ms for %d vertices", r.refineSeconds * 1e3, r.refinedVertices))

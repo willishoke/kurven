@@ -21,8 +21,9 @@ public struct Hatching: Sendable, Equatable {
     /// The distance between successive vertices along a line, or readings
     /// of its tone, in world units. On a solid the tone is read every
     /// `step`, and a change of width narrower than this can fall between two
-    /// readings. On a wall a line is its two ends, and on a plateau it has a
-    /// vertex wherever it crosses a grid line; on neither is the step read.
+    /// readings. On a wall or a riser a line is its two ends, and a manifest
+    /// writes no step there; on a plateau a line has a vertex wherever it
+    /// crosses a grid line, and the step is not read.
     /// The spacing by default, on every face, so the tone is read as finely
     /// as it is drawn, and no finer than `finestStep` of it.
     public var step: Double
@@ -129,89 +130,165 @@ public struct Hatching: Sendable, Equatable {
     }
 }
 
-/// The faces a hatching is laid on, and how its lines are placed there.
+/// The faces a contour or a hatching lies on: a layer's face selector, for
+/// the two kinds of layer whose curves can lie on more than one kind of face.
+/// Every other kind implies its face (`SceneGeometry.face(of:)`).
 ///
-/// One `Hatching` serves every face; what differs is the face's coordinates
-/// and where the first line falls. On a heightfield's walls and plateaus the
-/// spacing is rounded to a whole number of gaps, so that a plateau's lines
-/// meet the walls' at a corner; on a solid the lines run through the
+/// For a hatching it also says how the lines are placed. One `Hatching`
+/// serves every face; what differs is the face's coordinates and where the
+/// first line falls. On a landscape's walls, risers and plateaus the spacing
+/// is rounded to a whole number of gaps, so that a plateau's lines meet the
+/// walls' and the risers' at a corner; on a solid the lines run through the
 /// multiples of the spacing in each face's own frame, so that a face's
 /// hatching does not depend on how it is partitioned.
-public enum HatchedFaces: Sendable, Equatable {
-    /// A heightfield's walls along the listed perimeter edges. In a wall's
-    /// coordinates (distance along its edge, height) the lines are vertical,
-    /// `wallAngle`, from `base` to the top edge plus `topOffset`, each its two
-    /// ends (`Surface.vertical`). A line stands at each end of a wall; `trim`
-    /// leaves those two out. A layer that lists every edge of the perimeter
-    /// hatches the risers too, vertical faces of the solid as the walls are,
-    /// on the tiles where the truncation edge's layer draws their edges:
-    /// lines at whole gaps along the line each stands on, from its bottom
-    /// edge to its top plus `topOffset`, `trim` leaving out the line's ends
-    /// (`Surface.riserHatchLines`). One that lists some walls, or none,
-    /// hatches no riser.
-    case walls(edges: [Int], trim: Bool, base: Double, topOffset: Double)
-    /// A truncated heightfield's plateaus. In domain coordinates the lines
-    /// run along the real axis (angle 0) or the imaginary axis (angle π/2,
-    /// `DomainAxis.angle`), with a vertex at every grid line they cross, and each ends where it
-    /// reaches the truncation edge, by bisection on f. Copied to every tile
-    /// when `tiled`.
+public enum FaceSelector: Sendable, Equatable {
+    /// A landscape's graph, where z = |f|, copied to every tile when
+    /// `tiled`. Hatching is not laid on it: it is curved.
+    case graph(tiled: Bool)
+    /// A truncated landscape's plateaus, copied to every tile when `tiled`.
+    /// A hatching there is the contours of a coordinate
+    /// (`Surface.plateauHatching(axis:spacing:tiled:)`): lines along the real
+    /// axis (angle 0) or the imaginary axis (angle π/2, `DomainAxis.angle`),
+    /// with a vertex at every grid line they cross, each ending where it
+    /// reaches the truncation edge, by bisection on f.
     case plateaus(tiled: Bool)
+    /// A landscape's walls along the listed perimeter edges. A hatching's
+    /// lines are vertical in a wall's coordinates (distance along its edge,
+    /// height), `wallAngle`, from `base` to the top edge plus `topOffset`,
+    /// each its two ends (`Surface.vertical`), at whole gaps along each wall;
+    /// the lines at a wall's two ends are drawn only with `endLines`. The
+    /// three place hatch lines, and a contour takes their defaults.
+    case walls(edges: [Int], endLines: Bool, base: Double, topOffset: Double)
+    /// A landscape's risers, where the drawn top steps inside the solid: at
+    /// the band boundaries, on every tile when `tiled`, and then also at the
+    /// tile boundaries between the copies; in place otherwise. A hatching's
+    /// lines are placed as on the walls, at whole gaps along the line each
+    /// riser stands on, from its bottom edge to its top
+    /// (`Surface.riserHatchLines`), the lines at a stretch's two ends drawn
+    /// only with `endLines`, which a contour leaves false.
+    case risers(tiled: Bool, endLines: Bool)
+    /// A parametric surface's one face. A scene can carry it; a manifest,
+    /// which is a landscape's, refuses it (`LayerSource`).
+    case surface
     /// Every face of a solid, at any angle. A scene can carry it; a
-    /// manifest, which is a heightfield's, refuses it (`LayerSource`).
+    /// manifest refuses it.
     case solid
 
-    /// The angle of hatching on a wall, in the wall's coordinates: vertical.
+    /// The angle of hatching on a wall or a riser, in its coordinates: vertical.
     public static let wallAngle = Double.pi / 2
 
+    /// Its name in a manifest.
+    public var name: String {
+        switch self {
+        case .graph: "graph"
+        case .plateaus: "plateaus"
+        case .walls: "walls"
+        case .risers: "risers"
+        case .surface: "surface"
+        case .solid: "solid"
+        }
+    }
+
+    /// The kind of face selected.
+    public var kind: FaceKind {
+        switch self {
+        case .graph: .graph
+        case .plateaus: .plateau
+        case .walls: .wall
+        case .risers: .riser
+        case .surface: .surface
+        case .solid: .solid
+        }
+    }
+
     /// Why `hatching` cannot be laid on these faces, or nil when it can.
-    /// A tone other than uniform, or more than one width, is drawn on a
-    /// solid only: a heightfield's layers are one width each.
+    /// Hatching is laid on flat faces, where lines at a spacing are evenly
+    /// spaced. A tone other than uniform, or more than one width, is drawn
+    /// on a solid only: a landscape's layers are one width each.
     public func unsupported(_ hatching: Hatching) -> String? {
-        let heightfield: String
+        let landscape: String
         switch self {
         case .solid:
             return nil
-        case .walls:
-            guard abs(hatching.angle - HatchedFaces.wallAngle) <= Hatching.angleTolerance else {
-                return "hatching on walls is vertical, angle π/2, not \(hatching.angle)"
+        case .graph, .surface:
+            return "hatching on a curved face: it is laid on plateaus, walls, risers or a solid's faces"
+        case .walls, .risers:
+            landscape = name
+            guard abs(hatching.angle - FaceSelector.wallAngle) <= Hatching.angleTolerance else {
+                return "hatching on \(landscape) is vertical, angle π/2, not \(hatching.angle)"
             }
-            heightfield = "walls"
         case .plateaus:
             guard DomainAxis(angle: hatching.angle) != nil else {
                 return "hatching on plateaus runs along an axis, angle 0 or π/2, not \(hatching.angle)"
             }
-            heightfield = "plateaus"
+            landscape = "plateaus"
         }
         guard hatching.tone == .uniform, hatching.widthSteps == 1 else {
-            return "hatching on \(heightfield) has a uniform tone and one width"
+            return "hatching on \(landscape) has a uniform tone and one width"
         }
         return nil
     }
 
+    /// Why a contour of `field` cannot lie on these faces, or nil when it
+    /// can. |f| and arg f are the graph's, and a surface's that f is drawn
+    /// on; the coordinates and the height are every face's. On walls and
+    /// risers the hatching's placement is left at its defaults.
+    public func unsupported(_ field: ContourField) -> String? {
+        switch (field, self) {
+        case (.magnitude, .graph), (.magnitude, .surface), (.phase, .graph), (.phase, .surface),
+             (.u, _), (.v, _), (.height, _):
+            break
+        case (.magnitude, _), (.phase, _):
+            return "a contour of \(field.rawValue) lies on the graph, not on the \(name)"
+        }
+        let placed: Bool
+        switch self {
+        case .walls(_, let endLines, let base, let top): placed = endLines || base != 0 || top != 0
+        case .risers(_, let endLines): placed = endLines
+        case .graph, .plateaus, .surface, .solid: placed = false
+        }
+        return placed ? "a contour on walls or risers is placed by its field: endLines, base and topOffset place hatch lines" : nil
+    }
+
     public init(json: JSONValue) throws {
-        let o = try json.object("HatchedFaces")
-        switch try o.string("kind", "HatchedFaces") {
+        let o = try json.object("FaceSelector")
+        let kind = try o.string("kind", "FaceSelector")
+        switch kind {
+        case "graph":
+            self = .graph(tiled: try o.bool("tiled", "FaceSelector.graph", default: false))
+        case "plateaus":
+            self = .plateaus(tiled: try o.bool("tiled", "FaceSelector.plateaus", default: false))
         case "walls":
-            self = .walls(edges: try o.ints("edges", "HatchedFaces.walls"),
-                          trim: try o.bool("trim", "HatchedFaces.walls", default: true),
+            self = .walls(edges: try o.ints("edges", "FaceSelector.walls"),
+                          endLines: try o.bool("endLines", "FaceSelector.walls", default: false),
                           base: o.optionalDouble("base") ?? 0,
                           topOffset: o.optionalDouble("topOffset") ?? 0)
-        case "plateaus":
-            self = .plateaus(tiled: try o.bool("tiled", "HatchedFaces.plateaus", default: false))
+        case "risers":
+            self = .risers(tiled: try o.bool("tiled", "FaceSelector.risers", default: false),
+                           endLines: try o.bool("endLines", "FaceSelector.risers", default: false))
+        case "surface":
+            self = .surface
         case "solid":
             self = .solid
-        case let other:
-            throw ManifestError.unknownKind(other, of: "HatchedFaces", known: ["walls", "plateaus", "solid"])
+        default:
+            throw ManifestError.unknownKind(kind, of: "FaceSelector",
+                                            known: ["graph", "plateaus", "walls", "risers", "surface", "solid"])
         }
     }
 
     public var json: JSONValue {
         switch self {
-        case .walls(let edges, let trim, let base, let top):
-            .object(["kind": .string("walls"), "edges": .array(edges.map { .int($0) }),
-                     "trim": .bool(trim), "base": .double(base), "topOffset": .double(top)])
+        case .graph(let tiled):
+            .object(["kind": .string("graph"), "tiled": .bool(tiled)])
         case .plateaus(let tiled):
             .object(["kind": .string("plateaus"), "tiled": .bool(tiled)])
+        case .walls(let edges, let endLines, let base, let top):
+            .object(["kind": .string("walls"), "edges": .array(edges.map { .int($0) }),
+                     "endLines": .bool(endLines), "base": .double(base), "topOffset": .double(top)])
+        case .risers(let tiled, let endLines):
+            .object(["kind": .string("risers"), "tiled": .bool(tiled), "endLines": .bool(endLines)])
+        case .surface:
+            .object(["kind": .string("surface")])
         case .solid:
             .object(["kind": .string("solid")])
         }

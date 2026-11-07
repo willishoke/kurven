@@ -188,10 +188,12 @@ public enum PeriodicTorus {
         var layers: [Layer] = families.map { name, role, kind, levels, width in
             // Truncated, a phase line is lifted to |f| and kept under the
             // ceiling, ending on the truncation edge where it crosses it.
+            // Contoured on the plane's graph, and drawn on the torus.
             let cut = truncated && kind == .phase
-            let source = LayerSource.contour(field: kind, levels: levels,
-                                             restriction: cut ? .belowTruncation : .all, tiled: false)
-            let flat = field.derive(source, policy: cut ? .magnitude : .surface, region: .full,
+            let restriction: Restriction = cut ? .belowTruncation : .all
+            let source = LayerSource.contour(field: kind, levels: levels, restriction: restriction, faces: .surface)
+            let flat = field.derive(.contour(field: kind, levels: levels, restriction: restriction, faces: .graph(tiled: false)),
+                                    policy: cut ? .magnitude : .surface, region: .full,
                                     tiles: [.identity], refine: refiner.refine)
             // Where a curve crosses the rectangle's edge, the crossing is
             // solved on f along the edge, so that it lies on the level set
@@ -208,6 +210,7 @@ public enum PeriodicTorus {
                 case .phase:
                     g = abs(refiner.phase(Complex(a.x, a.y))) > .pi / 2
                         ? refiner.turnedPhase : refiner.phase
+                case .u, .v, .height: return c
                 }
                 let level = g(Complex(a.x, a.y))
                 guard level.isFinite else { return c }

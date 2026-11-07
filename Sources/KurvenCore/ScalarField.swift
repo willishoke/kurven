@@ -160,9 +160,12 @@ public extension Contour {
                 let pa = SIMD2(u.coordinate(a.x), v.coordinate(a.y))
                 let pb = SIMD2(u.coordinate(b.x), v.coordinate(b.y))
                 // From the end the grid has at or under the level to the end
-                // over it, so the bisection keeps the grid's own bracket.
+                // over it, so the bisection keeps the grid's own bracket. An
+                // end on the level to the bit is the crossing, not half a
+                // rounding past it: a coordinate's contour is on its level.
                 let (under, over) = grid[a.x, a.y] > 0 ? (pb, pa) : (pa, pb)
                 let bracket = bisect(under, over) { !(excess(value(P2($0))) > 0) }
+                if excess(value(P2(bracket.holds))) == 0 { return P2(bracket.holds) }
                 return P2(0.5 * (bracket.holds + bracket.fails))
             }
             return paths.map { unwrapped($0, u.period, v.period) }

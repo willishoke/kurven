@@ -123,12 +123,10 @@ public enum NativeLandscape {
     }
 
     /// The whole drawing, as descriptions: `kurven.landscape.default_layers`.
-    public static func defaultLayers(_ domain: Domain, shape: (nReal: Int, nImag: Int),
+    public static func defaultLayers(_ domain: Domain,
                                      truncation: Truncation, ceiling: Double, spacing: Double?,
                                      phase: Bool = true) -> [LayerSpec] {
         let spacing = spacing ?? LandscapeStyle.hatchSpacing(domain)
-        let (dx, dy) = cellSize(domain, shape)
-        let step = max(dx, dy)
         var (major, minor) = LandscapeStyle.magnitudeLevels(upTo: ceiling)
         if case .none = truncation {} else {
             major = major.filter { $0 < ceiling - 1e-9 }
@@ -137,23 +135,24 @@ public enum NativeLandscape {
         let edges = [0, 1, 2, 3]
         var layers = [
             LayerSpec(name: "mag_major", role: .magnitude,
-                      source: .contour(field: .magnitude, levels: major, restriction: .belowTruncation, tiled: false),
+                      source: .contour(field: .magnitude, levels: major, restriction: .belowTruncation,
+                                       faces: .graph(tiled: false)),
                       width: 0.4, heightPolicy: .level),
         ]
         if phase {
             layers.append(LayerSpec(name: "ang_major", role: .phase,
                                     source: .contour(field: .phase, levels: phaseMajor,
-                                                     restriction: .belowTruncation, tiled: false),
+                                                     restriction: .belowTruncation, faces: .graph(tiled: false)),
                                     width: 0.4, heightPolicy: .magnitude))
         }
         layers.append(LayerSpec(name: "mag_minor", role: .magnitude,
                                 source: .contour(field: .magnitude, levels: minor,
-                                                 restriction: .belowTruncation, tiled: false),
+                                                 restriction: .belowTruncation, faces: .graph(tiled: false)),
                                 width: 0.15, heightPolicy: .level))
         if phase {
             layers.append(LayerSpec(name: "ang_minor", role: .phase,
                                     source: .contour(field: .phase, levels: phaseMinor,
-                                                     restriction: .belowTruncation, tiled: false),
+                                                     restriction: .belowTruncation, faces: .graph(tiled: false)),
                                     width: 0.15, heightPolicy: .magnitude))
         }
         layers += [
@@ -163,12 +162,20 @@ public enum NativeLandscape {
                       source: .plateauHatching(axis: .real, spacing: spacing, tiled: false),
                       width: 0.2, heightPolicy: .level),
             LayerSpec(name: "wall_edges", role: .scaffold,
-                      source: .wallEdges(edges: edges, step: step, base: 0),
+                      source: .wallEdges(edges: edges, base: 0),
                       width: 0.3, heightPolicy: .surface),
             LayerSpec(name: "wall_hatch", role: .scaffold,
-                      source: .wallHatching(edges: edges, spacing: spacing, step: step,
-                                            trim: true, base: 0, topOffset: 0),
+                      source: .wallHatching(edges: edges, spacing: spacing),
                       width: 0.25, heightPolicy: .surface),
+        ]
+        // A banded truncation steps at its band boundaries, and the risers
+        // there are hatched as the walls are.
+        if case .realBands = truncation {
+            layers.append(LayerSpec(name: "riser_hatch", role: .scaffold,
+                                    source: .riserHatching(spacing: spacing),
+                                    width: 0.25, heightPolicy: .surface))
+        }
+        layers += [
             // The outline and inner fold curves, derived per camera: the
             // bounding curves along the curved edges, as the walls' edges are
             // along the straight ones.
@@ -264,7 +271,7 @@ public enum NativeLandscape {
         let density = wallDensity(domain, shape)
         let perimeter = rectangle(domain, density: density)
         let layers = request.layers ?? defaultLayers(
-            domain, shape: shape, truncation: truncation,
+            domain, truncation: truncation,
             ceiling: ceiling(of: truncation, magnitudes: samples.magnitude),
             spacing: request.spacing)
         let step = max(1, max(shape.nReal, shape.nImag) / occluderResolution)

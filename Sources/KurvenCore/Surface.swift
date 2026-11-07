@@ -678,7 +678,8 @@ public extension Surface {
     /// paths, the spurious crossings along the wrap included, and at the
     /// branch cut the zero level of arg(-f) (`Contour.cut`), which it places
     /// there. Without a refiner the branch cut has no contour: nothing would
-    /// drop the wrap's crossings.
+    /// drop the wrap's crossings. Nil for a field not f's, which the refiner
+    /// does not place (`contours(of:_:on:restriction:in:refine:)`).
     func field(of tag: ContourField, refine: ContourRefine?, ceiling: Double = .infinity)
         -> ScalarField? {
         let samples: Grid2D<Float>
@@ -687,6 +688,7 @@ public extension Surface {
         case .phase:
             guard let phase else { return nil }
             samples = phase
+        case .u, .v, .height: return nil
         }
         return ScalarField(samples: samples) { level, paths in
             let isCut = tag == .phase && Contour.isCut(level)
@@ -698,7 +700,8 @@ public extension Surface {
         }
     }
 
-    /// Every level of a described layer, contoured, lifted, filtered and tiled.
+    /// Every level of a described layer of |f| or arg f on the graph,
+    /// contoured, lifted, filtered and tiled.
     ///
     /// A path that leaves the kept region and comes back is split where it left,
     /// not closed across the gap. Filtering vertices and keeping the survivors
@@ -726,8 +729,8 @@ public extension Surface {
     /// way the Jahnke-Emde plates draw it.
     func derive(_ source: LayerSource, policy: HeightPolicy, region: Region,
                 tiles: [Affine2], refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
-        guard case .contour(let tag, let levels, let restriction, let tiled) = source,
-              let rectangle = parameterRectangle else {
+        guard case .contour(let tag, let levels, let restriction, .graph(let tiled)) = source,
+              tag.isFieldOfF, let rectangle = parameterRectangle else {
             return .empty
         }
         let carry = refine != nil && restriction.requiresBelowTruncation

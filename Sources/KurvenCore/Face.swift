@@ -247,21 +247,21 @@ public extension SceneGeometry {
     /// truncation edge and a polyhedron's edges are; anything else stored
     /// with nothing said of where it lies.
     ///
-    /// On a landscape the contours of |f| and arg f, and curves given their
-    /// roles, lie on the graph, and over the truncation, lifted onto it, on
-    /// a plateau; a wall's hatching and edges on the walls, the hatching on
-    /// the risers too, which the walls' test reads; a plateau's hatching on
-    /// the plateaus. The truncation edge, with the risers' tops and bottoms,
-    /// is a crease. On a parametric surface every curve but an
-    /// outline lies on its one face. On a polyhedron its hatching lies on
-    /// its faces.
+    /// On a landscape a contour or a hatching lies on the faces it selects
+    /// (`FaceSelector`): the contours of |f| and arg f on the graph, and
+    /// over the truncation, lifted onto it, on a plateau, whose facing the
+    /// graph's test reads. A wall's edges lie on the walls, and stored curves
+    /// given the roles of |f| and arg f on the graph. The truncation edge,
+    /// with the risers' tops and bottoms, is a crease. On a parametric
+    /// surface every curve but an outline lies on its one face. On a
+    /// polyhedron its hatching lies on its faces.
     func face(of spec: LayerSpec) -> FaceKind? {
         if case .foldCurves = spec.source { return nil }
         switch self {
         case .heightfield:
             switch spec.source {
-            case .hatching(_, .walls), .wallEdges: return .wall
-            case .hatching(_, .plateaus): return .plateau
+            case .contour(_, _, _, let faces), .hatching(_, let faces): return faces.kind
+            case .wallEdges: return .wall
             default: return spec.role == .magnitude || spec.role == .phase ? .graph : nil
             }
         case .parametric:

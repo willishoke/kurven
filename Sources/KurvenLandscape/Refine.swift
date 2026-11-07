@@ -128,7 +128,11 @@ public struct ContourRefiner: Sendable {
     }
 
     func field(_ f: ContourField) -> @Sendable (Complex) -> Double {
-        f == .magnitude ? magnitude : phase
+        switch f {
+        case .magnitude: magnitude
+        case .phase: phase
+        case .u, .v, .height: preconditionFailure("the refiner places f's contours, not \(f.rawValue)'s")
+        }
     }
 
     /// The scalar field and level a contour is solved on. A phase level of

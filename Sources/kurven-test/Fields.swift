@@ -207,7 +207,7 @@ func scalarFieldTests() {
         // layer's ceiling, a tenth over the truncation for curves lifted to
         // |f| and kept below it.
         asked.withLock { $0 = [] }
-        let layer = surface.derive(.contour(field: .phase, levels: [-.pi, 3, .pi], restriction: .all, tiled: false),
+        let layer = surface.derive(.contour(field: .phase, levels: [-.pi, 3, .pi], restriction: .all, faces: .graph(tiled: false)),
                                    policy: .level, region: .full, tiles: [.identity], refine: unmoved)
         let lifted = placed.flatMap { level, paths in
             paths.filter { $0.count >= 2 }.map { $0.map { P3<WorldSpace>($0.x, $0.y, level) } }
@@ -215,7 +215,7 @@ func scalarFieldTests() {
         Check.expect((0..<layer.count).map { Array(layer[path: $0]) } == lifted,
                      "a phase layer is the field's contours, lifted at their levels",
                      "\(layer.count) paths vs \(lifted.count)")
-        _ = surface.derive(.contour(field: .magnitude, levels: [0.5], restriction: .belowTruncation, tiled: false),
+        _ = surface.derive(.contour(field: .magnitude, levels: [0.5], restriction: .belowTruncation, faces: .graph(tiled: false)),
                            policy: .magnitude, region: .full, tiles: [.identity], refine: unmoved)
         let calls = asked.withLock { $0 }
         Check.expect(calls.sorted() == ["magnitude 0.5 \(1.1 * 0.8)", "phase 3.0 inf", "phase \(Double.pi) inf"],

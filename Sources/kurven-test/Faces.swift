@@ -298,7 +298,7 @@ private func tiling(_ l: Landscape) -> Tally {
         let tops: [[P3<WorldSpace>]] = perimeter.edges.indices.map { k in
             if onF {
                 let context = Surface.HatchContext(perimeter: perimeter, region: .full, tiles: l.tiles)
-                let drawn = surface.hatch(.wallEdges(edges: [k], step: 1, base: base), in: context, refine: l.refine)
+                let drawn = surface.hatch(.wallEdges(edges: [k], base: base), in: context, refine: l.refine)
                 return drawn.map { Array($0[path: 0]) } ?? []
             }
             return curtain(dense, k, surface: surface, base: base, tiles: l.tiles).top
@@ -1194,7 +1194,7 @@ func faceTests() {
                      listed(landscape))
         let sn = try PeriodicTorus.jacobiSN(modulus: 0.64)
         let outline = Layer(spec: LayerSpec(name: "truncation edge", role: .outline,
-                                            source: .contour(field: .magnitude, levels: [2], restriction: .all, tiled: false),
+                                            source: .contour(field: .magnitude, levels: [2], restriction: .all, faces: .graph(tiled: false)),
                                             width: 1, heightPolicy: .surface), paths: .empty)
         // Folds are edge-on whatever their role.
         let folds = Layer(spec: LayerSpec(name: "folds drawn as scaffold", role: .scaffold, source: .foldCurves,
@@ -1276,16 +1276,13 @@ func faceTests() {
                 for k in vertical {
                     let x = perimeter.edges[k].start.x
                     var vertices = curtain(dense, k, surface: l.surface, base: base, tiles: l.tiles).all
-                    if let drawn = l.surface.hatch(.wallEdges(edges: [k], step: 1, base: base), in: context, refine: l.refine) {
+                    if let drawn = l.surface.hatch(.wallEdges(edges: [k], base: base), in: context, refine: l.refine) {
                         vertices += drawn[path: 0] + drawn[path: 1]
                     }
-                    // The walls' hatching, less the risers' it draws with it,
-                    // which stand on their own lines, a hair onto the lower
-                    // side, and rise from a riser's bottom, not the base.
-                    let strokes = Hatching(angle: HatchedFaces.wallAngle, spacing: 0.02)
-                    if let hatch = l.surface.hatch(.hatching(strokes, faces: .walls(edges: [k], trim: false, base: base, topOffset: 0)),
+                    let strokes = Hatching(angle: FaceSelector.wallAngle, spacing: 0.02)
+                    if let hatch = l.surface.hatch(.hatching(strokes, faces: .walls(edges: [k], endLines: true, base: base, topOffset: 0)),
                                                    in: context, refine: l.refine) {
-                        vertices += (0..<hatch.count).map { Array(hatch[path: $0]) }.filter { $0[0].z == base }.joined()
+                        vertices += hatch.vertices
                     }
                     for v in vertices {
                         feet += 1
@@ -1306,7 +1303,7 @@ func faceTests() {
             if l.refine == nil {
                 var stations = 0, wrong: [String] = []
                 for k in perimeter.edges.indices {
-                    guard let drawn = l.surface.hatch(.wallEdges(edges: [k], step: 1, base: base), in: context) else { continue }
+                    guard let drawn = l.surface.hatch(.wallEdges(edges: [k], base: base), in: context) else { continue }
                     let top = Array(drawn[path: 0])
                     // Two at a point where the wall crosses a tile boundary,
                     // in order.
@@ -1332,7 +1329,7 @@ func faceTests() {
                 var vertices = 0, crossings = 0, wrong: [String] = []
                 var steps = [Int](repeating: 0, count: l.tiles.count)
                 for (k, edge) in perimeter.edges.enumerated() {
-                    guard let drawn = l.surface.hatch(.wallEdges(edges: [k], step: 1, base: base), in: context, refine: l.refine),
+                    guard let drawn = l.surface.hatch(.wallEdges(edges: [k], base: base), in: context, refine: l.refine),
                           let face = walls.first(where: { $0.id == .wall(edge: k) }) else { continue }
                     let top = Array(drawn[path: 0])
                     func apart(_ a: P3<WorldSpace>, _ b: P3<WorldSpace>) -> Bool { simd_length(a.xy.v - b.xy.v) > 1e-9 * cell }
@@ -1386,7 +1383,7 @@ func faceTests() {
             // tiles'. Read off the walls' own top edges, on the grid, as the
             // corners are.
             guard l.refine == nil,
-                  let drawn = l.surface.hatch(.wallEdges(edges: Array(perimeter.edges.indices), step: 1, base: base),
+                  let drawn = l.surface.hatch(.wallEdges(edges: Array(perimeter.edges.indices), base: base),
                                               in: Surface.HatchContext(perimeter: perimeter, region: .full, tiles: l.tiles))
             else { continue }
             var corners = 0, wrong: [String] = []
@@ -1427,7 +1424,7 @@ func faceTests() {
         // corner's edge reaches 2, the band below the riser in that tile.
         if let l = landscapes.first(where: { $0.name.hasSuffix("a corner on the tile boundary where its riser ends") }),
            case .perimeter(let perimeter, let base) = l.walls,
-           let drawn = l.surface.hatch(.wallEdges(edges: Array(perimeter.edges.indices), step: 1, base: base),
+           let drawn = l.surface.hatch(.wallEdges(edges: Array(perimeter.edges.indices), base: base),
                                        in: Surface.HatchContext(perimeter: perimeter, region: .full, tiles: l.tiles)) {
             let corner = (2 * perimeter.edges.count..<drawn.count).map { drawn[path: $0] }
                 .first { $0.allSatisfy { $0.xy == P2(1, 0.5) } }
@@ -1466,7 +1463,7 @@ func faceTests() {
                     let a = corners[k], b = corners[(k + 1) % corners.count]
                     return PerimeterEdge(start: P2(a.0, a.1), end: P2(b.0, b.1), density: 17)
                 })
-                let drawn = tower.surface.hatch(.wallEdges(edges: [0], step: 1, base: 0),
+                let drawn = tower.surface.hatch(.wallEdges(edges: [0], base: 0),
                                                 in: Surface.HatchContext(perimeter: perimeter), refine: tower.refine)
                 let top = drawn.map { Array($0[path: 0]) } ?? []
                 var wrong: [String] = []
@@ -1504,7 +1501,7 @@ func faceTests() {
         let straddling = Landscape("a tower at 0.5 | 1 in two tiles, the second reflected, a wall across the tile boundary at density 4",
                                    surface: straddlingTower.surface, tiles: [.identity, Affine2(a: -1, b: 0, tx: 3, c: 0, d: 1, ty: 0)],
                                    region: .inside(straddled), walls: .perimeter(straddled, base: -0.5), refine: straddlingTower.refine)
-        if let drawn = straddling.surface.hatch(.wallEdges(edges: [0], step: 1, base: -0.5),
+        if let drawn = straddling.surface.hatch(.wallEdges(edges: [0], base: -0.5),
                                                 in: Surface.HatchContext(perimeter: straddled, region: .full, tiles: straddling.tiles),
                                                 refine: straddling.refine), let tolerance = straddling.refine?.tolerance {
             let top = Array(drawn[path: 0]), h = straddling.heightfield
@@ -1546,7 +1543,7 @@ func faceTests() {
             let context = Surface.HatchContext(perimeter: perimeter, region: .full, tiles: l.tiles)
             var samples = 0, steps = 0, drops = 0, worst = 0.0, wrong: [String] = []
             for (k, edge) in perimeter.edges.enumerated() {
-                guard let drawn = l.surface.hatch(.wallEdges(edges: [k], step: 1, base: base), in: context, refine: l.refine) else { continue }
+                guard let drawn = l.surface.hatch(.wallEdges(edges: [k], base: base), in: context, refine: l.refine) else { continue }
                 let top = Array(drawn[path: 0])
                 let d = simd_normalize(edge.end.v - edge.start.v), inward = perimeter.inward(k)
                 func solid(_ w: SIMD2<Double>) -> Double { h.surfaceHeight(at: P2(w + 1e-9 * size * inward)) }
@@ -1611,7 +1608,7 @@ func faceTests() {
             let context = Surface.HatchContext(perimeter: acrossCn, region: .full, tiles: tiles)
             var vertices = 0, doubled: [String] = [], extra = 0
             for k in acrossCn.edges.indices {
-                guard let drawn = cn.surface.hatch(.wallEdges(edges: [k], step: 1, base: 0), in: context, refine: cn.refine) else { continue }
+                guard let drawn = cn.surface.hatch(.wallEdges(edges: [k], base: 0), in: context, refine: cn.refine) else { continue }
                 let top = Array(drawn[path: 0])
                 vertices += top.count
                 for (a, c) in zip(top, top.dropFirst()) where a.xy == c.xy { doubled.append("\(a.xy.v)") }
@@ -1845,9 +1842,9 @@ func faceTests() {
             let context = Surface.HatchContext(perimeter: perimeter, region: .full, tiles: [.identity])
             let edges = Array(perimeter.edges.indices)
             let layers: [(String, LayerSource)] = [
-                ("the wall edges", .wallEdges(edges: edges, step: 0.1, base: base)),
-                ("the wall hatching", .hatching(Hatching(angle: HatchedFaces.wallAngle, spacing: 0.05),
-                                                 faces: .walls(edges: edges, trim: false, base: base, topOffset: 0))),
+                ("the wall edges", .wallEdges(edges: edges, base: base)),
+                ("the wall hatching", .hatching(Hatching(angle: FaceSelector.wallAngle, spacing: 0.05),
+                                                 faces: .walls(edges: edges, endLines: true, base: base, topOffset: 0))),
                 ("the truncation edge", .truncationEdge(tiled: false)),
                 ("the plateaus' hatching along Re z", .hatching(Hatching(angle: 0, spacing: 0.05), faces: .plateaus(tiled: false))),
                 ("the plateaus' hatching along Im z", .hatching(Hatching(angle: .pi / 2, spacing: 0.05), faces: .plateaus(tiled: false))),
@@ -2409,7 +2406,7 @@ func faceTests() {
                 ("the footprint and a band of Im z", .intersection([.footprint, .band(axis: .imag, lo: band.lo, hi: band.hi)]), true),
             ] {
                 func derived(_ r: Restriction) -> PolylineSet<WorldSpace> {
-                    surface.derive(.contour(field: .magnitude, levels: levels, restriction: r, tiled: tiled),
+                    surface.derive(.contour(field: .magnitude, levels: levels, restriction: r, faces: .graph(tiled: tiled)),
                                    policy: .magnitude, region: l.region, tiles: l.tiles, refine: l.refine)
                 }
                 let whole = derived(.all), kept = derived(restriction)
