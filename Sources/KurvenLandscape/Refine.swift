@@ -415,9 +415,15 @@ public struct ContourRefiner: Sendable {
     /// leading coefficient. The order is the winding number of f round a
     /// small circle about the point, small against the distance to any
     /// other; the coefficient is the mean of f(z) / (z − point)^order round
-    /// a smaller one. A point whose winding number does not agree with the
-    /// way it was found, or round which f is not finite and nonzero, is left
-    /// out, and its lines are then carried onto it as before (`ended`).
+    /// a smaller one. The circle's radius is half a cell, or a quarter of the
+    /// way to the nearest other point, where it holds the point alone as far
+    /// as winding numbers can tell: where the winding number round one an
+    /// eighth the size is another, points the search did not find are inside
+    /// -- an accumulation of zeros, as sin(1/z)'s at 0 -- and the circle is
+    /// shrunk eightfold until two in turn agree. A point round which they
+    /// never do, or whose winding number does not agree with the way it was
+    /// found, or round which f is not finite and nonzero, is left out, and
+    /// its lines are then carried onto it as before (`ended`).
     public func singularPoints() -> [SingularPoint] {
         let (zeros, poles) = zerosAndPoles()
         let found = zeros.map { ($0, 1) } + poles.map { ($0, -1) }
@@ -425,11 +431,16 @@ public struct ContourRefiner: Sendable {
         for (i, (p, sign)) in found.enumerated() {
             var nearest = Double.infinity
             for (j, (q, _)) in found.enumerated() where j != i { nearest = min(nearest, Self.apart(p, q)) }
-            let r = min(0.5 * cell, 0.25 * nearest)
+            var r = min(0.5 * cell, 0.25 * nearest)
             guard r > 0 else { continue }
+            var read = windingNumber(round: p, radius: r), agreed = false
+            repeat {
+                let inner = windingNumber(round: p, radius: r / 8)
+                if inner == read { agreed = true; break }
+                r /= 8; read = inner
+            } while r >= 1e-6 * cell
+            guard agreed, let order = read, order != 0, (order > 0) == (sign > 0) else { continue }
             let c = Complex(p.x, p.y)
-            guard let order = windingNumber(round: p, radius: r),
-                  order != 0, (order > 0) == (sign > 0) else { continue }
             let rc = min(1e-2 * cell, 0.5 * r)
             var sum = Complex(0), count = 0
             for k in 0..<8 {
@@ -451,17 +462,33 @@ public struct ContourRefiner: Sendable {
     }
 
     /// The winding number of f round the circle of radius `r` about `p`,
-    /// read at 64 points, or nil where f is not finite and nonzero on it.
+    /// read at 64 points, an arc between two that turns more than a quarter
+    /// turn halved as a cell's edge is (`turn(from:_:to:_:depth:)`), or nil
+    /// where f is not finite and nonzero on it or the turn cannot be followed.
     func windingNumber(round p: P2<DomainSpace>, radius r: Double) -> Int? {
         let c = Complex(p.x, p.y)
-        let n = 64
-        var total = 0.0, previous: Double?
-        for k in 0...n {
-            let t = 2 * Double.pi * Double(k) / Double(n)
+        func at(_ t: Double) -> Double {
             let v = value(c + Complex(r * cos(t), r * sin(t)))
-            guard v.isFinite, v.magnitude > 0 else { return nil }
-            if let previous { total += Self.wrapped(v.argument - previous) }
-            previous = v.argument
+            return v.isFinite && v.magnitude > 0 ? v.argument : .nan
+        }
+        /// The turn of arg f along the arc from t0 to t1.
+        func turn(_ t0: Double, _ a0: Double, _ t1: Double, _ a1: Double, depth: Int) -> Double? {
+            guard a0.isFinite, a1.isFinite else { return nil }
+            let d = Self.wrapped(a1 - a0)
+            if abs(d) <= .pi / 2 { return d }
+            guard depth > 0 else { return nil }
+            let tm = 0.5 * (t0 + t1), am = at(tm)
+            guard let first = turn(t0, a0, tm, am, depth: depth - 1),
+                  let second = turn(tm, am, t1, a1, depth: depth - 1) else { return nil }
+            return first + second
+        }
+        let n = 64
+        var total = 0.0, t0 = 0.0, a0 = at(0)
+        for k in 1...n {
+            let t1 = 2 * Double.pi * Double(k) / Double(n), a1 = at(t1)
+            guard let d = turn(t0, a0, t1, a1, depth: 10) else { return nil }
+            total += d
+            t0 = t1; a0 = a1
         }
         return Int((total / (2 * .pi)).rounded())
     }

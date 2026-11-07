@@ -609,6 +609,26 @@ func refinementTests() {
         }
     }
 
+    Check.suite("refine: by an accumulation of zeros or poles, each order is read round the point alone") {
+        // sin(1/z) has simple zeros at 1/(k pi), crowding to 0 closer than
+        // the grid resolves; 1/sin(1/z) has simple poles there. A circle half
+        // a cell across, or a quarter of the way to the nearest point found,
+        // held others that were not found: zeros came out of order 6, 9 and
+        // 13, and a fan of that many rays was drawn from each.
+        let domain = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
+        for (expression, sign) in [("sin(1/z)", 1), ("1/sin(1/z)", -1)] {
+            let shape = NativeLandscape.gridShape(domain, resolution: 400)
+            let refiner = ContourRefiner(try KurvenMath.Expression.compile(expression), domain: domain,
+                                         width: shape.nReal, height: shape.nImag)
+            let found = refiner.singularPoints()
+            let other = found.filter { $0.order != sign }
+            Check.expect(found.count > 50 && other.isEmpty, "\(expression): every point found is of order \(sign)",
+                         "\(found.count) found, \(other.count) not: " + other.prefix(3).map {
+                             String(format: "order %d at %.6f%+.6fi", $0.order, $0.point.x, $0.point.y)
+                         }.joined(separator: ", "))
+        }
+    }
+
     Check.suite("refine: a zero or pole the grid's nodes do not see is found, by the winding number of its cell") {
         // 1/(z - p) + 1/(z - q) has its zero midway between its poles. With
         // the poles within a cell of each other no node beside the zero is
