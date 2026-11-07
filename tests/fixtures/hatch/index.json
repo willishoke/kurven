@@ -14,13 +14,12 @@
       2,
       3
      ],
+     "endLines": false,
      "kind": "walls",
-     "topOffset": 0.0,
-     "trim": true
+     "topOffset": 0.0
     },
     "kind": "hatching",
     "spacing": 0.35,
-    "step": 0.5,
     "tone": {
      "kind": "uniform"
     },
@@ -30,8 +29,8 @@
    "vertices": "uniform_wall_hatch.npy"
   },
   {
-   "name": "uniform_wall_hatch_untrimmed",
-   "offsets": "uniform_wall_hatch_untrimmed.idx.npy",
+   "name": "uniform_wall_hatch_end_lines",
+   "offsets": "uniform_wall_hatch_end_lines.idx.npy",
    "paths": 15,
    "source": {
     "angle": 1.5707963267948966,
@@ -41,20 +40,19 @@
       0,
       2
      ],
+     "endLines": true,
      "kind": "walls",
-     "topOffset": -0.05,
-     "trim": false
+     "topOffset": -0.05
     },
     "kind": "hatching",
     "spacing": 0.6,
-    "step": 0.25,
     "tone": {
      "kind": "uniform"
     },
     "widthSteps": 1
    },
    "truncation": "uniform",
-   "vertices": "uniform_wall_hatch_untrimmed.npy"
+   "vertices": "uniform_wall_hatch_end_lines.npy"
   },
   {
    "name": "uniform_wall_edges",
@@ -68,8 +66,7 @@
      2,
      3
     ],
-    "kind": "wallEdges",
-    "step": 0.4
+    "kind": "wallEdges"
    },
    "truncation": "uniform",
    "vertices": "uniform_wall_edges.npy"
@@ -141,13 +138,12 @@
       2,
       3
      ],
+     "endLines": false,
      "kind": "walls",
-     "topOffset": 0.0,
-     "trim": true
+     "topOffset": 0.0
     },
     "kind": "hatching",
     "spacing": 0.35,
-    "step": 0.5,
     "tone": {
      "kind": "uniform"
     },
@@ -157,8 +153,8 @@
    "vertices": "bands_wall_hatch.npy"
   },
   {
-   "name": "bands_wall_hatch_untrimmed",
-   "offsets": "bands_wall_hatch_untrimmed.idx.npy",
+   "name": "bands_wall_hatch_end_lines",
+   "offsets": "bands_wall_hatch_end_lines.idx.npy",
    "paths": 15,
    "source": {
     "angle": 1.5707963267948966,
@@ -168,20 +164,19 @@
       0,
       2
      ],
+     "endLines": true,
      "kind": "walls",
-     "topOffset": -0.05,
-     "trim": false
+     "topOffset": -0.05
     },
     "kind": "hatching",
     "spacing": 0.6,
-    "step": 0.25,
     "tone": {
      "kind": "uniform"
     },
     "widthSteps": 1
    },
    "truncation": "bands",
-   "vertices": "bands_wall_hatch_untrimmed.npy"
+   "vertices": "bands_wall_hatch_end_lines.npy"
   },
   {
    "name": "bands_wall_edges",
@@ -195,8 +190,7 @@
      2,
      3
     ],
-    "kind": "wallEdges",
-    "step": 0.4
+    "kind": "wallEdges"
    },
    "truncation": "bands",
    "vertices": "bands_wall_edges.npy"

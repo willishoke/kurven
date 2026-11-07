@@ -74,7 +74,7 @@
   },
   {
    "bundle": "landscape_tower.kurven",
-   "layers": 9,
+   "layers": 10,
    "spec": {
     "domain": {
      "imag": {
