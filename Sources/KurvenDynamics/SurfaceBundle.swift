@@ -31,6 +31,15 @@ public struct SurfaceBundle: Sendable {
         self.url = url; self.manifest = manifest; self.drawing = drawing
     }
 
+    /// The same bundle drawing `layers` in place of its own: its request,
+    /// presets and provenance kept, the surface and its identity too
+    /// (`SurfaceDrawing.restyled(_:)`), so only the curves are new.
+    public func restyled(_ layers: [LayerSpec]) throws -> SurfaceBundle {
+        var manifest = self.manifest
+        manifest.layers = layers
+        return SurfaceBundle(url: url, manifest: manifest, drawing: try drawing.restyled(layers))
+    }
+
     /// The mathematics a request draws, for the provenance.
     static func function(_ request: SurfaceRequest) -> String {
         switch request.shape {
