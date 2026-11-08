@@ -461,8 +461,8 @@ func polyhedronBundleTests() {
         // The window's frame of the gallery's frame: its edges and its
         // hatching in four widths, cut at rest in closed form as the bake
         // cuts them, then drawn. Every baked pixel is drawn, and every drawn
-        // pixel is within a pixel of a baked one, so no hidden edge and no
-        // hatch line on a face turned away shows.
+        // pixel is within two of a baked one, so no hidden edge and no hatch
+        // line on a face turned away shows.
         let bundle = try PolyhedronBundle.read(at: Fixtures.url("contract/polyhedron_frame.kurven"))
         let preset = bundle.manifest.presets[0]
         let viewport = Viewport(width: 1200, height: 900)
@@ -500,9 +500,9 @@ func polyhedronBundleTests() {
         let bakedPixels = bake.indices.filter { bake[$0] }
         // A stroke is drawn a pixel and a half wide, so a drawn pixel is
         // held to within two of the bake's.
-        func compared(draft: Bool) throws -> (recalled: Int, stray: Int, drawn: Int) {
+        func compared(draft: Bool, slopeScale: Float = 0) throws -> (recalled: Int, stray: Int, drawn: Int) {
             try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
-                                       options: PreviewOptions(slopeScale: 0, draft: draft), into: target)
+                                       options: PreviewOptions(slopeScale: slopeScale, draft: draft), into: target)
             let bgra = try PNG.bgra(target)
             let drawn = (0..<(viewport.width * viewport.height)).map { k -> Bool in
                 let r = Int(bgra[4 * k + 2]), g = Int(bgra[4 * k + 1]), b = Int(bgra[4 * k])
@@ -513,14 +513,25 @@ func polyhedronBundleTests() {
                     drawnPixels.filter { !near(bake, $0 / viewport.width, $0 % viewport.width, 2) }.count,
                     drawnPixels.count)
         }
-        let rest = try compared(draft: false), draft = try compared(draft: true)
-        Check.expect(bakedPixels.count > 5000 && rest.recalled == bakedPixels.count,
-                     "at rest the preview draws every pixel of the bake's edges and hatching",
-                     "\(rest.recalled) of \(bakedPixels.count)")
-        Check.expect(rest.stray == 0, "and draws nothing the bake hides",
-                     "\(rest.stray) of \(rest.drawn) drawn pixels")
+        // At rest, at the bake's predicate (no slope term) and the app's.
+        for slopeScale in [0, PreviewOptions.defaultSlopeScale] {
+            let rest = try compared(draft: false, slopeScale: slopeScale)
+            Check.expect(bakedPixels.count > 5000 && rest.recalled == bakedPixels.count && rest.stray == 0,
+                         "at rest, at slope scale \(slopeScale), the preview draws every pixel of the bake's edges "
+                         + "and hatching, and nothing the bake hides",
+                         "\(rest.recalled) of \(bakedPixels.count), \(rest.stray) of \(rest.drawn) drawn pixels astray")
+        }
+        // Moving, the strokes as carried are left to the depth pass: at the
+        // app's slope scale they are all there and nothing hidden shows; at
+        // the bake's predicate, lying on their faces, they break, which is
+        // what laying them out at rest is for.
+        let appDraft = try compared(draft: true, slopeScale: PreviewOptions.defaultSlopeScale)
+        let draft = try compared(draft: true)
+        Check.expect(appDraft.recalled == bakedPixels.count && appDraft.stray == 0,
+                     "while the camera moves, at the app's slope scale, the draft draws them too",
+                     "\(appDraft.recalled) of \(bakedPixels.count), \(appDraft.stray) astray")
         Check.expect(draft.recalled < bakedPixels.count || draft.stray > 0,
-                     "while the draft, tested per fragment against the depth pass, does not",
+                     "and with no slope term, tested per fragment against the depth pass, does not",
                      "it misses \(bakedPixels.count - draft.recalled) and strays at \(draft.stray)")
     }
 
