@@ -554,6 +554,10 @@ final class Document {
 
     func bake(to url: URL) {
         guard let scene = framedScene, !baking else { return }
+        if let why = CameraPreset.unsupported(buffer: bakeResolution) {
+            bakeStatus = "the resolution \(why)"
+            return
+        }
         guard canBake else {
             bakeStatus = "switch off perspective to bake: the plates are "
                 + "orthographic, and a perspective bake has no oracle"

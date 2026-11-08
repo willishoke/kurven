@@ -104,6 +104,10 @@ alone too, but holds its geometry: the vertices and loops
 `Solid(vertices:faces:)` takes, and its edges and hatching
 (`PolyhedronManifest`, `PolyhedronBundle`).
 
+A camera preset in any bundle asks for a depth buffer of 1 to 20000 pixels
+along its longer side (`CameraPreset.maxBuffer`), the largest gamma's
+published bake was made at; the CLI's `--resolution` is held to the same.
+
 Bundle arrays are in world order, `x = real`, `y = imag`, `z = |f|`. The
 convention is written into the manifest, because forgetting it was the most
 common bug in this codebase's history.

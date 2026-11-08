@@ -88,6 +88,14 @@ struct Args {
         guard let d = Double(v) else { throw CLIError("--\(name) wants a number, got '\(v)'") }
         return d
     }
+    /// A depth buffer's resolution, refused by the rule a preset's buffer is
+    /// read by (`CameraPreset.unsupported(buffer:)`).
+    func resolution(_ fallback: Int) throws -> Int {
+        let n = try int("resolution", fallback)
+        if let why = CameraPreset.unsupported(buffer: n) { throw CLIError("--resolution \(why)") }
+        return n
+    }
+
     /// A number that must be positive and finite, as a length is.
     func positive(_ name: String) throws -> Double? {
         guard let d = try double(name) else { return nil }
@@ -357,7 +365,7 @@ func bake(_ args: Args) throws {
     let (url, provenance, preset, scene) = try loadDrawing(args)
     let output = URL(fileURLWithPath: try args.string("output"))
     let options = BakeOptions(
-        resolution: try args.int("resolution", preset.buffer),
+        resolution: try args.resolution(preset.buffer),
         tiles: try args.int("tiles"),
         depthTolerance: try args.double("depth-tolerance") ?? preset.depthTolerance,
         outline: try args.double("outline"))
@@ -570,7 +578,7 @@ func surfaceCommand(_ args: Args) throws {
         let url = URL(fileURLWithPath: save)
         let preset = CameraPreset(name: SurfaceRequest.preset.name, projection: projection,
                                   depthTolerance: SurfaceRequest.preset.depthTolerance,
-                                  buffer: try args.int("resolution", SurfaceRequest.preset.buffer))
+                                  buffer: try args.resolution(SurfaceRequest.preset.buffer))
         try SurfaceBundle(url: url, drawing: drawing, presets: [preset]).write(to: url)
         print("\(shape) -> \(url.lastPathComponent)  (built in \(built))")
         if args.flags["output"] == nil { return }
@@ -596,7 +604,7 @@ func surfaceCommand(_ args: Args) throws {
               + "  took \(elapsed)")
         return
     }
-    let options = BakeOptions(resolution: try args.int("resolution", 3000),
+    let options = BakeOptions(resolution: try args.resolution(3000),
                               tiles: try args.int("tiles"))
 
     let renderer = try MetalRenderer()
@@ -693,7 +701,7 @@ func solidCommand(_ args: Args) throws {
     let bundle = PolyhedronBundle(
         url: URL(fileURLWithPath: args.flags["save"] ?? "/native/\(kind).kurven"), solid: solid, layers: specs,
         presets: [CameraPreset(name: SurfaceRequest.preset.name, projection: projection, depthTolerance: 0,
-                               buffer: try args.int("resolution", 3000))],
+                               buffer: try args.resolution(3000))],
         function: kind)
     if args.flags["save"] != nil {
         try bundle.write(to: bundle.url)
@@ -703,7 +711,7 @@ func solidCommand(_ args: Args) throws {
     let layers = bundle.layers
     let scene = Scene(solid: solid, layers: layers, camera: camera)
     let output = URL(fileURLWithPath: try args.string("output"))
-    let options = BakeOptions(resolution: try args.int("resolution", 3000),
+    let options = BakeOptions(resolution: try args.resolution(3000),
                               tiles: try args.int("tiles"))
     let renderer = try MetalRenderer()
     let clock = ContinuousClock()
@@ -742,7 +750,7 @@ func depth(_ args: Args) throws {
     try args.only("depth", Args.scene + ["resolution", "output"])
     let (_, _, preset, scene) = try loadDrawing(args)
     let output = URL(fileURLWithPath: try args.string("output"))
-    let resolution = try args.int("resolution", preset.buffer)
+    let resolution = try args.resolution(preset.buffer)
     guard let bounds = scene.viewBounds() else { throw CLIError("the scene is empty") }
     let frame = DepthFrame(covering: bounds, resolution: resolution)
     let image = try MetalRenderer().renderDepth(scene, frame: frame)

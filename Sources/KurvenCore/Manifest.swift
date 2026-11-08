@@ -986,12 +986,26 @@ public struct CameraPreset: Sendable, Equatable {
         self.buffer = buffer
     }
 
+    /// The finest depth buffer a preset asks for, along its longer side:
+    /// gamma's published bake, whose stitched buffer is 1.6 GB.
+    public static let maxBuffer = 20_000
+
+    /// Why `buffer` is no depth buffer's resolution, or nil when it is one:
+    /// at least a pixel, at most `maxBuffer`.
+    public static func unsupported(buffer: Int) -> String? {
+        (1...maxBuffer).contains(buffer) ? nil : "must be 1 to \(maxBuffer) pixels, not \(buffer)"
+    }
+
     init(json: JSONValue) throws {
         let o = try json.object("CameraPreset")
+        let buffer = try o.int("buffer", "CameraPreset")
+        if let why = CameraPreset.unsupported(buffer: buffer) {
+            throw ManifestError.invalid("a preset's buffer \(why)")
+        }
         self.init(name: try o.string("name", "CameraPreset"),
                   projection: try ObliqueProjection(json: o.value("projection", "CameraPreset")),
                   depthTolerance: try o.double("depthTolerance", "CameraPreset"),
-                  buffer: try o.int("buffer", "CameraPreset"))
+                  buffer: buffer)
     }
     var json: JSONValue {
         .object(["name": .string(name), "projection": projection.json,

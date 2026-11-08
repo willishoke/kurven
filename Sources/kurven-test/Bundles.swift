@@ -658,6 +658,28 @@ func polyhedronBundleTests() {
                                                                                  faces: .solid),
                               width: 0.3, heightPolicy: .surface)
                 }))
+        // A preset's buffer is a depth buffer's resolution, in any kind of
+        // manifest: none at all aborted on Metal, and a million exhausted
+        // memory.
+        func buffer(_ json: [String: JSONValue], _ n: Int) -> JSONValue {
+            var d = json
+            if case .array(var presets) = d["presets"], var first = try? presets[0].object("p") {
+                first["buffer"] = .int(n)
+                presets[0] = .object(first)
+                d["presets"] = .array(presets)
+            }
+            return .object(d)
+        }
+        for (kind, json) in [("a polyhedron's", good),
+                             ("a parametric surface's", try Fixtures.json("contract/surface.kurven/manifest.json")),
+                             ("a landscape's", try Fixtures.json("contract/landscape.kurven/manifest.json"))] {
+            for n in [0, -5, 20_001, 1_000_000] {
+                refuses("refuses \(kind) preset with a buffer of \(n)", saying: "buffer must be 1 to 20000 pixels",
+                        buffer(json, n))
+            }
+            Check.expect((try? BundleManifest(json: buffer(json, 20_000))) != nil,
+                         "\(kind) preset with a buffer of 20000 is read")
+        }
         refuses("refuses a landscape's key beside a polyhedron", saying: "a polyhedron with a landscape's domain",
                 mutated { $0["domain"] = .object([:]) })
         refuses("refuses a parametric surface beside a polyhedron", saying: "a polyhedron with a parametric surface",
