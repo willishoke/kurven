@@ -78,8 +78,8 @@ struct MetalView: NSViewRepresentable {
         /// Tracking fires once, so it re-arms itself.
         private func trackModel() {
             withObservationTracking {
-                _ = document.framedScene        // the scene, camera and depth tolerance
-                _ = document.previewOptions     // the mode and what is hidden
+                _ = document.shownScene         // the scene, camera, depth tolerance and pick
+                _ = document.shownOptions       // the mode and what is hidden
             } onChange: { [weak self] in
                 // `onChange` runs *before* the new value lands, and can run off
                 // the main actor; next turn, on the main actor, it has landed.
@@ -103,7 +103,7 @@ struct MetalView: NSViewRepresentable {
 
         func draw(in view: MTKView) {
             defer { (view as? GestureView)?.settleIfIdle() }
-            guard let scene = document.framedScene,
+            guard let scene = document.shownScene,
                   let navigator = document.navigator,
                   let drawable = view.currentDrawable else { return }
             let started = CACurrentMediaTime()
@@ -115,7 +115,7 @@ struct MetalView: NSViewRepresentable {
                 setViewport(viewport)
                 guard let commands = renderer.commandQueue.makeCommandBuffer() else { return }
                 // Stroke widths are pixels; the window is measured in points.
-                var options = document.previewOptions
+                var options = document.shownOptions
                 options.strokeWidth *= Float(view.drawableSize.width / max(view.bounds.width, 1))
                 // While the camera moves -- the view is on the display's
                 // clock -- every frame is a draft. At rest the frame is
@@ -165,7 +165,8 @@ struct MetalView: NSViewRepresentable {
             }
         }
 
-        /// The world point under a pixel, for double-click-to-retarget.
+        /// The world point under a pixel, for double-click-to-retarget and a
+        /// click's pick.
         func worldPoint(atPixel p: SIMD2<Double>) -> P3<WorldSpace>? {
             guard let renderer, let navigator = document.navigator else { return nil }
             return renderer.worldPoint(atPixel: p, navigator: navigator,
@@ -232,7 +233,12 @@ final class GestureView: MTKView {
         }
     }
 
+    /// Whether the mouse has moved with its button down since it went down:
+    /// a click that orbits picks nothing.
+    private var dragged = false
+
     override func mouseDown(with event: NSEvent) {
+        dragged = false
         if event.clickCount == 2 {
             MainActor.assumeIsolated {
                 if let p = coordinator?.worldPoint(atPixel: pixel(event)) {
@@ -243,7 +249,18 @@ final class GestureView: MTKView {
         }
     }
 
+    /// A click, held still, picks the face under it, or clears the pick off
+    /// the drawing.
+    override func mouseUp(with event: NSEvent) {
+        guard event.clickCount == 1, !dragged else { return }
+        MainActor.assumeIsolated {
+            coordinator?.document.pick(at: coordinator?.worldPoint(atPixel: pixel(event)))
+            needsDisplay = true
+        }
+    }
+
     override func mouseDragged(with event: NSEvent) {
+        dragged = true
         let d = delta(event)
         // Shift or option pans, matching the modifier most CAD tools use for
         // "move the paper rather than the camera".

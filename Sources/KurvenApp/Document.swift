@@ -44,7 +44,9 @@ final class Document {
 
     /// The landscape or the surface, and its curves. Its camera and depth tolerance are whatever they were
     /// when it was stored, and nothing reads them: `framedScene` supplies both.
-    var scene: Scene?
+    var scene: Scene? {
+        didSet { keepSelection() }
+    }
     var navigator: Navigator?
     var viewport = Viewport(width: 1200, height: 800)
 
@@ -59,14 +61,46 @@ final class Document {
     /// sidebar lists `scene`'s layers, so writing `scene` on every mouse event
     /// re-evaluated the whole sidebar on every mouse event, to show the same
     /// list of layers.
-    var framedScene: Scene? {
-        guard var scene, let navigator else { return nil }
+    var framedScene: Scene? { scene.flatMap(framed) }
+
+    /// The scene as the window draws it: `framedScene`, with the picked
+    /// face's boundary over it (`selection`). A bake draws `framedScene`, so
+    /// a pick never reaches a drawing.
+    var shownScene: Scene? { (selection?.scene ?? scene).flatMap(framed) }
+
+    private func framed(_ scene: Scene) -> Scene? {
+        guard let navigator else { return nil }
+        var scene = scene
         scene.camera = navigator.camera
         scene.depthTolerance = depthTolerance
         // A quarter of a drawable pixel: finer than any end of a curve can show.
         scene.resolution = 0.25 * navigator.framing.unitsPerPixel
         return scene
     }
+
+    // MARK: - the picked face
+    //
+    // The state `Picking.swift` works on.
+
+    /// The face a click picked, and the scene that draws its boundary.
+    struct Selection {
+        let pick: FacePick
+        /// The boundary, a layer in the accent colour.
+        let layer: Layer
+        /// The scene with the boundary drawn last, built once a pick so its
+        /// curves keep one identity while the camera moves.
+        let scene: Scene
+        /// The curves of the scene it was built over.
+        let base: ContentID
+    }
+    /// Nil when nothing is picked: a click off the drawing clears it.
+    var selection: Selection?
+    /// The scene's faces, kept while its geometry is, so the trim loops a
+    /// boundary is read off are made once.
+    var pickFaces: (content: ContentID, faces: [Face])?
+    /// A boundary being made on another thread.
+    var picking = false
+    var pickStatus: String?
 
     var mode: PreviewMode = .drawing
     /// Layer indices that are drawn. Absent means all of them.
@@ -206,6 +240,13 @@ final class Document {
     var previewOptions: PreviewOptions {
         let visible = Set(layers.indices).subtracting(hiddenLayers)
         return PreviewOptions(mode: mode, visibleLayers: visible)
+    }
+
+    /// `previewOptions`, with the picked face's boundary drawn.
+    var shownOptions: PreviewOptions {
+        var options = previewOptions
+        if let selection { options.visibleLayers?.insert(selection.scene.layers.count - 1) }
+        return options
     }
 
     // MARK: - loading
