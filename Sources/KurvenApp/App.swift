@@ -129,7 +129,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // under it. Repeated, the clicks come in order, so one off the
         // drawing clears the pick before it. Each prints what it picked, and
         // `--screenshot` draws the frame again with the pick's boundary over
-        // it.
+        // it. With `--at-once` the clicks come without waiting for one's
+        // boundary before the next, as fast clicks do, and what is left once
+        // the last lands is printed.
         let picks = zip(args.indices, args).compactMap { k, flag -> [Double]? in
             flag == "--pick" && k + 1 < args.endIndex ? args[k + 1].split(separator: ",").compactMap { Double($0) } : nil
         }
@@ -139,7 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(2)
             }
             Task { await headlessPick(URL(fileURLWithPath: bundlePath), at: picks.map { SIMD2($0[0], $0[1]) },
-                                      screenshot: path("--screenshot")) }
+                                      atOnce: args.contains("--at-once"), screenshot: path("--screenshot")) }
             return
         }
         // `--surface NAME [--screenshot PATH] [--bake PATH] [--save PATH]`
@@ -516,7 +518,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Open a bundle, draw a frame, and pick at each pixel as a click on it
     /// does; say what was picked, and draw the last pick if asked.
-    private func headlessPick(_ bundle: URL, at pixels: [SIMD2<Double>], screenshot: URL?) async {
+    private func headlessPick(_ bundle: URL, at pixels: [SIMD2<Double>], atOnce: Bool, screenshot: URL?) async {
         await document.load(bundle)
         guard let scene = document.framedScene, let navigator = document.navigator else {
             var why = "it did not open"
@@ -531,7 +533,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                        options: document.previewOptions, into: target)
             for pixel in pixels {
                 document.pick(at: renderer.worldPoint(atPixel: pixel, navigator: navigator, viewport: document.viewport))
+                if atOnce { continue }
                 while document.picking { try? await Task.sleep(for: .milliseconds(20)) }
+                print("Kurven: \(document.pickStatus ?? "no pick")")
+            }
+            if atOnce {
+                while document.picking { try? await Task.sleep(for: .milliseconds(20)) }
+                // Long enough for a boundary a later click left behind to land.
+                try? await Task.sleep(for: .milliseconds(500))
                 print("Kurven: \(document.pickStatus ?? "no pick")")
             }
         } catch {

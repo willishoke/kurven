@@ -100,6 +100,9 @@ final class Document {
     var pickFaces: (content: ContentID, faces: [Face])?
     /// A boundary being made on another thread.
     var picking = false
+    /// Bumped by every click and every clear, so a boundary that lands after
+    /// a later one is dropped: only the latest click is drawn.
+    var pickGeneration = 0
     var pickStatus: String?
 
     var mode: PreviewMode = .drawing

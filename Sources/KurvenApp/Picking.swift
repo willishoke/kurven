@@ -10,20 +10,21 @@ extension Document {
     /// preview (`MetalRenderer.worldPoint(atPixel:navigator:viewport:)`), or
     /// clear the pick where there is none: a click off the drawing gives no
     /// point, and a point no face is near picks nothing. The boundary is made
-    /// on another thread; `picking` is set until it lands.
+    /// on another thread; `picking` is set until the latest click's lands,
+    /// and a boundary that lands after a later click or clear is dropped.
     func pick(at point: P3<WorldSpace>?) {
+        pickGeneration &+= 1
+        let generation = pickGeneration
         guard let scene, let navigator, let point else {
-            selection = nil
-            pickStatus = "picked nothing"
+            clearPick("picked nothing")
             return
         }
         let geometry = scene.geometry
         if pickFaces?.content != scene.content { pickFaces = (scene.content, geometry.faces) }
         let faces = pickFaces?.faces ?? []
-        let tolerance = geometry.pickTolerance(unitsPerPixel: navigator.framing.unitsPerPixel)
+        let tolerance = geometry.pickTolerance(at: point, unitsPerPixel: navigator.framing.unitsPerPixel)
         guard let pick = geometry.face(at: point, within: tolerance, faces: faces) else {
-            selection = nil
-            pickStatus = "picked nothing at \(point.v)"
+            clearPick("picked nothing at \(point.v)")
             return
         }
         picking = true
@@ -32,6 +33,7 @@ extension Document {
             let boundary = await Task.detached(priority: .userInitiated) {
                 geometry.boundary(of: pick, faces: faces)
             }.value
+            guard generation == pickGeneration else { return }
             picking = false
             guard let scene = self.scene, scene.content == content else { return }
             let widest = scene.layers.map(\.spec.width).max() ?? 1
@@ -45,6 +47,13 @@ extension Document {
             pickStatus = String(format: "picked %@ at (%.4f, %.4f, %.4f), %d curves round it",
                                 "\(pick)", point.x, point.y, point.z, boundary.paths.count)
         }
+    }
+
+    /// No pick: what a click off the drawing leaves.
+    private func clearPick(_ status: String) {
+        selection = nil
+        picking = false
+        pickStatus = status
     }
 
     /// Carry the pick across a new scene: its boundary drawn over the new

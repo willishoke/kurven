@@ -151,6 +151,8 @@ step "the app saves, restyles and bakes a surface and a polyhedron as the CLI do
 # hole, where there is nothing; the second tile of a tiled landscape; a
 # plateau and two walls. A click off the drawing clears the pick: the frame
 # drawn after one is the frame drawn with no pick, and a pick changes it.
+# Clicked faster than a boundary lands, the latest click wins: a click on the
+# graph and then off the drawing leaves nothing picked, and nothing drawn.
 pick() {
     local dir="$PACKAGE/.build/pick-check" c="$ROOT/tests/fixtures/contract" out
     rm -rf "$dir" && mkdir -p "$dir" || return 1
@@ -175,7 +177,12 @@ pick() {
     "$BIN/KurvenApp" "$c/polyhedron_frame.kurven" --screenshot "$dir/none.png" >/dev/null &&
     "$BIN/KurvenApp" "$c/polyhedron_frame.kurven" --pick 300,250 --screenshot "$dir/picked.png" >/dev/null &&
     "$BIN/KurvenApp" "$c/polyhedron_frame.kurven" --pick 300,250 --pick 600,400 --screenshot "$dir/cleared.png" >/dev/null &&
-    cmp "$dir/none.png" "$dir/cleared.png" && ! cmp -s "$dir/none.png" "$dir/picked.png"
+    cmp "$dir/none.png" "$dir/cleared.png" && ! cmp -s "$dir/none.png" "$dir/picked.png" || return 1
+    out=$("$BIN/KurvenApp" "$c/landscape.kurven" --pick 100,500 --pick 5,5 --at-once --screenshot "$dir/raced.png") || return 1
+    printf '%s\n' "$out"
+    [ "$(printf '%s\n' "$out" | sed -n 1p | cut -d' ' -f2-3)" = "picked nothing" ] &&
+    "$BIN/KurvenApp" "$c/landscape.kurven" --screenshot "$dir/landscape.png" >/dev/null &&
+    cmp "$dir/landscape.png" "$dir/raced.png"
 }
 step "the app picks a face at a pixel, on a polyhedron, a torus and a tiled landscape, and a click off the drawing clears it, with no window" pick
 
