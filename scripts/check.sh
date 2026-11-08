@@ -81,7 +81,11 @@ step "the committed golden fixtures are what kurven-cli fixtures writes" golden
 # level slider's count, set before an edit of the request, stays on its
 # family through the edit and is saved, and the app's bake of the result is
 # the CLI's bake of the same bundle; and the contract's restyled surface,
-# edited, keeps its levels and the contours its request does not draw.
+# edited, keeps its levels and the contours its request does not draw. A
+# polyhedron likewise: the frame with Turing's hatching, saved by the CLI,
+# saved again by the app, reopened and baked, is `surface solid`'s drawing
+# byte for byte, and a hatching's strokes set as its slider sets them are
+# saved, and baked by the app as the CLI bakes them.
 app() {
     local dir="$PACKAGE/.build/app-check"
     rm -rf "$dir" && mkdir -p "$dir" || return 1
@@ -104,9 +108,20 @@ app() {
     "$BIN/kurven-cli" inspect "$dir/d.kurven" > "$dir/d.txt" &&
     grep -q 'ang_major .* 4 levels of phase' "$dir/d.txt" &&
     grep -q 'mag_major .* 3 levels of magnitude' "$dir/d.txt" &&
-    grep -q '2 levels of v on' "$dir/d.txt" && grep -q '3 levels of height on' "$dir/d.txt"
+    grep -q '2 levels of v on' "$dir/d.txt" && grep -q '3 levels of height on' "$dir/d.txt" &&
+    "$BIN/kurven-cli" surface solid --kind frame --hatching turing --save "$dir/p.kurven" >/dev/null &&
+    "$BIN/kurven-cli" surface solid --kind frame --hatching turing -o "$dir/p.svg" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/p.kurven" --save "$dir/q.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/q.kurven" --bake "$dir/q.svg" >/dev/null &&
+    cmp "$dir/p.kurven/manifest.json" "$dir/q.kurven/manifest.json" &&
+    cmp "$dir/p.svg" "$dir/q.svg" &&
+    "$BIN/KurvenApp" "$dir/q.kurven" --strokes hatching=40 --save "$dir/r.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/r.kurven" --bake "$dir/r.svg" >/dev/null &&
+    "$BIN/kurven-cli" bake "$dir/r.kurven" -o "$dir/r-cli.svg" >/dev/null &&
+    cmp "$dir/r.svg" "$dir/r-cli.svg" &&
+    grep -q '"spacing":0.1414213562373095' "$dir/r.kurven/manifest.json"
 }
-step "the app saves, restyles and bakes a surface as the CLI does, with no window" app
+step "the app saves, restyles and bakes a surface and a polyhedron as the CLI does, with no window" app
 
 # The vocabulary: a word docs/glossary.md retired, back in the code or the
 # docs, in a file's text or its name. The hits are printed; the fix is the
