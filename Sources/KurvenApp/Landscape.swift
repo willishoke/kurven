@@ -395,6 +395,9 @@ extension Document {
             return restylePolyhedron { layers in
                 guard index < layers.count,
                       case .hatching(var hatching, let faces) = layers[index].source else { return }
+                // A tone read as finely as the lines are drawn, the default,
+                // stays so.
+                if hatching.step == hatching.spacing { hatching.step = value }
                 hatching.spacing = value
                 layers[index].source = .hatching(hatching, faces: faces)
             }

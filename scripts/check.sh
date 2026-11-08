@@ -104,8 +104,9 @@ step "the committed golden fixtures are what kurven-cli fixtures writes" golden
 # edited, keeps its levels and the contours its request does not draw. A
 # polyhedron likewise: the frame with Turing's hatching, saved by the CLI,
 # saved again by the app, reopened and baked, is `surface solid`'s drawing
-# byte for byte, and a hatching's strokes set as its slider sets them are
-# saved, and baked by the app as the CLI bakes them.
+# byte for byte; and 40 strokes set as the hatching's slider sets them
+# (5.657 / 40 apart across the largest face) save and bake as `surface solid
+# --spacing` at that spacing saves and bakes, bundle and drawing.
 app() {
     local dir="$PACKAGE/.build/app-check"
     rm -rf "$dir" && mkdir -p "$dir" || return 1
@@ -137,9 +138,10 @@ app() {
     cmp "$dir/p.svg" "$dir/q.svg" &&
     "$BIN/KurvenApp" "$dir/q.kurven" --strokes hatching=40 --save "$dir/r.kurven" >/dev/null &&
     "$BIN/KurvenApp" "$dir/r.kurven" --bake "$dir/r.svg" >/dev/null &&
-    "$BIN/kurven-cli" bake "$dir/r.kurven" -o "$dir/r-cli.svg" >/dev/null &&
-    cmp "$dir/r.svg" "$dir/r-cli.svg" &&
-    grep -q '"spacing":0.1414213562373095' "$dir/r.kurven/manifest.json"
+    "$BIN/kurven-cli" surface solid --kind frame --hatching turing --spacing 0.1414213562373095 \
+        --save "$dir/s.kurven" -o "$dir/s.svg" >/dev/null &&
+    cmp "$dir/r.kurven/manifest.json" "$dir/s.kurven/manifest.json" &&
+    cmp "$dir/r.svg" "$dir/s.svg"
 }
 step "the app saves, restyles and bakes a surface and a polyhedron as the CLI does, with no window" app
 
