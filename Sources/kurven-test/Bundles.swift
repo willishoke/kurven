@@ -645,9 +645,26 @@ func polyhedronBundleTests() {
         wide.widthSteps = 17
         refuses("refuses more widths than a hatch line has", saying: "17 widths, more than the 16",
                 layer(.hatching(wide, faces: .solid)))
-        refuses("refuses Turing's pattern finer than a billionth of a face", saying: "finer than a billionth",
+        refuses("refuses Turing's pattern finer than a billionth of a face", saying: "too fine for its lines",
                 layer(.hatching(Hatching(angle: 0.5, spacing: 0.05, tone: .turing(scale: 1e-12, seed: 1)),
                                 faces: .solid)))
+        // Review's cube: within every count read off the lines and the
+        // readings, but with the pattern far finer than a reading's step it
+        // changes width at nearly every reading, each change bisected and a
+        // stroke of its own: 216 s and 7.27 million strokes before the
+        // changes were counted.
+        do {
+            let cube = Solid.platonic(.cube, circumradius: 2).resting(onFace: 0)
+            var manifest = try PolyhedronManifest(json: .object(good))
+            manifest.solid = cube
+            let fine = Hatching(angle: .pi / 4, spacing: 0.003266, step: 0.01921, tone: .turing(scale: 1e-5, seed: 1),
+                                widthSteps: 16)
+            manifest.layers = [edges, LayerSpec(name: "hatching", role: .scaffold,
+                                                source: .hatching(fine, faces: .solid), width: 0.3,
+                                                heightPolicy: .surface)]
+            refuses("refuses Turing's pattern too fine for its readings, quickly", saying: "change width",
+                    manifest.json)
+        }
         refuses("refuses hatch lines past what its hatchings lay", saying: "lines, more than the 65536",
                 layer(.hatching(Hatching(angle: 0.5, spacing: 1e-5), faces: .solid)))
         refuses("refuses tones read past what its hatchings read", saying: "times, more than the 1048576",

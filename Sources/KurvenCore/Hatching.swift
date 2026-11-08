@@ -363,6 +363,12 @@ public enum Turing {
     /// The sum's standard deviation: the kernels' squares summed over the
     /// lattice, `π / h²` by the integral, rooted.
     public static let deviation = Double.pi.squareRoot() / spacing
+    /// The steepest the pattern can be, per unit of its own coordinates:
+    /// every kernel's slope at its steepest sign, `Σ r exp(-r² / 2)` over the
+    /// lattice, is `(2π / h²) √(π / 2)` by the integral and at most 16.12 on
+    /// the lattice itself, and the pattern is the sum over `2 deviation`, so
+    /// `|∇ value| ≤ 3.184`. Rounded up.
+    public static let slope = 3.2
 
     /// The sign at lattice point `(r, s)` under `seed`: a mix of the three,
     /// its lowest bit.

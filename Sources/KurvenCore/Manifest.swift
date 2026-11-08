@@ -1277,9 +1277,12 @@ public struct PolyhedronManifest: Sendable, Equatable {
     public static let maxFaceCorners = 1 << 10, maxCorners = 1 << 14
     /// The most layers: each is drawn for every camera.
     public static let maxLayers = 64
-    /// The most hatch lines the hatchings lay together, and the most times
-    /// they read their tones, reckoned from each face's extent.
-    public static let maxHatchLines = 1 << 16, maxReadings = 1 << 20
+    /// The most hatch lines the hatchings lay together, the most times they
+    /// read their tones, and the most times a hatch line changes width,
+    /// reckoned from each face's extent. A change is found by bisecting the
+    /// tone between two readings, some sixty readings more, and starts a
+    /// stroke of its own.
+    public static let maxHatchLines = 1 << 16, maxReadings = 1 << 20, maxWidthChanges = 1 << 20
     /// The most widths a hatch line has: a width step is a layer of the
     /// bake, and a change of width between two readings is bisected.
     public static let maxWidthSteps = 16
@@ -1353,16 +1356,20 @@ public struct PolyhedronManifest: Sendable, Equatable {
     /// Why layers cannot be drawn on `solid`, or nil when they can: a layer
     /// other than its edges or hatching on its faces, a width that is not a
     /// number of at least 0, two layers of one name, more widths than
-    /// `maxWidthSteps`, Turing's pattern finer than a billionth of the
-    /// largest face, or hatchings that together would lay more lines or read
-    /// their tones more often than `maxHatchLines` and `maxReadings` allow,
+    /// `maxWidthSteps`, or hatchings that together would lay more lines,
+    /// read their tones more often or change width more often than
+    /// `maxHatchLines`, `maxReadings` and `maxWidthChanges` allow. Each is
     /// reckoned per face from its extent: at most `extent / spacing + 1`
-    /// lines, each at most `extent / step + 1` readings. The CLI's flags and
+    /// lines, each at most `extent / step + 1` readings, and, under Turing's
+    /// pattern at `scale`, at most `Turing.slope × widthSteps × extent /
+    /// scale + 1` changes of width, since a change is a crossing of one of
+    /// the tone's `widthSteps` levels and the tone moves at most
+    /// `Turing.slope / scale` per unit along a line. Uniform and half-Lambert
+    /// tones are constant on a face, and change nothing. The CLI's flags and
     /// the app's restyles are held to the same rule.
     public static func unsupported(_ layers: [LayerSpec], on solid: Solid) -> String? {
         var names = Set<String>()
-        var lines = 0.0, readings = 0.0
-        let largest = solid.frames.map(\.extent).max() ?? 0
+        var lines = 0.0, readings = 0.0, changes = 0.0
         for layer in layers {
             func refuse(_ why: String) -> String { "layer '\(layer.name)': \(why)" }
             // A layer is kept across a restyle, and its slider found, by
@@ -1382,14 +1389,17 @@ public struct PolyhedronManifest: Sendable, Equatable {
                     return refuse("hatching in \(hatching.widthSteps) widths, more than the \(maxWidthSteps) a "
                                   + "hatch line has")
                 }
-                if case .turing(let scale, _) = hatching.tone, !(largest / scale <= 1e9) {
-                    return refuse("Turing's pattern at a scale of \(scale), finer than a billionth of the largest "
-                                  + "face, \(largest) across")
+                // How fast the tone moves along a line, per unit of length.
+                let slope: Double
+                switch hatching.tone {
+                case .uniform, .halfLambert: slope = 0
+                case .turing(let scale, _): slope = Turing.slope / scale
                 }
                 for frame in solid.frames {
                     let across = frame.extent / hatching.spacing + 1
                     lines += across
                     readings += across * (frame.extent / hatching.step + 1)
+                    if slope > 0 { changes += across * (slope * Double(hatching.widthSteps) * frame.extent + 1) }
                 }
             default:
                 return refuse("a polyhedron draws its edges and hatching on its faces")
@@ -1402,6 +1412,10 @@ public struct PolyhedronManifest: Sendable, Equatable {
         guard readings <= Double(maxReadings) else {
             return "the hatchings would read their tones " + String(format: "%.3g", readings) + " times, more than "
                 + "the \(maxReadings) a polyhedron's hatchings read"
+        }
+        guard changes <= Double(maxWidthChanges) else {
+            return "the hatchings would change width " + String(format: "%.3g", changes) + " times, more than the "
+                + "\(maxWidthChanges) a polyhedron's hatchings change: Turing's pattern is too fine for its lines"
         }
         return nil
     }

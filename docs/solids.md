@@ -150,10 +150,14 @@ Its layers are its edges and hatching on its faces (`"faces": {"kind":
 "solid"}`). Reading it builds the solid, so loops that bound none are
 refused with the constructor's reason, and everything that drives work is
 bounded: 4096 vertices, 1024 corners to a face and 16384 in all, 64 layers,
-16 widths to a hatch line, Turing's scale at least a billionth of the
-largest face, and, reckoned from each face's extent, 65536 hatch lines and
-2²⁰ readings of the tone across all its hatchings. The CLI's flags are held
-to the same rule.
+16 widths to a hatch line, a preset's buffer of 20000 pixels, and, reckoned
+from each face's extent, 65536 hatch lines, 2²⁰ readings of the tone and
+2²⁰ changes of width across all its hatchings. A change of width is found
+by bisecting the tone between two readings and starts a stroke of its own;
+under Turing's pattern at a scale s, the tone moves at most 3.2 / s per
+unit along a line (`Turing.slope`), so a line of length ℓ in n widths
+changes about 3.2 n ℓ / s times, however often it is read. The CLI's flags
+are held to the same rule.
 
 Hatching on a landscape's walls, risers and plateaus is the same `Hatching`
 value laid on different faces (`FaceSelector`). There, lines are vertical on
