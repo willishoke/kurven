@@ -623,6 +623,12 @@ func surfaceCommand(_ args: Args) throws {
         """)
 }
 
+/// A solid's boundary as a number: its genus when it is one shell, or else
+/// how many shells and their Euler characteristic together.
+func topology(_ solid: Solid) -> String {
+    solid.genus.map { "genus \($0)" } ?? "\(solid.shellCount) shells, χ = \(solid.eulerCharacteristic)"
+}
+
 /// One of the solids `surface solid` builds, by name: a Platonic solid of
 /// circumradius `size` set down on a face, Császár's torus scaled to about
 /// that size, or a picture frame `2 size` across with a hole `hole` wide,
@@ -735,7 +741,7 @@ func solidCommand(_ args: Args) throws {
         \(kind) -> \(output.lastPathComponent)
           solid      \(solid.vertices.count) vertices, \(solid.edges.count - diagonals) edges, \
         \(solid.faces.count) faces\(diagonals > 0 ? " in \(solid.pieces.count) convex pieces" : ""), \
-        genus \(1 - solid.eulerCharacteristic / 2), \
+        \(topology(solid)), \
         \(solid.isConvex ? "convex: the sign test alone decides" : "not convex: edges are tested for occlusion")
           edges      \(drawn.count) spans drawn, \(whole) of them whole edges, \
         length \(String(format: "%.2f", drawn.totalLength))
@@ -1580,7 +1586,7 @@ func inspect(_ args: Args) throws {
         print("  function   \(m.provenance.function)  git \(m.provenance.gitSha.prefix(8))")
         print("  solid      \(solid.vertices.count) vertices, \(solid.edges.count - diagonals) edges, "
               + "\(solid.faces.count) faces in \(solid.pieces.count) convex pieces, "
-              + "genus \(1 - solid.eulerCharacteristic / 2)\(solid.isConvex ? ", convex" : "")")
+              + "\(topology(solid))\(solid.isConvex ? ", convex" : "")")
         for l in polyhedron.layers {
             print("    " + pad(l.spec.name, 12) + " " + pad(l.spec.role.rawValue, 10) + " "
                   + pad(String(l.paths.count), 7) + " paths  lw \(l.spec.width)  \(sourceName(l.spec.source))")

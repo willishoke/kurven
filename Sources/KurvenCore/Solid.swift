@@ -77,7 +77,8 @@ public struct Solid: Sendable, Equatable {
 
     /// The solid `loops` bound, or why they bound none (`SolidError`): every
     /// index names a vertex and every vertex is a finite point; a face has an
-    /// outer loop and every loop at least three vertices, no side of no
+    /// outer loop and every loop at least three vertices, every vertex lies
+    /// on a face, no side of no
     /// length, and no side that crosses another of its face or passes
     /// through a vertex of it; no two loops of a face share a vertex; every
     /// face is flat and encloses some area, and its holes run against its
@@ -152,6 +153,12 @@ public struct Solid: Sendable, Equatable {
             faceOfPiece += Array(repeating: i, count: cut.count)
             pieces += cut
             frames.append(frame)
+        }
+        // A vertex on no face is no part of the boundary, and would still
+        // stretch the solid's bounds and the tolerances measured from them.
+        let used = Set(loops.joined().joined())
+        if let k = vertices.indices.first(where: { !used.contains($0) }) {
+            throw SolidError("vertex \(k) lies on no face")
         }
         self.pieces = pieces
         self.faces = faces
@@ -259,6 +266,25 @@ public struct Solid: Sendable, Equatable {
         let F = loops.count, H = loops.reduce(0) { $0 + $1.count - 1 }
         return V - E + F - H
     }
+
+    /// How many shells the boundary has: its faces in sets that edges join.
+    /// One for a solid in one piece with no cavity; the checks accept more,
+    /// such as two cubes apart, or a cube with a cavity inside.
+    public var shellCount: Int {
+        var parent = Array(loops.indices)
+        func root(_ f: Int) -> Int {
+            var f = f
+            while parent[f] != f { parent[f] = parent[parent[f]]; f = parent[f] }
+            return f
+        }
+        for e in edges { parent[root(faceOfPiece[e.left])] = root(faceOfPiece[e.right]) }
+        return Set(loops.indices.map(root)).count
+    }
+
+    /// The genus of the boundary, `1 − χ / 2`, when it is one shell; nil
+    /// otherwise, where the Euler characteristic sums over the shells and
+    /// says nothing of any one of them.
+    public var genus: Int? { shellCount == 1 ? 1 - eulerCharacteristic / 2 : nil }
 
     /// Whether every vertex lies on or behind every face's plane.
     ///
@@ -444,6 +470,9 @@ public struct Solid: Sendable, Equatable {
         /// Twice each piece's signed area in projection; zero when seen
         /// edge-on, where it hides nothing.
         let area2: [Double]
+        /// The solid's size in view space: the farthest any vertex lies from
+        /// the centre of its bounds. The tolerances are fractions of it, so
+        /// they are the same wherever the solid stands.
         let scale: Double
         let eps: Double
         /// The direction back toward the eye, in world space.
@@ -455,12 +484,16 @@ public struct Solid: Sendable, Equatable {
             toEye = -view.projectionDirection
             let projected = solid.vertices.map { view($0) }
             self.projected = projected
-            scale = max(projected.map { simd_length($0.v) }.max() ?? 1, 1)
+            let points = projected.map(\.v)
+            let centre = 0.5 * (points.reduce(points[0], simd_min) + points.reduce(points[0], simd_max))
+            scale = points.map { simd_length($0 - centre) }.max()!
             eps = 1e-9 * scale
+            // From the centre, so a solid far from the origin is not measured
+            // in the rounding of its distance from it.
             area2 = solid.pieces.map { piece in
                 var a = 0.0
                 for k in 0..<piece.count {
-                    let p = projected[piece[k]], q = projected[piece[(k + 1) % piece.count]]
+                    let p = points[piece[k]] - centre, q = points[piece[(k + 1) % piece.count]] - centre
                     a += p.x * q.y - q.x * p.y
                 }
                 return a

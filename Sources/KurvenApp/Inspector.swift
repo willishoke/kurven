@@ -205,8 +205,11 @@ struct Inspector: View {
         let edges = solid.isDiagonal.filter { !$0 }.count
         LabeledContent("Solid", value: bundle.manifest.provenance.function)
         LabeledContent("Boundary", value: "\(solid.vertices.count) vertices, \(edges) edges, \(solid.faces.count) faces")
-        LabeledContent("Genus", value: "\(1 - solid.eulerCharacteristic / 2)"
-                       + (solid.isConvex ? ", convex" : ", not convex"))
+        if let genus = solid.genus {
+            LabeledContent("Genus", value: "\(genus)" + (solid.isConvex ? ", convex" : ", not convex"))
+        } else {
+            LabeledContent("Shells", value: "\(solid.shellCount), χ = \(solid.eulerCharacteristic)")
+        }
         if let status = document.polyhedronStatus {
             Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(3)
         }

@@ -549,6 +549,7 @@ func solidTests() {
                 saying: "cross")
         refused("a hole whose vertex lies on the outer loop's side", holed,
                 with(1, [[4, 5, 6, 7], [15, 16, 9]]), saying: "lies on side 4-5")
+        refused("a vertex on no face", corners + [P3(1e6, 1e6, 1e6)], cube, saying: "vertex 8 lies on no face")
         refused("an open surface", corners, Array(cube.dropLast()), saying: "not closed")
         refused("a face turned the other way from its neighbours", corners,
                 with(1, [[7, 6, 5, 4]]), saying: "traversed twice the same way")
@@ -558,6 +559,59 @@ func solidTests() {
         refused("two faces in one plane", split,
                 [[[0, 3, 2, 1]], [[4, 8, 9, 7]], [[8, 5, 6, 9]], [[0, 1, 5, 8, 4]], [[1, 2, 6, 5]],
                  [[2, 3, 7, 9, 6]], [[3, 0, 4, 7]]], saying: "in one plane")
+    }
+}
+
+func solidPlacementTests() {
+    Check.suite("solids: a boundary of several shells has no one genus") {
+        let cube = Solid.platonic(.cube, circumradius: 1)
+        let frame = Solid.frame(outer: 4, inner: 2, depth: 0.8)
+        let apart = Solid(vertices: cube.vertices + cube.vertices.map { P3($0.v + SIMD3(5, 0, 0)) },
+                          faces: cube.loops + cube.loops.map { $0.map { $0.map { $0 + 8 } } })
+        // A cube 4 across with a cube 2 across hollowed out of it: the inner
+        // shell's faces turned to face into the cavity.
+        let hollow = Solid(vertices: cube.vertices.map { P3(2 * $0.v) } + cube.vertices,
+                           faces: cube.loops + cube.loops.map { $0.map { $0.reversed().map { $0 + 8 } } })
+        Check.expect(cube.shellCount == 1 && cube.genus == 0 && frame.shellCount == 1 && frame.genus == 1,
+                     "a cube is one shell of genus 0, the frame one of genus 1")
+        Check.expect(apart.shellCount == 2 && apart.genus == nil && apart.eulerCharacteristic == 4,
+                     "two cubes apart are two shells, χ = 4, and no genus",
+                     "\(apart.shellCount) shells, χ = \(apart.eulerCharacteristic)")
+        Check.expect(hollow.shellCount == 2 && hollow.genus == nil && hollow.eulerCharacteristic == 4,
+                     "a cube with a cavity is two shells, χ = 4, and no genus",
+                     "\(hollow.shellCount) shells, χ = \(hollow.eulerCharacteristic)")
+    }
+
+    Check.suite("solids: a solid far from the origin draws what it draws at the origin") {
+        // The occlusion test's tolerances are fractions of the solid's own
+        // size in view, not of its distance from the origin: a frame moved a
+        // million away bakes the same edges and hatching, moved with it.
+        let frame = Solid.frame(outer: 4, inner: 2, depth: 0.8)
+        let hatching = Hatching(angle: .pi / 6, spacing: 0.035, tone: .turing(scale: 0.18, seed: 3), widthSteps: 4)
+        let camera = Camera.oblique(SurfaceRequest.projection)
+        func strokes(_ solid: Solid) -> [[SIMD3<Double>]] {
+            let edges = LayerSpec(name: "edges", role: .outline, source: .edges, width: 0.6, heightPolicy: .surface)
+            let hatch = LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching, faces: .solid),
+                                  width: 0.5, heightPolicy: .surface)
+            let scene = Scene(solid: solid, layers: [Layer(spec: edges, paths: solid.edgePaths),
+                                                     Layer(spec: hatch, paths: solid.hatchPaths(hatching))],
+                              camera: camera)
+            return scene.visibleLayers().flatMap { _, seen in
+                (0..<seen.count).map { seen[path: $0].map { camera.view.inverse(P3<ViewSpace>($0.v)).v } }
+            }
+        }
+        let near = strokes(frame)
+        for shift in [SIMD3(1e6, 0, 0), SIMD3(-3e5, 2e5, 1e5)] {
+            let far = strokes(frame.transformed(rotation: matrix_identity_double3x3, translation: shift))
+            var worst = 0.0
+            for (a, b) in zip(near, far) {
+                guard a.count == b.count else { worst = .infinity; break }
+                for (p, q) in zip(a, b) { worst = max(worst, simd_length(p + shift - q)) }
+            }
+            Check.expect(near.count > 2000 && far.count == near.count && worst < 1e-6,
+                         "moved by \(shift), the frame's \(near.count) strokes are drawn, each moved with it",
+                         "\(far.count) strokes, the farthest \(worst) off")
+        }
     }
 }
 
