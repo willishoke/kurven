@@ -136,6 +136,25 @@ U(r, s) = ±1. The signs come from a hash of the lattice point and a seed,
 so the pattern is defined on the whole plane with no array behind it. It is
 not a simulation of reaction and diffusion.
 
+## In a bundle
+
+`surface solid --save PATH` writes the solid as a `.kurven` bundle: a
+manifest holding its vertices and its faces' loops, exactly what
+`Solid(vertices:faces:)` takes, with its layers and the camera it was
+drawn from (`PolyhedronManifest`, `PolyhedronBundle`). The geometry is
+stored rather than the kind that built it, since it is the solid's exact
+boundary representation, it is small, and it holds solids no kind builds.
+`bake` draws the bundle as `surface solid` draws the solid, byte for byte.
+
+Its layers are its edges and hatching on its faces (`"faces": {"kind":
+"solid"}`). Reading it builds the solid, so loops that bound none are
+refused with the constructor's reason, and everything that drives work is
+bounded: 4096 vertices, 1024 corners to a face and 16384 in all, 64 layers,
+16 widths to a hatch line, Turing's scale at least a billionth of the
+largest face, and, reckoned from each face's extent, 65536 hatch lines and
+2²⁰ readings of the tone across all its hatchings. The CLI's flags are held
+to the same rule.
+
 Hatching on a landscape's walls, risers and plateaus is the same `Hatching`
 value laid on different faces (`FaceSelector`). There, lines are vertical on
 a wall or a riser and along an axis on a plateau, and a manifest that asks for a tone

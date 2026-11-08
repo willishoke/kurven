@@ -99,7 +99,10 @@ builds the surface (`SurfaceRequest`), since the map is code, and the
 layers drawn on its one face, contours of its coordinates, its height, and
 |f| and arg f where it carries a function (`SurfaceManifest`). Reading it
 builds the drawing `kurven-cli surface` builds from the same request, then
-draws the layers it kept (`SurfaceBundle`). A polyhedron is not stored yet.
+draws the layers it kept (`SurfaceBundle`). A polyhedron's is its manifest
+alone too, but holds its geometry: the vertices and loops
+`Solid(vertices:faces:)` takes, and its edges and hatching
+(`PolyhedronManifest`, `PolyhedronBundle`).
 
 Bundle arrays are in world order, `x = real`, `y = imag`, `z = |f|`. The
 convention is written into the manifest, because forgetting it was the most

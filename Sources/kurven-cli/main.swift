@@ -124,8 +124,9 @@ usage: kurven-cli <command> [options]
   bake <bundle> [--preset NAME] [--resolution N] [--tiles N] [--depth-tolerance T]
        [--outline W] [--dump PREFIX] -o out.svg
         Render a bundle's drawing to SVG through the depth-tested hidden-line
-        pipeline: a landscape's, or a parametric surface's, built from the
-        request it keeps. Defaults to the bundle's first preset and that preset's own
+        pipeline: a landscape's, a parametric surface's, built from the
+        request it keeps, or a polyhedron's, built from its vertices and
+        loops. Defaults to the bundle's first preset and that preset's own
         depth resolution and depth tolerance -- the settings the published drawing
         was made with. --outline traces the outline of the drawn region off
         the depth buffer and adds it as a stroke of that width. --dump also
@@ -179,7 +180,7 @@ usage: kurven-cli <command> [options]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N] [--color C]
           [--hatching uniform|turing|half-lambert [--angle DEG] [--spacing S] [--step S]
           [--width-steps N] [--seed N] [--scale S] [--hatch-width W]
-          [--hatch-color C]] -o out.svg
+          [--hatch-color C]] [--save PATH] -o out.svg
         Bake a polyhedron to SVG, its edges drawn. K is one of tetrahedron,
         cube, octahedron, dodecahedron, icosahedron -- built from their vertex
         coordinates by a convex hull, set down on a face -- csaszar, the
@@ -198,7 +199,10 @@ usage: kurven-cli <command> [options]
         up to --hatch-width. --step is how often the tone is read along a
         line (the spacing by default).
         --color is the edges' stroke colour and --hatch-color the
-        hatching's (any SVG colour; black by default).
+        hatching's (any SVG colour; black by default). --save writes the
+        solid as a .kurven bundle of its vertices and loops, with its layers
+        and this camera, which bake draws again byte for byte; -o may then
+        be left out.
 
   surface-costs [--repeat N] [--only torus|sn|forced]
         Time what each of the window's surface controls costs: the drawing
@@ -319,11 +323,24 @@ func readSurfaceBundle(_ url: URL) throws -> SurfaceBundle? {
     try SurfaceBundle.holdsSurface(at: url) ? SurfaceBundle.read(at: url) : nil
 }
 
-/// The scene a bundle of either kind describes, under `--preset` or its first
-/// preset: a landscape's (`loadScene`), or a parametric surface's, built from
-/// its request.
+/// A polyhedron's bundle, its solid built from its vertices and loops, when
+/// that is what `url` holds; nil for any other.
+func readPolyhedronBundle(_ url: URL) throws -> PolyhedronBundle? {
+    try PolyhedronBundle.holdsPolyhedron(at: url) ? PolyhedronBundle.read(at: url) : nil
+}
+
+/// The scene a bundle of any kind describes, under `--preset` or its first
+/// preset: a landscape's (`loadScene`), a parametric surface's, built from
+/// its request, or a polyhedron's, built from its vertices and loops.
 func loadDrawing(_ args: Args) throws -> (url: URL, provenance: Provenance, preset: CameraPreset, scene: Scene) {
     guard let path = args.positional.dropFirst().first else { throw CLIError("which bundle?") }
+    if let polyhedron = try readPolyhedronBundle(URL(fileURLWithPath: path)) {
+        let presets = polyhedron.manifest.presets
+        guard let preset = try args.flags["preset"].map(polyhedron.manifest.preset) ?? presets.first else {
+            throw CLIError("bundle has no presets; pass --preset once one exists")
+        }
+        return (polyhedron.url, polyhedron.manifest.provenance, preset, polyhedron.scene(preset: preset))
+    }
     guard let surface = try readSurfaceBundle(URL(fileURLWithPath: path)) else {
         let (bundle, preset, scene) = try loadScene(args)
         return (bundle.url, bundle.manifest.provenance, preset, scene)
@@ -598,45 +615,50 @@ func surfaceCommand(_ args: Args) throws {
         """)
 }
 
-/// `surface solid`: a polyhedron, baked straight to SVG. No bundle: a
-/// solid is a table and a rule, and the rule is exact.
-func solidCommand(_ args: Args) throws {
-    try args.only("surface solid", Args.projection
-                  + ["kind", "size", "hole", "depth", "width", "color", "resolution", "tiles", "output",
-                     "hatching", "angle", "spacing", "step", "width-steps", "seed", "scale",
-                     "hatch-width", "hatch-color"])
-    let kind = args.flags["kind"] ?? "dodecahedron"
-    let size = try args.positive("size") ?? 2
-    let width = try args.double("width") ?? 0.6
-    let solid: Solid
+/// One of the solids `surface solid` builds, by name: a Platonic solid of
+/// circumradius `size` set down on a face, Császár's torus scaled to about
+/// that size, or a picture frame `2 size` across with a hole `hole` wide,
+/// `depth` thick.
+func namedSolid(_ kind: String, size: Double, hole: Double? = nil, depth: Double? = nil) throws -> Solid {
     if kind == "csaszar" {
         // Császár's own coordinates stand on the table already; scaled so
         // its base is about the size of the others.
         let c = Solid.csaszar
         let r = c.vertices.map { simd_length(SIMD2($0.x, $0.y)) }.max() ?? 1
-        solid = c.transformed(rotation: matrix_identity_double3x3 * (size / r))
+        return c.transformed(rotation: matrix_identity_double3x3 * (size / r))
     } else if kind == "frame" {
-        let hole = try args.positive("hole") ?? size
+        let hole = hole ?? size
         guard hole < 2 * size else {
             throw CLIError("--hole wants less than the frame's width, 2 × --size = \(2 * size), got \(hole)")
         }
-        solid = Solid.frame(outer: 2 * size, inner: hole, depth: try args.positive("depth") ?? size / 2)
+        return Solid.frame(outer: 2 * size, inner: hole, depth: depth ?? size / 2)
     } else if let platonic = Solid.Platonic(rawValue: kind) {
-        solid = Solid.platonic(platonic, circumradius: size).resting(onFace: 0)
-    } else {
-        throw CLIError("unknown solid '\(kind)'; the table has: "
-                       + Solid.Platonic.allCases.map(\.rawValue).joined(separator: ", ")
-                       + ", csaszar, frame")
+        return Solid.platonic(platonic, circumradius: size).resting(onFace: 0)
     }
+    throw CLIError("unknown solid '\(kind)'; the table has: "
+                   + Solid.Platonic.allCases.map(\.rawValue).joined(separator: ", ")
+                   + ", csaszar, frame")
+}
+
+/// `surface solid`: a polyhedron, baked straight to SVG, or with `--save`
+/// kept as a bundle of its vertices and loops, which `bake` draws again byte
+/// for byte.
+func solidCommand(_ args: Args) throws {
+    try args.only("surface solid", Args.projection
+                  + ["kind", "size", "hole", "depth", "width", "color", "resolution", "tiles", "output",
+                     "hatching", "angle", "spacing", "step", "width-steps", "seed", "scale",
+                     "hatch-width", "hatch-color", "save"])
+    let kind = args.flags["kind"] ?? "dodecahedron"
+    let size = try args.positive("size") ?? 2
+    let width = try args.double("width") ?? 0.6
+    let solid = try namedSolid(kind, size: size, hole: try args.positive("hole"), depth: try args.positive("depth"))
     var projection = SurfaceRequest.projection
     projection.shear = try args.double("shear") ?? projection.shear
     projection.xAngle = try args.double("x-angle") ?? projection.xAngle
     projection.zAngle = try args.double("z-angle") ?? projection.zAngle
     let camera = Camera.oblique(projection)
-    var layers = [Layer(spec: LayerSpec(name: "edges", role: .outline, source: .edges,
-                                        width: width, heightPolicy: .surface,
-                                        color: args.flags["color"] ?? "#000000"),
-                        paths: solid.edgePaths)]
+    var specs = [LayerSpec(name: "edges", role: .outline, source: .edges, width: width, heightPolicy: .surface,
+                           color: args.flags["color"] ?? "#000000")]
     if let kind = args.flags["hatching"] {
         let tone: Tone
         switch kind {
@@ -654,15 +676,31 @@ func solidCommand(_ args: Args) throws {
             throw CLIError("--step wants at least a millionth of --spacing, got \(step)")
         }
         let widthSteps = try args.int("width-steps", 1)
-        guard widthSteps >= 1 else { throw CLIError("--width-steps wants 1 or more, got \(widthSteps)") }
+        guard (1...PolyhedronManifest.maxWidthSteps).contains(widthSteps) else {
+            throw CLIError("--width-steps wants 1 to \(PolyhedronManifest.maxWidthSteps), got \(widthSteps)")
+        }
         let hatching = Hatching(angle: (try args.double("angle") ?? 45) * .pi / 180, spacing: spacing,
                                 step: step, tone: tone, widthSteps: widthSteps)
-        layers.append(Layer(spec: LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching, faces: .solid),
-                                            width: try args.double("hatch-width") ?? width / 2,
-                                            heightPolicy: .surface,
-                                            color: args.flags["hatch-color"] ?? args.flags["color"] ?? "#000000"),
-                            paths: solid.hatchPaths(hatching)))
+        specs.append(LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching, faces: .solid),
+                               width: try args.double("hatch-width") ?? width / 2, heightPolicy: .surface,
+                               color: args.flags["hatch-color"] ?? args.flags["color"] ?? "#000000"))
     }
+    // Refused by the rule a polyhedron's manifest is read by: a width, an
+    // angle, Turing's scale, and what the hatching would lay.
+    if let why = PolyhedronManifest.unsupported(specs, on: solid) { throw CLIError(why) }
+    // `--save PATH`: the bundle that keeps this solid, its layers, and the
+    // camera and resolution it is baked at.
+    let bundle = PolyhedronBundle(
+        url: URL(fileURLWithPath: args.flags["save"] ?? "/native/\(kind).kurven"), solid: solid, layers: specs,
+        presets: [CameraPreset(name: SurfaceRequest.preset.name, projection: projection, depthTolerance: 0,
+                               buffer: try args.int("resolution", 3000))],
+        function: kind)
+    if args.flags["save"] != nil {
+        try bundle.write(to: bundle.url)
+        print("\(kind) -> \(bundle.url.lastPathComponent)")
+        if args.flags["output"] == nil { return }
+    }
+    let layers = bundle.layers
     let scene = Scene(solid: solid, layers: layers, camera: camera)
     let output = URL(fileURLWithPath: try args.string("output"))
     let options = BakeOptions(resolution: try args.int("resolution", 3000),
@@ -1527,6 +1565,24 @@ func sourceName(_ source: LayerSource) -> String {
 
 func inspect(_ args: Args) throws {
     try args.only("inspect", Args.scene)
+    if let polyhedron = try args.positional.dropFirst().first.flatMap({ try readPolyhedronBundle(URL(fileURLWithPath: $0)) }) {
+        let m = polyhedron.manifest, solid = polyhedron.solid
+        let diagonals = solid.isDiagonal.filter { $0 }.count
+        print("\(polyhedron.url.lastPathComponent)  schema \(m.schema)  a polyhedron")
+        print("  function   \(m.provenance.function)  git \(m.provenance.gitSha.prefix(8))")
+        print("  solid      \(solid.vertices.count) vertices, \(solid.edges.count - diagonals) edges, "
+              + "\(solid.faces.count) faces in \(solid.pieces.count) convex pieces, "
+              + "genus \(1 - solid.eulerCharacteristic / 2)\(solid.isConvex ? ", convex" : "")")
+        for l in polyhedron.layers {
+            print("    " + pad(l.spec.name, 12) + " " + pad(l.spec.role.rawValue, 10) + " "
+                  + pad(String(l.paths.count), 7) + " paths  lw \(l.spec.width)  \(sourceName(l.spec.source))")
+        }
+        for p in m.presets {
+            print("  preset     \(pad(p.name, 10)) shear \(p.projection.shear)  "
+                  + "x \(p.projection.xAngle)  z \(p.projection.zAngle)  buffer \(p.buffer)")
+        }
+        return
+    }
     if let surface = try args.positional.dropFirst().first.flatMap({ try readSurfaceBundle(URL(fileURLWithPath: $0)) }) {
         let m = surface.manifest
         print("\(surface.url.lastPathComponent)  schema \(m.schema)  a parametric surface")

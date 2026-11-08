@@ -18,10 +18,11 @@ import KurvenMath
 ///
 /// The sets, and what each pins:
 ///
-///     contract/  ten tiny bundles, five landscapes and a parametric surface
-///                of each shape, that between them use every arm of every sum
-///                type in the schema; `kurven-cli contract` and kurven-test
-///                round trip their manifests.
+///     contract/  seventeen tiny bundles, five landscapes, a parametric
+///                surface of each shape and a polyhedron of each kind, that
+///                between them use every arm of every sum type in the schema;
+///                `kurven-cli contract` and kurven-test round trip their
+///                manifests.
 ///     camera/    world points and their projections under each drawing preset.
 ///     clip/      the visible runs `HiddenLine.clip` cuts from view-space
 ///                polylines against a depth buffer.
@@ -366,6 +367,44 @@ enum GoldenFixtures {
                                                       faces: .surface),
                                      width: 0.6, heightPolicy: .surface),
                            folds])
+
+        // (11)-(17) a polyhedron of each kind `surface solid` builds, stored
+        //     as its vertices and loops, its edges drawn and its faces
+        //     hatched in each tone: uniform, at its own step and crossed;
+        //     Turing's pattern in one width and in four; half-Lambert in one
+        //     and in four. The frame's front and back have a hole each.
+        func polyhedron(_ kind: String, _ layers: [LayerSpec], hole: Double? = nil, depth: Double? = nil) throws {
+            let url = dir.appendingPathComponent("polyhedron_\(kind).kurven")
+            try directory(url)
+            let solid = try namedSolid(kind, size: 2, hole: hole, depth: depth)
+            try text(PolyhedronManifest(solid: solid, layers: layers, presets: [SurfaceRequest.preset],
+                                        provenance: Provenance(function: kind, example: "polyhedron", params: [:],
+                                                               cpuCount: 1, gitSha: gitSha)).canonicalJSON,
+                     to: url.appendingPathComponent("manifest.json"))
+        }
+        let edges = LayerSpec(name: "edges", role: .outline, source: .edges, width: 0.6, heightPolicy: .surface)
+        func hatching(_ name: String, _ hatching: Hatching, width: Double = 0.3) -> LayerSpec {
+            LayerSpec(name: name, role: .scaffold, source: .hatching(hatching, faces: .solid), width: width,
+                      heightPolicy: .surface)
+        }
+        let light = SIMD3(-0.4, -0.6, 0.7)
+        try polyhedron("tetrahedron", [edges])
+        try polyhedron("cube", [edges, hatching("hatching", Hatching(angle: .pi / 4, spacing: 0.08))])
+        try polyhedron("octahedron", [edges, hatching("hatching", Hatching(angle: 0, spacing: 0.1, step: 0.05)),
+                                      hatching("crossed", Hatching(angle: .pi / 2, spacing: 0.1), width: 0.2)])
+        try polyhedron("dodecahedron", [edges, hatching("hatching", Hatching(angle: .pi / 4, spacing: 0.08,
+                                                                            tone: .halfLambert(light: light)))])
+        try polyhedron("icosahedron", [edges, hatching("hatching", Hatching(angle: .pi / 4, spacing: 0.08,
+                                                                           tone: .halfLambert(light: light),
+                                                                           widthSteps: 4))])
+        try polyhedron("csaszar", [LayerSpec(name: "edges", role: .outline, source: .edges, width: 0.6,
+                                             heightPolicy: .surface, color: "#203040", clipped: false),
+                                   hatching("hatching", Hatching(angle: .pi / 6, spacing: 0.1,
+                                                                 tone: .turing(scale: 0.5, seed: 1)))])
+        try polyhedron("frame", [edges, hatching("hatching", Hatching(angle: .pi / 6, spacing: 0.035,
+                                                                     tone: .turing(scale: 0.18, seed: 3),
+                                                                     widthSteps: 4), width: 0.5)],
+                       hole: 2, depth: 0.8)
     }
 
     // MARK: camera

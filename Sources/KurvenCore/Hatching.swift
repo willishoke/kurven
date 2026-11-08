@@ -170,8 +170,9 @@ public enum FaceSelector: Sendable, Equatable {
     /// A parametric surface's one face. A parametric surface's manifest
     /// names it (`SurfaceManifest`); a landscape's refuses it (`LayerSource`).
     case surface
-    /// Every face of a solid, at any angle. A scene can carry it; a
-    /// manifest refuses it.
+    /// Every face of a solid, at any angle. A polyhedron's manifest names
+    /// it (`PolyhedronManifest`); a landscape's and a parametric surface's
+    /// refuse it.
     case solid
 
     /// The angle of hatching on a wall or a riser, in its coordinates: vertical.
@@ -209,7 +210,8 @@ public enum FaceSelector: Sendable, Equatable {
         let landscape: String
         switch self {
         case .solid:
-            return nil
+            return hatching.angle.isFinite ? nil : "hatching on a solid's faces at an angle that is not a number: "
+                + "\(hatching.angle)"
         case .graph, .surface:
             return "hatching on a curved face: it is laid on plateaus, walls, risers or a solid's faces"
         case .walls, .risers:
