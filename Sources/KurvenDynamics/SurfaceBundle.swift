@@ -58,6 +58,10 @@ public struct SurfaceBundle: Sendable {
             throw BundleError.missingFile("manifest.json", in: url.lastPathComponent)
         }
         let manifest = try SurfaceManifest(json: JSONValue.parse(Data(contentsOf: file)))
+        guard !manifest.presets.isEmpty else {
+            throw ManifestError.unsupported("a parametric surface with no camera preset: it has no view to open at "
+                                            + "or to bake from")
+        }
         let drawing = try SurfaceDrawing.build(manifest.surface).restyled(manifest.layers)
         return SurfaceBundle(url: url, manifest: manifest, drawing: drawing)
     }
@@ -70,14 +74,6 @@ public struct SurfaceBundle: Sendable {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         try manifest.canonicalJSON.write(to: url.appendingPathComponent("manifest.json"),
                                          atomically: true, encoding: .utf8)
-    }
-
-    /// The same bundle drawn with other layers: a restyle, which keeps the
-    /// surface (`SurfaceDrawing.restyled(_:)`).
-    public func restyled(_ layers: [LayerSpec]) throws -> SurfaceBundle {
-        var manifest = self.manifest
-        manifest.layers = layers
-        return SurfaceBundle(url: url, manifest: manifest, drawing: try drawing.restyled(layers))
     }
 
     /// The scene the bundle describes under one of its presets.

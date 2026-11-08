@@ -241,6 +241,18 @@ public extension KurvenBundle {
         if case .contour(_, let levels, _, _) = spec.source { return levels }
         return nil
     }
+
+    /// A contour's levels resampled to `count`, evenly over its own range, as
+    /// a level slider sets them: never fewer than two, so a family saved at
+    /// them keeps its range to be resampled again. Nil for a layer with fewer
+    /// than two levels, which has no range.
+    static func levels(of spec: LayerSpec, count: Int) -> [Double]? {
+        guard let base = levels(of: spec), base.count >= 2, let lo = base.min(), let hi = base.max() else {
+            return nil
+        }
+        let n = max(count, 2)
+        return (0..<n).map { lo + (hi - lo) * Double($0) / Double(n - 1) }
+    }
 }
 
 public extension KurvenBundle {

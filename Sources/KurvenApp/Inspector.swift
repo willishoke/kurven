@@ -123,7 +123,7 @@ struct Inspector: View {
                                           draft: draggingLevels == index) })
         HStack(spacing: 6) {
             Text("levels").font(.caption).foregroundStyle(.secondary)
-            Slider(value: count, in: 1...80, step: 1, onEditingChanged: { editing in
+            Slider(value: count, in: 2...80, step: 1, onEditingChanged: { editing in
                 draggingLevels = editing ? index : nil
                 if !editing { document.rebuildCurves() }
             })

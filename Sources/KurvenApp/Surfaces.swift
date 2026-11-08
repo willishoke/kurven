@@ -54,6 +54,9 @@ extension Document {
         // torus, its values on the grid, the trajectory's run, the
         // contours -- goes with the request.
         let previous = framing ? nil : surfaceDrawing
+        // The layers the bundle keeps -- its levels, a contour the request
+        // does not draw -- survive the edit (`SurfaceDrawing.keeping(_:)`).
+        let kept = framing ? nil : surfaceBundle?.manifest.layers
         building = true
         surfaceStatus = (previous?.refits(for: request) ?? true)
             && { if case .forced = request.shape { true } else { false } }()
@@ -64,7 +67,8 @@ extension Document {
             let started = clock.now
             do {
                 let built = try await Task.detached(priority: .userInitiated) {
-                    try SurfaceDrawing.build(request, reusing: previous, draft: draft)
+                    let built = try SurfaceDrawing.build(request, reusing: previous, draft: draft)
+                    return try kept.map(built.keeping) ?? built
                 }.value
                 // A landscape or another surface chosen meanwhile is the
                 // document now.

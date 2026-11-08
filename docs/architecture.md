@@ -343,7 +343,7 @@ a hatching. Dragging a window slider samples at a draft resolution and at
 the full one when you let go; dragging the truncation height does not
 sample at all (see *[Two speeds of edit](landscapes.md#two-speeds-of-edit)*).
 A surface's section edits its request, as the landscape's edits a
-landscape's. ⌘S writes what is on screen as a `.kurven` bundle, a landscape
+landscape's, and the layers its bundle kept stay through the edit. ⌘S writes what is on screen as a `.kurven` bundle, a landscape
 or a surface, each contour family at the levels its slider shows.
 
 Navigation is a pure function: input handling produces `Gesture` values and

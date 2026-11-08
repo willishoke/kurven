@@ -54,7 +54,7 @@ enum Fixtures {
 func contractTests() {
     Check.suite("contract: every fixture manifest round trips byte for byte") {
         let bundles = Fixtures.contractBundles
-        Check.expect(bundles.count == 6, "six fixture bundles are present",
+        Check.expect(bundles.count == 10, "ten fixture bundles are present",
                      "found \(bundles.count)")
         for b in bundles {
             let text = try String(contentsOf: b.appendingPathComponent("manifest.json"),

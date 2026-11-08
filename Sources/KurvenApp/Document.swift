@@ -72,8 +72,10 @@ final class Document {
     var depthTolerance: Double = 0.02
 
     /// Per-layer level-count overrides, for the layers a bundle *described*
-    /// rather than dumped. Absent means the bundle's own levels.
-    var levelCounts: [Int: Int] = [:]
+    /// rather than dumped, by the layer's name: a surface's request edit
+    /// can change the list of layers, and a count stays on its family.
+    /// Absent means the bundle's own levels.
+    var levelCounts: [String: Int] = [:]
 
     // MARK: - the landscape, when the document is one
     //
@@ -212,6 +214,9 @@ final class Document {
         scene = nil
         navigator = nil
         generation += 1
+        // An edit queued for whatever was open is not an edit of this.
+        wanted = nil
+        surfaceWanted = nil
         // Reading is megabytes of npy; it does not belong on the main actor
         // even though it is fast, because a stalled window during an open is
         // the difference between an app and a script with a window.
@@ -380,14 +385,12 @@ final class Document {
     /// blunt instrument -- recip's magnitude levels are not an arithmetic
     /// sequence -- but it is the honest one for a slider: it says "more or
     /// fewer contours over the same range" and nothing about which particular
-    /// values were interesting.
+    /// values were interesting (`KurvenBundle.levels(of:count:)`).
     func levels(forLayer index: Int) -> [Double]? {
         guard let spec = layerSpecs[safe: index], let base = KurvenBundle.levels(of: spec),
               base.count >= 2 else { return nil }
-        guard let n = levelCounts[index], n != base.count else { return base }
-        let lo = base.min()!, hi = base.max()!
-        guard n >= 2 else { return [(lo + hi) / 2] }
-        return (0..<n).map { lo + (hi - lo) * Double($0) / Double(n - 1) }
+        guard let n = levelCounts[spec.name], n != base.count else { return base }
+        return KurvenBundle.levels(of: spec, count: n)
     }
 
     func isDerived(layer index: Int) -> Bool {
@@ -463,12 +466,14 @@ final class Document {
     }
 
     func setLevelCount(_ n: Int, forLayer index: Int, draft: Bool = false) {
-        levelCounts[index] = max(n, 1)
+        guard let name = layerSpecs[safe: index]?.name else { return }
+        levelCounts[name] = max(n, 2)
         rebuildCurves(draft: draft)
     }
 
     func resetLevels(forLayer index: Int) {
-        levelCounts.removeValue(forKey: index)
+        guard let name = layerSpecs[safe: index]?.name else { return }
+        levelCounts.removeValue(forKey: name)
         rebuildCurves()
     }
 

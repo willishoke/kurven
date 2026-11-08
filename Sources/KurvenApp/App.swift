@@ -175,9 +175,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // same Scene value, the same BakeOptions -- and exits, so "the app bakes
         // what the CLI bakes" can be checked by comparing two files rather than
         // by reading two code paths and believing they agree. `--save PATH`
-        // writes the bundle as ⌘S does. Before either, a surface's request is
-        // edited by `--set FIELD=VALUE` as its controls edit it, and a
-        // layer's levels by `--levels LAYER=COUNT` as its slider sets them.
+        // writes the bundle as ⌘S does. Before either, a layer's levels are
+        // set by `--levels LAYER=COUNT` as its slider sets them, and then a
+        // surface's request edited by `--set FIELD=VALUE` as its controls
+        // edit it.
         if path("--bake") != nil || path("--save") != nil, let bundlePath {
             let resolution = args.firstIndex(of: "--resolution")
                 .flatMap { $0 + 1 < args.endIndex ? Int(args[$0 + 1]) : nil }
@@ -463,7 +464,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             FileHandle.standardError.write(Data("Kurven: could not open \(bundle.path) — \(why)\n".utf8))
             exit(1)
         }
-        await headlessEdit(edits)
         for (name, count) in levels {
             guard let index = document.layers.firstIndex(where: { $0.spec.name == name }),
                   document.isDerived(layer: index) else {
@@ -473,6 +473,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             document.setLevelCount(Int(count), forLayer: index)
             while document.drawing { try? await Task.sleep(for: .milliseconds(20)) }
         }
+        await headlessEdit(edits)
+        while document.drawing { try? await Task.sleep(for: .milliseconds(20)) }
         print("Kurven: \(document.title) — \(document.layers.count) layers, "
               + "\(document.layers.reduce(0) { $0 + $1.paths.count }) paths")
         if let save { headlessSave(to: save) }
