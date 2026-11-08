@@ -658,6 +658,53 @@ public struct Solid: Sendable, Equatable {
         return out
     }
 
+    /// Curves stored on the solid's surface, along its edges or across its
+    /// faces, cut to the spans that can be seen: a segment is seen where a
+    /// face whose plane holds both its ends faces the eye, and no piece of
+    /// another face stands in front of it. A picked face's boundary is
+    /// tested so (`SceneGeometry.boundary(of:faces:)`). A segment in no
+    /// face's plane is tested against every piece.
+    public func visibleCurves(onSurface paths: [[P3<WorldSpace>]], occlusion: Occlusion) -> [[P3<WorldSpace>]] {
+        var out: [[P3<WorldSpace>]] = []
+        for path in paths {
+            var run: [P3<WorldSpace>] = []
+            var openAtEnd = false
+            for (wa, wb) in zip(path, path.dropFirst()) {
+                let holding = frames.indices.filter { f in
+                    let frame = frames[f], tolerance = 10 * frame.flatnessTolerance
+                    return abs(simd_dot(wa.v - frame.origin, frame.normal)) <= tolerance
+                        && abs(simd_dot(wb.v - frame.origin, frame.normal)) <= tolerance
+                }
+                let facing = holding.isEmpty || holding.contains { f in
+                    simd_dot(normals[faces[f][0]], occlusion.toEye) > 0 && !faces[f].allSatisfy(occlusion.isEdgeOn)
+                }
+                let members = Set(holding.flatMap { faces[$0] })
+                let continuing = openAtEnd
+                openAtEnd = false
+                if facing {
+                    let pa = occlusion.view(wa), pb = occlusion.view(wb)
+                    for (a, b) in occlusion.visible(from: pa, to: pb, excluding: { members.contains($0) })
+                        where b - a > 1e-12 {
+                        let start = Solid.along(wa.v, wb.v, a), end = Solid.along(wa.v, wb.v, b)
+                        if continuing, a == 0, !run.isEmpty {
+                            run.append(end)
+                        } else {
+                            if run.count >= 2 { out.append(run) }
+                            run = [start, end]
+                        }
+                        openAtEnd = b == 1
+                    }
+                }
+                if !openAtEnd {
+                    if run.count >= 2 { out.append(run) }
+                    run = []
+                }
+            }
+            if run.count >= 2 { out.append(run) }
+        }
+        return out
+    }
+
     /// The point `t` of the way from `a` to `b`: the ends themselves at 0
     /// and 1, to the bit, so a segment seen whole is the segment it was.
     static func along(_ a: SIMD3<Double>, _ b: SIMD3<Double>, _ t: Double) -> P3<WorldSpace> {

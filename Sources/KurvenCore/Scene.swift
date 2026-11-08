@@ -1467,6 +1467,11 @@ public struct Scene: Sendable {
                     return (Layer(spec: spec, paths: all), drawn.mapped(view))
                 }
             }
+            if case .file = layer.spec.source, layer.spec.clipped {
+                let paths = (0..<layer.paths.count).map { Array(layer.paths[path: $0]) }
+                let seen = s.visibleCurves(onSurface: paths, occlusion: s.occlusion(view: view))
+                return [(layer, PolylineSet(paths: seen).mapped(view))]
+            }
             return [(layer, layer.paths.mapped(view))]
         }
     }

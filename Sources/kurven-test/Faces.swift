@@ -551,6 +551,12 @@ private func tiling(_ l: Landscape) -> Tally {
 /// fixtures, the hatch fixture under its truncations, banded on notched
 /// footprints, with a band boundary on its far edge, in four reflected tiles,
 /// and Γ banded on f.
+/// The faces suite's landscapes, each as a heightfield with its faces: what
+/// the pick suite samples (`pickTests`).
+func faceSuiteLandscapes() throws -> [(name: String, heightfield: Heightfield, faces: [Face])] {
+    try faceLandscapes().map { ($0.name, $0.heightfield, $0.faces) }
+}
+
 private func faceLandscapes() throws -> [Landscape] {
     var landscapes: [Landscape] = []
     // The contract fixtures: two tiles, the second a reflection; mesh

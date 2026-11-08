@@ -87,6 +87,16 @@ public struct Face: Sendable {
     /// replicated.
     public let copies: [Copy]
     private let loops: Computed<[[P2<ParamSpace>]]>?
+    /// Where a point of space stands on the face, before a copy moves it: a
+    /// point of the parameter plane. A flat face's is the point's orthogonal
+    /// projection onto its plane; the graph's and a plateau's the point of the
+    /// domain under it; a parametric surface's the nearest point, by Newton's
+    /// method (`ParametricSurface.nearestParameter(to:)`). What a pick reads
+    /// a face's distance off (`Face.pick(_:among:within:tie:)`).
+    public let foot: @Sendable (SIMD3<Double>) -> P2<ParamSpace>
+    /// A copy's boundary, given its tile: the curves of the parameter plane
+    /// its trimmed domain ends on (`boundary(of:)`).
+    let bounding: @Sendable (Affine2) -> [[P2<ParamSpace>]]
 
     /// The closed curves in the parameter plane that bound the face's trimmed
     /// domain even-odd, before a copy is cut to the footprint, each ending
@@ -176,9 +186,11 @@ public struct Face: Sendable {
     public init(id: FaceID, domain: (u: ParamAxis, v: ParamAxis),
                 contains: @escaping @Sendable (P2<ParamSpace>) -> Bool,
                 trimLoops: (@Sendable () -> [[P2<ParamSpace>]])? = nil,
-                map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet, outward: Double?) {
+                map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet, outward: Double?,
+                foot: @escaping @Sendable (SIMD3<Double>) -> P2<ParamSpace>,
+                bounding: @escaping @Sendable (Affine2) -> [[P2<ParamSpace>]]) {
         self.init(id: id, domain: domain, map: map, outward: outward, tiles: [.identity],
-                  trimLoops: trimLoops) { p, _ in contains(p) }
+                  trimLoops: trimLoops, foot: foot, bounding: bounding) { p, _ in contains(p) }
     }
 
     /// A face copied by `tiles`: each copy faces as `outward` says, turned by
@@ -191,9 +203,12 @@ public struct Face: Sendable {
                 tiles: [Affine2], trimLoops: (@Sendable () -> [[P2<ParamSpace>]])? = nil,
                 footprint: (@Sendable (Affine2) -> (perimeter: [[P2<ParamSpace>]],
                                                      contains: @Sendable (P2<ParamSpace>) -> Bool)?)? = nil,
+                foot: @escaping @Sendable (SIMD3<Double>) -> P2<ParamSpace>,
+                bounding: @escaping @Sendable (Affine2) -> [[P2<ParamSpace>]],
                 contains: @escaping @Sendable (P2<ParamSpace>, Affine2) -> Bool) {
         let loops = trimLoops.map(Computed.init)
         self.id = id; self.domain = domain; self.map = map; self.loops = loops
+        self.foot = foot; self.bounding = bounding
         copies = tiles.map { tile in
             let turn: Double = tile.a * tile.d - tile.b * tile.c < 0 ? -1 : 1
             return Copy(tile: tile, outward: outward.map { $0 * turn }, contains: { contains($0, tile) },
@@ -280,8 +295,10 @@ public extension ParametricSurface {
     /// an axis is periodic.
     var face: Face {
         let (u, v) = (self.u, self.v)
+        let surface = self
         return Face(id: .surface, domain: (u, v), contains: { u.covers($0.x) && v.covers($0.y) },
-                    map: map, outward: outward)
+                    map: map, outward: outward, foot: { surface.nearestParameter(to: $0) },
+                    bounding: { _ in surface.seams })
     }
 }
 
@@ -323,7 +340,9 @@ public extension Solid {
             },
             trimLoops: { loops.map { ($0 + [$0[0]]).map { P2($0) } } },
             map: { p in SurfaceJet(position: frame.point(p.v), du: u, dv: v) },
-            outward: 1)
+            outward: 1,
+            foot: { P2(frame.coordinates($0)) },
+            bounding: { _ in loops.map { ($0 + [$0[0]]).map { P2($0) } } })
     }
 }
 
@@ -390,6 +409,7 @@ public extension Surface {
         guard let rectangle = parameterRectangle else { return nil }
         let magnitude = faceMagnitude(refine)
         let surface = self
+        let loops = graphLoops(refine: refine)
         return Face(
             id: .graph, domain: rectangle,
             map: { p in
@@ -398,10 +418,10 @@ public extension Surface {
                                   du: SIMD3(1, 0, -n.x), dv: SIMD3(0, 1, -n.y))
             },
             outward: 1, tiles: tiles,
-            trimLoops: {
-                surface.graphTrimLoops(refine: refine).loops.map { $0.map { P2<ParamSpace>($0.v) } }
-            },
+            trimLoops: { loops.value },
             footprint: { tile in Surface.footprint(region, on: tile) },
+            foot: { P2($0.x, $0.y) },
+            bounding: { tile in surface.topBoundary(.graph, loops: loops.value, region: region, tile: tile) },
             contains: { p, tile in
                 rectangle.u.covers(p.x) && rectangle.v.covers(p.y)
                     && region.contains(tile(P3(p.x, p.y, 0)).xy)
@@ -419,6 +439,7 @@ public extension Surface {
         let magnitude = faceMagnitude(refine)
         let surface = self
         let real = domain.real
+        let loops = graphLoops(refine: refine)
         return truncation.bands(from: min(real.lo, real.hi), to: max(real.lo, real.hi)).compactMap { span in
             let h = span.height, k = span.band
             guard h.isFinite else { return nil }
@@ -426,6 +447,8 @@ public extension Surface {
                 id: .plateau(band: k), domain: rectangle,
                 map: { p in SurfaceJet(position: SIMD3(p.x, p.y, h), du: SIMD3(1, 0, 0), dv: SIMD3(0, 1, 0)) },
                 outward: 1, tiles: tiles,
+                foot: { P2($0.x, $0.y) },
+                bounding: { tile in surface.topBoundary(.plateau(band: k), loops: loops.value, region: region, tile: tile) },
                 contains: { p, tile in
                     rectangle.u.covers(p.x) && rectangle.v.covers(p.y)
                         && region.contains(tile(P3(p.x, p.y, 0)).xy)
@@ -453,21 +476,38 @@ public extension Surface {
         let highest = highestSample
         let side = 1e-9 * cell
         let y = rectangle.v
+        let tolerance = profileTolerance(refine)
         return zip(spans, spans.dropFirst()).compactMap { left, right in
             let b = left.hi
             let lesser = min(left.height, right.height), greater = max(left.height, right.height)
             guard lesser.isFinite, lesser < greater else { return nil }
+            let z = ParamAxis(Interval(lo: lesser, hi: greater.isFinite ? greater : max(highest, lesser)),
+                              periodic: false, samples: 2)
+            let inRiser: @Sendable (P2<ParamSpace>, Affine2) -> Bool = { p, tile in
+                guard y.covers(p.x), p.y >= lesser, p.y <= min(magnitude(P2(b, p.x)), greater) else { return false }
+                return region.contains(tile(P3(b - side, p.x, 0)).xy)
+                    && region.contains(tile(P3(b + side, p.x, 0)).xy)
+            }
             return Face(
                 id: .riser(band: left.band),
-                domain: (y, ParamAxis(Interval(lo: lesser, hi: greater.isFinite ? greater : max(highest, lesser)),
-                                      periodic: false, samples: 2)),
+                domain: (y, z),
                 map: { p in SurfaceJet(position: SIMD3(b, p.x, p.y), du: SIMD3(0, 1, 0), dv: SIMD3(0, 0, 1)) },
                 outward: left.height > right.height ? 1 : -1, tiles: tiles,
-                contains: { p, tile in
-                    guard y.covers(p.x), p.y >= lesser, p.y <= min(magnitude(P2(b, p.x)), greater) else { return false }
-                    return region.contains(tile(P3(b - side, p.x, 0)).xy)
-                        && region.contains(tile(P3(b + side, p.x, 0)).xy)
-                })
+                foot: { P2($0.y, $0.z) },
+                // Where it stands along its boundary, the rows and where the
+                // footprint's perimeter crosses the boundary seeding the search,
+                // from the lesser height up to its top.
+                bounding: { tile in
+                    let stops = (Surface.footprint(region, on: tile)?.perimeter ?? []).flatMap {
+                        Surface.crossings(of: $0, atX: b)
+                    }
+                    let stations = ((0..<y.samples).map(y.coordinate) + stops).filter(y.covers).sorted()
+                    return Surface.columnLoops(stations, eps: side, tolerance: tolerance,
+                                               stands: { inRiser(P2($0, lesser), tile) },
+                                               bottom: { _ in lesser },
+                                               top: { min(magnitude(P2(b, $0)), greater, z.range.hi) })
+                },
+                contains: inRiser)
         }
     }
 
@@ -504,25 +544,49 @@ public extension Surface {
             let d = domain
             let centre = tiles[boundary.second](P3(0.5 * (d.real.lo + d.real.hi), 0.5 * (d.imag.lo + d.imag.hi), 0)).xy.v
             let secondLeft = simd_dot(centre - boundary.start.v, n) > 0
+            let tolerance = surface.profileTolerance(refine)
+            // The stations a riser's boundary is found from along the tile
+            // boundary: the grid's spacing, and where the footprint's
+            // perimeter crosses it.
+            let start = boundary.start.v
+            let stops = (Surface.footprint(region, on: .identity)?.perimeter ?? []).flatMap { loop in
+                zip(loop, loop.dropFirst()).compactMap { a, c -> Double? in
+                    let e = c.v - a.v, r = a.v - start
+                    let det = along.x * e.y - along.y * e.x
+                    guard det != 0 else { return nil }
+                    let t = (r.x * e.y - r.y * e.x) / det, u = (r.x * along.y - r.y * along.x) / det
+                    return u >= 0 && u <= 1 && t > 0 && t < length ? t : nil
+                }
+            }
+            let stations = ((0..<s.samples).map(s.coordinate) + stops).sorted()
             return [(boundary.first, firstBack, boundary.second, secondBack, !secondLeft),
                     (boundary.second, secondBack, boundary.first, firstBack, secondLeft)].map { higher, up, lower, down, lowerRight in
-                Face(
+                @Sendable func high(_ s: Double) -> Double { surface.tileBoundaryTop(boundary.point(s), back: up, magnitude: magnitude) }
+                @Sendable func low(_ s: Double) -> Double { surface.tileBoundaryTop(boundary.point(s), back: down, magnitude: magnitude) }
+                let inRiser: @Sendable (P2<ParamSpace>) -> Bool = { p in
+                    guard s.covers(p.x) else { return false }
+                    let w = boundary.point(p.x)
+                    guard region.contains(P2(w.v - side * n)), region.contains(P2(w.v + side * n)) else { return false }
+                    let (high, low) = (high(p.x), low(p.x))
+                    return Surface.stands(high, over: low) && p.y >= low && p.y <= high
+                }
+                return Face(
                     id: .tileBoundaryRiser(tile: higher, facing: lower),
                     domain: (s, ParamAxis(Interval(lo: 0, hi: max(top, 0)), periodic: false, samples: 2)),
-                    contains: { p in
-                        guard s.covers(p.x) else { return false }
-                        let w = boundary.point(p.x)
-                        guard region.contains(P2(w.v - side * n)), region.contains(P2(w.v + side * n)) else { return false }
-                        let high = surface.tileBoundaryTop(w, back: up, magnitude: magnitude)
-                        let low = surface.tileBoundaryTop(w, back: down, magnitude: magnitude)
-                        return Surface.stands(high, over: low) && p.y >= low && p.y <= high
-                    },
+                    contains: inRiser,
                     map: { p in
                         let w = boundary.point(p.x)
                         return SurfaceJet(position: SIMD3(w.x, w.y, p.y), du: SIMD3(along.x, along.y, 0), dv: SIMD3(0, 0, 1))
                     },
                     // du × dv is the right of the tile boundary's direction.
-                    outward: lowerRight ? 1 : -1)
+                    outward: lowerRight ? 1 : -1,
+                    foot: { q in P2(simd_dot(SIMD2(q.x, q.y) - boundary.start.v, along), q.z) },
+                    // Where it stands along the tile boundary, from the lower
+                    // copy's top up to the higher's.
+                    bounding: { _ in
+                        Surface.columnLoops(stations, eps: side, tolerance: tolerance,
+                                            stands: { inRiser(P2($0, low($0))) }, bottom: low, top: high)
+                    })
             }
         }.sorted { $0.id < $1.id }
     }
@@ -553,6 +617,7 @@ public extension Surface {
             @Sendable func foot(_ distance: Double) -> P2<DomainSpace> {
                 P2(edge.start.v + along * (distance / length))
             }
+            let unit = along / length
             return Face(
                 id: .wall(edge: k),
                 domain: (s, ParamAxis(Interval(lo: base, hi: max(top, base)), periodic: false, samples: 2)),
@@ -566,7 +631,16 @@ public extension Surface {
                     return SurfaceJet(position: SIMD3(q.x, q.y, p.y),
                                       du: SIMD3(along.x / length, along.y / length, 0), dv: SIMD3(0, 0, 1))
                 },
-                outward: area < 0 ? -1 : 1)
+                outward: area < 0 ? -1 : 1,
+                foot: { q in P2(simd_dot(SIMD2(q.x, q.y) - edge.start.v, unit), q.z) },
+                // Its bottom, its far end, its top edge as its layer draws it,
+                // back along, and its near end.
+                bounding: { _ in
+                    let topEdge = grid.topEdge(of: edge, inward: inward, tiles: tiles, refine: refine)
+                    return [[P2(0, base), P2(length, base)]
+                            + topEdge.reversed().map { P2(simd_dot($0.xy.v - edge.start.v, unit), $0.z) }
+                            + [P2(0, base)]]
+                })
         }
     }
 }
@@ -605,5 +679,120 @@ extension Surface {
     /// The greatest finite sample of the height grid, or 0.
     var highestSample: Double {
         Double(height.values.lazy.filter(\.isFinite).max() ?? 0)
+    }
+
+    /// The graph's trim loops (`graphTrimLoops(refine:)`), in the parameter
+    /// plane, made the first time they are asked.
+    func graphLoops(refine: ContourRefine?) -> Computed<[[P2<ParamSpace>]]> {
+        let surface = self
+        return Computed { surface.graphTrimLoops(refine: refine).loops.map { $0.map { P2<ParamSpace>($0.v) } } }
+    }
+
+    /// The boundary of a copy of the graph or of a plateau on `tile`, in the
+    /// parameter plane, as the graph's trim loops `loops` bound it: the
+    /// trimmed domain read even-odd off them, as a contour on the face is
+    /// clipped (`Face.contours(of:_:on:)`). The graph's is the region the
+    /// loops bound, a plateau's the region its band's plateau loops bound in
+    /// its band, each cut to the footprint where the copy stands. Its pieces
+    /// are those of the loops, of each band boundary inside the domain,
+    /// across it, and of the footprint's perimeter, each cut where another
+    /// crosses it (`Face.pieces(of:eps:)`), and kept where the face lies a
+    /// ten-millionth of a cell on one side and not the other: a stretch two
+    /// loops pass, bounding nothing, is left out, and so is a band boundary
+    /// or a stretch of the perimeter the face does not reach. Ends within a
+    /// millionth of a cell are one (`Face.snapped(_:eps:)`).
+    func topBoundary(_ id: FaceID, loops: [[P2<ParamSpace>]], region: Region, tile: Affine2) -> [[P2<ParamSpace>]] {
+        let index = TrimIndex(id == .graph ? loops : Array(loops.dropFirst()), periods: (nil, nil))
+        let real = domain.real, imag = domain.imag
+        let (y0, y1) = (min(imag.lo, imag.hi), max(imag.lo, imag.hi))
+        let spans = truncation.bands(from: min(real.lo, real.hi), to: max(real.lo, real.hi))
+        let boundaries = zip(spans, spans.dropFirst()).map { left, _ in [SIMD2(left.hi, y0), SIMD2(left.hi, y1)] }
+        let perimeter = (Surface.footprint(region, on: tile)?.perimeter ?? []).map { $0.map(\.v) }
+        func holds(_ p: SIMD2<Double>) -> Bool {
+            guard index.encloses(p), region.contains(tile(P3(p.x, p.y, 0)).xy) else { return false }
+            if case .plateau(let k) = id { return band(atX: p.x) == k }
+            return true
+        }
+        let h = 1e-7 * cell
+        let kept = Face.pieces(of: loops.map { $0.map(\.v) } + boundaries + perimeter, eps: 1e-9 * cell).filter { a, b in
+            let d = b - a, length = simd_length(d)
+            guard length > 0 else { return false }
+            let m = 0.5 * (a + b), n = SIMD2(-d.y, d.x) / length
+            return holds(m + h * n) != holds(m - h * n)
+        }
+        return Face.chained(Face.snapped(kept, eps: 1e-6 * cell)).map { $0.map { P2<ParamSpace>($0) } }
+    }
+
+    /// The boundary of a vertical face whose trimmed domain is, at each
+    /// point along it, an interval from `bottom` up to `top`: a closed loop
+    /// round each stretch where it `stands`. The stretches are found at
+    /// `stations`, each end where the verdict turns between two placed by
+    /// bisection to within `eps`; a loop runs along the bottom, up the far
+    /// end, back along the top and down the near end, the bottom and the
+    /// top through the stations between and subdivided to `tolerance`
+    /// (`profile(_:tolerance:_:)`).
+    static func columnLoops(_ stations: [Double], eps: Double, tolerance: Double,
+                            stands: (Double) -> Bool, bottom: (Double) -> Double,
+                            top: (Double) -> Double) -> [[P2<ParamSpace>]] {
+        guard let first = stations.first else { return [] }
+        var stretches: [(lo: Double, hi: Double)] = []
+        var previous = first, standing = stands(first)
+        var start: Double? = standing ? first : nil
+        for s in stations.dropFirst() where s > previous {
+            let verdict = stands(s)
+            if verdict != standing {
+                var (a, c) = (previous, s)
+                while c - a > eps {
+                    let m = 0.5 * (a + c)
+                    guard m > a, m < c else { break }
+                    if stands(m) == standing { a = m } else { c = m }
+                }
+                if let lo = start, standing { stretches.append((lo, a)); start = nil } else { start = c }
+            }
+            previous = s; standing = verdict
+        }
+        if let lo = start, standing { stretches.append((lo, previous)) }
+        return stretches.compactMap { lo, hi in
+            guard hi > lo else { return nil }
+            let along = [lo] + stations.filter { $0 > lo && $0 < hi } + [hi]
+            let under = profile(along, tolerance: tolerance, bottom)
+            return under + profile(along, tolerance: tolerance, top).reversed() + [under[0]]
+        }
+    }
+
+    /// How far a profile along a riser's line may depart from its chord: the
+    /// refiner's tolerance on f, and on the grid, whose heights are linear
+    /// between its rows, a millionth of a cell.
+    func profileTolerance(_ refine: ContourRefine?) -> Double {
+        (refine?.magnitude != nil ? refine?.tolerance ?? 1e-6 : 1e-6) * cell
+    }
+
+    /// The heights where a closed polyline of the domain crosses the line
+    /// Re z = `x`.
+    static func crossings(of loop: [P2<ParamSpace>], atX x: Double) -> [Double] {
+        zip(loop, loop.dropFirst()).compactMap { a, b in
+            guard a.x != b.x, (a.x - x) * (b.x - x) <= 0 else { return nil }
+            return a.y + (x - a.x) / (b.x - a.x) * (b.y - a.y)
+        }
+    }
+
+    /// The curve `(s, top(s))` through `stations`, each chord halved until
+    /// its midpoint lies within `tolerance` of the curve, ten deep.
+    static func profile(_ stations: [Double], tolerance: Double,
+                        _ top: (Double) -> Double) -> [P2<ParamSpace>] {
+        var out: [P2<ParamSpace>] = []
+        func subdivide(_ s0: Double, _ z0: Double, _ s1: Double, _ z1: Double, depth: Int) {
+            let sm = 0.5 * (s0 + s1), zm = top(sm)
+            guard depth < 10, sm > s0, sm < s1, abs(zm - 0.5 * (z0 + z1)) > tolerance else { return }
+            subdivide(s0, z0, sm, zm, depth: depth + 1)
+            out.append(P2(sm, zm))
+            subdivide(sm, zm, s1, z1, depth: depth + 1)
+        }
+        for (k, s) in stations.enumerated() {
+            let z = top(s)
+            if k > 0, let last = out.last { subdivide(last.x, last.y, s, z, depth: 0) }
+            out.append(P2(s, z))
+        }
+        return out
     }
 }

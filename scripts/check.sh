@@ -145,6 +145,47 @@ app() {
 }
 step "the app saves, restyles and bakes a surface and a polyhedron as the CLI does, with no window" app
 
+# Picking, with no window: a click at a pixel reads the depth the frame left
+# there, takes it back through the camera, and names the face under it. The
+# frame's top face, holes and all, and a wall of its hole; the torus, and its
+# hole, where there is nothing; the second tile of a tiled landscape; a
+# plateau and two walls. A click off the drawing clears the pick: the frame
+# drawn after one is the frame drawn with no pick, and a pick changes it.
+# Clicked faster than a boundary lands, the latest click wins: a click on the
+# graph and then off the drawing leaves nothing picked, and nothing drawn.
+pick() {
+    local dir="$PACKAGE/.build/pick-check" c="$ROOT/tests/fixtures/contract" out
+    rm -rf "$dir" && mkdir -p "$dir" || return 1
+    out=$("$BIN/KurvenApp" "$c/polyhedron_frame.kurven" --pick 300,250 --pick 760,300 --pick 600,400) || return 1
+    printf '%s\n' "$out"
+    [ "$(printf '%s\n' "$out" | sed -n 1p | cut -d' ' -f2-4)" = "picked face 0" ] &&
+    [ "$(printf '%s\n' "$out" | sed -n 2p | cut -d' ' -f2-4)" = "picked face 7" ] &&
+    [ "$(printf '%s\n' "$out" | sed -n 3p)" = "Kurven: picked nothing" ] || return 1
+    out=$("$BIN/KurvenApp" "$c/surface_torus.kurven" --pick 300,600 --pick 600,400) || return 1
+    printf '%s\n' "$out"
+    [ "$(printf '%s\n' "$out" | sed -n 1p | cut -d' ' -f2-3)" = "picked surface" ] &&
+    [ "$(printf '%s\n' "$out" | sed -n 2p)" = "Kurven: picked nothing" ] || return 1
+    out=$("$BIN/KurvenApp" "$c/uniform_mesh.kurven" --pick 900,200 --pick 300,200) || return 1
+    printf '%s\n' "$out"
+    [ "$(printf '%s\n' "$out" | sed -n 1p | cut -d' ' -f2-6)" = "picked graph on tile 1" ] &&
+    [ "$(printf '%s\n' "$out" | sed -n 2p | cut -d' ' -f2-4)" = "picked graph at" ] || return 1
+    out=$("$BIN/KurvenApp" "$c/landscape.kurven" --pick 900,100 --pick 1100,200 --pick 300,700) || return 1
+    printf '%s\n' "$out"
+    [ "$(printf '%s\n' "$out" | sed -n 1p | cut -d' ' -f2-4)" = "picked plateau 0" ] &&
+    [ "$(printf '%s\n' "$out" | sed -n 2p | cut -d' ' -f2-4)" = "picked wall 1" ] &&
+    [ "$(printf '%s\n' "$out" | sed -n 3p | cut -d' ' -f2-4)" = "picked wall 0" ] || return 1
+    "$BIN/KurvenApp" "$c/polyhedron_frame.kurven" --screenshot "$dir/none.png" >/dev/null &&
+    "$BIN/KurvenApp" "$c/polyhedron_frame.kurven" --pick 300,250 --screenshot "$dir/picked.png" >/dev/null &&
+    "$BIN/KurvenApp" "$c/polyhedron_frame.kurven" --pick 300,250 --pick 600,400 --screenshot "$dir/cleared.png" >/dev/null &&
+    cmp "$dir/none.png" "$dir/cleared.png" && ! cmp -s "$dir/none.png" "$dir/picked.png" || return 1
+    out=$("$BIN/KurvenApp" "$c/landscape.kurven" --pick 100,500 --pick 5,5 --at-once --screenshot "$dir/raced.png") || return 1
+    printf '%s\n' "$out"
+    [ "$(printf '%s\n' "$out" | sed -n 1p | cut -d' ' -f2-3)" = "picked nothing" ] &&
+    "$BIN/KurvenApp" "$c/landscape.kurven" --screenshot "$dir/landscape.png" >/dev/null &&
+    cmp "$dir/landscape.png" "$dir/raced.png"
+}
+step "the app picks a face at a pixel, on a polyhedron, a torus and a tiled landscape, and a click off the drawing clears it, with no window" pick
+
 # The vocabulary: a word docs/glossary.md retired, back in the code or the
 # docs, in a file's text or its name. The hits are printed; the fix is the
 # glossary's word for the thing, or a new glossary entry if the old word

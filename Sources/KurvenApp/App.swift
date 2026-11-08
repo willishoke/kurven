@@ -123,6 +123,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return (String(pair[0]), v)
             }
         }
+        // `--pick PX,PY [--screenshot PATH]` opens a bundle with no window,
+        // draws a frame, and picks at that pixel as a click does: the depth
+        // the frame left there, taken back through the camera, and the face
+        // under it. Repeated, the clicks come in order, so one off the
+        // drawing clears the pick before it. Each prints what it picked, and
+        // `--screenshot` draws the frame again with the pick's boundary over
+        // it. With `--at-once` the clicks come without waiting for one's
+        // boundary before the next, as fast clicks do, and what is left once
+        // the last lands is printed.
+        let picks = zip(args.indices, args).compactMap { k, flag -> [Double]? in
+            flag == "--pick" && k + 1 < args.endIndex ? args[k + 1].split(separator: ",").compactMap { Double($0) } : nil
+        }
+        if !picks.isEmpty, let bundlePath {
+            guard picks.allSatisfy({ $0.count == 2 }) else {
+                FileHandle.standardError.write(Data("Kurven: --pick takes a pixel, PX,PY\n".utf8))
+                exit(2)
+            }
+            Task { await headlessPick(URL(fileURLWithPath: bundlePath), at: picks.map { SIMD2($0[0], $0[1]) },
+                                      atOnce: args.contains("--at-once"), screenshot: path("--screenshot")) }
+            return
+        }
         // `--surface NAME [--screenshot PATH] [--bake PATH] [--save PATH]`
         // opens a surface from the catalog through the window's own Document
         // -- the gallery's path -- so the window can be held to `kurven-cli
@@ -495,6 +516,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         exit(0)
     }
 
+    /// Open a bundle, draw a frame, and pick at each pixel as a click on it
+    /// does; say what was picked, and draw the last pick if asked.
+    private func headlessPick(_ bundle: URL, at pixels: [SIMD2<Double>], atOnce: Bool, screenshot: URL?) async {
+        await document.load(bundle)
+        guard let scene = document.framedScene, let navigator = document.navigator else {
+            var why = "it did not open"
+            if case .failed(_, let message) = document.state { why = message }
+            FileHandle.standardError.write(Data("Kurven: could not open \(bundle.path) — \(why)\n".utf8))
+            exit(1)
+        }
+        do {
+            let renderer = try MetalRenderer()
+            let target = try renderer.makePreviewTarget(document.viewport)
+            try renderer.renderPreview(scene, navigator: navigator, viewport: document.viewport,
+                                       options: document.previewOptions, into: target)
+            for pixel in pixels {
+                document.pick(at: renderer.worldPoint(atPixel: pixel, navigator: navigator, viewport: document.viewport))
+                if atOnce { continue }
+                while document.picking { try? await Task.sleep(for: .milliseconds(20)) }
+                print("Kurven: \(document.pickStatus ?? "no pick")")
+            }
+            if atOnce {
+                while document.picking { try? await Task.sleep(for: .milliseconds(20)) }
+                // Long enough for a boundary a later click left behind to land.
+                try? await Task.sleep(for: .milliseconds(500))
+                print("Kurven: \(document.pickStatus ?? "no pick")")
+            }
+        } catch {
+            FileHandle.standardError.write(Data("Kurven: \(error)\n".utf8))
+            exit(1)
+        }
+        if let screenshot { renderScreenshot(to: screenshot, what: bundle.lastPathComponent) }
+        exit(0)
+    }
+
     private func screenshot(bundle: URL, to output: URL) async {
         await document.load(bundle)
         renderScreenshot(to: output, what: bundle.lastPathComponent)
@@ -506,7 +562,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the bundle it was sampled into is scratch and is deleted the moment it
     /// has been read. What is on screen is the value in memory.
     private func renderScreenshot(to output: URL, what: String) {
-        guard let scene = document.framedScene, let navigator = document.navigator else {
+        guard let scene = document.shownScene, let navigator = document.navigator else {
             FileHandle.standardError.write(Data("Kurven: nothing to draw\n".utf8))
             exit(1)
         }
@@ -515,7 +571,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let target = try renderer.makePreviewTarget(document.viewport)
             try renderer.renderPreview(scene, navigator: navigator,
                                        viewport: document.viewport,
-                                       options: document.previewOptions, into: target)
+                                       options: document.shownOptions, into: target)
             try PNG.write(target, to: output)
             print("Kurven: \(what) -> \(output.lastPathComponent) "
                   + "(\(document.viewport.width)x\(document.viewport.height), "

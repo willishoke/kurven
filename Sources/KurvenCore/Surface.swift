@@ -437,6 +437,30 @@ public struct Surface: Sendable {
         return min(drawn.interpolated, drawn.truncationHeight)
     }
 
+    /// The height the depth pass's triangles draw over a point: as
+    /// `drawnHeight`, but each sample clamped to the truncation over it
+    /// before the triangle interpolates them, as the shader clamps its
+    /// vertices. In a cell the truncation crosses it lies under
+    /// `drawnHeight`, which interpolates and then clamps.
+    func clampedHeight(at p: P2<DomainSpace>, step: Int) -> Double {
+        let g = height
+        let step = max(step, 1)
+        let nx = (g.width + step - 1) / step, ny = (g.height + step - 1) / step
+        guard nx >= 2, ny >= 2 else { return min(Double(g[0, 0]), truncationHeight(atX: p.x)) }
+        let f = g.index(of: p) / Double(step)
+        let fx = min(max(f.x, 0), Double(nx - 1)), fy = min(max(f.y, 0), Double(ny - 1))
+        let i = min(Int(fx), nx - 2), j = min(Int(fy), ny - 2)
+        let u = fx - Double(i), v = fy - Double(j)
+        func sample(_ a: Int, _ b: Int) -> Double {
+            min(Double(g[a * step, b * step]), truncationHeight(atX: g.position(x: a * step, y: b * step).x))
+        }
+        let h00 = sample(i, j), h10 = sample(i + 1, j), h01 = sample(i, j + 1), h11 = sample(i + 1, j + 1)
+        let h = u + v <= 1
+            ? h00 + u * (h10 - h00) + v * (h01 - h00)
+            : h11 + (1 - u) * (h01 - h11) + (1 - v) * (h10 - h11)
+        return h.isNaN ? .infinity : h
+    }
+
     /// `drawnHeight` as the two numbers it is the lesser of -- the grid's
     /// interpolated height and the truncation over the point -- with the cosine of
     /// the interpolating triangle's tilt, `1 / sqrt(1 + |∇h|²)`, which turns a

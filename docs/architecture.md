@@ -36,7 +36,12 @@ boundary, its manifold, but for a landscape's sides where it has no walls
 or walls given as a mesh, which describe no face. A tiled landscape's graph
 is one face with a copy on every tile, each turned by its tile and cut to
 the footprint where it stands; where two copies meet with different tops,
-a riser stands at the tile boundary between them.
+a riser stands at the tile boundary between them. A point of space is on
+the face, and the copy, nearest it that holds its foot
+(`SceneGeometry.face(at:within:faces:)`); a point on a crease is the face
+listed first's, so a wall's or riser's top belongs to the face above, a
+riser's bottom to the face below, and a polyhedron's edge to the face of
+lesser index.
 
 **Curves.** Most curves are level sets of a field on a face: contours of
 |f| and arg f on the graph, of a face's coordinates or its height on any
@@ -327,7 +332,10 @@ swift run -c release KurvenApp --open ../recip.kurven    # from a terminal
 ```
 
 Left-drag orbits, shift-drag pans, scroll zooms toward the cursor,
-double-click re-targets the turn onto the point you clicked, `f` fits,
+a click picks the face under it and draws its boundary in the accent colour
+(a click off the drawing clears it; `Kurven x.kurven --pick PX,PY` picks
+with no window), double-click re-targets the turn onto the point you
+clicked, `f` fits,
 `1`/`2`/`3` switch between the drawing, a shaded surface, and the raw depth
 buffer. The inspector carries the camera as numbers, the bundle's camera
 presets, per-layer visibility and levels, the depth tolerance, and a bake
