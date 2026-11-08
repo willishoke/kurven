@@ -1127,9 +1127,16 @@ public struct SurfaceManifest: Sendable, Equatable {
         layers = try o.array("layers", "SurfaceManifest").map { try LayerSpec(json: $0, onSurface: true) }
         presets = try o.array("presets", "SurfaceManifest").map(CameraPreset.init(json:))
         provenance = try Provenance(json: o.value("provenance", "SurfaceManifest"))
+        var names = Set<String>()
         for layer in layers {
             if let why = SurfaceManifest.unsupported(layer.source, on: surface) {
                 throw ManifestError.unsupported("layer '\(layer.name)': \(why)")
+            }
+            // A layer is kept across a request edit, and its slider found,
+            // by its name.
+            guard names.insert(layer.name).inserted else {
+                throw ManifestError.unsupported("two layers named '\(layer.name)': a parametric surface's "
+                                                + "layers are told apart by name")
             }
         }
     }
@@ -1151,6 +1158,13 @@ public struct SurfaceManifest: Sendable, Equatable {
         case .trajectory:
             if case .forced = request.shape { return nil }
             return "a trajectory on a surface no flow winds round"
+        case .coordinateCurves(let u, let v):
+            guard u >= 0, v >= 0 else { return "coordinate curves must be counts, not \(u) and \(v)" }
+            return SurfaceRequest.vertices(coordinateCurves: SIMD2(u, v), resolution: request.lineResolution)
+                .map { "a layer that \($0)" }
+        case .linearCurves(let slope, let turns, let count):
+            return request.vertices(linearCurves: SurfaceRequest.LinearCurves(slope: slope, turns: turns, count: count))
+                .map { "a linear curve that \($0)" }
         default:
             return nil
         }
@@ -1185,10 +1199,6 @@ public enum BundleManifest: Sendable, Equatable {
     public init(json: JSONValue) throws {
         let o = try json.object("Manifest")
         self = o["surface"] == nil ? .landscape(try Manifest(json: json)) : .surface(try SurfaceManifest(json: json))
-    }
-
-    public static func read(contentsOf url: URL) throws -> BundleManifest {
-        try BundleManifest(json: JSONValue.parse(Data(contentsOf: url)))
     }
 
     public var canonicalJSON: String {

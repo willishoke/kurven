@@ -338,68 +338,162 @@ public extension SurfaceRequest {
         ])
     }
 
-    /// Refuse a request no drawing can be built from, naming the number:
-    /// a radius that is not positive, a modulus outside (0, 1), a grid too
-    /// coarse to span its rectangle, a forced torus revolved on one state
-    /// component twice. What only building can find -- a system the catalog
-    /// does not have, an expression that does not parse -- `SurfaceDrawing.build`
-    /// refuses.
-    func check() throws {
-        func refuse(_ why: String) -> ManifestError { .invalid("a surface's \(why)") }
-        func positive(_ x: Double, _ name: String) throws {
-            guard x.isFinite, x > 0 else { throw refuse("\(name) must be a positive number, not \(x)") }
+    /// Refuse a request no drawing can be built from, or one whose drawing
+    /// would cost without bound, naming the number: a radius that is not
+    /// positive, a modulus outside (0, 1), a grid too coarse to span its
+    /// rectangle or too fine to hold (`maxSamples`), curves of more vertices
+    /// than a layer holds (`maxVertices`), a forced torus revolved on one
+    /// state component twice. What only building can find -- a system the
+    /// catalog does not have, an expression that does not parse --
+    /// `SurfaceDrawing.build` refuses. `name` spells a field, given its key
+    /// in the request (`shape.modulus`), as the refusal names it: by its key
+    /// in a manifest's `surface`, or as the CLI's flag.
+    func check(naming name: (String) -> String = { "surface." + $0 }) throws {
+        func refuse(_ key: String, _ why: String) -> ManifestError { .invalid("\(name(key)) \(why)") }
+        func positive(_ x: Double, _ key: String) throws {
+            guard x.isFinite, x > 0 else { throw refuse(key, "must be a positive number, not \(x)") }
         }
-        func finite(_ x: Double, _ name: String) throws {
-            guard x.isFinite else { throw refuse("\(name) must be a finite number, not \(x)") }
+        func finite(_ x: Double, _ key: String) throws {
+            guard x.isFinite else { throw refuse(key, "must be a finite number, not \(x)") }
+        }
+        func within(_ n: Int, _ range: ClosedRange<Int>, _ key: String, _ what: String) throws {
+            guard range.contains(n) else {
+                throw refuse(key, "must be \(range.lowerBound) to \(range.upperBound) \(what), not \(n)")
+            }
         }
         func modulus(_ m: Double) throws {
-            guard m.isFinite, m > 0, m < 1 else { throw refuse("modulus must lie strictly between 0 and 1, not \(m)") }
+            guard m.isFinite, m > 0, m < 1 else {
+                throw refuse("shape.modulus", "must lie strictly between 0 and 1, not \(m)")
+            }
         }
-        func samples(_ n: Int, _ name: String) throws {
-            guard n >= 8 else { throw refuse("\(name) must be at least 8 samples, not \(n)") }
+        func radii(_ R: Double, _ r: Double) throws {
+            try positive(R, "shape.major"); try positive(r, "shape.minor")
         }
-        try samples(grid, "grid")
+        try within(grid, 8...Self.maxGrid, "grid", "samples")
         switch shape {
         case .torus(let R, let r):
-            try positive(R, "major radius"); try positive(r, "minor radius")
+            try radii(R, r)
         case .sn(let m, let R, let r, let g):
-            try modulus(m); try positive(R, "major radius"); try positive(r, "minor radius")
-            try samples(g, "sn's grid")
+            try modulus(m); try radii(R, r)
+            try within(g, 8...Self.maxFunctionGrid, "shape.grid", "samples")
         case .periodic(let e, let p, let R, let r, let g):
-            guard !e.trimmingCharacters(in: .whitespaces).isEmpty else { throw refuse("expression is empty") }
-            try positive(p.x, "real period"); try positive(p.y, "imaginary period")
-            try positive(R, "major radius"); try positive(r, "minor radius")
-            try samples(g, "function's grid")
+            guard !e.trimmingCharacters(in: .whitespaces).isEmpty else { throw refuse("shape.expression", "is empty") }
+            try positive(p.x, "shape.periods"); try positive(p.y, "shape.periods")
+            try radii(R, r)
+            try within(g, 8...Self.maxFunctionGrid, "shape.grid", "samples")
         case .forced(let system, let fit, let harmonics, let radial, let axial, let radius, let turns):
-            guard !system.isEmpty else { throw refuse("forced system is unnamed") }
-            try positive(fit, "fit length"); try positive(radius, "ring radius")
-            guard harmonics >= 1 else { throw refuse("harmonics must be at least 1, not \(harmonics)") }
-            guard (0...2).contains(radial), (0...2).contains(axial) else {
-                throw refuse("state components are x, x′ and x″, numbered 0 to 2, not \(radial) and \(axial)")
+            guard !system.isEmpty else { throw refuse("shape.system", "is unnamed") }
+            try positive(fit, "shape.fit"); try positive(radius, "shape.radius")
+            guard fit <= Self.maxFit else {
+                throw refuse("shape.fit", "must be at most \(Int(Self.maxFit)) time units, not \(fit)")
             }
+            try within(harmonics, 1...Self.maxHarmonics, "shape.harmonics", "harmonics")
+            try within(radial, 0...2, "shape.radial", "(x, x′ or x″)")
+            try within(axial, 0...2, "shape.axial", "(x, x′ or x″)")
             guard radial != axial else {
-                throw refuse("radius and height are both state component \(radial): one component as both is a curve, not a torus")
+                throw refuse("shape.radial", "and \(name("shape.axial")) are both state component \(radial): "
+                             + "one component as both is a curve, not a torus")
             }
-            guard turns >= 1 else { throw refuse("trajectory must run at least one turn, not \(turns)") }
+            try within(turns, 1...Self.maxVertices, "shape.turns", "turns")
+            let vertices = Double(turns) * Double(sampleBound.u)
+            guard vertices <= Double(Self.maxVertices) else {
+                throw refuse("shape.turns", "would take " + String(format: "%.3g", vertices)
+                             + " vertices for the trajectory, more than the \(Self.maxVertices) a layer holds")
+            }
         case .relief(let m, let R, let r, let a, let k, let g, let turn, let floor, _):
-            try modulus(m); try positive(R, "major radius"); try positive(r, "minor radius")
-            try finite(a, "relief amplitude"); try finite(turn, "turn")
-            if let floor { try finite(floor, "relief floor") }
-            guard k.x >= 1, k.y >= 1 else { throw refuse("repeats must be whole periods, at least 1 each way, not \(k.x) and \(k.y)") }
-            try samples(g, "sn's grid")
+            try modulus(m); try radii(R, r)
+            try finite(a, "shape.amplitude"); try finite(turn, "shape.turn")
+            if let floor { try finite(floor, "shape.floor") }
+            try within(k.x, 1...Self.maxRepeats, "shape.repeats", "whole periods each way")
+            try within(k.y, 1...Self.maxRepeats, "shape.repeats", "whole periods each way")
+            try within(g, 8...Self.maxFunctionGrid, "shape.grid", "samples")
         }
-        if let lines, lines.x < 0 || lines.y < 0 {
-            throw refuse("coordinate curves must be counts, not \(lines.x) and \(lines.y)")
+        let samples = sampleBound
+        guard Double(samples.u) * Double(samples.v) <= Double(Self.maxSamples) else {
+            throw refuse("grid", "and the radii make a grid of \(samples.u) × \(samples.v) samples, more than "
+                         + "the \(Self.maxSamples) a surface holds")
+        }
+        if let lines {
+            try within(lines.x, 0...Self.maxVertices, "lines", "coordinate curves")
+            try within(lines.y, 0...Self.maxVertices, "lines", "coordinate curves")
+            if let why = Self.vertices(coordinateCurves: lines, resolution: lineResolution) {
+                throw refuse("lines", why)
+            }
         }
         if let w = linearCurves {
-            try finite(w.slope, "linear curve's slope")
-            guard w.turns >= 1, w.count >= 1 else {
-                throw refuse("linear curve wants at least one turn of one strand, not \(w.turns) of \(w.count)")
-            }
+            if let why = vertices(linearCurves: w) { throw refuse("linearCurves", why) }
         }
-        for (width, name) in [(style.lines, "lines"), (style.trajectory, "trajectory"), (style.folds, "folds"),
-                              (style.linearCurves, "linear curves")] {
-            guard width.isFinite, width >= 0 else { throw refuse("\(name) width must be a number not below 0, not \(width)") }
+        for (width, key) in [(style.lines, "style.lines"), (style.trajectory, "style.trajectory"),
+                             (style.folds, "style.folds"), (style.linearCurves, "style.linearCurves")] {
+            guard width.isFinite, width >= 0 else { throw refuse(key, "must be a number not below 0, not \(width)") }
         }
+    }
+
+    /// The most samples a surface's grid holds: 8192 round the ring by 4096
+    /// round the tube.
+    static let maxSamples = 1 << 25
+    /// The most vertices one layer's curves hold.
+    static let maxVertices = 1 << 24
+    /// The most samples round the ring, and across a function's rectangle.
+    static let maxGrid = 1 << 16, maxFunctionGrid = 4096
+    /// The longest run a forced torus is fitted from, and its most harmonics.
+    static let maxFit = 100_000.0, maxHarmonics = 64
+    /// The most periods a relief repeats each way.
+    static let maxRepeats = 16
+
+    /// At most how many samples the surface's grid has round the ring and
+    /// round the tube: exactly, but for sn, whose rectangle's aspect its
+    /// modulus sets, where this takes the aspect at most 1.
+    var sampleBound: (u: Int, v: Int) {
+        func clamped(_ x: Double) -> Int { Int(min(max(x, 0), Double(Int32.max))) }
+        // A periodic torus sizes its tube to keep the cells square
+        // (`PeriodicTorus.torus(over:major:minor:grid:)`).
+        func tube(_ grid: Int, aspect: Double, _ R: Double, _ r: Double) -> Int {
+            max(clamped(Double(grid) * min(aspect, 1) * r / R), 32)
+        }
+        switch shape {
+        case .torus: return (grid, max(grid / 2, 8))
+        case .forced: return (grid, grid / 2)
+        case .sn(_, let R, let r, _): return (grid, tube(grid, aspect: 1, R, r))
+        case .periodic(_, let p, let R, let r, _): return (grid, tube(grid, aspect: p.y / p.x, R, r))
+        case .relief(_, let R, let r, _, let k, _, _, _, _):
+            let base = min(grid, 1024)
+            return (min(clamped(Double(base) * Double(k.x)), grid),
+                    max(clamped(Double(tube(base, aspect: 1, R, r)) * Double(k.y)), 32))
+        }
+    }
+
+    /// How many vertices a coordinate curve has along its axis: four to a
+    /// grid cell, two on a fitted torus, where each is the Fourier series.
+    var lineResolution: Int {
+        if case .forced = shape { return 2 * grid }
+        return 4 * grid
+    }
+
+    /// Why coordinate curves at `counts` would hold more vertices than a
+    /// layer does, or nil.
+    static func vertices(coordinateCurves counts: SIMD2<Int>, resolution: Int) -> String? {
+        let vertices = (Double(counts.x) + Double(counts.y)) * Double(resolution + 1)
+        guard vertices > Double(maxVertices) else { return nil }
+        return "would take " + String(format: "%.3g", vertices) + " vertices for \(counts.x) + \(counts.y) "
+            + "coordinate curves, more than the \(maxVertices) a layer holds"
+    }
+
+    /// Why a linear curve cannot be drawn on this surface, or nil: a slope
+    /// that is not a number, no turn or no strand, or more vertices than a
+    /// layer holds, at a vertex per grid cell along the steeper axis
+    /// (`ParametricSurface.linearCurves`).
+    func vertices(linearCurves w: LinearCurves) -> String? {
+        guard w.slope.isFinite else { return "wants a finite slope, not \(w.slope)" }
+        guard (1...Self.maxVertices).contains(w.turns), (1...Self.maxVertices).contains(w.count) else {
+            return "wants at least one turn of one strand, and at most \(Self.maxVertices), "
+                + "not \(w.turns) turns of \(w.count)"
+        }
+        let samples = sampleBound
+        let steps = max(Double(samples.u), (abs(w.slope) * Double(samples.v)).rounded(.up))
+        let vertices = Double(w.count) * (Double(w.closes ?? w.turns) * steps + 1)
+        guard vertices > Double(Self.maxVertices) else { return nil }
+        return "would take " + String(format: "%.3g", vertices) + " vertices, more than the "
+            + "\(Self.maxVertices) a layer holds"
     }
 }

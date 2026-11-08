@@ -509,7 +509,16 @@ func surfaceCommand(_ args: Args) throws {
     // A catalog entry by its own name, as the window opens it, so the two
     // keep the same request.
     if !relief, SurfacePreset.named(shape) != nil { request.name = shape }
-    try request.check()
+    // Refused by the schema's rule, naming the flag that set the number.
+    let flags = ["grid": "--samples", "shape.grid": "--grid", "shape.amplitude": "--relief",
+                 "shape.repeats": "--repeat", "lines": "--coordinate-curves", "linearCurves": "--linear-curves",
+                 "style.lines": "--width", "style.linearCurves": "--width", "style.folds": "--folds",
+                 "style.trajectory": "--trajectory-width"]
+    do {
+        try request.check { key in flags[key] ?? "--" + key.replacingOccurrences(of: "shape.", with: "") }
+    } catch ManifestError.invalid(let why) {
+        throw CLIError(why)
+    }
     let clock = ContinuousClock()
     var drawing: SurfaceDrawing!
     let built = try clock.measure { drawing = try SurfaceDrawing.build(request) }

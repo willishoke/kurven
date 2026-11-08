@@ -169,9 +169,15 @@ public extension Dictionary where Key == String, Value == JSONValue {
     func int(_ key: String, _ what: String) throws -> Int {
         switch try value(key, what) {
         case .int(let i): return i
-        case .double(let d) where d == d.rounded(): return Int(d)
+        case .double(let d) where Self.isInt(d): return Int(d)
         default: throw JSONError.wrongType(key, expected: "an integer", found: what)
         }
+    }
+
+    /// Whether a number read as a double is a whole number an `Int` holds:
+    /// 1e30 is whole, and is refused rather than trapped on.
+    private static func isInt(_ d: Double) -> Bool {
+        d == d.rounded() && abs(d) < 0x1p63
     }
 
     func double(_ key: String, _ what: String) throws -> Double {
@@ -222,7 +228,7 @@ public extension Dictionary where Key == String, Value == JSONValue {
         try array(key, what).map {
             switch $0 {
             case .int(let i): return i
-            case .double(let d) where d == d.rounded(): return Int(d)
+            case .double(let d) where Self.isInt(d): return Int(d)
             default: throw JSONError.wrongType(key, expected: "an array of integers", found: what)
             }
         }
