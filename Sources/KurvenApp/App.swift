@@ -667,19 +667,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "--levels", "--strokes":
                 let (name, text) = pair(value)
                 guard let count = Int(text) else { fail("\(flag) wants LAYER=COUNT") }
-                // A drag: taken hold of, moved, let go.
-                await edit {
-                    document.beginPaintDrag()
-                    if flag == "--levels" {
-                        document.paintLevels(count, ofLayer: name, draft: true)
-                        document.rebuildCurves()
-                        document.endPaintDrag("Levels of \(name)")
-                    } else {
-                        document.paintStrokes(count, ofLayer: name)
-                        document.endPaintDrag("Strokes of \(name)")
-                    }
+                // A drag, as the window has it: taken hold of, moved a step
+                // at a time, let go, each an event of its own and so a group
+                // of its own on the undo manager. The drag is one undo step.
+                let levels = flag == "--levels"
+                let from = levels
+                    ? document.layerSpecs.firstIndex { $0.name == name }.flatMap { document.levels(forLayer: $0)?.count }
+                    : document.paint?.layers.firstIndex { $0.name == name }.flatMap { document.hatchCount(ofLayer: $0) }
+                guard let from else { fail("no layer '\(name)' with \(levels ? "levels" : "strokes") to drag") }
+                func event(_ body: () -> Void) {
+                    undo.beginUndoGrouping()
+                    body()
+                    undo.endUndoGrouping()
                 }
-                print("Kurven: \(flag.dropFirst(2)) of \(name) = \(count)")
+                event { document.beginPaintDrag() }
+                for n in stride(from: from, through: count, by: count >= from ? 1 : -1).dropFirst() {
+                    event {
+                        if levels { document.paintLevels(n, ofLayer: name, draft: true) }
+                        else { document.paintStrokes(n, ofLayer: name) }
+                    }
+                    await settle()
+                }
+                event {
+                    if levels { document.rebuildCurves() }
+                    document.endPaintDrag("\(levels ? "Levels" : "Strokes") of \(name)")
+                }
+                await settle()
+                print("Kurven: dragged the \(flag.dropFirst(2)) of \(name) from \(from) to \(count)")
             case "--axis":
                 guard let axis = DomainAxis(rawValue: value) else { fail("--axis wants real or imag") }
                 await edit { document.paintAxis(axis) }

@@ -162,7 +162,8 @@ step "the app saves, restyles, paints and bakes a surface and a polyhedron as th
 # plateau painted. Each kind of edit -- a function, a layer added or taken
 # off, a level or strokes slider dragged, the plateaus' axis -- on a surface,
 # a landscape's graph, plateaus and a wall, and a polyhedron, undone, saves
-# what was saved before it, and redone, what was saved after it. A function
+# what was saved before it, and redone, what was saved after it; a drag of
+# many steps is one undo, which leaves nothing more to undo. A function
 # that does not parse, or a period that is not positive, is refused, saying
 # why.
 paint() {
@@ -183,8 +184,9 @@ paint() {
         shift 3
         "$BIN/KurvenApp" "$bundle" --pick "$pick" --save "$dir/$name-before.kurven" "$@" \
             --save "$dir/$name-after.kurven" --undo --save "$dir/$name-undone.kurven" \
-            --redo --save "$dir/$name-redone.kurven" >/dev/null &&
+            --redo --save "$dir/$name-redone.kurven" --undo --undo --save "$dir/$name-twice.kurven" >/dev/null &&
         diff -r "$dir/$name-before.kurven" "$dir/$name-undone.kurven" >/dev/null &&
+        diff -r "$dir/$name-before.kurven" "$dir/$name-twice.kurven" >/dev/null &&
         diff -r "$dir/$name-after.kurven" "$dir/$name-redone.kurven" >/dev/null &&
         ! diff -r "$dir/$name-before.kurven" "$dir/$name-after.kurven" >/dev/null ||
             { echo "undo of $name: not what was saved"; failed=1; }
