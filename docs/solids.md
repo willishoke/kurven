@@ -16,11 +16,15 @@ kurven-cli surface solid --kind dodecahedron --hatching half-lambert --width-ste
 A `Solid` is given as vertices and its faces in boundary representation,
 each face as its loops (`Solid(vertices:faces:)`): the outer loop
 counter-clockwise seen from outside, then one loop per hole, clockwise. The
-constructor checks that every face is flat, that no two loops of a face
-share a vertex, that every edge is shared by exactly two faces in opposite
-directions, that the signed volume is positive, and that no two faces
-sharing an edge lie in one plane (they would be one face); anything else is
-refused.
+constructor checks that every index names a vertex and every vertex is a
+finite point, that every face is flat and encloses some area, that no side
+of a face has no length, crosses another or passes through a vertex of it,
+that no two loops of a face share a vertex, that every edge is shared by
+exactly two faces in opposite directions, that the signed volume is
+positive, and that no two faces sharing an edge lie in one plane (they
+would be one face); anything else is refused, with the reason
+(`Solid(checking:faces:)`). It does not check that two faces apart from
+each other do not pass through each other.
 
 A face is flat when every vertex lies within its *flatness tolerance* of
 the face's plane: a billionth of the face's extent, the diagonal of its

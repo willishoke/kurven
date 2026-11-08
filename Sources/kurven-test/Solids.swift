@@ -500,6 +500,65 @@ func solidTests() {
                      "a path on the far wall that dips out of sight is drawn as its two seen ends",
                      "\(drawn.map { $0.map(\.v) })")
     }
+
+    Check.suite("solids: loops that bound no solid are refused, saying why, not trapped on") {
+        // A cube 2 on a side, its corners 0-3 below and 4-7 above, each
+        // counter-clockwise from above, and its faces outward; each case
+        // breaks it in one way.
+        let corners: [P3<WorldSpace>] = [P3(0, 0, 0), P3(2, 0, 0), P3(2, 2, 0), P3(0, 2, 0),
+                                         P3(0, 0, 2), P3(2, 0, 2), P3(2, 2, 2), P3(0, 2, 2)]
+        let cube: [[[Int]]] = [[[0, 3, 2, 1]], [[4, 5, 6, 7]], [[0, 1, 5, 4]], [[1, 2, 6, 5]],
+                               [[2, 3, 7, 6]], [[3, 0, 4, 7]]]
+        Check.expect((try? Solid(checking: corners, faces: cube))?.eulerCharacteristic == 2,
+                     "the cube itself is a solid, χ = 2")
+        func refused(_ what: String, _ vertices: [P3<WorldSpace>], _ faces: [[[Int]]], saying phrase: String) {
+            do {
+                _ = try Solid(checking: vertices, faces: faces)
+                Check.expect(false, "refuses \(what)", "built a solid")
+            } catch {
+                Check.expect("\(error)".contains(phrase), "refuses \(what)", "\(error)")
+            }
+        }
+        func with(_ face: Int, _ loops: [[Int]]) -> [[[Int]]] {
+            var faces = cube; faces[face] = loops; return faces
+        }
+        // A square hole in the top, 0.5 to 1.5, for the cases about holes.
+        let holed = corners + [P3(0.5, 0.5, 2), P3(1.5, 0.5, 2), P3(1.5, 1.5, 2), P3(0.5, 1.5, 2),
+                               P3(3, 0.5, 2), P3(3.5, 0.5, 2), P3(3.5, 1, 2), P3(1, 0, 2), P3(1, 0.5, 2)]
+        refused("no faces", corners, [], saying: "has none")
+        refused("a face with no loop", corners, with(1, []), saying: "no loop")
+        refused("a loop of two vertices", corners, with(1, [[4, 5]]), saying: "at least three")
+        refused("a vertex index past the last", corners, with(1, [[4, 5, 6, 8]]), saying: "names vertex 8")
+        refused("a negative vertex index", corners, with(1, [[4, 5, 6, -1]]), saying: "names vertex -1")
+        var nan = corners; nan[6] = P3(2, 2, .nan)
+        refused("a coordinate that is not a number", nan, cube, saying: "not a finite point")
+        var infinite = corners; infinite[2] = P3(.infinity, 2, 0)
+        refused("an infinite coordinate", infinite, cube, saying: "not a finite point")
+        refused("a side from a vertex to itself", corners, with(1, [[4, 5, 5, 6, 7]]), saying: "no length")
+        refused("a side between two vertices at one point", corners + [P3(2, 0, 2)],
+                with(1, [[4, 5, 8, 6, 7]]), saying: "no length")
+        refused("two loops of a face sharing a vertex", holed, with(1, [[4, 5, 6, 7], [8, 4, 10]]),
+                saying: "share vertex 4")
+        refused("a face of no area", corners + [P3(4, 0, 2)], with(1, [[4, 5, 8]]), saying: "encloses no area")
+        var bent = corners; bent[6] = P3(2, 2, 2.1)
+        refused("a face that is not flat", bent, cube, saying: "not flat")
+        refused("a hole running the same way as its face", holed, with(1, [[4, 5, 6, 7], [8, 9, 10, 11]]),
+                saying: "runs the same way")
+        refused("a hole outside its face", holed, with(1, [[4, 5, 6, 7], [12, 14, 13]]), saying: "not inside it")
+        refused("a loop that crosses itself", corners + [P3(1, -0.5, 2)], with(1, [[4, 5, 6, 7, 8]]),
+                saying: "cross")
+        refused("a hole whose vertex lies on the outer loop's side", holed,
+                with(1, [[4, 5, 6, 7], [15, 16, 9]]), saying: "lies on side 4-5")
+        refused("an open surface", corners, Array(cube.dropLast()), saying: "not closed")
+        refused("a face turned the other way from its neighbours", corners,
+                with(1, [[7, 6, 5, 4]]), saying: "traversed twice the same way")
+        refused("faces all turned inward", corners, cube.map { $0.map { Array($0.reversed()) } },
+                saying: "oriented inward")
+        let split = corners + [P3(1, 0, 2), P3(1, 2, 2)]
+        refused("two faces in one plane", split,
+                [[[0, 3, 2, 1]], [[4, 8, 9, 7]], [[8, 5, 6, 9]], [[0, 1, 5, 8, 4]], [[1, 2, 6, 5]],
+                 [[2, 3, 7, 9, 6]], [[3, 0, 4, 7]]], saying: "in one plane")
+    }
 }
 
 // MARK: - partition

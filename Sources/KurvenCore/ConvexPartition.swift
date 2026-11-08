@@ -28,15 +28,19 @@ enum ConvexPartition {
     /// with `point` placing each vertex in the face's plane. Each piece is
     /// counter-clockwise. `tolerance` is the area below which a corner
     /// counts as straight, a small fraction of the face's own: every test
-    /// here is a cross product held to it.
-    static func pieces(_ loops: [[Int]], point: (Int) -> SIMD2<Double>, tolerance: Double) -> [[Int]] {
+    /// here is a cross product held to it. Loops that bound no region the
+    /// partition can cut -- a hole outside its face, loops that cross -- are
+    /// refused, naming the face as `face` (`SolidError`).
+    static func pieces(_ loops: [[Int]], point: (Int) -> SIMD2<Double>, tolerance: Double,
+                       face: Int) throws -> [[Int]] {
         let outer = loops[0]
         // A loop that passes a vertex twice is never one piece.
         if loops.count == 1, Set(outer).count == outer.count, isConvex(outer, point: point, tolerance: tolerance) {
             return [outer]
         }
-        let ring = bridged(loops, point: point, tolerance: tolerance)
-        return merged(triangles(ring, point: point, tolerance: tolerance), point: point, tolerance: tolerance)
+        let ring = try bridged(loops, point: point, tolerance: tolerance, face: face)
+        return merged(try triangles(ring, point: point, tolerance: tolerance, face: face), point: point,
+                      tolerance: tolerance)
     }
 
     static func cross(_ a: SIMD2<Double>, _ b: SIMD2<Double>) -> Double { a.x * b.y - a.y * b.x }
@@ -60,7 +64,8 @@ enum ConvexPartition {
     /// joined by the shortest segment from one of its vertices to a vertex
     /// of the ring that leaves both ends into the face and meets nothing
     /// else on the way.
-    static func bridged(_ loops: [[Int]], point: (Int) -> SIMD2<Double>, tolerance: Double) -> [Int] {
+    static func bridged(_ loops: [[Int]], point: (Int) -> SIMD2<Double>, tolerance: Double,
+                        face: Int) throws -> [Int] {
         var ring = loops[0]
         var holes = Array(loops.dropFirst())
         holes.sort { a, b in
@@ -84,7 +89,9 @@ enum ConvexPartition {
                     best = (length, r, j)
                 }
             }
-            guard let b = best else { preconditionFailure("a hole cannot be joined to its face: it is not inside it") }
+            guard let b = best else {
+                throw SolidError("face \(face): a hole cannot be joined to the face: it is not inside it")
+            }
             let around = Array(hole[b.j...] + hole[..<b.j])
             ring = Array(ring[...b.r]) + around + [hole[b.j], ring[b.r]] + Array(ring[(b.r + 1)...])
         }
@@ -150,7 +157,8 @@ enum ConvexPartition {
     /// having been all that blocked one, are still not. That makes the cut
     /// quadratic in the ring's length, not cubic, and it is the cut a scan
     /// from the start would make whenever no such corner is freed.
-    static func triangles(_ ring: [Int], point: (Int) -> SIMD2<Double>, tolerance: Double) -> [[Int]] {
+    static func triangles(_ ring: [Int], point: (Int) -> SIMD2<Double>, tolerance: Double,
+                          face: Int) throws -> [[Int]] {
         var ring = ring
         var out: [[Int]] = []
         func isEar(_ k: Int) -> Bool {
@@ -169,14 +177,16 @@ enum ConvexPartition {
         while ring.count > 3 {
             let n = ring.count
             guard let k = (0..<n).lazy.map({ (start + $0) % n }).first(where: isEar) else {
-                preconditionFailure("a face has no ear: its loops cross, or a hole is not inside it")
+                throw SolidError("face \(face) has no ear to cut: its loops cross, or a hole is not inside it")
             }
             out.append([ring[(k + n - 1) % n], ring[k], ring[(k + 1) % n]])
             ring.remove(at: k)
             start = max(k - 1, 0)
         }
         let pa = point(ring[0]), pb = point(ring[1]), pc = point(ring[2])
-        precondition(cross(pb - pa, pc - pb) > tolerance, "a face leaves a degenerate triangle: its loops overlap")
+        guard cross(pb - pa, pc - pb) > tolerance else {
+            throw SolidError("face \(face) leaves a triangle of no area: its loops overlap")
+        }
         out.append(ring)
         return out
     }
