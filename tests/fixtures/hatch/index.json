@@ -83,7 +83,6 @@
     },
     "kind": "hatching",
     "spacing": 0.25,
-    "step": 0.25,
     "tone": {
      "kind": "uniform"
     },
@@ -104,7 +103,6 @@
     },
     "kind": "hatching",
     "spacing": 0.3,
-    "step": 0.3,
     "tone": {
      "kind": "uniform"
     },
@@ -207,7 +205,6 @@
     },
     "kind": "hatching",
     "spacing": 0.25,
-    "step": 0.25,
     "tone": {
      "kind": "uniform"
     },
@@ -228,7 +225,6 @@
     },
     "kind": "hatching",
     "spacing": 0.3,
-    "step": 0.3,
     "tone": {
      "kind": "uniform"
     },
