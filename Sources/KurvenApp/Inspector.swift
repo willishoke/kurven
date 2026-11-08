@@ -22,7 +22,7 @@ struct Inspector: View {
             // can be handed.
             // A surface has its own section and a way back to the gallery;
             // the function picker would only say "—" beside it.
-            if document.surfaceDrawing == nil && !document.building {
+            if document.surfaceDrawing == nil && document.polyhedronBundle == nil && !document.building {
                 Section("Landscape") {
                     LandscapeSection(document: document)
                 }
@@ -30,7 +30,17 @@ struct Inspector: View {
             if document.surfaceDrawing != nil || document.building {
                 Section("Surface") { SurfaceSection(document: document) }
             }
-            if let surfaceBundle = document.surfaceBundle {
+            if let polyhedronBundle = document.polyhedronBundle {
+                // A polyhedron's solid is its bundle's, and its visibility
+                // exact, so it has no controls of its own but its layers'.
+                Section("Polyhedron") { polyhedron(polyhedronBundle) }
+                Section("Camera") {
+                    CameraSection(document: document, presets: polyhedronBundle.manifest.presets)
+                }
+                Section("Mode") { modePicker }
+                Section("Layers") { layerList }
+                Section("Bake") { BakeSection(document: document) }
+            } else if let surfaceBundle = document.surfaceBundle {
                 // A surface has no truncation, and its visibility is exact
                 // or read off its coordinates, so it has no depth tolerance
                 // to set. Its camera has the presets its bundle keeps.
@@ -188,6 +198,22 @@ struct Inspector: View {
     }
 
     // MARK: - provenance
+
+    @ViewBuilder
+    private func polyhedron(_ bundle: PolyhedronBundle) -> some View {
+        let solid = bundle.solid
+        let edges = solid.isDiagonal.filter { !$0 }.count
+        LabeledContent("Solid", value: bundle.manifest.provenance.function)
+        LabeledContent("Boundary", value: "\(solid.vertices.count) vertices, \(edges) edges, \(solid.faces.count) faces")
+        if let genus = solid.genus {
+            LabeledContent("Genus", value: "\(genus)" + (solid.isConvex ? ", convex" : ", not convex"))
+        } else {
+            LabeledContent("Shells", value: "\(solid.shellCount), χ = \(solid.eulerCharacteristic)")
+        }
+        if let status = document.polyhedronStatus {
+            Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+        }
+    }
 
     @ViewBuilder
     private func provenance(_ bundle: SurfaceBundle) -> some View {

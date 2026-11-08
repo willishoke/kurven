@@ -147,7 +147,8 @@ The angle is π/2 on a wall or a riser and 0 or π/2 on a plateau,
 to within a thousandth of a radian, and the tone is uniform at one width;
 anything else is refused, and so is hatching on a solid's faces or a curved
 face, which a landscape's manifest has none of (a parametric surface's names
-its one face, `surface`, for its contours).
+its one face, `surface`, for its contours, and a polyhedron's its faces,
+`solid`, for its hatching).
 
 ## Two speeds of edit
 

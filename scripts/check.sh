@@ -64,6 +64,26 @@ BIN="$PACKAGE/.build/release"
 step "swift lane" "$BIN/kurven-test"
 step "schema round trip" "$BIN/kurven-cli" contract "$ROOT/tests/fixtures/contract"
 
+# A polyhedron's hatching in four widths bakes to a stroke layer per width,
+# each dumped and listed by its name and the outline by its own; and a
+# resolution no depth buffer has is refused, saved or baked.
+cli() {
+    local dir="$PACKAGE/.build/cli-check" ico="$ROOT/tests/fixtures/contract/polyhedron_icosahedron.kurven"
+    rm -rf "$dir" && mkdir -p "$dir" || return 1
+    "$BIN/kurven-cli" bake "$ico" --outline 0.5 --dump "$dir/ico" -o "$dir/ico.svg" > "$dir/ico.txt" || return 1
+    for name in edges "hatching 1of4" "hatching 2of4" "hatching 3of4" "hatching 4of4" outline; do
+        [ -f "$dir/ico.$name.npy" ] && [ -f "$dir/ico.$name.idx.npy" ] || { echo "no dump of $name"; return 1; }
+    done
+    grep -q 'hatching 4/4 .* paths' "$dir/ico.txt" && grep -q 'outline .* from the depth buffer' "$dir/ico.txt" &&
+    [ "$(grep -c 'from the depth buffer' "$dir/ico.txt")" = 1 ] &&
+    grep -q '"layers":\["edges","hatching 1/4","hatching 2/4","hatching 3/4","hatching 4/4","outline"\]' \
+        "$dir/ico.frame.json" &&
+    ! "$BIN/kurven-cli" surface solid --kind cube --resolution 0 --save "$dir/zero.kurven" 2>/dev/null &&
+    ! "$BIN/kurven-cli" bake "$ico" --resolution 20001 -o "$dir/huge.svg" 2>/dev/null &&
+    [ ! -e "$dir/zero.kurven" ] && [ ! -e "$dir/huge.svg" ]
+}
+step "the CLI bakes a polyhedron's widths as layers of their own, and refuses a resolution no buffer has" cli
+
 # Written in place and compared with the commit, so the check needs no
 # scratch tree and a failure leaves the difference in the working copy to be
 # read with `git diff`. Untracked files count: a set that grew a file is a
@@ -81,7 +101,12 @@ step "the committed golden fixtures are what kurven-cli fixtures writes" golden
 # level slider's count, set before an edit of the request, stays on its
 # family through the edit and is saved, and the app's bake of the result is
 # the CLI's bake of the same bundle; and the contract's restyled surface,
-# edited, keeps its levels and the contours its request does not draw.
+# edited, keeps its levels and the contours its request does not draw. A
+# polyhedron likewise: the frame with Turing's hatching, saved by the CLI,
+# saved again by the app, reopened and baked, is `surface solid`'s drawing
+# byte for byte; and 40 strokes set as the hatching's slider sets them
+# (5.657 / 40 apart across the largest face) save and bake as `surface solid
+# --spacing` at that spacing saves and bakes, bundle and drawing.
 app() {
     local dir="$PACKAGE/.build/app-check"
     rm -rf "$dir" && mkdir -p "$dir" || return 1
@@ -104,9 +129,21 @@ app() {
     "$BIN/kurven-cli" inspect "$dir/d.kurven" > "$dir/d.txt" &&
     grep -q 'ang_major .* 4 levels of phase' "$dir/d.txt" &&
     grep -q 'mag_major .* 3 levels of magnitude' "$dir/d.txt" &&
-    grep -q '2 levels of v on' "$dir/d.txt" && grep -q '3 levels of height on' "$dir/d.txt"
+    grep -q '2 levels of v on' "$dir/d.txt" && grep -q '3 levels of height on' "$dir/d.txt" &&
+    "$BIN/kurven-cli" surface solid --kind frame --hatching turing --save "$dir/p.kurven" >/dev/null &&
+    "$BIN/kurven-cli" surface solid --kind frame --hatching turing -o "$dir/p.svg" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/p.kurven" --save "$dir/q.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/q.kurven" --bake "$dir/q.svg" >/dev/null &&
+    cmp "$dir/p.kurven/manifest.json" "$dir/q.kurven/manifest.json" &&
+    cmp "$dir/p.svg" "$dir/q.svg" &&
+    "$BIN/KurvenApp" "$dir/q.kurven" --strokes hatching=40 --save "$dir/r.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/r.kurven" --bake "$dir/r.svg" >/dev/null &&
+    "$BIN/kurven-cli" surface solid --kind frame --hatching turing --spacing 0.1414213562373095 \
+        --save "$dir/s.kurven" -o "$dir/s.svg" >/dev/null &&
+    cmp "$dir/r.kurven/manifest.json" "$dir/s.kurven/manifest.json" &&
+    cmp "$dir/r.svg" "$dir/s.svg"
 }
-step "the app saves, restyles and bakes a surface as the CLI does, with no window" app
+step "the app saves, restyles and bakes a surface and a polyhedron as the CLI does, with no window" app
 
 # The vocabulary: a word docs/glossary.md retired, back in the code or the
 # docs, in a file's text or its name. The hits are printed; the fix is the

@@ -43,9 +43,12 @@ enum Fixtures {
     }
 
     /// The contract bundles that hold a landscape: all but the parametric
-    /// surface's.
+    /// surfaces' and the polyhedra's.
     static var contractLandscapes: [URL] {
-        contractBundles.filter { !((try? SurfaceBundle.holdsSurface(at: $0)) ?? false) }
+        contractBundles.filter {
+            !((try? SurfaceBundle.holdsSurface(at: $0)) ?? false)
+                && !((try? PolyhedronBundle.holdsPolyhedron(at: $0)) ?? false)
+        }
     }
 }
 
@@ -54,7 +57,7 @@ enum Fixtures {
 func contractTests() {
     Check.suite("contract: every fixture manifest round trips byte for byte") {
         let bundles = Fixtures.contractBundles
-        Check.expect(bundles.count == 10, "ten fixture bundles are present",
+        Check.expect(bundles.count == 17, "seventeen fixture bundles are present",
                      "found \(bundles.count)")
         for b in bundles {
             let text = try String(contentsOf: b.appendingPathComponent("manifest.json"),
@@ -67,6 +70,17 @@ func contractTests() {
 
     Check.suite("contract: bundles decode into consistent values") {
         for url in Fixtures.contractBundles {
+            if try PolyhedronBundle.holdsPolyhedron(at: url) {
+                // A polyhedron's: its solid built from its vertices and loops,
+                // and every layer drawn on it.
+                let bundle = try PolyhedronBundle.read(at: url)
+                let ok = bundle.layers.map(\.spec) == bundle.manifest.layers
+                    && bundle.layers.allSatisfy {
+                        $0.paths.count > 0 && $0.paths.offsets.last == $0.paths.vertices.count
+                    }
+                Check.expect(ok, "\(url.lastPathComponent) decodes consistently, every layer drawn on its solid")
+                continue
+            }
             if try SurfaceBundle.holdsSurface(at: url) {
                 // A parametric surface's: its request built, and every layer
                 // drawn on it.
@@ -1396,6 +1410,7 @@ plateauCurveTests()
 wallStrokeTests()
 stressTests()
 solidTests()
+solidPlacementTests()
 occlusionTests()
 faceTests()
 hatchingTests()
@@ -1419,4 +1434,5 @@ continuedFractionTests()
 forcedTorusTests()
 surfaceDrawingTests()
 surfaceBundleTests()
+polyhedronBundleTests()
 exit(Check.summary())

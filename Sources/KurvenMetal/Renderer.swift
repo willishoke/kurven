@@ -210,10 +210,12 @@ public final class MetalRenderer {
 
     func resources(for scene: Scene) throws -> SceneResources {
         if let r = cachedResources, r.content == scene.content { return r }
-        guard let h = scene.heightfield else {
-            throw RendererError.unsupported("drawing this geometry as a heightfield")
+        let r: SceneResources
+        switch scene.geometry {
+        case .heightfield(let h): r = try SceneResources(scene: scene, heightfield: h, device: device)
+        case .solid(let s): r = try SceneResources(scene: scene, solid: s, device: device)
+        case .parametric: throw RendererError.unsupported("drawing a parametric surface as a heightfield")
         }
-        let r = try SceneResources(scene: scene, heightfield: h, device: device)
         cachedResources = r
         return r
     }

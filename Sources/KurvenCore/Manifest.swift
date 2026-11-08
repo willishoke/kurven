@@ -47,10 +47,11 @@ public enum ManifestError: Error, CustomStringConvertible, Equatable {
 /// bundles outside this repository.
 ///
 /// A manifest with a `surface` holds a parametric surface by the request that
-/// builds it (`SurfaceManifest`), not a landscape. It was added to schema 3
-/// without a bump: no key of a landscape's manifest changed, so every bundle
-/// that read before reads and writes as it did, and nothing outside this
-/// repository writes schema 3.
+/// builds it (`SurfaceManifest`), and one with a `polyhedron` a polyhedron by
+/// its vertices and loops (`PolyhedronManifest`), not a landscape. Both were
+/// added to schema 3 without a bump: no key of a landscape's manifest
+/// changed, so every bundle that read before reads and writes as it did, and
+/// nothing outside this repository writes schema 3.
 public let kurvenSchema = 3
 /// The axis convention every bundle states about itself. A bundle that says
 /// anything else is not readable by this code, and saying so up front is the
@@ -623,8 +624,8 @@ public enum LayerSource: Sendable, Equatable {
     /// (`Surface.contours(of:_:on:restriction:in:refine:)`).
     case contour(field: ContourField, levels: [Double], restriction: Restriction, faces: FaceSelector)
     /// Hatching (`Hatching`) laid on `faces`: a landscape's walls, risers
-    /// or plateaus, or every face of a solid, which a scene carries and a
-    /// manifest refuses: a manifest is a landscape's. The landscape's hatchings are
+    /// or plateaus, or every face of a solid, which a polyhedron's manifest
+    /// takes (`PolyhedronManifest`). The landscape's hatchings are
     /// descriptions rather than stored curves for the same reason contours
     /// are: dragging the truncation moves every plateau, and a plateau that
     /// moves is a different set of hatch lines. `Hatch.swift` derives them,
@@ -659,16 +660,39 @@ public enum LayerSource: Sendable, Equatable {
     case edges
 
     public init(json: JSONValue) throws {
-        try self.init(json: json, onSurface: false)
+        try self.init(json: json, on: .landscape)
     }
 
-    /// A layer of a landscape's manifest, or with `onSurface`, of a
-    /// parametric surface's (`SurfaceManifest`): a contour on its one face,
-    /// its coordinate curves, linear curves, fold curves or a trajectory.
-    /// Which fields and restrictions the surface admits its request decides.
-    init(json: JSONValue, onSurface: Bool) throws {
+    /// The geometry a manifest holds, which decides the layers it takes.
+    enum Geometry {
+        case landscape, surface, polyhedron
+    }
+
+    /// A layer of a manifest holding `geometry`. A landscape's takes any but
+    /// the faces of another geometry. A parametric surface's
+    /// (`SurfaceManifest`) takes a contour on its one face, its coordinate
+    /// curves, linear curves, fold curves or a trajectory; which fields and
+    /// restrictions the surface admits its request decides. A polyhedron's
+    /// (`PolyhedronManifest`) takes its edges and hatching on its faces.
+    init(json: JSONValue, on geometry: Geometry) throws {
         let o = try json.object("LayerSource")
         let kind = try o.string("kind", "LayerSource")
+        let onSurface = geometry == .surface
+        if geometry == .polyhedron {
+            switch kind {
+            case "edges", "hatching":
+                break
+            case "file":
+                throw ManifestError.unsupported("a dumped layer on a polyhedron: its edges and hatching are drawn "
+                                                + "from its faces, not stored")
+            case "contour":
+                throw ManifestError.unsupported("a contour on a polyhedron's faces: a polyhedron draws its edges and "
+                                                + "hatching")
+            default:
+                throw ManifestError.unsupported("a \(kind) layer on a polyhedron: its curves are its edges and "
+                                                + "hatching on its faces")
+            }
+        }
         if onSurface {
             switch kind {
             case "contour", "coordinateCurves", "linearCurves", "foldCurves", "trajectory":
@@ -707,6 +731,15 @@ public enum LayerSource: Sendable, Equatable {
             }
             self = .contour(field: field, levels: try o.doubles("levels", "LayerSource.contour"),
                             restriction: restriction, faces: faces)
+        case "hatching" where geometry == .polyhedron:
+            let faces = try FaceSelector(json: o.value("faces", "LayerSource.hatching"))
+            guard faces == .solid else {
+                throw ManifestError.unsupported("hatching on the \(faces.name) of a polyhedron: it is laid on "
+                                                + "the solid's faces, `solid`")
+            }
+            let hatching = try Hatching(fields: o)
+            if let why = faces.unsupported(hatching) { throw ManifestError.unsupported(why) }
+            self = .hatching(hatching, faces: faces)
         case "hatching":
             let faces = try LayerSource.landscapeFaces(o, "LayerSource.hatching")
             if o["step"] != nil { throw LayerSource.landscapeStep }
@@ -760,7 +793,7 @@ public enum LayerSource: Sendable, Equatable {
         case .graph, .plateaus, .walls, .risers:
             return faces
         case .surface, .solid:
-            throw ManifestError.unsupported("a layer on a \(faces.name)'s faces: a manifest holds a landscape, "
+            throw ManifestError.unsupported("a layer on a \(faces.name)'s faces: this manifest holds a landscape, "
                                             + "with a graph, plateaus, walls and risers")
         }
     }
@@ -872,12 +905,11 @@ public struct LayerSpec: Sendable, Equatable {
     }
 
     public init(json: JSONValue) throws {
-        try self.init(json: json, onSurface: false)
+        try self.init(json: json, on: .landscape)
     }
 
-    /// A layer of a landscape's manifest, or with `onSurface` of a parametric
-    /// surface's (`LayerSource.init(json:onSurface:)`).
-    init(json: JSONValue, onSurface: Bool) throws {
+    /// A layer of a manifest holding `geometry` (`LayerSource.init(json:on:)`).
+    init(json: JSONValue, on geometry: LayerSource.Geometry) throws {
         let o = try json.object("LayerSpec")
         let roleText = try o.string("role", "LayerSpec")
         guard let role = LayerRole(rawValue: roleText) else {
@@ -890,7 +922,7 @@ public struct LayerSpec: Sendable, Equatable {
                                             known: HeightPolicy.allCases.map(\.rawValue))
         }
         self.init(name: try o.string("name", "LayerSpec"), role: role,
-                  source: try LayerSource(json: o.value("source", "LayerSpec"), onSurface: onSurface),
+                  source: try LayerSource(json: o.value("source", "LayerSpec"), on: geometry),
                   width: try o.double("width", "LayerSpec"),
                   heightPolicy: policy,
                   color: (try? o.string("color", "LayerSpec")) ?? "#000000",
@@ -954,12 +986,26 @@ public struct CameraPreset: Sendable, Equatable {
         self.buffer = buffer
     }
 
+    /// The finest depth buffer a preset asks for, along its longer side:
+    /// gamma's published bake, whose stitched buffer is 1.6 GB.
+    public static let maxBuffer = 20_000
+
+    /// Why `buffer` is no depth buffer's resolution, or nil when it is one:
+    /// at least a pixel, at most `maxBuffer`.
+    public static func unsupported(buffer: Int) -> String? {
+        (1...maxBuffer).contains(buffer) ? nil : "must be 1 to \(maxBuffer) pixels, not \(buffer)"
+    }
+
     init(json: JSONValue) throws {
         let o = try json.object("CameraPreset")
+        let buffer = try o.int("buffer", "CameraPreset")
+        if let why = CameraPreset.unsupported(buffer: buffer) {
+            throw ManifestError.invalid("a preset's buffer \(why)")
+        }
         self.init(name: try o.string("name", "CameraPreset"),
                   projection: try ObliqueProjection(json: o.value("projection", "CameraPreset")),
                   depthTolerance: try o.double("depthTolerance", "CameraPreset"),
-                  buffer: try o.int("buffer", "CameraPreset"))
+                  buffer: buffer)
     }
     var json: JSONValue {
         .object(["name": .string(name), "projection": projection.json,
@@ -1036,6 +1082,10 @@ public struct Manifest: Sendable, Equatable {
         guard o["surface"] == nil else {
             throw ManifestError.unsupported("a parametric surface, not a landscape: its bundle is built from its "
                                             + "request (`SurfaceManifest`, `SurfaceBundle`)")
+        }
+        guard o["polyhedron"] == nil else {
+            throw ManifestError.unsupported("a polyhedron, not a landscape: its bundle is its vertices and loops "
+                                            + "(`PolyhedronManifest`, `PolyhedronBundle`)")
         }
         axes = try o.strings("axes", "Manifest")
         guard axes == kurvenAxes else {
@@ -1121,10 +1171,14 @@ public struct SurfaceManifest: Sendable, Equatable {
         }
         if let key = ["axes", "domain", "height", "phase", "truncation", "occluder"].first(where: { o[$0] != nil }) {
             throw ManifestError.unsupported("a parametric surface with a landscape's \(key): a manifest holds one "
-                                            + "geometry, a landscape or a parametric surface")
+                                            + "geometry, a landscape, a parametric surface or a polyhedron")
+        }
+        guard o["polyhedron"] == nil else {
+            throw ManifestError.unsupported("a parametric surface with a polyhedron: a manifest holds one geometry, "
+                                            + "a landscape, a parametric surface or a polyhedron")
         }
         surface = try SurfaceRequest(json: o.value("surface", "SurfaceManifest"))
-        layers = try o.array("layers", "SurfaceManifest").map { try LayerSpec(json: $0, onSurface: true) }
+        layers = try o.array("layers", "SurfaceManifest").map { try LayerSpec(json: $0, on: .surface) }
         presets = try o.array("presets", "SurfaceManifest").map(CameraPreset.init(json:))
         provenance = try Provenance(json: o.value("provenance", "SurfaceManifest"))
         var names = Set<String>()
@@ -1188,23 +1242,232 @@ public struct SurfaceManifest: Sendable, Equatable {
     }
 }
 
-/// A bundle's manifest, by what it holds: a landscape (`Manifest`), or a
-/// parametric surface by the request that builds it (`SurfaceManifest`). One
-/// schema, told apart by key: a manifest with a `surface` is a parametric
-/// surface's, any other a landscape's.
+// MARK: - a polyhedron's manifest
+
+/// A polyhedron's manifest: its vertices and its faces' loops, as
+/// `Solid(vertices:faces:)` takes them, the curves drawn on it, its camera
+/// presets and where it came from. A polyhedron is stored as its geometry,
+/// not as the request that built it: the vertices and loops are its exact
+/// boundary representation, they are small, and they hold solids no named
+/// kind builds. Like a parametric surface's, the bundle is this file alone.
+///
+/// Its layers are its edges and hatching on its faces (`FaceSelector.solid`).
+/// The geometry is checked as the solid is built (`Solid.init(checking:faces:)`),
+/// and everything that drives work is bounded: the vertices, the corners of a
+/// face and of all of them, the layers, and what the hatchings lay
+/// (`unsupported(_:on:)`), so no manifest traps or costs without bound.
+public struct PolyhedronManifest: Sendable, Equatable {
+    public var schema: Int
+    public var solid: Solid
+    public var layers: [LayerSpec]
+    public var presets: [CameraPreset]
+    public var provenance: Provenance
+
+    public init(solid: Solid, layers: [LayerSpec], presets: [CameraPreset], provenance: Provenance) {
+        self.schema = kurvenSchema
+        self.solid = solid; self.layers = layers; self.presets = presets
+        self.provenance = provenance
+    }
+
+    /// The most vertices a polyhedron's manifest holds.
+    public static let maxVertices = 1 << 12
+    /// The most corners one face's loops have together, and all the faces'.
+    /// A face is cut into convex pieces in time quadratic in its corners,
+    /// and the edges are tested against every piece.
+    public static let maxFaceCorners = 1 << 10, maxCorners = 1 << 14
+    /// The most layers: each is drawn for every camera.
+    public static let maxLayers = 64
+    /// The most hatch lines the hatchings lay together, the most times they
+    /// read their tones, and the most times a hatch line changes width,
+    /// reckoned from each face's extent. A change is found by bisecting the
+    /// tone between two readings, some sixty readings more, and starts a
+    /// stroke of its own.
+    public static let maxHatchLines = 1 << 16, maxReadings = 1 << 20, maxWidthChanges = 1 << 20
+    /// The most widths a hatch line has: a width step is a layer of the
+    /// bake, and a change of width between two readings is bisected.
+    public static let maxWidthSteps = 16
+
+    public init(json: JSONValue) throws {
+        let o = try json.object("PolyhedronManifest")
+        schema = try o.int("schema", "PolyhedronManifest")
+        guard schema == kurvenSchema else {
+            throw ManifestError.unsupportedSchema(schema, supported: kurvenSchema)
+        }
+        if let key = ["axes", "domain", "height", "phase", "truncation", "occluder"].first(where: { o[$0] != nil }) {
+            throw ManifestError.unsupported("a polyhedron with a landscape's \(key): a manifest holds one geometry, "
+                                            + "a landscape, a parametric surface or a polyhedron")
+        }
+        guard o["surface"] == nil else {
+            throw ManifestError.unsupported("a polyhedron with a parametric surface: a manifest holds one geometry, "
+                                            + "a landscape, a parametric surface or a polyhedron")
+        }
+        solid = try PolyhedronManifest.solid(json: o.value("polyhedron", "PolyhedronManifest"))
+        let layerList = try o.array("layers", "PolyhedronManifest")
+        guard layerList.count <= Self.maxLayers else {
+            throw ManifestError.invalid("a polyhedron with \(layerList.count) layers, more than the \(Self.maxLayers) "
+                                        + "it holds")
+        }
+        layers = try layerList.map { try LayerSpec(json: $0, on: .polyhedron) }
+        presets = try o.array("presets", "PolyhedronManifest").map(CameraPreset.init(json:))
+        provenance = try Provenance(json: o.value("provenance", "PolyhedronManifest"))
+        if let why = PolyhedronManifest.unsupported(layers, on: solid) { throw ManifestError.invalid(why) }
+    }
+
+    /// The solid a manifest's `polyhedron` spells, counted before it is
+    /// built and checked as it is (`Solid.init(checking:faces:)`).
+    static func solid(json: JSONValue) throws -> Solid {
+        let o = try json.object("PolyhedronManifest.polyhedron")
+        let what = "PolyhedronManifest.polyhedron"
+        let points = try o.array("vertices", what)
+        guard points.count <= maxVertices else {
+            throw ManifestError.invalid("polyhedron.vertices: \(points.count) vertices, more than the \(maxVertices) "
+                                        + "a polyhedron holds")
+        }
+        let vertices = try points.enumerated().map { k, point -> P3<WorldSpace> in
+            let c = try point.doubles("vertices[\(k)]", what)
+            guard c.count == 3 else { throw ManifestError.badShape("polyhedron.vertices[\(k)]", [c.count]) }
+            // A coordinate the depth pass's single precision holds.
+            guard c.allSatisfy({ $0.isFinite && abs($0) <= Double(Float.greatestFiniteMagnitude) }) else {
+                throw ManifestError.invalid("polyhedron.vertices[\(k)] is not a finite point: \(c)")
+            }
+            return P3(c[0], c[1], c[2])
+        }
+        var corners = 0
+        let faces = try o.array("faces", what).enumerated().map { i, face -> [[Int]] in
+            guard case .array(let loops) = face else {
+                throw JSONError.wrongType("faces[\(i)]", expected: "an array of loops", found: what)
+            }
+            let face = try loops.map { try $0.ints("faces[\(i)]", what) }
+            let count = face.reduce(0) { $0 + $1.count }
+            corners += count
+            guard count <= maxFaceCorners, corners <= maxCorners else {
+                throw ManifestError.invalid("polyhedron.faces[\(i)]: more corners than a polyhedron holds, "
+                                            + "\(maxFaceCorners) a face and \(maxCorners) in all")
+            }
+            return face
+        }
+        do {
+            return try Solid(checking: vertices, faces: faces)
+        } catch let error as SolidError {
+            throw ManifestError.invalid("polyhedron: \(error)")
+        }
+    }
+
+    /// Why layers cannot be drawn on `solid`, or nil when they can: a layer
+    /// other than its edges or hatching on its faces, a width that is not a
+    /// number of at least 0, two layers of one name, more widths than
+    /// `maxWidthSteps`, or hatchings that together would lay more lines,
+    /// read their tones more often or change width more often than
+    /// `maxHatchLines`, `maxReadings` and `maxWidthChanges` allow. Each is
+    /// reckoned per face from its extent: at most `extent / spacing + 1`
+    /// lines, each at most `extent / step + 1` readings, and, under Turing's
+    /// pattern at `scale`, at most `Turing.slope × widthSteps × extent /
+    /// scale + 1` changes of width, since a change is a crossing of one of
+    /// the tone's `widthSteps` levels and the tone moves at most
+    /// `Turing.slope / scale` per unit along a line. Uniform and half-Lambert
+    /// tones are constant on a face, and change nothing. The CLI's flags and
+    /// the app's restyles are held to the same rule.
+    public static func unsupported(_ layers: [LayerSpec], on solid: Solid) -> String? {
+        var names = Set<String>()
+        var lines = 0.0, readings = 0.0, changes = 0.0
+        for layer in layers {
+            func refuse(_ why: String) -> String { "layer '\(layer.name)': \(why)" }
+            // A layer is kept across a restyle, and its slider found, by
+            // its name.
+            guard names.insert(layer.name).inserted else {
+                return "two layers named '\(layer.name)': a polyhedron's layers are told apart by name"
+            }
+            guard layer.width.isFinite, layer.width >= 0 else {
+                return refuse("a width must be a number not below 0, not \(layer.width)")
+            }
+            switch layer.source {
+            case .edges:
+                continue
+            case .hatching(let hatching, .solid):
+                if let why = FaceSelector.solid.unsupported(hatching) { return refuse(why) }
+                guard hatching.widthSteps <= maxWidthSteps else {
+                    return refuse("hatching in \(hatching.widthSteps) widths, more than the \(maxWidthSteps) a "
+                                  + "hatch line has")
+                }
+                // How fast the tone moves along a line, per unit of length.
+                let slope: Double
+                switch hatching.tone {
+                case .uniform, .halfLambert: slope = 0
+                case .turing(let scale, _): slope = Turing.slope / scale
+                }
+                for frame in solid.frames {
+                    let across = frame.extent / hatching.spacing + 1
+                    lines += across
+                    readings += across * (frame.extent / hatching.step + 1)
+                    if slope > 0 { changes += across * (slope * Double(hatching.widthSteps) * frame.extent + 1) }
+                }
+            default:
+                return refuse("a polyhedron draws its edges and hatching on its faces")
+            }
+        }
+        guard lines <= Double(maxHatchLines) else {
+            return "the hatchings would lay " + String(format: "%.3g", lines) + " lines, more than the "
+                + "\(maxHatchLines) a polyhedron's hatchings lay"
+        }
+        guard readings <= Double(maxReadings) else {
+            return "the hatchings would read their tones " + String(format: "%.3g", readings) + " times, more than "
+                + "the \(maxReadings) a polyhedron's hatchings read"
+        }
+        guard changes <= Double(maxWidthChanges) else {
+            return "the hatchings would change width " + String(format: "%.3g", changes) + " times, more than the "
+                + "\(maxWidthChanges) a polyhedron's hatchings change: Turing's pattern is too fine for its lines"
+        }
+        return nil
+    }
+
+    public var json: JSONValue {
+        .object(["schema": .int(schema),
+                 "polyhedron": .object([
+                    "vertices": .array(solid.vertices.map { .array([.double($0.x), .double($0.y), .double($0.z)]) }),
+                    "faces": .array(solid.loops.map { .array($0.map { .array($0.map(JSONValue.int)) }) }),
+                 ]),
+                 "layers": .array(layers.map(\.json)),
+                 "presets": .array(presets.map(\.json)),
+                 "provenance": provenance.json])
+    }
+
+    /// Canonical JSON with a trailing newline, as a landscape's manifest writes.
+    public var canonicalJSON: String { json.canonical + "\n" }
+
+    public func preset(_ name: String) throws -> CameraPreset {
+        guard let p = presets.first(where: { $0.name == name }) else {
+            throw ManifestError.noSuchPreset(name, have: presets.map(\.name))
+        }
+        return p
+    }
+}
+
+/// A bundle's manifest, by what it holds: a landscape (`Manifest`), a
+/// parametric surface by the request that builds it (`SurfaceManifest`), or a
+/// polyhedron by its vertices and loops (`PolyhedronManifest`). One schema,
+/// told apart by key: a manifest with a `surface` is a parametric surface's,
+/// one with a `polyhedron` a polyhedron's, any other a landscape's.
 public enum BundleManifest: Sendable, Equatable {
     case landscape(Manifest)
     case surface(SurfaceManifest)
+    case polyhedron(PolyhedronManifest)
 
     public init(json: JSONValue) throws {
         let o = try json.object("Manifest")
-        self = o["surface"] == nil ? .landscape(try Manifest(json: json)) : .surface(try SurfaceManifest(json: json))
+        self = if o["polyhedron"] != nil {
+            .polyhedron(try PolyhedronManifest(json: json))
+        } else if o["surface"] != nil {
+            .surface(try SurfaceManifest(json: json))
+        } else {
+            .landscape(try Manifest(json: json))
+        }
     }
 
     public var canonicalJSON: String {
         switch self {
         case .landscape(let m): m.canonicalJSON
         case .surface(let m): m.canonicalJSON
+        case .polyhedron(let m): m.canonicalJSON
         }
     }
 }

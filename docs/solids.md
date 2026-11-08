@@ -16,11 +16,18 @@ kurven-cli surface solid --kind dodecahedron --hatching half-lambert --width-ste
 A `Solid` is given as vertices and its faces in boundary representation,
 each face as its loops (`Solid(vertices:faces:)`): the outer loop
 counter-clockwise seen from outside, then one loop per hole, clockwise. The
-constructor checks that every face is flat, that no two loops of a face
-share a vertex, that every edge is shared by exactly two faces in opposite
-directions, that the signed volume is positive, and that no two faces
-sharing an edge lie in one plane (they would be one face); anything else is
-refused.
+constructor checks that every index names a vertex and every vertex is a
+finite point on some face, that every face is flat and encloses some area, that no side
+of a face has no length, crosses another or passes through a vertex of it,
+that no two loops of a face share a vertex, that every edge is shared by
+exactly two faces in opposite directions, that the signed volume is
+positive, and that no two faces sharing an edge lie in one plane (they
+would be one face); anything else is refused, with the reason
+(`Solid(checking:faces:)`). It does not check that two faces apart from
+each other do not pass through each other. It accepts a boundary of more
+than one shell, two solids apart or one with a cavity, whose genus is then
+not one number: `inspect` and the app give its shells and its Euler
+characteristic instead.
 
 A face is flat when every vertex lies within its *flatness tolerance* of
 the face's plane: a billionth of the face's extent, the diagonal of its
@@ -131,6 +138,29 @@ f(x, y) = Σ U(r, s) exp(−((x − hr)² + (y − hs)²)/2) with h = 0.7 and ea
 U(r, s) = ±1. The signs come from a hash of the lattice point and a seed,
 so the pattern is defined on the whole plane with no array behind it. It is
 not a simulation of reaction and diffusion.
+
+## In a bundle
+
+`surface solid --save PATH` writes the solid as a `.kurven` bundle: a
+manifest holding its vertices and its faces' loops, exactly what
+`Solid(vertices:faces:)` takes, with its layers and the camera it was
+drawn from (`PolyhedronManifest`, `PolyhedronBundle`). The geometry is
+stored rather than the kind that built it, since it is the solid's exact
+boundary representation, it is small, and it holds solids no kind builds.
+`bake` draws the bundle as `surface solid` draws the solid, byte for byte.
+
+Its layers are its edges and hatching on its faces (`"faces": {"kind":
+"solid"}`). Reading it builds the solid, so loops that bound none are
+refused with the constructor's reason, and everything that drives work is
+bounded: 4096 vertices, 1024 corners to a face and 16384 in all, 64 layers,
+16 widths to a hatch line, a preset's buffer of 20000 pixels, and, reckoned
+from each face's extent, 65536 hatch lines, 2²⁰ readings of the tone and
+2²⁰ changes of width across all its hatchings. A change of width is found
+by bisecting the tone between two readings and starts a stroke of its own;
+under Turing's pattern at a scale s, the tone moves at most 3.2 / s per
+unit along a line (`Turing.slope`), so a line of length ℓ in n widths
+changes about 3.2 n ℓ / s times, however often it is read. The CLI's flags
+are held to the same rule.
 
 Hatching on a landscape's walls, risers and plateaus is the same `Hatching`
 value laid on different faces (`FaceSelector`). There, lines are vertical on

@@ -500,6 +500,119 @@ func solidTests() {
                      "a path on the far wall that dips out of sight is drawn as its two seen ends",
                      "\(drawn.map { $0.map(\.v) })")
     }
+
+    Check.suite("solids: loops that bound no solid are refused, saying why, not trapped on") {
+        // A cube 2 on a side, its corners 0-3 below and 4-7 above, each
+        // counter-clockwise from above, and its faces outward; each case
+        // breaks it in one way.
+        let corners: [P3<WorldSpace>] = [P3(0, 0, 0), P3(2, 0, 0), P3(2, 2, 0), P3(0, 2, 0),
+                                         P3(0, 0, 2), P3(2, 0, 2), P3(2, 2, 2), P3(0, 2, 2)]
+        let cube: [[[Int]]] = [[[0, 3, 2, 1]], [[4, 5, 6, 7]], [[0, 1, 5, 4]], [[1, 2, 6, 5]],
+                               [[2, 3, 7, 6]], [[3, 0, 4, 7]]]
+        Check.expect((try? Solid(checking: corners, faces: cube))?.eulerCharacteristic == 2,
+                     "the cube itself is a solid, χ = 2")
+        func refused(_ what: String, _ vertices: [P3<WorldSpace>], _ faces: [[[Int]]], saying phrase: String) {
+            do {
+                _ = try Solid(checking: vertices, faces: faces)
+                Check.expect(false, "refuses \(what)", "built a solid")
+            } catch {
+                Check.expect("\(error)".contains(phrase), "refuses \(what)", "\(error)")
+            }
+        }
+        func with(_ face: Int, _ loops: [[Int]]) -> [[[Int]]] {
+            var faces = cube; faces[face] = loops; return faces
+        }
+        // A square hole in the top, 0.5 to 1.5, for the cases about holes.
+        let holed = corners + [P3(0.5, 0.5, 2), P3(1.5, 0.5, 2), P3(1.5, 1.5, 2), P3(0.5, 1.5, 2),
+                               P3(3, 0.5, 2), P3(3.5, 0.5, 2), P3(3.5, 1, 2), P3(1, 0, 2), P3(1, 0.5, 2)]
+        refused("no faces", corners, [], saying: "has none")
+        refused("a face with no loop", corners, with(1, []), saying: "no loop")
+        refused("a loop of two vertices", corners, with(1, [[4, 5]]), saying: "at least three")
+        refused("a vertex index past the last", corners, with(1, [[4, 5, 6, 8]]), saying: "names vertex 8")
+        refused("a negative vertex index", corners, with(1, [[4, 5, 6, -1]]), saying: "names vertex -1")
+        var nan = corners; nan[6] = P3(2, 2, .nan)
+        refused("a coordinate that is not a number", nan, cube, saying: "not a finite point")
+        var infinite = corners; infinite[2] = P3(.infinity, 2, 0)
+        refused("an infinite coordinate", infinite, cube, saying: "not a finite point")
+        refused("a side from a vertex to itself", corners, with(1, [[4, 5, 5, 6, 7]]), saying: "no length")
+        refused("a side between two vertices at one point", corners + [P3(2, 0, 2)],
+                with(1, [[4, 5, 8, 6, 7]]), saying: "no length")
+        refused("two loops of a face sharing a vertex", holed, with(1, [[4, 5, 6, 7], [8, 4, 10]]),
+                saying: "share vertex 4")
+        refused("a face of no area", corners + [P3(4, 0, 2)], with(1, [[4, 5, 8]]), saying: "encloses no area")
+        var bent = corners; bent[6] = P3(2, 2, 2.1)
+        refused("a face that is not flat", bent, cube, saying: "not flat")
+        refused("a hole running the same way as its face", holed, with(1, [[4, 5, 6, 7], [8, 9, 10, 11]]),
+                saying: "runs the same way")
+        refused("a hole outside its face", holed, with(1, [[4, 5, 6, 7], [12, 14, 13]]), saying: "not inside it")
+        refused("a loop that crosses itself", corners + [P3(1, -0.5, 2)], with(1, [[4, 5, 6, 7, 8]]),
+                saying: "cross")
+        refused("a hole whose vertex lies on the outer loop's side", holed,
+                with(1, [[4, 5, 6, 7], [15, 16, 9]]), saying: "lies on side 4-5")
+        refused("a vertex on no face", corners + [P3(1e6, 1e6, 1e6)], cube, saying: "vertex 8 lies on no face")
+        refused("an open surface", corners, Array(cube.dropLast()), saying: "not closed")
+        refused("a face turned the other way from its neighbours", corners,
+                with(1, [[7, 6, 5, 4]]), saying: "traversed twice the same way")
+        refused("faces all turned inward", corners, cube.map { $0.map { Array($0.reversed()) } },
+                saying: "oriented inward")
+        let split = corners + [P3(1, 0, 2), P3(1, 2, 2)]
+        refused("two faces in one plane", split,
+                [[[0, 3, 2, 1]], [[4, 8, 9, 7]], [[8, 5, 6, 9]], [[0, 1, 5, 8, 4]], [[1, 2, 6, 5]],
+                 [[2, 3, 7, 9, 6]], [[3, 0, 4, 7]]], saying: "in one plane")
+    }
+}
+
+func solidPlacementTests() {
+    Check.suite("solids: a boundary of several shells has no one genus") {
+        let cube = Solid.platonic(.cube, circumradius: 1)
+        let frame = Solid.frame(outer: 4, inner: 2, depth: 0.8)
+        let apart = Solid(vertices: cube.vertices + cube.vertices.map { P3($0.v + SIMD3(5, 0, 0)) },
+                          faces: cube.loops + cube.loops.map { $0.map { $0.map { $0 + 8 } } })
+        // A cube 4 across with a cube 2 across hollowed out of it: the inner
+        // shell's faces turned to face into the cavity.
+        let hollow = Solid(vertices: cube.vertices.map { P3(2 * $0.v) } + cube.vertices,
+                           faces: cube.loops + cube.loops.map { $0.map { $0.reversed().map { $0 + 8 } } })
+        Check.expect(cube.shellCount == 1 && cube.genus == 0 && frame.shellCount == 1 && frame.genus == 1,
+                     "a cube is one shell of genus 0, the frame one of genus 1")
+        Check.expect(apart.shellCount == 2 && apart.genus == nil && apart.eulerCharacteristic == 4,
+                     "two cubes apart are two shells, χ = 4, and no genus",
+                     "\(apart.shellCount) shells, χ = \(apart.eulerCharacteristic)")
+        Check.expect(hollow.shellCount == 2 && hollow.genus == nil && hollow.eulerCharacteristic == 4,
+                     "a cube with a cavity is two shells, χ = 4, and no genus",
+                     "\(hollow.shellCount) shells, χ = \(hollow.eulerCharacteristic)")
+    }
+
+    Check.suite("solids: a solid far from the origin draws what it draws at the origin") {
+        // The occlusion test's tolerances are fractions of the solid's own
+        // size in view, not of its distance from the origin: a frame moved a
+        // million away bakes the same edges and hatching, moved with it.
+        let frame = Solid.frame(outer: 4, inner: 2, depth: 0.8)
+        let hatching = Hatching(angle: .pi / 6, spacing: 0.035, tone: .turing(scale: 0.18, seed: 3), widthSteps: 4)
+        let camera = Camera.oblique(SurfaceRequest.projection)
+        func strokes(_ solid: Solid) -> [[SIMD3<Double>]] {
+            let edges = LayerSpec(name: "edges", role: .outline, source: .edges, width: 0.6, heightPolicy: .surface)
+            let hatch = LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching, faces: .solid),
+                                  width: 0.5, heightPolicy: .surface)
+            let scene = Scene(solid: solid, layers: [Layer(spec: edges, paths: solid.edgePaths),
+                                                     Layer(spec: hatch, paths: solid.hatchPaths(hatching))],
+                              camera: camera)
+            return scene.visibleLayers().flatMap { _, seen in
+                (0..<seen.count).map { seen[path: $0].map { camera.view.inverse(P3<ViewSpace>($0.v)).v } }
+            }
+        }
+        let near = strokes(frame)
+        for shift in [SIMD3(1e6, 0, 0), SIMD3(-3e5, 2e5, 1e5)] {
+            let far = strokes(frame.transformed(rotation: matrix_identity_double3x3, translation: shift))
+            var worst = 0.0
+            for (a, b) in zip(near, far) {
+                guard a.count == b.count else { worst = .infinity; break }
+                for (p, q) in zip(a, b) { worst = max(worst, simd_length(p + shift - q)) }
+            }
+            Check.expect(near.count > 2000 && far.count == near.count && worst < 1e-6,
+                         "moved by \(shift), the frame's \(near.count) strokes are drawn, each moved with it",
+                         "\(far.count) strokes, the farthest \(worst) off")
+        }
+    }
 }
 
 // MARK: - partition

@@ -77,14 +77,39 @@ final class SceneResources {
 
         // Walls are expanded to a flat vertex list once. They are a few thousand
         // triangles, so an index buffer would save little and cost a binding.
-        let wallVertices = h.occluder.triangles.flatMap { t in
-            t.indices.map { i in
-                KVVertex(position: SIMD3<Float>(h.occluder.vertices[Int(t[i])].v))
-            }
-        }
+        let wallVertices = SceneResources.flattened(h.occluder)
         wallVertexCount = wallVertices.count
         walls = wallVertices.isEmpty
             ? nil : try SceneResources.buffer(wallVertices, "wall vertices", device)
+    }
+
+    /// A solid's: no heightfield, and its pieces, fanned into triangles
+    /// (`Solid.mesh`), drawn by the walls' pipelines, as a bake's depth pass
+    /// draws them. The height texture is a single sample no pass reads.
+    init(scene: Scene, solid: Solid, device: MTLDevice) throws {
+        content = scene.content
+        let none = Domain(real: Interval(lo: 0, hi: 1), imag: Interval(lo: 0, hi: 1))
+        heights = try SceneResources.upload(Grid2D(width: 1, height: 1, domain: none, values: [0]), device: device)
+        truncationBaked = false
+        decimatedWidth = 0
+        decimatedHeight = 0
+        decimatedDomain = none
+        gridWidth = 0
+        gridHeight = 0
+        tiles = try SceneResources.buffer([KVTile(linear: SIMD4(1, 0, 0, 1), offset: .zero)], "tile transforms", device)
+        tileCount = 0
+        regionCount = 0
+        region = try SceneResources.buffer([SIMD2<Float>.zero], "the region polygon", device)
+        let faces = SceneResources.flattened(solid.mesh)
+        wallVertexCount = faces.count
+        walls = faces.isEmpty ? nil : try SceneResources.buffer(faces, "the solid's vertices", device)
+    }
+
+    /// A mesh's triangles as a flat vertex list, three to a triangle.
+    private static func flattened(_ mesh: Mesh<WorldSpace>) -> [KVVertex] {
+        mesh.triangles.flatMap { t in
+            t.indices.map { i in KVVertex(position: SIMD3<Float>(mesh.vertices[Int(t[i])].v)) }
+        }
     }
 
     private static func upload(_ grid: Grid2D<Float>, device: MTLDevice) throws -> MTLTexture {

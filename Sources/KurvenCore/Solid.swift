@@ -69,57 +69,96 @@ public struct Solid: Sendable, Equatable {
         public let left: Int, right: Int
     }
 
-    /// - Precondition: every face is flat and its loops bound a region of
-    ///   its plane; no two loops of a face share a vertex; every edge lies
-    ///   in exactly two faces, traversed in
-    ///   opposite directions -- the surface is closed and consistently
-    ///   oriented -- and the orientation is outward (the signed volume is
-    ///   positive); no two faces that share an edge lie in one plane, since
-    ///   then they are one face.
+    /// - Precondition: the loops bound a solid (`init(checking:faces:)`).
     public init(vertices: [P3<WorldSpace>], faces loops: [[[Int]]]) {
-        precondition(loops.allSatisfy { !$0.isEmpty && $0.allSatisfy { $0.count >= 3 } },
-                     "a face has an outer loop, and every loop at least three vertices")
+        do { self = try Solid(checking: vertices, faces: loops) }
+        catch { preconditionFailure("\(error)") }
+    }
+
+    /// The solid `loops` bound, or why they bound none (`SolidError`): every
+    /// index names a vertex and every vertex is a finite point; a face has an
+    /// outer loop and every loop at least three vertices, every vertex lies
+    /// on a face, no side of no
+    /// length, and no side that crosses another of its face or passes
+    /// through a vertex of it; no two loops of a face share a vertex; every
+    /// face is flat and encloses some area, and its holes run against its
+    /// outer loop and lie inside it; every edge lies in exactly two faces,
+    /// traversed in opposite directions -- the surface is closed and
+    /// consistently oriented -- and the orientation is outward (the signed
+    /// volume is positive); no two faces that share an edge lie in one plane,
+    /// since then they are one face. What it does not check is that two
+    /// faces apart from each other do not pass through each other.
+    public init(checking vertices: [P3<WorldSpace>], faces loops: [[[Int]]]) throws {
+        guard !loops.isEmpty else { throw SolidError("a solid has faces, and this has none") }
+        for (i, face) in loops.enumerated() {
+            guard !face.isEmpty else { throw SolidError("face \(i) has no loop") }
+            for (l, loop) in face.enumerated() {
+                guard loop.count >= 3 else {
+                    throw SolidError("face \(i): loop \(l) has \(loop.count) vertices, and a loop has at least three")
+                }
+                if let k = loop.first(where: { !vertices.indices.contains($0) }) {
+                    throw SolidError("face \(i): loop \(l) names vertex \(k), and there are \(vertices.count)")
+                }
+            }
+        }
+        if let k = vertices.firstIndex(where: { !($0.x.isFinite && $0.y.isFinite && $0.z.isFinite) }) {
+            throw SolidError("vertex \(k) is not a finite point: \(vertices[k].v)")
+        }
         self.vertices = vertices
         self.loops = loops
         // Each face cut into convex pieces in its own frame.
         var pieces: [[Int]] = [], faces: [[Int]] = [], faceOfPiece: [Int] = []
         var frames: [FaceFrame] = []
         for (i, face) in loops.enumerated() {
+            for (l, loop) in face.enumerated() {
+                for k in loop.indices where vertices[loop[k]] == vertices[loop[(k + 1) % loop.count]] {
+                    throw SolidError("face \(i): loop \(l) has a side of no length, from vertex \(loop[k]) "
+                                     + "to vertex \(loop[(k + 1) % loop.count])")
+                }
+            }
             // A loop is one component of the face's boundary. Where the face
             // touches itself at a vertex, that component passes the vertex
             // twice, so it is one loop, not two that share the vertex.
             for l in face.indices {
                 for m in face.indices where m > l {
                     guard let k = Set(face[l]).intersection(face[m]).min() else { continue }
-                    preconditionFailure("face \(i): loops \(l) and \(m) share vertex \(k). Where a face touches "
-                                        + "itself at a vertex, write its boundary there as one loop that passes "
-                                        + "the vertex twice")
+                    throw SolidError("face \(i): loops \(l) and \(m) share vertex \(k). Where a face touches "
+                                     + "itself at a vertex, write its boundary there as one loop that passes "
+                                     + "the vertex twice")
                 }
             }
-            let frame = FaceFrame(face, vertices: vertices)
+            let frame = try FaceFrame(face, vertices: vertices, face: i)
             // The tolerances scale with the face itself, the diagonal of its
             // bounding box in its plane, so a face is cut the same way
             // wherever the solid stands, down to what its coordinates hold.
             for loop in face {
                 for k in loop {
-                    precondition(abs(simd_dot(vertices[k].v - frame.origin, frame.normal)) <= frame.flatnessTolerance,
-                                 "face \(i) is not flat at vertex \(k)")
+                    let off = abs(simd_dot(vertices[k].v - frame.origin, frame.normal))
+                    guard off <= frame.flatnessTolerance else { throw SolidError("face \(i) is not flat at vertex \(k)") }
                 }
             }
             // The frame's normal is the loops' own, so the outer loop runs
             // counter-clockwise in it whichever way it was given; a face
             // turned inside out is caught where its edges meet its
             // neighbours'. A hole has to run the other way.
-            for (l, hole) in face.enumerated().dropFirst() {
-                precondition(frame.area(hole.map { vertices[$0].v }) < 0,
-                             "face \(i): hole \(l) runs the same way as the outer loop")
+            for (l, hole) in face.enumerated().dropFirst() where !(frame.area(hole.map { vertices[$0].v }) < 0) {
+                throw SolidError("face \(i): hole \(l) runs the same way as the outer loop")
             }
-            let cut = ConvexPartition.pieces(face, point: { frame.coordinates(vertices[$0].v) },
-                                             tolerance: 1e-9 * frame.extent * frame.extent)
+            if let why = Solid.crossing(face, frame: frame, vertices: vertices) {
+                throw SolidError("face \(i): \(why)")
+            }
+            let cut = try ConvexPartition.pieces(face, point: { frame.coordinates(vertices[$0].v) },
+                                                 tolerance: 1e-9 * frame.extent * frame.extent, face: i)
             faces.append(Array(pieces.count..<(pieces.count + cut.count)))
             faceOfPiece += Array(repeating: i, count: cut.count)
             pieces += cut
             frames.append(frame)
+        }
+        // A vertex on no face is no part of the boundary, and would still
+        // stretch the solid's bounds and the tolerances measured from them.
+        let used = Set(loops.joined().joined())
+        if let k = vertices.indices.first(where: { !used.contains($0) }) {
+            throw SolidError("vertex \(k) lies on no face")
         }
         self.pieces = pieces
         self.faces = faces
@@ -129,41 +168,93 @@ public struct Solid: Sendable, Equatable {
         for (f, piece) in pieces.enumerated() {
             for k in 0..<piece.count {
                 let e = SIMD2(piece[k], piece[(k + 1) % piece.count])
-                precondition(directed[e] == nil, "edge \(e) is traversed twice the same way")
+                guard directed[e] == nil else {
+                    throw SolidError("edge \(e.x)-\(e.y) is traversed twice the same way: the faces are not "
+                                     + "consistently oriented, or more than two meet there")
+                }
                 directed[e] = f
             }
         }
         var edges: [Edge] = []
         for (e, left) in directed where e.x < e.y {
             guard let right = directed[SIMD2(e.y, e.x)] else {
-                preconditionFailure("edge \(e) bounds only one face: the surface is not closed")
+                throw SolidError("edge \(e.x)-\(e.y) bounds only one face: the surface is not closed")
             }
             edges.append(Edge(a: e.x, b: e.y, left: left, right: right))
         }
-        precondition(directed.count == 2 * edges.count,
-                     "an edge bounds one face only: the surface is not closed")
+        guard directed.count == 2 * edges.count else {
+            let open = directed.keys.filter { directed[SIMD2($0.y, $0.x)] == nil }.min { ($0.x, $0.y) < ($1.x, $1.y) }!
+            throw SolidError("edge \(open.y)-\(open.x) bounds only one face: the surface is not closed")
+        }
         self.edges = edges.sorted { ($0.a, $0.b) < ($1.a, $1.b) }
         // Newell's normal: exact for a planar polygon however many vertices
         // it has, and the sum it is is the one the divergence theorem wants.
         var normals: [SIMD3<Double>] = []
         var volume = 0.0
-        for piece in pieces {
+        for (f, piece) in pieces.enumerated() {
             var n = Solid.newell([piece], vertices: vertices)
             let len = simd_length(n)
-            precondition(len > 0, "a piece is degenerate")
+            guard len > 0 else { throw SolidError("face \(faceOfPiece[f]) has a piece of no area") }
             n /= len
             normals.append(n)
             // (n is twice the area vector; p · n / 6 is the cone's volume.)
             volume += simd_dot(vertices[piece[0]].v, n * len) / 6
         }
-        precondition(volume > 0, "the faces are oriented inward (signed volume \(volume))")
+        guard volume > 0 else {
+            throw SolidError("the faces are oriented inward, or enclose nothing (signed volume \(volume))")
+        }
         self.normals = normals
         self.isDiagonal = self.edges.map { faceOfPiece[$0.left] == faceOfPiece[$0.right] }
         for (k, e) in self.edges.enumerated() where !isDiagonal[k] {
-            precondition(simd_dot(normals[e.left], normals[e.right]) < 1 - 1e-9,
-                         "faces \(faceOfPiece[e.left]) and \(faceOfPiece[e.right]) meet at edge \(e.a)-\(e.b) "
-                         + "in one plane: they are one face")
+            guard simd_dot(normals[e.left], normals[e.right]) < 1 - 1e-9 else {
+                throw SolidError("faces \(faceOfPiece[e.left]) and \(faceOfPiece[e.right]) meet at edge \(e.a)-\(e.b) "
+                                 + "in one plane: they are one face")
+            }
         }
+    }
+
+    /// Why the loops of a face cross, or nil: two of its sides cross, or a
+    /// vertex lies on a side it is not an end of. Sides that share a vertex
+    /// meet there, as neighbours or where a loop passes the vertex twice.
+    /// Measured in the face's plane, to a billionth of its extent, and swept
+    /// along `u` so that only sides whose spans overlap are compared.
+    static func crossing(_ loops: [[Int]], frame: FaceFrame, vertices: [P3<WorldSpace>]) -> String? {
+        var sides: [(a: Int, b: Int, p: SIMD2<Double>, q: SIMD2<Double>)] = []
+        for loop in loops {
+            for k in loop.indices {
+                let a = loop[k], b = loop[(k + 1) % loop.count]
+                sides.append((a, b, frame.coordinates(vertices[a].v), frame.coordinates(vertices[b].v)))
+            }
+        }
+        sides.sort { min($0.p.x, $0.q.x) < min($1.p.x, $1.q.x) }
+        let tolerance = 1e-9 * frame.extent
+        func cross(_ a: SIMD2<Double>, _ b: SIMD2<Double>) -> Double { a.x * b.y - a.y * b.x }
+        // The side of the line through `s` that `r` lies on, beyond the
+        // tolerance: 1 to the left, -1 to the right, 0 on it.
+        func side(_ r: SIMD2<Double>, of s: (a: Int, b: Int, p: SIMD2<Double>, q: SIMD2<Double>)) -> Int {
+            let d = s.q - s.p, c = cross(d, r - s.p), reach = tolerance * simd_length(d)
+            return c > reach ? 1 : (c < -reach ? -1 : 0)
+        }
+        // Whether `r` lies on `s` strictly between its ends.
+        func within(_ r: SIMD2<Double>, _ s: (a: Int, b: Int, p: SIMD2<Double>, q: SIMD2<Double>)) -> Bool {
+            let d = s.q - s.p, t = simd_dot(r - s.p, d) / simd_length_squared(d)
+            return side(r, of: s) == 0 && t > 0 && t < 1
+        }
+        for i in sides.indices {
+            let s = sides[i], reach = max(s.p.x, s.q.x) + tolerance
+            for t in sides[(i + 1)...] {
+                guard min(t.p.x, t.q.x) <= reach else { break }
+                for (v, r, other) in [(t.a, t.p, s), (t.b, t.q, s), (s.a, s.p, t), (s.b, s.q, t)]
+                    where v != other.a && v != other.b && within(r, other) {
+                    return "vertex \(v) lies on side \(other.a)-\(other.b)"
+                }
+                guard s.a != t.a, s.a != t.b, s.b != t.a, s.b != t.b else { continue }
+                if side(t.p, of: s) * side(t.q, of: s) < 0, side(s.p, of: t) * side(s.q, of: t) < 0 {
+                    return "sides \(s.a)-\(s.b) and \(t.a)-\(t.b) cross"
+                }
+            }
+        }
+        return nil
     }
 
     /// The boundary's Euler characteristic, 2 − 2g for genus g, by
@@ -175,6 +266,25 @@ public struct Solid: Sendable, Equatable {
         let F = loops.count, H = loops.reduce(0) { $0 + $1.count - 1 }
         return V - E + F - H
     }
+
+    /// How many shells the boundary has: its faces in sets that edges join.
+    /// One for a solid in one piece with no cavity; the checks accept more,
+    /// such as two cubes apart, or a cube with a cavity inside.
+    public var shellCount: Int {
+        var parent = Array(loops.indices)
+        func root(_ f: Int) -> Int {
+            var f = f
+            while parent[f] != f { parent[f] = parent[parent[f]]; f = parent[f] }
+            return f
+        }
+        for e in edges { parent[root(faceOfPiece[e.left])] = root(faceOfPiece[e.right]) }
+        return Set(loops.indices.map(root)).count
+    }
+
+    /// The genus of the boundary, `1 − χ / 2`, when it is one shell; nil
+    /// otherwise, where the Euler characteristic sums over the shells and
+    /// says nothing of any one of them.
+    public var genus: Int? { shellCount == 1 ? 1 - eulerCharacteristic / 2 : nil }
 
     /// Whether every vertex lies on or behind every face's plane.
     ///
@@ -267,11 +377,11 @@ public struct Solid: Sendable, Equatable {
         /// coordinates.
         public let flatnessTolerance: Double
 
-        init(_ loops: [[Int]], vertices: [P3<WorldSpace>]) {
+        init(_ loops: [[Int]], vertices: [P3<WorldSpace>], face: Int) throws {
             // Newell's normal over every loop: the holes, running the other
             // way, take their area off the outer loop's.
             let n = Solid.newell(loops, vertices: vertices)
-            precondition(simd_length(n) > 0, "a face is degenerate")
+            guard simd_length(n) > 0 else { throw SolidError("face \(face) encloses no area") }
             normal = simd_normalize(n)
             // Summed in index order, not a set's: the frame, and every hatch
             // line laid out in it, is then the same in every process.
@@ -360,6 +470,9 @@ public struct Solid: Sendable, Equatable {
         /// Twice each piece's signed area in projection; zero when seen
         /// edge-on, where it hides nothing.
         let area2: [Double]
+        /// The solid's size in view space: the farthest any vertex lies from
+        /// the centre of its bounds. The tolerances are fractions of it, so
+        /// they are the same wherever the solid stands.
         let scale: Double
         let eps: Double
         /// The direction back toward the eye, in world space.
@@ -371,12 +484,16 @@ public struct Solid: Sendable, Equatable {
             toEye = -view.projectionDirection
             let projected = solid.vertices.map { view($0) }
             self.projected = projected
-            scale = max(projected.map { simd_length($0.v) }.max() ?? 1, 1)
+            let points = projected.map(\.v)
+            let centre = 0.5 * (points.reduce(points[0], simd_min) + points.reduce(points[0], simd_max))
+            scale = points.map { simd_length($0 - centre) }.max()!
             eps = 1e-9 * scale
+            // From the centre, so a solid far from the origin is not measured
+            // in the rounding of its distance from it.
             area2 = solid.pieces.map { piece in
                 var a = 0.0
                 for k in 0..<piece.count {
-                    let p = projected[piece[k]], q = projected[piece[(k + 1) % piece.count]]
+                    let p = points[piece[k]] - centre, q = points[piece[(k + 1) % piece.count]] - centre
                     a += p.x * q.y - q.x * p.y
                 }
                 return a
@@ -702,4 +819,10 @@ public struct Solid: Sendable, Equatable {
         }
         return Solid(vertices: v, faces: faces)
     }
+}
+
+/// Why vertices and loops bound no solid (`Solid.init(checking:faces:)`).
+public struct SolidError: Error, CustomStringConvertible, Equatable {
+    public let description: String
+    public init(_ description: String) { self.description = description }
 }

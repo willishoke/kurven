@@ -151,6 +151,40 @@ public extension JSONValue {
         guard case .object(let o) = self else { throw JSONError.notAnObject(what) }
         return o
     }
+
+    /// An array of numbers, `key` in `what` naming it in a refusal.
+    func doubles(_ key: String, _ what: String) throws -> [Double] {
+        guard case .array(let a) = self else {
+            throw JSONError.wrongType(key, expected: "an array of numbers", found: what)
+        }
+        return try a.map {
+            switch $0 {
+            case .double(let d): return d
+            case .int(let i): return Double(i)
+            default: throw JSONError.wrongType(key, expected: "an array of numbers", found: what)
+            }
+        }
+    }
+
+    /// An array of integers, as `doubles(_:_:)` reads numbers.
+    func ints(_ key: String, _ what: String) throws -> [Int] {
+        guard case .array(let a) = self else {
+            throw JSONError.wrongType(key, expected: "an array of integers", found: what)
+        }
+        return try a.map {
+            switch $0 {
+            case .int(let i): return i
+            case .double(let d) where JSONValue.isInt(d): return Int(d)
+            default: throw JSONError.wrongType(key, expected: "an array of integers", found: what)
+            }
+        }
+    }
+
+    /// Whether a number read as a double is a whole number an `Int` holds:
+    /// 1e30 is whole, and is refused rather than trapped on.
+    static func isInt(_ d: Double) -> Bool {
+        d == d.rounded() && abs(d) < 0x1p63
+    }
 }
 
 public extension Dictionary where Key == String, Value == JSONValue {
@@ -174,11 +208,7 @@ public extension Dictionary where Key == String, Value == JSONValue {
         }
     }
 
-    /// Whether a number read as a double is a whole number an `Int` holds:
-    /// 1e30 is whole, and is refused rather than trapped on.
-    private static func isInt(_ d: Double) -> Bool {
-        d == d.rounded() && abs(d) < 0x1p63
-    }
+    private static func isInt(_ d: Double) -> Bool { JSONValue.isInt(d) }
 
     func double(_ key: String, _ what: String) throws -> Double {
         switch try value(key, what) {
@@ -215,23 +245,11 @@ public extension Dictionary where Key == String, Value == JSONValue {
     }
 
     func doubles(_ key: String, _ what: String) throws -> [Double] {
-        try array(key, what).map {
-            switch $0 {
-            case .double(let d): return d
-            case .int(let i): return Double(i)
-            default: throw JSONError.wrongType(key, expected: "an array of numbers", found: what)
-            }
-        }
+        try value(key, what).doubles(key, what)
     }
 
     func ints(_ key: String, _ what: String) throws -> [Int] {
-        try array(key, what).map {
-            switch $0 {
-            case .int(let i): return i
-            case .double(let d) where Self.isInt(d): return Int(d)
-            default: throw JSONError.wrongType(key, expected: "an array of integers", found: what)
-            }
-        }
+        try value(key, what).ints(key, what)
     }
 
     func strings(_ key: String, _ what: String) throws -> [String] {

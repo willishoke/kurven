@@ -170,8 +170,9 @@ public enum FaceSelector: Sendable, Equatable {
     /// A parametric surface's one face. A parametric surface's manifest
     /// names it (`SurfaceManifest`); a landscape's refuses it (`LayerSource`).
     case surface
-    /// Every face of a solid, at any angle. A scene can carry it; a
-    /// manifest refuses it.
+    /// Every face of a solid, at any angle. A polyhedron's manifest names
+    /// it (`PolyhedronManifest`); a landscape's and a parametric surface's
+    /// refuse it.
     case solid
 
     /// The angle of hatching on a wall or a riser, in its coordinates: vertical.
@@ -209,7 +210,8 @@ public enum FaceSelector: Sendable, Equatable {
         let landscape: String
         switch self {
         case .solid:
-            return nil
+            return hatching.angle.isFinite ? nil : "hatching on a solid's faces at an angle that is not a number: "
+                + "\(hatching.angle)"
         case .graph, .surface:
             return "hatching on a curved face: it is laid on plateaus, walls, risers or a solid's faces"
         case .walls, .risers:
@@ -361,6 +363,12 @@ public enum Turing {
     /// The sum's standard deviation: the kernels' squares summed over the
     /// lattice, `π / h²` by the integral, rooted.
     public static let deviation = Double.pi.squareRoot() / spacing
+    /// The steepest the pattern can be, per unit of its own coordinates:
+    /// every kernel's slope at its steepest sign, `Σ r exp(-r² / 2)` over the
+    /// lattice, is `(2π / h²) √(π / 2)` by the integral and at most 16.12 on
+    /// the lattice itself, and the pattern is the sum over `2 deviation`, so
+    /// `|∇ value| ≤ 3.184`. Rounded up.
+    public static let slope = 3.2
 
     /// The sign at lattice point `(r, s)` under `seed`: a mix of the three,
     /// its lowest bit.

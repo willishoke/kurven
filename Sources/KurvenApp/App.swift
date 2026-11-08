@@ -176,15 +176,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // what the CLI bakes" can be checked by comparing two files rather than
         // by reading two code paths and believing they agree. `--save PATH`
         // writes the bundle as ⌘S does. Before either, a layer's levels are
-        // set by `--levels LAYER=COUNT` as its slider sets them, and then a
-        // surface's request edited by `--set FIELD=VALUE` as its controls
+        // set by `--levels LAYER=COUNT` as its slider sets them, a hatching's
+        // strokes by `--strokes LAYER=COUNT` as its slider sets them, and then
+        // a surface's request edited by `--set FIELD=VALUE` as its controls
         // edit it.
         if path("--bake") != nil || path("--save") != nil, let bundlePath {
             let resolution = args.firstIndex(of: "--resolution")
                 .flatMap { $0 + 1 < args.endIndex ? Int(args[$0 + 1]) : nil }
             Task { await headlessBundle(URL(fileURLWithPath: bundlePath), edits: pairs("--set"),
-                                        levels: pairs("--levels"), save: path("--save"),
-                                        bake: path("--bake"), resolution: resolution) }
+                                        levels: pairs("--levels"), strokes: pairs("--strokes"),
+                                        save: path("--save"), bake: path("--bake"), resolution: resolution) }
             return
         }
         if let path = bundlePath { document.open(URL(fileURLWithPath: path)) }
@@ -360,7 +361,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Write the bundle as ⌘S does, or exit saying why not.
     private func headlessSave(to url: URL) {
         document.saveBundle(to: url)
-        let status = (document.surfaceBundle != nil ? document.surfaceStatus : document.landscapeStatus) ?? ""
+        let status = (document.surfaceBundle != nil ? document.surfaceStatus
+                      : document.polyhedronBundle != nil ? document.polyhedronStatus : document.landscapeStatus) ?? ""
         print("Kurven: \(status)")
         if !status.hasPrefix("saved") { exit(1) }
     }
@@ -401,8 +403,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func savePanel() {
         let panel = NSSavePanel()
-        let name = document.surface?.name ?? document.landscape?.name ?? ""
-        let kind = document.surfaceBundle != nil ? "surface" : "landscape"
+        let name = document.surface?.name ?? document.landscape?.name
+            ?? document.polyhedronBundle?.manifest.provenance.function ?? ""
+        let kind = document.surfaceBundle != nil ? "surface"
+            : document.polyhedronBundle != nil ? "polyhedron" : "landscape"
         panel.nameFieldStringValue = (name.isEmpty ? kind : name) + ".kurven"
         panel.message = "Save this \(kind) as a .kurven bundle"
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -456,7 +460,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Open a bundle, edit it as the window's controls do, and save or bake
     /// it: the document's own transitions, from open to save, with no window.
     private func headlessBundle(_ bundle: URL, edits: [(String, Double)], levels: [(String, Double)],
-                                save: URL?, bake: URL?, resolution: Int?) async {
+                                strokes: [(String, Double)] = [], save: URL?, bake: URL?, resolution: Int?) async {
         await document.load(bundle)
         guard document.scene != nil else {
             var why = "it did not open"
@@ -471,6 +475,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(1)
             }
             document.setLevelCount(Int(count), forLayer: index)
+            while document.drawing { try? await Task.sleep(for: .milliseconds(20)) }
+        }
+        for (name, count) in strokes {
+            guard let index = document.layers.firstIndex(where: { $0.spec.name == name }),
+                  document.hatchCount(ofLayer: index) != nil else {
+                FileHandle.standardError.write(Data("Kurven: no hatching '\(name)' with strokes to set\n".utf8))
+                exit(1)
+            }
+            document.setHatchCount(Int(count), ofLayer: index)
             while document.drawing { try? await Task.sleep(for: .milliseconds(20)) }
         }
         await headlessEdit(edits)

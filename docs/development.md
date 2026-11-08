@@ -142,6 +142,16 @@ slider does, and `--save` writes the result, as ⌘S does:
 KurvenApp sn.kurven --set major=2.5 --levels mag_major=5 --save sn-wide.kurven
 ```
 
+A polyhedron's bundle is its vertices and loops, so what opens editable is
+its layers: `--strokes LAYER=COUNT` sets a hatching's strokes as its slider
+does, counted across the largest face (on a landscape, which takes it too,
+along the window's longer side).
+
+```bash
+kurven-cli surface solid --kind frame --hatching turing --save frame.kurven
+KurvenApp frame.kurven --strokes hatching=40 --save frame-open.kurven
+```
+
 ## Things worth knowing
 
 - **SwiftPM relinks.** SwiftPM's incremental build does not reliably rebuild

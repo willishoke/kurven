@@ -389,3 +389,353 @@ private func surfaceShape(_ manifest: [String: JSONValue], _ shape: [String: JSO
     s["shape"] = .object(shape)
     return .object(s)
 }
+
+// MARK: - a polyhedron in a bundle
+//
+// A polyhedron's bundle stores its geometry, the vertices and loops
+// `Solid(vertices:faces:)` takes (`PolyhedronManifest`). So a bundle is held
+// to the solid it keeps -- its bake is the bake of the same solid drawn
+// straight, as `kurven-cli surface solid` draws it -- and its reader to
+// refusing, with the reason, whatever bounds no solid or would cost without
+// bound.
+
+func polyhedronBundleTests() {
+    Check.suite("bundles: a polyhedron's bundle bakes what its solid bakes, for every kind and tone") {
+        let csaszar = Solid.csaszar
+        let reach = csaszar.vertices.map { simd_length(SIMD2($0.x, $0.y)) }.max()!
+        let frame = Solid.frame(outer: 4, inner: 2, depth: 0.8)
+        let solids: [(String, Solid)] = Solid.Platonic.allCases.map {
+            ($0.rawValue, Solid.platonic($0, circumradius: 2).resting(onFace: 0))
+        } + [("csaszar", csaszar.transformed(rotation: matrix_identity_double3x3 * (2 / reach))), ("frame", frame)]
+        let light = SIMD3(-0.4, -0.6, 0.7)
+        let tones: [(String, Hatching?)] = [
+            ("edges alone", nil),
+            ("uniform", Hatching(angle: .pi / 4, spacing: 0.08)),
+            ("uniform at its own step", Hatching(angle: 0.3, spacing: 0.1, step: 0.03)),
+            ("Turing's pattern", Hatching(angle: .pi / 6, spacing: 0.05, tone: .turing(scale: 0.4, seed: 3))),
+            ("Turing's pattern in four widths",
+             Hatching(angle: .pi / 6, spacing: 0.035, tone: .turing(scale: 0.18, seed: 3), widthSteps: 4)),
+            ("half-Lambert", Hatching(angle: .pi / 4, spacing: 0.08, tone: .halfLambert(light: light))),
+            ("half-Lambert in four widths",
+             Hatching(angle: .pi / 4, spacing: 0.08, tone: .halfLambert(light: light), widthSteps: 4)),
+        ]
+        let renderer = try MetalRenderer()
+        let options = BakeOptions(resolution: 600)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kurven-polyhedra-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // Every tone on the two solids that are not convex, one each on
+        // the Platonic solids.
+        for (index, (kind, solid)) in solids.enumerated() {
+            let convex = index < Solid.Platonic.allCases.count
+            for (label, hatching) in convex ? [tones[index % tones.count]] : tones {
+                var specs = [LayerSpec(name: "edges", role: .outline, source: .edges, width: 0.6,
+                                       heightPolicy: .surface)]
+                var layers = [Layer(spec: specs[0], paths: solid.edgePaths)]
+                if let hatching {
+                    specs.append(LayerSpec(name: "hatching", role: .scaffold,
+                                           source: .hatching(hatching, faces: .solid), width: 0.3,
+                                           heightPolicy: .surface))
+                    layers.append(Layer(spec: specs[1], paths: solid.hatchPaths(hatching)))
+                }
+                let direct = SVG.render(try renderer.bake(
+                    Scene(solid: solid, layers: layers, camera: .oblique(SurfaceRequest.projection)),
+                    options: options).strokes)
+                let url = directory.appendingPathComponent("\(kind) \(label).kurven")
+                try PolyhedronBundle(url: url, solid: solid, layers: specs, presets: [SurfaceRequest.preset],
+                                     function: kind).write(to: url)
+                let text = try String(contentsOf: url.appendingPathComponent("manifest.json"), encoding: .utf8)
+                let read = try PolyhedronBundle.read(at: url)
+                let fromBundle = SVG.render(try renderer.bake(read.scene(preset: read.manifest.presets[0]),
+                                                              options: options).strokes)
+                let strokes = direct.components(separatedBy: "<polyline").count - 1
+                Check.expect(read.solid == solid && read.manifest.layers == specs
+                             && read.manifest.canonicalJSON == text && strokes > 3 && fromBundle == direct,
+                             "\(kind), \(label): saved, reopened and baked, the bundle bakes the solid's SVG "
+                             + "byte for byte", "\(strokes) strokes")
+            }
+        }
+    }
+
+    Check.suite("preview: a polyhedron at rest draws what its bake draws, and nothing it hides") {
+        // The window's frame of the gallery's frame: its edges and its
+        // hatching in four widths, cut at rest in closed form as the bake
+        // cuts them, then drawn. Every baked pixel is drawn, and every drawn
+        // pixel is within two of a baked one, so no hidden edge and no hatch
+        // line on a face turned away shows.
+        let bundle = try PolyhedronBundle.read(at: Fixtures.url("contract/polyhedron_frame.kurven"))
+        let preset = bundle.manifest.presets[0]
+        let viewport = Viewport(width: 1200, height: 900)
+        let scene = bundle.scene(preset: preset)
+        guard let bounds = scene.quickBounds() else { Check.expect(false, "the frame has bounds"); return }
+        let navigator = Navigator(orbit: Orbit(matching: preset.projection), framing: .fitting(bounds, in: viewport))
+        let renderer = try MetalRenderer()
+        let target = try renderer.makePreviewTarget(viewport)
+        let frame = navigator.framing.frame(viewport)
+        let baked = try renderer.bake(scene.looking(navigator.camera), options: BakeOptions(resolution: 3000))
+        var bake = [Bool](repeating: false, count: viewport.width * viewport.height)
+        for layer in baked.strokes.layers {
+            for path in layer.paths.paths {
+                for (a, b) in zip(path, path.dropFirst()) {
+                    let steps = max(Int(simd_length(b.v - a.v) / frame.unitsPerPixel.max() * 4), 1)
+                    for j in 0...steps {
+                        let t = Double(j) / Double(steps)
+                        let i = frame.index(of: P2<ViewSpace>(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t))
+                        guard i.x >= 0, i.x < viewport.height, i.y >= 0, i.y < viewport.width else { continue }
+                        bake[i.x * viewport.width + i.y] = true
+                    }
+                }
+            }
+        }
+        func near(_ marks: [Bool], _ row: Int, _ col: Int, _ reach: Int) -> Bool {
+            for dr in -reach...reach {
+                for dc in -reach...reach {
+                    let r = row + dr, c = col + dc
+                    guard r >= 0, r < viewport.height, c >= 0, c < viewport.width else { continue }
+                    if marks[r * viewport.width + c] { return true }
+                }
+            }
+            return false
+        }
+        let bakedPixels = bake.indices.filter { bake[$0] }
+        // A stroke is drawn a pixel and a half wide, so a drawn pixel is
+        // held to within two of the bake's.
+        func compared(draft: Bool, slopeScale: Float = 0) throws -> (recalled: Int, stray: Int, drawn: Int) {
+            try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
+                                       options: PreviewOptions(slopeScale: slopeScale, draft: draft), into: target)
+            let bgra = try PNG.bgra(target)
+            let drawn = (0..<(viewport.width * viewport.height)).map { k -> Bool in
+                let r = Int(bgra[4 * k + 2]), g = Int(bgra[4 * k + 1]), b = Int(bgra[4 * k])
+                return 299 * r + 587 * g + 114 * b < 224_000
+            }
+            let drawnPixels = drawn.indices.filter { drawn[$0] }
+            return (bakedPixels.filter { near(drawn, $0 / viewport.width, $0 % viewport.width, 1) }.count,
+                    drawnPixels.filter { !near(bake, $0 / viewport.width, $0 % viewport.width, 2) }.count,
+                    drawnPixels.count)
+        }
+        // At rest, at the bake's predicate (no slope term) and the app's.
+        for slopeScale in [0, PreviewOptions.defaultSlopeScale] {
+            let rest = try compared(draft: false, slopeScale: slopeScale)
+            Check.expect(bakedPixels.count > 5000 && rest.recalled == bakedPixels.count && rest.stray == 0,
+                         "at rest, at slope scale \(slopeScale), the preview draws every pixel of the bake's edges "
+                         + "and hatching, and nothing the bake hides",
+                         "\(rest.recalled) of \(bakedPixels.count), \(rest.stray) of \(rest.drawn) drawn pixels astray")
+        }
+        // Moving, the strokes as carried are left to the depth pass: at the
+        // app's slope scale they are all there and nothing hidden shows; at
+        // the bake's predicate, lying on their faces, they break, which is
+        // what laying them out at rest is for.
+        let appDraft = try compared(draft: true, slopeScale: PreviewOptions.defaultSlopeScale)
+        let draft = try compared(draft: true)
+        Check.expect(appDraft.recalled == bakedPixels.count && appDraft.stray == 0,
+                     "while the camera moves, at the app's slope scale, the draft draws them too",
+                     "\(appDraft.recalled) of \(bakedPixels.count), \(appDraft.stray) astray")
+        Check.expect(draft.recalled < bakedPixels.count || draft.stray > 0,
+                     "and with no slope term, tested per fragment against the depth pass, does not",
+                     "it misses \(bakedPixels.count - draft.recalled) and strays at \(draft.stray)")
+    }
+
+    Check.suite("bundles: a polyhedron restyled lays the hatching that changed, and nothing else") {
+        let opened = try PolyhedronBundle.read(at: Fixtures.url("contract/polyhedron_octahedron.kurven"))
+        var layers = opened.manifest.layers
+        let crossed = layers.firstIndex { $0.name == "crossed" }!
+        guard case .hatching(var hatching, let faces) = layers[crossed].source else {
+            Check.expect(false, "the octahedron's fixture is crossed"); return
+        }
+        hatching.spacing = 0.2
+        layers[crossed].source = .hatching(hatching, faces: faces)
+        let restyled = try opened.restyled(layers)
+        func paths(_ b: PolyhedronBundle, _ name: String) -> PolylineSet<WorldSpace>? {
+            b.layers.first { $0.spec.name == name }?.paths
+        }
+        Check.expect(restyled.solid == opened.solid && paths(restyled, "edges") == paths(opened, "edges")
+                     && paths(restyled, "hatching") == paths(opened, "hatching"),
+                     "the solid, the edges and the hatching not restyled are kept as drawn")
+        Check.expect(paths(restyled, "crossed") == opened.solid.hatchPaths(hatching)
+                     && paths(restyled, "crossed") != paths(opened, "crossed"),
+                     "the restyled hatching is laid again at its new spacing")
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kurven-restyled-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try restyled.write(to: directory)
+        let reopened = try PolyhedronBundle.read(at: directory)
+        Check.expect(reopened.manifest.layers == layers && reopened.layers.map(\.paths) == restyled.layers.map(\.paths),
+                     "saved and reopened, the restyled bundle draws what was on screen")
+        hatching.spacing = 1e-5
+        layers[crossed].source = .hatching(hatching, faces: faces)
+        Check.expectThrows("a restyle past what a polyhedron's hatchings lay is refused") {
+            _ = try opened.restyled(layers)
+        }
+    }
+
+    Check.suite("bundles: a malformed polyhedron's manifest is refused, saying why") {
+        let good = try Fixtures.json("contract/polyhedron_frame.kurven/manifest.json")
+        Check.expect((try? PolyhedronManifest(json: .object(good))) != nil, "the fixture itself is read")
+        func mutated(_ change: (inout [String: JSONValue]) -> Void) -> JSONValue {
+            var d = good; change(&d); return .object(d)
+        }
+        func polyhedron(vertices: [[Double]]? = nil, faces: JSONValue? = nil) -> JSONValue {
+            mutated { d in
+                var p = (try? d["polyhedron"]!.object("p")) ?? [:]
+                if let vertices { p["vertices"] = .array(vertices.map { .array($0.map(JSONValue.double)) }) }
+                if let faces { p["faces"] = faces }
+                d["polyhedron"] = .object(p)
+            }
+        }
+        let solid = Solid.frame(outer: 4, inner: 2, depth: 0.8)
+        let points = solid.vertices.map { [$0.x, $0.y, $0.z] }
+        func faces(_ loops: [[[Int]]]) -> JSONValue {
+            .array(loops.map { .array($0.map { .array($0.map(JSONValue.int)) }) })
+        }
+        func layers(_ specs: [LayerSpec]) -> JSONValue { mutated { $0["layers"] = .array(specs.map(\.json)) } }
+        func layer(_ source: LayerSource, width: Double = 0.3) -> JSONValue {
+            layers([LayerSpec(name: "x", role: .scaffold, source: source, width: width, heightPolicy: .surface)])
+        }
+        func refuses(_ what: String, saying words: String, _ json: JSONValue) {
+            let clock = ContinuousClock()
+            let start = clock.now
+            do {
+                _ = try BundleManifest(json: json)
+                Check.expect(false, what, "decoded")
+            } catch {
+                Check.expect("\(error)".contains(words) && clock.now - start < .seconds(1), what, "\(error)")
+            }
+        }
+        var loops = solid.loops
+        loops[0][0][2] = 16
+        refuses("refuses a vertex index past the last", saying: "names vertex 16, and there are 16",
+                polyhedron(faces: faces(loops)))
+        loops = solid.loops
+        loops[2] = [[0, 1]]
+        refuses("refuses a loop of two vertices", saying: "at least three", polyhedron(faces: faces(loops)))
+        loops = solid.loops
+        loops.removeLast()
+        refuses("refuses an open surface", saying: "not closed", polyhedron(faces: faces(loops)))
+        var bent = points
+        bent[0][2] = 0.1
+        refuses("refuses a face that is not flat", saying: "not flat", polyhedron(vertices: bent))
+        var far = points
+        far[3][0] = 1e39
+        refuses("refuses a coordinate past what the depth pass holds", saying: "not a finite point",
+                polyhedron(vertices: far))
+        do {
+            let text = try String(contentsOf: Fixtures.url("contract/polyhedron_frame.kurven/manifest.json"),
+                                  encoding: .utf8)
+            refuses("refuses a coordinate JSON reads as infinite", saying: "not a finite point",
+                    try JSONValue.parse(text.replacingOccurrences(of: "[2.0,2.0,0.8]", with: "[2.0,-1e400,0.8]")))
+            refuses("refuses a hatching at an angle that is not a number", saying: "not a number",
+                    try JSONValue.parse(text.replacingOccurrences(of: "\"angle\":0.5235987755982988",
+                                                                  with: "\"angle\":-1e400")))
+        }
+        refuses("refuses a vertex of two coordinates", saying: "vertices[1] has shape [2]",
+                polyhedron(vertices: [points[0], [1, 1]] + points.dropFirst(2)))
+        refuses("refuses a face that is not a list of loops", saying: "faces[0]",
+                polyhedron(faces: .array([.int(1)])))
+        refuses("refuses more vertices than a polyhedron holds", saying: "4097 vertices, more than the 4096",
+                polyhedron(vertices: Array(repeating: [0, 0, 0], count: 4097)))
+        refuses("refuses a face of more corners than a face holds", saying: "more corners than a polyhedron holds",
+                polyhedron(faces: faces([[Array(repeating: 0, count: 1025)]])))
+        refuses("refuses more corners in all than a polyhedron holds", saying: "more corners than a polyhedron holds",
+                polyhedron(faces: faces(Array(repeating: [Array(repeating: 0, count: 1000)], count: 17))))
+        let edges = LayerSpec(name: "edges", role: .outline, source: .edges, width: 0.6, heightPolicy: .surface)
+        refuses("refuses more layers than a polyhedron holds", saying: "65 layers, more than the 64",
+                layers((0..<65).map { var e = edges; e.name = "edges \($0)"; return e }))
+        refuses("refuses two layers of one name", saying: "two layers named 'edges'", layers([edges, edges]))
+        refuses("refuses a contour on its faces", saying: "a contour on a polyhedron's faces",
+                layer(.contour(field: .u, levels: [0], restriction: .all, faces: .solid)))
+        refuses("refuses a dumped layer", saying: "a dumped layer on a polyhedron",
+                layer(.file(vertices: "v.npy", offsets: "o.npy")))
+        refuses("refuses a layer of another geometry", saying: "a coordinateCurves layer on a polyhedron",
+                layer(.coordinateCurves(u: 4, v: 4)))
+        refuses("refuses hatching on a landscape's faces", saying: "hatching on the plateaus of a polyhedron",
+                layer(.plateauHatching(axis: .real, spacing: 0.1)))
+        refuses("refuses a negative width", saying: "a width must be a number not below 0",
+                layer(.edges, width: -1))
+        let turing = Hatching(angle: 0.5, spacing: 0.05, tone: .turing(scale: 0.2, seed: 1))
+        var wide = turing
+        wide.widthSteps = 17
+        refuses("refuses more widths than a hatch line has", saying: "17 widths, more than the 16",
+                layer(.hatching(wide, faces: .solid)))
+        refuses("refuses Turing's pattern finer than a billionth of a face", saying: "too fine for its lines",
+                layer(.hatching(Hatching(angle: 0.5, spacing: 0.05, tone: .turing(scale: 1e-12, seed: 1)),
+                                faces: .solid)))
+        // Review's cube: within every count read off the lines and the
+        // readings, but with the pattern far finer than a reading's step it
+        // changes width at nearly every reading, each change bisected and a
+        // stroke of its own: 216 s and 7.27 million strokes before the
+        // changes were counted.
+        do {
+            let cube = Solid.platonic(.cube, circumradius: 2).resting(onFace: 0)
+            var manifest = try PolyhedronManifest(json: .object(good))
+            manifest.solid = cube
+            let fine = Hatching(angle: .pi / 4, spacing: 0.003266, step: 0.01921, tone: .turing(scale: 1e-5, seed: 1),
+                                widthSteps: 16)
+            manifest.layers = [edges, LayerSpec(name: "hatching", role: .scaffold,
+                                                source: .hatching(fine, faces: .solid), width: 0.3,
+                                                heightPolicy: .surface)]
+            refuses("refuses Turing's pattern too fine for its readings, quickly", saying: "change width",
+                    manifest.json)
+        }
+        refuses("refuses hatch lines past what its hatchings lay", saying: "lines, more than the 65536",
+                layer(.hatching(Hatching(angle: 0.5, spacing: 1e-5), faces: .solid)))
+        refuses("refuses tones read past what its hatchings read", saying: "times, more than the 1048576",
+                layer(.hatching(Hatching(angle: 0.5, spacing: 0.05, step: 1e-7), faces: .solid)))
+        refuses("refuses its hatchings' work in all, not one at a time", saying: "lines, more than the 65536",
+                layers((0..<4).map {
+                    LayerSpec(name: "h\($0)", role: .scaffold, source: .hatching(Hatching(angle: 0.5, spacing: 0.0005),
+                                                                                 faces: .solid),
+                              width: 0.3, heightPolicy: .surface)
+                }))
+        // A preset's buffer is a depth buffer's resolution, in any kind of
+        // manifest: none at all aborted on Metal, and a million exhausted
+        // memory.
+        func buffer(_ json: [String: JSONValue], _ n: Int) -> JSONValue {
+            var d = json
+            if case .array(var presets) = d["presets"], var first = try? presets[0].object("p") {
+                first["buffer"] = .int(n)
+                presets[0] = .object(first)
+                d["presets"] = .array(presets)
+            }
+            return .object(d)
+        }
+        for (kind, json) in [("a polyhedron's", good),
+                             ("a parametric surface's", try Fixtures.json("contract/surface.kurven/manifest.json")),
+                             ("a landscape's", try Fixtures.json("contract/landscape.kurven/manifest.json"))] {
+            for n in [0, -5, 20_001, 1_000_000] {
+                refuses("refuses \(kind) preset with a buffer of \(n)", saying: "buffer must be 1 to 20000 pixels",
+                        buffer(json, n))
+            }
+            Check.expect((try? BundleManifest(json: buffer(json, 20_000))) != nil,
+                         "\(kind) preset with a buffer of 20000 is read")
+        }
+        refuses("refuses a landscape's key beside a polyhedron", saying: "a polyhedron with a landscape's domain",
+                mutated { $0["domain"] = .object([:]) })
+        refuses("refuses a parametric surface beside a polyhedron", saying: "a polyhedron with a parametric surface",
+                mutated { $0["surface"] = .object([:]) })
+        do {
+            _ = try Manifest(json: .object(good))
+            Check.expect(false, "a landscape's reader refuses a polyhedron, naming its reader", "decoded")
+        } catch {
+            Check.expect("\(error)".contains("PolyhedronManifest"),
+                         "a landscape's reader refuses a polyhedron, naming its reader", "\(error)")
+        }
+        let surface = try Fixtures.json("contract/surface.kurven/manifest.json")
+        do {
+            _ = try SurfaceManifest(json: .object(surface.merging(["polyhedron": good["polyhedron"]!]) { $1 }))
+            Check.expect(false, "a parametric surface's reader refuses a polyhedron beside it", "decoded")
+        } catch {
+            Check.expect("\(error)".contains("a parametric surface with a polyhedron"),
+                         "a parametric surface's reader refuses a polyhedron beside it", "\(error)")
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kurven-unviewed-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try mutated { $0["presets"] = .array([]) }.canonical
+            .write(to: directory.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
+        Check.expectThrows("a polyhedron with no camera preset is refused when it is read") {
+            _ = try PolyhedronBundle.read(at: directory)
+        }
+    }
+}
