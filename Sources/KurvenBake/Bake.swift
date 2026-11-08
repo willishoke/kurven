@@ -53,6 +53,11 @@ public enum BakeError: Error, CustomStringConvertible {
 
 public struct Bake: Sendable {
     public let strokes: Strokes
+    /// The layer each stroke layer draws, in order: a layer of the scene, or
+    /// one width of a solid's hatching (`Scene.visible(_:depthTolerance:image:)`).
+    /// The outline, when asked for, is the stroke layer past the last of
+    /// these, traced from the depth buffer.
+    public let specs: [LayerSpec]
     /// The whole drawing's depth, stitched from however many passes it took.
     public let depth: DepthImage
     /// The whole drawing's front-most surface coordinates, for a parametric
@@ -150,14 +155,15 @@ public extension MetalRenderer {
         // rendered for the `depth` output and the outline; the drawing reads
         // it, as the coordinate image, only for a parametric surface with no
         // exact test, and only there depends on the resolution.
-        var layers: [(style: Style, paths: PolylineSet<PageSpace>)] =
-            scene.visibleLayers(depthTolerance: depthTolerance, image: image).map { layer, visible in
-                (Style(layer.spec), HiddenLine.pass(visible))
-            }
+        let visible = scene.visibleLayers(depthTolerance: depthTolerance, image: image)
+        var layers: [(style: Style, paths: PolylineSet<PageSpace>)] = visible.map { layer, visible in
+            (Style(layer.spec), HiddenLine.pass(visible))
+        }
         if let width = options.outline {
             layers.append((Style(color: "#000000", width: width), depth.outline()))
         }
-        return Bake(strokes: Strokes(layers: layers), depth: depth, surface: image, tiles: n)
+        return Bake(strokes: Strokes(layers: layers), specs: visible.map(\.0.spec), depth: depth, surface: image,
+                    tiles: n)
     }
 
     /// Render the drawing as `n x n` sub-frames and copy each into its place in

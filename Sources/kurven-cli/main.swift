@@ -384,12 +384,17 @@ func bake(_ args: Args) throws {
     let elapsed = try clock.measure { result = try renderer.bake(scene, options: options) }
     try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
 
+    // Each stroke layer by the layer it draws: a scene's layer, one width
+    // of a solid's hatching ("hatching 2/4"), or past them the outline,
+    // traced from the depth buffer and carried by no layer.
+    let names = result.strokes.layers.indices.map { $0 < result.specs.count ? result.specs[$0].name : "outline" }
     if let prefix = args.flags["dump"] {
         // Strokes as arrays, so the comparison against the Python plate is on
         // geometry rather than on rasterized pixels. An SVG diff would measure
-        // the renderer; this measures the drawing.
+        // the renderer; this measures the drawing. A width's slash is no
+        // part of a file name.
         for (index, entry) in result.strokes.layers.enumerated() {
-            let name = scene.layers[index].spec.name
+            let name = names[index].replacingOccurrences(of: "/", with: "of")
             let flat = entry.paths.vertices.flatMap { [Float($0.x), Float($0.y)] }
             try NPY.write(flat, shape: [entry.paths.vertices.count, 2],
                           to: URL(fileURLWithPath: "\(prefix).\(name).npy"))
@@ -403,7 +408,7 @@ func bake(_ args: Args) throws {
             "axis1": .array([.double(f.axis1.lo), .double(f.axis1.hi)]),
             "shape": .array([.int(f.rows), .int(f.cols)]),
             "depthTolerance": .double(options.depthTolerance ?? scene.depthTolerance),
-            "layers": .array(scene.layers.map { .string($0.spec.name) }),
+            "layers": .array(names.map(JSONValue.string)),
         ])
         try (meta.canonical + "\n").write(to: URL(fileURLWithPath: "\(prefix).frame.json"),
                                           atomically: true, encoding: .utf8)
@@ -418,11 +423,8 @@ func bake(_ args: Args) throws {
           took       \(elapsed)
         """)
     for (index, entry) in result.strokes.layers.enumerated() {
-        // The outline, when asked for, is one more stroke layer than the
-        // scene has layers -- it is traced from the depth buffer, not
-        // carried by the bundle.
-        let spec = index < scene.layers.count ? scene.layers[index].spec : nil
-        print("    \(pad(spec?.name ?? "outline", 14)) "
+        let spec = index < result.specs.count ? result.specs[index] : nil
+        print("    \(pad(names[index], 14)) "
               + "\(pad(String(entry.paths.count), 7)) paths"
               + "  lw \(entry.style.width)"
               + (spec.map { $0.clipped ? "" : "  unclipped" } ?? "  from the depth buffer"))

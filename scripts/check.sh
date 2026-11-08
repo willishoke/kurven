@@ -64,6 +64,26 @@ BIN="$PACKAGE/.build/release"
 step "swift lane" "$BIN/kurven-test"
 step "schema round trip" "$BIN/kurven-cli" contract "$ROOT/tests/fixtures/contract"
 
+# A polyhedron's hatching in four widths bakes to a stroke layer per width,
+# each dumped and listed by its name and the outline by its own; and a
+# resolution no depth buffer has is refused, saved or baked.
+cli() {
+    local dir="$PACKAGE/.build/cli-check" ico="$ROOT/tests/fixtures/contract/polyhedron_icosahedron.kurven"
+    rm -rf "$dir" && mkdir -p "$dir" || return 1
+    "$BIN/kurven-cli" bake "$ico" --outline 0.5 --dump "$dir/ico" -o "$dir/ico.svg" > "$dir/ico.txt" || return 1
+    for name in edges "hatching 1of4" "hatching 2of4" "hatching 3of4" "hatching 4of4" outline; do
+        [ -f "$dir/ico.$name.npy" ] && [ -f "$dir/ico.$name.idx.npy" ] || { echo "no dump of $name"; return 1; }
+    done
+    grep -q 'hatching 4/4 .* paths' "$dir/ico.txt" && grep -q 'outline .* from the depth buffer' "$dir/ico.txt" &&
+    [ "$(grep -c 'from the depth buffer' "$dir/ico.txt")" = 1 ] &&
+    grep -q '"layers":\["edges","hatching 1/4","hatching 2/4","hatching 3/4","hatching 4/4","outline"\]' \
+        "$dir/ico.frame.json" &&
+    ! "$BIN/kurven-cli" surface solid --kind cube --resolution 0 --save "$dir/zero.kurven" 2>/dev/null &&
+    ! "$BIN/kurven-cli" bake "$ico" --resolution 20001 -o "$dir/huge.svg" 2>/dev/null &&
+    [ ! -e "$dir/zero.kurven" ] && [ ! -e "$dir/huge.svg" ]
+}
+step "the CLI bakes a polyhedron's widths as layers of their own, and refuses a resolution no buffer has" cli
+
 # Written in place and compared with the commit, so the check needs no
 # scratch tree and a failure leaves the difference in the working copy to be
 # read with `git diff`. Untracked files count: a set that grew a file is a
