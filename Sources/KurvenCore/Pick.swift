@@ -298,17 +298,41 @@ public extension SceneGeometry {
     }
 
     /// How far a point the preview's depth buffer gives can stand from the
-    /// face under it, with `unitsPerPixel` the size of a pixel: a few pixels,
-    /// and on a landscape two of the cells the depth pass draws, or on a
-    /// parametric surface its grid's widest spacing, which the depth pass
-    /// draws its triangles between. A polyhedron's depth pass draws its faces
-    /// themselves.
-    func pickTolerance(unitsPerPixel: Double) -> Double {
+    /// face under it, with `unitsPerPixel` the size of a pixel: four pixels,
+    /// for the depth's precision and the raster's, and where the depth pass
+    /// does not draw the faces themselves, how far the surface it draws
+    /// stands off them over the point. On a landscape that is the gap
+    /// between the grid's triangles, decimated and truncated as the depth
+    /// pass draws them, and the solid's top the faces bound
+    /// (`Heightfield.surfaceHeight(at:)`): the greater of the gaps to the
+    /// triangles truncated after they interpolate
+    /// (`Heightfield.drawnHeight(at:)`, which the traversal reads) and before,
+    /// as the shader truncates its vertices (`Surface.clampedHeight`), where
+    /// the point lies within the pixels of either: a point on a wall's
+    /// curtain or on walls given as a mesh is held to the pixels alone. Not
+    /// the grid's step, which let a mesh skirt's points pick the graph a cell
+    /// away. On a parametric
+    /// surface twice the gap between its grid, interpolated, and its map, at
+    /// the point's nearest parameter. A polyhedron's depth pass draws its
+    /// faces. Read at the point, so a point on what the depth pass draws and
+    /// no face bounds, as walls given as a mesh, is near nothing.
+    func pickTolerance(at p: P3<WorldSpace>, unitsPerPixel: Double) -> Double {
         let pixels = 4 * unitsPerPixel
         switch self {
-        case .heightfield(let h): return pixels + 2 * Double(max(h.step, 1)) * h.surface.cell
-        case .parametric: return pixels + scale
-        case .solid: return pixels
+        case .heightfield(let h):
+            let top = h.surfaceHeight(at: p.xy)
+            let q = h.surface.inTile(P2<DomainSpace>(p.x, p.y), tiles: h.tiles)
+            let drawn = h.drawnHeight(at: p.xy), clamped = h.surface.clampedHeight(at: q, step: h.step)
+            // Only a point on the terrain the depth pass draws stands off the
+            // faces by its gap; one on a wall's curtain or a mesh does not.
+            guard min(abs(p.z - drawn), abs(p.z - clamped)) <= pixels else { return pixels }
+            let gap = max(abs(drawn - top), abs(clamped - top))
+            return pixels + (gap.isFinite ? gap : 0)
+        case .parametric(let s):
+            let c = s.nearestParameter(to: p.v)
+            return pixels + 2 * simd_length(s.interpolate(c).v - s.map(c).position)
+        case .solid:
+            return pixels
         }
     }
 }

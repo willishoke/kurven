@@ -323,12 +323,29 @@ public struct Navigator: Sendable, Equatable {
         gestures.reduce(self) { $0.applying($1, in: v) }
     }
 
-    /// The world point under a pixel at a view depth: the pixel's view
-    /// coordinates, which the framing gives exactly, and the depth, taken
-    /// back through the camera. What a click reads off the preview's depth
-    /// buffer (`MetalRenderer.worldPoint(atPixel:navigator:viewport:)`).
+    /// The world point under a pixel position at a view depth: the
+    /// position's view coordinates, which the framing gives exactly, and the
+    /// depth, taken back through the camera.
     public func worldPoint(atPixel p: SIMD2<Double>, depth: Double, in v: Viewport) -> P3<WorldSpace> {
         let q = framing.viewPoint(atPixel: p, in: v)
         return camera.view.inverse(P3<ViewSpace>(q.x, q.y, depth))
+    }
+
+    /// The depth texel a pixel position falls in: the one whose square holds
+    /// it, pixel positions running from a texel's corner.
+    public static func texel(atPixel p: SIMD2<Double>) -> SIMD2<Int> {
+        SIMD2(Int(p.x.rounded(.down)), Int(p.y.rounded(.down)))
+    }
+
+    /// The world point a depth texel holds: its centre, at the depth the
+    /// depth pass sampled there. The raster's column 0 is at its left edge
+    /// plus half a pixel (`Framing.frame`), so texel i's centre is pixel
+    /// position i + 1/2; placed at the clicked position instead, a point
+    /// stands up to half a pixel off the surface whose depth it carries, and
+    /// at an outline it can land nearer the face behind. What a click reads
+    /// off the preview's depth buffer
+    /// (`MetalRenderer.worldPoint(atPixel:navigator:viewport:)`).
+    public func worldPoint(atTexel t: SIMD2<Int>, depth: Double, in v: Viewport) -> P3<WorldSpace> {
+        worldPoint(atPixel: SIMD2(Double(t.x) + 0.5, Double(t.y) + 0.5), depth: depth, in: v)
     }
 }

@@ -485,18 +485,20 @@ public extension MetalRenderer {
         return value > Self.emptySentinel ? Double(value) : nil
     }
 
-    /// The world point under a pixel: the depth the preview drew there, taken
-    /// back through the camera.
+    /// The world point under a pixel: the depth the preview drew in the
+    /// texel the pixel position falls in, taken back through the camera at
+    /// that texel's centre, where the depth was sampled
+    /// (`Navigator.worldPoint(atTexel:depth:in:)`).
     ///
-    /// Under an orthographic camera the view coordinates of a pixel are known
+    /// Under an orthographic camera the view coordinates of a texel are known
     /// exactly from the framing, so the only unknown is depth -- and the depth
     /// buffer the preview already drew is holding it. Nothing is re-rendered and
     /// nothing is intersected.
     func worldPoint(atPixel p: SIMD2<Double>, navigator: Navigator,
                     viewport: Viewport) -> P3<WorldSpace>? {
-        guard let z = previewDepth(atPixel: SIMD2(Int(p.x.rounded(.down)),
-                                                  Int(p.y.rounded(.down)))) else { return nil }
-        return navigator.worldPoint(atPixel: p, depth: z, in: viewport)
+        let texel = Navigator.texel(atPixel: p)
+        guard let z = previewDepth(atPixel: texel) else { return nil }
+        return navigator.worldPoint(atTexel: texel, depth: z, in: viewport)
     }
 }
 

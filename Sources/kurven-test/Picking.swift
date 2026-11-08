@@ -2,6 +2,7 @@ import Foundation
 import simd
 import KurvenCore
 import KurvenDynamics
+import KurvenMetal
 
 // MARK: - picking a face
 //
@@ -123,7 +124,7 @@ func pickTests() {
         var everyCopyOfTheGraph = true
         for l in landscapes {
             let geometry = SceneGeometry.heightfield(l.heightfield)
-            let tolerance = geometry.pickTolerance(unitsPerPixel: 0)
+            let tolerance = geometry.scale
             var tally = PickTally()
             for face in l.faces {
                 for k in face.copies.indices {
@@ -169,7 +170,7 @@ func pickTests() {
         var misplaced: [String] = []
         for l in landscapes {
             let geometry = SceneGeometry.heightfield(l.heightfield)
-            let tolerance = geometry.pickTolerance(unitsPerPixel: 0)
+            let tolerance = geometry.scale
             let cell = geometry.scale, tie = 1e-9 * cell
             func picked(_ w: P3<WorldSpace>) -> FacePick? { geometry.face(at: w, within: tolerance, faces: l.faces) }
             /// The tie rule's face at a crease point that lies on `face`'s
@@ -346,14 +347,15 @@ func pickTests() {
         func run(_ scene: Scene, faces: [Face], copies: Bool) {
             let n = navigator(for: scene, projection: projection, viewport: viewport)
             let geometry = scene.geometry
-            let tolerance = geometry.pickTolerance(unitsPerPixel: n.framing.unitsPerPixel)
+            let upp = n.framing.unitsPerPixel
             for face in faces {
                 for k in (copies ? Array(face.copies.indices) : [0]) {
                     for s in samples(of: face, copy: k, side: 16, most: 12, rng: rng) {
                         asked += 1
                         let expected = first(lyingOn(s.world, faces, tie: 1e-9 * geometry.scale)) ?? (s.face, s.copy)
                         let w = throughAPixel(s.world, n, viewport)
-                        tally.check(geometry.face(at: w, within: tolerance, faces: faces), expected.face, expected.copy, s.world)
+                        tally.check(geometry.face(at: w, within: geometry.pickTolerance(at: w, unitsPerPixel: upp), faces: faces),
+                                    expected.face, expected.copy, s.world)
                     }
                 }
             }
@@ -372,7 +374,8 @@ func pickTests() {
     Check.suite("pick: a picked face's boundary runs round its trimmed domain, closed") {
         let rng = SplitMix(seed: 86)
         var faced = 0, empty: [String] = [], offEdge: [String] = [], open: [String] = []
-        var worst: [String: Double] = [:], worstSag = 0.0, sags: [String] = []
+        var worst: [String: Double] = [:], worstAt: [String: String] = [:], worstSag = 0.0, sags: [String] = []
+        var outside: [String] = []
         /// `straddled`, on the grid, says whether a point of space lies, on
         /// some tile, within 1.5 cells of a band boundary.
         func check(_ name: String, _ geometry: SceneGeometry, _ faces: [Face],
@@ -399,33 +402,75 @@ func pickTests() {
                     // crosses a cell a band boundary straddles, up to 1.42
                     // cells off the face's step, and those cells are left
                     // out, as the trim suite leaves them.
+                    // How far a vertex may stand from the edge of the copy's
+                    // trimmed domain, in the scale's units (cells):
+                    //  - a polyhedron's loops are its edges, to a billionth;
+                    //  - on f, a vertex where the footprint or a band
+                    //    boundary cuts a chord of the truncation edge lies on
+                    //    the chord, which the refiner holds within its
+                    //    tolerance, 0.02 cells, of |f| = h at its midpoint;
+                    //    a quarter more for the rest of the chord;
+                    //  - on the grid, membership reads the grid bilinearly,
+                    //    and its level set in a cell stands off the chord
+                    //    across it by up to half the cell's diagonal, beside
+                    //    a saddle;
+                    //  - a wall's top edge on the grid is solved linearly
+                    //    between the wall's own stations, which the bundle
+                    //    can space wider than a cell, so it stands off the
+                    //    face's exact top by up to a station's spacing: the
+                    //    drawn top edge's, which the boundary follows.
+                    let kind = face.id.kind == .solid ? "solid" : straddled == nil ? "on f"
+                        : face.id.kind == .wall ? "a wall on the grid" : "on the grid"
+                    let allowed = kind == "solid" ? 1e-9 : kind == "on f" ? 0.025
+                        : kind == "on the grid" ? 0.5.squareRoot() : max(0.5.squareRoot(), face.domain.u.spacing / scale)
                     if face.id != .surface {
-                        let radii = [1e-9, 1e-6, 1e-3, 0.01, 0.03, 0.1, 0.3, 1, 3]
+                        func meets(_ q: P2<ParamSpace>, _ r: Double) -> Bool {
+                            let around = [q] + (0..<64).map { k in
+                                P2<ParamSpace>(q.v + r * scale * SIMD2(cos(Double(k) * .pi / 32), sin(Double(k) * .pi / 32)))
+                            }
+                            return around.contains(where: copy.contains) && around.contains { !copy.contains($0) }
+                        }
+                        let radii = [0, 1e-9, 1e-6, 1e-4, 1e-3, 0.003, 0.01, 0.03, 0.1, 0.3, 1, 3, 10]
                         var far = 0.0, at = SIMD2<Double>.zero
                         for q in coords.joined() {
                             if let straddled, straddled(P3(copy.place(face.map(q)).position)) { continue }
-                            let r = radii.first { r in
-                                let around = [q] + (0..<64).map { k in
-                                    P2<ParamSpace>(q.v + r * scale * SIMD2(cos(Double(k) * .pi / 32), sin(Double(k) * .pi / 32)))
-                                }
-                                return around.contains(where: copy.contains) && around.contains { !copy.contains($0) }
-                            } ?? .infinity
-                            if r > far { far = r; at = q.v }
+                            guard let k = radii.indices.dropFirst().first(where: { meets(q, radii[$0]) }) else {
+                                far = .infinity; at = q.v; continue
+                            }
+                            // Within the bin, to a hundredth of it.
+                            var (lo, hi) = (radii[k - 1], radii[k])
+                            if hi > far {
+                                for _ in 0..<7 { let m = 0.5 * (lo + hi); if meets(q, m) { hi = m } else { lo = m } }
+                            }
+                            if hi > far { far = hi; at = q.v }
                         }
-                        // A wall's top edge on the grid is solved linearly
-                        // between the wall's own stations, which the bundle
-                        // can space wider than a cell, so it stands off the
-                        // face's exact top by up to a station's spacing.
-                        let kind = face.id.kind == .solid ? "solid" : straddled == nil ? "on f"
-                            : face.id.kind == .wall ? "a wall on the grid" : "on the grid"
-                        let allowed = kind == "solid" ? 1e-9 : kind == "on f" ? 0.03
-                            : kind == "on the grid" ? 0.3 : max(0.3, face.domain.u.spacing / scale)
-                        worst[kind] = max(worst[kind] ?? 0, far)
+                        if far > worst[kind] ?? 0 { worst[kind] = far; worstAt[kind] = "\(label) at \(at)" }
                         if far > allowed { offEdge.append("\(label): \(far) cells at \(at)") }
                     }
                     // Every segment in space lies on the copy, at its
-                    // quarters, within a fiftieth of the scale: the curve
-                    // follows a curved face between its vertices.
+                    // quarters, within a fiftieth of the scale, over a foot
+                    // its trimmed domain holds, within what a vertex is
+                    // allowed: the curve follows a curved face between its
+                    // vertices, and does not leave it.
+                    if face.id != .surface, let back = copy.tile.inverse {
+                        let r = allowed * scale
+                        let leaves = paths.contains { path in
+                            zip(path, path.dropFirst()).contains { a, b in
+                                [0.25, 0.5, 0.75].contains { t in
+                                    let w = P3<WorldSpace>(a.v + t * (b.v - a.v))
+                                    if let straddled, straddled(w) { return false }
+                                    let q = face.foot(back(w).v)
+                                    // Anywhere in the disc of radius r round it.
+                                    return !copy.contains(q) && ![0.125, 0.25, 0.5, 0.75, 1].contains { m in
+                                        (0..<64).contains { k in
+                                            copy.contains(P2(q.v + m * r * SIMD2(cos(Double(k) * .pi / 32), sin(Double(k) * .pi / 32))))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if leaves { outside.append(label) }
+                    }
                     let sagging = paths.lazy.flatMap { path in zip(path, path.dropFirst()) }.flatMap { a, b in
                         [0.25, 0.5, 0.75].map { t -> Double in
                             // Off the surface the copy lies on, along its
@@ -478,13 +523,16 @@ func pickTests() {
         }), phase: nil, truncation: .uniform(10))
         let flat = Heightfield(surface: wavy, occluder: .empty, tiles: [.identity], step: 1, walls: .none)
         check("a wave whose midpoint is on the chord", .heightfield(flat), wavy.faces())
-        print("        \(faced) faces picked; \(open.count) with loose ends; farthest vertex from the edge, in cells: \(worst)")
+        print("        \(faced) faces picked; \(open.count) with loose ends; farthest vertex from the edge, in cells:")
+        for (kind, d) in worst.sorted(by: { $0.key < $1.key }) { print("          \(kind): \(d), \(worstAt[kind] ?? "")") }
         for line in offEdge.prefix(12) { print("        \(line)") }
         for line in open.prefix(12) { print("        \(line)") }
         Check.expect(faced > 0 && empty.isEmpty, "every picked face has a boundary", empty.first ?? "")
-        Check.expect(offEdge.isEmpty, "every vertex of it lies on the edge of the copy's trimmed domain: a polyhedron's to a billionth, on f within 0.03 cells, on the grid 0.3, a wall's within its stations' spacing",
+        Check.expect(offEdge.isEmpty, "every vertex of it lies on the edge of the copy's trimmed domain: a polyhedron's to a billionth, on f within 0.025 cells, on the grid half a cell's diagonal, a wall's on the grid its stations' spacing",
                      "\(offEdge.count) faces stray; first \(offEdge.first ?? "")")
         Check.expect(open.isEmpty, "every boundary closes", "\(open.count) open; first \(open.first ?? "")")
+        Check.expect(outside.isEmpty, "every segment of it stands over the copy's trimmed domain, within what a vertex is allowed",
+                     "\(outside.count) faces leave it; first \(outside.first ?? "")")
         Check.expect(sags.isEmpty, "every segment of it in space lies on the face, within a fiftieth of the scale",
                      "worst \(worstSag); \(sags.count) faces sag; first \(sags.first ?? "")")
     }
@@ -538,6 +586,117 @@ func pickOnSolidTests() {
             }
             Check.expect(compared > 0 && worst < 1e-7, "\(url.lastPathComponent): every face's boundary, under three cameras",
                          "worst difference in length \(worst) of the largest face")
+        }
+    }
+}
+
+/// How far a point is from a triangle.
+private func distance(_ p: SIMD3<Double>, _ a: SIMD3<Double>, _ b: SIMD3<Double>, _ c: SIMD3<Double>) -> Double {
+    let n = simd_cross(b - a, c - a), area = simd_length(n)
+    guard area > 0 else { return .infinity }
+    let u = n / area, q = p - simd_dot(p - a, u) * u
+    let inside = [(a, b), (b, c), (c, a)].allSatisfy { e0, e1 in simd_dot(simd_cross(e1 - e0, q - e0), u) >= 0 }
+    if inside { return abs(simd_dot(p - a, u)) }
+    return [(a, b), (b, c), (c, a)].map { e0, e1 in
+        let d = e1 - e0, t = max(0, min(1, simd_dot(p - e0, d) / simd_length_squared(d)))
+        return simd_length(p - (e0 + t * d))
+    }.min() ?? .infinity
+}
+
+func pickFromDepthTests() {
+    // The preview's own depth, picked as a click picks it: at a pixel, the
+    // depth the frame left in the texel under it, at the texel's centre.
+    // Every pixel the preview draws must pick a face, and the face must face
+    // the eye, but for what the depth pass draws that no face is, which picks
+    // nothing farther than the four pixels a pick allows any point:
+    //  - walls given as a mesh (`uniform_mesh`'s skirt), which describe no
+    //    face;
+    //  - a wall's curtain where it stands over its face's top: the curtain is
+    //    sampled at the wall's stations and runs straight between them, while
+    //    the face's top follows the surface;
+    //  - `bands_perimeter`'s far wall, seen from inside over the solid's top,
+    //    which its footprint drops at the domain's edge.
+    // The three are the drawing's, not the pick's, and are counted.
+    Check.suite("pick: every pixel the preview draws picks a face, facing the eye, from the depth it left") {
+        guard Check.gpu() != nil else { return }
+        let renderer = try MetalRenderer()
+        let viewport = Viewport(width: 1200, height: 800)
+        let target = try renderer.makePreviewTarget(viewport)
+        for url in Fixtures.contractBundles {
+            let scene: Scene, preset: CameraPreset
+            if (try? PolyhedronBundle.holdsPolyhedron(at: url)) == true {
+                let b = try PolyhedronBundle.read(at: url); preset = b.manifest.presets[0]; scene = b.scene(preset: preset)
+            } else if (try? SurfaceBundle.holdsSurface(at: url)) == true {
+                continue
+            } else {
+                let b = try KurvenBundle.read(at: url)
+                guard let first = b.manifest.presets.first else { continue }
+                preset = first; scene = Scene(bundle: b, preset: preset)
+            }
+            let name = url.lastPathComponent
+            // As the window first frames it (`Document`).
+            var navigator = Navigator(orbit: Orbit(matching: preset.projection),
+                                      framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
+            if let bounds = scene.looking(navigator.camera).quickBounds() {
+                navigator.framing = .fitting(bounds, in: viewport)
+            }
+            try renderer.renderPreview(scene.looking(navigator.camera), navigator: navigator, viewport: viewport,
+                                       options: PreviewOptions(), into: target)
+            let geometry = scene.geometry, faces = geometry.faces, scale = geometry.scale
+            let toEye = -navigator.camera.view.projectionDirection
+            let walls = faces.filter { $0.id.kind == .wall }
+            let mesh: Mesh<WorldSpace>? = {
+                guard case .heightfield(let h) = geometry, case .mesh = h.walls else { return nil }
+                return h.occluder
+            }()
+            /// On a wall's curtain over the wall face's top.
+            func overAWall(_ w: P3<WorldSpace>) -> Bool {
+                walls.contains { face in
+                    let copy = face.copies[0], q = face.foot(w.v)
+                    guard simd_length(copy.place(face.map(q)).position - w.v) <= 1e-4 * scale,
+                          q.x >= 0, q.x <= face.domain.u.range.hi, !copy.contains(q) else { return false }
+                    return copy.contains(P2(q.x, face.domain.v.range.lo + 1e-9 * scale))
+                }
+            }
+            func onTheMesh(_ w: P3<WorldSpace>) -> Bool {
+                guard let mesh else { return false }
+                return mesh.triangles.contains { t in
+                    distance(w.v, mesh.vertices[Int(t.x)].v, mesh.vertices[Int(t.y)].v, mesh.vertices[Int(t.z)].v) <= 1e-4 * scale
+                }
+            }
+            var covered = 0, excused = 0, turnedAwayExcused = 0
+            var empty: [String] = [], away: [String] = [], offFace: [String] = []
+            for y in stride(from: 0, to: viewport.height, by: 4) {
+                for x in stride(from: 0, to: viewport.width, by: 4) {
+                    guard let w = renderer.worldPoint(atPixel: SIMD2(Double(x), Double(y)), navigator: navigator,
+                                                      viewport: viewport) else { continue }
+                    covered += 1
+                    let tolerance = geometry.pickTolerance(at: w, unitsPerPixel: navigator.framing.unitsPerPixel)
+                    let pick = geometry.face(at: w, within: tolerance, faces: faces)
+                    // What no face is picks nothing.
+                    if overAWall(w) || onTheMesh(w) {
+                        if let pick, pick.distance > 4 * navigator.framing.unitsPerPixel { offFace.append("\(x),\(y) \(pick)") }
+                        else { excused += 1 }
+                        continue
+                    }
+                    guard let pick else {
+                        empty.append("\(x),\(y) at \(w.v)")
+                        continue
+                    }
+                    guard let face = faces.first(where: { $0.id == pick.face }) else { continue }
+                    let copy = face.copies[pick.copy]
+                    if let outward = copy.outward, simd_dot(copy.place(face.map(pick.parameter)).normal * outward, toEye) < 0 {
+                        if name == "bands_perimeter.kurven", face.id.kind == .wall { turnedAwayExcused += 1 }
+                        else { away.append("\(x),\(y) \(pick)") }
+                    }
+                }
+            }
+            Check.expect(covered > 0 && empty.isEmpty && away.isEmpty && offFace.isEmpty,
+                         "\(name): every pixel drawn picks a face facing the eye, and none where no face is",
+                         "\(covered) drawn, \(empty.count) pick nothing, \(away.count) a face turned away, "
+                            + "\(offFace.count) a face where none is" + (offFace.first.map { " (first \($0))" } ?? "") + "; "
+                            + "\(excused) on a curtain over its wall or a mesh, picking nothing past 4 px, \(turnedAwayExcused) on the far wall from inside"
+                            + (empty.first.map { "; first empty \($0)" } ?? "") + (away.first.map { "; first away \($0)" } ?? ""))
         }
     }
 }
