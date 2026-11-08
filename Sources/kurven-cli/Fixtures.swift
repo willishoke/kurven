@@ -102,9 +102,10 @@ enum GoldenFixtures {
         return (height, phase)
     }
 
-    /// Four tiny bundles that between them use every arm of `Truncation`, `Walls`,
-    /// `Region` and `LayerSource`, a phase grid and no phase grid, tiles and no
-    /// tiles, a clipped and an unclipped layer, a preset and no presets.
+    /// Five tiny bundles that between them use every arm of `Truncation`, `Walls`,
+    /// `Region`, `LayerSource` and a landscape's `FaceSelector`, a phase grid and
+    /// no phase grid, tiles and no tiles, a clipped and an unclipped layer, a
+    /// preset and no presets.
     static func contract(_ dir: URL) throws {
         let (height, phase) = tinyGrid()
         let (ny, nx) = (3, 4)
@@ -181,10 +182,10 @@ enum GoldenFixtures {
                           source: .contour(field: .magnitude, levels: [0.5, 1.0, 1.5],
                                            restriction: .intersection([.footprint, .belowTruncation,
                                                                        .band(axis: .imag, lo: -1, hi: 1)]),
-                                           tiled: false),
+                                           faces: .graph(tiled: false)),
                           width: 0.3, heightPolicy: .level),
                 LayerSpec(name: "all_levels", role: .magnitude,
-                          source: .contour(field: .phase, levels: [0.25], restriction: .all, tiled: true),
+                          source: .contour(field: .phase, levels: [0.25], restriction: .all, faces: .graph(tiled: true)),
                           width: 0.2, heightPolicy: .surface),
             ],
             presets: presets.map { CameraPreset(name: $0.0, projection: $0.1, depthTolerance: 0.01, buffer: 1024) },
@@ -200,7 +201,7 @@ enum GoldenFixtures {
             layers: [
                 LayerSpec(name: "mag_major", role: .magnitude,
                           source: .contour(field: .magnitude, levels: [0.5, 1.0, 1.5],
-                                           restriction: .belowTruncation, tiled: false),
+                                           restriction: .belowTruncation, faces: .graph(tiled: false)),
                           width: 0.4, heightPolicy: .level),
                 LayerSpec(name: "truncation_edge", role: .scaffold, source: .truncationEdge(tiled: false),
                           width: 0.4, heightPolicy: .level),
@@ -211,11 +212,10 @@ enum GoldenFixtures {
                           source: .plateauHatching(axis: .imag, spacing: 0.4, tiled: true),
                           width: 0.2, heightPolicy: .level),
                 LayerSpec(name: "wall_edges", role: .scaffold,
-                          source: .wallEdges(edges: [0, 1, 2, 3], step: 0.1, base: 0),
+                          source: .wallEdges(edges: [0, 1, 2, 3], base: 0),
                           width: 0.3, heightPolicy: .surface),
                 LayerSpec(name: "wall_hatch", role: .scaffold,
-                          source: .wallHatching(edges: [0, 2], spacing: 0.3, step: 0.1, trim: true,
-                                                base: 0.01, topOffset: -0.02),
+                          source: .wallHatching(edges: [0, 2], spacing: 0.3, base: 0.01, topOffset: -0.02),
                           width: 0.25, heightPolicy: .surface),
                 LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                           width: 0.4, heightPolicy: .surface),
@@ -225,7 +225,38 @@ enum GoldenFixtures {
                                                   "resolution": .int(4)])),
             phase: true)
 
-        // (4) the empty case: no truncations, no walls, no layers, no presets.
+        // (4) the face selector: a contour of a coordinate or the height on
+        //     each of a landscape's faces, and the risers hatched.
+        _ = try bundle("faces.kurven", Manifest(
+            domain: domain, height: heightRef, phase: nil,
+            truncation: .uniform(6),
+            occluder: Occluder(step: 1, tiles: [.identity], walls: .perimeter(perimeter, base: 0),
+                               region: .full, base: 0),
+            layers: [
+                LayerSpec(name: "graph_u", role: .scaffold,
+                          source: .contour(field: .u, levels: [-0.5, 0.5, 1.5], restriction: .all,
+                                           faces: .graph(tiled: true)),
+                          width: 0.2, heightPolicy: .surface),
+                LayerSpec(name: "plateau_v", role: .scaffold,
+                          source: .contour(field: .v, levels: [0.25, 0.75], restriction: .footprint,
+                                           faces: .plateaus(tiled: false)),
+                          width: 0.2, heightPolicy: .level),
+                LayerSpec(name: "wall_height", role: .scaffold,
+                          source: .contour(field: .height, levels: [0.5, 1.0], restriction: .all,
+                                           faces: .walls(edges: [0, 1], endLines: false, base: 0, topOffset: 0)),
+                          width: 0.2, heightPolicy: .surface),
+                LayerSpec(name: "riser_u", role: .scaffold,
+                          source: .contour(field: .u, levels: [0.5], restriction: .all,
+                                           faces: .risers(tiled: true, endLines: false)),
+                          width: 0.2, heightPolicy: .surface),
+                LayerSpec(name: "riser_hatch", role: .scaffold, source: .riserHatching(spacing: 0.2, tiled: true),
+                          width: 0.25, heightPolicy: .surface),
+            ],
+            presets: [CameraPreset(name: "oblique", projection: recip, depthTolerance: 0.02, buffer: 512)],
+            provenance: provenance("tiny_faces")),
+            phase: false)
+
+        // (5) the empty case: no truncations, no walls, no layers, no presets.
         _ = try bundle("empty.kurven", Manifest(
             domain: domain, height: heightRef, phase: nil, truncation: .none,
             occluder: Occluder(step: 1, tiles: [.identity], walls: .none, region: .full, base: 0),
@@ -324,11 +355,10 @@ enum GoldenFixtures {
                                  beyond: 1.6)),
         ]
         let sources: [(String, LayerSource)] = [
-            ("wall_hatch", .wallHatching(edges: [0, 1, 2, 3], spacing: 0.35, step: 0.5, trim: true,
-                                         base: 0, topOffset: 0)),
-            ("wall_hatch_untrimmed", .wallHatching(edges: [0, 2], spacing: 0.6, step: 0.25,
-                                                   trim: false, base: 0.1, topOffset: -0.05)),
-            ("wall_edges", .wallEdges(edges: [0, 1, 2, 3], step: 0.4, base: 0)),
+            ("wall_hatch", .wallHatching(edges: [0, 1, 2, 3], spacing: 0.35)),
+            ("wall_hatch_end_lines", .wallHatching(edges: [0, 2], spacing: 0.6, endLines: true,
+                                                   base: 0.1, topOffset: -0.05)),
+            ("wall_edges", .wallEdges(edges: [0, 1, 2, 3], base: 0)),
             ("plateau_hatch_real", .plateauHatching(axis: .real, spacing: 0.25, tiled: false)),
             ("plateau_hatch_imag", .plateauHatching(axis: .imag, spacing: 0.3, tiled: false)),
             ("truncation_edge", .truncationEdge(tiled: false)),

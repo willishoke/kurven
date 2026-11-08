@@ -347,7 +347,7 @@ func hatchingTests() {
             Check.expect(back == hatching, "\(JSONValue.object(hatching.fields).canonical) decodes to itself")
         }
         let sources: [LayerSource] = [
-            .wallHatching(edges: [0, 2], spacing: 0.3, step: 0.1, trim: false, base: -0.5, topOffset: 0.02),
+            .wallHatching(edges: [0, 2], spacing: 0.3, endLines: true, base: -0.5, topOffset: 0.02),
             .plateauHatching(axis: .imag, spacing: 0.4, tiled: true),
         ]
         for source in sources {

@@ -31,8 +31,11 @@ public struct ParamAxis: Sendable, Equatable {
     /// The coordinate of grid index `i`, *unwrapped*: on a periodic axis
     /// `i == samples` is one period past `i == 0`, which is what lets a cell
     /// that closes the seam interpolate across it rather than back through
-    /// the whole range.
-    public func coordinate(_ i: Int) -> Double { range.lo + Double(i) * spacing }
+    /// the whole range. On a bounded axis it is a `Grid2D`'s position, to the
+    /// bit, so a field on a landscape's face is sampled where its grid is.
+    public func coordinate(_ i: Int) -> Double {
+        periodic ? range.lo + Double(i) * spacing : range.lo + range.length * Double(i) / Double(cells)
+    }
 
     /// The stored sample an unwrapped grid index refers to.
     public func sample(_ i: Int) -> Int {

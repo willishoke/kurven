@@ -1124,12 +1124,12 @@ func landscapeCosts(_ args: Args) throws {
         m.truncation = truncation
         let levels = LandscapeStyle.levels(under: truncation)
         for i in m.layers.indices {
-            guard case .contour(let field, _, let restriction, let tiled) = m.layers[i].source else { continue }
+            guard case .contour(let field, _, let restriction, let faces) = m.layers[i].source else { continue }
             switch m.layers[i].name {
             case "mag_major": m.layers[i].source = .contour(field: field, levels: levels.major,
-                                                            restriction: restriction, tiled: tiled)
+                                                            restriction: restriction, faces: faces)
             case "mag_minor": m.layers[i].source = .contour(field: field, levels: levels.minor,
-                                                            restriction: restriction, tiled: tiled)
+                                                            restriction: restriction, faces: faces)
             default: break
             }
         }
@@ -1496,15 +1496,18 @@ func fmt(_ x: Double) -> String { String(format: "%g", x) }
 func sourceName(_ source: LayerSource) -> String {
     switch source {
     case .file: "dumped"
-    case .contour(let field, let levels, _, _): "\(levels.count) levels of \(field.rawValue)"
+    case .contour(let field, let levels, _, let faces): "\(levels.count) levels of \(field.rawValue) on the \(faces.name)"
     case .hatching(let h, .walls(let edges, _, _, _)):
         "wall hatching, \(edges.count) walls every \(fmt(h.spacing))"
+    case .hatching(let h, .risers):
+        "riser hatching every \(fmt(h.spacing))"
     case .hatching(let h, .plateaus):
         "plateau hatching at \(fmt(h.angle * 180 / .pi))° every \(fmt(h.spacing))"
     case .hatching(let h, .solid):
         "hatching every \(fmt(h.spacing)) at \(fmt(h.angle * 180 / .pi))°, "
             + "\(h.widthSteps) width\(h.widthSteps == 1 ? "" : "s")"
-    case .wallEdges(let edges, _, _): "edges of \(edges.count) walls"
+    case .hatching(_, .graph), .hatching(_, .surface): "hatching on a curved face, not drawn"
+    case .wallEdges(let edges, _): "edges of \(edges.count) walls"
     case .truncationEdge: "truncation edge"
     case .coordinateCurves(let u, let v): "\(u) + \(v) coordinate curves"
     case .linearCurves(let slope, let turns, let count):

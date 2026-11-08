@@ -1,64 +1,50 @@
 import Foundation
 import simd
 
-/// Deriving the hatching: the curves that shade a wall and a plateau.
+/// Deriving the hatching: the curves that shade a wall, a riser and a plateau.
 ///
-/// `kurven/hatch.py` is the definition of all four kinds and this is the
-/// consumer's implementation of it; `tests/fixtures/hatch` holds the two to each
-/// other on the same grid, the same perimeter and the same truncations. Where they
-/// necessarily differ is the *height*: Python has f and evaluates it, this has
-/// the grid and interpolates it, so a stroke's top sits at the grid's top edge
-/// rather than the function's. That difference is the grid's interpolation
-/// error, half a cell's rise at most -- and a whole cell's rise where a zero of
-/// f lies between two samples, since the grid's chord over a pit bottoms out at
-/// the nearer sample. So with a refiner in play the top edge gains a vertex at
-/// every minimum of |f| between two nodes, solved on f, and the hatch stands
-/// under it (`topEdge(of:tiles:refine:)`). The fixtures compare the grid's
-/// answer, with no refiner.
+/// `tests/fixtures/hatch` pins every kind on one small grid, perimeter and
+/// pair of truncations, derived from the grid alone, with no refiner, so a
+/// stroke's top sits at the grid's top edge rather than f's. That difference
+/// is the grid's interpolation error, half a cell's rise at most -- and a
+/// whole cell's rise where a zero of f lies between two samples, since the
+/// grid's chord over a pit bottoms out at the nearer sample. So with a
+/// refiner in play the top edge gains a vertex at every minimum of |f|
+/// between two nodes, solved on f, and the hatch stands under it
+/// (`topEdge(of:tiles:refine:)`).
 ///
 /// Why this is here at all, rather than a list of strokes in the bundle: the truncation
 /// is a slider. Moving it moves every plateau, which moves every plateau hatch line and
 /// every truncation edge and re-cuts every wall stroke at the new top edge. Shipping the answer
-/// would make the slider a round trip to Python; shipping the question makes it
-/// a few milliseconds of this.
+/// would make the slider a new bundle; shipping the question makes it a few
+/// milliseconds of this.
 public extension Surface {
-    /// What the hatching needs beyond the grids: where the walls stand, what
-    /// the footprint is, how the landscape is tiled, and where the risers'
-    /// edges are drawn.
+    /// What the hatching needs beyond the grids: where the walls stand and
+    /// how far down, what the footprint is, and how the landscape is tiled.
     struct HatchContext: Sendable {
         public var perimeter: BoundaryPerimeter?
         public var region: Region
         public var tiles: [Affine2]
-        /// Where the truncation edge's layer draws the risers' edges, and so
-        /// where the walls' hatching hatches the risers: on every tile, true;
-        /// in place, false; nil where no layer draws them.
-        public var riserEdgesTiled: Bool?
+        /// The height the walls stand on, where a contour on them starts.
+        public var base: Double
 
         public init(perimeter: BoundaryPerimeter?, region: Region = .full,
-                    tiles: [Affine2] = [.identity], riserEdgesTiled: Bool? = nil) {
-            self.perimeter = perimeter; self.region = region; self.tiles = tiles
-            self.riserEdgesTiled = riserEdgesTiled
+                    tiles: [Affine2] = [.identity], base: Double = 0) {
+            self.perimeter = perimeter; self.region = region; self.tiles = tiles; self.base = base
         }
 
         /// The context a manifest describes. The wall kinds hatch the perimeter
         /// the walls are *derived* from, referenced rather than repeated -- so a
         /// bundle whose walls are a dumped mesh has no perimeter to hatch, and
-        /// says so by deriving nothing. The risers' edges are drawn where
-        /// `layers`' truncation edges draw them: on every tile if one of them
-        /// is tiled.
-        public init(_ occluder: Occluder, layers: [LayerSpec]) {
-            if case .perimeter(let p, _) = occluder.walls {
-                perimeter = p
+        /// says so by deriving nothing.
+        public init(_ occluder: Occluder) {
+            if case .perimeter(let p, let base) = occluder.walls {
+                perimeter = p; self.base = base
             } else {
-                perimeter = nil
+                perimeter = nil; base = 0
             }
             region = occluder.region
             tiles = occluder.tiles
-            let tiled = layers.compactMap { spec -> Bool? in
-                if case .truncationEdge(let tiled) = spec.source { return tiled }
-                return nil
-            }
-            riserEdgesTiled = tiled.isEmpty ? nil : tiled.contains(true)
         }
     }
 
@@ -66,21 +52,30 @@ public extension Surface {
     ///
     /// The one place that knows which kinds of description exist, so a reader,
     /// a re-derivation after an edit and a bake all produce the same strokes
-    /// for the same spec. `layers` are the scene's, which say where the
-    /// risers' edges are drawn, and so where the walls' hatching hatches them.
-    func curves(_ spec: LayerSpec, occluder: Occluder, layers: [LayerSpec],
+    /// for the same spec.
+    func curves(_ spec: LayerSpec, occluder: Occluder,
                 refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
-        if let hatched = hatch(spec.source, in: HatchContext(occluder, layers: layers), refine: refine) {
+        let context = HatchContext(occluder)
+        if let hatched = hatch(spec.source, in: context, refine: refine) {
             return hatched
+        }
+        if case .contour(let field, let levels, let restriction, let faces) = spec.source, !field.isFieldOfF {
+            return PolylineSet(paths: contours(of: field, levels, on: faces, restriction: restriction,
+                                               in: context, refine: refine))
         }
         return derive(spec.source, policy: spec.heightPolicy,
                       region: occluder.region, tiles: occluder.tiles, refine: refine)
     }
 
-    /// The heightfield's hatchings and the edges of its walls and plateaus,
+    /// The landscape's hatchings and the edges of its walls and plateaus,
     /// as world-space polylines. `nil` for a source this does not own, so a
     /// caller can use it as the test as well as the derivation. With a
-    /// refiner, the walls take their heights from f.
+    /// refiner, the walls take their heights from f. A plateau's hatching is
+    /// derived as what it is, the contours of a coordinate
+    /// (`plateauHatching(axis:spacing:tiled:)`); a wall's and a riser's keep
+    /// their own routine, since their lines stand at whole gaps along each
+    /// wall or riser, at levels that differ from one to the next, and on a
+    /// wall's foot as its corners stand.
     func hatch(_ source: LayerSource, in context: HatchContext,
                refine: ContourRefine? = nil) -> PolylineSet<WorldSpace>? {
         var paths: [[P3<WorldSpace>]]
@@ -88,26 +83,28 @@ public extension Surface {
         case .file, .contour, .coordinateCurves, .linearCurves, .foldCurves, .trajectory, .edges,
              .hatching(_, .solid):
             return nil
-        case .hatching(let hatching, .walls(let edges, let trim, let base, let top)):
+        case .hatching(_, .graph), .hatching(_, .surface):
+            // Not laid on a curved face; decoding refuses it.
+            return .empty
+        case .hatching(let hatching, .walls(let edges, let endLines, let base, let top)):
             guard let perimeter = context.perimeter else { return .empty }
             paths = wallHatchLines(perimeter, edges: edges, spacing: hatching.spacing,
-                                   trim: trim, base: base, topOffset: top,
+                                   endLines: endLines, base: base, topOffset: top,
                                    tiles: context.tiles, refine: refine)
-            // The risers are vertical faces of the solid as the walls are,
-            // and a layer that hatches every wall hatches them too, where
-            // their edges are drawn, cut to the footprint already. One that
-            // picks some walls picks no riser.
-            guard Set(edges).isSuperset(of: perimeter.edges.indices), let tiled = context.riserEdgesTiled else { break }
-            return PolylineSet(paths: Surface.clip(paths, to: context.region)
-                + riserHatchLines(spacing: hatching.spacing, trim: trim, topOffset: top,
-                                  tiles: context.tiles, tiled: tiled, region: context.region, refine: refine))
+        case .hatching(let hatching, .risers(let tiled, let endLines)):
+            // Cut to the footprint already.
+            return PolylineSet(paths: riserHatchLines(spacing: hatching.spacing, endLines: endLines,
+                                                      tiles: context.tiles, tiled: tiled,
+                                                      region: context.region, refine: refine))
         case .hatching(let hatching, .plateaus(let tiled)):
             // Decoding holds the angle to an axis; one built in code at any
             // other draws nothing.
-            guard let axis = DomainAxis(angle: hatching.angle) else { return .empty }
-            paths = plateauHatchLines(axis: axis, spacing: hatching.spacing, refine: refine)
-            if tiled { paths = Surface.replicate(paths, context.tiles) }
-        case .wallEdges(let edges, _, let base):
+            guard let axis = DomainAxis(angle: hatching.angle),
+                  case .contour(let field, let levels, let restriction, let faces)
+                    = plateauHatching(axis: axis, spacing: hatching.spacing, tiled: tiled) else { return .empty }
+            return PolylineSet(paths: contours(of: field, levels, on: faces, restriction: restriction,
+                                               in: context, refine: refine))
+        case .wallEdges(let edges, let base):
             guard let perimeter = context.perimeter else { return .empty }
             paths = wallEdges(perimeter, edges: edges, base: base,
                               tiles: context.tiles, refine: refine)
@@ -556,14 +553,14 @@ extension Surface {
     }
 
     func wallHatchLines(_ perimeter: BoundaryPerimeter, edges: [Int], spacing: Double,
-                        trim: Bool, base: Double, topOffset: Double,
+                        endLines: Bool, base: Double, topOffset: Double,
                         tiles: [Affine2], refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
         var out: [[P3<WorldSpace>]] = []
         for index in edges where index >= 0 && index < perimeter.edges.count {
             let edge = perimeter.edges[index], inward = perimeter.inward(index)
             let length = simd_length(edge.end.v - edge.start.v)
             let n = Surface.strokeCount(length: length, spacing: spacing)
-            let range = trim ? Array(1..<max(n - 1, 1)) : Array(0..<n)
+            let range = endLines ? Array(0..<n) : Array(1..<max(n - 1, 1))
             let topEdge = refine?.magnitude == nil ? nil : topEdge(of: edge, inward: inward, tiles: tiles, refine: refine)
             for k in range {
                 let t = Double(k) / Double(max(n - 1, 1))
@@ -634,60 +631,84 @@ extension Surface {
 // MARK: - plateaus
 
 extension Surface {
-    func plateauHatchLines(axis: DomainAxis, spacing: Double,
-                           refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
-        guard spacing.isFinite, spacing > 0 else { return [] }
-        let grid = height
-        let across = axis == .real ? grid.domain.imag : grid.domain.real
-        let alongInterval = axis == .real ? grid.domain.real : grid.domain.imag
-        let count = axis == .real ? grid.width : grid.height
-        let samples = (0..<count).map { i in
-            axis == .real ? grid.position(x: i, y: 0).x : grid.position(x: 0, y: i).y
-        }
-
-        var out: [[P3<WorldSpace>]] = []
-        // Divided across the domain the way `wallHatchLines` divides an edge: the
-        // spacing asks for a count, and the strokes are spread to fit it. The
-        // hatching then meets the plateau's edges with whole gaps, and each stroke
-        // stands where the walls that run across it stand theirs, so it turns
-        // the corner down the wall instead of missing it.
+    /// A hatching on the plateaus, as what it is: the contours of the
+    /// coordinate across its lines, Im z for lines along the real axis and
+    /// Re z for lines along the imaginary, on the plateaus.
+    ///
+    /// Its levels divide the domain across the lines the way
+    /// `wallHatchLines` divides an edge: the spacing asks for a count, and
+    /// the lines are spread to fit it, the two on the domain's edges left
+    /// out. The hatching then meets the plateau's edges with whole gaps, and
+    /// each line stands where the walls that run across it stand theirs, so
+    /// it turns the corner down the wall instead of missing it.
+    func plateauHatching(axis: DomainAxis, spacing: Double, tiled: Bool) -> LayerSource {
+        let across = axis == .real ? height.domain.imag : height.domain.real
         let n = Surface.strokeCount(length: across.hi - across.lo, spacing: spacing)
-        for k in 1..<max(n - 1, 1) {
-            let c = across.lo + (across.hi - across.lo) * Double(k) / Double(n - 1)
-            // The truncation varies with Re and with nothing else: a line along the
-            // real axis crosses the bands and is solved piece by piece, and one
-            // along the imaginary axis stays in a single band for its length.
-            let intervals = axis == .real
-                ? truncation.bands(from: alongInterval.lo, to: alongInterval.hi).map { ($0.lo, $0.hi) }
-                : [(alongInterval.lo, alongInterval.hi)]
-            for (a, b) in intervals {
-                let truncationHeight = self.truncationHeight(atX: axis == .real ? a : c)
-                guard truncationHeight.isFinite else { continue }
-                var coord = [a]
-                coord.append(contentsOf: samples.filter { $0 > a && $0 < b })
-                coord.append(b)
-                // With the function at hand the strokes are ruled on f and
-                // end where |f| reaches the truncation along them, bisected: the
-                // grid's chords lie above f on a convex graph, so its truncation
-                // region reaches past the truncation edge drawn on f by a fraction of a
-                // cell, and a stroke ruled on it poked out past the truncation edge.
-                func excessAt(_ t: Double) -> Double {
-                    let p = axis == .real ? P2<DomainSpace>(t, c) : P2<DomainSpace>(c, t)
-                    if let f = refine?.magnitude {
-                        let u = f(p)
-                        return (u.isNaN ? .infinity : u) - truncationHeight
+        let levels = spacing.isFinite && spacing > 0
+            ? (1..<max(n - 1, 1)).map { across.lo + (across.hi - across.lo) * Double($0) / Double(n - 1) } : []
+        return .contour(field: axis == .real ? .v : .u, levels: levels, restriction: .all,
+                        faces: .plateaus(tiled: tiled))
+    }
+
+    /// The contours of u or v on the plateaus: lines along the other axis,
+    /// placed by the plain routine (`Contour.levels(of:_:over:trimLoops:contains:cuts:)`)
+    /// with a vertex wherever they cross a grid line, on the level exactly,
+    /// and each cut where it leaves a plateau. The height is constant on a
+    /// plateau, and has none.
+    ///
+    /// A line is cut band by band, each band's plateau at its own height,
+    /// with a vertex where it enters and leaves the band, and kept where |f|
+    /// reaches the band's height. With the function at hand it is ruled on f
+    /// and ends where |f| reaches the height along it, bisected: the grid's
+    /// chords lie above f on a convex graph, so its truncation region reaches
+    /// past the truncation edge drawn on f by a fraction of a cell, and a line
+    /// ruled on it poked out past the truncation edge. Without, the end is
+    /// solved linearly on the grid, as the truncation edge is contoured.
+    func plateauContours(of field: ContourField, _ levels: [Double],
+                         refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
+        guard field == .u || field == .v, let rectangle = parameterRectangle else { return [] }
+        // A line of v runs along the real axis, one of u along the imaginary.
+        let axis: DomainAxis = field == .v ? .real : .imag
+        let grid = height
+        let alongInterval = axis == .real ? grid.domain.real : grid.domain.imag
+        let lines = Contour.levels(of: ScalarField { field == .u ? $0.x : $0.y }, levels, over: rectangle)
+        var out: [[P3<WorldSpace>]] = []
+        for (_, paths) in lines {
+            for path in paths {
+                guard let first = path.first else { continue }
+                // The coordinate across the line, and its vertices in order along it.
+                let c = axis == .real ? first.y : first.x
+                let samples = path.map { axis == .real ? $0.x : $0.y }.sorted()
+                // The truncation varies with Re and with nothing else: a line along the
+                // real axis crosses the bands and is solved piece by piece, and one
+                // along the imaginary axis stays in a single band for its length.
+                let intervals = axis == .real
+                    ? truncation.bands(from: alongInterval.lo, to: alongInterval.hi).map { ($0.lo, $0.hi) }
+                    : [(alongInterval.lo, alongInterval.hi)]
+                for (a, b) in intervals {
+                    let truncationHeight = self.truncationHeight(atX: axis == .real ? a : c)
+                    guard truncationHeight.isFinite else { continue }
+                    var coord = [a]
+                    coord.append(contentsOf: samples.filter { $0 > a && $0 < b })
+                    coord.append(b)
+                    func excessAt(_ t: Double) -> Double {
+                        let p = axis == .real ? P2<DomainSpace>(t, c) : P2<DomainSpace>(c, t)
+                        if let f = refine?.magnitude {
+                            let u = f(p)
+                            return (u.isNaN ? .infinity : u) - truncationHeight
+                        }
+                        return magnitude(at: p) - truncationHeight
                     }
-                    return magnitude(at: p) - truncationHeight
-                }
-                let excess = coord.map(excessAt)
-                let runs = refine?.magnitude == nil
-                    ? Surface.runsAtOrAbove(coord, excess)
-                    : Surface.runsAtOrAbove(coord, excess) { lo, hi in Surface.bisected(lo, hi, excessAt) }
-                for run in runs {
-                    out.append(run.map { t in
-                        axis == .real ? P3<WorldSpace>(t, c, truncationHeight)
-                                      : P3<WorldSpace>(c, t, truncationHeight)
-                    })
+                    let excess = coord.map(excessAt)
+                    let runs = refine?.magnitude == nil
+                        ? Surface.runsAtOrAbove(coord, excess)
+                        : Surface.runsAtOrAbove(coord, excess) { lo, hi in Surface.bisected(lo, hi, excessAt) }
+                    for run in runs {
+                        out.append(run.map { t in
+                            axis == .real ? P3<WorldSpace>(t, c, truncationHeight)
+                                          : P3<WorldSpace>(c, t, truncationHeight)
+                        })
+                    }
                 }
             }
         }
@@ -794,8 +815,8 @@ extension Surface {
     }
 
     /// One stretch of a riser where it stands, in place: what the truncation
-    /// edge's layer draws of it, its top and bottom edges, and what the
-    /// walls' hatching needs to hatch it.
+    /// edge's layer draws of it, its top and bottom edges, and what its
+    /// hatching and contours need.
     struct RiserStretch {
         /// Where the riser meets the face above: the higher top.
         var top: [P3<WorldSpace>]
@@ -816,6 +837,9 @@ extension Surface {
         /// The riser's outward normal at a point of the line, in the ground
         /// plane: toward the lower side.
         var lower: (P2<WorldSpace>) -> SIMD2<Double>
+        /// The map back to the domain at a point of the line, through the
+        /// tile of the copy the riser faces there: where a restriction is read.
+        var back: (P2<WorldSpace>) -> Affine2
     }
 
     /// The risers at the band boundaries on the copy on `tile`, or in place
@@ -904,7 +928,8 @@ extension Surface {
                         let p = Surface.point(from: P2(b, y0), to: P2(b, y1), at: t)
                         return placed(P3(p.x, p.y, 0)).xy
                     },
-                    lo: (lo - y0) / (y1 - y0), hi: (hi - y0) / (y1 - y0), lower: { _ in outward }))
+                    lo: (lo - y0) / (y1 - y0), hi: (hi - y0) / (y1 - y0), lower: { _ in outward },
+                    back: { _ in tile?.inverse ?? .identity }))
             }
         }
         return out
@@ -986,52 +1011,61 @@ extension Surface {
                 // this one starts.
                 let follows = k > 0 && stretches[k - 1].last?.s == start.s
                 out.append(RiserStretch(top: top, bottom: bottom, length: length, point: { boundary.point($0 * length) },
-                                        lo: start.s / length, hi: end.s / length, opens: !follows, lower: lower))
+                                        lo: start.s / length, hi: end.s / length, opens: !follows, lower: lower,
+                                        back: { w in
+                                            let z = tops(w)
+                                            return z[1] < z[0] ? second : first
+                                        }))
             }
         }
         return out
     }
 
-    /// The hatch lines on the risers, as on the walls
-    /// (`wallHatchLines`): vertical, from a riser's bottom edge up to its
-    /// top, plus `topOffset`, a hair onto the lower side, at whole gaps
-    /// along the line it stands on, `trim` leaving out the line's two ends,
-    /// and kept where the riser stands. A band boundary's line runs across
-    /// the domain, as the plateaus' hatching divides it, so a plateau's
-    /// lines along Re z meet a riser's on its edges at the same spacing.
-    ///
-    /// Where the truncation edge's layer draws the risers' edges
+    /// The risers where they stand, a stretch at a time, as the truncation
+    /// edge's layer draws their edges
     /// (`drawnTruncationEdge(tiles:tiled:region:refine:)`): on every tile when
     /// `tiled`, each copy cut to the footprint where it stands, and at the
     /// tile boundaries; in place otherwise. A band boundary's only with a
     /// refiner, as their tops are drawn (`graphTrimLoops(refine:)`); a tile
     /// boundary's either way.
+    func riserStretches(tiles: [Affine2], tiled: Bool, region: Region,
+                        refine: ContourRefine?) -> [RiserStretch] {
+        let banded: Bool
+        if case .realBands = truncation, refine?.magnitude != nil { banded = true } else { banded = false }
+        guard banded || (tiled && tiles.count > 1) else { return [] }
+        let riserTops = banded ? graphTrimLoops(refine: refine).riserTops : []
+        return (tiled ? tiles.map(Optional.some) : [nil]).flatMap {
+            bandRiserStretches(riserTops, tile: $0, region: region, refine: refine)
+        } + (tiled ? tileBoundaryRiserStretches(tiles: tiles, region: region, refine: refine) : [])
+    }
+
+    /// The hatch lines on the risers (`riserStretches(tiles:tiled:region:refine:)`),
+    /// as on the walls (`wallHatchLines`): vertical, from a riser's bottom
+    /// edge up to its top, a hair onto the lower side, at whole gaps along
+    /// the line it stands on, the line's two ends drawn only with
+    /// `endLines`, and kept where the riser stands. A band boundary's line
+    /// runs across the domain, as the plateaus' hatching divides it, so a
+    /// plateau's lines along Re z meet a riser's on its edges at the same
+    /// spacing.
     ///
     /// A stretch holds the lines from its start to its end, but for one at
     /// its start where another ends: at a tile boundary a stretch breaks
     /// where a copy's top steps, and the next starts there
     /// (`tileBoundaryStretches`), and a line on that stop is the first's.
-    func riserHatchLines(spacing: Double, trim: Bool, topOffset: Double, tiles: [Affine2], tiled: Bool,
+    func riserHatchLines(spacing: Double, endLines: Bool, tiles: [Affine2], tiled: Bool,
                          region: Region, refine: ContourRefine?) -> [[P3<WorldSpace>]] {
-        let banded: Bool
-        if case .realBands = truncation, refine?.magnitude != nil { banded = true } else { banded = false }
-        guard banded || (tiled && tiles.count > 1) else { return [] }
-        let riserTops = banded ? graphTrimLoops(refine: refine).riserTops : []
-        let stretches = (tiled ? tiles.map(Optional.some) : [nil]).flatMap {
-            bandRiserStretches(riserTops, tile: $0, region: region, refine: refine)
-        } + (tiled ? tileBoundaryRiserStretches(tiles: tiles, region: region, refine: refine) : [])
         let side = 1e-9 * cell
         var out: [[P3<WorldSpace>]] = []
-        for riser in stretches {
+        for riser in riserStretches(tiles: tiles, tiled: tiled, region: region, refine: refine) {
             let n = Surface.strokeCount(length: riser.length, spacing: spacing)
-            for k in trim ? Array(1..<max(n - 1, 1)) : Array(0..<n) {
+            for k in endLines ? Array(0..<n) : Array(1..<max(n - 1, 1)) {
                 let t = Double(k) / Double(max(n - 1, 1))
                 guard t > riser.lo || riser.opens, t <= riser.hi else { continue }
                 let w = riser.point(t)
                 guard let top = topEdgeHeight(of: riser.top, at: P2(w.x, w.y)),
                       let base = topEdgeHeight(of: riser.bottom, at: P2(w.x, w.y)) else { continue }
                 let o = side * riser.lower(w)
-                if let stroke = Surface.vertical(x: w.x + o.x, y: w.y + o.y, base: base, top: top + topOffset) {
+                if let stroke = Surface.vertical(x: w.x + o.x, y: w.y + o.y, base: base, top: top) {
                     out.append(stroke)
                 }
             }

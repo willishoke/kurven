@@ -39,8 +39,10 @@ the footprint where it stands; where two copies meet with different tops,
 a riser stands at the tile boundary between them.
 
 **Curves.** Most curves are level sets of a field on a face: contours of
-|f| and arg f on the graph, coordinate curves on a torus, hatch lines on a
-wall or a plateau. The others are a face's edges (the truncation edge,
+|f| and arg f on the graph, of a face's coordinates or its height on any
+face, coordinate curves on a torus, hatch lines on a wall, a riser or a
+plateau. A layer whose curves can lie on more than one kind of face, a
+contour or a hatching, names its faces (`FaceSelector`). The others are a face's edges (the truncation edge,
 where the graph meets a plateau; a wall's top, bottom and vertical edges;
 a polyhedron's edges), flow lines (a trajectory, the linear curves on a
 torus), and fold curves, which depend on the camera. A curve is a polyline
@@ -84,7 +86,7 @@ curves, visibility and projection do. The first half is the expensive one,
 and its result is a `Scene`.
 
 A **`.kurven` bundle** is a `Scene`, serialized: a directory holding a typed
-`manifest.json` and `.npy` arrays (schema 2, `Manifest.swift`). A
+`manifest.json` and `.npy` arrays (schema 3, `Manifest.swift`). A
 landscape's bundle is described all the way through: no vertices, a
 manifest and two grids (|f| untruncated, and arg f), a few hundred
 kilobytes. Its contour layers are statements of levels, its walls a
@@ -150,18 +152,16 @@ edge, the level set |f| = h(x), solved exactly. Under a banded truncation
 (gamma's, one height per band of Re z) the truncation edge is not a level
 set of |f| at all, and the riser between two bands is a face of its own.
 
-**Hatching.** Walls and plateaus are hatched: vertical lines up the walls,
-lines along an axis across the plateaus (`Hatch.swift`). Both are the same
-`Hatching` value laid on different faces (`HatchedFaces`), and the spacing
-is rounded on each face to a whole number of gaps, so a plateau's hatch
-lines meet the walls' at a corner. `wallEdges` draws each wall's top,
-bottom and vertical edges. The truncation edge's layer draws each riser's
-top and bottom edges, and a hatching laid on every wall hatches the risers
-too, vertical faces of the solid as the walls are, on the tiles where
-their edges are drawn: a line at each whole gap along the line a riser
-stands on, from its bottom edge up to its top, so a plateau's lines along
-Re z turn up a riser where they meet it. A hatching laid on some walls
-hatches no riser.
+**Hatching.** Walls, risers and plateaus are hatched: vertical lines up the
+walls and the risers, lines along an axis across the plateaus
+(`Hatch.swift`). All are the same `Hatching` value laid on different faces
+(`FaceSelector`), and the spacing is rounded on each face to a whole number
+of gaps, so a plateau's hatch lines meet the walls' at a corner. A plateau's
+hatching is the contours of the coordinate across its lines. `wallEdges`
+draws each wall's top, bottom and vertical edges, and the truncation edge's
+layer each riser's. A riser's hatching is a line at each whole gap along the
+line it stands on, from its bottom edge up to its top, in place or on every
+tile, so a plateau's lines along Re z turn up a riser where they meet it.
 
 **Visibility.** The solid is the region under the truncated graph, down to
 the floor, closed by the walls. Every clipped layer is tested per vertex
@@ -205,9 +205,9 @@ whose foot they stand on: a wall that faces away hides its hatching, and
 its top edge, which is on the surface, is tested by the traversal alone.
 Below the top edge a point lies on the wall exactly, so the traversal
 forgives it nothing: any terrain its line of sight enters, another copy's
-or across a notch, hides it. **Curves on a riser** likewise: its hatching
-and bottom edge stand a hair onto the lower side, are tested by the
-riser's facing, and are forgiven nothing; its top, a crease, is tested by
+or across a notch, hides it. **Curves on a riser** likewise: its hatching, its
+contours and its bottom edge stand a hair onto the lower side, are tested by
+the riser's facing, and are forgiven nothing; its top, a crease, is tested by
 the traversal alone (`Heightfield.riserFacing`).
 
 **The depth buffer** is still drawn, and the realtime preview uses it: the

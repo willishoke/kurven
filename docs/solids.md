@@ -132,9 +132,9 @@ U(r, s) = ±1. The signs come from a hash of the lattice point and a seed,
 so the pattern is defined on the whole plane with no array behind it. It is
 not a simulation of reaction and diffusion.
 
-Hatching on a heightfield's walls and plateaus is the same `Hatching` value
-laid on different faces (`HatchedFaces`). There, lines are vertical on a
-wall and along an axis on a plateau, and a manifest that asks for a tone
+Hatching on a landscape's walls, risers and plateaus is the same `Hatching`
+value laid on different faces (`FaceSelector`). There, lines are vertical on
+a wall or a riser and along an axis on a plateau, and a manifest that asks for a tone
 other than uniform, or for more than one width, is refused
 ([landscapes.md](landscapes.md)).
 

@@ -418,7 +418,7 @@ func wallFaceTests() {
             // stands over the first's at the box edge they meet on, a riser
             // stands over the wall there, and its hatching, a hair onto the
             // lower side, rises from its bottom (`riserFaceTests`).
-            let both = surface.hatch(.wallHatching(edges: Array(layout.walls.edges.indices), spacing: 0.1, step: 0.1),
+            let both = surface.hatch(.wallHatching(edges: Array(layout.walls.edges.indices), spacing: 0.1),
                                      in: context)!
             let hatch = PolylineSet(paths: (0..<both.count).map { Array(both[path: $0]) }.filter { $0[0].z == 0 })
             // Each edge's outward normal, from the perimeter's turn.
@@ -507,8 +507,8 @@ func wallFaceTests() {
         for layout in layouts {
             let h = layout.h, dom = h.surface.domain
             let context = Surface.HatchContext(perimeter: layout.walls, region: h.region, tiles: h.tiles)
-            let hatch = h.surface.hatch(.wallHatching(edges: Array(layout.walls.edges.indices), spacing: 0.1, step: 0.1,
-                                                      trim: true, base: 0, topOffset: 0), in: context)!
+            let hatch = h.surface.hatch(.wallHatching(edges: Array(layout.walls.edges.indices), spacing: 0.1,
+                                                      endLines: false, base: 0, topOffset: 0), in: context)!
             let dense = PolylineSet(paths: (0..<hatch.count).map { i -> [P3<WorldSpace>] in
                 let p = Array(hatch[path: i]), a = p[0], b = p[p.count - 1]
                 return (0...256).map { j in j == 256 ? b : P3(a.v + (b.v - a.v) * (Double(j) / 256)) }
@@ -626,9 +626,9 @@ func wallFaceTests() {
 
 // MARK: - curves on a riser are tested by the riser
 //
-// A riser is a vertical face of the solid, as a wall is: the walls' hatching
-// hatches it, and the truncation edge's layer draws its bottom edge with its
-// top. Both stand a hair onto the lower side, and a point on them is tested
+// A riser is a vertical face of the solid, as a wall is: a hatching that
+// selects the risers hatches it, and the truncation edge's layer draws its
+// bottom edge with its top. Both stand a hair onto the lower side, and a point on them is tested
 // by the riser's facing and then by the traversal, forgiven nothing.
 
 /// A perimeter through the corners, in order.
@@ -683,9 +683,13 @@ func riserFaceTests() {
             let cell = max(abs(g.domain.real.length) / Double(g.width - 1), abs(g.domain.imag.length) / Double(g.height - 1))
             let tolerance = refine.tolerance * cell
             let tiled = c.tiles.count > 1
-            let context = Surface.HatchContext(perimeter: c.walls, region: c.region, tiles: c.tiles, riserEdgesTiled: tiled)
-            let hatch = surface.hatch(.wallHatching(edges: Array(c.walls.edges.indices), spacing: 0.07, step: 0.07),
-                                      in: context, refine: refine)!
+            let context = Surface.HatchContext(perimeter: c.walls, region: c.region, tiles: c.tiles)
+            let sources: [LayerSource] = [.wallHatching(edges: Array(c.walls.edges.indices), spacing: 0.07),
+                                          .riserHatching(spacing: 0.07, tiled: tiled)]
+            let hatch = PolylineSet<WorldSpace>(paths: sources.flatMap { source in
+                let lines = surface.hatch(source, in: context, refine: refine)!
+                return (0..<lines.count).map { Array(lines[path: $0]) }
+            })
             let edges = surface.hatch(.truncationEdge(tiled: tiled), in: context, refine: refine)!
             /// A billionth of a cell onto the lower side of the riser's line,
             /// Re z = `at`, which is to its left in all four.
@@ -727,12 +731,12 @@ func riserFaceTests() {
         }
     }
 
-    Check.suite("risers: a hatching on every wall hatches the risers, on the tiles where their edges are drawn") {
-        // The tower at 2 | 4 as a bundle draws it: one wall hatching on all
-        // four walls, and the truncation edge, in place. A riser's line is
-        // counted by where it stands: in place, a hair left of Re z = 1/2;
-        // on a second tile beside the first, of 5/2; at the tile boundary
-        // between, of 3/2.
+    Check.suite("risers: only a layer that selects the risers hatches them, in place or on every tile") {
+        // The tower at 2 | 4 as a bundle draws it: a wall hatching on all
+        // four walls, the risers' hatching in place, and the truncation edge
+        // in place. A riser's line is counted over every hatching layer by
+        // where it stands: in place, a hair left of Re z = 1/2; on a second
+        // tile beside the first, of 5/2; at the tile boundary between, of 3/2.
         let window = Domain(real: Interval(lo: -0.5, hi: 1.5), imag: Interval(lo: -1, hi: 1))
         let built = try NativeLandscape.build(
             LandscapeRequest(expression: "1/(z - 0.45)", domain: window, resolution: 48,
@@ -740,11 +744,12 @@ func riserFaceTests() {
             refine: true)
         let g = built.surface.height
         let cell = max(window.real.length / Double(g.width - 1), window.imag.length / Double(g.height - 1))
-        /// The wall hatching's lines on each riser, under `manifest`.
+        /// The hatching's lines on each riser, under `manifest`.
         func risers(_ manifest: Manifest) throws -> (inPlace: Int, second: Int, between: Int) {
             let bundle = KurvenBundle(url: built.url, manifest: manifest, surface: built.surface, refine: built.refine)
-            let hatch = try bundle.layer("wall_hatch").paths
-            let feet = (0..<hatch.count).map { hatch[path: $0].first! }
+            let feet = bundle.layers.filter { if case .hatching = $0.spec.source { true } else { false } }.flatMap { layer in
+                (0..<layer.paths.count).map { layer.paths[path: $0].first! }
+            }
             func on(_ x: Double) -> Int { feet.filter { x - $0.x > 0.5e-9 * cell && x - $0.x < 2e-9 * cell }.count }
             return (on(0.5), on(2.5), on(1.5))
         }
@@ -756,19 +761,19 @@ func riserFaceTests() {
         func walls(_ edges: [Int]) -> (inout Manifest) -> Void {
             { m in
                 for k in m.layers.indices {
-                    if case .hatching(let hatching, .walls(_, let trim, let base, let top)) = m.layers[k].source {
-                        m.layers[k].source = .hatching(hatching, faces: .walls(edges: edges, trim: trim, base: base, topOffset: top))
+                    if case .hatching(let hatching, .walls(_, let endLines, let base, let top)) = m.layers[k].source {
+                        m.layers[k].source = .hatching(hatching, faces: .walls(edges: edges, endLines: endLines, base: base, topOffset: top))
                     }
                 }
             }
         }
-        func truncationEdge(tiled: Bool?) -> (inout Manifest) -> Void {
+        func risersTiled(_ tiled: Bool?) -> (inout Manifest) -> Void {
             { m in
                 m.layers = m.layers.compactMap { spec in
-                    guard case .truncationEdge = spec.source else { return spec }
+                    guard case .hatching(let hatching, .risers(_, let endLines)) = spec.source else { return spec }
                     guard let tiled else { return nil }
                     var spec = spec
-                    spec.source = .truncationEdge(tiled: tiled)
+                    spec.source = .hatching(hatching, faces: .risers(tiled: tiled, endLines: endLines))
                     return spec
                 }
             }
@@ -778,23 +783,23 @@ func riserFaceTests() {
         }
         let all = try risers(built.manifest)
         Check.expect(all.inPlace > 30 && all.second == 0 && all.between == 0,
-                     "every wall hatched, the truncation edge in place: the riser, in place", "\(all)")
-        let listed = try risers(with(walls([3, 2, 1, 0, 2])))
-        Check.expect(listed.inPlace == all.inPlace, "every wall listed in another order, one twice: the same riser lines",
-                     "\(listed)")
+                     "every wall and the risers hatched, in place: the riser, in place", "\(all)")
+        let none = try risers(with(risersTiled(nil)))
+        Check.expect(none.inPlace == 0 && none.second == 0 && none.between == 0,
+                     "every wall hatched and no layer on the risers: no riser", "\(none)")
         for edges in [[0, 2], [1], []] {
             let some = try risers(with(walls(edges)))
-            Check.expect(some.inPlace == 0, "walls \(edges) hatched: no riser", "\(some)")
+            Check.expect(some.inPlace == all.inPlace, "walls \(edges) hatched: the same riser lines", "\(some)")
         }
-        let none = try risers(with(truncationEdge(tiled: nil)))
-        Check.expect(none.inPlace == 0, "no truncation edge drawn: no riser", "\(none)")
+        let edgeless = try risers(with { m in m.layers.removeAll { if case .truncationEdge = $0.source { true } else { false } } })
+        Check.expect(edgeless.inPlace == all.inPlace, "no truncation edge drawn: the same riser lines", "\(edgeless)")
         let untiled = try risers(with { m in beside(&m) })
         Check.expect(untiled.inPlace == all.inPlace && untiled.second == 0 && untiled.between == 0,
-                     "two tiles, the truncation edge in place: the riser in place, none on the second tile or between them",
+                     "two tiles, the risers hatched in place: the riser in place, none on the second tile or between them",
                      "\(untiled)")
-        let tiled = try risers(with { m in beside(&m); truncationEdge(tiled: true)(&m) })
+        let tiled = try risers(with { m in beside(&m); risersTiled(true)(&m) })
         Check.expect(tiled.inPlace == all.inPlace && tiled.second == all.inPlace && tiled.between > 30,
-                     "two tiles, the truncation edge tiled: the riser on both, and the one between them", "\(tiled)")
+                     "two tiles, the risers hatched on every tile: the riser on both, and the one between them", "\(tiled)")
     }
 
     // Where a riser faces away, the solid on its higher side stands between
@@ -869,7 +874,7 @@ func riserFaceTests() {
             let box = riserPerimeter([(lo, ylo), (hi, ylo), (hi, yhi), (lo, yhi)])
             let h = Heightfield(surface: surface, occluder: .empty, tiles: l.tiles, region: .full, step: 1,
                                 refine: refine, walls: .perimeter(box, base: 0))
-            let context = Surface.HatchContext(perimeter: box, region: .full, tiles: l.tiles, riserEdgesTiled: true)
+            let context = Surface.HatchContext(perimeter: box, region: .full, tiles: l.tiles)
             let cell = max(abs(dom.real.length) / Double(g.width - 1), abs(dom.imag.length) / Double(g.height - 1))
             // The lines the risers stand on, in place: the band boundaries
             // the truncation steps at inside the domain, on every copy, and
@@ -894,8 +899,7 @@ func riserFaceTests() {
                 }?.n
             }
             func onRiser(_ v: P3<WorldSpace>) -> Bool { riser(v) != nil }
-            let hatch = surface.hatch(.wallHatching(edges: [0, 1, 2, 3], spacing: l.spacing, step: l.spacing),
-                                      in: context, refine: refine)!
+            let hatch = surface.hatch(.riserHatching(spacing: l.spacing, tiled: true), in: context, refine: refine)!
             let edges = surface.hatch(.truncationEdge(tiled: true), in: context, refine: refine)!
             let strokes = (0..<hatch.count).map { Array(hatch[path: $0]) }.filter { $0.allSatisfy(onRiser) }
             let bottoms = (0..<edges.count).map { Array(edges[path: $0]) }.filter { $0.allSatisfy(onRiser) }
@@ -976,10 +980,10 @@ func riserFaceTests() {
                     }
                     return out
                 }
-                // As the walls' hatching layer and the truncation edge's
+                // As the risers' hatching layer and the truncation edge's
                 // test them (`SceneGeometry.face(of:)`).
-                let two = runs(h.visibleCurves(ends, on: .wall, view: view, depthTolerance: 0.02))
-                let many = runs(h.visibleCurves(dense, on: .wall, view: view, depthTolerance: 0.02))
+                let two = runs(h.visibleCurves(ends, on: .riser, view: view, depthTolerance: 0.02))
+                let many = runs(h.visibleCurves(dense, on: .riser, view: view, depthTolerance: 0.02))
                 func edgeOn(_ v: P3<WorldSpace>) -> Bool { riser(v).map { abs(simd_dot($0, dxy)) <= 1e-6 } ?? true }
                 for p in strokes where !edgeOn(p[0]) {
                     let at = SIMD2(p[0].x, p[0].y), base = p[0].z, top = p[1].z
@@ -1086,8 +1090,10 @@ func riserFaceTests() {
             for k in manifest.layers.indices where c.tiles.count > 1 {
                 switch manifest.layers[k].source {
                 case .contour(let field, let levels, let restriction, _):
-                    manifest.layers[k].source = .contour(field: field, levels: levels, restriction: restriction, tiled: true)
+                    manifest.layers[k].source = .contour(field: field, levels: levels, restriction: restriction, faces: .graph(tiled: true))
                 case .hatching(let hatching, .plateaus): manifest.layers[k].source = .hatching(hatching, faces: .plateaus(tiled: true))
+                case .hatching(let hatching, .risers(_, let endLines)):
+                    manifest.layers[k].source = .hatching(hatching, faces: .risers(tiled: true, endLines: endLines))
                 case .truncationEdge: manifest.layers[k].source = .truncationEdge(tiled: true)
                 default: break
                 }

@@ -131,7 +131,7 @@ func truncationTests() {
         })
         let rampTruncation = 3.5
         let s = Surface(height: ramp, phase: phase, truncation: .uniform(rampTruncation))
-        let source = LayerSource.contour(field: .phase, levels: [0], restriction: .belowTruncation, tiled: false)
+        let source = LayerSource.contour(field: .phase, levels: [0], restriction: .belowTruncation, faces: .graph(tiled: false))
         let identity = ContourRefine(contours: { _, _, paths, _, _ in paths }, rings: nil)
 
         let plain = s.derive(source, policy: .magnitude, region: .full, tiles: [.identity])
@@ -156,7 +156,7 @@ func truncationTests() {
                      "nothing over the truncation survives")
 
         // A layer that does not keep below the truncation is not touched.
-        let free = LayerSource.contour(field: .phase, levels: [0], restriction: .all, tiled: false)
+        let free = LayerSource.contour(field: .phase, levels: [0], restriction: .all, faces: .graph(tiled: false))
         let a = s.derive(free, policy: .magnitude, region: .full, tiles: [.identity])
         let b = s.derive(free, policy: .magnitude, region: .full, tiles: [.identity], refine: identity)
         Check.expect(a.vertices.count == b.vertices.count && a.vertices.map(\.z).max() == b.vertices.map(\.z).max(),

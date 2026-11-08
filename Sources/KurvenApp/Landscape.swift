@@ -319,6 +319,13 @@ extension Document {
         // Overrides are of the levels the truncation chose; a new truncation chooses again.
         levelCounts = [:]
         restyle { manifest in
+            // A banded truncation's risers are hatched as the walls are, and
+            // under any other there are none.
+            if Self.isBanded(manifest.truncation) != Self.isBanded(truncation) {
+                var walls: Int?
+                if case .perimeter(let perimeter, _) = manifest.occluder.walls { walls = perimeter.edges.count }
+                manifest.layers = NativeLandscape.riserHatching(manifest.layers, walls: walls, truncation: truncation)
+            }
             manifest.truncation = truncation
             // The levels are absolute, so a truncation raised past them would leave the
             // top of the landscape blank. `LandscapeStyle` is the rule the
@@ -328,7 +335,7 @@ extension Document {
             guard isLandscape, LandscapeStyle.ceiling(of: truncation) != nil else { return }
             let levels = LandscapeStyle.levels(under: truncation)
             for i in manifest.layers.indices {
-                guard case .contour(let field, _, let restriction, let tiled)
+                guard case .contour(let field, _, let restriction, let faces)
                         = manifest.layers[i].source else { continue }
                 let chosen: [Double]
                 switch manifest.layers[i].name {
@@ -337,9 +344,13 @@ extension Document {
                 default: continue
                 }
                 manifest.layers[i].source = .contour(field: field, levels: chosen,
-                                                     restriction: restriction, tiled: tiled)
+                                                     restriction: restriction, faces: faces)
             }
         }
+    }
+
+    private static func isBanded(_ truncation: Truncation) -> Bool {
+        if case .realBands = truncation { true } else { false }
     }
 
     /// The hatch spacing of one described hatching layer, in world units.

@@ -52,8 +52,7 @@ public struct KurvenBundle: Sendable {
                 refine: ContourRefine? = nil) {
         self.init(url: url, manifest: manifest, surface: surface,
                   layers: manifest.layers.map {
-                      Layer(spec: $0, paths: surface.curves($0, occluder: manifest.occluder,
-                                                            layers: manifest.layers, refine: refine))
+                      Layer(spec: $0, paths: surface.curves($0, occluder: manifest.occluder, refine: refine))
                   },
                   wallMesh: nil, refine: refine)
     }
@@ -143,8 +142,7 @@ public struct KurvenBundle: Sendable {
                 // trades its layer files for, and what makes the levels, the
                 // hatch spacing and the truncation editable.
                 layers.append(Layer(spec: spec,
-                                    paths: surface.curves(spec, occluder: manifest.occluder,
-                                                          layers: manifest.layers)))
+                                    paths: surface.curves(spec, occluder: manifest.occluder)))
                 continue
             }
             let v = try NPY.read(contentsOf: file(files.vertices))
@@ -181,11 +179,11 @@ public extension KurvenBundle {
     /// with `--derived` has editable level sets and one exported without does
     /// not, and the type says which you have.
     func layer(_ spec: LayerSpec, levels: [Double]) -> Layer {
-        guard case .contour(let field, _, let restriction, let tiled) = spec.source else {
+        guard case .contour(let field, _, let restriction, let faces) = spec.source else {
             return redrawn(spec)
         }
         var edited = spec
-        edited.source = .contour(field: field, levels: levels, restriction: restriction, tiled: tiled)
+        edited.source = .contour(field: field, levels: levels, restriction: restriction, faces: faces)
         return redrawn(edited)
     }
 
@@ -199,8 +197,7 @@ public extension KurvenBundle {
             let existing = layers.first { $0.spec.name == spec.name }
             return Layer(spec: spec, paths: existing?.paths ?? .empty)
         }
-        return Layer(spec: spec, paths: surface.curves(spec, occluder: manifest.occluder,
-                                                       layers: manifest.layers, refine: refine))
+        return Layer(spec: spec, paths: surface.curves(spec, occluder: manifest.occluder, refine: refine))
     }
 
     /// The same grids under a different manifest.
