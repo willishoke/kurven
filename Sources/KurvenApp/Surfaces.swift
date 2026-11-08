@@ -29,6 +29,8 @@ extension Document {
     func create(surface preset: SurfacePreset) {
         generation += 1
         wanted = nil
+        surfaceStyled = nil
+        forgetEdits()
         surface = preset.request
         send(surface: preset.request, framing: true)
     }
@@ -46,6 +48,14 @@ extension Document {
         pumpSurface()
     }
 
+    /// Paint layers on the surface: the request's own curves follow it, and
+    /// any other layer is drawn on the surface as it is (`redrawSurface`),
+    /// or on the one a request edit in flight will build.
+    func restyleSurface(_ layers: [LayerSpec]) {
+        surfaceStyled = layers
+        redrawSurface()
+    }
+
     private func pumpSurface() {
         guard !building, let (request, framing, draft) = surfaceWanted else { return }
         surfaceWanted = nil
@@ -55,8 +65,10 @@ extension Document {
         // contours -- goes with the request.
         let previous = framing ? nil : surfaceDrawing
         // The layers the bundle keeps -- its levels, a contour the request
-        // does not draw -- survive the edit (`SurfaceDrawing.keeping(_:)`).
-        let kept = framing ? nil : surfaceBundle?.manifest.layers
+        // does not draw -- survive the edit (`SurfaceDrawing.keeping(_:)`),
+        // or the layers asked for since, which the edit then draws.
+        let kept = framing ? nil : surfaceStyled ?? surfaceBundle?.manifest.layers
+        let provenance = surfaceBundle?.manifest.provenance.gitSha
         building = true
         surfaceStatus = (previous?.refits(for: request) ?? true)
             && { if case .forced = request.shape { true } else { false } }()
@@ -68,12 +80,13 @@ extension Document {
             do {
                 let built = try await Task.detached(priority: .userInitiated) {
                     let built = try SurfaceDrawing.build(request, reusing: previous, draft: draft)
-                    return try kept.map(built.keeping) ?? built
+                    return try kept.map { try built.keeping($0, from: previous) } ?? built
                 }.value
                 // A landscape or another surface chosen meanwhile is the
                 // document now.
                 if generation == asked {
-                    adopt(built, keepingCamera: !framing && scene != nil)
+                    adopt(built, keepingCamera: !framing && scene != nil, gitSha: framing ? nil : provenance)
+                    if surfaceStyled == built.layers.map(\.spec) { surfaceStyled = nil }
                     surfaceShown = request
                     surfaceStatus = status(of: built, took: clock.now - started)
                         + (draft ? " (draft)" : "")
@@ -83,6 +96,8 @@ extension Document {
             }
             building = false
             pumpSurface()
+            // Layers or levels asked for while it built are drawn on it.
+            if !building { redrawSurface() }
         }
     }
 
@@ -92,7 +107,36 @@ extension Document {
     /// (`SurfaceDrawing.restyled(_:)`), the rest kept. A draft is drawn in
     /// full: |f| and arg f are placed by the function either way.
     func redrawSurface() {
-        guard !drawing, let surfaceBundle, curvesWanted != nil, scene != nil else { return }
+        guard !drawing, let surfaceBundle, scene != nil else { return }
+        if let layers = surfaceStyled {
+            // A request edit in flight draws them on what it builds.
+            if building { return }
+            guard layers != surfaceBundle.manifest.layers else {
+                surfaceStyled = nil
+                return redrawSurface()
+            }
+            drawing = true
+            let asked = version
+            Task {
+                let restyled = await Task.detached(priority: .userInitiated) {
+                    Result { try surfaceBundle.restyled(layers) }
+                }.value
+                drawing = false
+                if version == asked {
+                    switch restyled {
+                    case .success(let bundle):
+                        adoptRestyled(bundle)
+                        if surfaceStyled == layers { surfaceStyled = nil }
+                    case .failure(let error):
+                        surfaceStatus = "\(error)"
+                        if surfaceStyled == layers { surfaceStyled = nil }
+                    }
+                }
+                redrawSurface()
+            }
+            return
+        }
+        guard curvesWanted != nil else { return }
         curvesWanted = nil
         drawing = true
         let asked = version

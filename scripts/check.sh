@@ -106,7 +106,11 @@ step "the committed golden fixtures are what kurven-cli fixtures writes" golden
 # saved again by the app, reopened and baked, is `surface solid`'s drawing
 # byte for byte; and 40 strokes set as the hatching's slider sets them
 # (5.657 / 40 apart across the largest face) save and bake as `surface solid
-# --spacing` at that spacing saves and bakes, bundle and drawing.
+# --spacing` at that spacing saves and bakes, bundle and drawing. And painted:
+# from the plain torus, sn(z, 0.64) over its period rectangle (4K by 2K', as
+# `surface sn` computes them), the coordinate curves taken off and the four
+# contour families added at the catalog's levels, bakes `surface sn`'s drawing
+# byte for byte.
 app() {
     local dir="$PACKAGE/.build/app-check"
     rm -rf "$dir" && mkdir -p "$dir" || return 1
@@ -141,9 +145,75 @@ app() {
     "$BIN/kurven-cli" surface solid --kind frame --hatching turing --spacing 0.1414213562373095 \
         --save "$dir/s.kurven" -o "$dir/s.svg" >/dev/null &&
     cmp "$dir/r.kurven/manifest.json" "$dir/s.kurven/manifest.json" &&
-    cmp "$dir/r.svg" "$dir/s.svg"
+    cmp "$dir/r.svg" "$dir/s.svg" &&
+    "$BIN/kurven-cli" surface torus --save "$dir/torus.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --function 'sn(z, 0.64)' \
+        --periods 7.981211110658917,3.5015076058315047 --remove lines \
+        --add mag_major --add mag_minor --add ang_major --add ang_minor --bake "$dir/painted.svg" >/dev/null &&
+    cmp "$dir/painted.svg" "$dir/a.svg"
 }
-step "the app saves, restyles and bakes a surface and a polyhedron as the CLI does, with no window" app
+step "the app saves, restyles, paints and bakes a surface and a polyhedron as the CLI does, with no window" app
+
+# Painting, with no window, as the "Curves on" section paints the picked
+# face. Plateau hatching painted on the hatch fixture's landscape, at the
+# fixture's spacing as the strokes slider sets it (18 and 15 along the longer
+# side), is the fixture's strokes byte for byte: along Re under the uniform
+# truncation, and along Im under the bands, where a plateau picked is every
+# plateau painted. Each kind of edit -- a function, a layer added or taken
+# off, a level or strokes slider dragged, the plateaus' axis -- on a surface,
+# a landscape's graph, plateaus and a wall, and a polyhedron, undone, saves
+# what was saved before it, and redone, what was saved after it. A function
+# that does not parse, or a period that is not positive, is refused, saying
+# why.
+paint() {
+    local dir="$PACKAGE/.build/paint-check" c="$ROOT/tests/fixtures/contract" h="$ROOT/tests/fixtures/hatch"
+    local sn=7.981211110658917,3.5015076058315047 failed=0 out
+    rm -rf "$dir" && mkdir -p "$dir" || return 1
+    "$BIN/KurvenApp" "$h/uniform.kurven" --pick 425,235 --add plateau_hatch --strokes plateau_hatch=18 \
+        --dump plateau_hatch="$dir/uniform" >/dev/null &&
+    cmp "$dir/uniform.npy" "$h/uniform_plateau_hatch_real.npy" &&
+    cmp "$dir/uniform.idx.npy" "$h/uniform_plateau_hatch_real.idx.npy" &&
+    "$BIN/KurvenApp" "$h/bands.kurven" --pick 860,170 --add plateau_hatch --axis imag --strokes plateau_hatch=15 \
+        --dump plateau_hatch="$dir/bands" >/dev/null &&
+    cmp "$dir/bands.npy" "$h/bands_plateau_hatch_imag.npy" &&
+    cmp "$dir/bands.idx.npy" "$h/bands_plateau_hatch_imag.idx.npy" || return 1
+    "$BIN/kurven-cli" surface torus --save "$dir/torus.kurven" >/dev/null || return 1
+    undone() {
+        local name=$1 bundle=$2 pick=$3
+        shift 3
+        "$BIN/KurvenApp" "$bundle" --pick "$pick" --save "$dir/$name-before.kurven" "$@" \
+            --save "$dir/$name-after.kurven" --undo --save "$dir/$name-undone.kurven" \
+            --redo --save "$dir/$name-redone.kurven" >/dev/null &&
+        diff -r "$dir/$name-before.kurven" "$dir/$name-undone.kurven" >/dev/null &&
+        diff -r "$dir/$name-after.kurven" "$dir/$name-redone.kurven" >/dev/null &&
+        ! diff -r "$dir/$name-before.kurven" "$dir/$name-after.kurven" >/dev/null ||
+            { echo "undo of $name: not what was saved"; failed=1; }
+    }
+    undone function "$dir/torus.kurven" 300,600 --function 'sn(z, 0.64)' --periods "$sn"
+    undone coordinate-curves "$dir/torus.kurven" 300,600 --remove lines
+    undone folds "$dir/torus.kurven" 300,600 --remove folds
+    undone contour "$dir/torus.kurven" 300,600 --add surface_v
+    undone surface-levels "$c/surface.kurven" 300,600 --levels ang_major=9
+    undone surface-remove "$c/surface.kurven" 300,600 --remove u
+    undone surface-add "$c/surface.kurven" 300,600 --add mag_minor
+    undone plateau-hatching "$h/uniform.kurven" 425,235 --add plateau_hatch
+    undone plateau-strokes "$c/landscape.kurven" 900,100 --strokes plateau_hatch=30
+    undone plateau-axis "$c/landscape.kurven" 900,100 --axis imag
+    undone plateau-remove "$c/landscape.kurven" 900,100 --remove plateau_hatch
+    undone wall-hatching "$c/landscape.kurven" 1100,200 --add wall_hatch
+    undone graph-levels "$c/landscape.kurven" 300,500 --levels mag_major=7
+    undone solid-hatching "$c/polyhedron_frame.kurven" 300,250 --add hatching
+    undone solid-strokes "$c/polyhedron_frame.kurven" 300,250 --strokes hatching=30
+    undone solid-remove "$c/polyhedron_frame.kurven" 300,250 --remove hatching
+    [ "$failed" = 0 ] || return 1
+    out=$("$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --function 'sn(z,' --periods "$sn" 2>&1) &&
+        { echo "an expression that stops in the middle was painted"; return 1; }
+    printf '%s\n' "$out" | grep -q 'refused: sn(z,: the expression stops in the middle' || { printf '%s\n' "$out"; return 1; }
+    out=$("$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --function 'sn(z, 0.64)' --periods 0,1 2>&1) &&
+        { echo "a period of 0 was painted"; return 1; }
+    printf '%s\n' "$out" | grep -q 'refused: a period must be a positive number, not 0.0' || { printf '%s\n' "$out"; return 1; }
+}
+step "the app paints the picked face, and undoes and redoes every kind of edit, with no window" paint
 
 # Picking, with no window: a click at a pixel reads the depth the frame left
 # there, takes it back through the camera, and names the face under it. The

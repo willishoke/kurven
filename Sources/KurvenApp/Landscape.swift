@@ -53,6 +53,8 @@ extension Document {
         landscape = request
         generation += 1
         surfaceWanted = nil
+        surfaceStyled = nil
+        forgetEdits()
         // A different function is a different landscape, not an edit of this
         // one: its styling is the new function's defaults, so nothing of the
         // old drawing's truncation or levels is carried across.

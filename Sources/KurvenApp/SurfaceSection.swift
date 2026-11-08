@@ -12,33 +12,42 @@ import KurvenDynamics
 /// redoes only what the edit touches. While a slider is dragged the drawing is
 /// built from `SurfaceRequest.drafted()`; the full request follows the release.
 ///
-/// What each costs, measured by `kurven-cli surface-costs` on an Apple M5
-/// Max at 1600×1200: the build from the drawing before, plus the first preview
-/// frame after it -- which lays out the curves, and uploads a surface only when
-/// the surface moved.
+/// What each costs is decided by the classes of fields it touches
+/// (`FieldClass`), whatever is painted on the surface: a contour of a
+/// coordinate is kept in parameter coordinates while the parameter rectangle
+/// keeps its samples, and only carried into space again when the surface
+/// moves; a contour of the height is kept while the surface is, and found
+/// again when it moves; |f| and arg f are carried with the surface, and
+/// sampled again when the function or its sampling changes
+/// (`SurfaceDrawing.keeping(_:from:)`). Measured by `kurven-cli
+/// surface-costs` on an Apple M5 Max at 1600×1200, with nothing painted: the
+/// build from the drawing before, plus the first preview frame after it --
+/// which lays out the curves, and uploads a surface only when the surface
+/// moved.
 ///
-///     torus    radii                    13 ms      new surface
-///              line counts              11 ms      curves only
-///              linear curve slope       11 ms      curves only
-///     sn       radii                     6 ms      contours re-placed, not resampled
-///              modulus                 115 ms      resampled; 65 ms while dragging
-///              samples                 100 ms      resampled; curves only
-///     forced   ring radius              39 ms      grid re-placed from state space;
-///                                                  7 ms while dragging
-///              radius from, height from 32 ms      re-placed
-///              turns                 17–36 ms      the trajectory is a linear curve, placed
-///                                                  from the grid; no draft needed
-///              coordinate curves        38 ms      the map at every line vertex
-///              linear curve slope       15 ms      curves only; the trajectory's layout
-///                                                  is kept
-///              harmonics, fit length   390 ms      fitted again
+///                                          coordinates  height   |f|, arg f
+///     torus    radii                 13 ms  carried      again
+///              line counts           11 ms  kept         kept
+///              linear curve slope    11 ms  kept         kept
+///     sn       radii                  6 ms  again        again    carried
+///              modulus              115 ms  again        again    sampled again; 65 ms dragging
+///              samples              100 ms  kept         kept     sampled again
+///     forced   ring radius           39 ms  carried      again    7 ms dragging
+///              radius from,          32 ms  carried      again
+///              height from
+///              turns              17–36 ms  kept         kept     the trajectory is placed from
+///                                                                 the grid; no draft needed
+///              coordinate curves     38 ms  kept         kept     the map at every line vertex
+///              linear curve slope    15 ms  kept         kept
+///              harmonics, fit       390 ms  carried      again    fitted again
 ///
-/// So the forced torus's fit is the one control that is not interactive, and
-/// it gets a stepper and a field rather than a slider. A curve edit lays out
-/// only the layer it touched -- the preview keeps every other layer's
-/// vertices from the frame before -- and curve normals are read off the
-/// grid, not asked of the map, so a new surface costs its grid and
-/// little else.
+/// sn sizes its tube's samples by its radii, so its radii move its
+/// rectangle's samples and its coordinates are contoured again. The forced
+/// torus's fit is the one control that is not interactive, and it gets a
+/// stepper and a field rather than a slider. A curve edit lays out only the
+/// layer it touched -- the preview keeps every other layer's vertices from
+/// the frame before -- and curve normals are read off the grid, not asked
+/// of the map, so a new surface costs its grid and little else.
 struct SurfaceSection: View {
     @Bindable var document: Document
 
