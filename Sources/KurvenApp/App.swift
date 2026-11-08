@@ -39,7 +39,7 @@ struct KurvenApplication: App {
             CommandGroup(after: .saveItem) {
                 Button("Save Bundle…") { delegate.savePanel() }
                     .keyboardShortcut("s")
-                    .disabled(delegate.document.bundle == nil)
+                    .disabled(!delegate.document.isOpen)
             }
         }
     }
@@ -109,29 +109,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                            screenshot: shot, save: save) }
             return
         }
-        // `--surface NAME [--screenshot PATH] [--bake PATH]` opens a surface
-        // from the catalog through the window's own Document -- the gallery's
-        // path -- so the window can be held to `kurven-cli surface NAME`:
-        // the same preview frame, pixel for pixel, and the same bake. With
-        // neither output it stays open, on that surface. `--set FIELD=VALUE`,
-        // repeated, then edits it as the controls do -- one edit at a time,
-        // each built from the drawing before it.
+        func path(_ flag: String) -> URL? {
+            args.firstIndex(of: flag).flatMap {
+                $0 + 1 < args.endIndex ? URL(fileURLWithPath: args[$0 + 1]) : nil
+            }
+        }
+        /// Every `FLAG KEY=NUMBER` pair, in order.
+        func pairs(_ flag: String) -> [(String, Double)] {
+            zip(args.indices, args).compactMap { k, f in
+                guard f == flag, k + 1 < args.endIndex else { return nil }
+                let pair = args[k + 1].split(separator: "=", maxSplits: 1)
+                guard pair.count == 2, let v = Double(pair[1]) else { return nil }
+                return (String(pair[0]), v)
+            }
+        }
+        // `--surface NAME [--screenshot PATH] [--bake PATH] [--save PATH]`
+        // opens a surface from the catalog through the window's own Document
+        // -- the gallery's path -- so the window can be held to `kurven-cli
+        // surface NAME`: the same preview frame, pixel for pixel, the same
+        // bake, and the same bundle. With no output it stays open, on that
+        // surface. `--set FIELD=VALUE`, repeated, then edits it as the
+        // controls do -- one edit at a time, each built from the drawing
+        // before it.
         if let i = args.firstIndex(of: "--surface"), i + 1 < args.endIndex {
             let name = args[i + 1]
-            func path(_ flag: String) -> URL? {
-                args.firstIndex(of: flag).flatMap {
-                    $0 + 1 < args.endIndex ? URL(fileURLWithPath: args[$0 + 1]) : nil
-                }
-            }
             let resolution = args.firstIndex(of: "--resolution")
                 .flatMap { $0 + 1 < args.endIndex ? Int(args[$0 + 1]) : nil }
-            var edits: [(String, Double)] = []
-            for (k, flag) in zip(args.indices, args) where flag == "--set" && k + 1 < args.endIndex {
-                let pair = args[k + 1].split(separator: "=", maxSplits: 1)
-                if pair.count == 2, let v = Double(pair[1]) { edits.append((String(pair[0]), v)) }
-            }
-            Task { await headlessSurface(name, edits: edits, screenshot: path("--screenshot"),
-                                         bake: path("--bake"), resolution: resolution) }
+            Task { await headlessSurface(name, edits: pairs("--set"), screenshot: path("--screenshot"),
+                                         bake: path("--bake"), save: path("--save"), resolution: resolution) }
             return
         }
         // `--thumbnails` draws every catalog entry into the picker's cache and
@@ -169,14 +174,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `--bake PATH` runs the window's own bake -- the same Document, the
         // same Scene value, the same BakeOptions -- and exits, so "the app bakes
         // what the CLI bakes" can be checked by comparing two files rather than
-        // by reading two code paths and believing they agree.
-        if let i = args.firstIndex(of: "--bake"), i + 1 < args.endIndex,
-           let path = bundlePath {
-            let output = URL(fileURLWithPath: args[i + 1])
+        // by reading two code paths and believing they agree. `--save PATH`
+        // writes the bundle as ⌘S does. Before either, a surface's request is
+        // edited by `--set FIELD=VALUE` as its controls edit it, and a
+        // layer's levels by `--levels LAYER=COUNT` as its slider sets them.
+        if path("--bake") != nil || path("--save") != nil, let bundlePath {
             let resolution = args.firstIndex(of: "--resolution")
                 .flatMap { $0 + 1 < args.endIndex ? Int(args[$0 + 1]) : nil }
-            Task { await headlessBake(bundle: URL(fileURLWithPath: path), to: output,
-                                      resolution: resolution) }
+            Task { await headlessBundle(URL(fileURLWithPath: bundlePath), edits: pairs("--set"),
+                                        levels: pairs("--levels"), save: path("--save"),
+                                        bake: path("--bake"), resolution: resolution) }
             return
         }
         if let path = bundlePath { document.open(URL(fileURLWithPath: path)) }
@@ -307,7 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Open a surface and report it, then draw or bake it and exit -- or, with
     /// nothing to write, show it.
     private func headlessSurface(_ name: String, edits: [(String, Double)] = [],
-                                 screenshot: URL?, bake: URL?, resolution: Int?) async {
+                                 screenshot: URL?, bake: URL?, save: URL?, resolution: Int?) async {
         guard let preset = SurfacePreset.named(name) else {
             FileHandle.standardError.write(Data(("Kurven: no surface '\(name)'; the catalog has: "
                 + SurfacePreset.catalog.map(\.name).joined(separator: ", ") + "\n").utf8))
@@ -315,10 +322,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         document.create(surface: preset)
         while document.building { try? await Task.sleep(for: .milliseconds(25)) }
+        await headlessEdit(edits)
+        guard document.surfaceDrawing != nil else {
+            FileHandle.standardError.write(Data(
+                "Kurven: could not build \(name) — \(document.surfaceStatus ?? "no reason given")\n".utf8))
+            exit(1)
+        }
+        print("Kurven: \(document.title) — \(document.surfaceStatus ?? ""), "
+              + "\(document.layers.count) layers, "
+              + "\(document.layers.reduce(0) { $0 + $1.paths.count }) paths")
+        guard screenshot != nil || bake != nil || save != nil else { fillScreen(); return }
+        if let save { headlessSave(to: save) }
+        if let screenshot { renderScreenshot(to: screenshot, what: document.title) }
+        if let bake { await headlessBake(to: bake, resolution: resolution) }
+        exit(0)
+    }
+
+    /// Edit the surface's request as its controls do, one field at a time,
+    /// each built from the drawing before it.
+    private func headlessEdit(_ edits: [(String, Double)]) async {
         for (name, value) in edits {
             guard let field = SurfaceRequest.Field(rawValue: name),
                   document.surface?[field] != nil else {
-                FileHandle.standardError.write(Data(("Kurven: \(preset.name) has no field '\(name)'; "
+                FileHandle.standardError.write(Data(("Kurven: \(document.title) has no field '\(name)'; "
                     + "it has: " + (document.surface?.fields.map(\.rawValue) ?? [])
                         .joined(separator: ", ") + "\n").utf8))
                 exit(1)
@@ -328,24 +354,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             while document.building { try? await Task.sleep(for: .milliseconds(25)) }
             print("Kurven: \(name) = \(value) — \(document.surfaceStatus ?? "")")
         }
-        guard document.surfaceDrawing != nil else {
-            FileHandle.standardError.write(Data(
-                "Kurven: could not build \(name) — \(document.surfaceStatus ?? "no reason given")\n".utf8))
-            exit(1)
-        }
-        print("Kurven: \(document.title) — \(document.surfaceStatus ?? ""), "
-              + "\(document.layers.count) layers, "
-              + "\(document.layers.reduce(0) { $0 + $1.paths.count }) paths")
-        guard screenshot != nil || bake != nil else { fillScreen(); return }
-        if let screenshot { renderScreenshot(to: screenshot, what: document.title) }
-        if let bake {
-            if let resolution { document.bakeResolution = resolution }
-            document.bake(to: bake)
-            while document.baking { try? await Task.sleep(for: .milliseconds(20)) }
-            print("Kurven: \(document.bakeStatus ?? "bake produced no status")")
-            if document.bakeStatus?.hasPrefix("bake failed") == true { exit(1) }
-        }
-        exit(0)
+    }
+
+    /// Write the bundle as ⌘S does, or exit saying why not.
+    private func headlessSave(to url: URL) {
+        document.saveBundle(to: url)
+        let status = (document.surfaceBundle != nil ? document.surfaceStatus : document.landscapeStatus) ?? ""
+        print("Kurven: \(status)")
+        if !status.hasPrefix("saved") { exit(1) }
+    }
+
+    /// The window's bake at `resolution`, or the bundle's own, or exit saying why not.
+    private func headlessBake(to output: URL, resolution: Int?) async {
+        if let resolution { document.bakeResolution = resolution }
+        document.bake(to: output)
+        while document.baking { try? await Task.sleep(for: .milliseconds(20)) }
+        print("Kurven: \(document.bakeStatus ?? "bake produced no status")")
+        if document.bakeStatus?.hasPrefix("bake failed") == true { exit(1) }
     }
 
     /// Show the picker. Not "make a landscape at once": with fourteen
@@ -375,9 +400,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func savePanel() {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = (document.landscape?.name.isEmpty == false
-                                      ? document.landscape!.name : "landscape") + ".kurven"
-        panel.message = "Save this landscape as a .kurven bundle"
+        let name = document.surface?.name ?? document.landscape?.name ?? ""
+        let kind = document.surfaceBundle != nil ? "surface" : "landscape"
+        panel.nameFieldStringValue = (name.isEmpty ? kind : name) + ".kurven"
+        panel.message = "Save this \(kind) as a .kurven bundle"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         document.saveBundle(to: url)
     }
@@ -426,17 +452,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         exit(0)
     }
 
-    private func headlessBake(bundle: URL, to output: URL, resolution: Int?) async {
+    /// Open a bundle, edit it as the window's controls do, and save or bake
+    /// it: the document's own transitions, from open to save, with no window.
+    private func headlessBundle(_ bundle: URL, edits: [(String, Double)], levels: [(String, Double)],
+                                save: URL?, bake: URL?, resolution: Int?) async {
         await document.load(bundle)
         guard document.scene != nil else {
-            FileHandle.standardError.write(Data("Kurven: could not open \(bundle.path)\n".utf8))
+            var why = "it did not open"
+            if case .failed(_, let message) = document.state { why = message }
+            FileHandle.standardError.write(Data("Kurven: could not open \(bundle.path) — \(why)\n".utf8))
             exit(1)
         }
-        if let resolution { document.bakeResolution = resolution }
-        document.bake(to: output)
-        while document.baking { try? await Task.sleep(for: .milliseconds(20)) }
-        print("Kurven: \(document.bakeStatus ?? "bake produced no status")")
-        exit(document.bakeStatus?.hasPrefix("bake failed") == true ? 1 : 0)
+        await headlessEdit(edits)
+        for (name, count) in levels {
+            guard let index = document.layers.firstIndex(where: { $0.spec.name == name }),
+                  document.isDerived(layer: index) else {
+                FileHandle.standardError.write(Data("Kurven: no layer '\(name)' with levels to set\n".utf8))
+                exit(1)
+            }
+            document.setLevelCount(Int(count), forLayer: index)
+            while document.drawing { try? await Task.sleep(for: .milliseconds(20)) }
+        }
+        print("Kurven: \(document.title) — \(document.layers.count) layers, "
+              + "\(document.layers.reduce(0) { $0 + $1.paths.count }) paths")
+        if let save { headlessSave(to: save) }
+        if let bake { await headlessBake(to: bake, resolution: resolution) }
+        exit(0)
     }
 
     private func screenshot(bundle: URL, to output: URL) async {
@@ -552,7 +593,7 @@ struct DocumentWindow: View {
                 Text(message).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: 420)
             }
-        case .ready, .surface:
+        case .ready:
             EmptyView()
         }
     }
@@ -580,7 +621,7 @@ struct StatusView: View {
                     ProgressView().controlSize(.small)
                     Text("Reading \(url.lastPathComponent)…")
                 }
-            case .ready, .surface:
+            case .ready:
                 HStack(spacing: 14) {
                     if document.building {
                         HStack(spacing: 6) {

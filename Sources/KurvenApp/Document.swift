@@ -6,7 +6,8 @@ import KurvenBake
 import KurvenLandscape
 import KurvenDynamics
 
-/// One open bundle or surface drawing, and everything the window knows about it.
+/// One open bundle, a landscape or a parametric surface, and everything the
+/// window knows about it.
 ///
 /// Every mutation is a whole new value assigned into a stored property, so the
 /// model holds no derived state that can go stale. In particular `scene` keeps
@@ -19,11 +20,17 @@ final class Document {
     enum State {
         case empty
         case loading(URL)
-        case ready(KurvenBundle)
-        /// A parametric surface. Not a bundle, so every control that edits
-        /// or saves one stays away from it.
-        case surface(SurfaceDrawing)
+        /// A bundle, opened, sampled or built: either kind is saved, restyled
+        /// and baked.
+        case ready(Opened)
         case failed(URL, String)
+    }
+
+    /// What a ready document holds: a landscape's bundle, or a parametric
+    /// surface's, whose request the surface's controls edit.
+    enum Opened {
+        case landscape(KurvenBundle)
+        case surface(SurfaceBundle)
     }
 
     private(set) var state: State = .empty {
@@ -33,7 +40,7 @@ final class Document {
     /// from one bundle is dropped if a different one is open when it lands.
     private(set) var version = 0
 
-    /// The landscape and its curves. Its camera and depth tolerance are whatever they were
+    /// The landscape or the surface, and its curves. Its camera and depth tolerance are whatever they were
     /// when it was stored, and nothing reads them: `framedScene` supplies both.
     var scene: Scene?
     var navigator: Navigator?
@@ -139,15 +146,16 @@ final class Document {
         switch state {
         case .empty: nil
         case .loading(let u): u
-        case .ready(let b): b.url
-        case .surface: nil
+        case .ready(.landscape(let b)): b.url
+        case .ready(.surface(let b)): b.url
         case .failed(let u, _): u
         }
     }
 
     var title: String {
-        if case .surface(let surfaceDrawing) = state {
-            return SurfacePreset.named(surfaceDrawing.request.name)?.label ?? "Surface"
+        if let surfaceBundle {
+            return SurfacePreset.named(surfaceBundle.manifest.surface.name)?.label
+                ?? surfaceBundle.url.deletingPathExtension().lastPathComponent
         }
         if let landscape, isLandscape {
             return catalog.preset(landscape.name)?.label ?? landscape.expression
@@ -155,18 +163,25 @@ final class Document {
         return url?.deletingPathExtension().lastPathComponent ?? "Kurven"
     }
 
+    /// The landscape's bundle, when the document is one.
     var bundle: KurvenBundle? {
-        if case .ready(let b) = state { return b }
+        if case .ready(.landscape(let b)) = state { return b }
         return nil
     }
 
-    var surfaceDrawing: SurfaceDrawing? {
-        if case .surface(let p) = state { return p }
+    /// The parametric surface's bundle, when the document is one.
+    var surfaceBundle: SurfaceBundle? {
+        if case .ready(.surface(let b)) = state { return b }
         return nil
     }
 
-    /// Whether anything is on screen: a bundle or a surface.
-    var isOpen: Bool { bundle != nil || surfaceDrawing != nil }
+    var surfaceDrawing: SurfaceDrawing? { surfaceBundle?.drawing }
+
+    /// Whether anything is on screen: a bundle of either kind.
+    var isOpen: Bool { bundle != nil || surfaceBundle != nil }
+
+    /// The open bundle's layers as its manifest describes them.
+    var layerSpecs: [LayerSpec] { bundle?.manifest.layers ?? surfaceBundle?.manifest.layers ?? [] }
 
     var layers: [Layer] { scene?.layers ?? [] }
 
@@ -181,12 +196,13 @@ final class Document {
 
     /// A bundle read from disk, its contours placed by f when it names a
     /// function and refinement is on -- here, off the main actor, because on
-    /// zeta that is seconds.
-    nonisolated static func read(_ url: URL, refining: Bool) throws -> KurvenBundle {
+    /// zeta that is seconds. A parametric surface's is built from its request.
+    nonisolated static func read(_ url: URL, refining: Bool) throws -> Opened {
+        if try SurfaceBundle.holdsSurface(at: url) { return .surface(try SurfaceBundle.read(at: url)) }
         let bundle = try KurvenBundle.read(at: url)
         guard refining, bundle.refine == nil,
-              let refiner = NativeLandscape.refiner(for: bundle) else { return bundle }
-        return bundle.refined(by: refiner.refine)
+              let refiner = NativeLandscape.refiner(for: bundle) else { return .landscape(bundle) }
+        return .landscape(bundle.refined(by: refiner.refine))
     }
 
     /// The awaitable form, so a headless run can wait for the bundle rather
@@ -200,12 +216,13 @@ final class Document {
         // even though it is fast, because a stalled window during an open is
         // the difference between an app and a script with a window.
         let refining = refineContours
-        let result = await Task.detached(priority: .userInitiated) { () -> Result<KurvenBundle, Error> in
+        let result = await Task.detached(priority: .userInitiated) { () -> Result<Opened, Error> in
             do { return .success(try Self.read(url, refining: refining)) }
             catch { return .failure(error) }
         }.value
         switch result {
-        case .success(let bundle): adopt(bundle)
+        case .success(.landscape(let bundle)): adopt(bundle)
+        case .success(.surface(let bundle)): adopt(bundle)
         case .failure(let error): state = .failed(url, "\(error)")
         }
     }
@@ -220,7 +237,7 @@ final class Document {
     /// Swap in a bundle derived from the same grids -- a restyling, not a new
     /// landscape (`Landscape.swift`). The only way `state` is written from
     /// outside this file, so "what is open" still changes in one place.
-    func replace(bundle: KurvenBundle) { state = .ready(bundle) }
+    func replace(bundle: KurvenBundle) { state = .ready(.landscape(bundle)) }
 
     /// Whether a landscape's contours are placed by its function rather than
     /// by its grid (`ContourRefiner`). A bundle read from disk records its
@@ -231,7 +248,7 @@ final class Document {
     /// Nothing here derives curves: the bundle arrives with its layers drawn,
     /// refined or not, from whichever thread read or sampled it.
     func adopt(_ bundle: KurvenBundle, keepingCamera: Bool = false, draft: Bool = false) {
-        state = .ready(bundle)
+        state = .ready(.landscape(bundle))
         surface = nil
         surfaceShown = nil
         shownDraft = draft
@@ -268,11 +285,30 @@ final class Document {
         adoptLandscape(bundle)
     }
 
+    /// Take a parametric surface's bundle read from disk as the document: its
+    /// request is what the controls edit, and it opens at its own first preset.
+    func adopt(_ surfaceBundle: SurfaceBundle) {
+        surface = surfaceBundle.manifest.surface
+        surfaceShown = surface
+        show(surfaceBundle)
+    }
+
     /// Take a built drawing as the document. A new drawing opens at the default
-    /// oblique projection, fitted to the window; an edit keeps the camera.
+    /// oblique projection, fitted to the window; an edit keeps the camera, and
+    /// the bundle it edits keeps its place and its presets.
     func adopt(_ surfaceDrawing: SurfaceDrawing, keepingCamera: Bool = false) {
+        let kept = keepingCamera ? surfaceBundle : nil
+        let name = surfaceDrawing.request.name.isEmpty ? "Surface" : surfaceDrawing.request.name
+        show(SurfaceBundle(url: kept?.url ?? URL(fileURLWithPath: "/native/\(name).kurven"),
+                           drawing: surfaceDrawing,
+                           presets: kept?.manifest.presets ?? [SurfaceRequest.preset]),
+             keepingCamera: keepingCamera)
+    }
+
+    private func show(_ surfaceBundle: SurfaceBundle, keepingCamera: Bool = false) {
+        let surfaceDrawing = surfaceBundle.drawing
         let before = self.surfaceDrawing
-        state = .surface(surfaceDrawing)
+        state = .ready(.surface(surfaceBundle))
         landscape = nil
         shown = nil
         derivedCurves = [:]
@@ -285,13 +321,17 @@ final class Document {
             // textures and its normals and lays out only the curves.
             self.scene = before?.content == surfaceDrawing.content
                 ? scene.drawing(surfaceDrawing.layers) : surfaceDrawing.scene(camera: navigator.camera)
+            // A layer drawn at levels of its own is drawn at them again.
+            if !levelCounts.isEmpty { rebuildCurves() }
             return
         }
-        let preset = SurfaceRequest.preset
+        let preset = surfaceBundle.manifest.presets.first ?? SurfaceRequest.preset
         depthTolerance = preset.depthTolerance
         bakeResolution = preset.buffer
         hiddenLayers = []
         levelCounts = [:]
+        curvesWanted = nil
+        styled = nil
         var navigator = Navigator(orbit: Orbit(matching: preset.projection),
                                   framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
         let scene = surfaceDrawing.scene(camera: navigator.camera)
@@ -342,8 +382,7 @@ final class Document {
     /// fewer contours over the same range" and nothing about which particular
     /// values were interesting.
     func levels(forLayer index: Int) -> [Double]? {
-        guard let bundle, index < bundle.manifest.layers.count,
-              let base = KurvenBundle.levels(of: bundle.manifest.layers[index]),
+        guard let spec = layerSpecs[safe: index], let base = KurvenBundle.levels(of: spec),
               base.count >= 2 else { return nil }
         guard let n = levelCounts[index], n != base.count else { return base }
         let lo = base.min()!, hi = base.max()!
@@ -352,8 +391,20 @@ final class Document {
     }
 
     func isDerived(layer index: Int) -> Bool {
-        guard let bundle, index < bundle.manifest.layers.count else { return false }
-        return KurvenBundle.levels(of: bundle.manifest.layers[index]) != nil
+        guard let spec = layerSpecs[safe: index] else { return false }
+        return KurvenBundle.levels(of: spec) != nil
+    }
+
+    /// The open bundle's layers as they are drawn: each described contour at
+    /// the levels its slider has set (`levels(forLayer:)`). What a save writes.
+    var drawnLayers: [LayerSpec] {
+        layerSpecs.enumerated().map { index, spec in
+            guard case .contour(let field, _, let restriction, let faces) = spec.source,
+                  let levels = levels(forLayer: index) else { return spec }
+            var drawn = spec
+            drawn.source = .contour(field: field, levels: levels, restriction: restriction, faces: faces)
+            return drawn
+        }
     }
 
     /// Re-derive the described layers at their current levels.
