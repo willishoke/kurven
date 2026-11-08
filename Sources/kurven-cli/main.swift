@@ -124,7 +124,8 @@ usage: kurven-cli <command> [options]
   bake <bundle> [--preset NAME] [--resolution N] [--tiles N] [--depth-tolerance T]
        [--outline W] [--dump PREFIX] -o out.svg
         Render a bundle's drawing to SVG through the depth-tested hidden-line
-        pipeline. Defaults to the bundle's first preset and that preset's own
+        pipeline: a landscape's, or a parametric surface's, built from the
+        request it keeps. Defaults to the bundle's first preset and that preset's own
         depth resolution and depth tolerance -- the settings the published drawing
         was made with. --outline traces the outline of the drawn region off
         the depth buffer and adds it as a stroke of that width. --dump also
@@ -140,7 +141,7 @@ usage: kurven-cli <command> [options]
           [--harmonics M] [--fit T] [--radial I] [--axial J] [--coordinate-curves U,V]
           [--major R] [--minor r] [--linear-curves SLOPE[,TURNS[,COUNT]]]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N]
-          [--tiles N] [--width W] [--folds W] -o out.svg
+          [--tiles N] [--width W] [--folds W] [--save out.kurven] -o out.svg
           [--mode M] [--width-px N] [--height-px N] -o out.png
         Bake a surface to SVG, hidden lines decided by where on the surface
         each vertex lies rather than by depth. torus draws its coordinate
@@ -169,7 +170,10 @@ usage: kurven-cli <command> [options]
         is the oblique foreshortening the published plates use. The fold
         curves -- the outline and inner fold curves -- are drawn at --folds (twice
         --width by default; 0 leaves them out). An output ending in .png
-        renders one frame of the realtime preview instead of baking.
+        renders one frame of the realtime preview instead of baking. --save
+        writes the drawing as a .kurven bundle that keeps its request, its
+        layers and this camera, which bake draws again byte for byte; -o
+        may then be left out.
 
   surface solid [--kind K] [--size R] [--hole H] [--depth D] [--width W]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N] [--color C]
@@ -309,9 +313,31 @@ func loadScene(_ args: Args) throws -> (KurvenBundle, CameraPreset, Scene) {
     return (bundle, preset, Scene(bundle: bundle, preset: preset))
 }
 
+/// A parametric surface's bundle, built from its request, when that is what
+/// `url` holds; nil for a landscape's, which `loadScene` reads.
+func readSurfaceBundle(_ url: URL) throws -> SurfaceBundle? {
+    try SurfaceBundle.holdsSurface(at: url) ? SurfaceBundle.read(at: url) : nil
+}
+
+/// The scene a bundle of either kind describes, under `--preset` or its first
+/// preset: a landscape's (`loadScene`), or a parametric surface's, built from
+/// its request.
+func loadDrawing(_ args: Args) throws -> (url: URL, provenance: Provenance, preset: CameraPreset, scene: Scene) {
+    guard let path = args.positional.dropFirst().first else { throw CLIError("which bundle?") }
+    guard let surface = try readSurfaceBundle(URL(fileURLWithPath: path)) else {
+        let (bundle, preset, scene) = try loadScene(args)
+        return (bundle.url, bundle.manifest.provenance, preset, scene)
+    }
+    let presets = surface.manifest.presets
+    guard let preset = try args.flags["preset"].map(surface.manifest.preset) ?? presets.first else {
+        throw CLIError("bundle has no presets; pass --preset once one exists")
+    }
+    return (surface.url, surface.manifest.provenance, preset, surface.scene(preset: preset))
+}
+
 func bake(_ args: Args) throws {
     try args.only("bake", Args.scene + ["resolution", "tiles", "depth-tolerance", "outline", "dump", "output"])
-    let (bundle, preset, scene) = try loadScene(args)
+    let (url, provenance, preset, scene) = try loadDrawing(args)
     let output = URL(fileURLWithPath: try args.string("output"))
     let options = BakeOptions(
         resolution: try args.int("resolution", preset.buffer),
@@ -319,10 +345,10 @@ func bake(_ args: Args) throws {
         depthTolerance: try args.double("depth-tolerance") ?? preset.depthTolerance,
         outline: try args.double("outline"))
 
-    if !bundle.manifest.provenance.isReproducible {
+    if !provenance.isReproducible {
         FileHandle.standardError.write(Data("""
             note: this bundle was contoured with \
-            \(bundle.manifest.provenance.cpuCount) chunks, so its contours were \
+            \(provenance.cpuCount) chunks, so its contours were \
             stitched in thread-completion order and are not reproducible.\n
             """.utf8))
     }
@@ -359,7 +385,7 @@ func bake(_ args: Args) throws {
     }
 
     print("""
-        \(bundle.url.lastPathComponent) -> \(output.lastPathComponent)  [\(preset.name)]
+        \(url.lastPathComponent) -> \(output.lastPathComponent)  [\(preset.name)]
           depth      \(result.depth.frame.rows)x\(result.depth.frame.cols) \
         in \(result.tiles * result.tiles) pass\(result.tiles == 1 ? "" : "es")
           strokes    \(result.strokes.pathCount) paths, \
@@ -385,7 +411,7 @@ func surfaceCommand(_ args: Args) throws {
     if relief {
         try args.only("surface sn --relief", Args.projection
                       + ["relief", "modulus", "major", "minor", "repeat", "samples", "grid", "turn",
-                         "soft", "floor", "resolution", "tiles", "output"])
+                         "soft", "floor", "resolution", "tiles", "output", "save"])
     } else {
         let own: [String]? = switch shape {
         case "torus": ["coordinate-curves"]
@@ -399,73 +425,12 @@ func surfaceCommand(_ args: Args) throws {
             try args.only("surface \(shape)", own + Args.projection + Args.previewOptions
                           + ["major", "minor", "width", "samples", "linear-curves", "trajectory-width",
                              "folds", "resolution", "tiles", "output", "preview", "width-px",
-                             "height-px", "mode"])
+                             "height-px", "mode", "save"])
         }
     }
     let R = try args.double("major") ?? 2
     let r = try args.double("minor") ?? 1
     let width = try args.double("width") ?? 0.3
-    // `surface sn --relief A`: the sn landscape in relief on its torus, the
-    // surface displaced along its normal by A times |f| truncated at the
-    // truncation, baked straight to SVG. A proof of concept: no window, no preview.
-    if relief, let amplitude = try args.double("relief") {
-        let m = try args.double("modulus") ?? 0.64
-        // `--repeat N[,M]`: N periods round the ring and M round the tube,
-        // the curves computed once and carried round by the periods.
-        let repeats = (args.flags["repeat"] ?? "1").split(separator: ",").compactMap { Int($0) }
-        guard (1...2).contains(repeats.count), repeats.allSatisfy({ $0 >= 1 }) else {
-            throw CLIError("--repeat wants N or N,M whole periods, as in 8 or 8,2")
-        }
-        // `--samples`: the grid round the ring in all, 1024 a period at most.
-        let grid = try args.int("samples", 8192)
-        let clock = ContinuousClock()
-        var drawing: PeriodicTorus.Drawing!
-        let built = try clock.measure {
-            var base = try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r,
-                                                  resolution: try args.int("grid", 600),
-                                                  grid: min(grid, 1024), truncated: true,
-                                                  turn: try args.double("turn") ?? 0)
-                .repeated(real: repeats[0], imag: repeats.count > 1 ? repeats[1] : 1, grid: grid)
-            // `--soft`: the truncation as a smooth saturation rather than a crease,
-            // c · tanh(|f| / c), an experiment on what the crease costs.
-            if args.switches.contains("soft"), let height = base.height {
-                let c = base.ceiling
-                base = PeriodicTorus.Drawing(surface: base.surface, layers: base.layers,
-                                             height: { p in c * tanh(height(p) / c) },
-                                             ceiling: c, radii: base.radii)
-            }
-            // `--floor b`: only |f| above b displaces, so each pole stands
-            // alone on the bare torus instead of on a raised ground.
-            if let floor = try args.double("floor"), let height = base.height {
-                base = PeriodicTorus.Drawing(surface: base.surface, layers: base.layers,
-                                             height: { p in max(height(p) - floor, 0) },
-                                             ceiling: base.ceiling - floor, radii: base.radii)
-            }
-            drawing = base.relief(amplitude: amplitude, reach: min(r, R - r))
-        }
-        var projection = SurfaceRequest.projection
-        projection.shear = try args.double("shear") ?? projection.shear
-        projection.xAngle = try args.double("x-angle") ?? projection.xAngle
-        projection.zAngle = try args.double("z-angle") ?? projection.zAngle
-        let scene = Scene(surface: drawing.surface, layers: drawing.layers,
-                          camera: Camera.oblique(projection), depthTolerance: 0)
-        let output = URL(fileURLWithPath: try args.string("output"))
-        let renderer = try MetalRenderer()
-        var result: Bake!
-        let baked = try clock.measure {
-            result = try renderer.bake(scene, options: BakeOptions(resolution: try args.int("resolution", 3000),
-                                                                   tiles: try args.int("tiles")))
-        }
-        try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
-        print("""
-            sn in relief, amplitude \(fmt(amplitude)) on R=\(fmt(R)) r=\(fmt(r)) -> \(output.lastPathComponent)
-              reach      \(fmt(min(r, R - r))); displacement up to \(fmt(amplitude * drawing.ceiling))\
-            \(drawing.surface.outward == nil ? ", NOT embedded: back faces kept" : ", embedded")
-              strokes    \(result.strokes.pathCount) paths, length \(String(format: "%.1f", result.strokes.totalLength))
-              took       \(built) to build, \(baked) to bake
-            """)
-        return
-    }
     func counts(_ text: String) throws -> SIMD2<Int> {
         let n = text.split(separator: ",").compactMap { Int($0) }
         guard n.count == 2 else { throw CLIError("--coordinate-curves wants U,V, as in 36,18") }
@@ -478,6 +443,21 @@ func surfaceCommand(_ args: Args) throws {
     case "torus":
         request = SurfaceRequest(.torus(major: R, minor: r),
                                  lines: try counts(args.flags["coordinate-curves"] ?? "36,18"))
+    case "sn" where relief:
+        // `surface sn --relief A`: the sn landscape in relief on its torus,
+        // the surface displaced along its normal by A times |f| truncated at
+        // the truncation. `--repeat N[,M]`: N periods round the ring and M
+        // round the tube, the curves computed once and carried round by the
+        // periods.
+        let repeats = (args.flags["repeat"] ?? "1").split(separator: ",").compactMap { Int($0) }
+        guard (1...2).contains(repeats.count), repeats.allSatisfy({ $0 >= 1 }) else {
+            throw CLIError("--repeat wants N or N,M whole periods, as in 8 or 8,2")
+        }
+        request = SurfaceRequest(.relief(modulus: try args.double("modulus") ?? 0.64, major: R, minor: r,
+                                         amplitude: try args.double("relief") ?? 0,
+                                         repeats: SIMD2(repeats[0], repeats.count > 1 ? repeats[1] : 1),
+                                         grid: try args.int("grid", 600), turn: try args.double("turn") ?? 0,
+                                         floor: try args.double("floor"), soft: args.switches.contains("soft")))
     case "sn":
         request = SurfaceRequest(.sn(modulus: try args.double("modulus") ?? 0.64, major: R, minor: r,
                                      grid: try args.int("grid", 600)))
@@ -503,7 +483,9 @@ func surfaceCommand(_ args: Args) throws {
     default:
         throw CLIError("unknown surface '\(shape)'; the catalog has: torus, sn, periodic, forced, solid")
     }
-    request.grid = try args.int("samples", 1024)
+    // `--samples`: the grid round the ring; in relief, round the ring in
+    // all, 1024 a period at most.
+    request.grid = try args.int("samples", relief ? 8192 : 1024)
     // A linear curve: `--linear-curves 2/5`, `--linear-curves 0.618,24` for that many turns,
     // `--linear-curves 1/3,3,4` for four strands of it.
     if let text = args.flags["linear-curves"] {
@@ -524,6 +506,10 @@ func surfaceCommand(_ args: Args) throws {
     request.style = SurfaceRequest.Style(lines: width, trajectory: try args.double("trajectory-width") ?? 0.08,
                                          folds: try args.double("folds") ?? 2 * width,
                                          linearCurves: width)
+    // A catalog entry by its own name, as the window opens it, so the two
+    // keep the same request.
+    if !relief, SurfacePreset.named(shape) != nil { request.name = shape }
+    try request.check()
     let clock = ContinuousClock()
     var drawing: SurfaceDrawing!
     let built = try clock.measure { drawing = try SurfaceDrawing.build(request) }
@@ -551,6 +537,18 @@ func surfaceCommand(_ args: Args) throws {
     projection.zAngle = try args.double("z-angle") ?? projection.zAngle
     let camera = Camera.oblique(projection)
     let scene = drawing.scene(camera: camera)
+    // `--save PATH`: the bundle that keeps this drawing, as the window saves
+    // one -- its request, its layers, and the camera and resolution it is
+    // baked at -- so `bake PATH` draws what this does.
+    if let save = args.flags["save"] {
+        let url = URL(fileURLWithPath: save)
+        let preset = CameraPreset(name: SurfaceRequest.preset.name, projection: projection,
+                                  depthTolerance: SurfaceRequest.preset.depthTolerance,
+                                  buffer: try args.int("resolution", SurfaceRequest.preset.buffer))
+        try SurfaceBundle(url: url, drawing: drawing, presets: [preset]).write(to: url)
+        print("\(shape) -> \(url.lastPathComponent)  (built in \(built))")
+        if args.flags["output"] == nil { return }
+    }
     let output = URL(fileURLWithPath: try args.string("output"))
 
     if args.switches.contains("preview") || output.pathExtension.lowercased() == "png" {
@@ -695,7 +693,7 @@ func solidCommand(_ args: Args) throws {
 
 func depth(_ args: Args) throws {
     try args.only("depth", Args.scene + ["resolution", "output"])
-    let (_, preset, scene) = try loadScene(args)
+    let (_, _, preset, scene) = try loadDrawing(args)
     let output = URL(fileURLWithPath: try args.string("output"))
     let resolution = try args.int("resolution", preset.buffer)
     guard let bounds = scene.viewBounds() else { throw CLIError("the scene is empty") }
@@ -1520,6 +1518,21 @@ func sourceName(_ source: LayerSource) -> String {
 
 func inspect(_ args: Args) throws {
     try args.only("inspect", Args.scene)
+    if let surface = try args.positional.dropFirst().first.flatMap({ try readSurfaceBundle(URL(fileURLWithPath: $0)) }) {
+        let m = surface.manifest
+        print("\(surface.url.lastPathComponent)  schema \(m.schema)  a parametric surface")
+        print("  function   \(m.provenance.function)  git \(m.provenance.gitSha.prefix(8))")
+        print("  surface    \(m.surface.json.canonical)")
+        for l in surface.drawing.layers {
+            print("    " + pad(l.spec.name, 12) + " " + pad(l.spec.role.rawValue, 10) + " "
+                  + pad(String(l.paths.count), 7) + " paths  lw \(l.spec.width)  \(sourceName(l.spec.source))")
+        }
+        for p in m.presets {
+            print("  preset     \(pad(p.name, 10)) shear \(p.projection.shear)  "
+                  + "x \(p.projection.xAngle)  z \(p.projection.zAngle)  buffer \(p.buffer)")
+        }
+        return
+    }
     let (bundle, _, _) = try loadScene(args)
     let m = bundle.manifest
     print("\(bundle.url.lastPathComponent)  schema \(m.schema)  axes \(m.axes.joined(separator: ", "))")
@@ -1556,7 +1569,7 @@ func contract(_ args: Args) throws {
     var failures = 0
     for b in bundles {
         let text = try String(contentsOf: b.appendingPathComponent("manifest.json"), encoding: .utf8)
-        let manifest = try Manifest(json: JSONValue.parse(text))
+        let manifest = try BundleManifest(json: JSONValue.parse(text))
         let again = manifest.canonicalJSON
         if again == text {
             print("  ok    \(b.lastPathComponent)")

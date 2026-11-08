@@ -125,12 +125,15 @@ public enum PeriodicTorus {
     /// `truncated`: the phase lines are cut at the ceiling, as a landscape's
     /// are at its truncation, and the truncation edge |f| = ceiling is drawn; for a drawing to be
     /// put in relief, where the truncation is a plateau. Otherwise every phase line
-    /// runs through its pole.
+    /// runs through its pole. `contours`: the contours of |f| and arg f to
+    /// draw, each kept below the ceiling where its restriction says so;
+    /// nil for the four families and the truncation edge (`contours(ceiling:truncated:)`).
     public static func drawing(_ expression: String, origin: Complex = Complex(0),
                                periods: (real: Double, imag: Double),
                                major R: Double = 2, minor r: Double = 1,
                                resolution: Int = 600, ceiling: Double = 3,
-                               grid: Int = 1024, truncated: Bool = false) throws -> Drawing {
+                               grid: Int = 1024, truncated: Bool = false,
+                               contours: [LayerSpec]? = nil) throws -> Drawing {
         let compiled = try KurvenMath.Expression.compile(expression)
         let domain = Domain(real: Interval(lo: origin.re, hi: origin.re + periods.real),
                             imag: Interval(lo: origin.im, hi: origin.im + periods.imag))
@@ -177,21 +180,14 @@ public enum PeriodicTorus {
         // crossing is put on the edge itself whatever the slack.
         let slack = 1e-6 * max(dx, dy)
 
-        let magnitude = LandscapeStyle.magnitudeLevels(upTo: ceiling)
-        var families: [(String, LayerRole, ContourField, [Double], Double)] = [
-            ("mag_major", .magnitude, .magnitude, magnitude.major, 0.35),
-            ("mag_minor", .magnitude, .magnitude, magnitude.minor, 0.15),
-            ("ang_major", .phase, .phase, NativeLandscape.phaseMajor, 0.35),
-            ("ang_minor", .phase, .phase, NativeLandscape.phaseMinor, 0.15),
-        ]
-        if truncated { families.append(("truncation edge", .outline, .magnitude, [ceiling], 0.6)) }
-        var layers: [Layer] = families.map { name, role, kind, levels, width in
-            // Truncated, a phase line is lifted to |f| and kept under the
-            // ceiling, ending on the truncation edge where it crosses it.
-            // Contoured on the plane's graph, and drawn on the torus.
-            let cut = truncated && kind == .phase
-            let restriction: Restriction = cut ? .belowTruncation : .all
-            let source = LayerSource.contour(field: kind, levels: levels, restriction: restriction, faces: .surface)
+        var layers: [Layer] = (contours ?? Self.contours(ceiling: ceiling, truncated: truncated)).compactMap { spec in
+            guard case .contour(let kind, let levels, let restriction, _) = spec.source, kind.isFieldOfF else {
+                return nil
+            }
+            // Kept below the truncation, a phase line is lifted to |f| and
+            // kept under the ceiling, ending on the truncation edge where it
+            // crosses it. Contoured on the plane's graph, and drawn on the torus.
+            let cut = restriction == .belowTruncation
             let flat = field.derive(.contour(field: kind, levels: levels, restriction: restriction, faces: .graph(tiled: false)),
                                     policy: cut ? .magnitude : .surface, region: .full,
                                     tiles: [.identity], refine: refiner.refine)
@@ -248,9 +244,7 @@ public enum PeriodicTorus {
                     placed.append(c.map { P3(surface.map($0).position) })
                 }
             }
-            return Layer(spec: LayerSpec(name: name, role: role, source: source, width: width,
-                                         heightPolicy: .surface),
-                         paths: PolylineSet(paths: placed, coords: coords))
+            return Layer(spec: spec, paths: PolylineSet(paths: placed, coords: coords))
         }
         layers.append(Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                                             width: 0.6, heightPolicy: .surface),
@@ -261,6 +255,26 @@ public enum PeriodicTorus {
             return v.isFinite ? min(v.magnitude, ceiling) : ceiling
         }
         return Drawing(surface: surface, layers: layers, height: relief, ceiling: ceiling, radii: (R, r))
+    }
+
+    /// The contours a drawing draws unless told otherwise: |f| and arg f, each
+    /// at major and minor levels, the moduli under the ceiling; truncated, the
+    /// phase lines kept below it and the truncation edge |f| = ceiling.
+    public static func contours(ceiling: Double = 3, truncated: Bool = false) -> [LayerSpec] {
+        let magnitude = LandscapeStyle.magnitudeLevels(upTo: ceiling)
+        var families: [(String, LayerRole, ContourField, [Double], Double)] = [
+            ("mag_major", .magnitude, .magnitude, magnitude.major, 0.35),
+            ("mag_minor", .magnitude, .magnitude, magnitude.minor, 0.15),
+            ("ang_major", .phase, .phase, NativeLandscape.phaseMajor, 0.35),
+            ("ang_minor", .phase, .phase, NativeLandscape.phaseMinor, 0.15),
+        ]
+        if truncated { families.append(("truncation edge", .outline, .magnitude, [ceiling], 0.6)) }
+        return families.map { name, role, kind, levels, width in
+            let restriction: Restriction = truncated && kind == .phase ? .belowTruncation : .all
+            return LayerSpec(name: name, role: role,
+                             source: .contour(field: kind, levels: levels, restriction: restriction, faces: .surface),
+                             width: width, heightPolicy: .surface)
+        }
     }
 
     /// The torus a rectangle of periods glues into, its grid `grid`
@@ -289,10 +303,12 @@ public enum PeriodicTorus {
     /// are on the outer equator.
     public static func jacobiSN(modulus m: Double, major R: Double = 2, minor r: Double = 1,
                                 resolution: Int = 600, grid: Int = 1024,
-                                truncated: Bool = false, turn: Double = 0) throws -> Drawing {
+                                truncated: Bool = false, turn: Double = 0,
+                                contours: [LayerSpec]? = nil) throws -> Drawing {
         let K = Jacobi.quarterPeriod(m), Kp = Jacobi.quarterPeriod(1 - m)
         return try drawing("sn(z, \(m))", origin: Complex(0, turn * 2 * Kp),
                            periods: (4 * K, 2 * Kp), major: R, minor: r,
-                           resolution: resolution, grid: grid, truncated: truncated)
+                           resolution: resolution, grid: grid, truncated: truncated,
+                           contours: contours)
     }
 }

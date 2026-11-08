@@ -98,11 +98,12 @@ Sources/
   KurvenMath/      complex arithmetic, the special functions, the expression
                    language; depends on nothing
   KurvenCore/      pure values: spaces, camera, navigation, contours, the
-                   heightfield and its visibility, hatching, solids, npy, SVG
+                   heightfield and its visibility, hatching, solids, the
+                   bundle schema, npy, SVG
   KurvenLandscape/ a landscape sampled here: the catalog, the refiner, the
                    derived styling, the bundle
   KurvenDynamics/  parametric surfaces: tori, doubly periodic functions,
-                   forced systems
+                   forced systems, and their bundles
   KurvenMetal/     the depth pass, the preview, the resource cache
   KurvenBake/      scene -> strokes; tiling; PNG
   KurvenApp/       the window, the picker, the landscape as a set of controls

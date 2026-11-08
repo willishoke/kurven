@@ -4,6 +4,7 @@ import KurvenCore
 import KurvenMetal
 import KurvenBake
 import KurvenLandscape
+import KurvenDynamics
 
 /// The test suite.
 ///
@@ -40,6 +41,12 @@ enum Fixtures {
             .filter { $0.pathExtension == "kurven" }
             .sorted { $0.path < $1.path } ?? []
     }
+
+    /// The contract bundles that hold a landscape: all but the parametric
+    /// surface's.
+    static var contractLandscapes: [URL] {
+        contractBundles.filter { !((try? SurfaceBundle.holdsSurface(at: $0)) ?? false) }
+    }
 }
 
 // MARK: - 1. the schema contract
@@ -47,12 +54,12 @@ enum Fixtures {
 func contractTests() {
     Check.suite("contract: every fixture manifest round trips byte for byte") {
         let bundles = Fixtures.contractBundles
-        Check.expect(bundles.count == 5, "five fixture bundles are present",
+        Check.expect(bundles.count == 6, "six fixture bundles are present",
                      "found \(bundles.count)")
         for b in bundles {
             let text = try String(contentsOf: b.appendingPathComponent("manifest.json"),
                                   encoding: .utf8)
-            let manifest = try Manifest(json: JSONValue.parse(text))
+            let manifest = try BundleManifest(json: JSONValue.parse(text))
             Check.expect(manifest.canonicalJSON == text,
                          "\(b.lastPathComponent) round trips byte for byte")
         }
@@ -60,6 +67,18 @@ func contractTests() {
 
     Check.suite("contract: bundles decode into consistent values") {
         for url in Fixtures.contractBundles {
+            if try SurfaceBundle.holdsSurface(at: url) {
+                // A parametric surface's: its request built, and every layer
+                // drawn on it.
+                let bundle = try SurfaceBundle.read(at: url)
+                let layers = bundle.drawing.layers
+                let ok = layers.map(\.spec) == bundle.manifest.layers
+                    && layers.allSatisfy { $0.paths.offsets.last == $0.paths.vertices.count
+                        && ($0.paths.coords?.count ?? 0) == $0.paths.vertices.count }
+                    && layers.filter { $0.spec.source != .foldCurves }.allSatisfy { $0.paths.count > 0 }
+                Check.expect(ok, "\(url.lastPathComponent) decodes consistently, every layer drawn on its surface")
+                continue
+            }
             let bundle = try KurvenBundle.read(at: url)
             let m = bundle.manifest
             var ok = bundle.surface.height.width == m.height.shape.nx
@@ -1399,4 +1418,5 @@ frequencyTests()
 continuedFractionTests()
 forcedTorusTests()
 surfaceDrawingTests()
+surfaceBundleTests()
 exit(Check.summary())

@@ -94,6 +94,13 @@ perimeter, its truncation a value, so each is a control in the app. A layer
 can also be stored as arrays (`file`), as some golden fixtures are, and the
 schema says which.
 
+A parametric surface's bundle is its manifest alone: the request that
+builds the surface (`SurfaceRequest`), since the map is code, and the
+layers drawn on its one face, contours of its coordinates, its height, and
+|f| and arg f where it carries a function (`SurfaceManifest`). Reading it
+builds the drawing `kurven-cli surface` builds from the same request, then
+draws the layers it kept (`SurfaceBundle`). A polyhedron is not stored yet.
+
 Bundle arrays are in world order, `x = real`, `y = imag`, `z = |f|`. The
 convention is written into the manifest, because forgetting it was the most
 common bug in this codebase's history.
