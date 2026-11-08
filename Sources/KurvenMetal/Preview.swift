@@ -496,8 +496,7 @@ public extension MetalRenderer {
                     viewport: Viewport) -> P3<WorldSpace>? {
         guard let z = previewDepth(atPixel: SIMD2(Int(p.x.rounded(.down)),
                                                   Int(p.y.rounded(.down)))) else { return nil }
-        let v = navigator.framing.viewPoint(atPixel: p, in: viewport)
-        return navigator.camera.view.inverse(P3<ViewSpace>(v.x, v.y, z))
+        return navigator.worldPoint(atPixel: p, depth: z, in: viewport)
     }
 }
 

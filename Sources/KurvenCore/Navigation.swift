@@ -322,4 +322,13 @@ public struct Navigator: Sendable, Equatable {
     public func applying(_ gestures: [Gesture], in v: Viewport) -> Navigator {
         gestures.reduce(self) { $0.applying($1, in: v) }
     }
+
+    /// The world point under a pixel at a view depth: the pixel's view
+    /// coordinates, which the framing gives exactly, and the depth, taken
+    /// back through the camera. What a click reads off the preview's depth
+    /// buffer (`MetalRenderer.worldPoint(atPixel:navigator:viewport:)`).
+    public func worldPoint(atPixel p: SIMD2<Double>, depth: Double, in v: Viewport) -> P3<WorldSpace> {
+        let q = framing.viewPoint(atPixel: p, in: v)
+        return camera.view.inverse(P3<ViewSpace>(q.x, q.y, depth))
+    }
 }
