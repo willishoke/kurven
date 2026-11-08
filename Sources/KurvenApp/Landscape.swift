@@ -204,6 +204,7 @@ extension Document {
     /// while it was being drawn -- is dropped, and the styling still asked
     /// for is drawn on the new one.
     func redraw() {
+        if surfaceBundle != nil { return redrawSurface() }
         guard !drawing, let bundle, let target = styling else { return }
         let current = Styling(bundle.manifest)
         if styled == current { styled = nil }
@@ -414,18 +415,33 @@ extension Document {
 
     // MARK: - keeping one
 
-    /// Write the landscape as a `.kurven` bundle.
+    /// Write what is on screen as a `.kurven` bundle: a landscape, or a
+    /// parametric surface.
     ///
     /// Everything that would go in it is already in memory, and half of it --
-    /// the truncation, the levels, the spacing -- exists only here. A described bundle
-    /// is a manifest and two grids, which is why this is short.
+    /// the truncation, the levels, the spacing -- exists only here. A described
+    /// landscape is a manifest and two grids, and a parametric surface a
+    /// manifest alone, the request that builds it; either keeps its layers as
+    /// they are drawn, at the levels their sliders set (`drawnLayers`).
     func saveBundle(to url: URL) {
-        guard let bundle else { return }
         do {
-            try bundle.write(to: url)
-            landscapeStatus = "saved \(url.lastPathComponent)"
+            switch state {
+            case .ready(.landscape(let bundle)):
+                var manifest = bundle.manifest
+                manifest.layers = drawnLayers
+                try KurvenBundle(url: bundle.url, manifest: manifest, surface: bundle.surface,
+                                 layers: bundle.layers, wallMesh: bundle.wallMesh, refine: bundle.refine)
+                    .write(to: url)
+                landscapeStatus = "saved \(url.lastPathComponent)"
+            case .ready(.surface(let bundle)):
+                try bundle.write(to: url, layers: drawnLayers)
+                surfaceStatus = "saved \(url.lastPathComponent)"
+            case .empty, .loading, .failed:
+                return
+            }
         } catch {
-            landscapeStatus = "could not save: \(error)"
+            if bundle != nil { landscapeStatus = "could not save: \(error)" }
+            else { surfaceStatus = "could not save: \(error)" }
         }
     }
 }

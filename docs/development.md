@@ -98,14 +98,16 @@ Sources/
   KurvenMath/      complex arithmetic, the special functions, the expression
                    language; depends on nothing
   KurvenCore/      pure values: spaces, camera, navigation, contours, the
-                   heightfield and its visibility, hatching, solids, npy, SVG
+                   heightfield and its visibility, hatching, solids, the
+                   bundle schema, npy, SVG
   KurvenLandscape/ a landscape sampled here: the catalog, the refiner, the
                    derived styling, the bundle
   KurvenDynamics/  parametric surfaces: tori, doubly periodic functions,
-                   forced systems
+                   forced systems, and their bundles
   KurvenMetal/     the depth pass, the preview, the resource cache
   KurvenBake/      scene -> strokes; tiling; PNG
-  KurvenApp/       the window, the picker, the landscape as a set of controls
+  KurvenApp/       the window, the picker, a landscape or a surface as a set
+                   of controls
   kurven-cli/      landscape, bake, surface, preview, bench, refine, catalog,
                    inspect, contract, fixtures, ...
   kurven-test/     the test suite
@@ -130,6 +132,15 @@ Any other bundle, such as a golden fixture, records no request and opens
 read-only. The bundles of the original atlas's Python plates were written
 in schema 1, which kurven no longer reads; the catalog draws the same
 functions natively.
+
+A parametric surface's bundle is its request (`surface`), so it always
+opens editable, and headlessly too: `--set FIELD=VALUE` edits the request as
+the surface's controls do, `--levels LAYER=COUNT` a layer's levels as its
+slider does, and `--save` writes the result, as ⌘S does:
+
+```bash
+KurvenApp sn.kurven --set major=2.5 --levels mag_major=5 --save sn-wide.kurven
+```
 
 ## Things worth knowing
 

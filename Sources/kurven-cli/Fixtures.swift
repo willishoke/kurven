@@ -18,8 +18,9 @@ import KurvenMath
 ///
 /// The sets, and what each pins:
 ///
-///     contract/  four tiny bundles that between them use every arm of every
-///                sum type in the schema; `kurven-cli contract` and kurven-test
+///     contract/  ten tiny bundles, five landscapes and a parametric surface
+///                of each shape, that between them use every arm of every sum
+///                type in the schema; `kurven-cli contract` and kurven-test
 ///                round trip their manifests.
 ///     camera/    world points and their projections under each drawing preset.
 ///     clip/      the visible runs `HiddenLine.clip` cuts from view-space
@@ -102,10 +103,11 @@ enum GoldenFixtures {
         return (height, phase)
     }
 
-    /// Five tiny bundles that between them use every arm of `Truncation`, `Walls`,
-    /// `Region`, `LayerSource` and a landscape's `FaceSelector`, a phase grid and
-    /// no phase grid, tiles and no tiles, a clipped and an unclipped layer, a
-    /// preset and no presets.
+    /// Ten tiny bundles that between them use every arm of `Truncation`, `Walls`,
+    /// `Region`, `LayerSource` and `FaceSelector`, a phase grid and no phase
+    /// grid, tiles and no tiles, a clipped and an unclipped layer, a preset
+    /// and no presets, and a parametric surface of every shape stored as its
+    /// request.
     static func contract(_ dir: URL) throws {
         let (height, phase) = tinyGrid()
         let (ny, nx) = (3, 4)
@@ -262,6 +264,108 @@ enum GoldenFixtures {
             occluder: Occluder(step: 1, tiles: [.identity], walls: .none, region: .full, base: 0),
             layers: [], presets: [], provenance: provenance("tiny_empty")),
             phase: false)
+
+        // (6) a parametric surface: sn on its torus, coarse, stored as the
+        //     request that builds it, with a layer of each kind its one face
+        //     takes -- contours of |f|, arg f, its coordinates and its height,
+        //     coordinate curves, a linear curve, the fold curves. No arrays.
+        let surface = dir.appendingPathComponent("surface.kurven")
+        try directory(surface)
+        func scaffold(_ name: String, _ source: LayerSource, _ width: Double) -> LayerSpec {
+            LayerSpec(name: name, role: .scaffold, source: source, width: width, heightPolicy: .surface)
+        }
+        func surfaceBundle(_ name: String, _ request: SurfaceRequest, _ function: String,
+                           _ layers: [LayerSpec]) throws {
+            let url = dir.appendingPathComponent(name)
+            try directory(url)
+            try text(SurfaceManifest(surface: request, layers: layers, presets: [SurfaceRequest.preset],
+                                     provenance: Provenance(function: function, example: "surface", params: [:],
+                                                            cpuCount: 1, gitSha: gitSha)).canonicalJSON,
+                     to: url.appendingPathComponent("manifest.json"))
+        }
+        let folds = LayerSpec(name: "folds", role: .outline, source: .foldCurves, width: 0.6, heightPolicy: .surface)
+        try text(SurfaceManifest(
+            surface: SurfaceRequest(.sn(modulus: 0.64, major: 2, minor: 1, grid: 120), grid: 64,
+                                    lines: SIMD2(12, 6), linearCurves: SurfaceRequest.LinearCurves(slope: 0.4),
+                                    name: "sn"),
+            layers: [
+                LayerSpec(name: "mag_major", role: .magnitude,
+                          source: .contour(field: .magnitude, levels: [0.5, 1, 2], restriction: .all, faces: .surface),
+                          width: 0.35, heightPolicy: .surface),
+                LayerSpec(name: "ang_major", role: .phase,
+                          source: .contour(field: .phase, levels: [-1.5707963267948966, 0, 1.5707963267948966],
+                                           restriction: .all, faces: .surface),
+                          width: 0.35, heightPolicy: .surface),
+                scaffold("u", .contour(field: .u, levels: [1, 3, 5], restriction: .all, faces: .surface), 0.2),
+                scaffold("v", .contour(field: .v, levels: [0.5, 2], restriction: .all, faces: .surface), 0.2),
+                scaffold("height", .contour(field: .height, levels: [-0.5, 0, 0.5], restriction: .all,
+                                            faces: .surface), 0.2),
+                scaffold("lines", .coordinateCurves(u: 12, v: 6), 0.3),
+                scaffold("linearCurves", .linearCurves(slope: 0.4, turns: 24, count: 1), 0.3),
+                LayerSpec(name: "folds", role: .outline, source: .foldCurves, width: 0.6, heightPolicy: .surface),
+            ],
+            presets: [SurfaceRequest.preset],
+            provenance: Provenance(function: "sn(z, 0.64)", example: "surface", params: [:],
+                                   cpuCount: 1, gitSha: gitSha)).canonicalJSON,
+                 to: surface.appendingPathComponent("manifest.json"))
+
+        // (7)-(10) a parametric surface of each other shape, with the layer
+        //     kinds that are its own: the torus of revolution's coordinate
+        //     curves and strands, a periodic expression's |f| and arg f, a
+        //     forced torus's trajectory, and a relief's phase lines kept below
+        //     its truncation and its truncation edge.
+        try surfaceBundle("surface_torus.kurven",
+                          SurfaceRequest(.torus(major: 2, minor: 0.75), grid: 64, lines: SIMD2(12, 6),
+                                         linearCurves: SurfaceRequest.LinearCurves(slope: 0.4, turns: 5, count: 3),
+                                         style: SurfaceRequest.Style(lines: 0.25, folds: 0.5, linearCurves: 0.2),
+                                         name: "torus"),
+                          "torus",
+                          [scaffold("lines", .coordinateCurves(u: 12, v: 6), 0.25),
+                           scaffold("linearCurves", .linearCurves(slope: 0.4, turns: 5, count: 3), 0.2),
+                           scaffold("v", .contour(field: .v, levels: [1, 4], restriction: .all, faces: .surface), 0.2),
+                           LayerSpec(name: "folds", role: .outline, source: .foldCurves, width: 0.5,
+                                     heightPolicy: .surface)])
+        try surfaceBundle("surface_periodic.kurven",
+                          SurfaceRequest(.periodic(expression: "sn(z, 0.5)",
+                                                   periods: SIMD2(7.416298709205487, 3.7081493546027433),
+                                                   major: 2, minor: 1, grid: 120), grid: 64),
+                          "sn(z, 0.5)",
+                          [LayerSpec(name: "mag", role: .magnitude,
+                                     source: .contour(field: .magnitude, levels: [0.5, 1], restriction: .all,
+                                                      faces: .surface),
+                                     width: 0.35, heightPolicy: .surface),
+                           LayerSpec(name: "ang", role: .phase,
+                                     source: .contour(field: .phase, levels: [0], restriction: .all, faces: .surface),
+                                     width: 0.35, heightPolicy: .surface),
+                           folds])
+        try surfaceBundle("surface_forced.kurven",
+                          SurfaceRequest(.forced(system: "jerk", fit: 8000, harmonics: 24, radial: 0, axial: 1,
+                                                 radius: 2.5, turns: 20),
+                                         grid: 64, lines: SIMD2(8, 4), name: "forced"),
+                          "jerk",
+                          [scaffold("trajectory", .trajectory, 0.08),
+                           scaffold("lines", .coordinateCurves(u: 8, v: 4), 0.3),
+                           scaffold("height", .contour(field: .height, levels: [0], restriction: .all,
+                                                       faces: .surface), 0.2),
+                           folds])
+        try surfaceBundle("surface_relief.kurven",
+                          SurfaceRequest(.relief(modulus: 0.64, major: 2, minor: 1, amplitude: 0.3,
+                                                 repeats: SIMD2(2, 1), grid: 60, turn: 0.25, floor: 0.5, soft: true),
+                                         grid: 128),
+                          "sn(z, 0.64)",
+                          [LayerSpec(name: "mag", role: .magnitude,
+                                     source: .contour(field: .magnitude, levels: [1, 2], restriction: .all,
+                                                      faces: .surface),
+                                     width: 0.35, heightPolicy: .surface),
+                           LayerSpec(name: "ang", role: .phase,
+                                     source: .contour(field: .phase, levels: [0, 1.5707963267948966],
+                                                      restriction: .belowTruncation, faces: .surface),
+                                     width: 0.35, heightPolicy: .surface),
+                           LayerSpec(name: "truncation edge", role: .outline,
+                                     source: .contour(field: .magnitude, levels: [3], restriction: .all,
+                                                      faces: .surface),
+                                     width: 0.6, heightPolicy: .surface),
+                           folds])
     }
 
     // MARK: camera

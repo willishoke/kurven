@@ -122,10 +122,10 @@ described layer kinds:
 | `truncationEdge` | where the graph meets the plateaus: the curve \|f\| = h(x), which under a banded truncation is not a level set of \|f\| at all, with the risers' top and bottom edges |
 
 A `contour` or a `hatching` names the faces it lies on (`FaceSelector`):
-`graph`, `plateaus`, `walls` or `risers` in a manifest, each copied to every
-tile when `tiled` (the walls stand in space). A contour is of |f| or arg f on
-the graph, or of a face's coordinates `u` and `v` or its height on any of the
-four, but the height on a plateau, which is constant. A restriction on one
+`graph`, `plateaus`, `walls` or `risers` in a landscape's manifest, each
+copied to every tile when `tiled` (the walls stand in space). A contour is
+of |f| or arg f on the graph, or of a face's coordinates `u` and `v` or its
+height on any of the four, but the height on a plateau, which is constant. A restriction on one
 of these is membership, read on the domain each copy came from: below the
 truncation is the graph, and the footprint holds every face, each cut to it
 already. A level on the edge of a face's parameter rectangle draws nothing
@@ -146,7 +146,8 @@ wall's `trim`, renamed `endLines` with the opposite sense, is refused too.
 The angle is π/2 on a wall or a riser and 0 or π/2 on a plateau,
 to within a thousandth of a radian, and the tone is uniform at one width;
 anything else is refused, and so is hatching on a solid's faces or a curved
-face, since a manifest holds a landscape.
+face, which a landscape's manifest has none of (a parametric surface's names
+its one face, `surface`, for its contours).
 
 ## Two speeds of edit
 

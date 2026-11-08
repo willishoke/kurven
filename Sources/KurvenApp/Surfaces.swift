@@ -11,8 +11,10 @@ import KurvenDynamics
 /// Built as a landscape is sampled -- one build in flight on a detached task,
 /// the latest edit queued behind it -- through `SurfaceDrawing.build`, the
 /// function `kurven-cli surface` calls, so the window and the CLI draw the
-/// same drawing. A surface is not a bundle: `bundle` is nil for one, so the
-/// controls that restyle, resample or save a bundle stay away from it.
+/// same drawing. The drawing on screen is a bundle (`SurfaceBundle`), the
+/// request that builds it and its layers, so it is saved, restyled and baked
+/// as a landscape is: a request edit here is the surface's resample, and a
+/// layer's levels its restyle (`redrawSurface`).
 @MainActor
 extension Document {
     /// Open what the gallery chose.
@@ -52,6 +54,9 @@ extension Document {
         // torus, its values on the grid, the trajectory's run, the
         // contours -- goes with the request.
         let previous = framing ? nil : surfaceDrawing
+        // The layers the bundle keeps -- its levels, a contour the request
+        // does not draw -- survive the edit (`SurfaceDrawing.keeping(_:)`).
+        let kept = framing ? nil : surfaceBundle?.manifest.layers
         building = true
         surfaceStatus = (previous?.refits(for: request) ?? true)
             && { if case .forced = request.shape { true } else { false } }()
@@ -62,7 +67,8 @@ extension Document {
             let started = clock.now
             do {
                 let built = try await Task.detached(priority: .userInitiated) {
-                    try SurfaceDrawing.build(request, reusing: previous, draft: draft)
+                    let built = try SurfaceDrawing.build(request, reusing: previous, draft: draft)
+                    return try kept.map(built.keeping) ?? built
                 }.value
                 // A landscape or another surface chosen meanwhile is the
                 // document now.
@@ -77,6 +83,32 @@ extension Document {
             }
             building = false
             pumpSurface()
+        }
+    }
+
+    /// A parametric surface's layers at the levels their sliders set, derived
+    /// off the main actor and coalesced as a landscape's are (`redraw`): each
+    /// layer at levels of its own is drawn again on the surface
+    /// (`SurfaceDrawing.restyled(_:)`), the rest kept. A draft is drawn in
+    /// full: |f| and arg f are placed by the function either way.
+    func redrawSurface() {
+        guard !drawing, let surfaceBundle, curvesWanted != nil, scene != nil else { return }
+        curvesWanted = nil
+        drawing = true
+        let asked = version
+        let layers = drawnLayers
+        Task {
+            let restyled = await Task.detached(priority: .userInitiated) {
+                Result { try surfaceBundle.drawing.restyled(layers) }
+            }.value
+            drawing = false
+            if version == asked {
+                switch restyled {
+                case .success(let drawn): if let scene { self.scene = scene.drawing(drawn.layers) }
+                case .failure(let error): surfaceStatus = "\(error)"
+                }
+            }
+            redrawSurface()
         }
     }
 

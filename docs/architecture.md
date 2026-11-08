@@ -94,6 +94,13 @@ perimeter, its truncation a value, so each is a control in the app. A layer
 can also be stored as arrays (`file`), as some golden fixtures are, and the
 schema says which.
 
+A parametric surface's bundle is its manifest alone: the request that
+builds the surface (`SurfaceRequest`), since the map is code, and the
+layers drawn on its one face, contours of its coordinates, its height, and
+|f| and arg f where it carries a function (`SurfaceManifest`). Reading it
+builds the drawing `kurven-cli surface` builds from the same request, then
+draws the layers it kept (`SurfaceBundle`). A polyhedron is not stored yet.
+
 Bundle arrays are in world order, `x = real`, `y = imag`, `z = |f|`. The
 convention is written into the manifest, because forgetting it was the most
 common bug in this codebase's history.
@@ -335,7 +342,9 @@ carries its own control: a level count for a contour family, a spacing for
 a hatching. Dragging a window slider samples at a draft resolution and at
 the full one when you let go; dragging the truncation height does not
 sample at all (see *[Two speeds of edit](landscapes.md#two-speeds-of-edit)*).
-⌘S writes what is on screen as a `.kurven` bundle.
+A surface's section edits its request, as the landscape's edits a
+landscape's, and the layers its bundle kept stay through the edit. ⌘S writes what is on screen as a `.kurven` bundle, a landscape
+or a surface, each contour family at the levels its slider shows.
 
 Navigation is a pure function: input handling produces `Gesture` values and
 `Navigator.applying` folds them, so orbit, pan, zoom and re-target are tested

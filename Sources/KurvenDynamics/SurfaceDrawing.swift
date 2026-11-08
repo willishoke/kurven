@@ -3,208 +3,6 @@ import KurvenCore
 import KurvenMath
 import KurvenLandscape
 
-/// A surface drawing, described: which surface, at what grid, with what curves.
-///
-/// The value the CLI parses its flags into and the app keeps in its
-/// document, so both build a drawing with one function -- `SurfaceDrawing.build`
-/// -- as a bake and a landscape are each built by one function called twice.
-public struct SurfaceRequest: Sendable, Equatable {
-    public enum Shape: Sendable, Equatable {
-        /// The torus of revolution about the z axis.
-        case torus(major: Double, minor: Double)
-        /// sn(z, m) on its fundamental rectangle, glued into a torus. Its own
-        /// case rather than a `periodic` expression, because the modulus
-        /// decides the periods as well as the function.
-        case sn(modulus: Double, major: Double, minor: Double, grid: Int)
-        /// Any function with a rectangle of periods, glued into a torus.
-        case periodic(expression: String, periods: SIMD2<Double>, major: Double, minor: Double,
-                      grid: Int)
-        /// A forced system's invariant torus, fitted from `fit` time units of
-        /// one run at `harmonics`, drawn by revolution on a ring of `radius`
-        /// with state components `radial` and `axial`; its trajectory drawn
-        /// on it for `turns` turns of the forcing -- as the linear curve at the
-        /// rotation number, which is what the trajectory is on the fitted
-        /// torus. The turns where it cuts the torus most evenly are the
-        /// denominators of the rotation number's convergents.
-        case forced(system: String, fit: Double, harmonics: Int, radial: Int, axial: Int,
-                    radius: Double, turns: Int)
-    }
-
-    /// Stroke widths. A fold width of zero leaves the folds out.
-    public struct Style: Sendable, Equatable {
-        public var lines: Double
-        public var trajectory: Double
-        public var folds: Double
-        public var linearCurves: Double
-        public init(lines: Double = 0.3, trajectory: Double = 0.08, folds: Double = 0.6,
-                    linearCurves: Double = 0.3) {
-            self.lines = lines; self.trajectory = trajectory; self.folds = folds
-            self.linearCurves = linearCurves
-        }
-    }
-
-    /// A linear curve drawn on the torus: `count` straight lines through its
-    /// parameter rectangle at `slope` turns of `v` per turn of `u`, each
-    /// `turns` turns long -- or closed, when the slope is a fraction whose
-    /// denominator is within the turns. See `ParametricSurface.linearCurves`.
-    public struct LinearCurves: Sendable, Equatable {
-        public var slope: Double
-        public var turns: Int
-        public var count: Int
-        public init(slope: Double, turns: Int = 24, count: Int = 1) {
-            self.slope = slope; self.turns = turns; self.count = count
-        }
-
-        /// The turns after which a strand closes, when it does within
-        /// `turns`: the denominator of a rational slope.
-        public var closes: Int? { ParametricSurface.linearCurveCloses(slope: slope, within: turns) }
-    }
-
-    public var shape: Shape
-    /// Grid points around `u`; `v` gets half as many (a periodic drawing
-    /// sizes `v` to its rectangle instead).
-    public var grid: Int
-    /// Lines of constant `u` and `v`, when drawn. A plain torus has nothing
-    /// else to draw; a forced torus draws them only when asked.
-    public var lines: SIMD2<Int>?
-    /// A linear curve, when drawn. Curves alone: the surface does not know it is
-    /// there, so its slope can move under a slider.
-    public var linearCurves: LinearCurves?
-    public var style: Style
-    /// The catalog entry this came from, for provenance and the title.
-    public var name: String
-
-    public init(_ shape: Shape, grid: Int = 1024, lines: SIMD2<Int>? = nil,
-                linearCurves: LinearCurves? = nil, style: Style = Style(), name: String = "") {
-        self.shape = shape; self.grid = grid; self.lines = lines
-        self.linearCurves = linearCurves; self.style = style; self.name = name
-    }
-
-    /// The projection a surface drawing opens at.
-    public static let projection = ObliqueProjection(shear: 0, xAngle: -55, zAngle: 30,
-                                                     flipX: false, yScale: nil)
-
-    /// The request a drag builds while it lasts: a quarter of the grid
-    /// around, and a periodic function sampled at most 240 across. The full
-    /// request follows when the drag ends. A forced trajectory needs no
-    /// draft: it is a linear curve, a vertex per cell of whatever grid.
-    public func drafted() -> SurfaceRequest {
-        var r = self
-        r.grid = min(grid, 256)
-        switch shape {
-        case .torus, .forced: break
-        case .sn(let m, let R, let rr, let grid):
-            r.shape = .sn(modulus: m, major: R, minor: rr, grid: min(grid, 240))
-        case .periodic(let e, let p, let R, let rr, let grid):
-            r.shape = .periodic(expression: e, periods: p, major: R, minor: rr, grid: min(grid, 240))
-        }
-        return r
-    }
-
-    /// The same, as a camera preset: no depth tolerance and the CLI's bake resolution,
-    /// so the window and `kurven-cli surface` bake the same picture.
-    public static let preset = CameraPreset(name: "oblique", projection: projection, depthTolerance: 0,
-                                            buffer: 3000)
-}
-
-public extension SurfaceRequest {
-    /// One number of a request, to edit by name: what a control moves.
-    enum Field: String, CaseIterable, Sendable {
-        case major, minor, modulus, grid, radius, harmonics, fit, radial, axial
-        /// A forced trajectory's length, in turns of the forcing.
-        case trajectoryTurns
-        /// The linear curve's, present when one is drawn: its slope, its length
-        /// in turns, and how many strands.
-        case slope, turns, strands
-    }
-
-    /// The fields this request's shape has, in the order a panel lists them.
-    /// The linear curve's are listed by `linearCurveFields` when there is one.
-    var fields: [Field] {
-        switch shape {
-        case .torus: [.major, .minor]
-        case .sn: [.modulus, .major, .minor, .grid]
-        case .periodic: [.major, .minor, .grid]
-        case .forced: [.radius, .radial, .axial, .trajectoryTurns, .harmonics, .fit]
-        }
-    }
-
-    static let linearCurveFields: [Field] = [.slope, .turns, .strands]
-
-    /// The fields that move curves alone -- placed from the grid, nothing of
-    /// the surface remade -- and so want no draft while dragged.
-    static let curveFields: [Field] = linearCurveFields + [.trajectoryTurns]
-
-    /// A field's value, or nil where the shape has no such field; setting
-    /// one the shape does not have changes nothing.
-    subscript(field: Field) -> Double? {
-        get {
-            switch (shape, field) {
-            case (_, .slope): linearCurves?.slope
-            case (_, .turns): linearCurves.map { Double($0.turns) }
-            case (_, .strands): linearCurves.map { Double($0.count) }
-            case (.torus(let R, _), .major), (.sn(_, let R, _, _), .major),
-                 (.periodic(_, _, let R, _, _), .major): R
-            case (.torus(_, let r), .minor), (.sn(_, _, let r, _), .minor),
-                 (.periodic(_, _, _, let r, _), .minor): r
-            case (.sn(let m, _, _, _), .modulus): m
-            case (.sn(_, _, _, let g), .grid), (.periodic(_, _, _, _, let g), .grid): Double(g)
-            case (.forced(_, _, _, _, _, let x, _), .radius): x
-            case (.forced(_, _, _, _, _, _, let x), .trajectoryTurns): Double(x)
-            case (.forced(_, _, let x, _, _, _, _), .harmonics): Double(x)
-            case (.forced(_, let x, _, _, _, _, _), .fit): x
-            case (.forced(_, _, _, let x, _, _, _), .radial): Double(x)
-            case (.forced(_, _, _, _, let x, _, _), .axial): Double(x)
-            default: nil
-            }
-        }
-        set {
-            guard let x = newValue, x.isFinite else { return }
-            let n = Int(x.rounded())
-            switch field {
-            case .slope: linearCurves?.slope = x; return
-            case .turns: linearCurves?.turns = max(n, 1); return
-            case .strands: linearCurves?.count = max(n, 1); return
-            default: break
-            }
-            switch shape {
-            case .torus(var R, var r):
-                if field == .major { R = x } else if field == .minor { r = x } else { return }
-                shape = .torus(major: R, minor: r)
-            case .sn(var m, var R, var r, var g):
-                switch field {
-                case .modulus: m = x
-                case .major: R = x
-                case .minor: r = x
-                case .grid: g = n
-                default: return
-                }
-                shape = .sn(modulus: m, major: R, minor: r, grid: g)
-            case .periodic(let e, let p, var R, var r, var g):
-                switch field {
-                case .major: R = x
-                case .minor: r = x
-                case .grid: g = n
-                default: return
-                }
-                shape = .periodic(expression: e, periods: p, major: R, minor: r, grid: g)
-            case .forced(let s, var f, var h, var ra, var ax, var rad, var t):
-                switch field {
-                case .radius: rad = x
-                case .trajectoryTurns: t = max(n, 1)
-                case .harmonics: h = n
-                case .fit: f = x
-                case .radial: ra = n
-                case .axial: ax = n
-                default: return
-                }
-                shape = .forced(system: s, fit: f, harmonics: h, radial: ra, axial: ax,
-                                radius: rad, turns: t)
-            }
-        }
-    }
-}
-
 /// A surface drawing, built: the surface, its curves, and what is worth keeping
 /// between edits.
 ///
@@ -228,10 +26,21 @@ public extension SurfaceRequest {
 /// a drawing depends on its request alone -- the window's is the CLI's. The one
 /// `draft` names a request made while a control is dragged; nothing is
 /// approximated for it now, and it is kept for the drag to say so.
+///
+/// A drawing restyled (`restyled(_:)`) draws other layers on the same
+/// surface, as a bundle that kept them asks; what an edit reuses is still
+/// only what its request drew.
 public struct SurfaceDrawing: Sendable {
     public let request: SurfaceRequest
     public let surface: ParametricSurface
     public let layers: [Layer]
+    /// The layers the request draws, which are all an edit reuses, whatever
+    /// a restyle has drawn instead.
+    let own: [Layer]
+    /// Contours of the request's function at other levels, from its samples
+    /// as they were taken once (`PeriodicTorus.Drawing.contours`); nil for a
+    /// surface that paints none.
+    let contours: (@Sendable ([LayerSpec]) -> [Layer])?
     /// The surface's identity: kept by an edit that leaves the surface alone,
     /// new whenever it moves.
     public let content: ContentID
@@ -277,6 +86,10 @@ public struct SurfaceDrawing: Sendable {
         case .forced(let s, let f, let h, let radial, let axial, let radius, _):
             g.shape = .forced(system: s, fit: f, harmonics: h, radial: radial, axial: axial,
                               radius: radius, turns: 0)
+        case .relief:
+            // Its contours are placed through the relief, so the whole
+            // shape is its geometry, and a kept surface keeps them too.
+            break
         }
         return g
     }
@@ -308,7 +121,7 @@ public struct SurfaceDrawing: Sendable {
         func lines(on surface: ParametricSurface, resolution: Int) -> Layer? {
             request.lines.map { n in
                 let old = kept.flatMap { k in
-                    k.request.lines == n ? k.layers.first { $0.spec.name == "lines" } : nil
+                    k.request.lines == n ? k.own.first { $0.spec.name == "lines" } : nil
                 }
                 return scaffold("lines", .coordinateCurves(u: n.x, v: n.y), style.lines,
                                 old?.paths ?? surface.coordinateCurves(counts: (n.x, n.y),
@@ -321,7 +134,7 @@ public struct SurfaceDrawing: Sendable {
         func linearCurves(on surface: ParametricSurface) -> Layer? {
             request.linearCurves.map { w in
                 let old = kept.flatMap { k in
-                    k.request.linearCurves == w ? k.layers.first { $0.spec.name == "linearCurves" } : nil
+                    k.request.linearCurves == w ? k.own.first { $0.spec.name == "linearCurves" } : nil
                 }
                 return scaffold("linearCurves", .linearCurves(slope: w.slope, turns: w.turns, count: w.count),
                                 style.linearCurves,
@@ -333,30 +146,44 @@ public struct SurfaceDrawing: Sendable {
         let surface: ParametricSurface
         var layers: [Layer]
         var revolution: Revolution?, embedded = true, forced: Forced?
+        var contours: (@Sendable ([LayerSpec]) -> [Layer])?
         switch request.shape {
         case .torus(let R, let r):
             let n = request.grid
             surface = kept?.surface
                 ?? ParametricSurface.torus(major: R, minor: r, samples: (n, max(n / 2, 8)))
-            layers = lines(on: surface, resolution: 4 * n).map { [$0] } ?? []
+            layers = lines(on: surface, resolution: request.lineResolution).map { [$0] } ?? []
 
         case .sn(_, let R, let r, _), .periodic(_, _, let R, let r, _):
             let drawing: PeriodicTorus.Drawing
-            if let previous, let key = contours(request), contours(previous.request) == key {
+            if let previous, let key = Self.contours(request), Self.contours(previous.request) == key {
                 // The same contours: as they are, or re-placed on new radii.
-                let old = PeriodicTorus.Drawing(surface: previous.surface, layers: previous.layers)
+                let old = PeriodicTorus.Drawing(surface: previous.surface, layers: previous.own,
+                                                contours: previous.contours)
                 drawing = kept != nil ? old : old.placed(major: R, minor: r, grid: request.grid)
-            } else if case .sn(let m, _, _, let grid) = request.shape {
-                drawing = try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r,
-                                                   resolution: grid, grid: request.grid)
-            } else if case .periodic(let expression, let periods, _, _, let grid) = request.shape {
-                drawing = try PeriodicTorus.drawing(expression, periods: (periods.x, periods.y),
-                                                    major: R, minor: r, resolution: grid,
-                                                    grid: request.grid)
-            } else { fatalError("unreachable") }
+            } else {
+                drawing = try periodic(request)
+            }
             surface = drawing.surface
+            contours = drawing.contours
             // Their own folds come with them; the style's replace them below.
-            layers = drawing.layers.filter { if case .contour = $0.spec.source { true } else { false } }
+            layers = drawing.layers.filter(\.isContour)
+            if let l = lines(on: surface, resolution: request.lineResolution) { layers.append(l) }
+
+        case .relief:
+            // The same relief keeps its contours as they are; any other
+            // change is a new relief.
+            if let kept {
+                surface = kept.surface
+                layers = kept.own.filter(\.isContour)
+                contours = kept.contours
+            } else {
+                let drawing = try periodic(request)
+                surface = drawing.surface
+                layers = drawing.layers.filter(\.isContour)
+                contours = drawing.contours
+            }
+            if let l = lines(on: surface, resolution: request.lineResolution) { layers.append(l) }
 
         case .forced(let name, let fit, let harmonics, let radial, let axial, let radius,
                      let turns):
@@ -399,10 +226,10 @@ public struct SurfaceDrawing: Sendable {
             if kept != nil, case .forced(_, _, _, _, _, _, turns)? = previous?.request.shape {
                 sameCurves = true
             }
-            let old = sameCurves ? kept?.layers.first { $0.spec.name == "trajectory" } : nil
+            let old = sameCurves ? kept?.own.first { $0.spec.name == "trajectory" } : nil
             layers = [scaffold("trajectory", .trajectory, style.trajectory,
                                old?.paths ?? torus.trajectory(on: surface, turns: turns))]
-            if let l = lines(on: surface, resolution: 2 * request.grid) { layers.append(l) }
+            if let l = lines(on: surface, resolution: request.lineResolution) { layers.append(l) }
         }
         if let w = linearCurves(on: surface) { layers.append(w) }
         // The outline and inner fold curves, derived per camera.
@@ -411,10 +238,137 @@ public struct SurfaceDrawing: Sendable {
                                                 width: style.folds, heightPolicy: .surface),
                                 paths: .empty))
         }
-        return SurfaceDrawing(request: request, surface: surface, layers: layers,
-                              content: kept?.content ?? ContentID(), revolution: revolution,
-                              embedded: embedded, forced: forced)
+        return SurfaceDrawing(request: request, surface: surface, layers: layers, own: layers,
+                              contours: contours, content: kept?.content ?? ContentID(),
+                              revolution: revolution, embedded: embedded, forced: forced)
     }
+
+    /// The drawing a request's function makes on its torus: sn, any periodic
+    /// expression, or sn in relief.
+    static func periodic(_ request: SurfaceRequest) throws -> PeriodicTorus.Drawing {
+        switch request.shape {
+        case .torus, .forced:
+            preconditionFailure("a torus of revolution or a forced torus paints no function")
+        case .sn(let m, let R, let r, let grid):
+            return try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r, resolution: grid,
+                                              grid: request.grid)
+        case .periodic(let expression, let periods, let R, let r, let grid):
+            return try PeriodicTorus.drawing(expression, periods: (periods.x, periods.y), major: R, minor: r,
+                                             resolution: grid, grid: request.grid)
+        case .relief(let m, let R, let r, let amplitude, let repeats, let grid, let turn, let floor, let soft):
+            // `repeats` periods round the ring and the tube, the curves
+            // computed once and carried round by the periods; the grid round
+            // the ring in all, 1024 a period at most.
+            var base = try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r, resolution: grid,
+                                                  grid: min(request.grid, 1024), truncated: true, turn: turn)
+                .repeated(real: repeats.x, imag: repeats.y, grid: request.grid)
+            // The truncation as a smooth saturation rather than a crease,
+            // c · tanh(|f| / c), an experiment on what the crease costs.
+            if soft, let height = base.height {
+                let c = base.ceiling
+                base = PeriodicTorus.Drawing(surface: base.surface, layers: base.layers,
+                                             height: { p in c * tanh(height(p) / c) },
+                                             ceiling: c, radii: base.radii, contours: base.contours)
+            }
+            // Only |f| above the floor displaces, so each pole stands alone
+            // on the bare torus instead of on a raised ground.
+            if let floor, let height = base.height {
+                base = PeriodicTorus.Drawing(surface: base.surface, layers: base.layers,
+                                             height: { p in max(height(p) - floor, 0) },
+                                             ceiling: base.ceiling - floor, radii: base.radii,
+                                             contours: base.contours)
+            }
+            return base.relief(amplitude: amplitude, reach: min(r, R - r))
+        }
+    }
+
+    /// The same surface drawn with `specs`, as a bundle that kept them asks.
+    ///
+    /// A layer whose source the drawing draws already keeps its curves, under
+    /// the new name and style. Any other is drawn on the surface: a contour of
+    /// a coordinate or the height by the plain routine (`Face.contours(of:_:on:)`),
+    /// of |f| or arg f from the request's function as it was sampled once,
+    /// all of them in one pass (`contours`); coordinate curves, linear
+    /// curves, the trajectory. The surface and its identity are kept, so a
+    /// restyle redraws curves alone.
+    public func restyled(_ specs: [LayerSpec]) throws -> SurfaceDrawing {
+        func drawn(_ spec: LayerSpec) -> Layer? { layers.first { $0.spec.source == spec.source } }
+        let ofF = specs.filter { spec in
+            if drawn(spec) == nil, case .contour(let field, _, _, _) = spec.source { field.isFieldOfF } else { false }
+        }
+        // On a surface with no function they are refused below, one by one.
+        let placed = ofF.isEmpty ? [] : contours?(ofF) ?? []
+        let restyled = try specs.map { spec -> Layer in
+            if let layer = drawn(spec) ?? placed.first(where: { $0.spec.source == spec.source }) {
+                return Layer(spec: spec, paths: layer.paths)
+            }
+            return Layer(spec: spec, paths: try curves(spec))
+        }
+        return SurfaceDrawing(request: request, surface: surface, layers: restyled, own: own, contours: contours,
+                              content: content, revolution: revolution, embedded: embedded, forced: forced)
+    }
+
+    /// This drawing, of an edited request, with the layers the drawing
+    /// before it kept: each stays as it was styled -- its levels, its width,
+    /// a contour the request does not draw -- but for the curves the request
+    /// itself describes, its coordinate curves, linear curve, trajectory and
+    /// folds, which are this request's: where it still draws them, and
+    /// added where it now does.
+    public func keeping(_ kept: [LayerSpec]) throws -> SurfaceDrawing {
+        let built = layers.map(\.spec)
+        var specs = kept.compactMap { spec in
+            Self.describesRequest(spec) ? built.first { $0.name == spec.name && Self.describesRequest($0) } : spec
+        }
+        specs += built.filter { spec in Self.describesRequest(spec) && !specs.contains { $0.name == spec.name } }
+        return try restyled(specs)
+    }
+
+    /// Whether a layer is one of the curves a request describes in itself
+    /// rather than as a layer: its coordinate curves, linear curve,
+    /// trajectory or folds, as `build` names them.
+    static func describesRequest(_ spec: LayerSpec) -> Bool {
+        switch (spec.name, spec.source) {
+        case ("lines", .coordinateCurves), ("linearCurves", .linearCurves), ("trajectory", .trajectory),
+             ("folds", .foldCurves): true
+        default: false
+        }
+    }
+
+    /// The curves of a layer the request does not draw, on this surface.
+    private func curves(_ spec: LayerSpec) throws -> PolylineSet<WorldSpace> {
+        if let why = SurfaceManifest.unsupported(spec.source, on: request) {
+            throw ManifestError.unsupported("layer '\(spec.name)': \(why)")
+        }
+        switch spec.source {
+        case .coordinateCurves(let u, let v):
+            return surface.coordinateCurves(counts: (u, v), resolution: request.lineResolution)
+        case .linearCurves(let slope, let turns, let count):
+            return surface.linearCurves(slope: slope, turns: turns, count: count)
+        case .foldCurves:
+            return .empty
+        case .trajectory:
+            guard let torus, case .forced(_, _, _, _, _, _, let turns) = request.shape else { return .empty }
+            return torus.trajectory(on: surface, turns: turns)
+        case .contour(let field, let levels, _, .surface) where !field.isFieldOfF:
+            let face = surface.face, map = surface.map
+            let value: @Sendable (P2<ParamSpace>) -> Double = switch field {
+            case .u: { $0.x }
+            case .v: { $0.y }
+            default: { map($0).position.z }
+            }
+            let period = field == .u ? surface.u.period : field == .v ? surface.v.period : nil
+            let coords = face.contours(of: ScalarField(period: period, value: value), levels, on: face.copies[0])
+                .flatMap(\.paths)
+            return PolylineSet(paths: coords.map { $0.map { P3(map($0).position) } }, coords: coords)
+        default:
+            throw ManifestError.unsupported("layer '\(spec.name)': a \(spec.source) on a parametric surface")
+        }
+    }
+}
+
+extension Layer {
+    /// Whether the layer is a contour: what a periodic drawing keeps of its own.
+    var isContour: Bool { if case .contour = spec.source { true } else { false } }
 }
 
 /// A surface the gallery offers: a name to ask for it by, a label, a formula

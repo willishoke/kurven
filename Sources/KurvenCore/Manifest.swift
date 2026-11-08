@@ -19,6 +19,8 @@ public enum ManifestError: Error, CustomStringConvertible, Equatable {
     case noSuchPreset(String, have: [String])
     case noSuchLayer(String, have: [String])
     case unsupported(String)
+    /// A value the schema can spell that no drawing can be built from.
+    case invalid(String)
 
     public var description: String {
         switch self {
@@ -32,6 +34,7 @@ public enum ManifestError: Error, CustomStringConvertible, Equatable {
         case .noSuchPreset(let n, let have): "manifest: no preset '\(n)' (have \(have))"
         case .noSuchLayer(let n, let have): "manifest: no layer '\(n)' (have \(have))"
         case .unsupported(let what): "manifest: \(what)"
+        case .invalid(let what): "manifest: \(what)"
         }
     }
 }
@@ -42,6 +45,12 @@ public enum ManifestError: Error, CustomStringConvertible, Equatable {
 /// restriction, step, coordinate curves, ...) and one hatching kind for
 /// every face. Older schemas are refused, not translated: there are no
 /// bundles outside this repository.
+///
+/// A manifest with a `surface` holds a parametric surface by the request that
+/// builds it (`SurfaceManifest`), not a landscape. It was added to schema 3
+/// without a bump: no key of a landscape's manifest changed, so every bundle
+/// that read before reads and writes as it did, and nothing outside this
+/// repository writes schema 3.
 public let kurvenSchema = 3
 /// The axis convention every bundle states about itself. A bundle that says
 /// anything else is not readable by this code, and saying so up front is the
@@ -650,8 +659,32 @@ public enum LayerSource: Sendable, Equatable {
     case edges
 
     public init(json: JSONValue) throws {
+        try self.init(json: json, onSurface: false)
+    }
+
+    /// A layer of a landscape's manifest, or with `onSurface`, of a
+    /// parametric surface's (`SurfaceManifest`): a contour on its one face,
+    /// its coordinate curves, linear curves, fold curves or a trajectory.
+    /// Which fields and restrictions the surface admits its request decides.
+    init(json: JSONValue, onSurface: Bool) throws {
         let o = try json.object("LayerSource")
-        switch try o.string("kind", "LayerSource") {
+        let kind = try o.string("kind", "LayerSource")
+        if onSurface {
+            switch kind {
+            case "contour", "coordinateCurves", "linearCurves", "foldCurves", "trajectory":
+                break
+            case "file":
+                throw ManifestError.unsupported("a dumped layer on a parametric surface: its curves are drawn "
+                                                + "from its request, not stored")
+            case "hatching":
+                throw ManifestError.unsupported("hatching on a parametric surface: it is curved, and hatching "
+                                                + "is laid on flat faces")
+            default:
+                throw ManifestError.unsupported("a \(kind) layer on a parametric surface: it is one face, with no "
+                                                + "walls, truncation edge or edges of a solid")
+            }
+        }
+        switch kind {
         case "file":
             self = .file(vertices: try o.string("vertices", "LayerSource.file"),
                          offsets: try o.string("offsets", "LayerSource.file"))
@@ -661,10 +694,14 @@ public enum LayerSource: Sendable, Equatable {
                 throw ManifestError.unknownKind(fieldText, of: "ContourField",
                                                 known: ContourField.allCases.map(\.rawValue))
             }
-            let faces = try LayerSource.landscapeFaces(o, "LayerSource.contour")
+            let faces = onSurface ? try LayerSource.surfaceFaces(o) : try LayerSource.landscapeFaces(o, "LayerSource.contour")
             if let why = faces.unsupported(field) { throw ManifestError.unsupported(why) }
             let restriction = try Restriction(json: o.value("restriction", "LayerSource.contour"))
-            if restriction.requiresBelowTruncation, faces.kind != .graph {
+            if onSurface, restriction != .all, restriction != .belowTruncation {
+                throw ManifestError.unsupported("a contour on a parametric surface kept to a footprint or a band: "
+                                                + "the surface has neither")
+            }
+            if restriction.requiresBelowTruncation, faces.kind != .graph, !onSurface {
                 throw ManifestError.unsupported("belowTruncation on the \(faces.name): it is membership in the graph, "
                                                 + "and holds nothing of another face")
             }
@@ -704,6 +741,16 @@ public enum LayerSource: Sendable, Equatable {
                                                     "linearCurves", "foldCurves", "trajectory",
                                                     "edges"])
         }
+    }
+
+    /// The face a contour on a parametric surface names: its one face.
+    private static func surfaceFaces(_ o: [String: JSONValue]) throws -> FaceSelector {
+        let faces = try FaceSelector(json: o.value("faces", "LayerSource.contour"))
+        guard faces == .surface else {
+            throw ManifestError.unsupported("a contour on the \(faces.name) of a parametric surface: "
+                                            + "the surface is one face, `surface`")
+        }
+        return faces
     }
 
     /// The faces a contour or a hatching in a manifest names: a landscape's.
@@ -825,6 +872,12 @@ public struct LayerSpec: Sendable, Equatable {
     }
 
     public init(json: JSONValue) throws {
+        try self.init(json: json, onSurface: false)
+    }
+
+    /// A layer of a landscape's manifest, or with `onSurface` of a parametric
+    /// surface's (`LayerSource.init(json:onSurface:)`).
+    init(json: JSONValue, onSurface: Bool) throws {
         let o = try json.object("LayerSpec")
         let roleText = try o.string("role", "LayerSpec")
         guard let role = LayerRole(rawValue: roleText) else {
@@ -837,7 +890,7 @@ public struct LayerSpec: Sendable, Equatable {
                                             known: HeightPolicy.allCases.map(\.rawValue))
         }
         self.init(name: try o.string("name", "LayerSpec"), role: role,
-                  source: try LayerSource(json: o.value("source", "LayerSpec")),
+                  source: try LayerSource(json: o.value("source", "LayerSpec"), onSurface: onSurface),
                   width: try o.double("width", "LayerSpec"),
                   heightPolicy: policy,
                   color: (try? o.string("color", "LayerSpec")) ?? "#000000",
@@ -980,6 +1033,10 @@ public struct Manifest: Sendable, Equatable {
         guard schema == kurvenSchema else {
             throw ManifestError.unsupportedSchema(schema, supported: kurvenSchema)
         }
+        guard o["surface"] == nil else {
+            throw ManifestError.unsupported("a parametric surface, not a landscape: its bundle is built from its "
+                                            + "request (`SurfaceManifest`, `SurfaceBundle`)")
+        }
         axes = try o.strings("axes", "Manifest")
         guard axes == kurvenAxes else {
             throw ManifestError.unexpectedAxes(axes, expected: kurvenAxes)
@@ -1026,5 +1083,128 @@ public struct Manifest: Sendable, Equatable {
             throw ManifestError.noSuchLayer(name, have: layers.map(\.name))
         }
         return l
+    }
+}
+
+// MARK: - a parametric surface's manifest
+
+/// A parametric surface's manifest: the request that builds the surface
+/// (`SurfaceRequest`), the curves drawn on it, its camera presets and where it
+/// came from. The map is code, so the bundle stores the request rather than
+/// samples of it, and is this file alone: no arrays, and no axes to state.
+///
+/// Its layers lie on the surface's one face: contours of its coordinates and
+/// its height, and of |f| and arg f where the request paints a function
+/// (kept below the truncation where it truncates one, as sn's relief does);
+/// coordinate curves, linear curves, the fold curves, and a forced torus's
+/// trajectory. They are the drawing as it was kept, restyled or not, and a
+/// reader draws each on the surface the request builds.
+public struct SurfaceManifest: Sendable, Equatable {
+    public var schema: Int
+    public var surface: SurfaceRequest
+    public var layers: [LayerSpec]
+    public var presets: [CameraPreset]
+    public var provenance: Provenance
+
+    public init(surface: SurfaceRequest, layers: [LayerSpec], presets: [CameraPreset],
+                provenance: Provenance) {
+        self.schema = kurvenSchema
+        self.surface = surface; self.layers = layers; self.presets = presets
+        self.provenance = provenance
+    }
+
+    public init(json: JSONValue) throws {
+        let o = try json.object("SurfaceManifest")
+        schema = try o.int("schema", "SurfaceManifest")
+        guard schema == kurvenSchema else {
+            throw ManifestError.unsupportedSchema(schema, supported: kurvenSchema)
+        }
+        if let key = ["axes", "domain", "height", "phase", "truncation", "occluder"].first(where: { o[$0] != nil }) {
+            throw ManifestError.unsupported("a parametric surface with a landscape's \(key): a manifest holds one "
+                                            + "geometry, a landscape or a parametric surface")
+        }
+        surface = try SurfaceRequest(json: o.value("surface", "SurfaceManifest"))
+        layers = try o.array("layers", "SurfaceManifest").map { try LayerSpec(json: $0, onSurface: true) }
+        presets = try o.array("presets", "SurfaceManifest").map(CameraPreset.init(json:))
+        provenance = try Provenance(json: o.value("provenance", "SurfaceManifest"))
+        var names = Set<String>()
+        for layer in layers {
+            if let why = SurfaceManifest.unsupported(layer.source, on: surface) {
+                throw ManifestError.unsupported("layer '\(layer.name)': \(why)")
+            }
+            // A layer is kept across a request edit, and its slider found,
+            // by its name.
+            guard names.insert(layer.name).inserted else {
+                throw ManifestError.unsupported("two layers named '\(layer.name)': a parametric surface's "
+                                                + "layers are told apart by name")
+            }
+        }
+    }
+
+    /// Why a layer cannot lie on the surface `request` builds, or nil when
+    /// it can: |f| and arg f where no function is painted, a contour kept
+    /// below a truncation the function does not have, a trajectory on a
+    /// torus no flow winds round.
+    public static func unsupported(_ source: LayerSource, on request: SurfaceRequest) -> String? {
+        switch source {
+        case .contour(let field, _, let restriction, _):
+            if field.isFieldOfF, !request.paintsFunction {
+                return "a contour of \(field.rawValue) on a surface that paints no function"
+            }
+            if restriction == .belowTruncation, !(field.isFieldOfF && request.truncatesFunction) {
+                return "a contour kept below a truncation: only |f| and arg f are truncated, and only in relief"
+            }
+            return nil
+        case .trajectory:
+            if case .forced = request.shape { return nil }
+            return "a trajectory on a surface no flow winds round"
+        case .coordinateCurves(let u, let v):
+            guard u >= 0, v >= 0 else { return "coordinate curves must be counts, not \(u) and \(v)" }
+            return SurfaceRequest.vertices(coordinateCurves: SIMD2(u, v), resolution: request.lineResolution)
+                .map { "a layer that \($0)" }
+        case .linearCurves(let slope, let turns, let count):
+            return request.vertices(linearCurves: SurfaceRequest.LinearCurves(slope: slope, turns: turns, count: count))
+                .map { "a linear curve that \($0)" }
+        default:
+            return nil
+        }
+    }
+
+    public var json: JSONValue {
+        .object(["schema": .int(schema), "surface": surface.json,
+                 "layers": .array(layers.map(\.json)),
+                 "presets": .array(presets.map(\.json)),
+                 "provenance": provenance.json])
+    }
+
+    /// Canonical JSON with a trailing newline, as a landscape's manifest writes.
+    public var canonicalJSON: String { json.canonical + "\n" }
+
+    public func preset(_ name: String) throws -> CameraPreset {
+        guard let p = presets.first(where: { $0.name == name }) else {
+            throw ManifestError.noSuchPreset(name, have: presets.map(\.name))
+        }
+        return p
+    }
+}
+
+/// A bundle's manifest, by what it holds: a landscape (`Manifest`), or a
+/// parametric surface by the request that builds it (`SurfaceManifest`). One
+/// schema, told apart by key: a manifest with a `surface` is a parametric
+/// surface's, any other a landscape's.
+public enum BundleManifest: Sendable, Equatable {
+    case landscape(Manifest)
+    case surface(SurfaceManifest)
+
+    public init(json: JSONValue) throws {
+        let o = try json.object("Manifest")
+        self = o["surface"] == nil ? .landscape(try Manifest(json: json)) : .surface(try SurfaceManifest(json: json))
+    }
+
+    public var canonicalJSON: String {
+        switch self {
+        case .landscape(let m): m.canonicalJSON
+        case .surface(let m): m.canonicalJSON
+        }
     }
 }

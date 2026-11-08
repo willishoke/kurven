@@ -167,8 +167,8 @@ public enum FaceSelector: Sendable, Equatable {
     /// (`Surface.riserHatchLines`), the lines at a stretch's two ends drawn
     /// only with `endLines`, which a contour leaves false.
     case risers(tiled: Bool, endLines: Bool)
-    /// A parametric surface's one face. A scene can carry it; a manifest,
-    /// which is a landscape's, refuses it (`LayerSource`).
+    /// A parametric surface's one face. A parametric surface's manifest
+    /// names it (`SurfaceManifest`); a landscape's refuses it (`LayerSource`).
     case surface
     /// Every face of a solid, at any angle. A scene can carry it; a
     /// manifest refuses it.

@@ -557,7 +557,7 @@ private func faceLandscapes() throws -> [Landscape] {
     // walls, a footprint, and bands that lie beyond the domain. Through
     // the scene where the bundle has a camera, so the walls are the ones a
     // bundle's scene carries.
-    for url in Fixtures.contractBundles {
+    for url in Fixtures.contractLandscapes {
         let bundle = try KurvenBundle.read(at: url)
         let o = bundle.manifest.occluder
         let geometry: SceneGeometry = bundle.manifest.presets.first.map {

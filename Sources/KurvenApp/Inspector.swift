@@ -30,16 +30,17 @@ struct Inspector: View {
             if document.surfaceDrawing != nil || document.building {
                 Section("Surface") { SurfaceSection(document: document) }
             }
-            if document.surfaceDrawing != nil {
-                // A surface is not a bundle: no truncation, depth tolerance
-                // or provenance. Its camera has the one oblique projection it
-                // opened at, so "reset" still has somewhere to go.
+            if let surfaceBundle = document.surfaceBundle {
+                // A surface has no truncation, and its visibility is exact
+                // or read off its coordinates, so it has no depth tolerance
+                // to set. Its camera has the presets its bundle keeps.
                 Section("Camera") {
-                    CameraSection(document: document, presets: [SurfaceRequest.preset])
+                    CameraSection(document: document, presets: surfaceBundle.manifest.presets)
                 }
                 Section("Mode") { modePicker }
                 Section("Layers") { layerList }
                 Section("Bake") { BakeSection(document: document) }
+                Section("Bundle") { provenance(surfaceBundle) }
             } else if let bundle = document.bundle {
                 Section("Camera") {
                     CameraSection(document: document, presets: bundle.manifest.presets)
@@ -122,7 +123,7 @@ struct Inspector: View {
                                           draft: draggingLevels == index) })
         HStack(spacing: 6) {
             Text("levels").font(.caption).foregroundStyle(.secondary)
-            Slider(value: count, in: 1...80, step: 1, onEditingChanged: { editing in
+            Slider(value: count, in: 2...80, step: 1, onEditingChanged: { editing in
                 draggingLevels = editing ? index : nil
                 if !editing { document.rebuildCurves() }
             })
@@ -187,6 +188,13 @@ struct Inspector: View {
     }
 
     // MARK: - provenance
+
+    @ViewBuilder
+    private func provenance(_ bundle: SurfaceBundle) -> some View {
+        let request = bundle.manifest.surface
+        LabeledContent("Function", value: bundle.manifest.provenance.function)
+        LabeledContent("Grid", value: "\(request.grid) around")
+    }
 
     @ViewBuilder
     private func provenance(_ bundle: KurvenBundle) -> some View {

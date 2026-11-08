@@ -34,12 +34,29 @@ public enum PeriodicTorus {
         public let ceiling: Double
         /// The torus's radii, for a drawing to be re-placed on the same torus.
         public let radii: (major: Double, minor: Double)
+        /// Contours of |f| and arg f for other layers, drawn as this
+        /// drawing's are: from the function as it was sampled once, carried
+        /// through whatever the drawing was repeated, re-placed or displaced
+        /// by, onto its surface. Nil for a drawing built without f.
+        public let contours: (@Sendable ([LayerSpec]) -> [Layer])?
 
         public init(surface: ParametricSurface, layers: [Layer],
                     height: (@Sendable (P2<ParamSpace>) -> Double)? = nil,
-                    ceiling: Double = .infinity, radii: (major: Double, minor: Double) = (2, 1)) {
+                    ceiling: Double = .infinity, radii: (major: Double, minor: Double) = (2, 1),
+                    contours: (@Sendable ([LayerSpec]) -> [Layer])? = nil) {
             self.surface = surface; self.layers = layers
             self.height = height; self.ceiling = ceiling; self.radii = radii
+            self.contours = contours
+        }
+
+        /// The same curves, each layer carried by `carry`, and the contours
+        /// drawn later carried by it too.
+        private func carrying(_ carry: @escaping @Sendable (Layer) -> Layer, onto surface: ParametricSurface,
+                              radii: (major: Double, minor: Double)) -> Drawing {
+            var carried: (@Sendable ([LayerSpec]) -> [Layer])?
+            if let contours { carried = { specs in contours(specs).map(carry) } }
+            return Drawing(surface: surface, layers: layers.map(carry), height: height, ceiling: ceiling,
+                           radii: radii, contours: carried)
         }
 
         /// The same function over several periods: a torus whose rectangle
@@ -57,7 +74,7 @@ public enum PeriodicTorus {
             let torus = PeriodicTorus.torus(over: domain, major: radii.major, minor: radii.minor,
                                             samples: (u: min(surface.u.samples * real, grid),
                                                       v: max(surface.v.samples * imag, 32)))
-            let layers = self.layers.map { layer -> Layer in
+            return carrying({ layer in
                 guard let coords = layer.paths.coords else { return layer }
                 var all: [[P2<ParamSpace>]] = []
                 for i in 0..<real {
@@ -72,8 +89,7 @@ public enum PeriodicTorus {
                 return Layer(spec: layer.spec,
                              paths: PolylineSet(paths: all.map { $0.map { P3(torus.map($0).position) } },
                                                 coords: all))
-            }
-            return Drawing(surface: torus, layers: layers, height: height, ceiling: ceiling, radii: radii)
+            }, onto: torus, radii: radii)
         }
 
         /// The landscape in relief on the torus: the surface displaced along
@@ -88,13 +104,7 @@ public enum PeriodicTorus {
             let encloses = surface.outward != nil && amplitude * ceiling < reach
             let displaced = surface.displaced(by: height, amplitude: amplitude, ceiling: ceiling,
                                               encloses: encloses)
-            let layers = self.layers.map { layer -> Layer in
-                guard let coords = layer.paths.coords else { return layer }
-                return Layer(spec: layer.spec,
-                             paths: PolylineSet(vertices: coords.map { P3(displaced.map($0).position) },
-                                                offsets: layer.paths.offsets, coords: coords))
-            }
-            return Drawing(surface: displaced, layers: layers, height: height, ceiling: ceiling, radii: radii)
+            return carrying({ $0.placed(on: displaced) }, onto: displaced, radii: radii)
         }
 
         /// The same function on a torus of other radii. The contours are the
@@ -103,13 +113,7 @@ public enum PeriodicTorus {
         public func placed(major R: Double, minor r: Double, grid: Int) -> Drawing {
             let domain = Domain(real: surface.u.range, imag: surface.v.range)
             let torus = PeriodicTorus.torus(over: domain, major: R, minor: r, grid: grid)
-            let layers = self.layers.map { layer -> Layer in
-                guard let coords = layer.paths.coords else { return layer }
-                return Layer(spec: layer.spec,
-                             paths: PolylineSet(vertices: coords.map { P3(torus.map($0).position) },
-                                                offsets: layer.paths.offsets, coords: coords))
-            }
-            return Drawing(surface: torus, layers: layers, height: height, ceiling: ceiling, radii: (R, r))
+            return carrying({ $0.placed(on: torus) }, onto: torus, radii: (R, r))
         }
     }
 
@@ -125,12 +129,15 @@ public enum PeriodicTorus {
     /// `truncated`: the phase lines are cut at the ceiling, as a landscape's
     /// are at its truncation, and the truncation edge |f| = ceiling is drawn; for a drawing to be
     /// put in relief, where the truncation is a plateau. Otherwise every phase line
-    /// runs through its pole.
+    /// runs through its pole. `contours`: the contours of |f| and arg f to
+    /// draw, each kept below the ceiling where its restriction says so;
+    /// nil for the four families and the truncation edge (`contours(ceiling:truncated:)`).
     public static func drawing(_ expression: String, origin: Complex = Complex(0),
                                periods: (real: Double, imag: Double),
                                major R: Double = 2, minor r: Double = 1,
                                resolution: Int = 600, ceiling: Double = 3,
-                               grid: Int = 1024, truncated: Bool = false) throws -> Drawing {
+                               grid: Int = 1024, truncated: Bool = false,
+                               contours: [LayerSpec]? = nil) throws -> Drawing {
         let compiled = try KurvenMath.Expression.compile(expression)
         let domain = Domain(real: Interval(lo: origin.re, hi: origin.re + periods.real),
                             imag: Interval(lo: origin.im, hi: origin.im + periods.imag))
@@ -177,21 +184,16 @@ public enum PeriodicTorus {
         // crossing is put on the edge itself whatever the slack.
         let slack = 1e-6 * max(dx, dy)
 
-        let magnitude = LandscapeStyle.magnitudeLevels(upTo: ceiling)
-        var families: [(String, LayerRole, ContourField, [Double], Double)] = [
-            ("mag_major", .magnitude, .magnitude, magnitude.major, 0.35),
-            ("mag_minor", .magnitude, .magnitude, magnitude.minor, 0.15),
-            ("ang_major", .phase, .phase, NativeLandscape.phaseMajor, 0.35),
-            ("ang_minor", .phase, .phase, NativeLandscape.phaseMinor, 0.15),
-        ]
-        if truncated { families.append(("truncation edge", .outline, .magnitude, [ceiling], 0.6)) }
-        var layers: [Layer] = families.map { name, role, kind, levels, width in
-            // Truncated, a phase line is lifted to |f| and kept under the
-            // ceiling, ending on the truncation edge where it crosses it.
-            // Contoured on the plane's graph, and drawn on the torus.
-            let cut = truncated && kind == .phase
-            let restriction: Restriction = cut ? .belowTruncation : .all
-            let source = LayerSource.contour(field: kind, levels: levels, restriction: restriction, faces: .surface)
+        // One layer's contours, from the samples and the refiner, which a
+        // later restyle draws with too (`Drawing.contours`).
+        let draw: @Sendable (LayerSpec) -> Layer? = { spec in
+            guard case .contour(let kind, let levels, let restriction, _) = spec.source, kind.isFieldOfF else {
+                return nil
+            }
+            // Kept below the truncation, a phase line is lifted to |f| and
+            // kept under the ceiling, ending on the truncation edge where it
+            // crosses it. Contoured on the plane's graph, and drawn on the torus.
+            let cut = restriction == .belowTruncation
             let flat = field.derive(.contour(field: kind, levels: levels, restriction: restriction, faces: .graph(tiled: false)),
                                     policy: cut ? .magnitude : .surface, region: .full,
                                     tiles: [.identity], refine: refiner.refine)
@@ -248,10 +250,9 @@ public enum PeriodicTorus {
                     placed.append(c.map { P3(surface.map($0).position) })
                 }
             }
-            return Layer(spec: LayerSpec(name: name, role: role, source: source, width: width,
-                                         heightPolicy: .surface),
-                         paths: PolylineSet(paths: placed, coords: coords))
+            return Layer(spec: spec, paths: PolylineSet(paths: placed, coords: coords))
         }
+        var layers = (contours ?? Self.contours(ceiling: ceiling, truncated: truncated)).compactMap(draw)
         layers.append(Layer(spec: LayerSpec(name: "folds", role: .outline, source: .foldCurves,
                                             width: 0.6, heightPolicy: .surface),
                             paths: .empty))
@@ -260,7 +261,28 @@ public enum PeriodicTorus {
             let v = compiled(Complex(c.x, c.y))
             return v.isFinite ? min(v.magnitude, ceiling) : ceiling
         }
-        return Drawing(surface: surface, layers: layers, height: relief, ceiling: ceiling, radii: (R, r))
+        return Drawing(surface: surface, layers: layers, height: relief, ceiling: ceiling, radii: (R, r),
+                       contours: { $0.compactMap(draw) })
+    }
+
+    /// The contours a drawing draws unless told otherwise: |f| and arg f, each
+    /// at major and minor levels, the moduli under the ceiling; truncated, the
+    /// phase lines kept below it and the truncation edge |f| = ceiling.
+    public static func contours(ceiling: Double = 3, truncated: Bool = false) -> [LayerSpec] {
+        let magnitude = LandscapeStyle.magnitudeLevels(upTo: ceiling)
+        var families: [(String, LayerRole, ContourField, [Double], Double)] = [
+            ("mag_major", .magnitude, .magnitude, magnitude.major, 0.35),
+            ("mag_minor", .magnitude, .magnitude, magnitude.minor, 0.15),
+            ("ang_major", .phase, .phase, NativeLandscape.phaseMajor, 0.35),
+            ("ang_minor", .phase, .phase, NativeLandscape.phaseMinor, 0.15),
+        ]
+        if truncated { families.append(("truncation edge", .outline, .magnitude, [ceiling], 0.6)) }
+        return families.map { name, role, kind, levels, width in
+            let restriction: Restriction = truncated && kind == .phase ? .belowTruncation : .all
+            return LayerSpec(name: name, role: role,
+                             source: .contour(field: kind, levels: levels, restriction: restriction, faces: .surface),
+                             width: width, heightPolicy: .surface)
+        }
     }
 
     /// The torus a rectangle of periods glues into, its grid `grid`
@@ -289,10 +311,21 @@ public enum PeriodicTorus {
     /// are on the outer equator.
     public static func jacobiSN(modulus m: Double, major R: Double = 2, minor r: Double = 1,
                                 resolution: Int = 600, grid: Int = 1024,
-                                truncated: Bool = false, turn: Double = 0) throws -> Drawing {
+                                truncated: Bool = false, turn: Double = 0,
+                                contours: [LayerSpec]? = nil) throws -> Drawing {
         let K = Jacobi.quarterPeriod(m), Kp = Jacobi.quarterPeriod(1 - m)
         return try drawing("sn(z, \(m))", origin: Complex(0, turn * 2 * Kp),
                            periods: (4 * K, 2 * Kp), major: R, minor: r,
-                           resolution: resolution, grid: grid, truncated: truncated)
+                           resolution: resolution, grid: grid, truncated: truncated,
+                           contours: contours)
+    }
+}
+
+private extension Layer {
+    /// The same curves, each vertex placed by its coordinate on `surface`.
+    func placed(on surface: ParametricSurface) -> Layer {
+        guard let coords = paths.coords else { return self }
+        return Layer(spec: spec, paths: PolylineSet(vertices: coords.map { P3(surface.map($0).position) },
+                                                    offsets: paths.offsets, coords: coords))
     }
 }
