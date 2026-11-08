@@ -205,6 +205,7 @@ extension Document {
     /// for is drawn on the new one.
     func redraw() {
         if surfaceBundle != nil { return redrawSurface() }
+        if polyhedronBundle != nil { return redrawPolyhedron() }
         guard !drawing, let bundle, let target = styling else { return }
         let current = Styling(bundle.manifest)
         if styled == current { styled = nil }
@@ -356,13 +357,16 @@ extension Document {
 
     /// The hatch spacing of one described hatching layer, in world units.
     func spacing(ofLayer index: Int) -> Double? {
-        guard let spec = styling?.layers[safe: index] else { return nil }
+        guard let spec = (polyhedronBundle != nil ? polyhedronLayers : styling?.layers)?[safe: index] else {
+            return nil
+        }
         guard case .hatching(let hatching, _) = spec.source else { return nil }
         return hatching.spacing
     }
 
     /// How many gaps a hatching layer rules along the domain's longer side,
-    /// the side `LandscapeStyle.hatchSpacing` counts its seventy strokes on.
+    /// the side `LandscapeStyle.hatchSpacing` counts its seventy strokes on;
+    /// on a polyhedron, across its largest face.
     ///
     /// Every face rounds its own count from the spacing and spreads its strokes
     /// to fit, so the hatching a person sees is a count, not a length. Setting
@@ -380,12 +384,21 @@ extension Document {
     }
 
     private var hatchReach: Double? {
+        if let solid = polyhedronBundle?.solid { return solid.frames.map(\.extent).max() }
         guard let domain = bundle?.manifest.domain else { return nil }
         let reach = max(abs(domain.real.length), abs(domain.imag.length))
         return reach > 0 ? reach : nil
     }
 
     func setSpacing(_ value: Double, ofLayer index: Int) {
+        if polyhedronBundle != nil {
+            return restylePolyhedron { layers in
+                guard index < layers.count,
+                      case .hatching(var hatching, let faces) = layers[index].source else { return }
+                hatching.spacing = value
+                layers[index].source = .hatching(hatching, faces: faces)
+            }
+        }
         restyle { manifest in
             guard index < manifest.layers.count else { return }
             guard case .hatching(var hatching, let faces) = manifest.layers[index].source else { return }
@@ -415,14 +428,16 @@ extension Document {
 
     // MARK: - keeping one
 
-    /// Write what is on screen as a `.kurven` bundle: a landscape, or a
-    /// parametric surface.
+    /// Write what is on screen as a `.kurven` bundle: a landscape, a
+    /// parametric surface or a polyhedron.
     ///
     /// Everything that would go in it is already in memory, and half of it --
     /// the truncation, the levels, the spacing -- exists only here. A described
     /// landscape is a manifest and two grids, and a parametric surface a
     /// manifest alone, the request that builds it; either keeps its layers as
-    /// they are drawn, at the levels their sliders set (`drawnLayers`).
+    /// they are drawn, at the levels their sliders set (`drawnLayers`). A
+    /// polyhedron is its manifest too, its vertices and loops and its layers
+    /// as drawn.
     func saveBundle(to url: URL) {
         do {
             switch state {
@@ -436,11 +451,15 @@ extension Document {
             case .ready(.surface(let bundle)):
                 try bundle.write(to: url, layers: drawnLayers)
                 surfaceStatus = "saved \(url.lastPathComponent)"
+            case .ready(.polyhedron(let bundle)):
+                try bundle.write(to: url)
+                polyhedronStatus = "saved \(url.lastPathComponent)"
             case .empty, .loading, .failed:
                 return
             }
         } catch {
             if bundle != nil { landscapeStatus = "could not save: \(error)" }
+            else if polyhedronBundle != nil { polyhedronStatus = "could not save: \(error)" }
             else { surfaceStatus = "could not save: \(error)" }
         }
     }

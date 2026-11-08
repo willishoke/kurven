@@ -457,6 +457,73 @@ func polyhedronBundleTests() {
         }
     }
 
+    Check.suite("preview: a polyhedron at rest draws what its bake draws, and nothing it hides") {
+        // The window's frame of the gallery's frame: its edges and its
+        // hatching in four widths, cut at rest in closed form as the bake
+        // cuts them, then drawn. Every baked pixel is drawn, and every drawn
+        // pixel is within a pixel of a baked one, so no hidden edge and no
+        // hatch line on a face turned away shows.
+        let bundle = try PolyhedronBundle.read(at: Fixtures.url("contract/polyhedron_frame.kurven"))
+        let preset = bundle.manifest.presets[0]
+        let viewport = Viewport(width: 1200, height: 900)
+        let scene = bundle.scene(preset: preset)
+        guard let bounds = scene.quickBounds() else { Check.expect(false, "the frame has bounds"); return }
+        let navigator = Navigator(orbit: Orbit(matching: preset.projection), framing: .fitting(bounds, in: viewport))
+        let renderer = try MetalRenderer()
+        let target = try renderer.makePreviewTarget(viewport)
+        let frame = navigator.framing.frame(viewport)
+        let baked = try renderer.bake(scene.looking(navigator.camera), options: BakeOptions(resolution: 3000))
+        var bake = [Bool](repeating: false, count: viewport.width * viewport.height)
+        for layer in baked.strokes.layers {
+            for path in layer.paths.paths {
+                for (a, b) in zip(path, path.dropFirst()) {
+                    let steps = max(Int(simd_length(b.v - a.v) / frame.unitsPerPixel.max() * 4), 1)
+                    for j in 0...steps {
+                        let t = Double(j) / Double(steps)
+                        let i = frame.index(of: P2<ViewSpace>(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t))
+                        guard i.x >= 0, i.x < viewport.height, i.y >= 0, i.y < viewport.width else { continue }
+                        bake[i.x * viewport.width + i.y] = true
+                    }
+                }
+            }
+        }
+        func near(_ marks: [Bool], _ row: Int, _ col: Int, _ reach: Int) -> Bool {
+            for dr in -reach...reach {
+                for dc in -reach...reach {
+                    let r = row + dr, c = col + dc
+                    guard r >= 0, r < viewport.height, c >= 0, c < viewport.width else { continue }
+                    if marks[r * viewport.width + c] { return true }
+                }
+            }
+            return false
+        }
+        let bakedPixels = bake.indices.filter { bake[$0] }
+        // A stroke is drawn a pixel and a half wide, so a drawn pixel is
+        // held to within two of the bake's.
+        func compared(draft: Bool) throws -> (recalled: Int, stray: Int, drawn: Int) {
+            try renderer.renderPreview(scene, navigator: navigator, viewport: viewport,
+                                       options: PreviewOptions(slopeScale: 0, draft: draft), into: target)
+            let bgra = try PNG.bgra(target)
+            let drawn = (0..<(viewport.width * viewport.height)).map { k -> Bool in
+                let r = Int(bgra[4 * k + 2]), g = Int(bgra[4 * k + 1]), b = Int(bgra[4 * k])
+                return 299 * r + 587 * g + 114 * b < 224_000
+            }
+            let drawnPixels = drawn.indices.filter { drawn[$0] }
+            return (bakedPixels.filter { near(drawn, $0 / viewport.width, $0 % viewport.width, 1) }.count,
+                    drawnPixels.filter { !near(bake, $0 / viewport.width, $0 % viewport.width, 2) }.count,
+                    drawnPixels.count)
+        }
+        let rest = try compared(draft: false), draft = try compared(draft: true)
+        Check.expect(bakedPixels.count > 5000 && rest.recalled == bakedPixels.count,
+                     "at rest the preview draws every pixel of the bake's edges and hatching",
+                     "\(rest.recalled) of \(bakedPixels.count)")
+        Check.expect(rest.stray == 0, "and draws nothing the bake hides",
+                     "\(rest.stray) of \(rest.drawn) drawn pixels")
+        Check.expect(draft.recalled < bakedPixels.count || draft.stray > 0,
+                     "while the draft, tested per fragment against the depth pass, does not",
+                     "it misses \(bakedPixels.count - draft.recalled) and strays at \(draft.stray)")
+    }
+
     Check.suite("bundles: a polyhedron restyled lays the hatching that changed, and nothing else") {
         let opened = try PolyhedronBundle.read(at: Fixtures.url("contract/polyhedron_octahedron.kurven"))
         var layers = opened.manifest.layers

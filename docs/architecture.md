@@ -327,8 +327,9 @@ double-click re-targets the turn onto the point you clicked, `f` fits,
 `1`/`2`/`3` switch between the drawing, a shaded surface, and the raw depth
 buffer. The inspector carries the camera as numbers, the bundle's camera
 presets, per-layer visibility and levels, the depth tolerance, and a bake
-panel. Polyhedra are not in the app yet; `kurven-cli surface solid` draws
-them.
+panel. A polyhedron's bundle opens with its edges and its hatching, drawn at
+rest as the bake draws them, cut in closed form for the camera, and left to
+the depth pass while the camera moves.
 
 ⌘N opens a picker: the catalog as pictures, each cell the landscape it
 names, drawn small by the same renderer that draws it full size. A name
@@ -346,8 +347,11 @@ a hatching. Dragging a window slider samples at a draft resolution and at
 the full one when you let go; dragging the truncation height does not
 sample at all (see *[Two speeds of edit](landscapes.md#two-speeds-of-edit)*).
 A surface's section edits its request, as the landscape's edits a
-landscape's, and the layers its bundle kept stay through the edit. ⌘S writes what is on screen as a `.kurven` bundle, a landscape
-or a surface, each contour family at the levels its slider shows.
+landscape's, and the layers its bundle kept stay through the edit. A
+polyhedron's solid is its bundle's, and a hatching's spacing its control,
+which lays that hatching again and keeps the rest. ⌘S writes what is on
+screen as a `.kurven` bundle, a landscape, a surface or a polyhedron, each
+contour family at the levels its slider shows.
 
 Navigation is a pure function: input handling produces `Gesture` values and
 `Navigator.applying` folds them, so orbit, pan, zoom and re-target are tested

@@ -6,8 +6,8 @@ import KurvenBake
 import KurvenLandscape
 import KurvenDynamics
 
-/// One open bundle, a landscape or a parametric surface, and everything the
-/// window knows about it.
+/// One open bundle, a landscape, a parametric surface or a polyhedron, and
+/// everything the window knows about it.
 ///
 /// Every mutation is a whole new value assigned into a stored property, so the
 /// model holds no derived state that can go stale. In particular `scene` keeps
@@ -20,17 +20,19 @@ final class Document {
     enum State {
         case empty
         case loading(URL)
-        /// A bundle, opened, sampled or built: either kind is saved, restyled
+        /// A bundle, opened, sampled or built: every kind is saved, restyled
         /// and baked.
         case ready(Opened)
         case failed(URL, String)
     }
 
-    /// What a ready document holds: a landscape's bundle, or a parametric
-    /// surface's, whose request the surface's controls edit.
+    /// What a ready document holds: a landscape's bundle, a parametric
+    /// surface's, whose request the surface's controls edit, or a
+    /// polyhedron's, whose layers its controls restyle.
     enum Opened {
         case landscape(KurvenBundle)
         case surface(SurfaceBundle)
+        case polyhedron(PolyhedronBundle)
     }
 
     private(set) var state: State = .empty {
@@ -140,6 +142,17 @@ final class Document {
     /// one is dropped when it lands rather than replacing the new one.
     var generation = 0
 
+    // MARK: - the polyhedron, when the document is one
+    //
+    // The state `Polyhedra.swift` works on: its solid is the bundle's, so all
+    // there is to edit is the layers.
+
+    /// The layers the controls have asked for, ahead of the bundle that will
+    /// carry them, as `styled` is a landscape's. Nil when the bundle is up to
+    /// date.
+    var polyhedronStyled: [LayerSpec]?
+    var polyhedronStatus: String?
+
     var bakeResolution: Int = 4000
     var bakeStatus: String?
     private(set) var baking = false
@@ -150,6 +163,7 @@ final class Document {
         case .loading(let u): u
         case .ready(.landscape(let b)): b.url
         case .ready(.surface(let b)): b.url
+        case .ready(.polyhedron(let b)): b.url
         case .failed(let u, _): u
         }
     }
@@ -179,11 +193,13 @@ final class Document {
 
     var surfaceDrawing: SurfaceDrawing? { surfaceBundle?.drawing }
 
-    /// Whether anything is on screen: a bundle of either kind.
-    var isOpen: Bool { bundle != nil || surfaceBundle != nil }
+    /// Whether anything is on screen: a bundle of any kind.
+    var isOpen: Bool { bundle != nil || surfaceBundle != nil || polyhedronBundle != nil }
 
     /// The open bundle's layers as its manifest describes them.
-    var layerSpecs: [LayerSpec] { bundle?.manifest.layers ?? surfaceBundle?.manifest.layers ?? [] }
+    var layerSpecs: [LayerSpec] {
+        bundle?.manifest.layers ?? surfaceBundle?.manifest.layers ?? polyhedronBundle?.manifest.layers ?? []
+    }
 
     var layers: [Layer] { scene?.layers ?? [] }
 
@@ -198,8 +214,10 @@ final class Document {
 
     /// A bundle read from disk, its contours placed by f when it names a
     /// function and refinement is on -- here, off the main actor, because on
-    /// zeta that is seconds. A parametric surface's is built from its request.
+    /// zeta that is seconds. A parametric surface's is built from its request,
+    /// and a polyhedron's from its vertices and loops.
     nonisolated static func read(_ url: URL, refining: Bool) throws -> Opened {
+        if try PolyhedronBundle.holdsPolyhedron(at: url) { return .polyhedron(try PolyhedronBundle.read(at: url)) }
         if try SurfaceBundle.holdsSurface(at: url) { return .surface(try SurfaceBundle.read(at: url)) }
         let bundle = try KurvenBundle.read(at: url)
         guard refining, bundle.refine == nil,
@@ -217,6 +235,7 @@ final class Document {
         // An edit queued for whatever was open is not an edit of this.
         wanted = nil
         surfaceWanted = nil
+        polyhedronStyled = nil
         // Reading is megabytes of npy; it does not belong on the main actor
         // even though it is fast, because a stalled window during an open is
         // the difference between an app and a script with a window.
@@ -228,6 +247,7 @@ final class Document {
         switch result {
         case .success(.landscape(let bundle)): adopt(bundle)
         case .success(.surface(let bundle)): adopt(bundle)
+        case .success(.polyhedron(let bundle)): adopt(bundle)
         case .failure(let error): state = .failed(url, "\(error)")
         }
     }
@@ -340,6 +360,45 @@ final class Document {
         var navigator = Navigator(orbit: Orbit(matching: preset.projection),
                                   framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
         let scene = surfaceDrawing.scene(camera: navigator.camera)
+        if let bounds = scene.quickBounds() {
+            navigator.framing = .fitting(bounds, in: viewport)
+        }
+        self.scene = scene
+        self.navigator = navigator
+    }
+
+    /// Take a polyhedron's bundle as the document. A bundle read from disk
+    /// opens at its own first preset, fitted to the window; a restyle keeps
+    /// the camera, and hides the layers that were hidden, by name.
+    func adopt(_ polyhedronBundle: PolyhedronBundle, keepingCamera: Bool = false) {
+        state = .ready(.polyhedron(polyhedronBundle))
+        landscape = nil
+        shown = nil
+        surface = nil
+        surfaceShown = nil
+        derivedCurves = [:]
+        let layers = polyhedronBundle.layers
+        let preset = polyhedronBundle.manifest.presets.first ?? SurfaceRequest.preset
+        if keepingCamera, let navigator, let scene {
+            let hidden = Set(hiddenLayers.compactMap { scene.layers[safe: $0]?.spec.name })
+            hiddenLayers = Set(layers.indices.filter { hidden.contains(layers[$0].spec.name) })
+            // The same solid keeps its identity, so the renderer keeps its
+            // mesh and lays out only the curves.
+            self.scene = scene.solid == polyhedronBundle.solid
+                ? scene.drawing(layers) : polyhedronBundle.scene(preset: preset).looking(navigator.camera)
+            return
+        }
+        depthTolerance = preset.depthTolerance
+        bakeResolution = preset.buffer
+        hiddenLayers = []
+        levelCounts = [:]
+        curvesWanted = nil
+        styled = nil
+        polyhedronStyled = nil
+        polyhedronStatus = nil
+        var navigator = Navigator(orbit: Orbit(matching: preset.projection),
+                                  framing: Framing(center: P2(0, 0), unitsPerPixel: 1))
+        let scene = polyhedronBundle.scene(preset: preset).looking(navigator.camera)
         if let bounds = scene.quickBounds() {
             navigator.framing = .fitting(bounds, in: viewport)
         }

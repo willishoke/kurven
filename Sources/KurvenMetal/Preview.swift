@@ -23,9 +23,11 @@ struct LineGeometry {
     /// Whether a layer's line geometry is the camera's: a heightfield's fold
     /// lines, or the strokes in its walls; or, on a parametric surface that
     /// carries its solid, its fold curves and every clipped layer that knows
-    /// where on the surface it lies. Sphere tracing sights along parallel lines,
-    /// so under perspective a surface's strokes stay with the stroke shader.
+    /// where on the surface it lies; or every clipped layer of a solid. Sphere
+    /// tracing and a solid's occlusion sight along parallel lines, so under
+    /// perspective their strokes stay with the stroke shader.
     static func isTestedExactly(_ layer: Layer, in scene: Scene) -> Bool {
+        if scene.solid != nil { return layer.spec.clipped && !scene.camera.isPerspective }
         if let s = scene.parametric {
             guard s.neighbourhood != nil, !scene.camera.isPerspective else { return false }
             if case .foldCurves = layer.spec.source { return true }
@@ -85,6 +87,12 @@ struct LineGeometry {
                 // which at a fold is everywhere. The draft is drawn from the
                 // surface strokes, not from here.
                 paths = draft ? PolylineSet(paths: []) : Self.sphereTraced(layer, in: scene)
+            } else if scene.solid != nil, isTestedExactly(layer, in: scene), !draft {
+                // A solid's edges and hatching at rest are the bake's: each
+                // cut where a piece stands in front, in closed form. The
+                // draft leaves them, as carried, to the depth test. Every
+                // width of a hatching is drawn at the layer's.
+                paths = Self.solidTested(layer, in: scene)
             } else if case .foldCurves = layer.spec.source, let h = scene.heightfield {
                 // At rest the folds are the bake's: every vertex moved onto
                 // the exact fold of f before sphere tracing tests it against f.
@@ -140,8 +148,18 @@ struct LineGeometry {
         }
         // Sphere tracing has no pixel in it, so a sphere-traced surface's layout serves
         // every zoom.
-        let resolution = draft ? .infinity : scene.parametric != nil ? 0 : scene.resolution
+        let resolution = draft ? .infinity : scene.parametric != nil || scene.solid != nil ? 0 : scene.resolution
         return VisibleLines(layers: layers, resolution: resolution)
+    }
+
+    /// A layer of a solid's strokes, as the bake tests it
+    /// (`Scene.visible(_:depthTolerance:image:)`): every width of it, in
+    /// world space for the stroke shader.
+    static func solidTested(_ layer: Layer, in scene: Scene) -> PolylineSet<WorldSpace> {
+        let view = scene.camera.view
+        return PolylineSet(paths: scene.visible(layer).flatMap { _, seen in
+            (0..<seen.count).map { seen[path: $0].map { view.inverse(P3<ViewSpace>($0.v)) } }
+        })
     }
 
     /// A layer of a sphere-traced surface's strokes, as the bake tests it
@@ -400,6 +418,7 @@ public extension MetalRenderer {
                 // unless this frame is a draft, which leaves them to the test.
                 var visible = scene.heightfield != nil && scene.geometry.face(of: layer.spec) == .wall
                 if case .foldCurves = layer.spec.source { visible = true }
+                if scene.solid != nil, LineGeometry.isTestedExactly(layer, in: scene) { visible = true }
                 if options.draft { visible = false }
                 shading.depthTolerance = layer.spec.clipped && !visible ? Float(scene.depthTolerance) : .infinity
                 shading.color = Self.color(layer.spec.color)
