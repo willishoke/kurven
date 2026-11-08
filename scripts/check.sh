@@ -75,6 +75,39 @@ golden() {
 }
 step "the committed golden fixtures are what kurven-cli fixtures writes" golden
 
+# The app's own document, driven without a window (a bundle named by a bare
+# path opens none): a surface saved by the CLI, opened, saved as ⌘S saves it,
+# reopened and baked, is the CLI's bundle and drawing byte for byte. Then a
+# level slider's count, set before an edit of the request, stays on its
+# family through the edit and is saved, and the app's bake of the result is
+# the CLI's bake of the same bundle; and the contract's restyled surface,
+# edited, keeps its levels and the contours its request does not draw.
+app() {
+    local dir="$PACKAGE/.build/app-check"
+    rm -rf "$dir" && mkdir -p "$dir" || return 1
+    "$BIN/kurven-cli" surface sn --save "$dir/a.kurven" >/dev/null &&
+    "$BIN/kurven-cli" surface sn -o "$dir/a.svg" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/a.kurven" --save "$dir/b.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/b.kurven" --bake "$dir/b.svg" >/dev/null &&
+    cmp "$dir/a.kurven/manifest.json" "$dir/b.kurven/manifest.json" &&
+    cmp "$dir/a.svg" "$dir/b.svg" &&
+    "$BIN/KurvenApp" "$dir/b.kurven" --levels ang_major=4 --set major=2.5 --save "$dir/c.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/c.kurven" --bake "$dir/c.svg" >/dev/null &&
+    "$BIN/kurven-cli" bake "$dir/c.kurven" -o "$dir/c-cli.svg" >/dev/null &&
+    cmp "$dir/c.svg" "$dir/c-cli.svg" &&
+    "$BIN/kurven-cli" inspect "$dir/c.kurven" > "$dir/c.txt" &&
+    grep -q 'ang_major .* 4 levels of phase' "$dir/c.txt" &&
+    grep -q 'mag_minor .* 24 levels of magnitude' "$dir/c.txt" &&
+    grep -q '"major":2.5' "$dir/c.kurven/manifest.json" &&
+    "$BIN/KurvenApp" "$ROOT/tests/fixtures/contract/surface.kurven" --levels ang_major=4 --set major=2.5 \
+        --save "$dir/d.kurven" >/dev/null &&
+    "$BIN/kurven-cli" inspect "$dir/d.kurven" > "$dir/d.txt" &&
+    grep -q 'ang_major .* 4 levels of phase' "$dir/d.txt" &&
+    grep -q 'mag_major .* 3 levels of magnitude' "$dir/d.txt" &&
+    grep -q '2 levels of v on' "$dir/d.txt" && grep -q '3 levels of height on' "$dir/d.txt"
+}
+step "the app saves, restyles and bakes a surface as the CLI does, with no window" app
+
 # The vocabulary: a word docs/glossary.md retired, back in the code or the
 # docs, in a file's text or its name. The hits are printed; the fix is the
 # glossary's word for the thing, or a new glossary entry if the old word
