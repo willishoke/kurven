@@ -15,6 +15,25 @@ public struct Placement: Sendable, Equatable {
 
     public static let identity = Placement()
 
+    /// The scales a placement takes, and how far from the origin its offset
+    /// reaches on each axis. Within them a geometry's arithmetic in world
+    /// space stays far from overflow and from the rounding of its distance
+    /// to the origin, and the steps along a segment stay countable.
+    public static let scales: ClosedRange<Double> = 1e-3...1e3
+    public static let reach = 1e4
+
+    /// Why this placement is out of range; nil when it is in it.
+    public var refusal: String? {
+        guard scale.isFinite, Placement.scales.contains(scale) else {
+            return "a placement's scale is between \(Placement.scales.lowerBound) and \(Placement.scales.upperBound), not \(scale)"
+        }
+        guard (0..<3).allSatisfy({ offset[$0].isFinite && abs(offset[$0]) <= Placement.reach }) else {
+            return "a placement's offset is within \(Placement.reach) of the origin on each axis, not "
+                + "(\(offset.x), \(offset.y), \(offset.z))"
+        }
+        return nil
+    }
+
     /// From the geometry's own coordinates into world space.
     public var transform: Transform<WorldSpace, WorldSpace> {
         Transform(rows: (SIMD3(scale, 0, 0), SIMD3(0, scale, 0), SIMD3(0, 0, scale)), translation: offset)
@@ -39,12 +58,19 @@ public struct CompositeError: Error, CustomStringConvertible, Equatable {
 /// Curves of different geometries that cross on the page are cut only where
 /// one hides the other, never joined.
 ///
+/// Another geometry cuts a curve's segments where their lines of sight meet
+/// it (`Occluder`): a polyhedron and a landscape on its grid in closed form,
+/// the round torus by the margins of its sphere tracing, and a landscape on
+/// its function by its traversal, asked at points along the segment.
+///
 /// Only a geometry with an exact occlusion test stands in a composite: a
-/// landscape, a polyhedron, or a parametric surface with a tubular
-/// neighbourhood. The coordinate image says only whether a point is the
-/// front-most of its own surface, nothing about another solid, so a surface
-/// tested by it -- the forced torus -- is refused. No depth buffer stands in
-/// between solids: the drawing is a function of the geometry and the camera.
+/// landscape, a polyhedron, or the round torus. The coordinate image says
+/// only whether a point is the front-most of its own surface, nothing about
+/// another solid, so a surface tested by it -- the forced torus -- is
+/// refused; so is a displaced torus, whose sphere tracing steps by a
+/// Lipschitz constant read off its grid rather than proved. No depth buffer
+/// stands in between solids: the drawing is a function of the geometry and
+/// the camera.
 public struct Composite: Sendable {
     public struct Part: Sendable {
         /// What the part is called in a refusal: its bundle's name.
@@ -57,6 +83,7 @@ public struct Composite: Sendable {
 
     public let parts: [Part]
     public let camera: Camera
+    let occluders: [Occluder]
 
     /// The parts, each `scene` taken with its geometry, layers and depth
     /// tolerance (its camera is the composite's), standing at its placement.
@@ -66,16 +93,19 @@ public struct Composite: Sendable {
         }
         self.camera = camera
         self.parts = try parts.map { name, scene, placement in
-            guard placement.scale > 0, placement.scale.isFinite,
-                  placement.offset.x.isFinite, placement.offset.y.isFinite, placement.offset.z.isFinite else {
-                throw CompositeError("\(name): a placement is a positive scale and a finite offset")
-            }
+            if let why = placement.refusal { throw CompositeError("\(name): \(why)") }
             switch scene.geometry {
             case .parametric(let s) where s.neighbourhood == nil:
                 throw CompositeError("""
                     \(name) is a surface with no exact occlusion test (it has no tubular neighbourhood): \
                     its coordinate image says only what of the surface itself is in front, nothing about \
                     another solid, so it cannot stand in a composite. It bakes alone.
+                    """)
+            case .parametric(let s) where s.neighbourhood!.above != 0 || s.neighbourhood!.below != 0:
+                throw CompositeError("""
+                    \(name) is a displaced torus: its sphere tracing steps by a Lipschitz constant read \
+                    off its grid, not proved, so it cannot hide another solid's curves exactly, and it \
+                    cannot stand in a composite. It bakes alone.
                     """)
             case .heightfield where placement.scale != 1:
                 throw CompositeError("""
@@ -88,59 +118,176 @@ public struct Composite: Sendable {
             return Part(name: name, scene: scene.looking(Camera(view: view, projection: camera.projection)),
                         placement: placement)
         }
+        occluders = try self.parts.map(Occluder.init)
     }
 
     /// Every part's layers in view space, in order, tested for the camera:
     /// each by its own geometry as alone, then cut wherever another part
-    /// hides it. An unclipped layer is drawn whole.
-    public func visibleLayers() -> [(Layer, PolylineSet<ViewSpace>)] {
-        let occluders = parts.map(Occluder.init)
+    /// hides it. An unclipped layer is drawn whole. Throws where a segment
+    /// would be asked at more points against one part than
+    /// `Occluder.steps`.
+    public func visibleLayers() throws -> [(Layer, PolylineSet<ViewSpace>)] {
         let world = camera.view.inverse
-        return parts.indices.flatMap { i -> [(Layer, PolylineSet<ViewSpace>)] in
+        return try parts.indices.flatMap { i -> [(Layer, PolylineSet<ViewSpace>)] in
             let others = occluders.indices.filter { $0 != i }.map { occluders[$0] }
-            return parts[i].scene.visibleLayers().map { layer, seen in
+            return try parts[i].scene.visibleLayers().map { layer, seen in
                 guard layer.spec.clipped, !others.isEmpty else { return (layer, seen) }
-                return (layer, Self.cut(seen, by: others, world: world))
+                return (layer, try Self.cut(seen, by: others, world: world))
             }
         }
     }
 
-    /// How a part hides the points of another's curves. A polyhedron's
-    /// pieces hide the spans of a straight segment in closed form, asked of
-    /// the segment's own ends in view space, where the part's occlusion is
-    /// built (`Solid.Occlusion`). The other tests are asked of points
-    /// (`OcclusionTest.isClear(ofAnotherSolid:)`), every `step` along a
-    /// segment in world space and at its ends, and a change of verdict is
-    /// bisected on the test.
-    struct Occluder: Sendable {
-        let pieces: Solid.Occlusion?
-        /// A test for each worker thread, taking a world point.
-        let points: (@Sendable () -> @Sendable (P3<WorldSpace>) -> Bool)?
-        let step: Double
+    /// How a part hides the segments of another's curves: the spans of a
+    /// segment whose lines of sight meet the part, as fractions of the way
+    /// along it. Each works only where those lines can meet the part at all,
+    /// through the box or the ball that holds it.
+    enum Occluder: Sendable {
+        /// A polyhedron's pieces, in closed form, asked of the segment's ends
+        /// in view space, where its occlusion is built.
+        case pieces(Solid.Occlusion)
+        /// A landscape on its grid, in closed form (`Slab`), in its own
+        /// coordinates: world space less its offset.
+        case slab(Slab, offset: SIMD3<Double>)
+        /// A landscape on its function: its traversal, asked every `step`
+        /// along the segment over the box that holds its slab, and bisected
+        /// where the verdict turns. Nothing bounds f's slope, so a span
+        /// shorter than the step can be passed over.
+        case function(HeightfieldVisibility, placement: Placement, step: Double, box: Slab.Box)
+        /// The round torus: sphere tracing's margins
+        /// (`SphereTracing.margin(ofAnotherSolid:)`), each a stretch of the
+        /// segment with one verdict.
+        case tube(SphereTracing, placement: Placement)
 
-        init(_ part: Part) {
+        /// The most points a segment is asked at against one part: past it,
+        /// the drawing is refused rather than cut.
+        static let steps = 1_000_000
+
+        init(_ part: Part) throws {
             let view = part.scene.camera.view, placement = part.placement
             switch part.scene.geometry {
             case .solid(let s):
-                pieces = s.occlusion(view: view); points = nil; step = .infinity
+                self = .pieces(s.occlusion(view: view))
+            case .heightfield(let h) where h.refine?.magnitude == nil:
+                self = .slab(try Slab(h, name: part.name), offset: placement.offset)
             case .heightfield(let h):
                 let test = HeightfieldVisibility(heightfield: h, view: view, depthTolerance: part.scene.depthTolerance)
-                pieces = nil
-                points = {
-                    let mine = test.forked()
-                    return { mine.isClear(ofAnotherSolid: placement.back($0)) }
-                }
-                // A quarter of a cell: the traversal's solid is linear
-                // between its crossings, a cell apart.
-                step = 0.25 * test.traversal.cell * placement.scale
+                // A quarter of a cell: the traversal's solid is f between its
+                // crossings, a cell apart.
+                self = .function(test, placement: placement, step: 0.25 * test.traversal.cell,
+                                 box: Slab.box(of: h, base: test.traversal.base, top: test.traversal.top))
             case .parametric(let s):
                 // Refused at the composite's door without one.
-                let test = SphereTracing(s, sight: view.projectionDirection)!
-                pieces = nil
-                points = { { test.isClear(ofAnotherSolid: placement.back($0)) } }
-                step = test.neighbourhood.radius / 256 * placement.scale
+                self = .tube(SphereTracing(s, sight: view.projectionDirection)!, placement: placement)
             }
         }
+
+        /// The same occluder for one worker thread: a landscape's function
+        /// forked.
+        func forked() -> Occluder {
+            if case .function(let test, let placement, let step, let box) = self {
+                return .function(test.forked(), placement: placement, step: step, box: box)
+            }
+            return self
+        }
+
+        /// The spans of the segment `a -> b` (view space; `world` takes it
+        /// back to world space) whose lines of sight, along `toward`, meet
+        /// this part.
+        func hidden(from a: P3<ViewSpace>, to b: P3<ViewSpace>,
+                    world: Transform<ViewSpace, WorldSpace>, toward: SIMD3<Double>) throws -> [(Double, Double)] {
+            switch self {
+            case .pieces(let occlusion):
+                return occlusion.hidden(from: a, to: b, excluding: { _ in false })
+            case .slab(let slab, let offset):
+                return slab.hidden(from: world(a).v - offset, to: world(b).v - offset, toward: toward)
+            case .function(let test, let placement, let step, let box):
+                let wa = placement.back(world(a)).v, wb = placement.back(world(b)).v
+                guard let (s0, s1) = Slab.sweep(of: box, from: wa, to: wb, toward: toward) else { return [] }
+                let count = (simd_length(wb - wa) * (s1 - s0) / step).rounded(.up)
+                guard count <= Double(Occluder.steps) else { throw Composite.tooFine(count) }
+                return Composite.bisected(from: s0, to: s1, n: max(1, Int(count))) { s in
+                    test.isClear(ofAnotherSolid: P3(wa + (wb - wa) * s))
+                }
+            case .tube(let tracing, let placement):
+                let wa = placement.back(world(a)).v, wb = placement.back(world(b)).v
+                let e = tracing.neighbourhood
+                guard let (s0, s1) = Composite.sweep(ofBall: e.centre, radius: 1.01 * e.radius,
+                                                     from: wa, to: wb, toward: toward) else { return [] }
+                let length = simd_length(wb - wa), least = 1e-5 * e.radius
+                func margin(_ s: Double) -> Double { tracing.margin(ofAnotherSolid: P3(wa + (wb - wa) * s)) }
+                guard length > 0 else { return margin(0) < 0 ? [(0, 1)] : [] }
+                var hidden: [(Double, Double)] = []
+                var s = s0, m = margin(s0), steps = 0
+                while s < s1 {
+                    // Every point within the margin keeps the verdict, so
+                    // the next point to ask is the margin along; a margin
+                    // under the least step is a verdict to that resolution.
+                    let next = min(s + max(abs(m), least) / length, s1)
+                    let mn = margin(next)
+                    if (m < 0) != (mn < 0) {
+                        var lo = s, hi = next
+                        while hi - lo > 1e-13 {
+                            let mid = 0.5 * (lo + hi)
+                            if (margin(mid) < 0) == (m < 0) { lo = mid } else { hi = mid }
+                        }
+                        hidden.append(m < 0 ? (s, lo) : (hi, next))
+                    } else if m < 0 {
+                        hidden.append((s, next))
+                    }
+                    s = next; m = mn
+                    steps += 1
+                    guard steps <= Occluder.steps else { throw Composite.tooFine(Double(steps)) }
+                }
+                return hidden
+            }
+        }
+    }
+
+    static func tooFine(_ count: Double) -> CompositeError {
+        CompositeError("a segment would be asked at \(Int(min(count, 1e18))) points against one geometry, "
+                       + "past the \(Occluder.steps) a composite allows")
+    }
+
+    /// The spans of [s0, s1] where `clear` fails, asked at `n` even steps
+    /// and its ends, each turn of the verdict bisected to the last bit.
+    static func bisected(from s0: Double, to s1: Double, n: Int, clear: (Double) -> Bool) -> [(Double, Double)] {
+        var hidden: [(Double, Double)] = []
+        var t0 = s0, c0 = clear(s0)
+        for i in 1...n {
+            let t1 = i == n ? s1 : s0 + (s1 - s0) * Double(i) / Double(n)
+            let c1 = clear(t1)
+            if c0 != c1 {
+                var lo = t0, hi = t1
+                while hi - lo > 1e-13 {
+                    let mid = 0.5 * (lo + hi)
+                    if clear(mid) == c0 { lo = mid } else { hi = mid }
+                }
+                hidden.append(c0 ? (hi, t1) : (t0, lo))
+            } else if !c0 {
+                hidden.append((t0, t1))
+            }
+            t0 = t1; c0 = c1
+        }
+        return hidden
+    }
+
+    /// The fractions of the segment `a -> b` whose lines of sight, along
+    /// the unit `d`, pass within `radius` of `centre`: where the distance
+    /// from the centre to the line through the point is at most the radius,
+    /// a quadratic in the fraction. Those that meet the ball ahead of the
+    /// point are among them.
+    static func sweep(ofBall centre: SIMD3<Double>, radius: Double, from a: SIMD3<Double>, to b: SIMD3<Double>,
+                      toward d: SIMD3<Double>) -> (Double, Double)? {
+        // The part of (a + s e - centre) across d.
+        let w0 = a - centre, e = b - a
+        let p0 = w0 - simd_dot(w0, d) * d, pe = e - simd_dot(e, d) * d
+        let qa = simd_dot(pe, pe), qb = 2 * simd_dot(p0, pe), qc = simd_dot(p0, p0) - radius * radius
+        if qa <= 1e-24 * radius * radius { return qc <= 0 ? (0, 1) : nil }
+        let disc = qb * qb - 4 * qa * qc
+        guard disc >= 0 else { return nil }
+        let root = disc.squareRoot()
+        let lo = max((-qb - root) / (2 * qa), 0), hi = min((-qb + root) / (2 * qa), 1)
+        return lo <= hi ? (lo, hi) : nil
     }
 
     /// The runs of `paths` (view space) that no occluder hides: each
@@ -148,52 +295,29 @@ public struct Composite: Sendable {
     /// vertex where the spans either side meet it, and a run of fewer than
     /// two vertices dropped. `world` takes a view point back to world space.
     static func cut(_ paths: PolylineSet<ViewSpace>, by occluders: [Occluder],
-                    world: Transform<ViewSpace, WorldSpace>) -> PolylineSet<ViewSpace> {
+                    world: Transform<ViewSpace, WorldSpace>) throws -> PolylineSet<ViewSpace> {
         guard !paths.vertices.isEmpty else { return paths }
-        let pointed = occluders.filter { $0.points != nil }
-        let step = pointed.map(\.step).min() ?? .infinity
-        let worker: @Sendable () -> @Sendable (P3<WorldSpace>) -> Bool = {
-            let tests = pointed.map { $0.points!() }
-            return { p in tests.allSatisfy { $0(p) } }
-        }
+        // Toward the eye: view depth grows toward it.
+        let toward = simd_normalize(world(P3<ViewSpace>(0, 0, 1)).v - world(P3<ViewSpace>(0, 0, 0)).v)
         let vertices = paths.vertices
-        // Every vertex's verdict under the point tests, once.
-        let clear = Heightfield.parallelMap(vertices, chunk: 16, worker: worker) { test, v in test(world(v)) }
-        // Every segment's seen spans, as fractions of the way along it.
         var segments: [Int] = []
         for path in 0..<paths.count {
             for k in (paths.offsets[path] + 1)..<paths.offsets[path + 1] { segments.append(k) }
         }
-        let spans = Heightfield.parallelMap(segments, chunk: 8, worker: worker) { test, k -> [(Double, Double)] in
+        let results = Heightfield.parallelMap(segments, chunk: 4, worker: { occluders.map { $0.forked() } }) {
+            mine, k -> Result<[(Double, Double)], CompositeError> in
             let a = vertices[k - 1], b = vertices[k]
-            var hidden: [(Double, Double)] = []
-            for o in occluders {
-                if let pieces = o.pieces { hidden += pieces.hidden(from: a, to: b, excluding: { _ in false }) }
+            do {
+                var hidden: [(Double, Double)] = []
+                for o in mine { hidden += try o.hidden(from: a, to: b, world: world, toward: toward) }
+                return .success(seen(after: hidden))
+            } catch let error as CompositeError {
+                return .failure(error)
+            } catch {
+                return .failure(CompositeError("\(error)"))
             }
-            if !pointed.isEmpty {
-                let wa = world(a), wb = world(b)
-                let n = max(1, Int((simd_length(wb.v - wa.v) / step).rounded(.up)))
-                func at(_ t: Double) -> P3<WorldSpace> { P3(wa.v + (wb.v - wa.v) * t) }
-                var t0 = 0.0, c0 = clear[k - 1]
-                for i in 1...n {
-                    let t1 = i == n ? 1 : Double(i) / Double(n)
-                    let c1 = i == n ? clear[k] : test(at(t1))
-                    if c0 != c1 {
-                        // Where the verdict turns, to the last bit.
-                        var lo = t0, hi = t1
-                        while hi - lo > 1e-13 {
-                            let mid = 0.5 * (lo + hi)
-                            if test(at(mid)) == c0 { lo = mid } else { hi = mid }
-                        }
-                        if c0 { hidden.append((hi, t1)) } else { hidden.append((t0, lo)) }
-                    } else if !c0 {
-                        hidden.append((t0, t1))
-                    }
-                    t0 = t1; c0 = c1
-                }
-            }
-            return seen(after: hidden)
         }
+        let spans = try results.map { try $0.get() }
         var out: [[P3<ViewSpace>]] = []
         var s = 0
         for path in 0..<paths.count {

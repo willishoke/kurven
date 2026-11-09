@@ -510,7 +510,7 @@ func compositeDrawing(_ bundles: [(path: String, placement: Placement)], preset:
         parts.append((url.lastPathComponent, scene, bundle.placement))
     }
     let composite = try Composite(parts, camera: parts[0].scene.camera)
-    let layers = composite.visibleLayers()
+    let layers = try composite.visibleLayers()
     let strokes = Strokes(layers: layers.map { layer, seen in (Style(layer.spec), HiddenLine.pass(seen)) })
     return (parts.map(\.name), layers, strokes)
 }

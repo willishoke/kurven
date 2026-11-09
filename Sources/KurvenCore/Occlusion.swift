@@ -87,10 +87,61 @@ public struct SphereTracing: OcclusionTest {
         return true
     }
 
-    /// The same test: it forgives nothing but an occluder thinner than its
-    /// least step, and from a point inside the solid by more than that its
-    /// first step is inside.
-    public func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool { isClear(p) }
+    /// Whether a point of another solid is clear: its margin is not
+    /// negative (`margin(ofAnotherSolid:)`).
+    public func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool { margin(ofAnotherSolid: p) >= 0 }
+
+    /// How far a point of another solid can move and keep its verdict, with
+    /// the verdict in the sign: positive where its line of sight is clear,
+    /// and every point within the margin of it has a clear line too;
+    /// negative where the line passes through the solid, and every point
+    /// within the margin's size of it has a line through the solid too.
+    ///
+    /// The line is traced from the point itself, not a step past it, in
+    /// steps of half the gap over the Lipschitz constant: a step of half the
+    /// gap leaves every point it passes at least half the gap from the
+    /// solid, so the least half-gap is a distance no line within it can
+    /// close. Past a ball a hundredth larger than the one that holds the
+    /// solid, every point is that hundredth away. Where the line enters the
+    /// solid the margin is the deepest the line goes, by the gap, which on
+    /// the round torus is the distance to the tube and so exact inside too.
+    /// A step is never under sphere tracing's least step, a hundred-thousandth
+    /// of the ball, and a margin under it is a verdict to that resolution.
+    public func margin(ofAnotherSolid p: P3<WorldSpace>) -> Double {
+        let e = neighbourhood
+        let q = p.v, d = -sight
+        let lipschitz = max(e.lipschitz, 1), least = 1e-5 * e.radius
+        func gap(_ x: SIMD3<Double>) -> Double {
+            let (coord, distance) = e.foot(x)
+            let over = distance - e.above
+            return over > 0 ? over : (distance - e.normalOffset(coord)) / lipschitz
+        }
+        let o = q - e.centre, outer = 1.01 * e.radius
+        let b = simd_dot(o, d), c = simd_dot(o, o) - outer * outer
+        let disc = b * b - c
+        guard disc > 0, -b + disc.squareRoot() > 0 else {
+            return simd_length(o + max(-b, 0) * d) - e.radius
+        }
+        let exit = -b + disc.squareRoot()
+        var t = max(-b - disc.squareRoot(), 0)
+        var margin = outer - e.radius
+        while t <= exit {
+            let g = gap(q + t * d)
+            if g < 0 {
+                var deepest = -g, u = t
+                while u <= exit {
+                    let h = gap(q + u * d)
+                    if h >= 0 { break }
+                    deepest = max(deepest, -h)
+                    u += max(-h, least)
+                }
+                return -deepest
+            }
+            margin = min(margin, 0.5 * g)
+            t += max(0.5 * g, least)
+        }
+        return margin
+    }
 }
 
 extension Solid.Occlusion: OcclusionTest {
