@@ -139,23 +139,7 @@ extension Document {
             }
             sampling = false
             pump()
-            recordGitSha()
         }
-    }
-
-    /// When the samples on screen are the ones asked for, record the git sha
-    /// asked for (`landscapeGitSha`): an undo's, or a drag's let go where it
-    /// began, rather than this process's.
-    func recordGitSha() {
-        guard let want = landscapeGitSha, wanted == nil, !sampling, !shownDraft, let bundle, let landscape,
-              shown?.samples(as: landscape) == true else { return }
-        if bundle.manifest.provenance.gitSha != want {
-            var manifest = bundle.manifest
-            manifest.provenance.gitSha = want
-            replace(bundle: KurvenBundle(url: bundle.url, manifest: manifest, surface: bundle.surface,
-                                         layers: bundle.layers, wallMesh: bundle.wallMesh, refine: bundle.refine))
-        }
-        landscapeGitSha = nil
     }
 
     /// Note the landscape a newly opened bundle is, so its controls start where

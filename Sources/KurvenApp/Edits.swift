@@ -140,8 +140,8 @@ extension Document {
                 surfaceGitSha = before.gitSha
                 recordSurfaceGitSha()
             } else if before.landscape != nil {
+                // Sampled in full when it is let go, which records it.
                 landscapeGitSha = before.gitSha
-                recordGitSha()
             }
         }
         guard before != after, refusal(of: after) == nil else { return }
