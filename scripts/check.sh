@@ -241,12 +241,16 @@ paint() {
     grep -q '"gitSha":"golden"' "$dir/surface-undone-0.kurven/manifest.json" &&
         grep -q '"gitSha":"native"' "$dir/surface-1.kurven/manifest.json" ||
         { echo "a surface made again does not record this build, or its undo the bundle's"; return 1; }
+    # Two edits at once, the second before the first is drawn, against the
+    # first saved and reopened and the second made on it.
     racing() {
-        local name=$1 bundle=$2 pick=$3
-        shift 3
-        "$BIN/KurvenApp" "$bundle" --pick "$pick" "$@" --save "$dir/$name-waited.kurven" >/dev/null &&
-        "$BIN/KurvenApp" "$bundle" --pick "$pick" --at-once "$@" --save "$dir/$name-at-once.kurven" >/dev/null &&
-        diff -r "$dir/$name-waited.kurven" "$dir/$name-at-once.kurven" >/dev/null ||
+        local name=$1 bundle=$2 pick=$3 first=$4 a=$5 second=$6 b=$7
+        "$BIN/KurvenApp" "$bundle" --pick "$pick" "$first" "$a" --save "$dir/$name-first.kurven" >/dev/null &&
+        "$BIN/KurvenApp" "$dir/$name-first.kurven" --pick "$pick" "$second" "$b" \
+            --save "$dir/$name-then.kurven" >/dev/null &&
+        "$BIN/KurvenApp" "$bundle" --pick "$pick" --at-once "$first" "$a" "$second" "$b" \
+            --save "$dir/$name-at-once.kurven" >/dev/null &&
+        diff -r "$dir/$name-then.kurven" "$dir/$name-at-once.kurven" >/dev/null ||
             { echo "$name: edits made at once save other than made one after the other"; return 1; }
     }
     racing linear-curve "$c/surface_torus.kurven" 300,600 --set slope=0.5 --add surface_u &&
