@@ -32,7 +32,7 @@ public struct HeightfieldVisibility: OcclusionTest {
     public let depthTolerance: Double
     /// The direction lines of sight travel, in world space.
     public let sight: SIMD3<Double>
-    let traversal: GridTraversal
+    private(set) var traversal: GridTraversal
 
     public init(heightfield: Heightfield, view: Transform<WorldSpace, ViewSpace>, depthTolerance: Double) {
         self.heightfield = heightfield
@@ -50,6 +50,21 @@ public struct HeightfieldVisibility: OcclusionTest {
     /// Whether nothing of the solid stands between `p` and the eye, to
     /// within the depth tolerance.
     public func isClear(_ p: P3<WorldSpace>) -> Bool { traversal.unoccluded(p) }
+
+    /// Whether nothing of the solid stands between `p`, a point of another
+    /// solid, and the eye: no depth tolerance, and hidden where it stands
+    /// inside this one (`GridTraversal.unoccluded(_:forgiven:elsewhere:trace:)`).
+    public func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool {
+        traversal.unoccluded(p, forgiven: false, elsewhere: true)
+    }
+
+    /// The same test for one thread of a parallel visibility test: the
+    /// heightfield's function forked (`Heightfield.forked`).
+    public func forked() -> HeightfieldVisibility {
+        var m = self
+        m.traversal = traversal.forked()
+        return m
+    }
 
     /// Why `p` is hidden or clear: every sample the traversal took along the
     /// line of sight from it and what it made of each, one line per sample.

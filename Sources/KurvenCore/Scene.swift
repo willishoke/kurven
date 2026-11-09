@@ -916,10 +916,14 @@ struct GridTraversal: Sendable {
     /// Whether nothing of the solid stands between `p` and the eye. A point
     /// not `forgiven` lies on a wall exactly, with no interpolation gap to
     /// forgive: it is on the solid's boundary, not tested where it stands,
-    /// and outside from the start, so anything its line enters hides it. With
-    /// `trace`, every sample the traversal takes and what it made of it, for
-    /// asking why a vertex is hidden.
-    func unoccluded(_ p: P3<WorldSpace>, forgiven: Bool = true, trace: ((String) -> Void)? = nil) -> Bool {
+    /// and outside from the start, so anything its line enters hides it. A
+    /// point `elsewhere`, of another solid in a composite, is forgiven
+    /// nothing either, and is tested where it stands as well: inside this
+    /// solid by more than a rounding, it is hidden. With `trace`, every
+    /// sample the traversal takes and what it made of it, for asking why a
+    /// vertex is hidden.
+    func unoccluded(_ p: P3<WorldSpace>, forgiven: Bool = true, elsewhere: Bool = false,
+                    trace: ((String) -> Void)? = nil) -> Bool {
         let d = toward
         let pxy = SIMD2(p.x, p.y), dxy = SIMD2(d.x, d.y)
         // How far up the line there can be anything: once above the highest
@@ -1078,19 +1082,21 @@ struct GridTraversal: Sendable {
         // has been outside, being inside at or beyond the depth tolerance's reach is
         // occlusion. A point not forgiven has been outside from the start, and
         // being inside anywhere is occlusion.
-        var outsideYet = !forgiven
+        var outsideYet = !forgiven || elsewhere
         var startForgiven = false
         /// Hidden at `t`, tested under a triangle of the given cosine; `g` is
         /// the gap there, nil beyond the region (outside, then).
         func hidden(_ t: Double, _ g: Sample?, cosine: Double) -> Bool {
-            var visible = t > tEps
+            var visible = t > tEps || elsewhere
             if !visible, forgiven, strictlyInside, !startForgiven { visible = true; startForgiven = true }
             // At the start, a point on the surface to rounding is in its own
-            // surface's neighbourhood, not outside it. Further along, a line
-            // under the surface by rounding alone is not inside it: the last
-            // sample lies at the highest height by construction, and over a
-            // truncation at that height the sign of its gap is a rounding error.
-            let zEps = t > tEps ? -1e-9 * cell : 1e-9 * cell
+            // surface's neighbourhood, not outside it; a point of another
+            // solid there is on this one's boundary, and not inside it.
+            // Further along, a line under the surface by rounding alone is not
+            // inside it: the last sample lies at the highest height by
+            // construction, and over a truncation at that height the sign of
+            // its gap is a rounding error.
+            let zEps = t > tEps || elsewhere ? -1e-9 * cell : 1e-9 * cell
             guard let g, g.overTriangle < zEps, g.overTruncation < zEps else {
                 // Outside here, the start included: a point on the boundary
                 // that stands above the surface is outside from the start,
@@ -1115,7 +1121,7 @@ struct GridTraversal: Sendable {
                 return false
             }
             if outsideYet {
-                let occluded = !forgiven || t + tEps >= reach
+                let occluded = !forgiven || elsewhere || t + tEps >= reach
                 trace?(String(format: "t %.4g cells: inside by %.3e (below the truncation by %.3e) after being outside, reach %.4g cells: %@",
                               t / cell, -g.overTriangle, -g.overTruncation, reach / cell, occluded ? "hidden" : "forgiven"))
                 return occluded

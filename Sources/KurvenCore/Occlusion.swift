@@ -17,16 +17,23 @@ import simd
 ///
 /// A landscape's is public as `HeightfieldVisibility`, which asks the
 /// traversal. Each scene's visibility asks its test as its own type
-/// (`Scene.visible(_:depthTolerance:image:)`); the protocol is what a scene
-/// of several solids will ask them through, and what the `occlusion:`
-/// suite holds each of them to a ray cast by.
+/// (`Scene.visible(_:depthTolerance:image:)`); the protocol is what a
+/// composite asks each of its geometries through about another's curves
+/// (`Composite`), and what the `occlusion:` suite holds each of them to a ray
+/// cast by.
 public protocol OcclusionTest: Sendable {
     /// Whether nothing of this solid stands on the open ray from `p` toward the eye.
     func isClear(_ p: P3<WorldSpace>) -> Bool
+    /// The same of a point of another solid, which this one forgives
+    /// nothing: `isClear` may forgive a point of its own surface for lying
+    /// a rounding or a depth tolerance inside the solid, and a point of
+    /// another solid inside this one is hidden by it.
+    func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool
 }
 
 extension GridTraversal: OcclusionTest {
     func isClear(_ p: P3<WorldSpace>) -> Bool { unoccluded(p) }
+    func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool { unoccluded(p, forgiven: false, elsewhere: true) }
 }
 
 /// Sphere tracing (Hart 1996): the occlusion test of a surface with a
@@ -79,18 +86,27 @@ public struct SphereTracing: OcclusionTest {
         }
         return true
     }
+
+    /// The same test: it forgives nothing but an occluder thinner than its
+    /// least step, and from a point inside the solid by more than that its
+    /// first step is inside.
+    public func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool { isClear(p) }
 }
 
 extension Solid.Occlusion: OcclusionTest {
     /// The point form: the segment form asked of the segment from `p` to
     /// itself, which a piece hides whole or not at all. A piece through `p`
     /// stands in front of it by nothing, and a piece seen edge-on hides
-    /// nothing, as on a segment. Nothing draws with it yet: a polyhedron's
-    /// edges and hatching are tested by the segment form, and the point form
-    /// is for a scene of several solids, held to a ray cast meanwhile by the
-    /// `occlusion:` suite.
+    /// nothing, as on a segment. Nothing draws with it: a polyhedron's
+    /// edges and hatching are tested by the segment form, and so are the
+    /// segments of another geometry's curves in a composite (`Composite`).
+    /// The `occlusion:` suite holds it to a ray cast.
     public func isClear(_ p: P3<WorldSpace>) -> Bool {
         let q = view(p)
         return hidden(from: q, to: q, excluding: { _ in false }).isEmpty
     }
+
+    /// The same test, which excludes no piece: a point inside the solid has
+    /// one in front of it.
+    public func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool { isClear(p) }
 }
