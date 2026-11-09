@@ -45,6 +45,8 @@ struct PaintSection: View {
                 }
             } label: { Label("Add", systemImage: "plus") }
                 .disabled(choices.isEmpty)
+                .help(document.isCurrent ? "Curves the face's fields admit"
+                      : "Offered once the drawing on screen is the one asked for: its levels are read off it")
                 .fixedSize()
             if pick.face == .surface, document.edited?.request?.takesFunction == true {
                 Button("Function…") { askingFunction = true }

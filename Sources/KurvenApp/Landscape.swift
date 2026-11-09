@@ -116,8 +116,20 @@ extension Document {
                 }.value
                 // A surface chosen meanwhile is the document now.
                 if generation == asked {
-                    adopt(bundle, keepingCamera: !framing && scene != nil, draft: draft)
+                    let keeping = !framing && scene != nil
+                    // What the controls ask for now: the request, and the
+                    // styling, which a restyle made while this sampled may
+                    // have moved past what was sent with it.
+                    let request0 = landscape, styling0 = styling
+                    adopt(bundle, keepingCamera: keeping, draft: draft)
                     shown = request
+                    if keeping {
+                        landscape = request0
+                        if let styling0, Styling(bundle.manifest) != styling0 {
+                            styled = styling0
+                            redraw()
+                        }
+                    }
                     if landscapeGitSha == gitSha, !draft { landscapeGitSha = nil }
                 }
                 landscapeStatus = "\(request.resolution)² in \(clock.now - started)"
@@ -127,7 +139,23 @@ extension Document {
             }
             sampling = false
             pump()
+            recordGitSha()
         }
+    }
+
+    /// When the samples on screen are the ones asked for, record the git sha
+    /// asked for (`landscapeGitSha`): an undo's, or a drag's let go where it
+    /// began, rather than this process's.
+    func recordGitSha() {
+        guard let want = landscapeGitSha, wanted == nil, !sampling, !shownDraft, let bundle, let landscape,
+              shown?.samples(as: landscape) == true else { return }
+        if bundle.manifest.provenance.gitSha != want {
+            var manifest = bundle.manifest
+            manifest.provenance.gitSha = want
+            replace(bundle: KurvenBundle(url: bundle.url, manifest: manifest, surface: bundle.surface,
+                                         layers: bundle.layers, wallMesh: bundle.wallMesh, refine: bundle.refine))
+        }
+        landscapeGitSha = nil
     }
 
     /// Note the landscape a newly opened bundle is, so its controls start where

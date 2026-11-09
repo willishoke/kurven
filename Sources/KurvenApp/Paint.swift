@@ -122,7 +122,7 @@ extension Document {
     /// height at seven levels across the face. Hatching is not laid on a
     /// curved face, and a polyhedron's faces take hatching alone.
     func paintChoices(on pick: FacePick) -> [PaintChoice] {
-        guard let paint = edited, let scene, let face = faces(of: scene).first(where: { $0.id == pick.face }) else { return [] }
+        guard isCurrent, let paint = edited, let scene, let face = faces(of: scene).first(where: { $0.id == pick.face }) else { return [] }
         let has = { (source: LayerSource) in paint.layers.contains { $0.source == source } }
         var choices: [PaintChoice] = []
         func contours(_ fields: [ContourField], on faces: FaceSelector, heightPolicy: HeightPolicy = .surface) {
@@ -288,7 +288,24 @@ extension Document {
     /// the catalog knows it (`SurfaceRequest.periods(of:)`), else the
     /// surface's own.
     func functionPeriods(for expression: String) -> SIMD2<Double> {
-        SurfaceRequest.periods(of: expression) ?? edited?.request?.periods ?? SIMD2(2 * .pi, 2 * .pi)
+        let request = edited?.request
+        // The function the surface carries keeps the rectangle it is
+        // painted over; the catalog's is offered for a new one.
+        if case .periodic(let painted, let periods, _, _, _)? = request?.shape,
+           painted.trimmingCharacters(in: .whitespacesAndNewlines) == expression.trimmingCharacters(in: .whitespacesAndNewlines) {
+            return periods
+        }
+        return SurfaceRequest.periods(of: expression) ?? request?.periods ?? SIMD2(2 * .pi, 2 * .pi)
+    }
+
+    /// Whether what is on screen is what is asked for: nothing building,
+    /// sampling, restyling or waiting to. The Add menu is offered only
+    /// then, since its levels are read off the drawing -- a coordinate's
+    /// off the face's rectangle, the height off its samples -- which a
+    /// request edit in flight is about to replace.
+    var isCurrent: Bool {
+        !building && !sampling && !drawing && surfaceWanted == nil && wanted == nil && styled == nil
+            && surfaceStyled == nil && polyhedronStyled == nil && curvesWanted == nil
     }
 
     // MARK: - sliders

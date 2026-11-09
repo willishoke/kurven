@@ -167,7 +167,10 @@ step "the app saves, restyles, paints and bakes a surface and a polyhedron as th
 # landscape's numbers -- undone one by one, save at each undo what was saved
 # at that point of the history, the opened bundle's provenance included. An
 # edit made while the one before it is still being drawn saves what the two
-# save made one after the other. Strokes past what a polyhedron holds are
+# save made one after the other -- a resample and a restyle too, and undos
+# pressed faster than they are drawn. A drag let go where it began leaves
+# nothing to undo and the bundle as opened; "Function…" offers a surface's own
+# function its own periods. Strokes past what a polyhedron holds are
 # refused and leave nothing to undo; a layer hidden stays hidden by name when
 # another is added; a relief's truncation edge is listed on its surface and
 # can be taken off, and the Add menu offers nothing the surface has. A
@@ -175,6 +178,7 @@ step "the app saves, restyles, paints and bakes a surface and a polyhedron as th
 # saying why.
 paint() {
     local dir="$PACKAGE/.build/paint-check" c="$ROOT/tests/fixtures/contract" h="$ROOT/tests/fixtures/hatch"
+    local e="$ROOT/tests/fixtures/expr/landscape_cubic.kurven"
     local sn=7.981211110658917,3.5015076058315047 failed=0 out
     rm -rf "$dir" && mkdir -p "$dir" || return 1
     "$BIN/KurvenApp" "$h/uniform.kurven" --pick 425,235 --add plateau_hatch --strokes plateau_hatch=18 \
@@ -257,7 +261,48 @@ paint() {
     [ "$(grep -o '"slope":0.5' "$dir/linear-curve-at-once.kurven/manifest.json" | wc -l)" -eq 2 ] ||
         { echo "the linear curve drawn is not the one the request says"; return 1; }
     racing radii "$c/surface_torus.kurven" 300,600 --set minor=0.5 --remove linearCurves &&
-    racing truncation "$c/landscape.kurven" 300,500 --truncation 1.5 --add graph_v || return 1
+    racing truncation "$c/landscape.kurven" 300,500 --truncation 1.5 --add graph_v &&
+    racing window-truncation "$e" 600,500 --set rMin=-1.0 --truncation 4 &&
+    racing window-add "$e" 600,500 --set rMin=-1.0 --add graph_u || return 1
+    # Four edits at once -- a window, an addition, a truncation, a resolution
+    # -- and their undos, against the same made one after the other; then two
+    # undos at once.
+    "$BIN/KurvenApp" "$e" --pick 600,500 --save "$dir/four-0.kurven" --set rMin=-1.0 --add graph_u \
+        --truncation 4 --set res=240 --save "$dir/four-4.kurven" --undo --save "$dir/four-3.kurven" \
+        --undo --save "$dir/four-2.kurven" --undo --save "$dir/four-1.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$e" --pick 600,500 --at-once --set rMin=-1.0 --add graph_u --truncation 4 --set res=240 \
+        --save "$dir/four-at-once-4.kurven" --undo --save "$dir/four-at-once-3.kurven" \
+        --undo --save "$dir/four-at-once-2.kurven" --undo --save "$dir/four-at-once-1.kurven" >/dev/null || return 1
+    for i in 1 2 3 4; do
+        diff -r "$dir/four-$i.kurven" "$dir/four-at-once-$i.kurven" >/dev/null ||
+            { echo "four edits at once: step $i is not what one after the other saves"; return 1; }
+    done
+    "$BIN/KurvenApp" "$e" --pick 600,500 --at-once --set rMin=-1.0 --truncation 4 --save "$dir/twice-2.kurven" \
+        --undo --undo --save "$dir/twice-0.kurven" >/dev/null &&
+    diff -r "$dir/four-0.kurven" "$dir/twice-0.kurven" >/dev/null || { echo "two undos at once: not the opened bundle"; return 1; }
+    # The golden landscape's window moved and undone saves the golden
+    # bundle, and redone, this build's; a drag of a surface's and a
+    # landscape's number let go where it began leaves nothing to undo, and
+    # the bundle as it was opened.
+    history golden "$e" 600,500 --set rMin=-1.0 || return 1
+    "$BIN/KurvenApp" "$e" --pick 600,500 --set rMin=-1.0 --undo --redo --save "$dir/golden-redone.kurven" >/dev/null &&
+    grep -q '"gitSha":"golden"' "$dir/golden-undone-0.kurven/manifest.json" &&
+    grep -q '"gitSha":"native"' "$dir/golden-redone.kurven/manifest.json" ||
+        { echo "the golden landscape's provenance does not come back with an undo"; return 1; }
+    for drag in "$c/surface_torus.kurven 300,600 major=2.3,2.6,2.0" "$e 600,500 rMin=-1.0,-2.0"; do
+        set -- $drag
+        out=$("$BIN/KurvenApp" "$1" --pick "$2" --save "$dir/drag-before.kurven" --drag "$3" \
+            --save "$dir/drag-after.kurven" --undo 2>&1) &&
+        printf '%s\n' "$out" | grep -q 'undo: nothing to undo' &&
+        diff -r "$dir/drag-before.kurven" "$dir/drag-after.kurven" >/dev/null ||
+            { echo "a drag of $3 let go where it began left a step, or another bundle"; return 1; }
+    done
+    # "Function…" offers the surface's own function its own periods.
+    "$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --function 'sn(z, 0.64)' \
+        --periods 15.962422221317834,7.0030152116630094 --save "$dir/eight.kurven" \
+        --function 'sn(z, 0.64)' --save "$dir/eight-again.kurven" >/dev/null &&
+    diff -r "$dir/eight.kurven" "$dir/eight-again.kurven" >/dev/null ||
+        { echo "painting a surface's own function again moved its periods"; return 1; }
     out=$("$BIN/KurvenApp" "$c/polyhedron_frame.kurven" --pick 300,250 --save "$dir/frame.kurven" \
         --strokes hatching=20000 --save "$dir/frame-refused.kurven" --undo 2>&1) || { printf '%s\n' "$out"; return 1; }
     printf '%s\n' "$out" | grep -q 'more than the 65536 a polyhedron' &&
@@ -269,7 +314,10 @@ paint() {
     "$BIN/KurvenApp" "$c/landscape.kurven" --pick 900,100 --add plateaus_u --hide folds \
         --screenshot "$dir/hidden-after.png" >/dev/null &&
     cmp "$dir/hidden-first.png" "$dir/hidden-after.png" || { echo "a hidden layer is hidden by index"; return 1; }
-    "$BIN/KurvenApp" "$c/surface_relief.kurven" --pick 600,400 --remove 'truncation edge' >/dev/null || return 1
+    "$BIN/KurvenApp" "$c/surface_relief.kurven" --pick 600,400 --remove 'truncation edge' \
+        --save "$dir/relief.kurven" >/dev/null &&
+    ! grep -q '"name":"truncation edge"' "$dir/relief.kurven/manifest.json" ||
+        { echo "the relief's truncation edge was not taken off"; return 1; }
     "$BIN/kurven-cli" surface sn --save "$dir/sn.kurven" >/dev/null || return 1
     out=$("$BIN/KurvenApp" "$dir/sn.kurven" --pick 300,600 --add mag_major 2>&1) &&
         { echo "sn's own mag_major was offered again"; return 1; }

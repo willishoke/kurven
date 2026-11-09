@@ -136,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // landscape's controls do, `--hide LAYER` as the layer list does, and
         // `--at-once` makes the edits without waiting for what each draws.
         let painting: Set<String> = ["--add", "--remove", "--function", "--undo", "--redo", "--axis",
-                                     "--dump", "--inspector", "--truncation", "--hide"]
+                                     "--dump", "--inspector", "--truncation", "--hide", "--drag"]
         // A pick followed by an edit or a save is painting too.
         let editing: Set<String> = ["--set", "--save", "--bake", "--levels", "--strokes"]
         if args.contains(where: painting.contains) || (args.contains("--pick") && args.contains(where: editing.contains)),
@@ -601,7 +601,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let atOnce = args.contains("--at-once")
         func settle() async {
             repeat { try? await Task.sleep(for: .milliseconds(20)) }
-            while document.building || document.drawing || document.picking || document.sampling
+            while document.building || document.drawing || document.picking || document.sampling || !document.isCurrent
         }
         /// An event: what a control's callback does, then a turn of the run
         /// loop, which closes its undo group.
@@ -638,10 +638,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let flag = args[k]
             guard flag.hasPrefix("--"), flag != "--at-once" else { k += 1; continue }
             if flag == "--undo" || flag == "--redo" {
-                await settle()
+                // At once, ⌘Z pressed again before the last undo is drawn.
+                if !atOnce { await settle() }
                 let can = flag == "--undo" ? undo.canUndo : undo.canRedo
                 if flag == "--undo" { undo.undo() } else { undo.redo() }
-                await settle()
+                if !atOnce { await settle() }
                 print("Kurven: \(flag.dropFirst(2))" + (can ? " — \(document.layers.count) layers" : ": nothing to \(flag.dropFirst(2))"))
                 k += 1
                 continue
@@ -679,8 +680,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await edit { try document.addFunction(value, periods: periods) }
                 print("Kurven: function \(value) over \(periods.x) × \(periods.y)")
             case "--add":
+                // Chosen as soon as the menu offers it, as a hand would.
                 let pick = picked()
-                let choices = document.paintChoices(on: pick)
+                var choices = document.paintChoices(on: pick)
+                for _ in 0..<3000 where !choices.contains(where: { $0.id == value }) {
+                    try? await Task.sleep(for: .milliseconds(20))
+                    choices = document.paintChoices(on: pick)
+                }
                 guard let choice = choices.first(where: { $0.id == value }) else {
                     fail("nothing called '\(value)' to add on \(document.paintTitle(pick)); the Add menu has: "
                          + choices.map(\.id).joined(separator: ", "))
@@ -702,18 +708,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // as `--resample` spells them (`LandscapeSection`).
                 let (key, text) = pair(value)
                 guard let number = Double(text) else { fail("--set wants KEY=NUMBER") }
-                if var request = document.surface {
-                    guard let field = SurfaceRequest.Field(rawValue: key), request[field] != nil else {
+                if document.surface != nil {
+                    guard let field = SurfaceRequest.Field(rawValue: key), document.surface?[field] != nil else {
                         fail("the surface has no field '\(key)'")
                     }
-                    request[field] = number
-                    await edit { document.editSurface(request, key) }
+                    await edit { SurfaceFieldSlider(document: document, field: field, label: key).set(number) }
                 } else if document.landscape != nil {
-                    await edit { document.editLandscape(key) { $0 = $0.applying(overrides: [key: number]) } }
+                    await edit { LandscapeSlider(document: document, label: key).set { $0 = $0.applying(overrides: [key: number]) } }
                 } else {
                     fail("--set edits a surface's or a landscape's request; this bundle has none to edit")
                 }
                 print("Kurven: \(key) = \(number)")
+            case "--drag":
+                // A drag of a surface's or a landscape's control through its
+                // slider's callbacks (`SurfaceFieldSlider`, `LandscapeSlider`):
+                // KEY=V1,V2,... taken hold of, moved through the values, let go.
+                let (key, text) = pair(value)
+                let values = text.split(separator: ",").compactMap { Double($0) }
+                guard !values.isEmpty else { fail("--drag wants KEY=V1,V2,...") }
+                if document.surface != nil {
+                    guard let field = SurfaceRequest.Field(rawValue: key), document.surface?[field] != nil else {
+                        fail("the surface has no field '\(key)'")
+                    }
+                    let slider = SurfaceFieldSlider(document: document, field: field, label: key)
+                    await event { slider.editingChanged(true) }
+                    for v in values {
+                        await event { slider.set(v) }
+                        if !atOnce { await settle() }
+                    }
+                    await event { slider.editingChanged(false) }
+                } else if document.landscape != nil {
+                    let slider = LandscapeSlider(document: document, label: key)
+                    await event { slider.editingChanged(true) }
+                    for v in values { await event { slider.set { $0 = $0.applying(overrides: [key: v]) } } }
+                    await event { slider.editingChanged(false) }
+                } else {
+                    fail("--drag moves a surface's or a landscape's control; this bundle has none")
+                }
+                if !atOnce { await settle() }
+                print("Kurven: dragged \(key) through \(values.count) values")
             case "--truncation":
                 guard let height = Double(value) else { fail("--truncation wants a height") }
                 await edit { document.editTruncation(.uniform(height)) }

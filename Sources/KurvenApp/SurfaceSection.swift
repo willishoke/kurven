@@ -51,7 +51,6 @@ import KurvenDynamics
 struct SurfaceSection: View {
     @Bindable var document: Document
 
-    @State private var dragging: SurfaceRequest.Field?
 
     var body: some View {
         if let request = document.surface {
@@ -136,24 +135,16 @@ struct SurfaceSection: View {
         }
     }
 
-    /// Whether a drag of this control builds drafts. A linear curve, and the
-    /// trajectory, are curves alone, placed from the grid, so their drags
-    /// build the full drawing each step: the surface is kept and only their
-    /// vertices are made again.
-    private func drafts(_ field: SurfaceRequest.Field) -> Bool {
-        !SurfaceRequest.curveFields.contains(field)
-    }
-
     @ViewBuilder
     private func row(_ field: SurfaceRequest.Field, _ request: SurfaceRequest) -> some View {
         let c = control(field)
         if field == .radial || field == .axial {
             componentPicker(field, request, label: c.label)
         } else if let current = request[field] {
+            let slider = SurfaceFieldSlider(document: document, field: field, label: c.label)
             let value = Binding<Double>(
                 get: { current },
-                set: { set(field, to: min(max($0, c.range.lowerBound), c.range.upperBound),
-                           draft: false, label: c.label) })
+                set: { slider.set(min(max($0, c.range.lowerBound), c.range.upperBound)) })
             // A slider with detents rests at them: a value within a detent's
             // reach lands on it exactly, so a fraction is a fraction and the
             // linear curve closes, and a convergent's turns are those turns.
@@ -163,12 +154,9 @@ struct SurfaceSection: View {
                     if c.slides {
                         Slider(value: Binding(
                             get: { min(max(current, c.range.lowerBound), c.range.upperBound) },
-                            set: { set(field, to: quantize($0, step: c.step, detents: detents,
-                                                           reach: Self.detentReach(field)),
-                                       draft: dragging == field && drafts(field), label: c.label) }),
-                               in: c.range, onEditingChanged: { editing in
-                                   dragged(field, editing, label: c.label)
-                               })
+                            set: { slider.set(quantize($0, step: c.step, detents: detents,
+                                                       reach: Self.detentReach(field))) }),
+                               in: c.range, onEditingChanged: { slider.editingChanged($0) })
                             .accessibilityLabel(c.label)
                     } else {
                         Spacer()
@@ -348,33 +336,47 @@ struct SurfaceSection: View {
 
     // MARK: - editing
 
-    private func set(_ field: SurfaceRequest.Field, to value: Double, draft: Bool, label: String) {
-        guard var next = document.surface, next[field] != value else { return }
-        next[field] = value
-        if dragging == field {
-            document.dragSurface(next, draft: draft)
-        } else {
-            commit(next, label: label)
-        }
-    }
-
-    /// A drag starts: remember what was edited. It ends: one undo step, and
-    /// the full request.
-    private func dragged(_ field: SurfaceRequest.Field, _ editing: Bool, label: String) {
-        if editing {
-            dragging = field
-            document.beginDrag()
-        } else {
-            dragging = nil
-            document.surfaceEdited(draft: false)
-            document.endDrag(label)
-        }
-    }
-
     /// One edit, one undo step, which puts back the request and the layers
     /// together (`Document.edit`). The Edit menu names the control: "Undo
     /// Ring Radius".
     private func commit(_ next: SurfaceRequest, label: String) {
         document.editSurface(next, label)
+    }
+}
+
+/// One number of a surface's request as its slider, field and stepper set
+/// it, and a headless drag does: a drag is taken hold of, moved, let go,
+/// one undo step; a value typed or stepped is an edit of its own.
+@MainActor
+struct SurfaceFieldSlider {
+    let document: Document
+    let field: SurfaceRequest.Field
+    let label: String
+
+    /// Whether a drag builds drafts. A linear curve, and the trajectory,
+    /// are curves alone, placed from the grid, so their drags build the full
+    /// drawing each step: the surface is kept and only their vertices are
+    /// made again.
+    var drafts: Bool { !SurfaceRequest.curveFields.contains(field) }
+
+    func editingChanged(_ editing: Bool) {
+        if editing {
+            document.beginDrag()
+        } else {
+            // Let go first, so a drag back to where it began records the
+            // bundle it began on (`Document.endDrag`); then the full request.
+            document.endDrag(label)
+            document.surfaceEdited(draft: false)
+        }
+    }
+
+    func set(_ value: Double) {
+        guard var next = document.surface, next[field] != value else { return }
+        next[field] = value
+        if document.editedBeforeDrag != nil {
+            document.dragSurface(next, draft: drafts)
+        } else {
+            document.editSurface(next, label)
+        }
     }
 }

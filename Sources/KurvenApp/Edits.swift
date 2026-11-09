@@ -127,9 +127,24 @@ extension Document {
 
     /// A slider let go: the whole drag is one undo step, unless nothing it
     /// asked for was taken.
+    ///
+    /// A drag let go where it began registers nothing, and what it made
+    /// again on the way records what the document was opened as: the
+    /// request is the same, so the bundle saved is the same.
     func endDrag(_ name: String) {
         defer { editedBeforeDrag = nil }
-        guard let before = editedBeforeDrag, let after = edited, before != after, refusal(of: after) == nil else { return }
+        guard let before = editedBeforeDrag, var after = edited else { return }
+        if after.request == before.request, Self.samplesAlike(after.landscape, before.landscape) {
+            after.gitSha = before.gitSha
+            if before.request != nil {
+                surfaceGitSha = before.gitSha
+                recordSurfaceGitSha()
+            } else if before.landscape != nil {
+                landscapeGitSha = before.gitSha
+                recordGitSha()
+            }
+        }
+        guard before != after, refusal(of: after) == nil else { return }
         registerUndo(from: before, to: after, name)
     }
 

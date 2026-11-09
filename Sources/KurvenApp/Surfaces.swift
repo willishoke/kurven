@@ -90,8 +90,8 @@ extension Document {
                 if generation == asked {
                     adopt(built, keepingCamera: !framing && scene != nil, gitSha: gitSha)
                     if surfaceGitSha == gitSha { surfaceGitSha = nil }
-                    if surfaceStyled == built.layers.map(\.spec) { surfaceStyled = nil }
                     surfaceShown = request
+                    if surfaceStyled == built.layers.map(\.spec) { surfaceStyled = nil }
                     surfaceStatus = status(of: built, took: clock.now - started)
                         + (draft ? " (draft)" : "")
                 }
@@ -100,9 +100,20 @@ extension Document {
             }
             building = false
             pumpSurface()
+            recordSurfaceGitSha()
             // Layers or levels asked for while it built are drawn on it.
             if !building { redrawSurface() }
         }
+    }
+
+    /// When the surface on screen is the one asked for, record the git sha
+    /// asked for (`surfaceGitSha`): an undo's, or a drag's let go where it
+    /// began, rather than this process's.
+    func recordSurfaceGitSha() {
+        guard let want = surfaceGitSha, !building, surfaceWanted == nil, let bundle = surfaceBundle,
+              bundle.manifest.surface == surface else { return }
+        if bundle.manifest.provenance.gitSha != want { adoptRestyled(bundle.recording(gitSha: want)) }
+        surfaceGitSha = nil
     }
 
     /// A parametric surface's layers at the levels their sliders set, derived

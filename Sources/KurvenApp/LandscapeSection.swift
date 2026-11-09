@@ -175,8 +175,10 @@ struct LandscapeSection: View {
                             document.beginDrag()
                         } else {
                             draggingLiteral = nil
-                            document.dragLandscape(draft: false)
+                            // Let go first, so a drag back to where it began
+                            // records the bundle it began on; then sampled in full.
                             document.endDrag(label)
+                            document.landscapeEdited(draft: false)
                         }
                     })
                     .accessibilityLabel(label)
@@ -243,12 +245,10 @@ struct LandscapeSection: View {
 
     @ViewBuilder
     private func domainControls(_ landscape: LandscapeRequest, window: Domain) -> some View {
-        intervalControl("Re", value: Binding(
-            get: { document.landscape?.domain.real ?? landscape.domain.real },
-            set: { document.landscape?.domain.real = $0 }), within: window.real)
-        intervalControl("Im", value: Binding(
-            get: { document.landscape?.domain.imag ?? landscape.domain.imag },
-            set: { document.landscape?.domain.imag = $0 }), within: window.imag)
+        intervalControl("Re", \.domain.real, current: document.landscape?.domain.real ?? landscape.domain.real,
+                        within: window.real)
+        intervalControl("Im", \.domain.imag, current: document.landscape?.domain.imag ?? landscape.domain.imag,
+                        within: window.imag)
     }
 
     /// One axis of the window, as two thumbs that cannot cross.
@@ -259,37 +259,31 @@ struct LandscapeSection: View {
     /// is close enough to zoom right in and far enough that the grid is never
     /// asked for a rectangle with no area.
     @ViewBuilder
-    private func intervalControl(_ label: String, value: Binding<Interval>,
-                                 within reach: Interval) -> some View {
+    private func intervalControl(_ label: String, _ axis: WritableKeyPath<LandscapeRequest, Interval>,
+                                 current: Interval, within reach: Interval) -> some View {
         let gap = reach.length / 50
+        let slider = LandscapeSlider(document: document, label: label)
+        let lo = Binding(get: { current.lo }, set: { x in
+            slider.set { $0[keyPath: axis].lo = min(x, $0[keyPath: axis].hi - gap) }
+        })
+        let hi = Binding(get: { current.hi }, set: { x in
+            slider.set { $0[keyPath: axis].hi = max(x, $0[keyPath: axis].lo + gap) }
+        })
         LabeledContent(label) {
             HStack(spacing: 6) {
-                number(label, Binding(
-                    get: { value.wrappedValue.lo },
-                    set: { value.wrappedValue.lo = min($0, value.wrappedValue.hi - gap) }))
-                Slider(value: Binding(
-                    get: { value.wrappedValue.lo },
-                    set: { value.wrappedValue.lo = min($0, value.wrappedValue.hi - gap) }),
-                       in: reach.lo...reach.hi, onEditingChanged: edited(label))
-                Slider(value: Binding(
-                    get: { value.wrappedValue.hi },
-                    set: { value.wrappedValue.hi = max($0, value.wrappedValue.lo + gap) }),
-                       in: reach.lo...reach.hi, onEditingChanged: edited(label))
-                number(label, Binding(
-                    get: { value.wrappedValue.hi },
-                    set: { value.wrappedValue.hi = max($0, value.wrappedValue.lo + gap) }))
+                number(lo)
+                Slider(value: lo, in: reach.lo...reach.hi, onEditingChanged: { slider.editingChanged($0) })
+                Slider(value: hi, in: reach.lo...reach.hi, onEditingChanged: { slider.editingChanged($0) })
+                number(hi)
             }
         }
     }
 
+    /// A field for one end: what is typed is an edit of its own, the slider
+    /// being let go (`LandscapeSlider.set`).
     @ViewBuilder
-    private func number(_ label: String, _ value: Binding<Double>) -> some View {
-        TextField("", value: Binding(get: { value.wrappedValue }, set: { typed in
-            document.editing(label) {
-                value.wrappedValue = typed
-                document.dragLandscape(draft: false)
-            }
-        }), format: .number.precision(.fractionLength(1)))
+    private func number(_ value: Binding<Double>) -> some View {
+        TextField("", value: value, format: .number.precision(.fractionLength(1)))
             .labelsHidden().monospacedDigit().frame(width: 52)
     }
 
@@ -297,12 +291,13 @@ struct LandscapeSection: View {
 
     @ViewBuilder
     private func resolutionControl(_ landscape: LandscapeRequest) -> some View {
+        let slider = LandscapeSlider(document: document, label: "Samples")
         let value = Binding(
             get: { Double(document.landscape?.resolution ?? landscape.resolution) },
-            set: { document.landscape?.resolution = Int($0.rounded()) })
+            set: { x in slider.set { $0.resolution = Int(x.rounded()) } })
         LabeledContent("Samples") {
             HStack(spacing: 6) {
-                Slider(value: value, in: 120...2000, step: 20, onEditingChanged: edited("Samples"))
+                Slider(value: value, in: 120...2000, step: 20, onEditingChanged: { slider.editingChanged($0) })
                 Text("\(landscape.resolution)")
                     .font(.caption).monospacedDigit().frame(width: 34, alignment: .trailing)
             }
@@ -310,18 +305,6 @@ struct LandscapeSection: View {
         .help("Samples along the longer side of the window. While you drag any "
               + "of these controls the landscape is sampled at "
               + "\(document.draftResolution) and redrawn at this when you let go.")
-    }
-
-    /// A drag samples at the draft resolution while it lasts and at the real one
-    /// when it ends -- so the picture keeps up with the hand, and is right when
-    /// the hand stops.
-    /// Each drag is one undo step.
-    private func edited(_ label: String) -> (Bool) -> Void {
-        { isDragging in
-            if isDragging { document.beginDrag() }
-            document.dragLandscape(draft: isDragging)
-            if !isDragging { document.endDrag(label) }
-        }
     }
 
     @ViewBuilder
@@ -467,6 +450,40 @@ struct TruncationSection: View {
             case .uniform: self = .uniform
             case .realBands: self = .bands
             }
+        }
+    }
+}
+
+/// The window's and the resolution's sliders, as the window calls them and
+/// a headless drag does. A drag samples at the draft resolution while it
+/// lasts and at the real one when it ends -- so the picture keeps up with
+/// the hand, and is right when the hand stops -- and is one undo step. A
+/// value typed, or stepped from the keyboard with no drag, is an edit of its
+/// own.
+@MainActor
+struct LandscapeSlider {
+    let document: Document
+    let label: String
+
+    func editingChanged(_ editing: Bool) {
+        if editing {
+            document.beginDrag()
+            document.dragLandscape(draft: true)
+        } else {
+            // Let go first, so a drag back to where it began records the
+            // bundle it began on (`Document.endDrag`); then sampled in full.
+            document.endDrag(label)
+            document.landscapeEdited(draft: false)
+        }
+    }
+
+    func set(_ change: (inout LandscapeRequest) -> Void) {
+        if document.editedBeforeDrag != nil {
+            guard var request = document.landscape else { return }
+            change(&request)
+            document.landscape = request
+        } else {
+            document.editLandscape(label, change)
         }
     }
 }

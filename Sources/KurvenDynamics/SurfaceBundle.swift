@@ -44,6 +44,14 @@ public struct SurfaceBundle: Sendable {
         return SurfaceBundle(url: url, manifest: manifest, drawing: drawing)
     }
 
+    /// The same bundle recording `gitSha` as the build that made it: what an
+    /// edit undone, or a drag let go where it began, puts back.
+    public func recording(gitSha: String) -> SurfaceBundle {
+        var manifest = self.manifest
+        manifest.provenance.gitSha = gitSha
+        return SurfaceBundle(url: url, manifest: manifest, drawing: drawing)
+    }
+
     /// The mathematics a request draws, for the provenance.
     static func function(_ request: SurfaceRequest) -> String {
         switch request.shape {
