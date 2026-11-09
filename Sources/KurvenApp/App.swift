@@ -747,6 +747,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 if !atOnce { await settle() }
                 print("Kurven: dragged \(key) through \(values.count) values")
+            case "--draft-resolution":
+                // The resolution a landscape's drag samples at while it lasts.
+                guard let n = Int(value), n >= 8 else { fail("--draft-resolution wants a resolution") }
+                document.draftResolution = n
             case "--truncation":
                 guard let height = Double(value) else { fail("--truncation wants a height") }
                 await edit { document.editTruncation(.uniform(height)) }

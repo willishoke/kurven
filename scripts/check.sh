@@ -291,7 +291,8 @@ paint() {
         { echo "the golden landscape's provenance does not come back with an undo"; return 1; }
     for drag in "$c/surface_torus.kurven 300,600 major=2.3,2.6,2.0" "$e 600,500 rMin=-1.0,-2.0"; do
         set -- $drag
-        out=$("$BIN/KurvenApp" "$1" --pick "$2" --save "$dir/drag-before.kurven" --drag "$3" \
+        # Drafts coarser than the fixture's 64 samples, so the drag samples.
+        out=$("$BIN/KurvenApp" "$1" --pick "$2" --draft-resolution 32 --save "$dir/drag-before.kurven" --drag "$3" \
             --save "$dir/drag-after.kurven" --undo 2>&1) &&
         printf '%s\n' "$out" | grep -q 'undo: nothing to undo' &&
         diff -r "$dir/drag-before.kurven" "$dir/drag-after.kurven" >/dev/null ||
