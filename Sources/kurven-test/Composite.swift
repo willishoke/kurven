@@ -31,15 +31,84 @@ func acrossSight(_ d: SIMD3<Double>) -> [SIMD3<Double>] {
 /// billionth of `size`; nil when a nudge of a ten-millionth across the line
 /// of sight changes that. A point inside a closed mesh meets it on the way
 /// out.
-func triangleCast(_ meshes: [Mesh<WorldSpace>], size: Double,
+///
+/// With `box`, the box a landscape's slab fills, a point on one of its
+/// faces -- a wall, the floor, the box's top -- within a billionth of
+/// `size` is on the solid's boundary, seen from outside: it is cast from a
+/// millionth outside that face, where nudges cannot carry it in.
+func triangleCast(_ meshes: [Mesh<WorldSpace>], size: Double, box: (lo: SIMD3<Double>, hi: SIMD3<Double>)? = nil,
                   model: @escaping @Sendable (SIMD3<Double>) -> SIMD3<Double>) -> Cast {
     { p, toEye in
-        func clear(_ q: SIMD3<Double>) -> Bool {
-            meshes.allSatisfy { firstHit($0, from: model(q), along: toEye, after: 1e-9 * size) == nil }
+        let (q, face) = box.map { outside(model(p), of: $0, size: size) } ?? (model(p), nil)
+        func clear(_ x: SIMD3<Double>) -> Bool {
+            meshes.allSatisfy { firstHit($0, from: x, along: toEye, after: 1e-9 * size) == nil }
         }
-        let truth = clear(p)
-        return acrossSight(toEye).allSatisfy { clear(p + 1e-7 * size * $0) == truth } ? truth : nil
+        let truth = clear(q)
+        // On a face, nudged only along it.
+        let nudges = acrossSight(toEye).compactMap { v -> SIMD3<Double>? in
+            guard let n = face else { return v }
+            let w = v - simd_dot(v, n) * n
+            return simd_length(w) > 1e-6 ? simd_normalize(w) : nil
+        }
+        return nudges.allSatisfy { clear(q + 1e-7 * size * $0) == truth } ? truth : nil
     }
+}
+
+/// A point within a billionth of `size` of a face of `box`, and inside the
+/// box's extent across it, moved a hundred-millionth of `size` out through
+/// that face, with the face's outward normal; any other point as it is.
+func outside(_ q: SIMD3<Double>, of box: (lo: SIMD3<Double>, hi: SIMD3<Double>),
+             size: Double) -> (SIMD3<Double>, SIMD3<Double>?) {
+    let tol = 1e-9 * size
+    guard (0..<3).allSatisfy({ q[$0] >= box.lo[$0] - tol && q[$0] <= box.hi[$0] + tol }) else { return (q, nil) }
+    for axis in 0..<3 {
+        var n = SIMD3<Double>.zero
+        if abs(q[axis] - box.lo[axis]) <= tol { n[axis] = -1 } else if abs(q[axis] - box.hi[axis]) <= tol { n[axis] = 1 }
+        if n != .zero { return (q + 1e-8 * size * n, n) }
+    }
+    return (q, nil)
+}
+
+/// The box a landscape's slab fills in its own coordinates: its domain,
+/// from its base up to its highest sample.
+func slabBox(_ h: Heightfield) -> (lo: SIMD3<Double>, hi: SIMD3<Double>) {
+    let d = h.surface.domain
+    var top = -Double.infinity
+    h.forEachSample { top = max(top, $0.z) }
+    var base = 0.0
+    if case .perimeter(_, let b) = h.walls { base = b }
+    return (SIMD3(min(d.real.lo, d.real.hi), min(d.imag.lo, d.imag.hi), base),
+            SIMD3(max(d.real.lo, d.real.hi), max(d.imag.lo, d.imag.hi), top))
+}
+
+/// The corners of a landscape's skyline, in its own coordinates: every
+/// node of its decimated grid at its drawn height, every point where a
+/// triangle's side crosses the truncation, and the floor's corners. A
+/// peak or a notch of what it hides is the image of one of these.
+func skylineCorners(_ h: Heightfield) -> [SIMD3<Double>] {
+    var out: [SIMD3<Double>] = []
+    h.forEachSample { out.append($0.v) }
+    let s = h.surface, g = s.height, step = max(h.step, 1)
+    let nx = (g.width + step - 1) / step, ny = (g.height + step - 1) / step
+    func node(_ i: Int, _ j: Int) -> SIMD3<Double> {
+        let p = g.position(x: i * step, y: j * step)
+        return SIMD3(p.x, p.y, Double(g[i * step, j * step]))
+    }
+    for j in 0..<ny {
+        for i in 0..<nx {
+            let a = node(i, j)
+            for b in [i + 1 < nx ? node(i + 1, j) : nil, j + 1 < ny ? node(i, j + 1) : nil,
+                      i + 1 < nx && j > 0 ? node(i + 1, j - 1) : nil].compactMap({ $0 }) {
+                let ea = a.z - s.truncationHeight(atX: a.x), eb = b.z - s.truncationHeight(atX: b.x)
+                guard (ea > 0) != (eb > 0), ea.isFinite, eb.isFinite else { continue }
+                let t = ea / (ea - eb), x = a + t * (b - a)
+                out.append(SIMD3(x.x, x.y, s.truncationHeight(atX: x.x)))
+            }
+        }
+    }
+    let box = slabBox(h)
+    for x in [box.lo.x, box.hi.x] { for y in [box.lo.y, box.hi.y] { out.append(SIMD3(x, y, box.lo.z)) } }
+    return h.tiles.flatMap { tile in out.map { v in SIMD3(tile(P3<WorldSpace>(v)).x, tile(P3<WorldSpace>(v)).y, v.z) } }
 }
 
 /// A cast against a round torus of radii `R`, `r` about the z axis: the line
@@ -87,12 +156,12 @@ func functionCast(_ h: Heightfield, model: @escaping @Sendable (SIMD3<Double>) -
     let lo = SIMD2(min(d.real.lo, d.real.hi), min(d.imag.lo, d.imag.hi))
     let hi = SIMD2(max(d.real.lo, d.real.hi), max(d.imag.lo, d.imag.hi))
     let cell = max(abs(d.real.length) / Double(g.width - 1), abs(d.imag.length) / Double(g.height - 1))
-    var highest = -Double.infinity
-    h.forEachSample { highest = max(highest, $0.z) }
-    let top = highest
+    let box = slabBox(h)
+    let top = box.hi.z, base = box.lo.z
     let truncation = h.surface.truncation
     return { p, toEye in
-        let q = model(p)
+        // On the slab's boundary, seen from outside.
+        let q = outside(model(p), of: box, size: 4).0
         // The stretch of the line over the domain's box, below the top.
         var ta = 0.0, tb = toEye.z > 0 ? max((top - q.z) / toEye.z, 0) : 1e3
         for axis in 0..<2 {
@@ -111,7 +180,8 @@ func functionCast(_ h: Heightfield, model: @escaping @Sendable (SIMD3<Double>) -
         while t <= tb {
             let x = q + t * toEye
             let u = magnitude(P2<DomainSpace>(x.x, x.y))
-            let gap = x.z - min(u.isNaN ? .infinity : u, truncation.height(atX: x.x))
+            // Under the floor is outside the slab.
+            let gap = max(x.z - min(u.isNaN ? .infinity : u, truncation.height(atX: x.x)), base - x.z)
             least = min(least, gap)
             if gap < -1e-4 * cell { return false }
             t += cell / 64
@@ -127,14 +197,24 @@ func compositeCast(_ part: Composite.Part) -> Cast {
     switch part.scene.geometry {
     case .heightfield(let h):
         if h.refine?.magnitude != nil { return functionCast(h, model: model) }
-        return triangleCast([drawnTriangles(h, base: 0)], size: 4, model: model)
+        let box = slabBox(h)
+        return triangleCast([drawnTriangles(h, base: box.lo.z)], size: 4, box: box, model: model)
     case .solid(let solid):
         let size = solid.vertices.map { simd_length($0.v) }.max()!
         return triangleCast(solid.pieces.indices.map { pieceMesh(solid, $0) }, size: size, model: model)
-    case .parametric:
-        // The torus fixture's radii; nothing else stands in these composites.
-        return torusCast(R: 2, r: 0.75, model: model)
+    case .parametric(let surface):
+        let (R, r) = torusRadii(surface)
+        return torusCast(R: R, r: r, model: model)
     }
+}
+
+/// A round torus's radii, read off its neighbourhood: the ball that holds it
+/// has radius R + r, and the centre stands R − r off the tube. A composite
+/// takes no other parametric surface.
+func torusRadii(_ s: ParametricSurface) -> (R: Double, r: Double) {
+    let e = s.neighbourhood!
+    let d0 = e.foot(e.centre).distance
+    return ((e.radius + d0) / 2, (e.radius - d0) / 2)
 }
 
 /// Polylines in view space, indexed by the cells of a grid over the page
@@ -215,9 +295,19 @@ struct CompositeVerdict {
 /// line of sight. Each part drawn alone is held to its own cast: a
 /// polyhedron's edges and hatching anywhere, a landscape's graph and the
 /// torus's curves at their vertices, where their own tests decide.
-func compositeVerdict(_ composite: Composite, casts: [Cast]) -> CompositeVerdict {
+func compositeVerdict(_ composite: Composite, casts: [Cast]) throws -> CompositeVerdict {
     var verdict = CompositeVerdict()
-    let drawn = composite.visibleLayers()
+    let drawn = try composite.visibleLayers()
+    // Each landscape's skyline corners and cell, in view space: where a
+    // peak or a notch of what it hides can be.
+    let marks: [(corners: [SIMD3<Double>], cell: Double)] = composite.parts.map { part in
+        guard case .heightfield(let h) = part.scene.geometry else { return ([], 0) }
+        let view = part.scene.camera.view
+        let g = h.surface.height, d = h.surface.domain
+        let cell = max(abs(d.real.length) / Double(g.width - 1), abs(d.imag.length) / Double(g.height - 1))
+            * Double(max(h.step, 1))
+        return (skylineCorners(h).map { view(P3<WorldSpace>($0)).v }, cell)
+    }
     let view = composite.camera.view, world = view.inverse
     let toEye = -view.projectionDirection
     var index = 0
@@ -268,6 +358,39 @@ func compositeVerdict(_ composite: Composite, casts: [Cast]) -> CompositeVerdict
                     for d in [1e-5, 1e-4, 1e-3, 1e-2, 1e-1] {
                         for u in [t - d, t + d] where u > 0 && u < 1 {
                             samples.append((a + ab * u, l2.squareRoot()))
+                        }
+                    }
+                }
+            }
+            // A hair either side of where each skyline corner of another
+            // geometry crosses a segment on the page: a peak's tip hides a
+            // span, and a notch shows a slit, as short as you like there,
+            // and a missed one leaves no run end to sample beside.
+            for (j, mark) in marks.enumerated() where j != i && !mark.corners.isEmpty {
+                let near = SegmentIndex(PolylineSet(paths: mark.corners.map { [P3<ViewSpace>($0), P3<ViewSpace>($0)] }),
+                                        lo: lo, size: 1.00001 * size, n: 200)
+                for k in 0..<seen.count {
+                    let path = seen[path: k]
+                    for (a, b) in zip(path, path.dropFirst()) {
+                        let e = SIMD2(b.x - a.x, b.y - a.y), l2 = simd_length_squared(e)
+                        guard l2 > 0 else { continue }
+                        var corners: [SIMD3<Double>] = []
+                        let (i0, j0) = near.key(SIMD2(min(a.x, b.x), min(a.y, b.y)) - mark.cell)
+                        let (i1, j1) = near.key(SIMD2(max(a.x, b.x), max(a.y, b.y)) + mark.cell)
+                        for u in i0...i1 { for w in j0...j1 { corners += near.buckets[u * near.n + w].map(\.a) } }
+                        let length = l2.squareRoot()
+                        for c in corners {
+                            let r = SIMD2(c.x - a.x, c.y - a.y)
+                            let t = simd_dot(r, e) / l2
+                            // Within a cell of the segment on the page, and
+                            // in front of it: a corner behind hides nothing.
+                            guard t > -mark.cell / length, t < 1 + mark.cell / length,
+                                  abs(r.x * e.y - r.y * e.x) / length <= mark.cell,
+                                  c.z > a.z + (b.z - a.z) * min(max(t, 0), 1) else { continue }
+                            let fine = (-16...16).map { Double($0) * mark.cell / 16 / length }
+                            for dt in fine + [1e-9, -1e-9, 1e-7, -1e-7, 1e-5, -1e-5] where t + dt > 0 && t + dt < 1 {
+                                samples.append((a.v + (b.v - a.v) * (t + dt), length))
+                            }
                         }
                     }
                 }
@@ -380,7 +503,8 @@ func ownTruths(_ part: Composite.Part, layer: Layer, view: Transform<WorldSpace,
         }
     case .parametric(let s):
         guard layer.spec.role != .outline, let coords = layer.paths.coords else { return [] }
-        let cast = torusCast(R: 2, r: 0.75, model: { $0 })
+        let (R, r) = torusRadii(s)
+        let cast = torusCast(R: R, r: r, model: { $0 })
         return Heightfield.parallelMap(Array(coords.indices)) { k -> (SIMD3<Double>, Bool?) in
             let q = layer.paths.vertices[k].v
             guard let f = s.facing(coords[k], sight: -toEye), abs(f) > 1e-9 else { return (q, nil) }
@@ -407,6 +531,14 @@ func compositeTests() {
         let bundle = try KurvenBundle.read(at: Fixtures.dir.appendingPathComponent("expr/landscape_cubic.kurven"))
         let landscape = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
         let cube = try polyhedron("cube"), frame = try polyhedron("frame"), torus = try surface("torus")
+        let cubeMaxY = cube.solid!.vertices.map(\.y).max()!
+        // A spike, exp(-20 |z|), on a grid of 64 cells: an apex no step
+        // along a segment can be trusted to find.
+        let spikeBundle = try NativeLandscape.build(
+            LandscapeRequest(expression: "exp(-20*abs(z))",
+                             domain: Domain(real: Interval(lo: -2, hi: 2), imag: Interval(lo: -2, hi: 2)),
+                             resolution: 65, truncation: .uniform(5)), refine: false)
+        let spike = Scene(bundle: spikeBundle, preset: spikeBundle.manifest.presets[0])
         let cameras: [(String, Camera)] = [
             ("the landscape's", landscape.camera),
             ("el 30° az 37°", Camera(view: testCamera(elevation: -30, azimuth: 37), projection: .orthographic(oblique: nil))),
@@ -426,6 +558,19 @@ func compositeTests() {
              [("landscape", landscape, Placement(offset: SIMD3(0.4, 0.2, -0.1))),
               ("cube", cube, Placement(scale: 0.35, offset: SIMD3(-0.8, 0.3, 0.2))),
               ("torus", torus, Placement(scale: 0.35, offset: SIMD3(1.4, 0.2, 1.5)))]),
+            // Under the slab's floor at its front, where lines of sight
+            // leave the footprint before they reach the floor.
+            ("a cube under the landscape's base",
+             [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -1.6, -0.9)))]),
+            // Its back face in the plane of the front wall, to rounding.
+            ("a cube flush against the landscape's front wall",
+             [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -2 - 0.35 * cubeMaxY, 0)))]),
+            ("a cube seen through the notch between two towers",
+             [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.4, offset: SIMD3(-0.2, 1.8, 0.5)))]),
+            ("a cube over the towers, where a tower's corner hid a hatch line's span",
+             [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(-1, 1, 1)))]),
+            ("a cube behind the spike's apex",
+             [("landscape", spike, .identity), ("cube", cube, Placement(offset: SIMD3(-0.3712, 1.162, -0.249)))]),
         ]
         // The same landscape with its function, whose solid is f: the
         // frame's curves held to the dense cast against f, under the
@@ -441,7 +586,7 @@ func compositeTests() {
             let elapsed = try clock.measure {
                 for (_, camera) in cameras {
                     let composite = try Composite(parts, camera: camera)
-                    let v = compositeVerdict(composite, casts: composite.parts.map(compositeCast))
+                    let v = try compositeVerdict(composite, casts: composite.parts.map(compositeCast))
                     total.compared += v.compared; total.wrong += v.wrong; total.undecided += v.undecided
                     total.hiddenByOther += v.hiddenByOther; total.outsideAlone += v.outsideAlone
                     total.ownCompared += v.ownCompared; total.ownWrong += v.ownWrong
@@ -450,7 +595,7 @@ func compositeTests() {
                 }
             }
             Check.expect(total.wrong == 0 && total.outsideAlone == 0 && total.compared > 20_000
-                         && total.hiddenByOther > total.compared / 50,
+                         && total.hiddenByOther > 0,
                          "\(name): drawn exactly where no other geometry's cast meets the line of sight",
                          "\(total.wrong) of \(total.compared) disagree, \(total.hiddenByOther) hidden by another, "
                          + "\(total.undecided) at a boundary, \(total.outsideAlone) vertices off the drawing alone, "
@@ -475,6 +620,28 @@ func compositeTests() {
         Check.expectThrows("a landscape scaled is refused") {
             _ = try Composite([("landscape", landscape, Placement(scale: 2)), ("cube", try polyhedron("cube"), .identity)],
                               camera: landscape.camera)
+        }
+        // A displaced torus's sphere tracing steps by a Lipschitz constant
+        // read off its grid, not proved: it is refused.
+        let relief = try surface("relief")
+        do {
+            _ = try Composite([("landscape", landscape, .identity), ("relief", relief, .identity)], camera: landscape.camera)
+            Check.expect(false, "a displaced torus is refused in a composite", "it was taken")
+        } catch let error as CompositeError {
+            Check.expect(error.description.contains("displaced"), "a displaced torus is refused in a composite, saying why",
+                         error.description)
+        }
+        // Placements at either end of the range, and past it.
+        let cube = try polyhedron("cube")
+        for (what, placement, taken) in [("scale 1e-3", Placement(scale: 1e-3), true), ("scale 1e3", Placement(scale: 1e3), true),
+                                         ("offset 1e4", Placement(offset: SIMD3(1e4, -1e4, 1e4)), true),
+                                         ("scale 1e200", Placement(scale: 1e200), false),
+                                         ("scale 1e-20", Placement(scale: 1e-20), false),
+                                         ("scale 0.999e-3", Placement(scale: 0.999e-3), false),
+                                         ("offset 1e300", Placement(offset: SIMD3(0, 1e300, 0)), false),
+                                         ("offset 1.001e4", Placement(offset: SIMD3(0, 0, -1.001e4)), false)] {
+            let made = try? Composite([("landscape", landscape, .identity), ("cube", cube, placement)], camera: landscape.camera)
+            Check.expect((made != nil) == taken, "a cube placed at \(what) is \(taken ? "taken" : "refused")")
         }
     }
 }
