@@ -78,7 +78,10 @@ extension Document {
             }
         case .ready(.surface):
             if let request = next.request, request != current.request {
-                surfaceStyled = next.layers
+                // The layers the build keeps; asked for only when they moved,
+                // since the request's own curves in them are the old
+                // request's, which the build replaces (`keeping`).
+                if next.layers != current.layers { surfaceStyled = next.layers }
                 surfaceGitSha = next.gitSha
                 surface = request
                 surfaceEdited(draft: false)

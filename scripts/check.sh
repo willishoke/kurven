@@ -254,6 +254,8 @@ paint() {
             { echo "$name: edits made at once save other than made one after the other"; return 1; }
     }
     racing linear-curve "$c/surface_torus.kurven" 300,600 --set slope=0.5 --add surface_u &&
+    [ "$(grep -o '"slope":0.5' "$dir/linear-curve-at-once.kurven/manifest.json" | wc -l)" -eq 2 ] ||
+        { echo "the linear curve drawn is not the one the request says"; return 1; }
     racing radii "$c/surface_torus.kurven" 300,600 --set minor=0.5 --remove linearCurves &&
     racing truncation "$c/landscape.kurven" 300,500 --truncation 1.5 --add graph_v || return 1
     out=$("$BIN/KurvenApp" "$c/polyhedron_frame.kurven" --pick 300,250 --save "$dir/frame.kurven" \
