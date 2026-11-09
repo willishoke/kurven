@@ -255,7 +255,7 @@ paint() {
     }
     racing linear-curve "$c/surface_torus.kurven" 300,600 --set slope=0.5 --add surface_u &&
     racing radii "$c/surface_torus.kurven" 300,600 --set minor=0.5 --remove linearCurves &&
-    racing truncation "$c/landscape.kurven" 900,100 --truncation 1.5 --add plateaus_u || return 1
+    racing truncation "$c/landscape.kurven" 300,500 --truncation 1.5 --add graph_v || return 1
     out=$("$BIN/KurvenApp" "$c/polyhedron_frame.kurven" --pick 300,250 --save "$dir/frame.kurven" \
         --strokes hatching=20000 --save "$dir/frame-refused.kurven" --undo 2>&1) || { printf '%s\n' "$out"; return 1; }
     printf '%s\n' "$out" | grep -q 'more than the 65536 a polyhedron' &&

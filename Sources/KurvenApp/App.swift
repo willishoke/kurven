@@ -137,7 +137,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `--at-once` makes the edits without waiting for what each draws.
         let painting: Set<String> = ["--add", "--remove", "--function", "--undo", "--redo", "--axis",
                                      "--dump", "--inspector", "--truncation", "--hide"]
-        if args.contains(where: painting.contains), let bundlePath {
+        // A pick followed by an edit or a save is painting too.
+        let editing: Set<String> = ["--set", "--save", "--bake", "--levels", "--strokes"]
+        if args.contains(where: painting.contains) || (args.contains("--pick") && args.contains(where: editing.contains)),
+           let bundlePath {
             Task { await headlessPaint(URL(fileURLWithPath: bundlePath), args: Array(args)) }
             return
         }
