@@ -142,6 +142,16 @@ usage: kurven-cli <command> [options]
         and the frame as PREFIX.frame.json, for checking a bake stroke for
         stroke outside this program.
 
+  scene <bundle> [--at X,Y,Z[,S]] <bundle> [--at X,Y,Z[,S]] ... [--preset NAME]
+        [--no-refine] -o out.svg
+        Draw several bundles as one composite: each geometry scaled by S
+        (1 by default) and moved to X,Y,Z, under the first bundle's camera
+        (its first preset, or --preset). Every clipped curve is tested by its
+        own geometry, as its bundle's bake tests it, and by every other
+        geometry, which forgives it nothing; no depth buffer has a part in
+        it. A landscape stands at scale 1, and a surface with no exact
+        occlusion test, such as the forced torus, is refused.
+
   surface torus [--coordinate-curves U,V] [--samples N]
   surface sn [--modulus M] [--grid N]
   surface sn --relief A [--repeat N[,M]] [--turn T] [--floor B] [--soft] [--samples S]
@@ -429,6 +439,80 @@ func bake(_ args: Args) throws {
               + "  lw \(entry.style.width)"
               + (spec.map { $0.clipped ? "" : "  unclipped" } ?? "  from the depth buffer"))
     }
+}
+
+/// `scene`: several bundles drawn as one composite (`Composite`), each
+/// placed by the `--at` after it. Read off the command line in order, since
+/// which bundle an `--at` places is where it stands.
+func sceneCommand() throws {
+    let argv = Array(CommandLine.arguments.drop { $0 != "scene" }.dropFirst())
+    var bundles: [(path: String, at: String?)] = []
+    var preset: String?, output: String?, refine = true
+    var i = 0
+    func value(_ name: String) throws -> String {
+        guard i + 1 < argv.count else { throw CLIError("\(name) wants a value") }
+        defer { i += 2 }
+        return argv[i + 1]
+    }
+    while i < argv.count {
+        switch argv[i] {
+        case "--at":
+            guard let last = bundles.indices.last else { throw CLIError("--at places the bundle before it, and none is") }
+            guard bundles[last].at == nil else { throw CLIError("\(bundles[last].path) is placed twice") }
+            bundles[last].at = try value("--at")
+        case "--preset": preset = try value("--preset")
+        case "-o": output = try value("-o")
+        case "--no-refine": refine = false; i += 1
+        case let a where a.hasPrefix("-"):
+            throw CLIError("scene takes no \(a); it takes --at --preset --no-refine -o")
+        case let a: bundles.append((a, nil)); i += 1
+        }
+    }
+    guard bundles.count >= 2 else { throw CLIError("scene draws two bundles or more") }
+    guard let output else { throw CLIError("missing -o") }
+    func placement(_ text: String) throws -> Placement {
+        let numbers = text.split(separator: ",").map { Double($0) }
+        guard numbers.count == 3 || numbers.count == 4, numbers.allSatisfy({ $0 != nil }) else {
+            throw CLIError("--at wants X,Y,Z or X,Y,Z,S, got '\(text)'")
+        }
+        return Placement(scale: numbers.count == 4 ? numbers[3]! : 1,
+                         offset: SIMD3(numbers[0]!, numbers[1]!, numbers[2]!))
+    }
+    let placed = try bundles.map { ($0.path, try $0.at.map(placement) ?? .identity) }
+    let clock = ContinuousClock()
+    var drawing: (names: [String], layers: [(Layer, PolylineSet<ViewSpace>)], strokes: Strokes)!
+    let elapsed = try clock.measure { drawing = try compositeDrawing(placed, preset: preset, refine: refine) }
+    try SVG.render(drawing.strokes).write(to: URL(fileURLWithPath: output), atomically: true, encoding: .utf8)
+    print("""
+        \(drawing.names.joined(separator: " + ")) -> \(URL(fileURLWithPath: output).lastPathComponent)
+          strokes    \(drawing.strokes.pathCount) paths, length \(String(format: "%.1f", drawing.strokes.totalLength))
+          took       \(elapsed)
+        """)
+    for (layer, seen) in drawing.layers {
+        print("    \(pad(layer.spec.name, 14)) \(pad(String(seen.count), 7)) paths"
+              + (layer.spec.clipped ? "" : "  unclipped"))
+    }
+}
+
+/// The composite of bundles at their placements, under the first one's
+/// camera (`preset`, or its first): each read as `bake` reads it, its
+/// contours placed by its function unless not `refine`. Its parts' names,
+/// its layers tested, and their strokes.
+func compositeDrawing(_ bundles: [(path: String, placement: Placement)], preset: String?, refine: Bool) throws
+    -> (names: [String], layers: [(Layer, PolylineSet<ViewSpace>)], strokes: Strokes)
+{
+    var parts: [(name: String, scene: Scene, placement: Placement)] = []
+    for (k, bundle) in bundles.enumerated() {
+        var words = ["scene", bundle.path]
+        if k == 0, let preset { words += ["--preset", preset] }
+        if !refine { words.append("--no-refine") }
+        let (url, _, _, scene) = try loadDrawing(Args(words))
+        parts.append((url.lastPathComponent, scene, bundle.placement))
+    }
+    let composite = try Composite(parts, camera: parts[0].scene.camera)
+    let layers = composite.visibleLayers()
+    let strokes = Strokes(layers: layers.map { layer, seen in (Style(layer.spec), HiddenLine.pass(seen)) })
+    return (parts.map(\.name), layers, strokes)
 }
 
 func surfaceCommand(_ args: Args) throws {
@@ -1698,6 +1782,7 @@ let args = Args(Array(CommandLine.arguments.dropFirst()))
 do {
     switch args.positional.first {
     case "bake": try bake(args)
+    case "scene": try sceneCommand()
     case "depth": try depth(args)
     case "surface": try surfaceCommand(args)
     case "surface-costs": try surfaceCosts(args)
