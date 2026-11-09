@@ -1079,16 +1079,24 @@ struct GridTraversal: Sendable {
                 if b.ta + 2 * tEps < b.tb { ts.append(b.ta + 2 * tEps) }
             }
         }
-        // A point of another solid: where its line crosses the base, which
-        // is the slab's floor, and a hair along the line from a start on the
-        // boundary, where the line goes in or out.
+        // A point of another solid: hidden where its line crosses the base,
+        // which is the slab's floor, and sampled a hair along the line from
+        // a start on the boundary, where the line goes in or out.
         var startInside = false
         if elsewhere, !ts.isEmpty {
             // Only over a copy's grid, where the slab is.
             func overGrid(_ t: Double) -> Bool { passages.contains { t >= $0.ta && t <= $0.tb } }
+            // The floor is a sheet of the slab's boundary: a line that
+            // crosses it over the grid and the footprint goes into the slab
+            // however thin the slab is there -- where the surface comes down
+            // to the base -- as the closed-form cut has it (`Slab`).
             if abs(d.z) > 1e-15 {
                 let floorCrossing = (base - p.z) / d.z
-                if floorCrossing > tEps, overGrid(floorCrossing) { ts.append(floorCrossing) }
+                if floorCrossing > tEps, overGrid(floorCrossing),
+                   region.contains(P2<WorldSpace>(pxy.x + floorCrossing * dxy.x, pxy.y + floorCrossing * dxy.y)) {
+                    trace?(String(format: "t %.4g cells: through the floor", floorCrossing / cell))
+                    return false
+                }
             }
             if overGrid(2 * tEps) { ts.append(2 * tEps) }
             let e = side
