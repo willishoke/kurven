@@ -540,7 +540,7 @@ func compositeTests() {
         let bundle = try KurvenBundle.read(at: Fixtures.dir.appendingPathComponent("expr/landscape_cubic.kurven"))
         let landscape = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
         let cube = try polyhedron("cube"), frame = try polyhedron("frame"), torus = try surface("torus")
-        let cubeMaxY = cube.solid!.vertices.map(\.y).max()!
+        let cubeMinY = cube.solid!.vertices.map(\.y).min()!
         // A spike, exp(-20 |z|), on a grid of 64 cells: an apex no step
         // along a segment can be trusted to find.
         let spikeBundle = try NativeLandscape.build(
@@ -569,13 +569,17 @@ func compositeTests() {
              [("landscape", landscape, Placement(offset: SIMD3(0.4, 0.2, -0.1))),
               ("cube", cube, Placement(scale: 0.35, offset: SIMD3(-0.8, 0.3, 0.2))),
               ("torus", torus, Placement(scale: 0.35, offset: SIMD3(1.4, 0.2, 1.5)))]),
-            // Under the slab's floor at its front, where lines of sight
-            // leave the footprint before they reach the floor.
+            // Under the slab's floor at its front, its front face a hair
+            // inside the front wall: lines of sight from the face's lower
+            // part leave the footprint before they reach the floor, and
+            // from its upper part come up through it.
             ("a cube under the landscape's base",
-             [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -1.6, -0.9)))]),
-            // Its back face in the plane of the front wall, to rounding.
+             [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -1.56, -0.86)))]),
+            // Standing on the base, sunk into the slab, its front face in
+            // the plane of the front wall, to rounding: on the slab's
+            // boundary, seen from outside.
             ("a cube flush against the landscape's front wall",
-             [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -2 - 0.35 * cubeMaxY, 0)))]),
+             [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -2 - 0.35 * cubeMinY, 0)))]),
             ("a cube seen through the notch between two towers",
              [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.4, offset: SIMD3(-0.2, 1.8, 0.5)))]),
             ("a cube over the towers, where a tower's corner hid a hatch line's span",
@@ -594,13 +598,13 @@ func compositeTests() {
                 [("landscape", onF, .identity), ("frame", frame, Placement(scale: 0.3, offset: SIMD3(0.3, -1.3, 0.2)))],
                 Array(cameras.prefix(1))),
                ("a cube under the landscape's base, on f",
-                [("landscape", onF, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -1.6, -0.9)))],
+                [("landscape", onF, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -1.56, -0.86)))],
                 Array(cameras.prefix(1))),
                ("a cube behind the spike's apex, on f",
                 [("landscape", spikeOnF, .identity), ("cube", cube, Placement(offset: SIMD3(-0.3712, 1.162, -0.249)))],
                 Array(cameras.prefix(1))),
                ("a cube flush against the landscape's front wall, on f",
-                [("landscape", onF, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -2 - 0.35 * cubeMaxY, 0)))],
+                [("landscape", onF, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -2 - 0.35 * cubeMinY, 0)))],
                 Array(cameras.prefix(1)))] {
             var total = CompositeVerdict()
             let elapsed = try clock.measure {
