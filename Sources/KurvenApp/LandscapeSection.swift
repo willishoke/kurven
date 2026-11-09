@@ -28,10 +28,6 @@ struct LandscapeSection: View {
     /// a slider is a new set of literals.
     @State private var reachSource: String = ""
     @State private var draggingLiteral: Int?
-    /// The expression as it was when the current drag began: one undo step
-    /// per drag, not one per pixel.
-    @State private var beforeDrag: String?
-    @Environment(\.undoManager) private var undoManager
 
     private var landscape: LandscapeRequest? { document.landscape }
 
@@ -96,11 +92,10 @@ struct LandscapeSection: View {
                 .onSubmit {
                     editingExpression = false
                     guard typed != landscape.expression, !typed.isEmpty else { return }
-                    document.landscape?.expression = typed
                     // A typed expression is no longer the preset it started
                     // from, and saying so is what keeps the picker honest.
-                    document.landscape?.name = ""
-                    document.landscapeEdited(draft: false)
+                    let typed = typed
+                    document.editLandscape("Expression") { $0.expression = typed; $0.name = "" }
                 }
         }
         .help("Press return to sample it. Anything the language parses: "
@@ -177,15 +172,11 @@ struct LandscapeSection: View {
                             // otherwise stretch under the thumb as it moves.
                             reaches[index] = reach
                             draggingLiteral = index
-                            beforeDrag = expression
+                            document.beginDrag()
                         } else {
                             draggingLiteral = nil
-                            if let before = beforeDrag, let after = document.landscape?.expression,
-                               before != after {
-                                registerUndo(from: before, to: after, label)
-                            }
-                            beforeDrag = nil
-                            document.landscapeEdited(draft: false)
+                            document.dragLandscape(draft: false)
+                            document.endDrag(label)
                         }
                     })
                     .accessibilityLabel(label)
@@ -215,37 +206,18 @@ struct LandscapeSection: View {
         let next = KurvenMath.Expression.replacing(literal, with: value, significant: 6,
                                                    in: expression)
         guard next != expression else { return }
-        // A drag registers its undo when it ends; a typed or stepped value is
-        // one edit, registered here.
-        if draggingLiteral != index { registerUndo(from: expression, to: next, label) }
-        apply(next, draft: draft)
-    }
-
-    private func apply(_ next: String, draft: Bool) {
         reachSource = next
         editingExpression = false
         typed = next
-        document.landscape?.expression = next
-        document.landscape?.name = ""
-        document.landscapeEdited(draft: draft)
-    }
-
-    /// ⌘Z puts the number back, and ⌘⇧Z moves it again. The action name is
-    /// what the Edit menu shows: "Undo Modulus".
-    private func registerUndo(from before: String, to after: String, _ label: String) {
-        guard let undoManager else { return }
-        undoManager.registerUndo(withTarget: document) { document in
-            MainActor.assumeIsolated {
-                // Re-registered the other way round, so the same edit can be
-                // redone; SwiftUI has no handle on this view from here, so
-                // the document's request is what moves.
-                registerUndo(from: after, to: before, label)
-                document.landscape?.expression = before
-                document.landscape?.name = ""
-                document.landscapeEdited(draft: false)
-            }
+        // A drag registers its undo when it ends (`Document.endDrag`); a
+        // typed or stepped value is one edit.
+        if draggingLiteral == index {
+            document.landscape?.expression = next
+            document.landscape?.name = ""
+            document.dragLandscape(draft: draft)
+        } else {
+            document.editLandscape(label) { $0.expression = next; $0.name = "" }
         }
-        undoManager.setActionName(label)
     }
 
     /// Room around a number, in the direction it already points: `0.64`
@@ -292,18 +264,18 @@ struct LandscapeSection: View {
         let gap = reach.length / 50
         LabeledContent(label) {
             HStack(spacing: 6) {
-                number(Binding(
+                number(label, Binding(
                     get: { value.wrappedValue.lo },
                     set: { value.wrappedValue.lo = min($0, value.wrappedValue.hi - gap) }))
                 Slider(value: Binding(
                     get: { value.wrappedValue.lo },
                     set: { value.wrappedValue.lo = min($0, value.wrappedValue.hi - gap) }),
-                       in: reach.lo...reach.hi, onEditingChanged: edited)
+                       in: reach.lo...reach.hi, onEditingChanged: edited(label))
                 Slider(value: Binding(
                     get: { value.wrappedValue.hi },
                     set: { value.wrappedValue.hi = max($0, value.wrappedValue.lo + gap) }),
-                       in: reach.lo...reach.hi, onEditingChanged: edited)
-                number(Binding(
+                       in: reach.lo...reach.hi, onEditingChanged: edited(label))
+                number(label, Binding(
                     get: { value.wrappedValue.hi },
                     set: { value.wrappedValue.hi = max($0, value.wrappedValue.lo + gap) }))
             }
@@ -311,10 +283,12 @@ struct LandscapeSection: View {
     }
 
     @ViewBuilder
-    private func number(_ value: Binding<Double>) -> some View {
-        TextField("", value: Binding(get: { value.wrappedValue }, set: {
-            value.wrappedValue = $0
-            document.landscapeEdited(draft: false)
+    private func number(_ label: String, _ value: Binding<Double>) -> some View {
+        TextField("", value: Binding(get: { value.wrappedValue }, set: { typed in
+            document.editing(label) {
+                value.wrappedValue = typed
+                document.dragLandscape(draft: false)
+            }
         }), format: .number.precision(.fractionLength(1)))
             .labelsHidden().monospacedDigit().frame(width: 52)
     }
@@ -328,7 +302,7 @@ struct LandscapeSection: View {
             set: { document.landscape?.resolution = Int($0.rounded()) })
         LabeledContent("Samples") {
             HStack(spacing: 6) {
-                Slider(value: value, in: 120...2000, step: 20, onEditingChanged: edited)
+                Slider(value: value, in: 120...2000, step: 20, onEditingChanged: edited("Samples"))
                 Text("\(landscape.resolution)")
                     .font(.caption).monospacedDigit().frame(width: 34, alignment: .trailing)
             }
@@ -341,8 +315,13 @@ struct LandscapeSection: View {
     /// A drag samples at the draft resolution while it lasts and at the real one
     /// when it ends -- so the picture keeps up with the hand, and is right when
     /// the hand stops.
-    private func edited(_ isDragging: Bool) {
-        document.landscapeEdited(draft: isDragging)
+    /// Each drag is one undo step.
+    private func edited(_ label: String) -> (Bool) -> Void {
+        { isDragging in
+            if isDragging { document.beginDrag() }
+            document.dragLandscape(draft: isDragging)
+            if !isDragging { document.endDrag(label) }
+        }
     }
 
     @ViewBuilder
@@ -385,7 +364,7 @@ struct TruncationSection: View {
                 .font(.caption).foregroundStyle(.secondary)
         case .uniform(let z):
             truncationSlider("Height", value: Binding(get: { z }, set: {
-                document.setTruncation(.uniform($0))
+                document.editTruncation(.uniform($0))
             }))
         case .realBands(let bands, let beyond):
             bandRows(bands, beyond)
@@ -405,7 +384,7 @@ struct TruncationSection: View {
             HStack(spacing: 6) {
                 TextField("", value: live, format: .number.precision(.fractionLength(2)))
                     .labelsHidden().monospacedDigit().frame(width: 60)
-                Slider(value: live, in: 0.1...ceiling)
+                Slider(value: live, in: 0.1...ceiling, onEditingChanged: drag)
             }
         }
     }
@@ -424,7 +403,7 @@ struct TruncationSection: View {
                     set: { value in
                         var next = bands
                         next[index].below = value
-                        document.setTruncation(.realBands(next, beyond: beyond))
+                        document.editTruncation(.realBands(next, beyond: beyond))
                     }),
                     format: .number.precision(.fractionLength(1)))
                     .labelsHidden().monospacedDigit().frame(width: 52)
@@ -432,14 +411,14 @@ struct TruncationSection: View {
                 Slider(value: Binding(get: { band.height }, set: {
                     var next = bands
                     next[index].height = $0
-                    document.setTruncation(.realBands(next, beyond: beyond))
-                }), in: 0.1...ceiling)
+                    document.editTruncation(.realBands(next, beyond: beyond))
+                }), in: 0.1...ceiling, onEditingChanged: drag)
                 Text(String(format: "%.2f", band.height))
                     .font(.caption).monospacedDigit().frame(width: 40, alignment: .trailing)
                 Button {
                     var next = bands
                     next.remove(at: index)
-                    document.setTruncation(.realBands(next, beyond: beyond))
+                    document.editTruncation(.realBands(next, beyond: beyond))
                 } label: { Image(systemName: "minus.circle") }
                     .buttonStyle(.borderless).controlSize(.small)
             }
@@ -447,29 +426,35 @@ struct TruncationSection: View {
         truncationSlider("Beyond", value: Binding(
             get: { beyond.isFinite ? beyond : ceiling },
             set: {
-                document.setTruncation(.realBands(bands, beyond: $0))
+                document.editTruncation(.realBands(bands, beyond: $0))
             }))
         Button("Add a band") {
             let below = (bands.last?.below ?? -1) + 1
-            document.setTruncation(.realBands(bands + [RealBand(below: below,
+            document.editTruncation(.realBands(bands + [RealBand(below: below,
                                                           height: beyond.isFinite ? beyond : 5)],
                                         beyond: beyond))
         }
         .controlSize(.small)
     }
 
+    /// A drag of a height is one undo step; a typed or chosen truncation is
+    /// one of its own (`Document.editTruncation`).
+    private func drag(_ editing: Bool) {
+        if editing { document.beginDrag() } else { document.endDrag("Truncation") }
+    }
+
     private func apply(_ kind: Kind) {
         let current = LandscapeStyle.ceiling(of: document.truncation) ?? 5
         switch kind {
-        case .none: document.setTruncation(.none)
-        case .uniform: document.setTruncation(.uniform(current))
+        case .none: document.editTruncation(.none)
+        case .uniform: document.editTruncation(.uniform(current))
         case .bands:
             // Start from the truncation that is already there, as one band and a
             // beyond: the first edit should be a change to this landscape, not
             // a different one.
             let domain = document.bundle?.manifest.domain
             let middle = domain.map { ($0.real.lo + $0.real.hi) / 2 } ?? 0
-            document.setTruncation(.realBands([RealBand(below: middle, height: current)],
+            document.editTruncation(.realBands([RealBand(below: middle, height: current)],
                                               beyond: current))
         }
     }

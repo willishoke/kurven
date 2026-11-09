@@ -20,7 +20,7 @@ struct PaintSection: View {
             Text("Nothing is drawn on it yet.").font(.caption).foregroundStyle(.tertiary)
         }
         ForEach(indices, id: \.self) { index in
-            if let spec = document.paint?.layers[safe: index] {
+            if let spec = document.edited?.layers[safe: index] {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
                         Text(spec.name)
@@ -46,7 +46,7 @@ struct PaintSection: View {
             } label: { Label("Add", systemImage: "plus") }
                 .disabled(choices.isEmpty)
                 .fixedSize()
-            if pick.face == .surface, document.paint?.request?.takesFunction == true {
+            if pick.face == .surface, document.edited?.request?.takesFunction == true {
                 Button("Function…") { askingFunction = true }
                     .help("Paint a function on the torus, over a rectangle of its periods, "
                           + "as `kurven-cli surface periodic` takes one: its |f| and arg f can then be contoured.")
@@ -74,10 +74,10 @@ struct FunctionSheet: View {
     init(document: Document, dismiss: @escaping () -> Void) {
         self.document = document
         self.dismiss = dismiss
-        let periods = document.paint?.request?.periods ?? SIMD2(2 * .pi, 2 * .pi)
-        if case .periodic(let e, _, _, _, _)? = document.paint?.request?.shape {
-            _expression = State(initialValue: e)
-        }
+        var expression = ""
+        if case .periodic(let e, _, _, _, _)? = document.edited?.request?.shape { expression = e }
+        let periods = document.functionPeriods(for: expression)
+        _expression = State(initialValue: expression)
         _real = State(initialValue: periods.x)
         _imag = State(initialValue: periods.y)
     }
@@ -86,6 +86,11 @@ struct FunctionSheet: View {
         Form {
             TextField("f(z)", text: $expression, prompt: Text("sn(z, 0.64)"))
                 .font(.body.monospaced())
+                .onChange(of: expression) {
+                    // A function whose periods the catalog knows brings its
+                    // rectangle with it.
+                    if let periods = SurfaceRequest.periods(of: expression) { (real, imag) = (periods.x, periods.y) }
+                }
             LabeledContent("Periods") {
                 HStack {
                     TextField("", value: $real, format: .number.precision(.significantDigits(1...17)))
@@ -121,14 +126,50 @@ struct FunctionSheet: View {
     }
 }
 
+/// A layer's level slider, as the window's slider calls it and a headless
+/// drag does: taken hold of, moved, let go. A drag is one undo step, taken
+/// when it is let go; while it lasts the curves are the grid's, and placed on
+/// f when it ends.
+@MainActor
+struct LevelSlider {
+    let document: Document
+    let name: String
+
+    func editingChanged(_ editing: Bool) {
+        if editing {
+            document.beginDrag()
+        } else {
+            document.rebuildCurves()
+            document.endDrag("Levels of \(name)")
+        }
+    }
+
+    func set(_ value: Double) {
+        document.paintLevels(Int(value.rounded()), ofLayer: name, draft: document.editedBeforeDrag != nil)
+    }
+}
+
+/// A hatching's strokes slider, as the window's slider calls it and a
+/// headless drag does.
+@MainActor
+struct StrokeSlider {
+    let document: Document
+    let name: String
+
+    func editingChanged(_ editing: Bool) {
+        if editing { document.beginDrag() } else { document.endDrag("Strokes of \(name)") }
+    }
+
+    func set(_ value: Double) {
+        document.paintStrokes(Int(value.rounded()), ofLayer: name)
+    }
+}
+
 /// A layer's own controls: its levels, its strokes, which way the plateaus'
 /// hatching runs. A drag is one undo step, taken when the slider is let go.
 struct LayerControls: View {
     @Bindable var document: Document
     let name: String
-    /// While the level slider is dragged its curves are the grid's, and
-    /// placed on f when it is let go.
-    @State private var dragging = false
 
     var body: some View {
         // A described layer carries its question, so its level set can be
@@ -142,8 +183,8 @@ struct LayerControls: View {
         // A hatching carries its spacing the way a contour family carries its
         // levels, and for the same reason: it is a description, so the number
         // in it is a control.
-        if let spec = document.paint?.layers.first(where: { $0.name == name }),
-           let index = document.paint?.layers.firstIndex(of: spec) {
+        if let spec = document.edited?.layers.first(where: { $0.name == name }),
+           let index = document.edited?.layers.firstIndex(of: spec) {
             if let count = document.hatchCount(ofLayer: index) { strokeSlider(count) }
             if let axis = spec.source.plateauHatchAxis { axisPicker(axis) }
         }
@@ -151,21 +192,11 @@ struct LayerControls: View {
 
     @ViewBuilder
     private func levelSlider(_ levels: [Double]) -> some View {
-        let count = Binding(
-            get: { Double(levels.count) },
-            set: { document.paintLevels(Int($0.rounded()), ofLayer: name, draft: dragging) })
+        let slider = LevelSlider(document: document, name: name)
         HStack(spacing: 6) {
             Text("levels").font(.caption).foregroundStyle(.secondary)
-            Slider(value: count, in: 2...80, step: 1, onEditingChanged: { editing in
-                if editing {
-                    dragging = true
-                    document.beginPaintDrag()
-                } else {
-                    dragging = false
-                    document.rebuildCurves()
-                    document.endPaintDrag("Levels of \(name)")
-                }
-            })
+            Slider(value: Binding(get: { Double(levels.count) }, set: { slider.set($0) }), in: 2...80, step: 1,
+                   onEditingChanged: { slider.editingChanged($0) })
             Text("\(levels.count)")
                 .font(.caption).monospacedDigit().frame(width: 24, alignment: .trailing)
             Button {
@@ -183,14 +214,11 @@ struct LayerControls: View {
     /// here, so this redraws within a frame however large the landscape is.
     @ViewBuilder
     private func strokeSlider(_ count: Int) -> some View {
-        let live = Binding(get: { Double(count) }, set: {
-            document.paintStrokes(Int($0.rounded()), ofLayer: name)
-        })
+        let slider = StrokeSlider(document: document, name: name)
         HStack(spacing: 6) {
             Text("strokes").font(.caption).foregroundStyle(.secondary)
-            Slider(value: live, in: 2...400, step: 1, onEditingChanged: { editing in
-                if editing { document.beginPaintDrag() } else { document.endPaintDrag("Strokes of \(name)") }
-            })
+            Slider(value: Binding(get: { Double(count) }, set: { slider.set($0) }), in: 2...400, step: 1,
+                   onEditingChanged: { slider.editingChanged($0) })
             Text("\(count)")
                 .font(.caption).monospacedDigit().frame(width: 28, alignment: .trailing)
         }

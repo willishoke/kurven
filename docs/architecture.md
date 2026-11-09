@@ -350,10 +350,12 @@ arg f, a coordinate or the height, hatching on a flat face, the fold
 curves; on a round torus, "Function…" paints an expression over a
 rectangle of its periods, as `kurven-cli surface periodic` takes one. A
 layer names a kind of face (`FaceSelector`), so one painted on a plateau
-lies on every plateau, and one on a wall on that wall. Each edit, and each
-drag of a slider, is one step of ⌘Z; with no window, `--add`, `--remove`,
-`--function`, `--levels`, `--strokes`, `--undo` and the rest run the same
-edits in order.
+lies on every plateau, and one on a wall on that wall. Every edit that
+changes what a save writes -- painting, a truncation, a surface's or a
+landscape's numbers -- and each drag of a slider, is one step of ⌘Z, and
+undoing it puts back what was saved before it; with no window, `--add`,
+`--remove`, `--function`, `--set`, `--truncation`, `--levels`, `--strokes`,
+`--undo` and the rest run the same edits in order.
 
 ⌘N opens a picker: the catalog as pictures, each cell the landscape it
 names, drawn small by the same renderer that draws it full size. A name

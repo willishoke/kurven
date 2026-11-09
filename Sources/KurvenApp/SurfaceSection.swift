@@ -52,10 +52,6 @@ struct SurfaceSection: View {
     @Bindable var document: Document
 
     @State private var dragging: SurfaceRequest.Field?
-    /// The request as it was when the current drag began: one undo step per
-    /// drag, not one per pixel.
-    @State private var beforeDrag: SurfaceRequest?
-    @Environment(\.undoManager) private var undoManager
 
     var body: some View {
         if let request = document.surface {
@@ -355,50 +351,30 @@ struct SurfaceSection: View {
     private func set(_ field: SurfaceRequest.Field, to value: Double, draft: Bool, label: String) {
         guard var next = document.surface, next[field] != value else { return }
         next[field] = value
-        if draft {
-            document.surface = next
-            document.surfaceEdited(draft: true)
+        if dragging == field {
+            document.dragSurface(next, draft: draft)
         } else {
             commit(next, label: label)
         }
     }
 
-    /// A drag starts: remember where from. It ends: one undo step, and the
-    /// full request.
+    /// A drag starts: remember what was edited. It ends: one undo step, and
+    /// the full request.
     private func dragged(_ field: SurfaceRequest.Field, _ editing: Bool, label: String) {
         if editing {
             dragging = field
-            beforeDrag = document.surface
+            document.beginDrag()
         } else {
             dragging = nil
-            if let before = beforeDrag, let after = document.surface, before != after {
-                registerUndo(from: before, to: after, label)
-            }
-            beforeDrag = nil
             document.surfaceEdited(draft: false)
+            document.endDrag(label)
         }
     }
 
-    /// One edit, one undo step.
+    /// One edit, one undo step, which puts back the request and the layers
+    /// together (`Document.edit`). The Edit menu names the control: "Undo
+    /// Ring Radius".
     private func commit(_ next: SurfaceRequest, label: String) {
-        guard let before = document.surface, before != next else { return }
-        registerUndo(from: before, to: next, label)
-        document.surface = next
-        document.surfaceEdited(draft: false)
-    }
-
-    /// ⌘Z puts the request back, and ⌘⇧Z moves it again; the Edit menu
-    /// names the control: "Undo Ring Radius".
-    private func registerUndo(from before: SurfaceRequest, to after: SurfaceRequest,
-                              _ label: String) {
-        guard let undoManager else { return }
-        undoManager.registerUndo(withTarget: document) { document in
-            MainActor.assumeIsolated {
-                registerUndo(from: after, to: before, label)
-                document.surface = before
-                document.surfaceEdited(draft: false)
-            }
-        }
-        undoManager.setActionName(label)
+        document.editSurface(next, label)
     }
 }

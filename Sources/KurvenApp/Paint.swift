@@ -3,16 +3,6 @@ import KurvenCore
 import KurvenLandscape
 import KurvenDynamics
 
-/// What painting edits: the layers, a parametric surface's request, which
-/// draws some of them and carries the function, and the level counts the
-/// sliders set. One value, so an edit is one step to undo, and undoing it
-/// puts back exactly what a save wrote before it.
-struct Paint: Equatable {
-    var layers: [LayerSpec]
-    var request: SurfaceRequest?
-    var levelCounts: [String: Int]
-}
-
 /// Why a paint edit was refused.
 struct PaintRefusal: Error, CustomStringConvertible {
     let description: String
@@ -37,100 +27,13 @@ struct PaintChoice: Identifiable, Equatable {
 /// edit goes through `paintEdit` or a drag, so each is one undo step.
 @MainActor
 extension Document {
-    // MARK: - the state
-
-    /// What is painted now: the layers last asked for, which a restyle in
-    /// flight is still drawing, and the request the controls say.
-    var paint: Paint? {
-        switch state {
-        case .ready(.landscape):
-            Paint(layers: styling?.layers ?? [], request: nil, levelCounts: levelCounts)
-        case .ready(.surface(let bundle)):
-            Paint(layers: surfaceStyled ?? bundle.manifest.layers, request: surface ?? bundle.manifest.surface,
-                  levelCounts: levelCounts)
-        case .ready(.polyhedron):
-            Paint(layers: polyhedronLayers ?? [], request: nil, levelCounts: levelCounts)
-        case .empty, .loading, .failed:
-            nil
-        }
-    }
-
-    /// Paint `next`: the layers restyled from what is built, a request edit
-    /// built as the surface's controls build one, the levels drawn again.
-    func setPaint(_ next: Paint) {
-        guard let current = paint, next != current else { return }
-        let levelsMoved = next.levelCounts != current.levelCounts
-        levelCounts = next.levelCounts
-        switch state {
-        case .ready(.landscape):
-            if next.layers != current.layers { restyle { $0.layers = next.layers } }
-        case .ready(.surface):
-            if let request = next.request, request != current.request {
-                surfaceStyled = next.layers
-                surface = request
-                surfaceEdited(draft: false)
-            } else if next.layers != current.layers {
-                restyleSurface(next.layers)
-            }
-        case .ready(.polyhedron):
-            if next.layers != current.layers { restylePolyhedron { $0 = next.layers } }
-        case .empty, .loading, .failed:
-            return
-        }
-        if levelsMoved { rebuildCurves() }
-    }
-
-    /// One edit, one undo step, named in the Edit menu.
-    func paintEdit(_ name: String, _ change: (inout Paint) throws -> Void) rethrows {
-        guard let before = paint else { return }
-        var after = before
-        try change(&after)
-        guard after != before else { return }
-        registerUndo(from: before, to: after, name)
-        setPaint(after)
-    }
-
-    /// A slider taken hold of: what to undo back to when it is let go.
-    func beginPaintDrag() {
-        paintBeforeDrag = paint
-    }
-
-    /// A slider let go: the whole drag is one undo step.
-    func endPaintDrag(_ name: String) {
-        defer { paintBeforeDrag = nil }
-        guard let before = paintBeforeDrag, let after = paint, before != after else { return }
-        registerUndo(from: before, to: after, name)
-    }
-
-    /// ⌘Z paints `before` again, and ⌘⇧Z `after`.
-    private func registerUndo(from before: Paint, to after: Paint, _ name: String) {
-        guard let undoManager else { return }
-        undoManager.registerUndo(withTarget: self) { document in
-            MainActor.assumeIsolated {
-                document.registerUndo(from: after, to: before, name)
-                document.setPaint(before)
-            }
-        }
-        undoManager.setActionName(name)
-    }
-
-    /// A different document: nothing done to the last one can be undone on
-    /// it, and nothing of it is picked.
-    func forgetEdits() {
-        undoManager?.removeAllActions(withTarget: self)
-        paintBeforeDrag = nil
-        paintStatus = nil
-        picked = nil
-        selection = nil
-    }
-
     // MARK: - the layers on a face
 
     /// The indices into `paint.layers` of the layers that lie on the picked
     /// face. A layer whose selector is not tiled lies only on the copy in
     /// place, on the identity tile; one on listed walls, only on those.
     func paintedLayers(on pick: FacePick) -> [Int] {
-        guard let paint, let scene else { return [] }
+        guard let paint = edited, let scene else { return [] }
         return paint.layers.indices.filter { lies(paint.layers[$0], on: pick, scene.geometry) }
     }
 
@@ -138,6 +41,10 @@ extension Document {
         // The fold curves are the graph's or the surface's, though their
         // image is the outline and no face holds them.
         if case .foldCurves = spec.source { return pick.face.kind == .graph || pick.face.kind == .surface }
+        // A contour whose selector names the surface lies on it, the
+        // relief's truncation edge among them, though its role is an
+        // outline's and visibility treats it as one.
+        if case .contour(_, _, _, .surface) = spec.source { return pick.face == .surface }
         guard geometry.face(of: spec) == pick.face.kind else { return false }
         switch spec.source {
         case .contour(_, _, _, .walls(let edges, _, _, _)), .hatching(_, .walls(let edges, _, _, _)),
@@ -145,6 +52,9 @@ extension Document {
             guard case .wall(let edge) = pick.face else { return false }
             return edges.contains(edge)
         case .contour(_, _, _, let faces), .hatching(_, let faces):
+            // A riser at a tile boundary stands between two copies, which
+            // only risers selected on every tile reach.
+            if case .tileBoundaryRiser = pick.face { return Self.tiled(faces) == true }
             return Self.tiled(faces) ?? true || onIdentityTile(pick)
         default:
             return true
@@ -212,7 +122,7 @@ extension Document {
     /// height at seven levels across the face. Hatching is not laid on a
     /// curved face, and a polyhedron's faces take hatching alone.
     func paintChoices(on pick: FacePick) -> [PaintChoice] {
-        guard let paint, let scene, let face = faces(of: scene).first(where: { $0.id == pick.face }) else { return [] }
+        guard let paint = edited, let scene, let face = faces(of: scene).first(where: { $0.id == pick.face }) else { return [] }
         let has = { (source: LayerSource) in paint.layers.contains { $0.source == source } }
         var choices: [PaintChoice] = []
         func contours(_ fields: [ContourField], on faces: FaceSelector, heightPolicy: HeightPolicy = .surface) {
@@ -235,9 +145,14 @@ extension Document {
             let m = bundle.manifest
             let tiled = paintsEveryTile
             // The ceiling the build chose the levels under: the truncation's,
-            // or with none, read off the samples as the build reads it.
-            let ceiling = LandscapeStyle.ceiling(of: m.truncation)
-                ?? NativeLandscape.ceiling(of: m.truncation, magnitudes: bundle.surface.height.values.map(Double.init))
+            // or with none, read off the samples as the build reads it, once.
+            let ceiling = LandscapeStyle.ceiling(of: m.truncation) ?? {
+                if let kept = paintCeiling, kept.content == scene.content { return kept.value }
+                let value = NativeLandscape.ceiling(of: m.truncation,
+                                                    magnitudes: bundle.surface.height.values.map(Double.init))
+                paintCeiling = (scene.content, value)
+                return value
+            }()
             let defaults = NativeLandscape.defaultLayers(m.domain, truncation: m.truncation, ceiling: ceiling,
                                                          spacing: nil, phase: bundle.surface.phase != nil)
             func template(_ name: String) -> LayerSpec? { defaults.first { $0.name == name } }
@@ -303,14 +218,17 @@ extension Document {
         case .empty, .loading, .failed:
             break
         }
-        return choices
+        // Nothing the face has already: an addition the same as a layer
+        // present would draw the same curves twice.
+        return choices.filter { choice in !paint.layers.contains { $0.source == choice.spec.source } }
     }
 
     /// Add `choice` to the picked face's layers: before the outline drawn
     /// last, under a name of its own. A surface's coordinate curves and fold
     /// curves are its request's, which the edit sets too.
     func add(_ choice: PaintChoice) {
-        paintEdit("Add \(choice.label)") { paint in
+        paintStatus = nil
+        edit("Add \(choice.label)") { paint in
             var spec = choice.spec
             let names = Set(paint.layers.map(\.name))
             if names.contains(spec.name), !SurfaceDrawing.describesRequest(spec) || paint.request == nil {
@@ -327,7 +245,6 @@ extension Document {
             let outline = paint.layers.reversed().prefix { $0.role == .outline }.count
             paint.layers.insert(spec, at: spec.role == .outline ? paint.layers.count : paint.layers.count - outline)
         }
-        paintStatus = nil
     }
 
     /// Take a layer off: one of the face's, by its index in `paint.layers`.
@@ -335,11 +252,12 @@ extension Document {
     /// its request with it; a forced torus's trajectory is the torus's own
     /// and stays.
     func removeLayer(at index: Int) throws {
-        guard let spec = paint?.layers[safe: index] else { return }
+        guard let spec = edited?.layers[safe: index] else { return }
         if case .trajectory = spec.source {
             throw PaintRefusal(description: "the trajectory is the forced torus's own: set its turns instead")
         }
-        paintEdit("Remove \(spec.name)") { paint in
+        paintStatus = nil
+        edit("Remove \(spec.name)") { paint in
             if var request = paint.request, SurfaceDrawing.describesRequest(spec) {
                 switch spec.source {
                 case .coordinateCurves: request.lines = nil
@@ -352,19 +270,25 @@ extension Document {
             paint.layers.remove(at: index)
             paint.levelCounts.removeValue(forKey: spec.name)
         }
-        paintStatus = nil
     }
 
     /// Paint a function on the surface (`SurfaceRequest.painting(_:periods:)`):
     /// its |f| and arg f, whose contours can then be added. Refused, saying
     /// why, and nothing changes.
     func addFunction(_ expression: String, periods: SIMD2<Double>) throws {
-        guard let request = paint?.request else {
+        guard let request = edited?.request else {
             throw FunctionRefusal("a function is painted on a parametric surface")
         }
         let next = try request.painting(expression, periods: periods)
-        paintEdit("Function \(expression)") { $0.request = next }
         paintStatus = nil
+        edit("Function \(expression)") { $0.request = next }
+    }
+
+    /// The periods "Function…" offers for `expression`: its rectangle where
+    /// the catalog knows it (`SurfaceRequest.periods(of:)`), else the
+    /// surface's own.
+    func functionPeriods(for expression: String) -> SIMD2<Double> {
+        SurfaceRequest.periods(of: expression) ?? edited?.request?.periods ?? SIMD2(2 * .pi, 2 * .pi)
     }
 
     // MARK: - sliders
@@ -373,8 +297,8 @@ extension Document {
     /// with none under way, an edit of its own.
     func paintLevels(_ count: Int, ofLayer name: String, draft: Bool) {
         guard let index = layerSpecs.firstIndex(where: { $0.name == name }) else { return }
-        if paintBeforeDrag == nil {
-            paintEdit("Levels of \(name)") { $0.levelCounts[name] = max(count, 2) }
+        if editedBeforeDrag == nil {
+            edit("Levels of \(name)") { $0.levelCounts[name] = max(count, 2) }
         } else {
             setLevelCount(count, forLayer: index, draft: draft)
         }
@@ -382,26 +306,18 @@ extension Document {
 
     /// Set a hatching's strokes as its slider does.
     func paintStrokes(_ count: Int, ofLayer name: String) {
-        guard let index = paint?.layers.firstIndex(where: { $0.name == name }) else { return }
-        if paintBeforeDrag == nil {
-            beginPaintDrag()
-            setHatchCount(count, ofLayer: index)
-            endPaintDrag("Strokes of \(name)")
-        } else {
-            setHatchCount(count, ofLayer: index)
-        }
+        guard let index = edited?.layers.firstIndex(where: { $0.name == name }) else { return }
+        editing("Strokes of \(name)") { setHatchCount(count, ofLayer: index) }
     }
 
     /// Put a layer's levels back to its own.
     func paintResetLevels(ofLayer name: String) {
-        paintEdit("Reset Levels of \(name)") { $0.levelCounts.removeValue(forKey: name) }
+        edit("Reset Levels of \(name)") { $0.levelCounts.removeValue(forKey: name) }
     }
 
     /// Run the plateaus' hatching along an axis.
     func paintAxis(_ axis: DomainAxis) {
-        beginPaintDrag()
-        setPlateauHatchAxis(axis)
-        endPaintDrag("Hatching along \(axis == .real ? "Re" : "Im")")
+        editing("Hatching along \(axis == .real ? "Re" : "Im")") { setPlateauHatchAxis(axis) }
     }
 
     // MARK: - defaults

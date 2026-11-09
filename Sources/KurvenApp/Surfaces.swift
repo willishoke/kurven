@@ -48,7 +48,8 @@ extension Document {
         pumpSurface()
     }
 
-    /// Paint layers on the surface: the request's own curves follow it, and
+    /// Paint layers on the surface: the request's own curves follow it
+    /// (`SurfaceBundle.restyled(_:)`, through `SurfaceDrawing.keeping`), and
     /// any other layer is drawn on the surface as it is (`redrawSurface`),
     /// or on the one a request edit in flight will build.
     func restyleSurface(_ layers: [LayerSpec]) {
@@ -68,7 +69,9 @@ extension Document {
         // does not draw -- survive the edit (`SurfaceDrawing.keeping(_:)`),
         // or the layers asked for since, which the edit then draws.
         let kept = framing ? nil : surfaceStyled ?? surfaceBundle?.manifest.layers
-        let provenance = surfaceBundle?.manifest.provenance.gitSha
+        // Made again here, so recorded as this process's, unless an undo
+        // asks for the bundle it put back.
+        let gitSha = surfaceGitSha ?? rebuiltGitSha
         building = true
         surfaceStatus = (previous?.refits(for: request) ?? true)
             && { if case .forced = request.shape { true } else { false } }()
@@ -85,7 +88,8 @@ extension Document {
                 // A landscape or another surface chosen meanwhile is the
                 // document now.
                 if generation == asked {
-                    adopt(built, keepingCamera: !framing && scene != nil, gitSha: framing ? nil : provenance)
+                    adopt(built, keepingCamera: !framing && scene != nil, gitSha: gitSha)
+                    if surfaceGitSha == gitSha { surfaceGitSha = nil }
                     if surfaceStyled == built.layers.map(\.spec) { surfaceStyled = nil }
                     surfaceShown = request
                     surfaceStatus = status(of: built, took: clock.now - started)

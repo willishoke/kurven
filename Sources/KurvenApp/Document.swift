@@ -205,9 +205,22 @@ final class Document {
     /// carry them, as `polyhedronStyled` is a polyhedron's. Nil when the
     /// bundle is up to date.
     var surfaceStyled: [LayerSpec]?
-    /// What was painted when the slider being dragged was taken hold of:
-    /// one undo step per drag.
-    var paintBeforeDrag: Paint?
+    /// What was edited when the slider being dragged was taken hold of:
+    /// one undo step per drag (`Edits.swift`).
+    var editedBeforeDrag: Edited?
+    /// The git sha the next build of the surface, or sampling of the
+    /// landscape, records: an undone edit's, so the bundle saved is the one
+    /// saved before it. Nil for this process's own.
+    var surfaceGitSha: String?
+    var landscapeGitSha: String?
+    /// The ceiling a landscape's levels are chosen under when it has no
+    /// truncation, read off its samples once per landscape.
+    @ObservationIgnored var paintCeiling: (content: ContentID, value: Double)?
+    /// For an undo manager not grouping by AppKit's events: an edit opens a
+    /// group when it registers and none is open, and says so here, for the
+    /// event's end to close it.
+    @ObservationIgnored var opensUndoGroups = false
+    @ObservationIgnored var undoGroupOpened = false
     /// Why the last paint edit was refused, or what it did.
     var paintStatus: String?
 

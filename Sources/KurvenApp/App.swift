@@ -132,8 +132,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `--save PATH`, `--bake PATH`, `--screenshot PATH`, `--inspector
         // PATH` (the section, drawn) and `--dump LAYER=PREFIX` (the layer's
         // curves, as `kurven-cli fixtures` writes a hatching's) among them.
+        // `--set KEY=NUMBER` and `--truncation H` edit as the surface's and the
+        // landscape's controls do, `--hide LAYER` as the layer list does, and
+        // `--at-once` makes the edits without waiting for what each draws.
         let painting: Set<String> = ["--add", "--remove", "--function", "--undo", "--redo", "--axis",
-                                     "--dump", "--inspector"]
+                                     "--dump", "--inspector", "--truncation", "--hide"]
         if args.contains(where: painting.contains), let bundlePath {
             Task { await headlessPaint(URL(fileURLWithPath: bundlePath), args: Array(args)) }
             return
@@ -580,22 +583,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if case .failed(_, let message) = document.state { why = message }
             fail("could not open \(bundle.path) — \(why)")
         }
+        // Grouped by event, as the window's is, each control's callback an
+        // event: a step of a drag that registered would be an undo step of
+        // its own. The window's undo manager groups by the events AppKit
+        // delivers, and with none delivered here its automatic groups never
+        // close between steps; so an event's first registration opens a
+        // group, as AppKit's would, and the event's end closes it.
         let undo = UndoManager()
         undo.groupsByEvent = false
         document.undoManager = undo
+        document.opensUndoGroups = true
+        // `--at-once`: an edit does not wait for the build or restyle it asks
+        // for before the next, as edits faster than the drawing do.
+        let atOnce = args.contains("--at-once")
         func settle() async {
             repeat { try? await Task.sleep(for: .milliseconds(20)) }
             while document.building || document.drawing || document.picking || document.sampling
         }
-        /// One edit, one undo step.
-        func edit(_ body: () throws -> Void) async {
-            undo.beginUndoGrouping()
-            do { try body() } catch {
+        /// An event: what a control's callback does, then a turn of the run
+        /// loop, which closes its undo group.
+        func event(_ body: () throws -> Void) async {
+            do { try body() } catch { fail("refused: \(error)") }
+            if document.undoGroupOpened {
                 undo.endUndoGrouping()
-                fail("refused: \(error)")
+                document.undoGroupOpened = false
             }
-            undo.endUndoGrouping()
-            await settle()
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        /// One edit, and unless `--at-once`, what it asked for drawn.
+        func edit(_ body: () throws -> Void) async {
+            document.paintStatus = nil
+            await event(body)
+            if let status = document.paintStatus { print("Kurven: refused — \(status)") }
+            if !atOnce { await settle() }
         }
         func pair(_ text: String) -> (String, String) {
             let parts = text.split(separator: "=", maxSplits: 1).map(String.init)
@@ -611,11 +631,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var k = 0
         while k < args.count {
             let flag = args[k]
-            guard flag.hasPrefix("--") else { k += 1; continue }
+            guard flag.hasPrefix("--"), flag != "--at-once" else { k += 1; continue }
             if flag == "--undo" || flag == "--redo" {
+                await settle()
+                let can = flag == "--undo" ? undo.canUndo : undo.canRedo
                 if flag == "--undo" { undo.undo() } else { undo.redo() }
                 await settle()
-                print("Kurven: \(flag.dropFirst(2)) — \(document.layers.count) layers")
+                print("Kurven: \(flag.dropFirst(2))" + (can ? " — \(document.layers.count) layers" : ": nothing to \(flag.dropFirst(2))"))
                 k += 1
                 continue
             }
@@ -624,6 +646,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             k += 2
             switch flag {
             case "--pick":
+                await settle()
                 let p = value.split(separator: ",").compactMap { Double($0) }
                 guard p.count == 2, let scene = document.framedScene, let navigator = document.navigator else {
                     fail("--pick takes a pixel, PX,PY, of an open drawing")
@@ -640,12 +663,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await settle()
                 print("Kurven: \(document.pickStatus ?? "no pick")")
             case "--function":
-                guard k + 1 < args.count, args[k] == "--periods" else { fail("--function wants --periods P1,P2 after it") }
-                let p = args[k + 1].split(separator: ",").compactMap { Double($0) }
-                k += 2
-                guard p.count == 2 else { fail("--periods wants the real and imaginary periods, as in 6.4,4.1") }
-                await edit { try document.addFunction(value, periods: SIMD2(p[0], p[1])) }
-                print("Kurven: function \(value) — \(document.surfaceStatus ?? "")")
+                // The periods "Function…" offers, unless given.
+                var periods = document.functionPeriods(for: value)
+                if k + 1 < args.count, args[k] == "--periods" {
+                    let p = args[k + 1].split(separator: ",").compactMap { Double($0) }
+                    k += 2
+                    guard p.count == 2 else { fail("--periods wants the real and imaginary periods, as in 6.4,4.1") }
+                    periods = SIMD2(p[0], p[1])
+                }
+                await edit { try document.addFunction(value, periods: periods) }
+                print("Kurven: function \(value) over \(periods.x) × \(periods.y)")
             case "--add":
                 let pick = picked()
                 let choices = document.paintChoices(on: pick)
@@ -654,58 +681,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                          + choices.map(\.id).joined(separator: ", "))
                 }
                 await edit { document.add(choice) }
-                print("Kurven: added \(value) — \(document.layers.count) layers")
+                print("Kurven: added \(value)")
             case "--remove":
                 let pick = picked()
                 let on = document.paintedLayers(on: pick)
-                guard let index = on.first(where: { document.paint?.layers[$0].name == value }) else {
+                guard let index = on.first(where: { document.edited?.layers[$0].name == value }) else {
                     fail("no layer '\(value)' on \(document.paintTitle(pick)); it has: "
-                         + on.compactMap { document.paint?.layers[$0].name }.joined(separator: ", "))
+                         + on.compactMap { document.edited?.layers[$0].name }.joined(separator: ", "))
                 }
                 await edit { try document.removeLayer(at: index) }
-                print("Kurven: removed \(value) — \(document.layers.count) layers")
+                print("Kurven: removed \(value)")
+            case "--set":
+                // A number typed into a control: a surface's field
+                // (`SurfaceSection`), or a landscape's window or resolution,
+                // as `--resample` spells them (`LandscapeSection`).
+                let (key, text) = pair(value)
+                guard let number = Double(text) else { fail("--set wants KEY=NUMBER") }
+                if var request = document.surface {
+                    guard let field = SurfaceRequest.Field(rawValue: key), request[field] != nil else {
+                        fail("the surface has no field '\(key)'")
+                    }
+                    request[field] = number
+                    await edit { document.editSurface(request, key) }
+                } else if document.landscape != nil {
+                    await edit { document.editLandscape(key) { $0 = $0.applying(overrides: [key: number]) } }
+                } else {
+                    fail("--set edits a surface's or a landscape's request; this bundle has none to edit")
+                }
+                print("Kurven: \(key) = \(number)")
+            case "--truncation":
+                guard let height = Double(value) else { fail("--truncation wants a height") }
+                await edit { document.editTruncation(.uniform(height)) }
+                print("Kurven: truncated at \(height)")
+            case "--hide":
+                guard let index = document.layers.firstIndex(where: { $0.spec.name == value }) else {
+                    fail("no layer '\(value)' to hide")
+                }
+                document.toggle(layer: index)
             case "--levels", "--strokes":
+                // A drag through the slider's own callbacks (`LevelSlider`,
+                // `StrokeSlider`): taken hold of, moved, let go, each an event.
                 let (name, text) = pair(value)
                 guard let count = Int(text) else { fail("\(flag) wants LAYER=COUNT") }
-                // A drag, as the window has it: taken hold of, moved a step
-                // at a time, let go, each an event of its own and so a group
-                // of its own on the undo manager. The drag is one undo step.
                 let levels = flag == "--levels"
                 let from = levels
                     ? document.layerSpecs.firstIndex { $0.name == name }.flatMap { document.levels(forLayer: $0)?.count }
-                    : document.paint?.layers.firstIndex { $0.name == name }.flatMap { document.hatchCount(ofLayer: $0) }
+                    : document.edited?.layers.firstIndex { $0.name == name }.flatMap { document.hatchCount(ofLayer: $0) }
                 guard let from else { fail("no layer '\(name)' with \(levels ? "levels" : "strokes") to drag") }
-                func event(_ body: () -> Void) {
-                    undo.beginUndoGrouping()
-                    body()
-                    undo.endUndoGrouping()
+                let level = LevelSlider(document: document, name: name)
+                let strokes = StrokeSlider(document: document, name: name)
+                func changed(_ editing: Bool) {
+                    if levels { level.editingChanged(editing) } else { strokes.editingChanged(editing) }
                 }
-                event { document.beginPaintDrag() }
-                for n in stride(from: from, through: count, by: count >= from ? 1 : -1).dropFirst() {
-                    event {
-                        if levels { document.paintLevels(n, ofLayer: name, draft: true) }
-                        else { document.paintStrokes(n, ofLayer: name) }
-                    }
-                    await settle()
+                func set(_ value: Double) {
+                    if levels { level.set(value) } else { strokes.set(value) }
                 }
-                event {
-                    if levels { document.rebuildCurves() }
-                    document.endPaintDrag("\(levels ? "Levels" : "Strokes") of \(name)")
+                // Every count on the way for a short drag; sixteen even
+                // steps for a long one.
+                let span = count - from, steps = max(min(abs(span), 16), 1)
+                await event { changed(true) }
+                for i in 1...steps {
+                    await event { set(Double(from + span * i / steps)) }
+                    if !atOnce { await settle() }
                 }
-                await settle()
-                print("Kurven: dragged the \(flag.dropFirst(2)) of \(name) from \(from) to \(count)")
+                await event { changed(false) }
+                if !atOnce { await settle() }
+                print("Kurven: dragged the \(flag.dropFirst(2)) of \(name) from \(from) to \(count)"
+                      + (document.paintStatus.map { " — \($0)" } ?? ""))
             case "--axis":
                 guard let axis = DomainAxis(rawValue: value) else { fail("--axis wants real or imag") }
                 await edit { document.paintAxis(axis) }
             case "--save":
+                await settle()
                 headlessSave(to: URL(fileURLWithPath: value))
             case "--bake":
+                await settle()
                 await headlessBake(to: URL(fileURLWithPath: value), resolution: resolution)
             case "--screenshot":
+                await settle()
                 renderScreenshot(to: URL(fileURLWithPath: value), what: bundle.lastPathComponent)
             case "--inspector":
+                await settle()
                 await renderPaintSection(to: URL(fileURLWithPath: value))
             case "--dump":
+                await settle()
                 let (name, prefix) = pair(value)
                 guard let layer = document.layers.first(where: { $0.spec.name == name }) else {
                     fail("no layer '\(name)' to dump")
@@ -721,7 +780,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "--resolution":
                 break
             default:
-                fail("\(flag) is not a painting step")
+                fail("\(flag) is not an editing step")
             }
         }
         exit(0)

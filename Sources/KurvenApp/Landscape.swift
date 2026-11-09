@@ -108,13 +108,17 @@ extension Document {
                 // Sampled here, in this process: the evaluator is native, and
                 // the bundle is a value rather than a directory to read back.
                 let refining = refineContours && !draft
+                // Sampled here, so recorded as this process's, unless an
+                // undo asks for the bundle it put back.
+                let gitSha = landscapeGitSha ?? rebuiltGitSha
                 let bundle = try await Task.detached(priority: .userInitiated) {
-                    try NativeLandscape.build(request, refine: refining)
+                    try NativeLandscape.build(request, gitSha: gitSha, refine: refining)
                 }.value
                 // A surface chosen meanwhile is the document now.
                 if generation == asked {
                     adopt(bundle, keepingCamera: !framing && scene != nil, draft: draft)
                     shown = request
+                    if landscapeGitSha == gitSha, !draft { landscapeGitSha = nil }
                 }
                 landscapeStatus = "\(request.resolution)² in \(clock.now - started)"
                     + (draft ? " (draft)" : "")
@@ -283,6 +287,10 @@ extension Document {
             guard let navigator, let preset = restyled.manifest.presets.first else { return }
             var scene = Scene(bundle: restyled, preset: preset)
             scene.camera = navigator.camera
+            // Hidden layers are hidden by name: a layer added or taken off
+            // moves the others.
+            let hidden = Set(hiddenLayers.compactMap { self.scene?.layers[safe: $0]?.spec.name })
+            hiddenLayers = Set(scene.layers.indices.filter { hidden.contains(scene.layers[$0].spec.name) })
             self.scene = scene
             // A layer drawn at levels of its own is drawn at them again.
             if !levelCounts.isEmpty { curvesWanted = curvesWanted ?? false }
