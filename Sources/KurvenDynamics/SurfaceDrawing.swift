@@ -344,7 +344,8 @@ public struct SurfaceDrawing: Sendable {
     /// from, lends the contours of a coordinate it drew on the same
     /// parameter rectangle (`restyled(_:carrying:)`).
     public func keeping(_ kept: [LayerSpec], from previous: SurfaceDrawing? = nil) throws -> SurfaceDrawing {
-        let built = layers.map(\.spec)
+        // The request's own curves as it draws them, whatever a restyle drew.
+        let built = own.map(\.spec)
         var specs = kept.compactMap { spec in
             Self.describesRequest(spec) ? built.first { $0.name == spec.name && Self.describesRequest($0) } : spec
         }
@@ -470,6 +471,16 @@ public extension SurfaceRequest {
         case .periodic(_, let p, _, _, _): p
         case .forced, .relief: nil
         }
+    }
+
+    /// The rectangle of periods of an expression whose periods the catalog
+    /// knows: sn(z, m) for a number 0 < m < 1, whose rectangle is
+    /// [0, 4K) × [0, 2K'), as `surface sn` draws it. Nil for any other.
+    static func periods(of expression: String) -> SIMD2<Double>? {
+        guard case .call("sn", let arguments)? = try? KurvenMath.Expression.parse(expression),
+              arguments.count == 2, arguments[0] == .variable,
+              case .number(let m) = arguments[1], m > 0, m < 1 else { return nil }
+        return SIMD2(4 * Jacobi.quarterPeriod(m), 2 * Jacobi.quarterPeriod(1 - m))
     }
 
     /// This request with `expression` painted on its torus over the period
