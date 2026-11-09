@@ -631,6 +631,20 @@ func compositeTests() {
             Check.expect(error.description.contains("displaced"), "a displaced torus is refused in a composite, saying why",
                          error.description)
         }
+        // At either end of the range of scales, drawn in reasonable time:
+        // each part works only over the ball or box that holds it.
+        let clock = ContinuousClock()
+        for (what, part, placement) in [("the round torus at scale 1e-3", try surface("torus"), Placement(scale: 1e-3, offset: SIMD3(0, 0, 1))),
+                                        ("the round torus at scale 1e3", try surface("torus"), Placement(scale: 1e3, offset: SIMD3(0, 0, 1))),
+                                        ("a cube at scale 1e3", try polyhedron("cube"), Placement(scale: 1e3)),
+                                        ("a cube at scale 1e-3", try polyhedron("cube"), Placement(scale: 1e-3, offset: SIMD3(1, 1, 1)))] {
+            var drawn = false
+            let elapsed = try clock.measure {
+                drawn = try Composite([("landscape", landscape, .identity), ("part", part, placement)],
+                                      camera: landscape.camera).visibleLayers().count > 0
+            }
+            Check.expect(drawn && elapsed < .seconds(20), "\(what) on the landscape is drawn in reasonable time", "\(elapsed)")
+        }
         // Placements at either end of the range, and past it.
         let cube = try polyhedron("cube")
         for (what, placement, taken) in [("scale 1e-3", Placement(scale: 1e-3), true), ("scale 1e3", Placement(scale: 1e3), true),

@@ -97,8 +97,8 @@ step "the committed golden fixtures are what kurven-cli fixtures writes" golden
 
 # Several geometries in one scene: `kurven-cli scene` draws the golden
 # composites (`kurven-cli fixtures`, composite/) byte for byte, and refuses a
-# surface with no exact occlusion test, the forced torus, saying why and
-# writing nothing.
+# surface with no exact occlusion test, the forced torus, a displaced torus,
+# and a placement out of range, saying why and writing nothing.
 scene() {
     local dir="$PACKAGE/.build/scene-check" f="$ROOT/tests/fixtures" out
     local land="$f/expr/landscape_cubic.kurven" c="$f/contract"
@@ -115,8 +115,20 @@ scene() {
         { echo "the forced torus was drawn in a composite"; return 1; }
     printf '%s\n' "$out" | grep -q 'no exact occlusion test' && [ ! -e "$dir/forced.svg" ] ||
         { printf '%s\n' "$out"; return 1; }
+    # A displaced torus, and placements past either end of the range.
+    local refused
+    for refused in "$c/surface_relief.kurven --at 0,0,1,0.3|a displaced torus" \
+                   "$c/polyhedron_cube.kurven --at 0,0,0,1e200|scale is between" \
+                   "$c/polyhedron_cube.kurven --at 0,0,0,1e-20|scale is between" \
+                   "$c/polyhedron_cube.kurven --at 0,1e300,0|offset is within"; do
+        rm -f "$dir/refused.svg"
+        out=$("$BIN/kurven-cli" scene "$land" ${refused%|*} -o "$dir/refused.svg" 2>&1) &&
+            { echo "scene drew ${refused%|*}"; return 1; }
+        printf '%s\n' "$out" | grep -q "${refused#*|}" && [ ! -e "$dir/refused.svg" ] ||
+            { printf '%s\n' "$out"; echo "scene did not refuse ${refused%|*}, saying why, with nothing written"; return 1; }
+    done
 }
-step "the CLI draws several geometries in one scene as the golden composites, and refuses one with no exact occlusion test" scene
+step "the CLI draws several geometries in one scene as the golden composites, and refuses a geometry with no exact occlusion test or out of range" scene
 
 # The app's own document, driven without a window (a bundle named by a bare
 # path opens none): a surface saved by the CLI, opened, saved as ⌘S saves it,
