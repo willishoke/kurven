@@ -12,6 +12,7 @@ venv/
 *.jpg
 !docs/**/*.svg
 !docs/**/*.png
+!tests/fixtures/composite/*.svg
 
 .ipynb_checkpoints/
 .DS_Store

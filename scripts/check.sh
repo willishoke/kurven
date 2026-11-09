@@ -95,6 +95,29 @@ golden() {
 }
 step "the committed golden fixtures are what kurven-cli fixtures writes" golden
 
+# Several geometries in one scene: `kurven-cli scene` draws the golden
+# composites (`kurven-cli fixtures`, composite/) byte for byte, and refuses a
+# surface with no exact occlusion test, the forced torus, saying why and
+# writing nothing.
+scene() {
+    local dir="$PACKAGE/.build/scene-check" f="$ROOT/tests/fixtures" out
+    local land="$f/expr/landscape_cubic.kurven" c="$f/contract"
+    rm -rf "$dir" && mkdir -p "$dir" || return 1
+    "$BIN/kurven-cli" scene "$land" "$c/polyhedron_cube.kurven" --at -1.2,0.1,0.3,0.35 -o "$dir/cube.svg" >/dev/null &&
+    "$BIN/kurven-cli" scene "$land" "$c/surface_torus.kurven" --at 1,0,1.6,0.35 -o "$dir/torus.svg" >/dev/null &&
+    "$BIN/kurven-cli" scene "$land" "$c/polyhedron_frame.kurven" --at 0.3,-1.3,0.2,0.3 -o "$dir/frame.svg" >/dev/null &&
+    "$BIN/kurven-cli" scene "$land" "$c/polyhedron_cube.kurven" --at -1.2,0.1,0.3,0.35 \
+        "$c/surface_torus.kurven" --at 1,0,1.6,0.35 -o "$dir/three.svg" >/dev/null || return 1
+    for name in cube torus frame three; do
+        cmp "$dir/$name.svg" "$f/composite/$name.svg" || { echo "the $name composite is not the golden one"; return 1; }
+    done
+    out=$("$BIN/kurven-cli" scene "$land" "$c/surface_forced.kurven" -o "$dir/forced.svg" 2>&1) &&
+        { echo "the forced torus was drawn in a composite"; return 1; }
+    printf '%s\n' "$out" | grep -q 'no exact occlusion test' && [ ! -e "$dir/forced.svg" ] ||
+        { printf '%s\n' "$out"; return 1; }
+}
+step "the CLI draws several geometries in one scene as the golden composites, and refuses one with no exact occlusion test" scene
+
 # The app's own document, driven without a window (a bundle named by a bare
 # path opens none): a surface saved by the CLI, opened, saved as ⌘S saves it,
 # reopened and baked, is the CLI's bundle and drawing byte for byte. Then a
