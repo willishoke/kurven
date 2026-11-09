@@ -608,7 +608,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 undo.endUndoGrouping()
                 document.undoGroupOpened = false
             }
-            try? await Task.sleep(for: .milliseconds(2))
+            // At once, the next edit comes before anything this one asked
+            // for can land: nothing lands but on the main actor.
+            if !atOnce { try? await Task.sleep(for: .milliseconds(2)) }
         }
         /// One edit, and unless `--at-once`, what it asked for drawn.
         func edit(_ body: () throws -> Void) async {
