@@ -343,6 +343,20 @@ panel. A polyhedron's bundle opens with its edges and its hatching, drawn at
 rest as the bake draws them, cut in closed form for the camera, and left to
 the depth pass while the camera moves.
 
+A picked face gets a "Curves on" section: the layers on it, each with its
+level or strokes slider and a way to take it off, and an Add menu of what
+its fields admit, at the catalog's levels and spacing -- a contour of |f|,
+arg f, a coordinate or the height, hatching on a flat face, the fold
+curves; on a round torus, "Function…" paints an expression over a
+rectangle of its periods, as `kurven-cli surface periodic` takes one. A
+layer names a kind of face (`FaceSelector`), so one painted on a plateau
+lies on every plateau, and one on a wall on that wall. Every edit that
+changes what a save writes -- painting, a truncation, a surface's or a
+landscape's numbers -- and each drag of a slider, is one step of ⌘Z, and
+undoing it puts back what was saved before it; with no window, `--add`,
+`--remove`, `--function`, `--set`, `--truncation`, `--levels`, `--strokes`,
+`--undo` and the rest run the same edits in order.
+
 ⌘N opens a picker: the catalog as pictures, each cell the landscape it
 names, drawn small by the same renderer that draws it full size. A name
 cannot answer what ψ looks like against ζ, which is the reason these plates

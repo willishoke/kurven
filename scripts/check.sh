@@ -106,7 +106,11 @@ step "the committed golden fixtures are what kurven-cli fixtures writes" golden
 # saved again by the app, reopened and baked, is `surface solid`'s drawing
 # byte for byte; and 40 strokes set as the hatching's slider sets them
 # (5.657 / 40 apart across the largest face) save and bake as `surface solid
-# --spacing` at that spacing saves and bakes, bundle and drawing.
+# --spacing` at that spacing saves and bakes, bundle and drawing. And painted:
+# from the plain torus, sn(z, 0.64) over the period rectangle "Function…"
+# offers for it (4K by 2K', as `surface sn` computes them), the coordinate
+# curves taken off and the four contour families added at the catalog's
+# levels, bakes `surface sn`'s drawing byte for byte.
 app() {
     local dir="$PACKAGE/.build/app-check"
     rm -rf "$dir" && mkdir -p "$dir" || return 1
@@ -141,9 +145,192 @@ app() {
     "$BIN/kurven-cli" surface solid --kind frame --hatching turing --spacing 0.1414213562373095 \
         --save "$dir/s.kurven" -o "$dir/s.svg" >/dev/null &&
     cmp "$dir/r.kurven/manifest.json" "$dir/s.kurven/manifest.json" &&
-    cmp "$dir/r.svg" "$dir/s.svg"
+    cmp "$dir/r.svg" "$dir/s.svg" &&
+    "$BIN/kurven-cli" surface torus --save "$dir/torus.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --function 'sn(z, 0.64)' --remove lines \
+        --add mag_major --add mag_minor --add ang_major --add ang_minor --bake "$dir/painted.svg" >/dev/null &&
+    cmp "$dir/painted.svg" "$dir/a.svg"
 }
-step "the app saves, restyles and bakes a surface and a polyhedron as the CLI does, with no window" app
+step "the app saves, restyles, paints and bakes a surface and a polyhedron as the CLI does, with no window" app
+
+# Painting, with no window, as the "Curves on" section paints the picked
+# face. Plateau hatching painted on the hatch fixture's landscape, at the
+# fixture's spacing as the strokes slider sets it (18 and 15 along the longer
+# side), is the fixture's strokes byte for byte: along Re under the uniform
+# truncation, and along Im under the bands, where a plateau picked is every
+# plateau painted. Each kind of edit -- a function, a layer added or taken
+# off, a level or strokes slider dragged, the plateaus' axis -- on a surface,
+# a landscape's graph, plateaus and a wall, and a polyhedron, undone, saves
+# what was saved before it, and redone, what was saved after it; a drag of
+# many steps is one undo, which leaves nothing more to undo. Edits of
+# different kinds in a row -- painting, a truncation, a surface's or a
+# landscape's numbers -- undone one by one, save at each undo what was saved
+# at that point of the history, the opened bundle's provenance included. An
+# edit made while the one before it is still being drawn saves what the two
+# save made one after the other -- a resample and a restyle too, and undos
+# pressed faster than they are drawn. A drag let go where it began leaves
+# nothing to undo and the bundle as opened; "Function…" offers a surface's own
+# function its own periods. Strokes past what a polyhedron holds are
+# refused and leave nothing to undo; a layer hidden stays hidden by name when
+# another is added; a relief's truncation edge is listed on its surface and
+# can be taken off, and the Add menu offers nothing the surface has. A
+# function that does not parse, or a period that is not positive, is refused,
+# saying why.
+paint() {
+    local dir="$PACKAGE/.build/paint-check" c="$ROOT/tests/fixtures/contract" h="$ROOT/tests/fixtures/hatch"
+    local e="$ROOT/tests/fixtures/expr/landscape_cubic.kurven"
+    local sn=7.981211110658917,3.5015076058315047 failed=0 out
+    rm -rf "$dir" && mkdir -p "$dir" || return 1
+    "$BIN/KurvenApp" "$h/uniform.kurven" --pick 425,235 --add plateau_hatch --strokes plateau_hatch=18 \
+        --dump plateau_hatch="$dir/uniform" >/dev/null &&
+    cmp "$dir/uniform.npy" "$h/uniform_plateau_hatch_real.npy" &&
+    cmp "$dir/uniform.idx.npy" "$h/uniform_plateau_hatch_real.idx.npy" &&
+    "$BIN/KurvenApp" "$h/bands.kurven" --pick 860,170 --add plateau_hatch --axis imag --strokes plateau_hatch=15 \
+        --dump plateau_hatch="$dir/bands" >/dev/null &&
+    cmp "$dir/bands.npy" "$h/bands_plateau_hatch_imag.npy" &&
+    cmp "$dir/bands.idx.npy" "$h/bands_plateau_hatch_imag.idx.npy" || return 1
+    "$BIN/kurven-cli" surface torus --save "$dir/torus.kurven" >/dev/null || return 1
+    undone() {
+        local name=$1 bundle=$2 pick=$3
+        shift 3
+        "$BIN/KurvenApp" "$bundle" --pick "$pick" --save "$dir/$name-before.kurven" "$@" \
+            --save "$dir/$name-after.kurven" --undo --save "$dir/$name-undone.kurven" \
+            --redo --save "$dir/$name-redone.kurven" --undo --undo --save "$dir/$name-twice.kurven" >/dev/null &&
+        diff -r "$dir/$name-before.kurven" "$dir/$name-undone.kurven" >/dev/null &&
+        diff -r "$dir/$name-before.kurven" "$dir/$name-twice.kurven" >/dev/null &&
+        diff -r "$dir/$name-after.kurven" "$dir/$name-redone.kurven" >/dev/null &&
+        ! diff -r "$dir/$name-before.kurven" "$dir/$name-after.kurven" >/dev/null ||
+            { echo "undo of $name: not what was saved"; failed=1; }
+    }
+    undone function "$dir/torus.kurven" 300,600 --function 'sn(z, 0.64)' --periods "$sn"
+    undone coordinate-curves "$dir/torus.kurven" 300,600 --remove lines
+    undone folds "$dir/torus.kurven" 300,600 --remove folds
+    undone contour "$dir/torus.kurven" 300,600 --add surface_v
+    undone surface-levels "$c/surface.kurven" 300,600 --levels ang_major=9
+    undone surface-remove "$c/surface.kurven" 300,600 --remove u
+    undone surface-add "$c/surface.kurven" 300,600 --add mag_minor
+    undone plateau-hatching "$h/uniform.kurven" 425,235 --add plateau_hatch
+    undone plateau-strokes "$c/landscape.kurven" 900,100 --strokes plateau_hatch=30
+    undone plateau-axis "$c/landscape.kurven" 900,100 --axis imag
+    undone plateau-remove "$c/landscape.kurven" 900,100 --remove plateau_hatch
+    undone wall-hatching "$c/landscape.kurven" 1100,200 --add wall_hatch
+    undone graph-levels "$c/landscape.kurven" 300,500 --levels mag_major=7
+    undone solid-hatching "$c/polyhedron_frame.kurven" 300,250 --add hatching
+    undone solid-strokes "$c/polyhedron_frame.kurven" 300,250 --strokes hatching=30
+    undone solid-remove "$c/polyhedron_frame.kurven" 300,250 --remove hatching
+    [ "$failed" = 0 ] || return 1
+    # A history, saved after each edit and at each undo.
+    history() {
+        local name=$1 bundle=$2 pick=$3 args=() n=0
+        shift 3
+        args=(--save "$dir/$name-0.kurven")
+        while [ $# -gt 0 ]; do
+            n=$((n + 1))
+            args+=("$1" "$2" --save "$dir/$name-$n.kurven")
+            shift 2
+        done
+        for ((i = n - 1; i >= 0; i--)); do args+=(--undo --save "$dir/$name-undone-$i.kurven"); done
+        "$BIN/KurvenApp" "$bundle" --pick "$pick" "${args[@]}" >/dev/null || { echo "history $name: did not run"; return 1; }
+        for ((i = 0; i < n; i++)); do
+            diff -r "$dir/$name-$i.kurven" "$dir/$name-undone-$i.kurven" >/dev/null ||
+                { echo "history $name: undone to step $i, not what was saved there"; return 1; }
+        done
+    }
+    "$BIN/kurven-cli" landscape "1/(z^3 - 1)" --re -1.3,1.6 --im -1.2,1.5 --truncation 5 --res 200 \
+        -o "$dir/cubic.kurven" >/dev/null || return 1
+    history landscape "$c/landscape.kurven" 300,500 --levels mag_major=7 --add graph_u --truncation 1.5 &&
+    history bands "$h/bands.kurven" 860,170 --add plateau_hatch --truncation 2 --strokes plateau_hatch=30 &&
+    history surface "$c/surface_torus.kurven" 300,600 --set major=2.5 --add surface_v --remove lines &&
+    history window "$dir/cubic.kurven" 600,400 --set rMin=-1.0 --truncation 4 --set res=240 || return 1
+    grep -q '"gitSha":"golden"' "$dir/surface-undone-0.kurven/manifest.json" &&
+        grep -q '"gitSha":"native"' "$dir/surface-1.kurven/manifest.json" ||
+        { echo "a surface made again does not record this build, or its undo the bundle's"; return 1; }
+    # Two edits at once, the second before the first is drawn, against the
+    # first saved and reopened and the second made on it.
+    racing() {
+        local name=$1 bundle=$2 pick=$3 first=$4 a=$5 second=$6 b=$7
+        "$BIN/KurvenApp" "$bundle" --pick "$pick" "$first" "$a" --save "$dir/$name-first.kurven" >/dev/null &&
+        "$BIN/KurvenApp" "$dir/$name-first.kurven" --pick "$pick" "$second" "$b" \
+            --save "$dir/$name-then.kurven" >/dev/null &&
+        "$BIN/KurvenApp" "$bundle" --pick "$pick" --at-once "$first" "$a" "$second" "$b" \
+            --save "$dir/$name-at-once.kurven" >/dev/null &&
+        diff -r "$dir/$name-then.kurven" "$dir/$name-at-once.kurven" >/dev/null ||
+            { echo "$name: edits made at once save other than made one after the other"; return 1; }
+    }
+    racing linear-curve "$c/surface_torus.kurven" 300,600 --set slope=0.5 --add surface_u &&
+    [ "$(grep -o '"slope":0.5' "$dir/linear-curve-at-once.kurven/manifest.json" | wc -l)" -eq 2 ] ||
+        { echo "the linear curve drawn is not the one the request says"; return 1; }
+    racing radii "$c/surface_torus.kurven" 300,600 --set minor=0.5 --remove linearCurves &&
+    racing truncation "$c/landscape.kurven" 300,500 --truncation 1.5 --add graph_v &&
+    racing window-truncation "$e" 600,500 --set rMin=-1.0 --truncation 4 &&
+    racing window-add "$e" 600,500 --set rMin=-1.0 --add graph_u || return 1
+    # Four edits at once -- a window, an addition, a truncation, a resolution
+    # -- and their undos, against the same made one after the other; then two
+    # undos at once.
+    "$BIN/KurvenApp" "$e" --pick 600,500 --save "$dir/four-0.kurven" --set rMin=-1.0 --add graph_u \
+        --truncation 4 --set res=240 --save "$dir/four-4.kurven" --undo --save "$dir/four-3.kurven" \
+        --undo --save "$dir/four-2.kurven" --undo --save "$dir/four-1.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$e" --pick 600,500 --at-once --set rMin=-1.0 --add graph_u --truncation 4 --set res=240 \
+        --save "$dir/four-at-once-4.kurven" --undo --save "$dir/four-at-once-3.kurven" \
+        --undo --save "$dir/four-at-once-2.kurven" --undo --save "$dir/four-at-once-1.kurven" >/dev/null || return 1
+    for i in 1 2 3 4; do
+        diff -r "$dir/four-$i.kurven" "$dir/four-at-once-$i.kurven" >/dev/null ||
+            { echo "four edits at once: step $i is not what one after the other saves"; return 1; }
+    done
+    "$BIN/KurvenApp" "$e" --pick 600,500 --at-once --set rMin=-1.0 --truncation 4 --save "$dir/twice-2.kurven" \
+        --undo --undo --save "$dir/twice-0.kurven" >/dev/null &&
+    diff -r "$dir/four-0.kurven" "$dir/twice-0.kurven" >/dev/null || { echo "two undos at once: not the opened bundle"; return 1; }
+    # The golden landscape's window moved and undone saves the golden
+    # bundle, and redone, this build's; a drag of a surface's and a
+    # landscape's number let go where it began leaves nothing to undo, and
+    # the bundle as it was opened.
+    history golden "$e" 600,500 --set rMin=-1.0 || return 1
+    "$BIN/KurvenApp" "$e" --pick 600,500 --set rMin=-1.0 --undo --redo --save "$dir/golden-redone.kurven" >/dev/null &&
+    grep -q '"gitSha":"golden"' "$dir/golden-undone-0.kurven/manifest.json" &&
+    grep -q '"gitSha":"native"' "$dir/golden-redone.kurven/manifest.json" ||
+        { echo "the golden landscape's provenance does not come back with an undo"; return 1; }
+    for drag in "$c/surface_torus.kurven 300,600 major=2.3,2.6,2.0" "$e 600,500 rMin=-1.0,-2.0"; do
+        set -- $drag
+        # Drafts coarser than the fixture's 64 samples, so the drag samples.
+        out=$("$BIN/KurvenApp" "$1" --pick "$2" --draft-resolution 32 --save "$dir/drag-before.kurven" --drag "$3" \
+            --save "$dir/drag-after.kurven" --undo 2>&1) &&
+        printf '%s\n' "$out" | grep -q 'undo: nothing to undo' &&
+        diff -r "$dir/drag-before.kurven" "$dir/drag-after.kurven" >/dev/null ||
+            { echo "a drag of $3 let go where it began left a step, or another bundle"; return 1; }
+    done
+    # "Function…" offers the surface's own function its own periods.
+    "$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --function 'sn(z, 0.64)' \
+        --periods 15.962422221317834,7.0030152116630094 --save "$dir/eight.kurven" \
+        --function 'sn(z, 0.64)' --save "$dir/eight-again.kurven" >/dev/null &&
+    diff -r "$dir/eight.kurven" "$dir/eight-again.kurven" >/dev/null ||
+        { echo "painting a surface's own function again moved its periods"; return 1; }
+    out=$("$BIN/KurvenApp" "$c/polyhedron_frame.kurven" --pick 300,250 --save "$dir/frame.kurven" \
+        --strokes hatching=20000 --save "$dir/frame-refused.kurven" --undo 2>&1) || { printf '%s\n' "$out"; return 1; }
+    printf '%s\n' "$out" | grep -q 'more than the 65536 a polyhedron' &&
+        printf '%s\n' "$out" | grep -q 'undo: nothing to undo' &&
+        diff -r "$dir/frame.kurven" "$dir/frame-refused.kurven" >/dev/null ||
+        { printf '%s\n' "$out"; echo "strokes past the polyhedron's lines were taken, or left a step"; return 1; }
+    "$BIN/KurvenApp" "$c/landscape.kurven" --pick 900,100 --hide folds --add plateaus_u \
+        --screenshot "$dir/hidden-first.png" >/dev/null &&
+    "$BIN/KurvenApp" "$c/landscape.kurven" --pick 900,100 --add plateaus_u --hide folds \
+        --screenshot "$dir/hidden-after.png" >/dev/null &&
+    cmp "$dir/hidden-first.png" "$dir/hidden-after.png" || { echo "a hidden layer is hidden by index"; return 1; }
+    "$BIN/KurvenApp" "$c/surface_relief.kurven" --pick 600,400 --remove 'truncation edge' \
+        --save "$dir/relief.kurven" >/dev/null &&
+    ! grep -q '"name":"truncation edge"' "$dir/relief.kurven/manifest.json" ||
+        { echo "the relief's truncation edge was not taken off"; return 1; }
+    "$BIN/kurven-cli" surface sn --save "$dir/sn.kurven" >/dev/null || return 1
+    out=$("$BIN/KurvenApp" "$dir/sn.kurven" --pick 300,600 --add mag_major 2>&1) &&
+        { echo "sn's own mag_major was offered again"; return 1; }
+    printf '%s\n' "$out" | grep -q "nothing called 'mag_major'" || { printf '%s\n' "$out"; return 1; }
+    out=$("$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --function 'sn(z,' --periods "$sn" 2>&1) &&
+        { echo "an expression that stops in the middle was painted"; return 1; }
+    printf '%s\n' "$out" | grep -q 'refused: sn(z,: the expression stops in the middle' || { printf '%s\n' "$out"; return 1; }
+    out=$("$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --function 'sn(z, 0.64)' --periods 0,1 2>&1) &&
+        { echo "a period of 0 was painted"; return 1; }
+    printf '%s\n' "$out" | grep -q 'refused: a period must be a positive number, not 0.0' || { printf '%s\n' "$out"; return 1; }
+}
+step "the app paints the picked face, and undoes and redoes every kind of edit, with no window" paint
 
 # Picking, with no window: a click at a pixel reads the depth the frame left
 # there, takes it back through the camera, and names the face under it. The

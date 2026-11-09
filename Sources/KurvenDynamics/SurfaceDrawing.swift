@@ -22,6 +22,11 @@ import KurvenLandscape
 ///     the fitted series or integrating again;
 ///   - **its fit** -- system, fit length, harmonics -- fits again.
 ///
+/// A layer painted on the surface, which the request does not draw, goes by
+/// its field's class (`FieldClass`, `keeping(_:from:)`): a coordinate's
+/// contours are carried while the parameter rectangle keeps its samples, the
+/// height's while the surface is kept, and |f| and arg f's with the function.
+///
 /// Everything reused is exactly what building from nothing would produce, so
 /// a drawing depends on its request alone -- the window's is the CLI's. The one
 /// `draft` names a request made while a control is dragged; nothing is
@@ -292,7 +297,29 @@ public struct SurfaceDrawing: Sendable {
     /// curves, the trajectory. The surface and its identity are kept, so a
     /// restyle redraws curves alone.
     public func restyled(_ specs: [LayerSpec]) throws -> SurfaceDrawing {
+        try restyled(specs, carrying: nil)
+    }
+
+    /// `restyled(_:)`, with the contours `previous` drew carried over from
+    /// it by their field's class (`FieldClass`): a coordinate's where this
+    /// drawing's parameter rectangle and its samples are the same -- found
+    /// in parameter coordinates, they are the same curves there, and only
+    /// their place in space is new -- and the height's where the surface is
+    /// the same, since it is read off the map. |f| and arg f come with the
+    /// drawing, from its function.
+    private func restyled(_ specs: [LayerSpec], carrying previous: SurfaceDrawing?) throws -> SurfaceDrawing {
         func drawn(_ spec: LayerSpec) -> Layer? { layers.first { $0.spec.source == spec.source } }
+        let sameRectangle = previous.map { $0.surface.u == surface.u && $0.surface.v == surface.v } ?? false
+        let sameSurface = previous?.content == content
+        func carried(_ spec: LayerSpec) -> PolylineSet<WorldSpace>? {
+            guard case .contour(let field, _, _, _) = spec.source,
+                  field.fieldClass == .coordinate ? sameRectangle : field.fieldClass == .embedding && sameSurface,
+                  let old = previous?.layers.first(where: { $0.spec.source == spec.source }),
+                  let coords = old.paths.coords else { return nil }
+            let map = surface.map
+            return PolylineSet(vertices: coords.map { P3(map($0).position) }, offsets: old.paths.offsets,
+                               coords: coords)
+        }
         let ofF = specs.filter { spec in
             if drawn(spec) == nil, case .contour(let field, _, _, _) = spec.source { field.isFieldOfF } else { false }
         }
@@ -302,7 +329,7 @@ public struct SurfaceDrawing: Sendable {
             if let layer = drawn(spec) ?? placed.first(where: { $0.spec.source == spec.source }) {
                 return Layer(spec: spec, paths: layer.paths)
             }
-            return Layer(spec: spec, paths: try curves(spec))
+            return Layer(spec: spec, paths: try carried(spec) ?? curves(spec))
         }
         return SurfaceDrawing(request: request, surface: surface, layers: restyled, own: own, contours: contours,
                               content: content, revolution: revolution, embedded: embedded, forced: forced)
@@ -313,20 +340,23 @@ public struct SurfaceDrawing: Sendable {
     /// a contour the request does not draw -- but for the curves the request
     /// itself describes, its coordinate curves, linear curve, trajectory and
     /// folds, which are this request's: where it still draws them, and
-    /// added where it now does.
-    public func keeping(_ kept: [LayerSpec]) throws -> SurfaceDrawing {
-        let built = layers.map(\.spec)
+    /// added where it now does. `previous`, the drawing the edit was made
+    /// from, lends the contours of a coordinate it drew on the same
+    /// parameter rectangle (`restyled(_:carrying:)`).
+    public func keeping(_ kept: [LayerSpec], from previous: SurfaceDrawing? = nil) throws -> SurfaceDrawing {
+        // The request's own curves as it draws them, whatever a restyle drew.
+        let built = own.map(\.spec)
         var specs = kept.compactMap { spec in
             Self.describesRequest(spec) ? built.first { $0.name == spec.name && Self.describesRequest($0) } : spec
         }
         specs += built.filter { spec in Self.describesRequest(spec) && !specs.contains { $0.name == spec.name } }
-        return try restyled(specs)
+        return try restyled(specs, carrying: previous)
     }
 
     /// Whether a layer is one of the curves a request describes in itself
     /// rather than as a layer: its coordinate curves, linear curve,
     /// trajectory or folds, as `build` names them.
-    static func describesRequest(_ spec: LayerSpec) -> Bool {
+    public static func describesRequest(_ spec: LayerSpec) -> Bool {
         switch (spec.name, spec.source) {
         case ("lines", .coordinateCurves), ("linearCurves", .linearCurves), ("trajectory", .trajectory),
              ("folds", .foldCurves): true
@@ -413,4 +443,82 @@ public extension SurfacePreset {
     ]
 
     static func named(_ name: String) -> SurfacePreset? { catalog.first { $0.name == name } }
+}
+
+/// Why a function cannot be painted on a surface, in words a field can show.
+public struct FunctionRefusal: Error, CustomStringConvertible, Equatable {
+    public let description: String
+    public init(_ description: String) { self.description = description }
+}
+
+public extension SurfaceRequest {
+    /// Whether a function can be painted on the surface: a round torus,
+    /// plain or carrying one already. A forced torus is fitted to a flow,
+    /// and sn in relief is built from sn.
+    var takesFunction: Bool {
+        switch shape {
+        case .torus, .sn, .periodic: true
+        case .forced, .relief: false
+        }
+    }
+
+    /// The function's period rectangle, when the surface carries one; the
+    /// plain torus's parameter rectangle, a whole turn each way, when not.
+    var periods: SIMD2<Double>? {
+        switch shape {
+        case .torus: SIMD2(2 * .pi, 2 * .pi)
+        case .sn(let m, _, _, _): SIMD2(4 * Jacobi.quarterPeriod(m), 2 * Jacobi.quarterPeriod(1 - m))
+        case .periodic(_, let p, _, _, _): p
+        case .forced, .relief: nil
+        }
+    }
+
+    /// The rectangle of periods of an expression whose periods the catalog
+    /// knows: sn(z, m) for a number 0 < m < 1, whose rectangle is
+    /// [0, 4K) × [0, 2K'), as `surface sn` draws it. Nil for any other.
+    static func periods(of expression: String) -> SIMD2<Double>? {
+        guard case .call("sn", let arguments)? = try? KurvenMath.Expression.parse(expression),
+              arguments.count == 2, arguments[0] == .variable,
+              case .number(let m) = arguments[1], m > 0, m < 1 else { return nil }
+        return SIMD2(4 * Jacobi.quarterPeriod(m), 2 * Jacobi.quarterPeriod(1 - m))
+    }
+
+    /// This request with `expression` painted on its torus over the period
+    /// rectangle [0, periods.x) × [0, periods.y), as `kurven-cli surface
+    /// periodic --expression E --periods P1,P2` asks for it: the radii and
+    /// the grid kept, f sampled as the catalog's sn is, unless a function
+    /// was sampled before, and then as that one was. The surface then has
+    /// |f| and arg f to contour. Refused, saying why: a surface that takes
+    /// no function, an expression the language does not parse, and what
+    /// `check()` refuses, a period that is not positive among it.
+    func painting(_ expression: String, periods: SIMD2<Double>) throws -> SurfaceRequest {
+        let catalog: Int = if case .sn(_, _, _, let g)? = SurfacePreset.named("sn")?.request.shape { g } else { 600 }
+        let (R, r, samples): (Double, Double, Int)
+        switch shape {
+        case .torus(let major, let minor): (R, r, samples) = (major, minor, catalog)
+        case .sn(_, let major, let minor, let g), .periodic(_, _, let major, let minor, let g): (R, r, samples) = (major, minor, g)
+        case .forced:
+            throw FunctionRefusal("a function is painted on a round torus; a forced torus is fitted to its flow")
+        case .relief:
+            throw FunctionRefusal("a function is painted on a round torus; sn in relief is built from sn")
+        }
+        let text = expression.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw FunctionRefusal("the expression is empty") }
+        do {
+            _ = try KurvenMath.Expression.compile(text)
+        } catch let error as ExpressionError {
+            throw FunctionRefusal("\(text): \(error)")
+        }
+        var next = self
+        next.shape = .periodic(expression: text, periods: periods, major: R, minor: r, grid: samples)
+        next.name = ""
+        let words = ["shape.periods": "a period", "shape.expression": "the expression",
+                     "shape.grid": "the function's samples", "grid": "the grid"]
+        do {
+            try next.check { words[$0] ?? $0 }
+        } catch ManifestError.invalid(let why) {
+            throw FunctionRefusal(why)
+        }
+        return next
+    }
 }

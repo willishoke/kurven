@@ -27,7 +27,8 @@ import KurvenMath
 ///     clip/      the visible runs `HiddenLine.clip` cuts from view-space
 ///                polylines against a depth buffer.
 ///     hatch/     every hatching source derived from one grid, one perimeter
-///                and two kinds of truncation, and the two derived style numbers.
+///                and two kinds of truncation, the landscape under each as a
+///                bundle, and the two derived style numbers.
 ///     expr/      three landscapes built natively, as bundles, and the specs
 ///                they were built from.
 ///
@@ -522,6 +523,31 @@ enum GoldenFixtures {
                     "vertices": .string("\(stem).npy"), "offsets": .string("\(stem).idx.npy"),
                     "paths": .int(paths.count)]))
             }
+        }
+
+        // The same landscape under each truncation as a bundle, with no
+        // hatching on its plateaus: the app paints one there and is held to
+        // the strokes above. The function is not recorded, so nothing refines
+        // it: the strokes are the grid's, as these are.
+        for (truncationName, truncationHeight) in truncation {
+            let url = dir.appendingPathComponent("\(truncationName).kurven")
+            try directory(url)
+            try NPY.write(values, shape: [ny, nx], to: url.appendingPathComponent("height.npy"))
+            let manifest = Manifest(
+                domain: hatchDomain, height: GridRef(file: "height.npy", shape: (ny: ny, nx: nx), dtype: .float32),
+                phase: nil, truncation: truncationHeight,
+                occluder: Occluder(step: 1, tiles: [.identity], walls: .perimeter(perimeter, base: 0),
+                                   region: .full, base: 0),
+                layers: [
+                    LayerSpec(name: "truncation_edge", role: .scaffold, source: .truncationEdge(tiled: false),
+                              width: 0.4, heightPolicy: .level),
+                    LayerSpec(name: "wall_edges", role: .scaffold, source: .wallEdges(edges: [0, 1, 2, 3], base: 0),
+                              width: 0.3, heightPolicy: .surface),
+                    LayerSpec(name: "folds", role: .outline, source: .foldCurves, width: 0.4, heightPolicy: .surface),
+                ],
+                presets: [CameraPreset(name: "oblique", projection: presets[0].1, depthTolerance: 0.02, buffer: 2000)],
+                provenance: Provenance(function: "hatch", example: "fixture", params: [:], cpuCount: 1, gitSha: gitSha))
+            try text(manifest.canonicalJSON, to: url.appendingPathComponent("manifest.json"))
         }
 
         // The two derived numbers a consumer computes for itself, because a

@@ -516,6 +516,27 @@ public enum ContourField: String, Sendable, CaseIterable {
 
     /// Whether this is one of f's fields, placed by the refiner.
     public var isFieldOfF: Bool { self == .magnitude || self == .phase }
+
+    /// What the field's values are computed from (`FieldClass`).
+    public var fieldClass: FieldClass {
+        switch self {
+        case .u, .v: .coordinate
+        case .height: .embedding
+        case .magnitude, .phase: .function
+        }
+    }
+}
+
+/// A class of scalar fields, by what their values are computed from, which
+/// decides what an edit of a surface redoes for their contours. A
+/// coordinate is the parameter rectangle's own, so its contours are kept in
+/// parameter coordinates while the rectangle and its samples are, and only
+/// carried into space again when the surface moves. The height is read off
+/// the map, so its contours are found again whenever the surface moves. |f|
+/// and arg f come from f's samples, which a new function or sampling takes
+/// again, and which a moved surface only carries into space.
+public enum FieldClass: Sendable, CaseIterable {
+    case coordinate, embedding, function
 }
 
 /// An axis of the domain: the real or the imaginary.

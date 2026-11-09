@@ -12,41 +12,45 @@ import KurvenDynamics
 /// redoes only what the edit touches. While a slider is dragged the drawing is
 /// built from `SurfaceRequest.drafted()`; the full request follows the release.
 ///
-/// What each costs, measured by `kurven-cli surface-costs` on an Apple M5
-/// Max at 1600×1200: the build from the drawing before, plus the first preview
-/// frame after it -- which lays out the curves, and uploads a surface only when
-/// the surface moved.
+/// What each costs is decided by the classes of fields it touches
+/// (`FieldClass`), whatever is painted on the surface: a contour of a
+/// coordinate is kept in parameter coordinates while the parameter rectangle
+/// keeps its samples, and only carried into space again when the surface
+/// moves; a contour of the height is kept while the surface is, and found
+/// again when it moves; |f| and arg f are carried with the surface, and
+/// sampled again when the function or its sampling changes
+/// (`SurfaceDrawing.keeping(_:from:)`). Measured by `kurven-cli
+/// surface-costs` on an Apple M5 Max at 1600×1200, with nothing painted: the
+/// build from the drawing before, plus the first preview frame after it --
+/// which lays out the curves, and uploads a surface only when the surface
+/// moved.
 ///
-///     torus    radii                    13 ms      new surface
-///              line counts              11 ms      curves only
-///              linear curve slope       11 ms      curves only
-///     sn       radii                     6 ms      contours re-placed, not resampled
-///              modulus                 115 ms      resampled; 65 ms while dragging
-///              samples                 100 ms      resampled; curves only
-///     forced   ring radius              39 ms      grid re-placed from state space;
-///                                                  7 ms while dragging
-///              radius from, height from 32 ms      re-placed
-///              turns                 17–36 ms      the trajectory is a linear curve, placed
-///                                                  from the grid; no draft needed
-///              coordinate curves        38 ms      the map at every line vertex
-///              linear curve slope       15 ms      curves only; the trajectory's layout
-///                                                  is kept
-///              harmonics, fit length   390 ms      fitted again
+///                                          coordinates  height   |f|, arg f
+///     torus    radii                 13 ms  carried      again
+///              line counts           11 ms  kept         kept
+///              linear curve slope    11 ms  kept         kept
+///     sn       radii                  6 ms  again        again    carried
+///              modulus              115 ms  again        again    sampled again; 65 ms dragging
+///              samples              100 ms  kept         kept     sampled again
+///     forced   ring radius           39 ms  carried      again    7 ms dragging
+///              radius from,          32 ms  carried      again
+///              height from
+///              turns              17–36 ms  kept         kept     the trajectory is placed from
+///                                                                 the grid; no draft needed
+///              coordinate curves     38 ms  kept         kept     the map at every line vertex
+///              linear curve slope    15 ms  kept         kept
+///              harmonics, fit       390 ms  carried      again    fitted again
 ///
-/// So the forced torus's fit is the one control that is not interactive, and
-/// it gets a stepper and a field rather than a slider. A curve edit lays out
-/// only the layer it touched -- the preview keeps every other layer's
-/// vertices from the frame before -- and curve normals are read off the
-/// grid, not asked of the map, so a new surface costs its grid and
-/// little else.
+/// sn sizes its tube's samples by its radii, so its radii move its
+/// rectangle's samples and its coordinates are contoured again. The forced
+/// torus's fit is the one control that is not interactive, and it gets a
+/// stepper and a field rather than a slider. A curve edit lays out only the
+/// layer it touched -- the preview keeps every other layer's vertices from
+/// the frame before -- and curve normals are read off the grid, not asked
+/// of the map, so a new surface costs its grid and little else.
 struct SurfaceSection: View {
     @Bindable var document: Document
 
-    @State private var dragging: SurfaceRequest.Field?
-    /// The request as it was when the current drag began: one undo step per
-    /// drag, not one per pixel.
-    @State private var beforeDrag: SurfaceRequest?
-    @Environment(\.undoManager) private var undoManager
 
     var body: some View {
         if let request = document.surface {
@@ -131,24 +135,16 @@ struct SurfaceSection: View {
         }
     }
 
-    /// Whether a drag of this control builds drafts. A linear curve, and the
-    /// trajectory, are curves alone, placed from the grid, so their drags
-    /// build the full drawing each step: the surface is kept and only their
-    /// vertices are made again.
-    private func drafts(_ field: SurfaceRequest.Field) -> Bool {
-        !SurfaceRequest.curveFields.contains(field)
-    }
-
     @ViewBuilder
     private func row(_ field: SurfaceRequest.Field, _ request: SurfaceRequest) -> some View {
         let c = control(field)
         if field == .radial || field == .axial {
             componentPicker(field, request, label: c.label)
         } else if let current = request[field] {
+            let slider = SurfaceFieldSlider(document: document, field: field, label: c.label)
             let value = Binding<Double>(
                 get: { current },
-                set: { set(field, to: min(max($0, c.range.lowerBound), c.range.upperBound),
-                           draft: false, label: c.label) })
+                set: { slider.set(min(max($0, c.range.lowerBound), c.range.upperBound)) })
             // A slider with detents rests at them: a value within a detent's
             // reach lands on it exactly, so a fraction is a fraction and the
             // linear curve closes, and a convergent's turns are those turns.
@@ -158,12 +154,9 @@ struct SurfaceSection: View {
                     if c.slides {
                         Slider(value: Binding(
                             get: { min(max(current, c.range.lowerBound), c.range.upperBound) },
-                            set: { set(field, to: quantize($0, step: c.step, detents: detents,
-                                                           reach: Self.detentReach(field)),
-                                       draft: dragging == field && drafts(field), label: c.label) }),
-                               in: c.range, onEditingChanged: { editing in
-                                   dragged(field, editing, label: c.label)
-                               })
+                            set: { slider.set(quantize($0, step: c.step, detents: detents,
+                                                       reach: Self.detentReach(field))) }),
+                               in: c.range, onEditingChanged: { slider.editingChanged($0) })
                             .accessibilityLabel(c.label)
                     } else {
                         Spacer()
@@ -343,53 +336,47 @@ struct SurfaceSection: View {
 
     // MARK: - editing
 
-    private func set(_ field: SurfaceRequest.Field, to value: Double, draft: Bool, label: String) {
-        guard var next = document.surface, next[field] != value else { return }
-        next[field] = value
-        if draft {
-            document.surface = next
-            document.surfaceEdited(draft: true)
-        } else {
-            commit(next, label: label)
-        }
+    /// One edit, one undo step, which puts back the request and the layers
+    /// together (`Document.edit`). The Edit menu names the control: "Undo
+    /// Ring Radius".
+    private func commit(_ next: SurfaceRequest, label: String) {
+        document.editSurface(next, label)
     }
+}
 
-    /// A drag starts: remember where from. It ends: one undo step, and the
-    /// full request.
-    private func dragged(_ field: SurfaceRequest.Field, _ editing: Bool, label: String) {
+/// One number of a surface's request as its slider, field and stepper set
+/// it, and a headless drag does: a drag is taken hold of, moved, let go,
+/// one undo step; a value typed or stepped is an edit of its own.
+@MainActor
+struct SurfaceFieldSlider {
+    let document: Document
+    let field: SurfaceRequest.Field
+    let label: String
+
+    /// Whether a drag builds drafts. A linear curve, and the trajectory,
+    /// are curves alone, placed from the grid, so their drags build the full
+    /// drawing each step: the surface is kept and only their vertices are
+    /// made again.
+    var drafts: Bool { !SurfaceRequest.curveFields.contains(field) }
+
+    func editingChanged(_ editing: Bool) {
         if editing {
-            dragging = field
-            beforeDrag = document.surface
+            document.beginDrag()
         } else {
-            dragging = nil
-            if let before = beforeDrag, let after = document.surface, before != after {
-                registerUndo(from: before, to: after, label)
-            }
-            beforeDrag = nil
+            // Let go first, so a drag back to where it began records the
+            // bundle it began on (`Document.endDrag`); then the full request.
+            document.endDrag(label)
             document.surfaceEdited(draft: false)
         }
     }
 
-    /// One edit, one undo step.
-    private func commit(_ next: SurfaceRequest, label: String) {
-        guard let before = document.surface, before != next else { return }
-        registerUndo(from: before, to: next, label)
-        document.surface = next
-        document.surfaceEdited(draft: false)
-    }
-
-    /// ⌘Z puts the request back, and ⌘⇧Z moves it again; the Edit menu
-    /// names the control: "Undo Ring Radius".
-    private func registerUndo(from before: SurfaceRequest, to after: SurfaceRequest,
-                              _ label: String) {
-        guard let undoManager else { return }
-        undoManager.registerUndo(withTarget: document) { document in
-            MainActor.assumeIsolated {
-                registerUndo(from: after, to: before, label)
-                document.surface = before
-                document.surfaceEdited(draft: false)
-            }
+    func set(_ value: Double) {
+        guard var next = document.surface, next[field] != value else { return }
+        next[field] = value
+        if document.editedBeforeDrag != nil {
+            document.dragSurface(next, draft: drafts)
+        } else {
+            document.editSurface(next, label)
         }
-        undoManager.setActionName(label)
     }
 }

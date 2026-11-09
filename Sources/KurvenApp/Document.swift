@@ -95,6 +95,10 @@ final class Document {
     }
     /// Nil when nothing is picked: a click off the drawing clears it.
     var selection: Selection?
+    /// The face picked, which the "Curves on" section paints: kept while
+    /// the geometry has it, though its boundary is made again whenever the
+    /// geometry is.
+    var picked: FacePick?
     /// The scene's faces, kept while its geometry is, so the trim loops a
     /// boundary is read off are made once.
     var pickFaces: (content: ContentID, faces: [Face])?
@@ -190,6 +194,36 @@ final class Document {
     var polyhedronStyled: [LayerSpec]?
     var polyhedronStatus: String?
 
+    // MARK: - painting
+    //
+    // The state `Paint.swift` works on.
+
+    /// The undo manager edits register with: the window's, or a headless
+    /// run's own.
+    var undoManager: UndoManager?
+    /// A parametric surface's layers asked for ahead of the bundle that will
+    /// carry them, as `polyhedronStyled` is a polyhedron's. Nil when the
+    /// bundle is up to date.
+    var surfaceStyled: [LayerSpec]?
+    /// What was edited when the slider being dragged was taken hold of:
+    /// one undo step per drag (`Edits.swift`).
+    var editedBeforeDrag: Edited?
+    /// The git sha the next build of the surface, or sampling of the
+    /// landscape, records: an undone edit's, so the bundle saved is the one
+    /// saved before it. Nil for this process's own.
+    var surfaceGitSha: String?
+    var landscapeGitSha: String?
+    /// The ceiling a landscape's levels are chosen under when it has no
+    /// truncation, read off its samples once per landscape.
+    @ObservationIgnored var paintCeiling: (content: ContentID, value: Double)?
+    /// For an undo manager not grouping by AppKit's events: an edit opens a
+    /// group when it registers and none is open, and says so here, for the
+    /// event's end to close it.
+    @ObservationIgnored var opensUndoGroups = false
+    @ObservationIgnored var undoGroupOpened = false
+    /// Why the last paint edit was refused, or what it did.
+    var paintStatus: String?
+
     var bakeResolution: Int = 4000
     var bakeStatus: String?
     private(set) var baking = false
@@ -280,6 +314,8 @@ final class Document {
         wanted = nil
         surfaceWanted = nil
         polyhedronStyled = nil
+        surfaceStyled = nil
+        forgetEdits()
         // Reading is megabytes of npy; it does not belong on the main actor
         // even though it is fast, because a stalled window during an open is
         // the difference between an app and a script with a window.
@@ -365,13 +401,21 @@ final class Document {
     /// Take a built drawing as the document. A new drawing opens at the default
     /// oblique projection, fitted to the window; an edit keeps the camera, and
     /// the bundle it edits keeps its place and its presets.
-    func adopt(_ surfaceDrawing: SurfaceDrawing, keepingCamera: Bool = false) {
+    /// `gitSha`: the provenance the bundle it edits records, kept.
+    func adopt(_ surfaceDrawing: SurfaceDrawing, keepingCamera: Bool = false, gitSha: String? = nil) {
         let kept = keepingCamera ? surfaceBundle : nil
         let name = surfaceDrawing.request.name.isEmpty ? "Surface" : surfaceDrawing.request.name
         show(SurfaceBundle(url: kept?.url ?? URL(fileURLWithPath: "/native/\(name).kurven"),
                            drawing: surfaceDrawing,
-                           presets: kept?.manifest.presets ?? [SurfaceRequest.preset]),
+                           presets: kept?.manifest.presets ?? [SurfaceRequest.preset],
+                           gitSha: gitSha ?? "native"),
              keepingCamera: keepingCamera)
+    }
+
+    /// Take the same surface drawn with other layers as the document
+    /// (`SurfaceBundle.restyled(_:)`), the camera kept.
+    func adoptRestyled(_ surfaceBundle: SurfaceBundle) {
+        show(surfaceBundle, keepingCamera: navigator != nil && scene != nil)
     }
 
     private func show(_ surfaceBundle: SurfaceBundle, keepingCamera: Bool = false) {

@@ -11,9 +11,6 @@ import KurvenDynamics
 /// second copy of the camera to keep in step with the first.
 struct Inspector: View {
     @Bindable var document: Document
-    /// The layer whose level slider is being dragged: its curves are the grid's
-    /// until the drag ends, and placed on f when it does.
-    @State private var draggingLevels: Int?
 
     var body: some View {
         Form {
@@ -38,6 +35,7 @@ struct Inspector: View {
                     CameraSection(document: document, presets: polyhedronBundle.manifest.presets)
                 }
                 Section("Mode") { modePicker }
+                paintSection
                 Section("Layers") { layerList }
                 Section("Bake") { BakeSection(document: document) }
             } else if let surfaceBundle = document.surfaceBundle {
@@ -48,6 +46,7 @@ struct Inspector: View {
                     CameraSection(document: document, presets: surfaceBundle.manifest.presets)
                 }
                 Section("Mode") { modePicker }
+                paintSection
                 Section("Layers") { layerList }
                 Section("Bake") { BakeSection(document: document) }
                 Section("Bundle") { provenance(surfaceBundle) }
@@ -59,6 +58,7 @@ struct Inspector: View {
                 Section("Truncation") {
                     TruncationSection(document: document)
                 }
+                paintSection
                 Section("Layers") { layerList }
                 Section("Visibility") { depthToleranceField }
                 Section("Bake") { BakeSection(document: document) }
@@ -104,81 +104,19 @@ struct Inspector: View {
                             .font(.caption).foregroundStyle(.tertiary)
                     }
                 }
-                // A described layer carries its question, so its level set can
-                // be moved. A dumped one carries only the answer, and there is
-                // nothing here to drag -- which is the difference between a
-                // bundle exported with --derived and one without, made visible.
-                if document.isDerived(layer: index),
-                   let levels = document.levels(forLayer: index) {
-                    levelSlider(index: index, levels: levels)
-                }
-                // A hatching carries its spacing the way a contour family
-                // carries its levels, and for the same reason: it is a
-                // description, so the number in it is a control.
-                if let count = document.hatchCount(ofLayer: index) {
-                    strokeSlider(index: index, count: count)
-                }
-                if let axis = layer.spec.source.plateauHatchAxis {
-                    axisPicker(axis)
-                }
+                LayerControls(document: document, name: layer.spec.name)
             }
         }
     }
 
-    @ViewBuilder
-    private func levelSlider(index: Int, levels: [Double]) -> some View {
-        let count = Binding(
-            get: { Double(levels.count) },
-            set: { document.setLevelCount(Int($0.rounded()), forLayer: index,
-                                          draft: draggingLevels == index) })
-        HStack(spacing: 6) {
-            Text("levels").font(.caption).foregroundStyle(.secondary)
-            Slider(value: count, in: 2...80, step: 1, onEditingChanged: { editing in
-                draggingLevels = editing ? index : nil
-                if !editing { document.rebuildCurves() }
-            })
-            Text("\(levels.count)")
-                .font(.caption).monospacedDigit().frame(width: 24, alignment: .trailing)
-            Button {
-                document.resetLevels(forLayer: index)
-            } label: { Image(systemName: "arrow.uturn.backward") }
-                .buttonStyle(.borderless).controlSize(.small)
-        }
-        .padding(.leading, 20)
-    }
+    // MARK: - painting
 
-    /// Hatch strokes along the domain's longer side, in whole steps: each face
-    /// divides itself evenly, so a hatching is a count, and a drag steps through
-    /// counts rather than sliding a hatching past the edges. Restyling, not
-    /// resampling: the strokes are re-derived from grids that are already
-    /// here, so this redraws within a frame however large the landscape is.
+    /// The curves on the picked face, when one is picked.
     @ViewBuilder
-    private func strokeSlider(index: Int, count: Int) -> some View {
-        let live = Binding(get: { Double(count) }, set: {
-            document.setHatchCount(Int($0.rounded()), ofLayer: index)
-        })
-        HStack(spacing: 6) {
-            Text("strokes").font(.caption).foregroundStyle(.secondary)
-            Slider(value: live, in: 2...400, step: 1)
-            Text("\(count)")
-                .font(.caption).monospacedDigit().frame(width: 28, alignment: .trailing)
+    private var paintSection: some View {
+        if let pick = document.picked {
+            Section("Curves on \(document.paintTitle(pick))") { PaintSection(document: document, pick: pick) }
         }
-        .padding(.leading, 20)
-    }
-
-    /// Which way the strokes on the plateaus run. The plates rule them
-    /// along the real axis; a landscape whose plateaus are long in the other
-    /// direction reads better ruled the other way.
-    @ViewBuilder
-    private func axisPicker(_ axis: DomainAxis) -> some View {
-        Picker("", selection: Binding(get: { axis }, set: {
-            document.setPlateauHatchAxis($0)
-        })) {
-            Text("along Re").tag(DomainAxis.real)
-            Text("along Im").tag(DomainAxis.imag)
-        }
-        .pickerStyle(.segmented).labelsHidden().controlSize(.small)
-        .padding(.leading, 20)
     }
 
     // MARK: - curves

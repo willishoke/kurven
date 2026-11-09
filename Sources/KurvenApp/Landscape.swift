@@ -53,6 +53,8 @@ extension Document {
         landscape = request
         generation += 1
         surfaceWanted = nil
+        surfaceStyled = nil
+        forgetEdits()
         // A different function is a different landscape, not an edit of this
         // one: its styling is the new function's defaults, so nothing of the
         // old drawing's truncation or levels is carried across.
@@ -106,13 +108,29 @@ extension Document {
                 // Sampled here, in this process: the evaluator is native, and
                 // the bundle is a value rather than a directory to read back.
                 let refining = refineContours && !draft
+                // Sampled here, so recorded as this process's, unless an
+                // undo asks for the bundle it put back.
+                let gitSha = landscapeGitSha ?? rebuiltGitSha
                 let bundle = try await Task.detached(priority: .userInitiated) {
-                    try NativeLandscape.build(request, refine: refining)
+                    try NativeLandscape.build(request, gitSha: gitSha, refine: refining)
                 }.value
                 // A surface chosen meanwhile is the document now.
                 if generation == asked {
-                    adopt(bundle, keepingCamera: !framing && scene != nil, draft: draft)
+                    let keeping = !framing && scene != nil
+                    // What the controls ask for now: the request, and the
+                    // styling, which a restyle made while this sampled may
+                    // have moved past what was sent with it.
+                    let request0 = landscape, styling0 = styling
+                    adopt(bundle, keepingCamera: keeping, draft: draft)
                     shown = request
+                    if keeping {
+                        landscape = request0
+                        if let styling0, Styling(bundle.manifest) != styling0 {
+                            styled = styling0
+                            redraw()
+                        }
+                    }
+                    if landscapeGitSha == gitSha, !draft { landscapeGitSha = nil }
                 }
                 landscapeStatus = "\(request.resolution)² in \(clock.now - started)"
                     + (draft ? " (draft)" : "")
@@ -281,6 +299,10 @@ extension Document {
             guard let navigator, let preset = restyled.manifest.presets.first else { return }
             var scene = Scene(bundle: restyled, preset: preset)
             scene.camera = navigator.camera
+            // Hidden layers are hidden by name: a layer added or taken off
+            // moves the others.
+            let hidden = Set(hiddenLayers.compactMap { self.scene?.layers[safe: $0]?.spec.name })
+            hiddenLayers = Set(scene.layers.indices.filter { hidden.contains(scene.layers[$0].spec.name) })
             self.scene = scene
             // A layer drawn at levels of its own is drawn at them again.
             if !levelCounts.isEmpty { curvesWanted = curvesWanted ?? false }

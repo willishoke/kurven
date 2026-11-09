@@ -31,6 +31,27 @@ public struct SurfaceBundle: Sendable {
         self.url = url; self.manifest = manifest; self.drawing = drawing
     }
 
+    /// The same bundle drawing `layers` in place of its own: its request,
+    /// presets and provenance kept, the surface and its identity too, so
+    /// only the curves are new. The curves the request draws itself are the
+    /// request's, as `layers` lists them or not (`SurfaceDrawing.keeping(_:from:)`):
+    /// layers asked for while the request was being edited name its curves
+    /// as they were before the edit.
+    public func restyled(_ layers: [LayerSpec]) throws -> SurfaceBundle {
+        let drawing = try self.drawing.keeping(layers)
+        var manifest = self.manifest
+        manifest.layers = drawing.layers.map(\.spec)
+        return SurfaceBundle(url: url, manifest: manifest, drawing: drawing)
+    }
+
+    /// The same bundle recording `gitSha` as the build that made it: what an
+    /// edit undone, or a drag let go where it began, puts back.
+    public func recording(gitSha: String) -> SurfaceBundle {
+        var manifest = self.manifest
+        manifest.provenance.gitSha = gitSha
+        return SurfaceBundle(url: url, manifest: manifest, drawing: drawing)
+    }
+
     /// The mathematics a request draws, for the provenance.
     static func function(_ request: SurfaceRequest) -> String {
         switch request.shape {

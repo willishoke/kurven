@@ -31,6 +31,13 @@ extension Document {
         let before = layers
         change(&layers)
         guard layers != before else { return }
+        // Refused here, so a slider that asks for more than the solid takes
+        // leaves the layers as they were, and nothing to undo.
+        if let bundle = polyhedronBundle, let why = PolyhedronManifest.unsupported(layers, on: bundle.solid) {
+            polyhedronStatus = why
+            paintStatus = why
+            return
+        }
         polyhedronStyled = layers
         redrawPolyhedron()
     }
