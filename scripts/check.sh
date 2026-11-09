@@ -107,10 +107,10 @@ step "the committed golden fixtures are what kurven-cli fixtures writes" golden
 # byte for byte; and 40 strokes set as the hatching's slider sets them
 # (5.657 / 40 apart across the largest face) save and bake as `surface solid
 # --spacing` at that spacing saves and bakes, bundle and drawing. And painted:
-# from the plain torus, sn(z, 0.64) over its period rectangle (4K by 2K', as
-# `surface sn` computes them), the coordinate curves taken off and the four
-# contour families added at the catalog's levels, bakes `surface sn`'s drawing
-# byte for byte.
+# from the plain torus, sn(z, 0.64) over the period rectangle "Function…"
+# offers for it (4K by 2K', as `surface sn` computes them), the coordinate
+# curves taken off and the four contour families added at the catalog's
+# levels, bakes `surface sn`'s drawing byte for byte.
 app() {
     local dir="$PACKAGE/.build/app-check"
     rm -rf "$dir" && mkdir -p "$dir" || return 1
@@ -147,8 +147,7 @@ app() {
     cmp "$dir/r.kurven/manifest.json" "$dir/s.kurven/manifest.json" &&
     cmp "$dir/r.svg" "$dir/s.svg" &&
     "$BIN/kurven-cli" surface torus --save "$dir/torus.kurven" >/dev/null &&
-    "$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --function 'sn(z, 0.64)' \
-        --periods 7.981211110658917,3.5015076058315047 --remove lines \
+    "$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --function 'sn(z, 0.64)' --remove lines \
         --add mag_major --add mag_minor --add ang_major --add ang_minor --bake "$dir/painted.svg" >/dev/null &&
     cmp "$dir/painted.svg" "$dir/a.svg"
 }
@@ -163,9 +162,17 @@ step "the app saves, restyles, paints and bakes a surface and a polyhedron as th
 # off, a level or strokes slider dragged, the plateaus' axis -- on a surface,
 # a landscape's graph, plateaus and a wall, and a polyhedron, undone, saves
 # what was saved before it, and redone, what was saved after it; a drag of
-# many steps is one undo, which leaves nothing more to undo. A function
-# that does not parse, or a period that is not positive, is refused, saying
-# why.
+# many steps is one undo, which leaves nothing more to undo. Edits of
+# different kinds in a row -- painting, a truncation, a surface's or a
+# landscape's numbers -- undone one by one, save at each undo what was saved
+# at that point of the history, the opened bundle's provenance included. An
+# edit made while the one before it is still being drawn saves what the two
+# save made one after the other. Strokes past what a polyhedron holds are
+# refused and leave nothing to undo; a layer hidden stays hidden by name when
+# another is added; a relief's truncation edge is listed on its surface and
+# can be taken off, and the Add menu offers nothing the surface has. A
+# function that does not parse, or a period that is not positive, is refused,
+# saying why.
 paint() {
     local dir="$PACKAGE/.build/paint-check" c="$ROOT/tests/fixtures/contract" h="$ROOT/tests/fixtures/hatch"
     local sn=7.981211110658917,3.5015076058315047 failed=0 out
@@ -208,6 +215,59 @@ paint() {
     undone solid-strokes "$c/polyhedron_frame.kurven" 300,250 --strokes hatching=30
     undone solid-remove "$c/polyhedron_frame.kurven" 300,250 --remove hatching
     [ "$failed" = 0 ] || return 1
+    # A history, saved after each edit and at each undo.
+    history() {
+        local name=$1 bundle=$2 pick=$3 args=() n=0
+        shift 3
+        args=(--save "$dir/$name-0.kurven")
+        while [ $# -gt 0 ]; do
+            n=$((n + 1))
+            args+=("$1" "$2" --save "$dir/$name-$n.kurven")
+            shift 2
+        done
+        for ((i = n - 1; i >= 0; i--)); do args+=(--undo --save "$dir/$name-undone-$i.kurven"); done
+        "$BIN/KurvenApp" "$bundle" --pick "$pick" "${args[@]}" >/dev/null || { echo "history $name: did not run"; return 1; }
+        for ((i = 0; i < n; i++)); do
+            diff -r "$dir/$name-$i.kurven" "$dir/$name-undone-$i.kurven" >/dev/null ||
+                { echo "history $name: undone to step $i, not what was saved there"; return 1; }
+        done
+    }
+    "$BIN/kurven-cli" landscape "1/(z^3 - 1)" --re -1.3,1.6 --im -1.2,1.5 --truncation 5 --res 200 \
+        -o "$dir/cubic.kurven" >/dev/null || return 1
+    history landscape "$c/landscape.kurven" 300,500 --levels mag_major=7 --add graph_u --truncation 1.5 &&
+    history bands "$h/bands.kurven" 860,170 --add plateau_hatch --truncation 2 --strokes plateau_hatch=30 &&
+    history surface "$c/surface_torus.kurven" 300,600 --set major=2.5 --add surface_v --remove lines &&
+    history window "$dir/cubic.kurven" 600,400 --set rMin=-1.0 --truncation 4 --set res=240 || return 1
+    grep -q '"gitSha":"golden"' "$dir/surface-undone-0.kurven/manifest.json" &&
+        grep -q '"gitSha":"native"' "$dir/surface-1.kurven/manifest.json" ||
+        { echo "a surface made again does not record this build, or its undo the bundle's"; return 1; }
+    racing() {
+        local name=$1 bundle=$2 pick=$3
+        shift 3
+        "$BIN/KurvenApp" "$bundle" --pick "$pick" "$@" --save "$dir/$name-waited.kurven" >/dev/null &&
+        "$BIN/KurvenApp" "$bundle" --pick "$pick" --at-once "$@" --save "$dir/$name-at-once.kurven" >/dev/null &&
+        diff -r "$dir/$name-waited.kurven" "$dir/$name-at-once.kurven" >/dev/null ||
+            { echo "$name: edits made at once save other than made one after the other"; return 1; }
+    }
+    racing linear-curve "$c/surface_torus.kurven" 300,600 --set slope=0.5 --add surface_u &&
+    racing radii "$c/surface_torus.kurven" 300,600 --set minor=0.5 --remove linearCurves &&
+    racing truncation "$c/landscape.kurven" 900,100 --truncation 1.5 --add plateaus_u || return 1
+    out=$("$BIN/KurvenApp" "$c/polyhedron_frame.kurven" --pick 300,250 --save "$dir/frame.kurven" \
+        --strokes hatching=20000 --save "$dir/frame-refused.kurven" --undo 2>&1) || { printf '%s\n' "$out"; return 1; }
+    printf '%s\n' "$out" | grep -q 'more than the 65536 a polyhedron' &&
+        printf '%s\n' "$out" | grep -q 'undo: nothing to undo' &&
+        diff -r "$dir/frame.kurven" "$dir/frame-refused.kurven" >/dev/null ||
+        { printf '%s\n' "$out"; echo "strokes past the polyhedron's lines were taken, or left a step"; return 1; }
+    "$BIN/KurvenApp" "$c/landscape.kurven" --pick 900,100 --hide folds --add plateaus_u \
+        --screenshot "$dir/hidden-first.png" >/dev/null &&
+    "$BIN/KurvenApp" "$c/landscape.kurven" --pick 900,100 --add plateaus_u --hide folds \
+        --screenshot "$dir/hidden-after.png" >/dev/null &&
+    cmp "$dir/hidden-first.png" "$dir/hidden-after.png" || { echo "a hidden layer is hidden by index"; return 1; }
+    "$BIN/KurvenApp" "$c/surface_relief.kurven" --pick 600,400 --remove 'truncation edge' >/dev/null || return 1
+    "$BIN/kurven-cli" surface sn --save "$dir/sn.kurven" >/dev/null || return 1
+    out=$("$BIN/KurvenApp" "$dir/sn.kurven" --pick 300,600 --add mag_major 2>&1) &&
+        { echo "sn's own mag_major was offered again"; return 1; }
+    printf '%s\n' "$out" | grep -q "nothing called 'mag_major'" || { printf '%s\n' "$out"; return 1; }
     out=$("$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --function 'sn(z,' --periods "$sn" 2>&1) &&
         { echo "an expression that stops in the middle was painted"; return 1; }
     printf '%s\n' "$out" | grep -q 'refused: sn(z,: the expression stops in the middle' || { printf '%s\n' "$out"; return 1; }
