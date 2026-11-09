@@ -189,11 +189,11 @@ func functionCast(_ h: Heightfield, model: @escaping @Sendable (SIMD3<Double>) -
             if hit(t) { return false }
             t += cell / 64
         }
-        // Up through the floor near a wall, the line can be in the slab
-        // for less than a step: halfway from the floor to the wall too.
+        // Up through the floor, which is opaque however thin the slab over
+        // it, the line enters the slab.
         if abs(toEye.z) > 1e-12 {
             let floor = (base - q.z) / toEye.z
-            if floor > ta, floor < tb, hit(0.5 * (floor + tb)) { return false }
+            if floor > max(ta, 1e-9 * cell), floor < tb { return false }
         }
         return abs(least) > 1e-4 * cell ? true : nil
     }
@@ -548,6 +548,8 @@ func compositeTests() {
                              domain: Domain(real: Interval(lo: -2, hi: 2), imag: Interval(lo: -2, hi: 2)),
                              resolution: 65, truncation: .uniform(5)), refine: false)
         let spike = Scene(bundle: spikeBundle, preset: spikeBundle.manifest.presets[0])
+        let spikeRefined = spikeBundle.refined(by: NativeLandscape.refiner(for: spikeBundle)?.refine)
+        let spikeOnF = Scene(bundle: spikeRefined, preset: spikeRefined.manifest.presets[0])
         let cameras: [(String, Camera)] = [
             ("the landscape's", landscape.camera),
             ("el 30° az 37°", Camera(view: testCamera(elevation: -30, azimuth: 37), projection: .orthographic(oblique: nil))),
@@ -593,6 +595,9 @@ func compositeTests() {
                 Array(cameras.prefix(1))),
                ("a cube under the landscape's base, on f",
                 [("landscape", onF, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -1.6, -0.9)))],
+                Array(cameras.prefix(1))),
+               ("a cube behind the spike's apex, on f",
+                [("landscape", spikeOnF, .identity), ("cube", cube, Placement(offset: SIMD3(-0.3712, 1.162, -0.249)))],
                 Array(cameras.prefix(1))),
                ("a cube flush against the landscape's front wall, on f",
                 [("landscape", onF, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -2 - 0.35 * cubeMaxY, 0)))],
