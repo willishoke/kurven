@@ -60,7 +60,7 @@ public struct CompositeError: Error, CustomStringConvertible, Equatable {
 ///
 /// Another geometry cuts a curve's segments where their lines of sight meet
 /// it (`Occluder`): a polyhedron and a landscape on its grid in closed form,
-/// the round torus by the margins of its sphere tracing, and a landscape on
+/// the round torus by the clearances of its sphere tracing, and a landscape on
 /// its function by its traversal, asked at points along the segment.
 ///
 /// Only a geometry with an exact occlusion test stands in a composite: a
@@ -153,8 +153,8 @@ public struct Composite: Sendable {
         /// where the verdict turns. Nothing bounds f's slope, so a span
         /// shorter than the step can be passed over.
         case function(HeightfieldVisibility, placement: Placement, step: Double, box: Slab.Box)
-        /// The round torus: sphere tracing's margins
-        /// (`SphereTracing.margin(ofAnotherSolid:)`), each a stretch of the
+        /// The round torus: sphere tracing's clearances
+        /// (`SphereTracing.clearance(ofAnotherSolid:)`), each a stretch of the
         /// segment with one verdict.
         case tube(SphereTracing, placement: Placement)
 
@@ -214,21 +214,21 @@ public struct Composite: Sendable {
                 guard let (s0, s1) = Composite.sweep(ofBall: e.centre, radius: 1.01 * e.radius,
                                                      from: wa, to: wb, toward: toward) else { return [] }
                 let length = simd_length(wb - wa), least = 1e-5 * e.radius
-                func margin(_ s: Double) -> Double { tracing.margin(ofAnotherSolid: P3(wa + (wb - wa) * s)) }
-                guard length > 0 else { return margin(0) < 0 ? [(0, 1)] : [] }
+                func clearance(_ s: Double) -> Double { tracing.clearance(ofAnotherSolid: P3(wa + (wb - wa) * s)) }
+                guard length > 0 else { return clearance(0) < 0 ? [(0, 1)] : [] }
                 var hidden: [(Double, Double)] = []
-                var s = s0, m = margin(s0), steps = 0
+                var s = s0, m = clearance(s0), steps = 0
                 while s < s1 {
-                    // Every point within the margin keeps the verdict, so
-                    // the next point to ask is the margin along; a margin
+                    // Every point within the clearance keeps the verdict, so
+                    // the next point to ask is the clearance along; a clearance
                     // under the least step is a verdict to that resolution.
                     let next = min(s + max(abs(m), least) / length, s1)
-                    let mn = margin(next)
+                    let mn = clearance(next)
                     if (m < 0) != (mn < 0) {
                         var lo = s, hi = next
                         while hi - lo > 1e-13 {
                             let mid = 0.5 * (lo + hi)
-                            if (margin(mid) < 0) == (m < 0) { lo = mid } else { hi = mid }
+                            if (clearance(mid) < 0) == (m < 0) { lo = mid } else { hi = mid }
                         }
                         hidden.append(m < 0 ? (s, lo) : (hi, next))
                     } else if m < 0 {

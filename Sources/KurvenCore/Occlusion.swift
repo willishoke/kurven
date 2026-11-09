@@ -87,15 +87,15 @@ public struct SphereTracing: OcclusionTest {
         return true
     }
 
-    /// Whether a point of another solid is clear: its margin is not
-    /// negative (`margin(ofAnotherSolid:)`).
-    public func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool { margin(ofAnotherSolid: p) >= 0 }
+    /// Whether a point of another solid is clear: its clearance is not
+    /// negative (`clearance(ofAnotherSolid:)`).
+    public func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool { clearance(ofAnotherSolid: p) >= 0 }
 
     /// How far a point of another solid can move and keep its verdict, with
     /// the verdict in the sign: positive where its line of sight is clear,
-    /// and every point within the margin of it has a clear line too;
+    /// and every point within the clearance of it has a clear line too;
     /// negative where the line passes through the solid, and every point
-    /// within the margin's size of it has a line through the solid too.
+    /// within the clearance's size of it has a line through the solid too.
     ///
     /// The line is traced from the point itself, not a step past it, in
     /// steps of half the gap over the Lipschitz constant: a step of half the
@@ -103,11 +103,11 @@ public struct SphereTracing: OcclusionTest {
     /// solid, so the least half-gap is a distance no line within it can
     /// close. Past a ball a hundredth larger than the one that holds the
     /// solid, every point is that hundredth away. Where the line enters the
-    /// solid the margin is the deepest the line goes, by the gap, which on
+    /// solid the clearance is the deepest the line goes, by the gap, which on
     /// the round torus is the distance to the tube and so exact inside too.
     /// A step is never under sphere tracing's least step, a hundred-thousandth
-    /// of the ball, and a margin under it is a verdict to that resolution.
-    public func margin(ofAnotherSolid p: P3<WorldSpace>) -> Double {
+    /// of the ball, and a clearance under it is a verdict to that resolution.
+    public func clearance(ofAnotherSolid p: P3<WorldSpace>) -> Double {
         let e = neighbourhood
         let q = p.v, d = -sight
         let lipschitz = max(e.lipschitz, 1), least = 1e-5 * e.radius
@@ -124,7 +124,7 @@ public struct SphereTracing: OcclusionTest {
         }
         let exit = -b + disc.squareRoot()
         var t = max(-b - disc.squareRoot(), 0)
-        var margin = outer - e.radius
+        var clearance = outer - e.radius
         while t <= exit {
             let g = gap(q + t * d)
             if g < 0 {
@@ -137,10 +137,10 @@ public struct SphereTracing: OcclusionTest {
                 }
                 return -deepest
             }
-            margin = min(margin, 0.5 * g)
+            clearance = min(clearance, 0.5 * g)
             t += max(0.5 * g, least)
         }
-        return margin
+        return clearance
     }
 }
 

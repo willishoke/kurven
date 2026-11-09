@@ -80,13 +80,18 @@ a fold or a crease lies on no one face and is tested by occlusion alone.
 per geometry, each at its placement, a uniform scale and a translation, under
 one camera. Each geometry's curves are tested by its own test exactly as when
 it stands alone, then by every other geometry's, which forgives them nothing:
-a point inside another solid is hidden by it (`OcclusionTest.isClear(ofAnotherSolid:)`).
-A polyhedron cuts another geometry's segments in closed form; the other tests
-are asked at points along a segment a fraction of their own feature size
-apart, a landscape's cell or a torus's ball, and bisected where the verdict
-turns. The coordinate image cannot hide another solid's curves, so a surface
-tested by it is refused, and a landscape stands at scale 1, since its
-tolerances are lengths in its domain.
+a point inside another solid is hidden by it, and a point on its boundary
+only where its line goes in (`OcclusionTest.isClear(ofAnotherSolid:)`). The
+lines of sight from a segment sweep a strip, and each other geometry cuts it
+over the box or ball that holds it: a polyhedron's pieces and a landscape's
+slab on its grid in closed form, the slab as convex prisms down to its floor
+(`Slab`), and the round torus by sphere tracing's clearances, each a stretch of
+the segment with one verdict. A landscape on its function is asked at points
+a quarter cell apart, since nothing bounds f's slope. The coordinate image
+cannot hide another solid's curves, nor can a displaced torus, whose
+Lipschitz constant is read off its grid, so both are refused; a landscape
+stands at scale 1, since its tolerances are lengths in its domain, and a
+placement's scale and offset are held to a range.
 
 **Projection.** An oblique parallel projection (`Camera.oblique`), as the
 plates use. See [below](#the-oblique-projection).

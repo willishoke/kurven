@@ -73,6 +73,7 @@ and Emde, *Funktionentafeln*, 1909).
 | occlusion | A polyhedron's occlusion test: the spans of a flat segment hidden by flat pieces, in closed form (`Solid.Occlusion`). | cast |
 | depth tolerance | How far behind a surface, in view depth, a point may lie and still be drawn. The preview adds a slope-scaled term, as shadow maps do. | margin |
 | composite | Several geometries in one scene under one camera, each at its placement (`Composite`). A curve is seen where its own geometry shows it, as when it stands alone, and no other geometry's occlusion test hides it; the other forgives it nothing (`OcclusionTest.isClear(ofAnotherSolid:)`). | |
+| clearance | How far a point of another solid can move and keep the verdict sphere tracing gives it, signed by the verdict: a distance its line of sight keeps from the torus, or goes into it (`SphereTracing.clearance(ofAnotherSolid:)`). CAD's word for the room between two parts. | |
 | placement | Where a geometry stands in a composite: a uniform scale about the origin, then a translation (`Placement`). The CAD term for a part's position. | |
 
 ## Drawing
