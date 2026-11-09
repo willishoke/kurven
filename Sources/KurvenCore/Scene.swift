@@ -1084,11 +1084,13 @@ struct GridTraversal: Sendable {
         // boundary, where the line goes in or out.
         var startInside = false
         if elsewhere, !ts.isEmpty {
+            // Only over a copy's grid, where the slab is.
+            func overGrid(_ t: Double) -> Bool { passages.contains { t >= $0.ta && t <= $0.tb } }
             if abs(d.z) > 1e-15 {
                 let floorCrossing = (base - p.z) / d.z
-                if floorCrossing > tEps, floorCrossing < tMax { ts.append(floorCrossing) }
+                if floorCrossing > tEps, overGrid(floorCrossing) { ts.append(floorCrossing) }
             }
-            ts.append(2 * tEps)
+            if overGrid(2 * tEps) { ts.append(2 * tEps) }
             let e = side
             startInside = strictlyInside && p.z > base + tEps
                 && [SIMD2(e, 0), SIMD2(-e, 0), SIMD2(0, e), SIMD2(0, -e)].allSatisfy {
