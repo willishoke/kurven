@@ -630,6 +630,30 @@ func compositeTests() {
         }
     }
 
+    Check.suite("composite: a landscape's test of another solid's point has a floor and a boundary") {
+        // Under the landscape's own camera, whose lines of sight run toward
+        // the front wall (−y) and up: a point a hair inside the wall, on it
+        // and a hair outside, each under the wall's top, is seen; one under
+        // the surface inside is not; one under the base whose line leaves
+        // the footprint before it reaches the base is seen, and one whose
+        // line comes up through the floor is not. On the grid and on f.
+        let bundle = try KurvenBundle.read(at: Fixtures.dir.appendingPathComponent("expr/landscape_cubic.kurven"))
+        let refined = bundle.refined(by: NativeLandscape.refiner(for: bundle)?.refine)
+        for (name, b) in [("on the grid", bundle), ("on f", refined)] {
+            let scene = Scene(bundle: b, preset: b.manifest.presets[0])
+            let test = HeightfieldVisibility(heightfield: scene.heightfield!, view: scene.camera.view,
+                                             depthTolerance: scene.depthTolerance)
+            for (what, p, clear) in [("a hair inside the front wall", P3<WorldSpace>(0, -2 + 1e-12, 0.05), true),
+                                     ("on the front wall", P3<WorldSpace>(0, -2, 0.05), true),
+                                     ("a hair outside the front wall", P3<WorldSpace>(0, -2 - 1e-12, 0.05), true),
+                                     ("under the surface inside", P3<WorldSpace>(0, -1.9, 0.05), false),
+                                     ("under the base, its line leaving through the wall", P3<WorldSpace>(0, -1.95, -0.05), true),
+                                     ("under the base, its line coming up through the floor", P3<WorldSpace>(0, -1.5, -0.05), false)] {
+                Check.expect(test.isClear(ofAnotherSolid: p) == clear, "\(name): a point \(what) is \(clear ? "seen" : "hidden")")
+            }
+        }
+    }
+
     Check.suite("composite: a surface with no exact occlusion test is refused") {
         let bundle = try KurvenBundle.read(at: Fixtures.dir.appendingPathComponent("expr/landscape_cubic.kurven"))
         let landscape = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
