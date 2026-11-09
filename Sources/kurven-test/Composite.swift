@@ -176,15 +176,24 @@ func functionCast(_ h: Heightfield, model: @escaping @Sendable (SIMD3<Double>) -
         }
         guard ta <= tb else { return true }
         var least = Double.infinity
-        var t = ta
-        while t <= tb {
+        func hit(_ t: Double) -> Bool {
             let x = q + t * toEye
             let u = magnitude(P2<DomainSpace>(x.x, x.y))
             // Under the floor is outside the slab.
             let gap = max(x.z - min(u.isNaN ? .infinity : u, truncation.height(atX: x.x)), base - x.z)
             least = min(least, gap)
-            if gap < -1e-4 * cell { return false }
+            return gap < -1e-4 * cell
+        }
+        var t = ta
+        while t <= tb {
+            if hit(t) { return false }
             t += cell / 64
+        }
+        // Up through the floor near a wall, the line can be in the slab
+        // for less than a step: halfway from the floor to the wall too.
+        if abs(toEye.z) > 1e-12 {
+            let floor = (base - q.z) / toEye.z
+            if floor > ta, floor < tb, hit(0.5 * (floor + tb)) { return false }
         }
         return abs(least) > 1e-4 * cell ? true : nil
     }
@@ -581,6 +590,12 @@ func compositeTests() {
         for (name, parts, cameras) in compositions.map({ ($0.0, $0.1, cameras) })
             + [("a frame sunk into the slope of a tower, on f",
                 [("landscape", onF, .identity), ("frame", frame, Placement(scale: 0.3, offset: SIMD3(0.3, -1.3, 0.2)))],
+                Array(cameras.prefix(1))),
+               ("a cube under the landscape's base, on f",
+                [("landscape", onF, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -1.6, -0.9)))],
+                Array(cameras.prefix(1))),
+               ("a cube flush against the landscape's front wall, on f",
+                [("landscape", onF, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -2 - 0.35 * cubeMaxY, 0)))],
                 Array(cameras.prefix(1)))] {
             var total = CompositeVerdict()
             let elapsed = try clock.measure {
