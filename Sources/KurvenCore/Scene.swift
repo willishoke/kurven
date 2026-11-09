@@ -790,6 +790,10 @@ struct GridTraversal: Sendable {
     let cell: Double
     let top: Double
     let floor: Double
+    /// The floor the walls stand on, a perimeter's base, or without one the
+    /// lowest point drawn: under it is outside the slab, for a point of
+    /// another solid (`unoccluded(_:forgiven:elsewhere:trace:)`).
+    let base: Double
     /// Per tile: world to the tile's grid index coordinates, and the
     /// grid's last index each way.
     let grids: [(linear: simd_double2x2, offset: SIMD2<Double>, extent: SIMD2<Double>)]
@@ -841,6 +845,7 @@ struct GridTraversal: Sendable {
         heightfield.forEachSample { top = max(top, $0.z); floor = min(floor, $0.z) }
         for v in heightfield.occluder.vertices { floor = min(floor, v.z) }
         self.top = top; self.floor = floor
+        if case .perimeter(_, let base) = heightfield.walls { self.base = base } else { self.base = floor }
         var grids: [(linear: simd_double2x2, offset: SIMD2<Double>, extent: SIMD2<Double>)] = []
         var backs: [Affine2] = []
         for tile in heightfield.tiles {
@@ -918,10 +923,15 @@ struct GridTraversal: Sendable {
     /// forgive: it is on the solid's boundary, not tested where it stands,
     /// and outside from the start, so anything its line enters hides it. A
     /// point `elsewhere`, of another solid in a composite, is forgiven
-    /// nothing either, and is tested where it stands as well: inside this
-    /// solid by more than a rounding, it is hidden. With `trace`, every
-    /// sample the traversal takes and what it made of it, for asking why a
-    /// vertex is hidden.
+    /// nothing either, and is tested where it stands as well: strictly
+    /// inside this solid -- over the domain and the footprint, above the
+    /// base and under the surface, each by more than a rounding -- it is
+    /// hidden; on a wall, the floor or the top it is on the boundary, and
+    /// hidden only where its line goes in. For such a point the slab has a
+    /// floor: under the base is outside it, and a line of sight that comes
+    /// up through the floor enters it there. With `trace`, every sample the
+    /// traversal takes and what it made of it, for asking why a vertex is
+    /// hidden.
     func unoccluded(_ p: P3<WorldSpace>, forgiven: Bool = true, elsewhere: Bool = false,
                     trace: ((String) -> Void)? = nil) -> Bool {
         let d = toward
@@ -954,6 +964,7 @@ struct GridTraversal: Sendable {
             let q = pxy + t * dxy
             guard heightfield.region.contains(P2<WorldSpace>(q.x, q.y)) else { return nil }
             let z = p.z + t * d.z
+            if elsewhere, z < base - tEps { return nil }
             if let magnitude {
                 let (dq, back) = heightfield.surface.tile(under: P2<DomainSpace>(q.x, q.y), tiles: heightfield.tiles)
                 let (u, slope) = functionSurface(at: dq, magnitude: magnitude)
@@ -1068,6 +1079,22 @@ struct GridTraversal: Sendable {
                 if b.ta + 2 * tEps < b.tb { ts.append(b.ta + 2 * tEps) }
             }
         }
+        // A point of another solid: where its line crosses the base, which
+        // is the slab's floor, and a hair along the line from a start on the
+        // boundary, where the line goes in or out.
+        var startInside = false
+        if elsewhere, !ts.isEmpty {
+            if abs(d.z) > 1e-15 {
+                let floorCrossing = (base - p.z) / d.z
+                if floorCrossing > tEps, floorCrossing < tMax { ts.append(floorCrossing) }
+            }
+            ts.append(2 * tEps)
+            let e = side
+            startInside = strictlyInside && p.z > base + tEps
+                && [SIMD2(e, 0), SIMD2(-e, 0), SIMD2(0, e), SIMD2(0, -e)].allSatisfy {
+                    region.contains(P2<WorldSpace>(pxy.x + $0.x, pxy.y + $0.y))
+                }
+        }
         risers.sort { $0.t < $1.t }
         guard !ts.isEmpty else { return true }
         ts.sort()
@@ -1087,7 +1114,7 @@ struct GridTraversal: Sendable {
         /// Hidden at `t`, tested under a triangle of the given cosine; `g` is
         /// the gap there, nil beyond the region (outside, then).
         func hidden(_ t: Double, _ g: Sample?, cosine: Double) -> Bool {
-            var visible = t > tEps || elsewhere
+            var visible = t > tEps || (elsewhere && startInside)
             if !visible, forgiven, strictlyInside, !startForgiven { visible = true; startForgiven = true }
             // At the start, a point on the surface to rounding is in its own
             // surface's neighbourhood, not outside it; a point of another
