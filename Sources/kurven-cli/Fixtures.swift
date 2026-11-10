@@ -31,9 +31,9 @@ import KurvenMath
 ///                bundle, and the two derived style numbers.
 ///     expr/      three landscapes built natively, as bundles, and the specs
 ///                they were built from.
-///     composite/ the cubic landscape of expr/ with the contract's cube,
-///                torus and frame standing on it, drawn as `kurven-cli
-///                scene` draws them.
+///     composite/ the cubic landscape of expr/ on its grid with the
+///                contract's cube, torus and frame standing on it, drawn as
+///                `kurven-cli scene --no-refine` draws them.
 ///
 /// Some files in these sets are *inputs*, not answers: the seeded noise in the
 /// contract bundles' dumped layers, the camera's point cloud, and the clip
@@ -645,7 +645,7 @@ extension GoldenFixtures {
         try directory(dir)
         for (name, parts) in composites {
             let drawing = try compositeDrawing(parts.map { (root.appendingPathComponent($0.path).path, $0.placement) },
-                                               preset: nil, refine: true)
+                                               preset: nil, refine: false)
             try text(SVG.render(drawing.strokes), to: dir.appendingPathComponent("\(name).svg"))
         }
     }
