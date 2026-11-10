@@ -17,16 +17,23 @@ import simd
 ///
 /// A landscape's is public as `HeightfieldVisibility`, which asks the
 /// traversal. Each scene's visibility asks its test as its own type
-/// (`Scene.visible(_:depthTolerance:image:)`); the protocol is what a scene
-/// of several solids will ask them through, and what the `occlusion:`
-/// suite holds each of them to a ray cast by.
+/// (`Scene.visible(_:depthTolerance:image:)`); the protocol is what a
+/// composite asks each of its geometries through about another's curves
+/// (`Composite`), and what the `occlusion:` suite holds each of them to a ray
+/// cast by.
 public protocol OcclusionTest: Sendable {
     /// Whether nothing of this solid stands on the open ray from `p` toward the eye.
     func isClear(_ p: P3<WorldSpace>) -> Bool
+    /// The same of a point of another solid, which this one forgives
+    /// nothing: `isClear` may forgive a point of its own surface for lying
+    /// a rounding or a depth tolerance inside the solid, and a point of
+    /// another solid inside this one is hidden by it.
+    func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool
 }
 
 extension GridTraversal: OcclusionTest {
     func isClear(_ p: P3<WorldSpace>) -> Bool { unoccluded(p) }
+    func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool { unoccluded(p, forgiven: false, elsewhere: true) }
 }
 
 /// Sphere tracing (Hart 1996): the occlusion test of a surface with a
@@ -79,18 +86,78 @@ public struct SphereTracing: OcclusionTest {
         }
         return true
     }
+
+    /// Whether a point of another solid is clear: its clearance is not
+    /// negative (`clearance(ofAnotherSolid:)`).
+    public func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool { clearance(ofAnotherSolid: p) >= 0 }
+
+    /// How far a point of another solid can move and keep its verdict, with
+    /// the verdict in the sign: positive where its line of sight is clear,
+    /// and every point within the clearance of it has a clear line too;
+    /// negative where the line passes through the solid, and every point
+    /// within the clearance's size of it has a line through the solid too.
+    ///
+    /// The line is traced from the point itself, not a step past it, in
+    /// steps of half the gap over the Lipschitz constant: a step of half the
+    /// gap leaves every point it passes at least half the gap from the
+    /// solid, so the least half-gap is a distance no line within it can
+    /// close. Past a ball a hundredth larger than the one that holds the
+    /// solid, every point is that hundredth away. Where the line enters the
+    /// solid the clearance is the deepest the line goes, by the gap, which on
+    /// the round torus is the distance to the tube and so exact inside too.
+    /// A step is never under sphere tracing's least step, a hundred-thousandth
+    /// of the ball, and a clearance under it is a verdict to that resolution.
+    public func clearance(ofAnotherSolid p: P3<WorldSpace>) -> Double {
+        let e = neighbourhood
+        let q = p.v, d = -sight
+        let lipschitz = max(e.lipschitz, 1), least = 1e-5 * e.radius
+        func gap(_ x: SIMD3<Double>) -> Double {
+            let (coord, distance) = e.foot(x)
+            let over = distance - e.above
+            return over > 0 ? over : (distance - e.normalOffset(coord)) / lipschitz
+        }
+        let o = q - e.centre, outer = 1.01 * e.radius
+        let b = simd_dot(o, d), c = simd_dot(o, o) - outer * outer
+        let disc = b * b - c
+        guard disc > 0, -b + disc.squareRoot() > 0 else {
+            return simd_length(o + max(-b, 0) * d) - e.radius
+        }
+        let exit = -b + disc.squareRoot()
+        var t = max(-b - disc.squareRoot(), 0)
+        var clearance = outer - e.radius
+        while t <= exit {
+            let g = gap(q + t * d)
+            if g < 0 {
+                var deepest = -g, u = t
+                while u <= exit {
+                    let h = gap(q + u * d)
+                    if h >= 0 { break }
+                    deepest = max(deepest, -h)
+                    u += max(-h, least)
+                }
+                return -deepest
+            }
+            clearance = min(clearance, 0.5 * g)
+            t += max(0.5 * g, least)
+        }
+        return clearance
+    }
 }
 
 extension Solid.Occlusion: OcclusionTest {
     /// The point form: the segment form asked of the segment from `p` to
     /// itself, which a piece hides whole or not at all. A piece through `p`
     /// stands in front of it by nothing, and a piece seen edge-on hides
-    /// nothing, as on a segment. Nothing draws with it yet: a polyhedron's
-    /// edges and hatching are tested by the segment form, and the point form
-    /// is for a scene of several solids, held to a ray cast meanwhile by the
-    /// `occlusion:` suite.
+    /// nothing, as on a segment. Nothing draws with it: a polyhedron's
+    /// edges and hatching are tested by the segment form, and so are the
+    /// segments of another geometry's curves in a composite (`Composite`).
+    /// The `occlusion:` suite holds it to a ray cast.
     public func isClear(_ p: P3<WorldSpace>) -> Bool {
         let q = view(p)
         return hidden(from: q, to: q, excluding: { _ in false }).isEmpty
     }
+
+    /// The same test, which excludes no piece: a point inside the solid has
+    /// one in front of it.
+    public func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool { isClear(p) }
 }

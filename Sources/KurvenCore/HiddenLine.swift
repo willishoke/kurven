@@ -51,6 +51,13 @@ public struct HeightfieldVisibility: OcclusionTest {
     /// within the depth tolerance.
     public func isClear(_ p: P3<WorldSpace>) -> Bool { traversal.unoccluded(p) }
 
+    /// Whether nothing of the solid stands between `p`, a point of another
+    /// solid, and the eye: no depth tolerance, and hidden where it stands
+    /// inside this one (`GridTraversal.unoccluded(_:forgiven:elsewhere:trace:)`).
+    public func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool {
+        traversal.unoccluded(p, forgiven: false, elsewhere: true)
+    }
+
     /// Why `p` is hidden or clear: every sample the traversal took along the
     /// line of sight from it and what it made of each, one line per sample.
     public func explain(_ p: P3<WorldSpace>) -> String {

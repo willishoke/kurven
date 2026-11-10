@@ -95,6 +95,43 @@ golden() {
 }
 step "the committed golden fixtures are what kurven-cli fixtures writes" golden
 
+# Several geometries in one scene: `kurven-cli scene` draws the golden
+# composites (`kurven-cli fixtures`, composite/), the landscape on its grid,
+# byte for byte, and refuses the landscape on its function, a surface with no
+# exact occlusion test (the forced torus), a displaced torus, and a placement
+# out of range, saying why and writing nothing.
+scene() {
+    local dir="$PACKAGE/.build/scene-check" f="$ROOT/tests/fixtures" out
+    local land="$f/expr/landscape_cubic.kurven" c="$f/contract"
+    rm -rf "$dir" && mkdir -p "$dir" || return 1
+    "$BIN/kurven-cli" scene "$land" "$c/polyhedron_cube.kurven" --at -1.2,0.1,0.3,0.35 --no-refine -o "$dir/cube.svg" >/dev/null &&
+    "$BIN/kurven-cli" scene "$land" "$c/surface_torus.kurven" --at 1,0,1.6,0.35 --no-refine -o "$dir/torus.svg" >/dev/null &&
+    "$BIN/kurven-cli" scene "$land" "$c/polyhedron_frame.kurven" --at 0.3,-1.3,0.2,0.3 --no-refine -o "$dir/frame.svg" >/dev/null &&
+    "$BIN/kurven-cli" scene "$land" "$c/polyhedron_cube.kurven" --at -1.2,0.1,0.3,0.35 \
+        "$c/surface_torus.kurven" --at 1,0,1.6,0.35 --no-refine -o "$dir/three.svg" >/dev/null || return 1
+    for name in cube torus frame three; do
+        cmp "$dir/$name.svg" "$f/composite/$name.svg" || { echo "the $name composite is not the golden one"; return 1; }
+    done
+    out=$("$BIN/kurven-cli" scene "$land" "$c/surface_forced.kurven" --no-refine -o "$dir/forced.svg" 2>&1) &&
+        { echo "the forced torus was drawn in a composite"; return 1; }
+    printf '%s\n' "$out" | grep -q 'no exact occlusion test' && [ ! -e "$dir/forced.svg" ] ||
+        { printf '%s\n' "$out"; return 1; }
+    # A displaced torus, and placements past either end of the range.
+    local refused
+    for refused in "$c/polyhedron_cube.kurven --at -1.2,0.1,0.3,0.35|a landscape on its function" \
+                   "$c/surface_relief.kurven --at 0,0,1,0.3 --no-refine|a displaced torus" \
+                   "$c/polyhedron_cube.kurven --at 0,0,0,1e200 --no-refine|scale is between" \
+                   "$c/polyhedron_cube.kurven --at 0,0,0,1e-20 --no-refine|scale is between" \
+                   "$c/polyhedron_cube.kurven --at 0,1e300,0 --no-refine|offset is within"; do
+        rm -f "$dir/refused.svg"
+        out=$("$BIN/kurven-cli" scene "$land" ${refused%|*} -o "$dir/refused.svg" 2>&1) &&
+            { echo "scene drew ${refused%|*}"; return 1; }
+        printf '%s\n' "$out" | grep -q "${refused#*|}" && [ ! -e "$dir/refused.svg" ] ||
+            { printf '%s\n' "$out"; echo "scene did not refuse ${refused%|*}, saying why, with nothing written"; return 1; }
+    done
+}
+step "the CLI draws several geometries in one scene as the golden composites, and refuses a geometry with no exact occlusion test or out of range" scene
+
 # The app's own document, driven without a window (a bundle named by a bare
 # path opens none): a surface saved by the CLI, opened, saved as ⌘S saves it,
 # reopened and baked, is the CLI's bundle and drawing byte for byte. Then a

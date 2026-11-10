@@ -76,6 +76,23 @@ tests every layer of every scene (`Scene.visible`): the facing of the kind
 of face its curves lie on (`SceneGeometry.face(of:)`), then the scene's test;
 a fold or a crease lies on no one face and is tested by occlusion alone.
 
+**Several solids.** A composite (`Composite`, `kurven-cli scene`) is a scene
+per geometry, each at its placement, a uniform scale and a translation, under
+one camera. Each geometry's curves are tested by its own test exactly as when
+it stands alone, then by every other geometry's, which forgives them nothing:
+a point inside another solid is hidden by it, and a point on its boundary
+only where its line goes in (`OcclusionTest.isClear(ofAnotherSolid:)`). The
+lines of sight from a segment sweep a strip, and each other geometry cuts it
+over the box or ball that holds it: a polyhedron's pieces and a landscape's
+slab on its grid in closed form, the slab as convex prisms down to its floor
+(`Slab`), and the round torus by sphere tracing's clearances, each a stretch of
+the segment with one verdict. The coordinate image cannot hide another
+solid's curves exactly, nor can a displaced torus, whose Lipschitz constant
+is read off its grid, nor a landscape on its function, whose slope nothing
+bounds, so all three are refused; a landscape stands on its grid at scale 1,
+since its tolerances are lengths in its domain, and a placement's scale and
+offset are held to a range.
+
 **Projection.** An oblique parallel projection (`Camera.oblique`), as the
 plates use. See [below](#the-oblique-projection).
 

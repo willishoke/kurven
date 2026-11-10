@@ -31,6 +31,9 @@ import KurvenMath
 ///                bundle, and the two derived style numbers.
 ///     expr/      three landscapes built natively, as bundles, and the specs
 ///                they were built from.
+///     composite/ the cubic landscape of expr/ on its grid with the
+///                contract's cube, torus and frame standing on it, drawn as
+///                `kurven-cli scene --no-refine` draws them.
 ///
 /// Some files in these sets are *inputs*, not answers: the seeded noise in the
 /// contract bundles' dumped layers, the camera's point cloud, and the clip
@@ -52,6 +55,7 @@ enum GoldenFixtures {
         try clip(root.appendingPathComponent("clip"))
         try hatch(root.appendingPathComponent("hatch"))
         try landscapes(root.appendingPathComponent("expr"))
+        try composites(root)
     }
 
     // MARK: shared
@@ -619,6 +623,34 @@ enum GoldenFixtures {
     }
 }
 
+extension GoldenFixtures {
+    /// Each composite `scripts/check.sh` draws with `kurven-cli scene`, from
+    /// bundles written above: a cube standing behind a tower, the round
+    /// torus ringing one, a frame sunk into the slope of one, and the cube
+    /// and the torus together.
+    static let composites: [(name: String, parts: [(path: String, placement: Placement)])] = [
+        ("cube", [("expr/landscape_cubic.kurven", .identity),
+                  ("contract/polyhedron_cube.kurven", Placement(scale: 0.35, offset: SIMD3(-1.2, 0.1, 0.3)))]),
+        ("torus", [("expr/landscape_cubic.kurven", .identity),
+                   ("contract/surface_torus.kurven", Placement(scale: 0.35, offset: SIMD3(1, 0, 1.6)))]),
+        ("frame", [("expr/landscape_cubic.kurven", .identity),
+                   ("contract/polyhedron_frame.kurven", Placement(scale: 0.3, offset: SIMD3(0.3, -1.3, 0.2)))]),
+        ("three", [("expr/landscape_cubic.kurven", .identity),
+                   ("contract/polyhedron_cube.kurven", Placement(scale: 0.35, offset: SIMD3(-1.2, 0.1, 0.3))),
+                   ("contract/surface_torus.kurven", Placement(scale: 0.35, offset: SIMD3(1, 0, 1.6)))]),
+    ]
+
+    static func composites(_ root: URL) throws {
+        let dir = root.appendingPathComponent("composite")
+        try directory(dir)
+        for (name, parts) in composites {
+            let drawing = try compositeDrawing(parts.map { (root.appendingPathComponent($0.path).path, $0.placement) },
+                                               preset: nil, refine: false)
+            try text(SVG.render(drawing.strokes), to: dir.appendingPathComponent("\(name).svg"))
+        }
+    }
+}
+
 func fixturesCommand(_ args: Args) throws {
     try args.only("fixtures", [])
     guard let dir = args.positional.dropFirst().first else {
@@ -627,5 +659,5 @@ func fixturesCommand(_ args: Args) throws {
     let clock = ContinuousClock()
     let elapsed = try clock.measure { try GoldenFixtures.write(to: URL(fileURLWithPath: dir)) }
     print("wrote the golden sets under \(dir) in \(elapsed): contract, camera, clip, hatch, "
-          + "expr/landscape_*")
+          + "expr/landscape_*, composite")
 }
