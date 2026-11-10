@@ -149,8 +149,10 @@ usage: kurven-cli <command> [options]
         (its first preset, or --preset). Every clipped curve is tested by its
         own geometry, as its bundle's bake tests it, and by every other
         geometry, which forgives it nothing; no depth buffer has a part in
-        it. A landscape stands at scale 1, and a surface with no exact
-        occlusion test, such as the forced torus, is refused.
+        it. A landscape stands on its grid (--no-refine) at scale 1; one on
+        its function, a surface with no exact occlusion test such as the
+        forced torus, a displaced torus and a placement out of range are
+        refused.
 
   surface torus [--coordinate-curves U,V] [--samples N]
   surface sn [--modulus M] [--grid N]

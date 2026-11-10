@@ -32,7 +32,7 @@ public struct HeightfieldVisibility: OcclusionTest {
     public let depthTolerance: Double
     /// The direction lines of sight travel, in world space.
     public let sight: SIMD3<Double>
-    private(set) var traversal: GridTraversal
+    let traversal: GridTraversal
 
     public init(heightfield: Heightfield, view: Transform<WorldSpace, ViewSpace>, depthTolerance: Double) {
         self.heightfield = heightfield
@@ -56,14 +56,6 @@ public struct HeightfieldVisibility: OcclusionTest {
     /// inside this one (`GridTraversal.unoccluded(_:forgiven:elsewhere:trace:)`).
     public func isClear(ofAnotherSolid p: P3<WorldSpace>) -> Bool {
         traversal.unoccluded(p, forgiven: false, elsewhere: true)
-    }
-
-    /// The same test for one thread of a parallel visibility test: the
-    /// heightfield's function forked (`Heightfield.forked`).
-    public func forked() -> HeightfieldVisibility {
-        var m = self
-        m.traversal = traversal.forked()
-        return m
     }
 
     /// Why `p` is hidden or clear: every sample the traversal took along the

@@ -26,13 +26,6 @@ import simd
 /// from its (1, 0) corner to its (0, 1) corner, the raw samples interpolated
 /// and cut at the truncation, over the copies' boxes and the footprint.
 struct Slab: Sendable {
-    /// A box that holds the slab in world space, as half-spaces n · x ≤ c,
-    /// and its corners.
-    struct Box: Sendable {
-        let halfSpaces: [(n: SIMD3<Double>, c: Double)]
-        let corners: [SIMD3<Double>]
-    }
-
     /// One copy of the grid: world (x, y) to the decimated grid's index
     /// coordinates (u, v), and the footprint's convex pieces there.
     struct Copy: Sendable {
@@ -127,36 +120,6 @@ struct Slab: Sendable {
             }
             return Copy(linear: linear, offset: offset, pieces: pieces, corners: corners)
         }
-    }
-
-    /// The box that holds a landscape's slab in world space: its copies'
-    /// boxes, from `base` up to `top`.
-    static func box(of h: Heightfield, base: Double, top: Double) -> Box {
-        let d = h.surface.domain
-        var lo = SIMD2<Double>(repeating: .infinity), hi = SIMD2<Double>(repeating: -.infinity)
-        for tile in h.tiles {
-            for c in [SIMD2(d.real.lo, d.imag.lo), SIMD2(d.real.hi, d.imag.lo),
-                      SIMD2(d.real.hi, d.imag.hi), SIMD2(d.real.lo, d.imag.hi)] {
-                let w = tile(P3<WorldSpace>(c.x, c.y, 0))
-                lo = simd_min(lo, SIMD2(w.x, w.y)); hi = simd_max(hi, SIMD2(w.x, w.y))
-            }
-        }
-        let l = SIMD3(lo.x, lo.y, base), u = SIMD3(hi.x, hi.y, top)
-        return Box(halfSpaces: [(SIMD3(-1, 0, 0), -l.x), (SIMD3(1, 0, 0), u.x), (SIMD3(0, -1, 0), -l.y),
-                                (SIMD3(0, 1, 0), u.y), (SIMD3(0, 0, -1), -l.z), (SIMD3(0, 0, 1), u.z)],
-                   corners: [l, SIMD3(u.x, l.y, l.z), SIMD3(l.x, u.y, l.z), SIMD3(u.x, u.y, l.z),
-                             SIMD3(l.x, l.y, u.z), SIMD3(u.x, l.y, u.z), SIMD3(l.x, u.y, u.z), u])
-    }
-
-    /// The fractions of the segment `a -> b` whose lines of sight along the
-    /// unit `d` meet `box`; nil where none does.
-    static func sweep(of box: Box, from a: SIMD3<Double>, to b: SIMD3<Double>,
-                      toward d: SIMD3<Double>) -> (Double, Double)? {
-        let reach = box.corners.map { simd_length($0 - a) }.max()! + simd_length(b - a)
-        let polygon = clip(box.halfSpaces, a: a, e: b - a, d: d, t0: 0, t1: 1.01 * reach + 1)
-        guard !polygon.isEmpty else { return nil }
-        let s = polygon.map(\.x)
-        return (max(s.min()!, 0), min(s.max()!, 1))
     }
 
     /// The spans of the segment `a -> b`, in the landscape's own

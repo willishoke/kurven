@@ -60,15 +60,15 @@ public struct CompositeError: Error, CustomStringConvertible, Equatable {
 ///
 /// Another geometry cuts a curve's segments where their lines of sight meet
 /// it (`Occluder`): a polyhedron and a landscape on its grid in closed form,
-/// the round torus by the clearances of its sphere tracing, and a landscape on
-/// its function by its traversal, asked at points along the segment.
+/// the round torus by the clearances of its sphere tracing.
 ///
-/// Only a geometry with an exact occlusion test stands in a composite: a
-/// landscape, a polyhedron, or the round torus. The coordinate image says
-/// only whether a point is the front-most of its own surface, nothing about
-/// another solid, so a surface tested by it -- the forced torus -- is
-/// refused; so is a displaced torus, whose sphere tracing steps by a
-/// Lipschitz constant read off its grid rather than proved. No depth buffer
+/// Only a geometry that cuts another's segments exactly stands in a
+/// composite: a landscape on its grid, a polyhedron, or the round torus. The
+/// coordinate image says only whether a point is the front-most of its own
+/// surface, nothing about another solid, so a surface tested by it -- the
+/// forced torus -- is refused; so is a displaced torus, whose sphere tracing
+/// steps by a Lipschitz constant read off its grid rather than proved, and a
+/// landscape on its function, whose slope nothing bounds. No depth buffer
 /// stands in between solids: the drawing is a function of the geometry and
 /// the camera.
 public struct Composite: Sendable {
@@ -106,6 +106,12 @@ public struct Composite: Sendable {
                     \(name) is a displaced torus: its sphere tracing steps by a Lipschitz constant read \
                     off its grid, not proved, so it cannot hide another solid's curves exactly, and it \
                     cannot stand in a composite. It bakes alone.
+                    """)
+            case .heightfield(let h) where h.refine?.magnitude != nil:
+                throw CompositeError("""
+                    \(name) is a landscape on its function: nothing bounds f's slope, so it cannot cut \
+                    another solid's curves exactly, and it cannot stand in a composite. It stands on its \
+                    grid (kurven-cli scene --no-refine), or bakes alone.
                     """)
             case .heightfield where placement.scale != 1:
                 throw CompositeError("""
@@ -148,11 +154,6 @@ public struct Composite: Sendable {
         /// A landscape on its grid, in closed form (`Slab`), in its own
         /// coordinates: world space less its offset.
         case slab(Slab, offset: SIMD3<Double>)
-        /// A landscape on its function: its traversal, asked every `step`
-        /// along the segment over the box that holds its slab, and bisected
-        /// where the verdict turns. Nothing bounds f's slope, so a span
-        /// shorter than the step can be passed over.
-        case function(HeightfieldVisibility, placement: Placement, step: Double, box: Slab.Box)
         /// The round torus: sphere tracing's clearances
         /// (`SphereTracing.clearance(ofAnotherSolid:)`), each a stretch of the
         /// segment with one verdict.
@@ -167,27 +168,13 @@ public struct Composite: Sendable {
             switch part.scene.geometry {
             case .solid(let s):
                 self = .pieces(s.occlusion(view: view))
-            case .heightfield(let h) where h.refine?.magnitude == nil:
-                self = .slab(try Slab(h, name: part.name), offset: placement.offset)
             case .heightfield(let h):
-                let test = HeightfieldVisibility(heightfield: h, view: view, depthTolerance: part.scene.depthTolerance)
-                // A quarter of a cell: the traversal's solid is f between its
-                // crossings, a cell apart.
-                self = .function(test, placement: placement, step: 0.25 * test.traversal.cell,
-                                 box: Slab.box(of: h, base: test.traversal.base, top: test.traversal.top))
+                // On its grid: one on its function is refused at the door.
+                self = .slab(try Slab(h, name: part.name), offset: placement.offset)
             case .parametric(let s):
                 // Refused at the composite's door without one.
                 self = .tube(SphereTracing(s, sight: view.projectionDirection)!, placement: placement)
             }
-        }
-
-        /// The same occluder for one worker thread: a landscape's function
-        /// forked.
-        func forked() -> Occluder {
-            if case .function(let test, let placement, let step, let box) = self {
-                return .function(test.forked(), placement: placement, step: step, box: box)
-            }
-            return self
         }
 
         /// The spans of the segment `a -> b` (view space; `world` takes it
@@ -200,14 +187,6 @@ public struct Composite: Sendable {
                 return occlusion.hidden(from: a, to: b, excluding: { _ in false })
             case .slab(let slab, let offset):
                 return slab.hidden(from: world(a).v - offset, to: world(b).v - offset, toward: toward)
-            case .function(let test, let placement, let step, let box):
-                let wa = placement.back(world(a)).v, wb = placement.back(world(b)).v
-                guard let (s0, s1) = Slab.sweep(of: box, from: wa, to: wb, toward: toward) else { return [] }
-                let count = (simd_length(wb - wa) * (s1 - s0) / step).rounded(.up)
-                guard count <= Double(Occluder.steps) else { throw Composite.tooFine(count) }
-                return Composite.bisected(from: s0, to: s1, n: max(1, Int(count))) { s in
-                    test.isClear(ofAnotherSolid: P3(wa + (wb - wa) * s))
-                }
             case .tube(let tracing, let placement):
                 let wa = placement.back(world(a)).v, wb = placement.back(world(b)).v
                 let e = tracing.neighbourhood
@@ -248,29 +227,6 @@ public struct Composite: Sendable {
                        + "past the \(Occluder.steps) a composite allows")
     }
 
-    /// The spans of [s0, s1] where `clear` fails, asked at `n` even steps
-    /// and its ends, each turn of the verdict bisected to the last bit.
-    static func bisected(from s0: Double, to s1: Double, n: Int, clear: (Double) -> Bool) -> [(Double, Double)] {
-        var hidden: [(Double, Double)] = []
-        var t0 = s0, c0 = clear(s0)
-        for i in 1...n {
-            let t1 = i == n ? s1 : s0 + (s1 - s0) * Double(i) / Double(n)
-            let c1 = clear(t1)
-            if c0 != c1 {
-                var lo = t0, hi = t1
-                while hi - lo > 1e-13 {
-                    let mid = 0.5 * (lo + hi)
-                    if clear(mid) == c0 { lo = mid } else { hi = mid }
-                }
-                hidden.append(c0 ? (hi, t1) : (t0, lo))
-            } else if !c0 {
-                hidden.append((t0, t1))
-            }
-            t0 = t1; c0 = c1
-        }
-        return hidden
-    }
-
     /// The fractions of the segment `a -> b` whose lines of sight, along
     /// the unit `d`, pass within `radius` of `centre`: where the distance
     /// from the centre to the line through the point is at most the radius,
@@ -304,7 +260,7 @@ public struct Composite: Sendable {
         for path in 0..<paths.count {
             for k in (paths.offsets[path] + 1)..<paths.offsets[path + 1] { segments.append(k) }
         }
-        let results = Heightfield.parallelMap(segments, chunk: 4, worker: { occluders.map { $0.forked() } }) {
+        let results = Heightfield.parallelMap(segments, chunk: 4, worker: { occluders }) {
             mine, k -> Result<[(Double, Double)], CompositeError> in
             let a = vertices[k - 1], b = vertices[k]
             do {
