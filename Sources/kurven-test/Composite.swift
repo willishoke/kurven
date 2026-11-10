@@ -144,68 +144,12 @@ func torusCast(R: Double, r: Double, model: @escaping @Sendable (SIMD3<Double>) 
     }
 }
 
-/// A cast against a landscape's function, as the stress suite's dense
-/// cast walks it: the line from the point walked a sixty-fourth of a cell at
-/// a time over the domain until it is above the highest sample, hidden where
-/// it is ever under min(|f|, h), the point itself included; nil where the
-/// least gap seen is within a ten-thousandth of a cell, where the walk's
-/// step decides.
-func functionCast(_ h: Heightfield, model: @escaping @Sendable (SIMD3<Double>) -> SIMD3<Double>) -> Cast {
-    let magnitude = h.refine!.magnitude!
-    let d = h.surface.domain, g = h.surface.height
-    let lo = SIMD2(min(d.real.lo, d.real.hi), min(d.imag.lo, d.imag.hi))
-    let hi = SIMD2(max(d.real.lo, d.real.hi), max(d.imag.lo, d.imag.hi))
-    let cell = max(abs(d.real.length) / Double(g.width - 1), abs(d.imag.length) / Double(g.height - 1))
-    let box = slabBox(h)
-    let top = box.hi.z, base = box.lo.z
-    let truncation = h.surface.truncation
-    return { p, toEye in
-        // On the slab's boundary, seen from outside.
-        let q = outside(model(p), of: box, size: 4).0
-        // The stretch of the line over the domain's box, below the top.
-        var ta = 0.0, tb = toEye.z > 0 ? max((top - q.z) / toEye.z, 0) : 1e3
-        for axis in 0..<2 {
-            let o = axis == 0 ? q.x : q.y, v = axis == 0 ? toEye.x : toEye.y
-            let (a, b) = (lo[axis], hi[axis])
-            if abs(v) < 1e-15 {
-                if o < a || o > b { return true }
-                continue
-            }
-            let t1 = (a - o) / v, t2 = (b - o) / v
-            ta = max(ta, min(t1, t2)); tb = min(tb, max(t1, t2))
-        }
-        guard ta <= tb else { return true }
-        var least = Double.infinity
-        func hit(_ t: Double) -> Bool {
-            let x = q + t * toEye
-            let u = magnitude(P2<DomainSpace>(x.x, x.y))
-            // Under the floor is outside the slab.
-            let gap = max(x.z - min(u.isNaN ? .infinity : u, truncation.height(atX: x.x)), base - x.z)
-            least = min(least, gap)
-            return gap < -1e-4 * cell
-        }
-        var t = ta
-        while t <= tb {
-            if hit(t) { return false }
-            t += cell / 64
-        }
-        // Up through the floor, which is opaque however thin the slab over
-        // it, the line enters the slab.
-        if abs(toEye.z) > 1e-12 {
-            let floor = (base - q.z) / toEye.z
-            if floor > max(ta, 1e-9 * cell), floor < tb { return false }
-        }
-        return abs(least) > 1e-4 * cell ? true : nil
-    }
-}
-
 /// The brute-force cast against a part as it stands.
 func compositeCast(_ part: Composite.Part) -> Cast {
     let s = part.placement.scale, o = part.placement.offset
     let model: @Sendable (SIMD3<Double>) -> SIMD3<Double> = { ($0 - o) / s }
     switch part.scene.geometry {
     case .heightfield(let h):
-        if h.refine?.magnitude != nil { return functionCast(h, model: model) }
         let box = slabBox(h)
         return triangleCast([drawnTriangles(h, base: box.lo.z)], size: 4, box: box, model: model)
     case .solid(let solid):
@@ -548,8 +492,6 @@ func compositeTests() {
                              domain: Domain(real: Interval(lo: -2, hi: 2), imag: Interval(lo: -2, hi: 2)),
                              resolution: 65, truncation: .uniform(5)), refine: false)
         let spike = Scene(bundle: spikeBundle, preset: spikeBundle.manifest.presets[0])
-        let spikeRefined = spikeBundle.refined(by: NativeLandscape.refiner(for: spikeBundle)?.refine)
-        let spikeOnF = Scene(bundle: spikeRefined, preset: spikeRefined.manifest.presets[0])
         let cameras: [(String, Camera)] = [
             ("the landscape's", landscape.camera),
             ("el 30° az 37°", Camera(view: testCamera(elevation: -30, azimuth: 37), projection: .orthographic(oblique: nil))),
@@ -587,25 +529,8 @@ func compositeTests() {
             ("a cube behind the spike's apex",
              [("landscape", spike, .identity), ("cube", cube, Placement(offset: SIMD3(-0.3712, 1.162, -0.249)))]),
         ]
-        // The same landscape with its function, whose solid is f: the
-        // frame's curves held to the dense cast against f, under the
-        // landscape's own camera.
-        let refined = bundle.refined(by: NativeLandscape.refiner(for: bundle)?.refine)
-        let onF = Scene(bundle: refined, preset: refined.manifest.presets[0])
         let clock = ContinuousClock()
-        for (name, parts, cameras) in compositions.map({ ($0.0, $0.1, cameras) })
-            + [("a frame sunk into the slope of a tower, on f",
-                [("landscape", onF, .identity), ("frame", frame, Placement(scale: 0.3, offset: SIMD3(0.3, -1.3, 0.2)))],
-                Array(cameras.prefix(1))),
-               ("a cube under the landscape's base, on f",
-                [("landscape", onF, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -1.56, -0.86)))],
-                Array(cameras.prefix(1))),
-               ("a cube behind the spike's apex, on f",
-                [("landscape", spikeOnF, .identity), ("cube", cube, Placement(offset: SIMD3(-0.3712, 1.162, -0.249)))],
-                Array(cameras.prefix(1))),
-               ("a cube flush against the landscape's front wall, on f",
-                [("landscape", onF, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -2 - 0.35 * cubeMinY, 0)))],
-                Array(cameras.prefix(1)))] {
+        for (name, parts) in compositions {
             var total = CompositeVerdict()
             let elapsed = try clock.measure {
                 for (_, camera) in cameras {
@@ -636,10 +561,9 @@ func compositeTests() {
         // and a hair outside, each under the wall's top, is seen; one under
         // the surface inside is not; one under the base whose line leaves
         // the footprint before it reaches the base is seen, and one whose
-        // line comes up through the floor is not. On the grid and on f.
+        // line comes up through the floor is not.
         let bundle = try KurvenBundle.read(at: Fixtures.dir.appendingPathComponent("expr/landscape_cubic.kurven"))
-        let refined = bundle.refined(by: NativeLandscape.refiner(for: bundle)?.refine)
-        for (name, b) in [("on the grid", bundle), ("on f", refined)] {
+        for (name, b) in [("on the grid", bundle)] {
             let scene = Scene(bundle: b, preset: b.manifest.presets[0])
             let test = HeightfieldVisibility(heightfield: scene.heightfield!, view: scene.camera.view,
                                              depthTolerance: scene.depthTolerance)
@@ -668,6 +592,17 @@ func compositeTests() {
         Check.expectThrows("a landscape scaled is refused") {
             _ = try Composite([("landscape", landscape, Placement(scale: 2)), ("cube", try polyhedron("cube"), .identity)],
                               camera: landscape.camera)
+        }
+        // A landscape on its function: nothing bounds f's slope, so it
+        // cannot cut another's curves exactly, and it is refused.
+        let refined = bundle.refined(by: NativeLandscape.refiner(for: bundle)?.refine)
+        let onF = Scene(bundle: refined, preset: refined.manifest.presets[0])
+        do {
+            _ = try Composite([("landscape", onF, .identity), ("cube", try polyhedron("cube"), .identity)], camera: onF.camera)
+            Check.expect(false, "a landscape on its function is refused in a composite", "it was taken")
+        } catch let error as CompositeError {
+            Check.expect(error.description.contains("on its function"),
+                         "a landscape on its function is refused in a composite, saying why", error.description)
         }
         // A displaced torus's sphere tracing steps by a Lipschitz constant
         // read off its grid, not proved: it is refused.
