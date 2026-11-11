@@ -144,6 +144,40 @@ func torusCast(R: Double, r: Double, model: @escaping @Sendable (SIMD3<Double>) 
     }
 }
 
+/// The cast from a point on a round torus of radii `R`, `r` about the z axis,
+/// facing the eye: the line walked a thousandth of the tube at a time from a
+/// ten-thousandth of the tube along it, through the ball that holds the
+/// torus; hidden where it is ever inside the tube by a millionth of it. Nil
+/// where it starts inside -- the point is on a fold, or the line grazes a
+/// concave stretch -- or where, once it turns back toward the tube, it comes
+/// within a millionth of it, where the walk's step decides. `torusCast`
+/// casts a point off the torus; on it, its clearance is zero and it says
+/// nothing.
+func torusOwnCast(R: Double, r: Double) -> Cast {
+    { q, toEye in
+        func clearance(_ x: SIMD3<Double>) -> Double {
+            let rho = (x.x * x.x + x.y * x.y).squareRoot()
+            return ((rho - R) * (rho - R) + x.z * x.z).squareRoot() - r
+        }
+        let ball = R + r
+        let b = simd_dot(q, toEye), c = simd_dot(q, q) - ball * ball
+        let exit = -b + max(b * b - c, 0).squareRoot()
+        var t = 1e-4 * r
+        var previous = clearance(q + t * toEye)
+        guard previous > 0 else { return nil }
+        var rising = true, least = Double.infinity
+        while t < exit {
+            t += 1e-3 * r
+            let g = clearance(q + t * toEye)
+            if g < -1e-6 * r { return false }
+            if rising, g < previous { rising = false }
+            if !rising { least = min(least, g) }
+            previous = g
+        }
+        return least > 1e-6 * r ? true : nil
+    }
+}
+
 /// The brute-force cast against a part as it stands.
 func compositeCast(_ part: Composite.Part) -> Cast {
     let s = part.placement.scale, o = part.placement.offset
@@ -329,6 +363,9 @@ struct TerrainTops: Sendable {
 struct CompositeVerdict {
     var compared = 0, wrong = 0, hiddenByOther = 0, undecided = 0, outsideAlone = 0
     var ownCompared = 0, ownWrong = 0
+    /// Of the own comparisons, those on the torus its cast says are seen:
+    /// what shows the cast gives a verdict on a point facing the eye.
+    var torusSeen = 0
     /// Of the comparisons, those on a contact line, and of them those
     /// another part hides.
     var contactCompared = 0, contactHidden = 0
@@ -525,6 +562,7 @@ func compositeVerdict(_ composite: Composite, casts: [Cast]) throws -> Composite
             for (q, truth) in own {
                 guard let truth, let shown = aloneHolds(q) else { continue }
                 verdict.ownCompared += 1
+                if truth, case .parametric = part.scene.geometry { verdict.torusSeen += 1 }
                 if truth != shown {
                     verdict.ownWrong += 1
                     if verdict.ownExample.isEmpty {
@@ -566,7 +604,7 @@ func ownTruths(_ part: Composite.Part, layer: Layer, view: Transform<WorldSpace,
             return out
         case .parametric(let s):
             let (R, r) = torusRadii(s)
-            let cast = torusCast(R: R, r: r, model: { $0 })
+            let cast = torusOwnCast(R: R, r: r)
             let coords = Array(contact.coords.joined())
             return Heightfield.parallelMap(coords) { c -> (SIMD3<Double>, Bool?) in
                 let q = s.map(c).position
@@ -629,7 +667,7 @@ func ownTruths(_ part: Composite.Part, layer: Layer, view: Transform<WorldSpace,
     case .parametric(let s):
         guard layer.spec.role != .outline, let coords = layer.paths.coords else { return [] }
         let (R, r) = torusRadii(s)
-        let cast = torusCast(R: R, r: r, model: { $0 })
+        let cast = torusOwnCast(R: R, r: r)
         return Heightfield.parallelMap(Array(coords.indices)) { k -> (SIMD3<Double>, Bool?) in
             let q = layer.paths.vertices[k].v
             guard let f = s.facing(coords[k], sight: -toEye), abs(f) > 1e-9 else { return (q, nil) }
@@ -741,7 +779,7 @@ func compositeTests() {
                     let v = try compositeVerdict(composite, casts: composite.parts.map(compositeCast))
                     total.compared += v.compared; total.wrong += v.wrong; total.undecided += v.undecided
                     total.hiddenByOther += v.hiddenByOther; total.outsideAlone += v.outsideAlone
-                    total.ownCompared += v.ownCompared; total.ownWrong += v.ownWrong
+                    total.ownCompared += v.ownCompared; total.ownWrong += v.ownWrong; total.torusSeen += v.torusSeen
                     total.contactCompared += v.contactCompared; total.contactHidden += v.contactHidden
                     total.offTerrain += v.offTerrain
                     if total.example.isEmpty { total.example = v.example }
@@ -764,9 +802,10 @@ func compositeTests() {
             } else {
                 Check.expect(total.contactCompared == 0, "\(name): no part meets the terrain, and no contact line is drawn")
             }
-            Check.expect(total.ownWrong == 0 && total.ownCompared > 2_000,
+            let hasTorus = parts.contains { if case .parametric = $0.1.geometry { return true }; return false }
+            Check.expect(total.ownWrong == 0 && total.ownCompared > 2_000 && (!hasTorus || total.torusSeen > 1_000),
                          "\(name): each geometry alone is its own cast",
-                         "\(total.ownWrong) of \(total.ownCompared) disagree\(total.ownExample)")
+                         "\(total.ownWrong) of \(total.ownCompared) disagree, \(total.torusSeen) seen on the torus\(total.ownExample)")
         }
     }
 
