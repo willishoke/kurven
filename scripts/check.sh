@@ -97,9 +97,10 @@ step "the committed golden fixtures are what kurven-cli fixtures writes" golden
 
 # Several geometries in one scene: `kurven-cli scene` draws the golden
 # composites (`kurven-cli fixtures`, composite/), the landscape on its grid,
-# byte for byte, and refuses the landscape on its function, a surface with no
-# exact occlusion test (the forced torus), a displaced torus, and a placement
-# out of range, saying why and writing nothing.
+# byte for byte, and a contact line exactly where a part meets the terrain;
+# and refuses the landscape on its function, a surface with no exact
+# occlusion test (the forced torus), a displaced torus, and a placement out
+# of range, saying why and writing nothing.
 scene() {
     local dir="$PACKAGE/.build/scene-check" f="$ROOT/tests/fixtures" out
     local land="$f/expr/landscape_cubic.kurven" c="$f/contract"
@@ -112,6 +113,15 @@ scene() {
     for name in cube torus frame three; do
         cmp "$dir/$name.svg" "$f/composite/$name.svg" || { echo "the $name composite is not the golden one"; return 1; }
     done
+    # The contact line: the cube standing on the terrain draws one, the
+    # torus ringing a tower and a cube over the towers' tops none.
+    "$BIN/kurven-cli" scene "$land" "$c/polyhedron_cube.kurven" --at -1.2,0.1,0.3,0.35 --no-refine \
+        -o "$dir/contact.svg" | grep -q '^ *contact ' &&
+    ! "$BIN/kurven-cli" scene "$land" "$c/surface_torus.kurven" --at 1,0,1.6,0.35 --no-refine \
+        -o "$dir/contact.svg" | grep -q '^ *contact ' &&
+    ! "$BIN/kurven-cli" scene "$land" "$c/polyhedron_cube.kurven" --at -0.5,0.5,5.5,0.35 --no-refine \
+        -o "$dir/contact.svg" | grep -q '^ *contact ' ||
+        { echo "a contact line is drawn where no part meets the terrain, or missing where one does"; return 1; }
     out=$("$BIN/kurven-cli" scene "$land" "$c/surface_forced.kurven" --no-refine -o "$dir/forced.svg" 2>&1) &&
         { echo "the forced torus was drawn in a composite"; return 1; }
     printf '%s\n' "$out" | grep -q 'no exact occlusion test' && [ ! -e "$dir/forced.svg" ] ||
@@ -130,7 +140,7 @@ scene() {
             { printf '%s\n' "$out"; echo "scene did not refuse ${refused%|*}, saying why, with nothing written"; return 1; }
     done
 }
-step "the CLI draws several geometries in one scene as the golden composites, and refuses a geometry with no exact occlusion test or out of range" scene
+step "the CLI draws several geometries in one scene as the golden composites, with a contact line where a part meets the terrain, and refuses a geometry with no exact occlusion test or out of range" scene
 
 # The app's own document, driven without a window (a bundle named by a bare
 # path opens none): a surface saved by the CLI, opened, saved as ⌘S saves it,
