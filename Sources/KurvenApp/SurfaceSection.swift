@@ -132,6 +132,11 @@ struct SurfaceSection: View {
         case .strands:
             Control(label: "Strands", range: 1...12, step: 1, digits: 0,
                     help: "Parallel linear curves, evenly spaced through the tube.")
+        case .relief:
+            Control(label: "Relief", range: SurfaceRequest.reliefRange, step: 0.01,
+                    help: "How far the torus is displaced along its normal per unit of |sn|, "
+                        + "truncated at 3. Past the torus's reach the relief passes through "
+                        + "itself, and its back faces are kept.")
         }
     }
 
@@ -370,9 +375,16 @@ struct SurfaceFieldSlider {
         }
     }
 
+    /// A value the request refuses -- not a number, or out of its range --
+    /// is not taken, a step of a drag included, and the status says why: the
+    /// drawing and what a save writes stay at the last value taken.
     func set(_ value: Double) {
-        guard var next = document.surface, next[field] != value else { return }
-        next[field] = value
+        guard let current = document.surface, current[field] != value else { return }
+        let next: SurfaceRequest
+        do { next = try current.setting(field, to: value) } catch {
+            document.paintStatus = "\(error)"
+            return
+        }
         if document.editedBeforeDrag != nil {
             document.dragSurface(next, draft: drafts)
         } else {

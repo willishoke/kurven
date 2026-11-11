@@ -265,7 +265,8 @@ public struct SurfaceDrawing: Sendable {
             // computed once and carried round by the periods; the grid round
             // the ring in all, 1024 a period at most.
             var base = try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r, resolution: grid,
-                                                  grid: min(request.grid, 1024), truncated: true, turn: turn)
+                                                  grid: min(request.grid, 1024),
+                                                  ceiling: SurfaceRequest.reliefCeiling, truncated: true, turn: turn)
                 .repeated(real: repeats.x, imag: repeats.y, grid: request.grid)
             // The truncation as a smooth saturation rather than a crease,
             // c · tanh(|f| / c), an experiment on what the crease costs.

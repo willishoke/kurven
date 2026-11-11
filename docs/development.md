@@ -142,6 +142,15 @@ slider does, and `--save` writes the result, as ⌘S does:
 KurvenApp sn.kurven --set major=2.5 --levels mag_major=5 --save sn-wide.kurven
 ```
 
+sn in relief has a Relief slider as well, its amplitude from 0 to 1, which
+`--relief A` sets; the app's relief at A is `kurven-cli surface sn --relief
+A`, drawing and bundle:
+
+```bash
+kurven-cli surface sn --relief 0 --save flat.kurven
+KurvenApp flat.kurven --relief 0.4 --save raised.kurven
+```
+
 A polyhedron's bundle is its vertices and loops, so what opens editable is
 its layers: `--strokes LAYER=COUNT` sets a hatching's strokes as its slider
 does, counted across the largest face (on a landscape, which takes it too,
