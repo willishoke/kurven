@@ -1,4 +1,5 @@
 import SwiftUI
+import simd
 import KurvenCore
 import KurvenDynamics
 
@@ -167,8 +168,33 @@ struct StrokeSlider {
     }
 }
 
+/// A layer's light sliders, as the window's sliders call them and a
+/// headless `--light` does: the direction toward the light by its azimuth
+/// round z and its elevation over the xy plane, in degrees.
+@MainActor
+struct LightSlider {
+    let document: Document
+    let name: String
+
+    func editingChanged(_ editing: Bool) {
+        if editing { document.beginDrag() } else { document.endDrag("Light of \(name)") }
+    }
+
+    func set(azimuth: Double, elevation: Double) {
+        let a = azimuth * .pi / 180, e = elevation * .pi / 180
+        document.paintLight(SIMD3(cos(e) * cos(a), cos(e) * sin(a), sin(e)), ofLayer: name)
+    }
+
+    /// A light's azimuth and elevation, in degrees.
+    static func angles(of light: SIMD3<Double>) -> (azimuth: Double, elevation: Double) {
+        let l = simd_normalize(light)
+        return (atan2(l.y, l.x) * 180 / .pi, asin(min(max(l.z, -1), 1)) * 180 / .pi)
+    }
+}
+
 /// A layer's own controls: its levels, its strokes, which way the plateaus'
-/// hatching runs. A drag is one undo step, taken when the slider is let go.
+/// hatching runs, the light an isophote or a half-Lambert tone is read
+/// under. A drag is one undo step, taken when the slider is let go.
 struct LayerControls: View {
     @Bindable var document: Document
     let name: String
@@ -189,6 +215,26 @@ struct LayerControls: View {
            let index = document.edited?.layers.firstIndex(of: spec) {
             if let count = document.hatchCount(ofLayer: index) { strokeSlider(count) }
             if let axis = spec.source.plateauHatchAxis { axisPicker(axis) }
+            if let light = spec.source.light { lightSliders(light) }
+        }
+    }
+
+    /// The light by its azimuth and elevation, each its own slider.
+    @ViewBuilder
+    private func lightSliders(_ light: SIMD3<Double>) -> some View {
+        let slider = LightSlider(document: document, name: name)
+        let (azimuth, elevation) = LightSlider.angles(of: light)
+        ForEach([("azimuth", -180.0...180.0), ("elevation", -90.0...90.0)], id: \.0) { label, range in
+            HStack(spacing: 6) {
+                Text(label).font(.caption).foregroundStyle(.secondary)
+                Slider(value: Binding(get: { label == "azimuth" ? azimuth : elevation },
+                                      set: { label == "azimuth" ? slider.set(azimuth: $0, elevation: elevation)
+                                                                : slider.set(azimuth: azimuth, elevation: $0) }),
+                       in: range, step: 1, onEditingChanged: { slider.editingChanged($0) })
+                Text("\(Int((label == "azimuth" ? azimuth : elevation).rounded()))°")
+                    .font(.caption).monospacedDigit().frame(width: 36, alignment: .trailing)
+            }
+            .padding(.leading, 20)
         }
     }
 

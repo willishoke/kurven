@@ -179,11 +179,11 @@ public extension KurvenBundle {
     /// with `--derived` has editable level sets and one exported without does
     /// not, and the type says which you have.
     func layer(_ spec: LayerSpec, levels: [Double]) -> Layer {
-        guard case .contour(let field, _, let restriction, let faces) = spec.source else {
+        guard case .contour(let field, _, let restriction, let faces, let light) = spec.source else {
             return redrawn(spec)
         }
         var edited = spec
-        edited.source = .contour(field: field, levels: levels, restriction: restriction, faces: faces)
+        edited.source = .contour(field: field, levels: levels, restriction: restriction, faces: faces, light: light)
         return redrawn(edited)
     }
 
@@ -238,7 +238,7 @@ public extension KurvenBundle {
 
     /// The levels a described layer was exported with, or nil when it is dumped.
     static func levels(of spec: LayerSpec) -> [Double]? {
-        if case .contour(_, let levels, _, _) = spec.source { return levels }
+        if case .contour(_, let levels, _, _, _) = spec.source { return levels }
         return nil
     }
 

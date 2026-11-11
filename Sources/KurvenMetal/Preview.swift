@@ -164,12 +164,17 @@ struct LineGeometry {
 
     /// A layer of a sphere-traced surface's strokes, as the bake tests it
     /// (`Scene.visible(_:depthTolerance:image:)`): what of it the solid
-    /// leaves in sight, in world space for the stroke shader.
+    /// leaves in sight, in world space for the stroke shader. A hatching
+    /// comes back a layer per width step: every width is drawn, at the
+    /// layer's.
     static func sphereTraced(_ layer: Layer, in scene: Scene) -> PolylineSet<WorldSpace> {
         let view = scene.camera.view
-        let seen = scene.visible(layer).first?.1 ?? .empty
-        return PolylineSet(vertices: seen.vertices.map { view.inverse(P3<ViewSpace>($0.v)) },
-                           offsets: seen.offsets)
+        var vertices: [P3<WorldSpace>] = [], offsets = [0]
+        for (_, seen) in scene.visible(layer) {
+            vertices += seen.vertices.map { view.inverse(P3<ViewSpace>($0.v)) }
+            offsets += seen.offsets.dropFirst().map { $0 + offsets.last! }
+        }
+        return PolylineSet(vertices: vertices, offsets: offsets)
     }
 
     /// `layOut`'s result, uploaded: every layer's segments end to end.

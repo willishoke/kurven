@@ -313,7 +313,7 @@ public struct SurfaceDrawing: Sendable {
         let sameRectangle = previous.map { $0.surface.u == surface.u && $0.surface.v == surface.v } ?? false
         let sameSurface = previous?.content == content
         func carried(_ spec: LayerSpec) -> PolylineSet<WorldSpace>? {
-            guard case .contour(let field, _, _, _) = spec.source,
+            guard case .contour(let field, _, _, _, _) = spec.source,
                   field.fieldClass == .coordinate ? sameRectangle : field.fieldClass == .embedding && sameSurface,
                   let old = previous?.layers.first(where: { $0.spec.source == spec.source }),
                   let coords = old.paths.coords else { return nil }
@@ -322,7 +322,7 @@ public struct SurfaceDrawing: Sendable {
                                coords: coords)
         }
         let ofF = specs.filter { spec in
-            if drawn(spec) == nil, case .contour(let field, _, _, _) = spec.source { field.isFieldOfF } else { false }
+            if drawn(spec) == nil, case .contour(let field, _, _, _, _) = spec.source { field.isFieldOfF } else { false }
         }
         // On a surface with no function they are refused below, one by one.
         let placed = ofF.isEmpty ? [] : contours?(ofF) ?? []
@@ -380,7 +380,29 @@ public struct SurfaceDrawing: Sendable {
         case .trajectory:
             guard let torus, case .forced(_, _, _, _, _, _, let turns) = request.shape else { return .empty }
             return torus.trajectory(on: surface, turns: turns)
-        case .contour(let field, let levels, _, .surface) where !field.isFieldOfF:
+        case .contour(.isophote, let levels, _, .surface, let light?):
+            guard surface.outward != nil else {
+                throw ManifestError.unsupported("layer '\(spec.name)': isophotes on a surface that bounds no solid, "
+                                                + "which has no outward normal")
+            }
+            return surface.isophotes(light: light, levels)
+        case .hatching(let hatching, .surface):
+            if case .halfLambert = hatching.tone, surface.outward == nil {
+                throw ManifestError.unsupported("layer '\(spec.name)': half-Lambert tone on a surface that bounds "
+                                                + "no solid, which has no outward normal")
+            }
+            let face = surface.face
+            let across = DomainAxis(angle: hatching.angle) == .real ? face.domain.v : face.domain.u
+            let along = DomainAxis(angle: hatching.angle) == .real ? face.domain.u : face.domain.v
+            let lines = Face.hatchLevels(across: across, spacing: hatching.spacing).count
+            guard Double(lines) * Double(along.samples + 1) <= Double(SurfaceRequest.maxVertices) else {
+                throw ManifestError.unsupported("layer '\(spec.name)': \(lines) hatch lines of \(along.samples + 1) "
+                                                + "vertices, more than the \(SurfaceRequest.maxVertices) a layer holds")
+            }
+            let steps = surface.coordinateHatching(hatching)
+            return PolylineSet(paths: steps.flatMap { step in (0..<step.paths.count).map { Array(step.paths[path: $0]) } },
+                               coords: steps.flatMap { step in (0..<step.paths.count).map { Array(step.paths.coords(path: $0)!) } })
+        case .contour(let field, let levels, _, .surface, _) where !field.isFieldOfF:
             let face = surface.face, map = surface.map
             let value: @Sendable (P2<ParamSpace>) -> Double = switch field {
             case .u: { $0.x }

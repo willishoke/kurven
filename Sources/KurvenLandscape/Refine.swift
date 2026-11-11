@@ -131,7 +131,7 @@ public struct ContourRefiner: Sendable {
         switch f {
         case .magnitude: magnitude
         case .phase: phase
-        case .u, .v, .height: preconditionFailure("the refiner places f's contours, not \(f.rawValue)'s")
+        case .u, .v, .height, .isophote: preconditionFailure("the refiner places f's contours, not \(f.rawValue)'s")
         }
     }
 
@@ -1741,7 +1741,7 @@ public extension NativeLandscape {
         let clock = ContinuousClock()
         var reports: [RefinementReport] = []
         for spec in bundle.manifest.layers {
-            guard case .contour(let field, let levels, _, _) = spec.source else { continue }
+            guard case .contour(let field, let levels, _, _, _) = spec.source else { continue }
             // The grid's paths as `Surface.derive` hands them to a refiner,
             // the branch cut once as the zero level of the turned phase: the
             // field under a refiner that moves nothing.

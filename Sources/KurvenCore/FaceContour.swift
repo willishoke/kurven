@@ -21,14 +21,18 @@ public extension Surface {
     /// domain the vertex came from, before a copy moves it, as `derive` reads
     /// a band. Nothing for |f| and arg f, which `derive` draws, nor on a
     /// parametric surface's or a solid's faces, which a landscape has none of.
+    /// An isophote, n · l for a light toward `light`, lies on the graph alone:
+    /// on a plateau, a wall or a riser it is constant (`Face.isFlat`), and
+    /// has no level set.
     func contours(of field: ContourField, _ levels: [Double], on faces: FaceSelector,
                   restriction: Restriction, in context: HatchContext,
-                  refine: ContourRefine? = nil) -> [[P3<WorldSpace>]] {
+                  refine: ContourRefine? = nil, light: SIMD3<Double>? = nil) -> [[P3<WorldSpace>]] {
         guard !field.isFieldOfF, !levels.isEmpty else { return [] }
+        if field == .isophote, faces.kind != .graph || light == nil { return [] }
         switch faces {
         case .graph(let tiled):
             return graphContours(of: field, levels, tiles: tiled ? context.tiles : [.identity],
-                                 region: context.region, restriction: restriction, refine: refine)
+                                 region: context.region, restriction: restriction, refine: refine, light: light)
         case .plateaus(let tiled):
             let placed = Surface.restricted(plateauContours(of: field, levels, refine: refine), restriction,
                                             onGraph: false) { $0.xy.v }
@@ -81,25 +85,30 @@ public extension Surface {
         return out
     }
 
-    /// The contours of u = Re z, v = Im z or the height |f| on the graph,
-    /// each copy's clipped to its trimmed domain (`Face.contours(of:_:on:)`):
-    /// cut where they cross the truncation edge, the domain's edge or the
-    /// footprint where the copy stands. Lifted to |f|, f's own with a
-    /// refiner, restricted where they lie in the domain, and carried to the
-    /// copy's tile.
+    /// The contours of u = Re z, v = Im z, the height |f| or an isophote
+    /// on the graph, each copy's clipped to its trimmed domain
+    /// (`Face.contours(of:_:on:)`): cut where they cross the truncation edge,
+    /// the domain's edge or the footprint where the copy stands. Lifted to
+    /// |f|, f's own with a refiner, restricted where they lie in the domain,
+    /// and carried to the copy's tile. An isophote is each copy's own, n · l
+    /// with the copy's normal in place (`Face.isophotes(light:_:on:)`).
     func graphContours(of field: ContourField, _ levels: [Double], tiles: [Affine2], region: Region,
-                       restriction: Restriction = .all, refine: ContourRefine?) -> [[P3<WorldSpace>]] {
+                       restriction: Restriction = .all, refine: ContourRefine?,
+                       light: SIMD3<Double>? = nil) -> [[P3<WorldSpace>]] {
         guard let face = graph(tiles: tiles, region: region, refine: refine) else { return [] }
         let magnitude = faceMagnitude(refine)
         let scalar = ScalarField { p in
             switch field {
             case .u: p.x
             case .v: p.y
-            case .height, .magnitude, .phase: magnitude(P2(p.x, p.y))
+            case .height, .magnitude, .phase, .isophote: magnitude(P2(p.x, p.y))
             }
         }
         return face.copies.flatMap { copy in
-            let lifted = face.contours(of: scalar, levels, on: copy).flatMap(\.paths).map { path in
+            let contoured = field == .isophote
+                ? light.map { face.isophotes(light: $0, levels, on: copy) } ?? []
+                : face.contours(of: scalar, levels, on: copy)
+            let lifted = contoured.flatMap(\.paths).map { path in
                 path.map { p in P3<WorldSpace>(p.x, p.y, magnitude(P2(p.x, p.y))) }
             }
             return Surface.restricted(lifted, restriction, onGraph: true) { $0.xy.v }.map { $0.map { copy.tile($0) } }

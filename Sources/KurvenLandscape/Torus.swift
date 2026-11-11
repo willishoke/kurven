@@ -189,7 +189,7 @@ public enum PeriodicTorus {
         // One layer's contours, from the samples and the refiner, which a
         // later restyle draws with too (`Drawing.contours`).
         let draw: @Sendable (LayerSpec) -> Layer? = { spec in
-            guard case .contour(let kind, let levels, let restriction, _) = spec.source, kind.isFieldOfF else {
+            guard case .contour(let kind, let levels, let restriction, _, _) = spec.source, kind.isFieldOfF else {
                 return nil
             }
             // Kept below the truncation, a phase line is lifted to |f| and
@@ -214,7 +214,7 @@ public enum PeriodicTorus {
                 case .phase:
                     g = abs(refiner.phase(Complex(a.x, a.y))) > .pi / 2
                         ? refiner.turnedPhase : refiner.phase
-                case .u, .v, .height: return c
+                case .u, .v, .height, .isophote: return c
                 }
                 let level = g(Complex(a.x, a.y))
                 guard level.isFinite else { return c }

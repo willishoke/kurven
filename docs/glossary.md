@@ -47,18 +47,19 @@ and Emde, *Funktionentafeln*, 1909).
 |---|---|---|
 | curve | A polyline on a surface, in world space, before visibility and projection. | ink |
 | scalar field | A function on a face's parameter rectangle, whose level sets are drawn: a coordinate, a height, \|f\|, arg f (`ScalarField`). A *circle-valued* field, such as arg f or the coordinate along a periodic axis, is defined up to whole multiples of its period (arg f's branch cut is the refiner's: `Surface.field`). | |
-| field class | What a scalar field's values are computed from, which decides what an edit of a surface redoes for its contours: a *coordinate* (u, v) the parameter rectangle, the height the map (the *embedding*), \|f\| and arg f the function's samples (`FieldClass`). | |
+| field class | What a scalar field's values are computed from, which decides what an edit of a surface redoes for its contours: a *coordinate* (u, v) the parameter rectangle, the height and an isophote's n · l the map (the *embedding*), \|f\| and arg f the function's samples (`FieldClass`). | |
 | level set, contour | The curve where a field takes one value: \|f\| = c, arg f = θ. A smooth field's are found by marching squares on its samples, each vertex then bisected onto the level set along its grid edge (`Contour.levels(of:_:over:trimLoops:contains:cuts:)`); a field with a routine of its own, as \|f\| and arg f have the refiner, places them through the same call (`ScalarField.Contouring.placed`). | |
+| isophote | A level set of n · l, the outward unit normal against the unit direction l toward a light (Koenderink and van Doorn 1980), on a curved face: the graph or a parametric surface (`ContourField.isophote`). On a flat face n · l is constant, and there is none. | |
 | face selector | The faces a contour or a hatching lies on: the graph, the plateaus, walls, risers, a parametric surface or a solid's faces (`FaceSelector`). Every other kind of layer implies its face. | |
 | restriction | The part of the domain a contour is kept to: the footprint, below the truncation (membership in the graph), a band, or an intersection of these (`Restriction`). | keep |
 | coordinate curves | The curves u = const and v = const on a parametric surface. | parameter lines |
 | linear curves | Straight lines through a torus's parameter rectangle; a (p, q) torus curve when the slope p/q is rational. | windings |
 | fold curve | Where the projection direction is tangent to the surface: Whitney's fold of the projection. Its image on the page is the *outline*. | fold lines |
 | outline | The image of the fold curves. | silhouette |
-| hatching | Parallel lines at an angle and a spacing, laid on faces (`Hatching`, `FaceSelector`). Each one is a *hatch line*; on a wall or a riser the *end lines* are the two at its ends, drawn only when asked for. | fill, ruling |
+| hatching | Parallel lines at an angle and a spacing, laid on faces (`Hatching`, `FaceSelector`); on a curved face, lines of one coordinate of its parameter rectangle, spaced in the other (`Face.coordinateHatching`). Each one is a *hatch line*; on a wall or a riser the *end lines* are the two at its ends, drawn only when asked for. | fill, ruling |
 | tone | The function on a face that sets where hatch lines are drawn and how wide: `.uniform`, `.turing`, `.halfLambert`. | fill field |
 | Turing's pattern | The closed form behind the dappled figure in Turing's 1952 paper, as reconstructed in "Turing Patterns" (willishoke.github.io, 2022): unit Gaussians on a square lattice of spacing 0.7 with random signs. Not a reaction–diffusion simulation. | |
-| half-Lambert | The tone (1 − n·l)/2 for a face's normal n and the unit direction l toward the light: the darkness under half-Lambert, or wrapped, shading (1 + n·l)/2 (Mitchell, McTaggart and Green, "Shading in Valve's Source Engine", 2006). Not Lambert's cosine law, max(0, n·l). | lambert, shade |
+| half-Lambert | The tone (1 − n·l)/2 for the outward unit normal n of a face, at each point on a curved one, and the unit direction l toward the light: the darkness under half-Lambert, or wrapped, shading (1 + n·l)/2 (Mitchell, McTaggart and Green, "Shading in Valve's Source Engine", 2006). Not Lambert's cosine law, max(0, n·l). | lambert, shade |
 | width steps | How many widths a hatch line can be drawn at. | levels |
 | step | The distance between successive vertices, or readings of a tone, along a curve. | pitch |
 

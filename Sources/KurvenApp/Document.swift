@@ -549,10 +549,10 @@ final class Document {
     /// the levels its slider has set (`levels(forLayer:)`). What a save writes.
     var drawnLayers: [LayerSpec] {
         layerSpecs.enumerated().map { index, spec in
-            guard case .contour(let field, _, let restriction, let faces) = spec.source,
+            guard case .contour(let field, _, let restriction, let faces, let light) = spec.source,
                   let levels = levels(forLayer: index) else { return spec }
             var drawn = spec
-            drawn.source = .contour(field: field, levels: levels, restriction: restriction, faces: faces)
+            drawn.source = .contour(field: field, levels: levels, restriction: restriction, faces: faces, light: light)
             return drawn
         }
     }

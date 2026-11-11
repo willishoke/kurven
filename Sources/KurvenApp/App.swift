@@ -136,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // landscape's controls do, `--relief A` as a relief's slider does,
         // `--hide LAYER` as the layer list does, and `--at-once` makes the
         // edits without waiting for what each draws.
-        let painting: Set<String> = ["--add", "--remove", "--function", "--undo", "--redo", "--axis",
+        let painting: Set<String> = ["--add", "--remove", "--function", "--undo", "--redo", "--axis", "--light",
                                      "--dump", "--inspector", "--truncation", "--hide", "--drag", "--relief"]
         // A pick followed by an edit or a save is painting too.
         let editing: Set<String> = ["--set", "--save", "--bake", "--levels", "--strokes"]
@@ -833,6 +833,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "--axis":
                 guard let axis = DomainAxis(rawValue: value) else { fail("--axis wants real or imag") }
                 await edit { document.paintAxis(axis) }
+            case "--light":
+                // The light a layer is read under, LAYER=X,Y,Z, as its
+                // sliders' callback sets it (`LightSlider`): one undo step.
+                let (name, text) = pair(value)
+                let l = text.split(separator: ",").compactMap { Double($0) }
+                guard l.count == 3, l.allSatisfy(\.isFinite), l != [0, 0, 0] else {
+                    fail("--light wants LAYER=X,Y,Z, a direction toward the light")
+                }
+                guard document.edited?.layers.first(where: { $0.name == name })?.source.light != nil else {
+                    fail("no layer '\(name)' read under a light: an isophote or a half-Lambert tone")
+                }
+                await edit { document.paintLight(SIMD3(l[0], l[1], l[2]), ofLayer: name) }
+                print("Kurven: light of \(name) toward \(l[0]),\(l[1]),\(l[2])")
             case "--save":
                 await settle()
                 headlessSave(to: URL(fileURLWithPath: value))

@@ -22,8 +22,9 @@ public struct Hatching: Sendable, Equatable {
     /// of its tone, in world units. On a solid the tone is read every
     /// `step`, and a change of width narrower than this can fall between two
     /// readings. On a wall or a riser a line is its two ends, and on a
-    /// plateau it has a vertex wherever it crosses a grid line, so the step
-    /// is not read on a landscape's faces, and a manifest writes none.
+    /// plateau, the graph or a parametric surface it has a vertex wherever
+    /// it crosses a sample of the face's parameter rectangle, so the step is
+    /// not read there, and a manifest writes none.
     /// The spacing by default, on every face, so the tone is read as finely
     /// as it is drawn, and no finer than `finestStep` of it.
     public var step: Double
@@ -143,7 +144,8 @@ public struct Hatching: Sendable, Equatable {
 /// hatching does not depend on how it is partitioned.
 public enum FaceSelector: Sendable, Equatable {
     /// A landscape's graph, where z = |f|, copied to every tile when
-    /// `tiled`. Hatching is not laid on it: it is curved.
+    /// `tiled`. It is curved, so a hatching there runs along a coordinate,
+    /// as on a parametric surface (`Face.coordinateHatching(_:on:)`).
     case graph(tiled: Bool)
     /// A truncated landscape's plateaus, copied to every tile when `tiled`.
     /// A hatching there is the contours of a coordinate
@@ -169,6 +171,10 @@ public enum FaceSelector: Sendable, Equatable {
     case risers(tiled: Bool, endLines: Bool)
     /// A parametric surface's one face. A parametric surface's manifest
     /// names it (`SurfaceManifest`); a landscape's refuses it (`LayerSource`).
+    /// A hatching there runs along a coordinate of its parameter rectangle
+    /// (D8): lines of v along u at angle 0, lines of u along v at π/2,
+    /// spread to whole gaps across the other coordinate, the spacing in its
+    /// units (`Face.coordinateHatching(_:on:)`).
     case surface
     /// Every face of a solid, at any angle. A polyhedron's manifest names
     /// it (`PolyhedronManifest`); a landscape's and a parametric surface's
@@ -203,9 +209,12 @@ public enum FaceSelector: Sendable, Equatable {
     }
 
     /// Why `hatching` cannot be laid on these faces, or nil when it can.
-    /// Hatching is laid on flat faces, where lines at a spacing are evenly
-    /// spaced. A tone other than uniform, or more than one width, is drawn
-    /// on a solid only: a landscape's layers are one width each.
+    /// On a flat face lines at a spacing are evenly spaced at any angle. A
+    /// curved face is hatched along a coordinate of its parameter rectangle
+    /// (D8), angle 0 or π/2, with a uniform or half-Lambert tone, the tone
+    /// setting the widths, in at most `PolyhedronManifest.maxWidthSteps`. A
+    /// tone other than uniform, or more than one width, is drawn on a solid
+    /// and a curved face only: a landscape's flat faces are one width each.
     public func unsupported(_ hatching: Hatching) -> String? {
         let landscape: String
         switch self {
@@ -213,7 +222,18 @@ public enum FaceSelector: Sendable, Equatable {
             return hatching.angle.isFinite ? nil : "hatching on a solid's faces at an angle that is not a number: "
                 + "\(hatching.angle)"
         case .graph, .surface:
-            return "hatching on a curved face: it is laid on plateaus, walls, risers or a solid's faces"
+            guard DomainAxis(angle: hatching.angle) != nil else {
+                return "hatching on a curved face runs along a coordinate, angle 0 or π/2, not \(hatching.angle)"
+            }
+            switch hatching.tone {
+            case .uniform, .halfLambert: break
+            case .turing: return "Turing's tone on a curved face: it is laid on a solid's faces"
+            }
+            guard hatching.widthSteps <= PolyhedronManifest.maxWidthSteps else {
+                return "hatching in \(hatching.widthSteps) widths, more than the "
+                    + "\(PolyhedronManifest.maxWidthSteps) a curved face takes"
+            }
+            return nil
         case .walls, .risers:
             landscape = name
             guard abs(hatching.angle - FaceSelector.wallAngle) <= Hatching.angleTolerance else {
@@ -234,13 +254,17 @@ public enum FaceSelector: Sendable, Equatable {
     /// Why a contour of `field` cannot lie on these faces, or nil when it
     /// can. |f| and arg f are the graph's, and a surface's that f is drawn
     /// on; the coordinates are every face's, and the height every face's but
-    /// a plateau's, where it is constant and has no level set. On walls and
-    /// risers the hatching's placement is left at its defaults.
+    /// a plateau's, where it is constant and has no level set. An isophote
+    /// lies on a curved face: on a flat one n · l is constant, and has no
+    /// level set either. On walls and risers the hatching's placement is
+    /// left at its defaults.
     public func unsupported(_ field: ContourField) -> String? {
         switch (field, self) {
         case (.magnitude, .graph), (.magnitude, .surface), (.phase, .graph), (.phase, .surface),
-             (.u, _), (.v, _):
+             (.u, _), (.v, _), (.isophote, .graph), (.isophote, .surface):
             break
+        case (.isophote, _):
+            return "isophotes on the \(name): n · l is constant on a flat face, and has no level set"
         case (.height, .plateaus):
             return "a contour of the height on the plateaus: it is constant on each, and has no level set"
         case (.height, _):
@@ -319,8 +343,9 @@ public enum Tone: Sendable, Equatable {
     /// Darkness under half-Lambert shading: `(1 - n·l) / 2` for the face's
     /// outward normal `n` and the unit direction `l` toward the light, the
     /// complement of half-Lambert (wrapped) shading `(1 + n·l) / 2`. Nothing
-    /// on a face square to the light, full width on one turned away from it,
-    /// one value per face.
+    /// on a face square to the light, full width on one turned away from it:
+    /// one value per flat face, and on a curved face read at each point from
+    /// its normal there (`Face.coordinateHatching(_:on:)`).
     case halfLambert(light: SIMD3<Double>)
 
     /// Whether `light` has a direction to normalize: not zero, not infinite.
@@ -337,9 +362,15 @@ public enum Tone: Sendable, Equatable {
         case .turing(let scale, let seed):
             return { c in Turing.value(c / scale, seed: seed) }
         case .halfLambert(let light):
-            let w = (1 - simd_dot(face.normal, simd_normalize(light))) / 2
+            let w = Tone.darkness(normal: face.normal, light: light)
             return { _ in w }
         }
+    }
+
+    /// Half-Lambert darkness `(1 - n·l) / 2` at a point whose outward unit
+    /// normal is `normal`, `l` the light's direction normalized.
+    public static func darkness(normal: SIMD3<Double>, light: SIMD3<Double>) -> Double {
+        (1 - simd_dot(normal, simd_normalize(light))) / 2
     }
 }
 
