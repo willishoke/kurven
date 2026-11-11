@@ -106,19 +106,25 @@ func contactTests() {
                 guard case .heightfield(let h) = p.scene.geometry else { return nil }
                 return 1e-9 * landscapeCell(h)
             }.min()!
-            var points = 0, terrain = 0.0, onPart = 0.0
+            var points = 0, terrain = 0.0, onPart = 0.0, crossings = 0, farthest = 0.0
             for i in composite.parts.indices {
                 let stray = contactStray(composite, part: i)
                 points += stray.points; terrain = max(terrain, stray.terrain); onPart = max(onPart, stray.part)
+                // A polyhedron's contact line is exact: it passes through
+                // every crossing found apart from it.
+                if case .solid = composite.parts[i].scene.geometry, stray.points > 0 {
+                    let miss = contactMissed(composite, part: i, steps: 240)
+                    crossings += miss.crossings; farthest = max(farthest, miss.farthest)
+                }
             }
             let drawn = try composite.visibleLayers().filter { $0.0.spec.name == "contact" }.count
             if points == 0 {
                 Check.expect(drawn == 0, "\(name): no part meets the terrain, and there is no contact line")
             } else {
-                Check.expect(terrain <= tolerance && onPart <= tolerance && drawn >= 1,
-                             "\(name): every point of the contact line is on the terrain and on its part",
-                             String(format: "%d points, off the terrain by %.1e, off the part by %.1e, within %.1e",
-                                    points, terrain, onPart, tolerance))
+                Check.expect(terrain <= tolerance && onPart <= tolerance && farthest <= tolerance && drawn >= 1,
+                             "\(name): every point of the contact line is on the terrain and on its part, and it misses no crossing",
+                             String(format: "%d points, off the terrain by %.1e, off the part by %.1e, %d crossings the farthest %.1e off it, within %.1e",
+                                    points, terrain, onPart, crossings, farthest, tolerance))
             }
         }
     }
@@ -381,12 +387,24 @@ func contactSweepTests() {
         PerimeterEdge(start: P2(corners[k].x, corners[k].y),
                       end: P2(corners[(k + 1) % corners.count].x, corners[(k + 1) % corners.count].y), density: 8)
     })
-    let landscapes: [(String, Scene)] = [
-        ("the sinusoid", gridLandscape(camera: camera, f: f)),
-        ("the sinusoid in bands, on an L", gridLandscape(truncation: bands, region: .inside(footprint), camera: camera, f: f)),
+    func spikeHeight(_ x: Double, _ y: Double) -> Double { exp(-20 * (x * x + y * y).squareRoot()) }
+    // Each with the height a part is placed by.
+    var landscapes: [(name: String, scene: Scene, height: (Double, Double) -> Double)] = [
+        ("the sinusoid", gridLandscape(camera: camera, f: f), f),
+        ("the sinusoid in bands, on an L", gridLandscape(truncation: bands, region: .inside(footprint), camera: camera, f: f), f),
         ("the sinusoid with a sample not a number, truncated at 1.2",
-         gridLandscape(truncation: .uniform(1.2), patch: [(8, 8, .nan)], camera: camera, f: f)),
+         gridLandscape(truncation: .uniform(1.2), patch: [(8, 8, .nan)], camera: camera, f: f), f),
+        // Slabs of no thickness: every sample at the base.
+        ("a flat terrain", gridLandscape(camera: camera) { _, _ in 0.5 }, { _, _ in 0.5 }),
+        ("a plateau", gridLandscape(truncation: .uniform(0.5), camera: camera) { _, _ in 2 }, { _, _ in 0.5 }),
     ]
+    // The gate's spike, whose terrain is a rounding over its floor away
+    // from the apex.
+    if let spike = try? NativeLandscape.build(
+        LandscapeRequest(expression: "exp(-20*abs(z))", domain: Domain(real: Interval(lo: -2, hi: 2), imag: Interval(lo: -2, hi: 2)),
+                         resolution: 65, truncation: .uniform(5)), refine: false) {
+        landscapes.append(("the spike", Scene(bundle: spike, preset: spike.manifest.presets[0]), spikeHeight))
+    }
 
     Check.suite("composite: a sweep of parts over landscapes meets the terrain on both surfaces, and misses nothing") {
         let contract = Fixtures.dir.appendingPathComponent("contract")
@@ -394,15 +412,17 @@ func contactSweepTests() {
         let torus = torusBundle.scene(preset: torusBundle.manifest.presets[0])
         let cube = try PolyhedronBundle.read(at: contract.appendingPathComponent("polyhedron_cube.kurven"))
         let frame = try PolyhedronBundle.read(at: contract.appendingPathComponent("polyhedron_frame.kurven"))
+        let turnedCube = try turned(cube.scene(preset: cube.manifest.presets[0]).solid!, 0.4, 0.3, 0.7)
+        let turnedL = try turned(try lPrism(), 0.6, -0.5, 0.2)
         let solids: [(String, Solid)] = [
-            ("the cube turned", try turned(cube.scene(preset: cube.manifest.presets[0]).solid!, 0.4, 0.3, 0.7)),
+            ("the cube turned", turnedCube),
             ("the frame turned", try turned(frame.scene(preset: frame.manifest.presets[0]).solid!, 1.1, 0.2, 0.5)),
-            ("the L-prism", try lPrism()), ("the L-prism turned", try turned(try lPrism(), 0.6, -0.5, 0.2)),
+            ("the L-prism", try lPrism()), ("the L-prism turned", turnedL),
         ]
-        // The placements the review found wanting, then a seeded sweep.
+        func solid(_ s: Solid) -> Scene { Scene(solid: s, layers: [], camera: camera) }
+        // The placements the reviews found wanting, then a seeded sweep.
         var placements: [(String, Int, Scene, Placement)] = [
-            ("the L-prism with a face on a grid line", 0, Scene(solid: try lPrism(), layers: [], camera: camera),
-             Placement(scale: 0.6, offset: SIMD3(0.1, -0.2, 0.6))),
+            ("the L-prism with a face on a grid line", 0, solid(try lPrism()), Placement(scale: 0.6, offset: SIMD3(0.1, -0.2, 0.6))),
             ("the frame with a face on a grid line", 0, frame.scene(preset: frame.manifest.presets[0]),
              Placement(scale: 0.6, offset: SIMD3(0.1, -0.2, 0.6))),
             ("the torus where a crossing left its piece", 0, torus, Placement(scale: 0.4018, offset: SIMD3(0.5374, -0.7111, 0.9796))),
@@ -413,63 +433,161 @@ func contactSweepTests() {
             ("the torus over the steps", 1, torus, Placement(scale: 0.35, offset: SIMD3(0, 0, 0.8))),
             ("the torus over the sample not a number", 2, torus, Placement(scale: 0.35, offset: SIMD3(0, 0, 0.8))),
         ]
+        for (land, z) in [(3, 0.3), (3, 0.45), (4, 0.3), (4, 0.45)] {
+            placements.append(("the cube turned, on a slab of no thickness", land, solid(turnedCube), Placement(scale: 0.4, offset: SIMD3(0.1, 0.1, z))))
+            placements.append(("the L-prism turned, on a slab of no thickness", land, solid(turnedL), Placement(scale: 0.4, offset: SIMD3(0.1, 0.1, z))))
+        }
+        if landscapes.count > 5 {
+            for (x, y) in [(1.5, 1.5), (1.0, -1.2), (0.6, 0.5), (0.3, 0.2)] {
+                placements.append(("the cube turned, where the spike is a rounding over its floor", 5, solid(turnedCube),
+                                   Placement(scale: 0.2, offset: SIMD3(x, y, -0.15))))
+            }
+        }
         var random = SweepRandom(state: 99)
-        for k in 0..<136 {
-            let land = k % landscapes.count
+        for k in 0..<180 {
+            let land = k % landscapes.count, h = landscapes[land].height
             let x = random.range(-1.2, 1.2), y = random.range(-1.2, 1.2)
             if k % 2 == 0 {
                 let scale = random.range(0.2, 0.6)
-                placements.append(("a torus", land, torus, Placement(scale: scale, offset: SIMD3(x, y, f(x, y) + random.range(-0.3, 0.3)))))
+                placements.append(("a torus", land, torus, Placement(scale: scale, offset: SIMD3(x, y, h(x, y) + random.range(-0.3, 0.3)))))
             } else {
-                let (name, solid) = solids[(k / 2) % solids.count]
+                let (name, s) = solids[(k / 2) % solids.count]
                 let scale = random.range(0.3, 0.9)
-                placements.append((name, land, Scene(solid: solid, layers: [], camera: camera),
-                                   Placement(scale: scale, offset: SIMD3(x, y, f(x, y) - random.range(0, 0.5) * scale))))
+                placements.append((name, land, solid(s), Placement(scale: scale, offset: SIMD3(x, y, h(x, y) - random.range(-0.2, 0.5) * scale))))
             }
         }
         let clock = ContinuousClock()
         var met = 0, points = 0, terrain = 0.0, onPart = 0.0, crossings = 0, missed = 0, loose = 0
-        var farthest = 0.0, example = "", polyFarthest = 0.0, polyExample = ""
+        var farthest = 0.0, example = "", polyFarthest = 0.0, polyExample = "", strayExample = ""
         let elapsed = try clock.measure {
             for (k, (name, land, scene, placement)) in placements.enumerated() {
-                let composite = try Composite([("landscape", landscapes[land].1, .identity), ("part", scene, placement)],
+                let composite = try Composite([("landscape", landscapes[land].scene, .identity), ("part", scene, placement)],
                                               camera: camera)
                 guard !composite.contact(of: 1).isEmpty else { continue }
                 met += 1
+                guard case .heightfield(let h) = composite.parts[0].scene.geometry else { continue }
+                let cell = landscapeCell(h), tolerance = 1e-9 * cell
                 let stray = contactStray(composite, part: 1)
-                points += stray.points; terrain = max(terrain, stray.terrain); onPart = max(onPart, stray.part)
+                points += stray.points
+                // Each against a billionth of its landscape's cell.
+                if stray.terrain / tolerance > terrain || stray.part / tolerance > onPart {
+                    strayExample = "\(name) #\(k) on \(landscapes[land].name)"
+                }
+                terrain = max(terrain, stray.terrain / tolerance); onPart = max(onPart, stray.part / tolerance)
                 let miss = contactMissed(composite, part: 1, steps: 240)
                 crossings += miss.crossings
-                if case .parametric = scene.geometry {
-                    if miss.farthest > farthest {
-                        farthest = miss.farthest
+                if case .parametric(let surface) = scene.geometry {
+                    // The solve's least step: a sixty-fourth of a square of
+                    // a quarter of a cell, at most an eighth of the tube.
+                    let least = min(cell / 4, torusRadii(surface).r * placement.scale / 8) / 64
+                    if miss.farthest / least > farthest {
+                        farthest = miss.farthest / least
                         example = String(format: "%@ #%d on %@ (scale %.4f at (%.4f, %.4f, %.4f)), the crossing at (%.5f, %.5f, %.5f)",
-                                         name, k, landscapes[land].0, placement.scale, placement.offset.x, placement.offset.y,
+                                         name, k, landscapes[land].name, placement.scale, placement.offset.x, placement.offset.y,
                                          placement.offset.z, miss.at.x, miss.at.y, miss.at.z)
                     }
                 } else {
-                    polyFarthest = max(polyFarthest, miss.farthest)
-                    if miss.farthest > 1e-9 { missed += 1; if polyExample.isEmpty { polyExample = "\(name) #\(k) on \(landscapes[land].0)" } }
+                    polyFarthest = max(polyFarthest, miss.farthest / tolerance)
+                    if miss.farthest > tolerance {
+                        missed += 1
+                        if polyExample.isEmpty { polyExample = "\(name) #\(k) on \(landscapes[land].name), at \(miss.at)" }
+                    }
                 }
                 loose += contactLooseEnds(composite, part: 1)
             }
         }
-        // A billionth of the sinusoid's cell.
-        let tolerance = 1e-9 * 0.25
-        Check.expect(met > 100 && terrain <= tolerance && onPart <= tolerance,
+        Check.expect(met > 150 && terrain <= 1 && onPart <= 1,
                      "every vertex and chord middle of \(met) parts' contact lines lies on the terrain and on the part",
-                     String(format: "%d points, off the terrain by %.1e, off the part by %.1e, within %.1e, %@",
-                            points, terrain, onPart, tolerance, "\(elapsed)"))
-        Check.expect(missed == 0 && polyFarthest <= 1e-9,
+                     String(format: "%d points, off the terrain by %.2g and off the part by %.2g of a billionth of the cell, %@%@",
+                            points, terrain, onPart, "\(elapsed)", strayExample.isEmpty ? "" : ", the worst " + strayExample))
+        Check.expect(missed == 0 && crossings > 100_000,
                      "a polyhedron's contact line passes through every crossing found apart from it",
-                     String(format: "%d crossings, the farthest %.1e off it%@", crossings, polyFarthest, polyExample.isEmpty ? "" : ", e.g. " + polyExample))
-        // A chord is drawn where it stays within the solve's least step --
-        // a sixty-fourth of a square, a quarter of a cell at most -- of the
-        // curve at its quarters: twice that step, a 128th of the cell.
-        Check.expect(farthest <= 0.25 / 128,
-                     "the torus's contact line passes within twice the solve's least step of every crossing found apart from it",
-                     String(format: "the farthest %.1e off it, within %.1e, at %@", farthest, 0.25 / 128, example))
+                     String(format: "%d crossings, the farthest %.2g of a billionth of the cell off it%@", crossings, polyFarthest,
+                            polyExample.isEmpty ? "" : ", e.g. " + polyExample))
+        // A chord is drawn where Newton's step from each of its quarters to
+        // the curve is within half the least step, a first-order estimate:
+        // the curve is held within the least step of it.
+        Check.expect(farthest <= 1,
+                     "the torus's contact line passes within the solve's least step of every crossing found apart from it",
+                     String(format: "the farthest %.2f of the least step off it, at %@", farthest, example))
         Check.expect(loose == 0, "the torus's contact line ends only on a step of the terrain", "\(loose) ends elsewhere")
+    }
+
+    Check.suite("composite: a torus just touching a level terrain draws nothing, or the whole of its circles") {
+        // R 2, r 0.75, at scale 0.4, its crown a little over a flat terrain
+        // or a plateau at 0.5, or its bottom a little into one: within a
+        // billionth of the cell (2.5e-10) nothing; past it, two closed
+        // circles about the axis, ring ± √(tube² − (h − z₀)²).
+        let surface = ParametricSurface.torus(major: 2, minor: 0.75, samples: (u: 64, v: 32))
+        let scene = Scene(surface: surface, layers: [], camera: camera, depthTolerance: 0)
+        let s = 0.4, r = 0.75 * s, ring = 2 * s, tolerance = 1e-9 * 0.25
+        var wrong: [String] = [], rungs = 0
+        for (what, land) in [("a flat terrain", landscapes[3].scene), ("a plateau", landscapes[4].scene)] {
+            for (end, sign) in [("crown", 1.0), ("bottom", -1.0)] {
+                for exponent in -13 ... -6 {
+                    let eps = pow(10, Double(exponent))
+                    // The crown eps over 0.5, or the bottom eps under it.
+                    let z = 0.5 - sign * r + sign * eps
+                    let composite = try Composite([("landscape", land, .identity),
+                                                   ("torus", scene, Placement(scale: s, offset: SIMD3(0.13, 0.07, z)))], camera: camera)
+                    let paths = composite.contact(of: 1).paths.map { $0.map { s * $0.v + SIMD3(0.13, 0.07, z) } }
+                    rungs += 1
+                    if eps <= tolerance {
+                        if !paths.isEmpty { wrong.append("\(what), \(end) \(eps): \(paths.count) paths") }
+                        continue
+                    }
+                    // Each path closed, on one circle all round, and its chords
+                    // as long as the circle's but for their sagitta.
+                    let half = (r * r - (r - eps) * (r - eps)).squareRoot()
+                    let axis = SIMD2(0.13, 0.07)
+                    var good = paths.count == 2
+                    for (path, rho) in zip(paths.sorted { simd_length(SIMD2($0[0].x, $0[0].y) - axis) < simd_length(SIMD2($1[0].x, $1[0].y) - axis) },
+                                           [ring - half, ring + half]) {
+                        let closed = simd_distance(path.first!, path.last!) <= 1e-12
+                        let onCircle = path.allSatisfy { abs(simd_length(SIMD2($0.x, $0.y) - axis) - rho) <= 1e-12 && abs($0.z - 0.5) <= 1e-12 }
+                        let length = zip(path, path.dropFirst()).reduce(0) { $0 + simd_distance($1.0, $1.1) }
+                        good = good && closed && onCircle && abs(length - 2 * .pi * rho) <= 1e-3 * 2 * .pi * rho
+                    }
+                    if !good { wrong.append(String(format: "%@, %@ %.0e: %d paths", what, end, eps, paths.count)) }
+                }
+            }
+        }
+        Check.expect(wrong.isEmpty, "from 1e-13 to 1e-6 either side of touching, each rung draws nothing or both circles whole",
+                     "\(rungs) rungs\(wrong.isEmpty ? "" : ", e.g. " + wrong.prefix(3).joined(separator: "; "))")
+    }
+
+    Check.suite("composite: a torus's contact costs with the curve's length, not the area under it") {
+        let clock = ContinuousClock()
+        var fine: [Int: Scene] = [:]
+        for n in [257, 1025] { fine[n] = gridLandscape(n: n, camera: camera, f: f) }
+        let plateau = gridLandscape(n: 1025, truncation: .uniform(0.5), camera: camera) { _, _ in 2 }
+        let torus = try SurfaceBundle.read(at: Fixtures.dir.appendingPathComponent("contract/surface_torus.kurven"))
+        let fixture = torus.scene(preset: torus.manifest.presets[0])
+        var cases: [(String, Scene, Scene, Placement)] = []
+        for r in [1e-3, 1e-4] {
+            cases.append(("a torus of R 2 and r \(r) at scale 0.5", landscapes[0].scene,
+                          Scene(surface: .torus(major: 2, minor: r, samples: (u: 64, v: 32)), layers: [], camera: camera, depthTolerance: 0),
+                          Placement(scale: 0.5, offset: SIMD3(0.1, 0.05, 1.0))))
+        }
+        for n in [257, 1025] {
+            cases.append(("the torus at scale 1e3, its outer wall across a grid of \(n)", fine[n]!, fixture,
+                          Placement(scale: 1e3, offset: SIMD3(-2.75e3, 0, 1))))
+            cases.append(("the torus at scale 1e3, its top through a grid of \(n)", fine[n]!, fixture,
+                          Placement(scale: 1e3, offset: SIMD3(-2e3, 0, 1 - 750))))
+        }
+        cases.append(("the torus at scale 1e3 grazing a plateau on a grid of 1025", plateau, fixture,
+                      Placement(scale: 1e3, offset: SIMD3(-2e3, 0, 0.5 - 750 + 1e-6))))
+        for (what, land, part, placement) in cases {
+            let composite = try Composite([("landscape", land, .identity), ("torus", part, placement)], camera: camera)
+            var count = 0
+            let elapsed = clock.measure { count = composite.contact(of: 1).paths.count }
+            let stray = contactStray(composite, part: 1)
+            guard case .heightfield(let h) = land.geometry else { continue }
+            let tolerance = 1e-9 * landscapeCell(h)
+            Check.expect(count > 0 && elapsed < .seconds(10) && stray.terrain <= tolerance,
+                         "\(what) meets the terrain in reasonable time",
+                         String(format: "%d paths, off the terrain by %.1e, %@", count, stray.terrain, "\(elapsed)"))
+        }
     }
 
     Check.suite("composite: a face flush with the terrain draws the same at a rounding either side") {
