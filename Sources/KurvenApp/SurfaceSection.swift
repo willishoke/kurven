@@ -385,6 +385,16 @@ struct SurfaceFieldSlider {
             document.paintStatus = "\(error)"
             return
         }
+        // Nor a value the layers drawn on the surface cannot take: a relief
+        // past the tube's reach bounds no solid, and isophotes and
+        // half-Lambert tone need its outward side.
+        if var edited = document.edited {
+            edited.request = next
+            if let why = document.refusal(of: edited) {
+                document.paintStatus = why
+                return
+            }
+        }
         if document.editedBeforeDrag != nil {
             document.dragSurface(next, draft: drafts)
         } else {

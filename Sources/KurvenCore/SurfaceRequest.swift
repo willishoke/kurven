@@ -501,6 +501,26 @@ public extension SurfaceRequest {
     /// [0, ceiling − floor] with ceiling − floor positive.
     static let reliefCeiling = 3.0
 
+    /// Whether the surface bounds a solid, and so has an outward side, which
+    /// an isophote and a half-Lambert tone are read from: a torus whose tube
+    /// does not reach its axis, R > r, and in relief only while the
+    /// displacement, |amplitude| times the truncated height less the floor,
+    /// stays under the tube's reach, min(r, R − r), as
+    /// `PeriodicTorus.Drawing.relief` decides it. Nil for a forced torus,
+    /// which bounds one where its fitted revolution passes through itself
+    /// nowhere: that is decided when it is built.
+    var boundsSolid: Bool? {
+        switch shape {
+        case .torus(let R, let r), .sn(_, let R, let r, _), .periodic(_, _, let R, let r, _):
+            return R > r
+        case .relief(_, let R, let r, let amplitude, _, _, _, let floor, _):
+            let ceiling = floor.map { Self.reliefCeiling - $0 } ?? Self.reliefCeiling
+            return R > r && ceiling >= 0 && abs(amplitude) * ceiling < min(r, R - r)
+        case .forced:
+            return nil
+        }
+    }
+
     /// At most how many samples the surface's grid has round the ring and
     /// round the tube: exactly, but for sn, whose rectangle's aspect its
     /// modulus sets, where this takes the aspect at most 1.

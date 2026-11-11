@@ -204,8 +204,10 @@ usage: kurven-cli <command> [options]
         the outward unit normal against the direction toward --light
         (-0.4,-0.6,0.7 by default), at the levels listed; --hatching hatches
         the surface along u (--angle 0) or v (90), a line every --spacing of
-        the other coordinate, its width set by the tone, as on a solid: on
-        half-lambert it changes on the isophotes. The landscape command
+        the other coordinate (a 48th of its range by default), its width set
+        by the tone, as on a solid: on half-lambert it changes on the
+        isophotes. Widths are positive, and a flag with no layer to apply it
+        to is refused. The landscape command
         takes the same flags, for the graph.
 
   surface solid [--kind K] [--size R] [--hole H] [--depth D] [--width W]
@@ -535,11 +537,23 @@ func compositeDrawing(_ bundles: [(path: String, placement: Placement)], preset:
 /// isophotes at the levels listed, `--isophotes C1,C2,...`, and hatching
 /// along a coordinate, `--hatching uniform|half-lambert`, at `--angle` 0
 /// (along u, the default) or 90 (along v), every `--spacing` of the
-/// coordinate across (`spacing` by default), in `--width-steps` widths;
-/// both read under `--light X,Y,Z`, the direction toward the light, by
-/// default the one `surface solid --hatching half-lambert` draws under.
-/// Refused as a manifest refuses them (`FaceSelector.unsupported`).
-func shadingLayers(_ args: Args, on faces: FaceSelector, spacing: Double) throws -> [LayerSpec] {
+/// coordinate across, by default `spacing`'s for that coordinate (`v` for
+/// lines along u, `u` along v), in `--width-steps` widths; both read under
+/// `--light X,Y,Z`, the direction toward the light, by default the one
+/// `surface solid --hatching half-lambert` draws under. Widths are
+/// positive. A flag with no layer to apply it to is refused, as is what a
+/// manifest refuses (`FaceSelector.unsupported`). `spacingIsOwn` says the
+/// command reads `--spacing` itself, as `landscape` does for its plateaus.
+func shadingLayers(_ args: Args, on faces: FaceSelector, spacing: (u: Double, v: Double),
+                   spacingIsOwn: Bool = false) throws -> [LayerSpec] {
+    let isophotes = args.flags["isophotes"] != nil, hatching = args.flags["hatching"] != nil
+    let orphans = (isophotes || hatching ? [] : ["light"])
+        + (isophotes ? [] : ["isophote-width"])
+        + (hatching ? [] : ["angle", "width-steps", "hatch-width"] + (spacingIsOwn ? [] : ["spacing"]))
+    if let orphan = orphans.first(where: { args.flags[$0] != nil || args.switches.contains($0) }) {
+        let wants = orphan == "light" ? "--isophotes or --hatching" : orphan == "isophote-width" ? "--isophotes" : "--hatching"
+        throw CLIError("--\(orphan) applies to \(wants), and none is given")
+    }
     var light = SIMD3<Double>(-0.4, -0.6, 0.7)
     if let text = args.flags["light"] {
         let l = text.split(separator: ",").compactMap { Double($0) }
@@ -558,7 +572,7 @@ func shadingLayers(_ args: Args, on faces: FaceSelector, spacing: Double) throws
         layers.append(LayerSpec(name: "isophotes", role: .scaffold,
                                 source: .contour(field: .isophote, levels: levels, restriction: .all, faces: faces,
                                                  light: light),
-                                width: try args.double("isophote-width") ?? 0.3, heightPolicy: .surface))
+                                width: try args.positive("isophote-width") ?? 0.3, heightPolicy: .surface))
     }
     if let kind = args.flags["hatching"] {
         let tone: Tone
@@ -571,11 +585,13 @@ func shadingLayers(_ args: Args, on faces: FaceSelector, spacing: Double) throws
         guard (1...PolyhedronManifest.maxWidthSteps).contains(widthSteps) else {
             throw CLIError("--width-steps wants 1 to \(PolyhedronManifest.maxWidthSteps), got \(widthSteps)")
         }
-        let hatching = Hatching(angle: (try args.double("angle") ?? 0) * .pi / 180,
-                                spacing: try args.positive("spacing") ?? spacing, tone: tone, widthSteps: widthSteps)
+        let angle = (try args.double("angle") ?? 0) * .pi / 180
+        let across = DomainAxis(angle: angle) == .imag ? spacing.u : spacing.v
+        let hatching = Hatching(angle: angle, spacing: try args.positive("spacing") ?? across, tone: tone,
+                                widthSteps: widthSteps)
         if let why = faces.unsupported(hatching) { throw CLIError(why) }
         layers.append(LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching, faces: faces),
-                                width: try args.double("hatch-width") ?? 0.4, heightPolicy: .surface))
+                                width: try args.positive("hatch-width") ?? 0.4, heightPolicy: .surface))
     }
     return layers
 }
@@ -712,7 +728,8 @@ func surfaceCommand(_ args: Args) throws {
     let built = try clock.measure { drawing = try SurfaceDrawing.build(request) }
     // `--isophotes`, `--hatching`: the surface's one face lit, its spacing
     // a 48th of the tube's turn by default.
-    let shading = try shadingLayers(args, on: .surface, spacing: abs(drawing.surface.v.range.length) / 48)
+    let shading = try shadingLayers(args, on: .surface, spacing: (abs(drawing.surface.u.range.length) / 48,
+                                                                  abs(drawing.surface.v.range.length) / 48))
     if !shading.isEmpty {
         do {
             drawing = try drawing.restyled(adding(shading, to: drawing.layers.map(\.spec)))
@@ -1670,7 +1687,7 @@ func landscapeCommand(_ args: Args) throws {
         if case .hatching(let h, .plateaus) = spec.source { h.spacing } else { nil }
     }.first
     let spacing = plateauSpacing ?? max(abs(request.domain.real.length), abs(request.domain.imag.length)) / 70
-    let shading = try shadingLayers(args, on: .graph(tiled: false), spacing: spacing)
+    let shading = try shadingLayers(args, on: .graph(tiled: false), spacing: (spacing, spacing), spacingIsOwn: true)
     if !shading.isEmpty {
         var m = bundle.manifest
         m.layers = adding(shading, to: m.layers)

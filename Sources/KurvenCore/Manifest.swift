@@ -921,6 +921,24 @@ public enum LayerSource: Sendable, Equatable {
                   faces: .plateaus(tiled: tiled))
     }
 
+    /// Its kind as a manifest names it, an isophote and a half-Lambert tone
+    /// by what they are.
+    public var kind: String {
+        switch self {
+        case .file: "file"
+        case .contour(.isophote, _, _, _, _): "isophotes"
+        case .contour: "contour"
+        case .hatching(let hatching, _): if case .halfLambert = hatching.tone { "half-Lambert tone" } else { "hatching" }
+        case .wallEdges: "wallEdges"
+        case .truncationEdge: "truncationEdge"
+        case .coordinateCurves: "coordinateCurves"
+        case .linearCurves: "linearCurves"
+        case .foldCurves: "foldCurves"
+        case .trajectory: "trajectory"
+        case .edges: "edges"
+        }
+    }
+
     /// The direction toward the light the layer is read under: an
     /// isophote's, or a hatching's half-Lambert tone's. Nil for any other.
     public var light: SIMD3<Double>? {
@@ -1003,9 +1021,16 @@ public struct LayerSpec: Sendable, Equatable {
             throw ManifestError.unknownKind(policyText, of: "HeightPolicy",
                                             known: HeightPolicy.allCases.map(\.rawValue))
         }
+        let width = try o.double("width", "LayerSpec")
+        // A polyhedron's manifest refuses one in its own words
+        // (`PolyhedronManifest.unsupported(_:on:)`).
+        guard geometry == .polyhedron || (width.isFinite && width >= 0) else {
+            throw ManifestError.invalid("layer '\((try? o.string("name", "LayerSpec")) ?? "")': a width must be a "
+                                        + "number not below 0, not \(width)")
+        }
         self.init(name: try o.string("name", "LayerSpec"), role: role,
                   source: try LayerSource(json: o.value("source", "LayerSpec"), on: geometry),
-                  width: try o.double("width", "LayerSpec"),
+                  width: width,
                   heightPolicy: policy,
                   color: (try? o.string("color", "LayerSpec")) ?? "#000000",
                   clipped: try o.bool("clipped", "LayerSpec", default: true))
@@ -1282,7 +1307,14 @@ public struct SurfaceManifest: Sendable, Equatable {
     /// below a truncation the function does not have, a trajectory on a
     /// torus no flow winds round.
     public static func unsupported(_ source: LayerSource, on request: SurfaceRequest) -> String? {
+        // n · l needs the surface's outward side, which a surface bounding
+        // no solid has not.
+        if source.light != nil, request.boundsSolid == false {
+            return "\(source.kind) on a surface that bounds no solid, which has no outward normal"
+        }
         switch source {
+        case .contour(.isophote, _, _, _, nil):
+            return "an isophote with no light to read n · l by"
         case .contour(let field, _, let restriction, _, _):
             if field.isFieldOfF, !request.paintsFunction {
                 return "a contour of \(field.rawValue) on a surface that paints no function"
