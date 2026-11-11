@@ -130,6 +130,11 @@ public struct Face: Sendable {
     /// nothing is truncated, and on a grid's graph, whose truncation edge is
     /// the loops' chords themselves, solved linearly on the grid.
     public let truncationExcess: (@Sendable (P2<ParamSpace>) -> Double)?
+    /// The face's point in space, where its parameter plane is the world's
+    /// xy, as the graph's is: a chord's sag off the face is then a length in
+    /// the cell's own units, and the plain routine refines it
+    /// (`contours(of:_:on:)`). Nil on every other face.
+    let lift: (@Sendable (P2<ParamSpace>) -> SIMD3<Double>)?
 
     /// The contours of a field on one copy of the face, clipped to its
     /// trimmed domain: cut where they cross the face's trim loops or the
@@ -147,9 +152,6 @@ public struct Face: Sendable {
         guard let loops = trimLoops else {
             return Contour.levels(of: field, levels, over: domain, contains: copy.contains)
         }
-        let map = self.map
-        var lift: (@Sendable (P2<ParamSpace>) -> SIMD3<Double>)?
-        if id.kind == .graph { lift = { @Sendable p in map(p).position } }
         return Contour.levels(of: field, levels, over: domain, trimLoops: loops,
                               contains: copy.footprint?.contains, cuts: copy.footprint?.perimeter ?? [],
                               excess: truncationExcess, lift: lift)
@@ -220,12 +222,13 @@ public struct Face: Sendable {
                 footprint: (@Sendable (Affine2) -> (perimeter: [[P2<ParamSpace>]],
                                                      contains: @Sendable (P2<ParamSpace>) -> Bool)?)? = nil,
                 truncationExcess: (@Sendable (P2<ParamSpace>) -> Double)? = nil,
+                lift: (@Sendable (P2<ParamSpace>) -> SIMD3<Double>)? = nil,
                 foot: @escaping @Sendable (SIMD3<Double>) -> P2<ParamSpace>,
                 bounding: @escaping @Sendable (Affine2) -> [[P2<ParamSpace>]],
                 contains: @escaping @Sendable (P2<ParamSpace>, Affine2) -> Bool) {
         let loops = trimLoops.map(Computed.init)
         self.id = id; self.domain = domain; self.map = map; self.loops = loops
-        self.truncationExcess = truncationExcess
+        self.truncationExcess = truncationExcess; self.lift = lift
         self.foot = foot; self.bounding = bounding
         copies = tiles.map { tile in
             let turn: Double = tile.a * tile.d - tile.b * tile.c < 0 ? -1 : 1
@@ -446,6 +449,7 @@ public extension Surface {
             trimLoops: { loops.value },
             footprint: { tile in Surface.footprint(region, on: tile) },
             truncationExcess: excess,
+            lift: { p in SIMD3(p.x, p.y, magnitude(P2(p.x, p.y))) },
             foot: { P2($0.x, $0.y) },
             bounding: { tile in surface.topBoundary(.graph, loops: loops.value, region: region, tile: tile) },
             contains: { p, tile in

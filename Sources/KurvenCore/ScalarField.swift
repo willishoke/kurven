@@ -202,7 +202,9 @@ public extension Contour {
     /// parameter rectangle: the refiner's tolerance for |f| and arg f
     /// (`Refiner.tolerance`), so the families drawn together on a face are
     /// held to one bound. On the 64-sample landscape it is 1.3e-3, a third
-    /// of a pixel in a 1600-pixel drawing.
+    /// of a pixel in a 1600-pixel drawing. On a parametric surface the
+    /// distance is Euclidean in (u, v), against the larger of the two
+    /// spacings, and there is no sag to measure.
     static let chordTolerance = 0.02
     /// How many times a chord may be halved: at most 31 vertices are added
     /// between two of the grid's, as the refiner's `maxDepth`.
@@ -216,9 +218,10 @@ public extension Contour {
     /// marching squares placed lie on the level set; between two, the curve
     /// can turn within a cell, and on a steep graph its chord can sag far
     /// off the face. A chord is split at the point of the level set on its
-    /// normal through its midpoint, sought toward Newton's step and doubled
-    /// out to the chord's length until the excess changes sign, then
-    /// bisected to the last bit, as a crossing is. A chord split for its
+    /// normal through its midpoint, sought either way from it, nearer first,
+    /// out to the chord's length, until the excess changes sign, then
+    /// bisected to the last bit, as a crossing is, and kept only where its
+    /// residual is small: not on a jump of the field. A chord split for its
     /// sag alone is split at its midpoint where none is found there, the
     /// midpoint being within the tolerance of the level set. Each half is
     /// measured again, down to `chordDepth` halvings. A chord is kept as it
@@ -258,23 +261,33 @@ public extension Contour {
             }
             guard error > tolerance || sag > tolerance else { return }
             /// The point of the level set on the chord's normal through its
-            /// midpoint; nil for a chord across the level set rather than
-            /// along it, or with none within a chord's length.
+            /// midpoint: the reach doubled from Newton's step out to the
+            /// chord's length, each tried toward Newton's step and then away
+            /// from it, since beside an extremum of the field the step points
+            /// away from the level set. Nil for a chord across the level set
+            /// rather than along it, with none within a chord's length, or
+            /// where the bracket closes on a jump of the field rather than
+            /// its level, its residual not small.
             func onLevel() -> SIMD2<Double>? {
                 guard abs(gn) > 1e-3 * slope else { return nil }
+                func placed(_ q: SIMD2<Double>) -> SIMD2<Double>? {
+                    let rq = f(q)
+                    return rq.isFinite && abs(rq) <= 1e-6 * tolerance * slope ? q : nil
+                }
                 let toward: Double = r / gn > 0 ? -1 : 1
-                var reach = abs(r / gn)
+                var reach = max(abs(r / gn), 1e-6 * chord)
                 while true {
-                    let t = toward * min(reach, chord), rt = f(m + t * normal)
-                    guard near(rt) else { return nil }
-                    let far = m + t * normal
-                    if rt == 0 { return far }
-                    if (rt > 0) != (r > 0) {
-                        // From the end at or under the level to the end over
-                        // it, as a crossing is placed.
-                        let (under, over) = r > 0 ? (far, m) : (m, far)
-                        let bracket = bisect(under, over) { !(f($0) > 0) }
-                        return f(bracket.holds) == 0 ? bracket.holds : 0.5 * (bracket.holds + bracket.fails)
+                    for t in [toward, -toward].map({ $0 * min(reach, chord) }) {
+                        let far = m + t * normal, rt = f(far)
+                        guard near(rt) else { continue }
+                        if rt == 0 { return placed(far) }
+                        if (rt > 0) != (r > 0) {
+                            // From the end at or under the level to the end
+                            // over it, as a crossing is placed.
+                            let (under, over) = r > 0 ? (far, m) : (m, far)
+                            let bracket = bisect(under, over) { !(f($0) > 0) }
+                            return placed(f(bracket.holds) == 0 ? bracket.holds : 0.5 * (bracket.holds + bracket.fails))
+                        }
                     }
                     guard reach < chord else { return nil }
                     reach *= 2
@@ -364,18 +377,23 @@ public extension Contour {
                                 holds: (P2<ParamSpace>) -> Bool, contains: ((P2<ParamSpace>) -> Bool)?,
                                 loops: TrimIndex, excess: ((P2<ParamSpace>) -> Double)?) -> [[P2<ParamSpace>]] {
         // Where an end of a run was cut on a loop: the segment of the path,
-        // counted on round a closed path past its last, so a run carried
-        // round where the path begins ends on segment n + k for its k.
+        // counted on round a closed path past its last, or back past its
+        // first, so a run carried round where the path begins ends on
+        // segment n + k for its k.
         let n = path.count - 1, shift = path[n].v - path[0].v
-        func vertex(_ j: Int) -> P2<ParamSpace> { j <= n ? path[j] : P2(path[j - n].v + shift) }
+        func vertex(_ j: Int) -> P2<ParamSpace> {
+            let lap = j >= 0 ? j / n : -((n - 1 - j) / n)
+            return P2(path[j - lap * n].v + Double(lap) * shift)
+        }
         var runs: [(points: [P2<ParamSpace>], start: Int?, end: Int?)] = []
         var run: [P2<ParamSpace>] = [], start: Int?
-        // Whether the run under way ends at a cut, and whether the path is
-        // kept from its first vertex.
-        var endsAtCut = false, keptFromStart = false
+        // Whether the run under way ends at a cut, whether the path is kept
+        // from its first vertex, and whether it crosses a loop at all.
+        var endsAtCut = false, keptFromStart = false, crossed = false
         for k in 0..<n {
             let a = path[k].v, b = path[k + 1].v
             let cuts = loops.crossings(a, b)
+            crossed = crossed || !cuts.isEmpty
             var from = a
             for (i, to) in (cuts + [b]).enumerated() where to != from {
                 defer { from = to }
@@ -403,15 +421,34 @@ public extension Contour {
         }
         if run.count >= 2 { runs.append((run, start, end)) }
         guard let excess else { return runs.map(\.points) }
+        // A path that crosses no loop and is held nowhere may lie between a
+        // chord and the level, in the domain: it is read on `excess` whole,
+        // where `contains` holds it, which does not change along it.
+        if runs.isEmpty, !crossed, contains?(P2(0.5 * (path[0].v + path[1].v))) ?? true {
+            runs = [(path, nil, nil)]
+        }
 
-        /// The vertices that carry a run on from an end at `x`, out along
-        /// `outward`, to where `excess` reaches 0; nil where it does not
-        /// before the path crosses a loop, leaves `contains` or ends.
-        func carried(from x: SIMD2<Double>, _ outward: [P2<ParamSpace>]) -> [P2<ParamSpace>]? {
+        /// The vertices that carry a run on from an end at `x`, cut on
+        /// segment `segment` of the path, out along it, forward or back, to
+        /// where `excess` reaches 0; nil where it does not before the path
+        /// crosses a loop, leaves `contains` or ends. Round a closed path it
+        /// goes on past where the path begins, once round. On the cut's own
+        /// segment the loops are met beyond the cut, along the segment, so
+        /// the cut's own crossing, a rounding from it, is not met again.
+        func carried(from x: SIMD2<Double>, segment: Int, forward: Bool) -> [P2<ParamSpace>]? {
             guard excess(P2(x)) < 0 else { return nil }
+            let s0 = vertex(segment).v, s1 = vertex(segment + 1).v, d = s1 - s0
+            let along = { (q: SIMD2<Double>) in simd_dot(q - s0, d) }
+            let others = loops.crossings(s0, s1)
+            if let own = others.indices.min(by: { simd_distance(others[$0], x) < simd_distance(others[$1], x) }),
+               (forward ? others[(own + 1)...] : others[..<own]).contains(where: { (along($0) > along(x)) == forward }) {
+                return nil
+            }
+            let outward = forward ? Array((segment + 1)...(closed ? segment + n : n))
+                                  : Array(stride(from: segment, through: closed ? segment - n + 1 : 0, by: -1))
             var previous = x, added: [P2<ParamSpace>] = []
-            for w in outward.map(\.v) where w != previous {
-                guard loops.crossings(previous, w).isEmpty,
+            for (k, w) in outward.map({ vertex($0).v }).enumerated() where w != previous {
+                guard k == 0 || loops.crossings(previous, w).isEmpty,
                       contains?(P2(0.5 * (previous + w))) ?? true else { return nil }
                 if !(excess(P2(w)) < 0) {
                     let edge = bisect(previous, w) { excess(P2($0)) < 0 }.holds
@@ -428,8 +465,8 @@ public extension Contour {
         // and the midpoints of its steps, are all where `excess` is negative
         // and `contains` holds. A path across a region outside the domain
         // that the loops caught has its cuts on that region's chords, over
-        // the level. So are the last run
-        // and the first of a closed path, across where it begins.
+        // the level. So are the last run and the first of a closed path,
+        // across where it begins.
         func inside(_ between: [P2<ParamSpace>]) -> Bool {
             zip(between, between.dropFirst()).allSatisfy { a, b in
                 let m = P2<ParamSpace>(0.5 * (a.v + b.v))
@@ -466,16 +503,16 @@ public extension Contour {
         var out: [[P2<ParamSpace>]] = []
         for (points, start, end) in joined {
             var points = points
-            if let end, let last = points.last,
-               let more = carried(from: last.v, ((end + 1)...(end < n ? n : min(2 * n, end + n))).map(vertex)) {
+            if let end, let last = points.last, let more = carried(from: last.v, segment: end, forward: true) {
                 points.removeLast()
                 points += more
             }
-            if let start, let first = points.first,
-               let more = carried(from: first.v, (0...start).reversed().map(vertex)) {
+            if let start, let first = points.first, let more = carried(from: first.v, segment: start, forward: false) {
                 points.removeFirst()
                 points = more.reversed() + points
             }
+            // A run round the whole of a closed path.
+            let round = closed && points.count >= 2 && points[points.count - 1].v - points[0].v == shift
             // Kept where `excess` is negative, cut where it changes sign. A
             // chord whose midpoint lies on the other side from both its ends
             // passes through a hole in the domain, or a region outside it,
@@ -490,20 +527,27 @@ public extension Contour {
                 read.append(p); inside.append(isInside)
             }
             points = read
-            var piece: [P2<ParamSpace>] = []
+            var pieces: [[P2<ParamSpace>]] = [], piece: [P2<ParamSpace>] = []
             func add(_ p: SIMD2<Double>) { if piece.last?.v != p { piece.append(P2(p)) } }
             for (k, p) in points.enumerated() {
                 if k > 0, inside[k] != inside[k - 1] {
                     let (i, o) = inside[k] ? (p.v, points[k - 1].v) : (points[k - 1].v, p.v)
                     add(bisect(i, o) { excess(P2($0)) < 0 }.holds)
                     if !inside[k] {
-                        if piece.count >= 2 { out.append(piece) }
+                        if piece.count >= 2 { pieces.append(piece) }
                         piece = []
                     }
                 }
                 if inside[k] { add(p.v) }
             }
-            if piece.count >= 2 { out.append(piece) }
+            if piece.count >= 2 { pieces.append(piece) }
+            // Round a closed path, the piece through its end and the piece
+            // through its start are one, as the runs are.
+            if round, pieces.count >= 2, inside[0], inside[inside.count - 1] {
+                let first = pieces.removeFirst()
+                pieces[pieces.count - 1] += first.dropFirst().map { P2($0.v + shift) }
+            }
+            out += pieces
         }
         return out
     }
