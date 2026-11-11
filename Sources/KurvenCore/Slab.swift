@@ -44,6 +44,9 @@ struct Slab: Sendable {
     let base: Double, top: Double
     /// The truncation's bands as stretches of u, with their heights.
     let bands: [(lo: Double, hi: Double, height: Double)]
+    /// The decimated grid's cell, the larger of its sides in the
+    /// landscape's own units.
+    let cell: Double
     /// Where a line starts to count: a billionth of a cell along it.
     let start: Double
 
@@ -63,7 +66,7 @@ struct Slab: Sendable {
         let d = g.domain
         let su = Double(g.width - 1) / (d.real.length * Double(step))
         let sv = Double(g.height - 1) / (d.imag.length * Double(step))
-        let cell = max(abs(1 / su), abs(1 / sv))
+        cell = max(abs(1 / su), abs(1 / sv))
         start = 1e-9 * cell
         func u(_ x: Double) -> Double { (x - d.real.lo) * su }
         let spans = s.truncation.bands(from: min(d.real.lo, d.real.hi), to: max(d.real.lo, d.real.hi))

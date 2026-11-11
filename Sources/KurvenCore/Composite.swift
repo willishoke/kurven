@@ -129,14 +129,19 @@ public struct Composite: Sendable {
 
     /// Every part's layers in view space, in order, tested for the camera:
     /// each by its own geometry as alone, then cut wherever another part
-    /// hides it. An unclipped layer is drawn whole. Throws where a segment
+    /// hides it. After a part's own layers comes its contact with the
+    /// landscapes, where it has one (`visibleContact(of:)`), cut the same
+    /// way: a landscape hides its own contact curve only where the line of
+    /// sight goes into its slab, as it hides any point on its boundary
+    /// (`Slab`). An unclipped layer is drawn whole. Throws where a segment
     /// would be asked at more points against one part than
     /// `Occluder.steps`.
     public func visibleLayers() throws -> [(Layer, PolylineSet<ViewSpace>)] {
         let world = camera.view.inverse
         return try parts.indices.flatMap { i -> [(Layer, PolylineSet<ViewSpace>)] in
             let others = occluders.indices.filter { $0 != i }.map { occluders[$0] }
-            return try parts[i].scene.visibleLayers().map { layer, seen in
+            let own = parts[i].scene.visibleLayers() + (visibleContact(of: i).map { [$0] } ?? [])
+            return try own.map { layer, seen in
                 guard layer.spec.clipped, !others.isEmpty else { return (layer, seen) }
                 return (layer, try Self.cut(seen, by: others, world: world))
             }
