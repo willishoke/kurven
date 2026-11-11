@@ -287,8 +287,8 @@ func surfaceBundleTests() {
                     s["style"] = .object(style)
                 })
         refuses("refuses a request with no style", saying: "no key 'style'", surface { $0["style"] = nil })
-        refuses("refuses hatching on a parametric surface", saying: "hatching on a parametric surface: it is curved",
-                layer(.hatching(Hatching(angle: 0, spacing: 0.1), faces: .surface)))
+        refuses("refuses hatching on a parametric surface along no coordinate", saying: "runs along a coordinate",
+                layer(.hatching(Hatching(angle: 0.3, spacing: 0.1), faces: .surface)))
         refuses("refuses wall edges on a parametric surface", saying: "it is one face, with no walls",
                 layer(.wallEdges(edges: [0], base: 0)))
         refuses("refuses a dumped layer on a parametric surface", saying: "drawn from its request, not stored",

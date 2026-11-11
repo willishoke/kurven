@@ -174,8 +174,8 @@ func faceFieldTests() {
             try decode(.contour(field: .u, levels: [1], restriction: .all,
                                 faces: .walls(edges: [0], endLines: true, base: 0, topOffset: 0)))
         }
-        Check.expectThrows("refuses hatching on the graph, which is curved") {
-            try decode(.hatching(Hatching(angle: 0, spacing: 0.1), faces: .graph(tiled: false)))
+        Check.expectThrows("refuses hatching on the graph, which is curved, along no coordinate") {
+            try decode(.hatching(Hatching(angle: 0.3, spacing: 0.1), faces: .graph(tiled: false)))
         }
         var accepted = 0
         for faces in [FaceSelector.graph(tiled: true), .plateaus(tiled: false),

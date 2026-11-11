@@ -356,6 +356,16 @@ paint() {
     undone solid-hatching "$c/polyhedron_frame.kurven" 300,250 --add hatching
     undone solid-strokes "$c/polyhedron_frame.kurven" 300,250 --strokes hatching=30
     undone solid-remove "$c/polyhedron_frame.kurven" 300,250 --remove hatching
+    undone isophotes "$dir/torus.kurven" 300,600 --add surface_isophote
+    undone tone "$dir/torus.kurven" 300,600 --add surface_tone
+    undone graph-isophotes "$c/landscape.kurven" 300,500 --add graph_isophote
+    undone graph-tone "$c/landscape.kurven" 300,500 --add graph_tone
+    "$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --add surface_isophote --add surface_tone \
+        --save "$dir/lit.kurven" >/dev/null || return 1
+    undone light "$dir/lit.kurven" 300,600 --light surface_isophote=0,0,1
+    undone tone-light "$dir/lit.kurven" 300,600 --light surface_tone=1,-1,1.5
+    undone tone-remove "$dir/lit.kurven" 300,600 --remove surface_tone
+    undone isophotes-remove "$dir/lit.kurven" 300,600 --remove surface_isophote
     [ "$failed" = 0 ] || return 1
     # A history, saved after each edit and at each undo.
     history() {
@@ -469,6 +479,46 @@ paint() {
     printf '%s\n' "$out" | grep -q 'refused: a period must be a positive number, not 0.0' || { printf '%s\n' "$out"; return 1; }
 }
 step "the app paints the picked face, and undoes and redoes every kind of edit, with no window" paint
+
+# Light on curved faces, with no window: isophotes and half-Lambert tone
+# added from the Add menu on the torus and on a landscape's graph, a light
+# set as the sliders set it, saved, and baked by the app and by `bake`: the
+# same drawing byte for byte, the tone in a stroke layer per width. The
+# CLI's flags add the same layers; a light with no direction, a tone along
+# no coordinate, and isophotes on the plateaus are refused, saying why.
+shading() {
+    local dir="$PACKAGE/.build/shading-check" c="$ROOT/tests/fixtures/contract" out
+    rm -rf "$dir" && mkdir -p "$dir" || return 1
+    "$BIN/kurven-cli" surface torus --save "$dir/torus.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --add surface_isophote --add surface_tone \
+        --light surface_tone=1,-1,1.5 --save "$dir/lit.kurven" --bake "$dir/lit-app.svg" >/dev/null &&
+    "$BIN/kurven-cli" bake "$dir/lit.kurven" --dump "$dir/lit" -o "$dir/lit-cli.svg" >/dev/null &&
+    cmp "$dir/lit-app.svg" "$dir/lit-cli.svg" || { echo "the torus lit: the app's bake is not the CLI's"; return 1; }
+    grep -q '"field":"isophote"' "$dir/lit.kurven/manifest.json" &&
+    grep -q '"light":\[1.0,-1.0,1.5\]' "$dir/lit.kurven/manifest.json" &&
+    grep -q '"layers":\[.*"surface_tone 1/4",.*"surface_tone 4/4"' "$dir/lit.frame.json" ||
+        { echo "the torus lit: not the layers asked for, or the tone not in a layer per width"; return 1; }
+    "$BIN/KurvenApp" "$c/landscape.kurven" --pick 300,500 --add graph_isophote --add graph_tone \
+        --light graph_isophote=0.3,0.2,1 --save "$dir/graph.kurven" --bake "$dir/graph-app.svg" >/dev/null &&
+    "$BIN/kurven-cli" bake "$dir/graph.kurven" -o "$dir/graph-cli.svg" >/dev/null &&
+    cmp "$dir/graph-app.svg" "$dir/graph-cli.svg" &&
+    grep -q '"light":\[0.3,0.2,1.0\]' "$dir/graph.kurven/manifest.json" ||
+        { echo "the graph lit: the app's bake is not the CLI's, or the light not the one set"; return 1; }
+    "$BIN/kurven-cli" surface torus --isophotes -0.75,-0.5,-0.25,0,0.25,0.5,0.75 --hatching half-lambert \
+        --width-steps 4 --spacing 0.1308996938995747 --hatch-width 0.4 --isophote-width 0.2 \
+        --save "$dir/flags.kurven" -o "$dir/flags.svg" >/dev/null &&
+    "$BIN/kurven-cli" bake "$dir/flags.kurven" -o "$dir/flags-bake.svg" >/dev/null &&
+    cmp "$dir/flags.svg" "$dir/flags-bake.svg" || { echo "surface torus --isophotes --hatching: not what its bundle bakes"; return 1; }
+    for refused in "--isophotes 0.5 --light 0,0,0" "--hatching half-lambert --angle 30" "--hatching turing"; do
+        out=$("$BIN/kurven-cli" surface torus $refused --save "$dir/refused.kurven" 2>&1) &&
+            { echo "surface torus $refused was drawn"; return 1; }
+        [ ! -e "$dir/refused.kurven" ] || { echo "surface torus $refused wrote a bundle"; return 1; }
+    done
+    out=$("$BIN/KurvenApp" "$dir/lit.kurven" --pick 300,600 --light folds=0,0,1 2>&1) &&
+        { echo "a light was set on the folds"; return 1; }
+    printf '%s\n' "$out" | grep -q "no layer 'folds' read under a light" || { printf '%s\n' "$out"; return 1; }
+}
+step "the app lights a curved face with isophotes and half-Lambert tone, undoes it, and bakes it as the CLI does, with no window" shading
 
 # Picking, with no window: a click at a pixel reads the depth the frame left
 # there, takes it back through the camera, and names the face under it. The
