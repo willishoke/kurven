@@ -17,20 +17,27 @@ import simd
 ///   points on the terrain are the sides of the convex polygon the face
 ///   leaves inside the prism that lie on its top. The pieces are joined end
 ///   to end and clipped to the face's trim loops (`Contour.clipped`).
-/// - On the round torus, over each piece, the curve is the zero set of the
-///   torus's distance on the piece's plane, a function with Lipschitz
-///   constant 1 in space (`TubularNeighbourhood.foot`). It is found on a grid
-///   of squares a quarter of a cell, at most an eighth of the tube's radius,
-///   clipped to the piece: each square's sides are
-///   searched for every zero down to a sixty-fourth of a square, and a square
-///   is split while it might hold a zero its sides do not show. Each zero is
-///   bisected to the last bit. A loop of the curve is missed only where it
-///   lies wholly in a square the curve already crosses and is smaller than
-///   the square, or is smaller than a sixty-fourth of one.
+/// - On the round torus, over each piece, the curve is where the torus
+///   meets the piece's plane. On a level piece it is closed form: the
+///   torus stands upright, so the curve is circles about its axis, clipped
+///   to the piece. On any other it is the zero set of the torus's distance
+///   on the plane, which has Lipschitz constant 1 in space
+///   (`TubularNeighbourhood.foot`): blocks of cells, then the piece, then
+///   squares are passed over where the bound shows no zero, and split
+///   otherwise, down to squares a quarter of a cell, at most an eighth of
+///   the tube's radius (`zeros(of:on:side:least:within:loopsRound:)`), so
+///   the work goes with the curve's length. Each zero is bisected to the
+///   last bit. A loop smaller than a sixty-fourth of a square can be
+///   missed.
 ///
 /// Contact within the scene's tolerance (`Slab.start`) of a polyhedron
 /// face's boundary, along it, is the part's edge and is not contact; a face
 /// within the tolerance of the terrain's plane all over meets it nowhere.
+/// So with the torus: a level piece it reaches past by no more than the
+/// tolerance, or sinks into by no more, it meets nowhere.
+///
+/// A prism with no top -- a corner of its triangle not a number, and no
+/// truncation over it -- is no terrain, and nothing meets it.
 ///
 /// The curves are in the part's own coordinates, on a polyhedron with the
 /// face each lies on, on a surface with each vertex's coordinate.
@@ -240,24 +247,6 @@ extension Slab {
         return (i0...i1, j0...j1)
     }
 
-    /// The terrain's height over a point of the landscape's own (x, y): the
-    /// top of the first piece that holds it (`tops`). Nil where none does.
-    func height(at p: SIMD2<Double>) -> Double? {
-        for copy in copies {
-            guard let (ir, jr) = cells(over: p, p, copy: copy) else { continue }
-            for j in jr {
-                for i in ir {
-                    for upper in [false, true] {
-                        if let piece = tops(i, j, upper: upper, copy: copy).first(where: { $0.contains(p, slack: 1e-12 * cell) }) {
-                            return piece.height(p)
-                        }
-                    }
-                }
-            }
-        }
-        return nil
-    }
-
     /// Where face `f` of `solid`, standing at `placement`, meets the terrain
     /// of the landscape standing at `offset`: paths in the solid's own
     /// coordinates, clipped to the face's trim loops.
@@ -296,7 +285,11 @@ extension Slab {
             for j in jr {
                 for i in ir {
                     for upper in [false, true] {
-                        for halfSpaces in prisms(i, j, upper: upper, copy: copy) {
+                        // Without the floor, which bounds no top, and on a
+                        // slab as thin as a rounding would leave the face
+                        // nothing.
+                        for prism in prisms(i, j, upper: upper, copy: copy) {
+                            let halfSpaces = prism.filter { $0.n.z >= 0 }
                             segments += Slab.tops(rectangle, halfSpaces, origin: O, A, B, size: hi - lo,
                                                   tolerance: start).map { (SIMD3($0.0.x, $0.0.y, 0), SIMD3($0.1.x, $0.1.y, 0)) }
                         }
@@ -439,19 +432,20 @@ extension Slab {
         return out
     }
 
-    /// Where `surface` -- the round torus, whose distance has Lipschitz
-    /// constant 1 in space -- standing at `placement`, meets the terrain of
-    /// the landscape standing at `offset`: paths of the landscape's own
-    /// coordinates, each point on both surfaces and each chord in one piece
-    /// of the terrain (`ContactCurves`).
+    /// Where `surface` -- the round torus about its z axis, upright as a
+    /// placement leaves it, whose distance has Lipschitz constant 1 in space
+    /// -- standing at `placement`, meets the terrain of the landscape
+    /// standing at `offset`: paths of the landscape's own coordinates, each
+    /// point on both surfaces and each chord in one piece of the terrain
+    /// (`ContactCurves`).
     func contact(on surface: ParametricSurface, placement: Placement, offset: SIMD3<Double>) -> [[SIMD3<Double>]] {
-        guard let e = surface.neighbourhood else { return [] }
+        guard let e = surface.neighbourhood, nx >= 2, ny >= 2 else { return [] }
         let s = placement.scale, shift = placement.offset - offset
         // The torus's distance from a point of the landscape's coordinates.
         @Sendable func distance(_ x: SIMD3<Double>) -> Double { s * e.foot((x - shift) / s).distance }
         let centre = s * e.centre + shift, radius = s * e.radius
-        // The tube's radius: the ball that holds the torus reaches R + r,
-        // and its centre stands R − r off the tube's core.
+        // The tube's radius and the core's: the ball that holds the torus
+        // reaches R + r, and its centre stands R − r off the tube's core.
         let tube = 0.5 * (radius - s * e.foot(e.centre).distance), ring = radius - tube
         let side = min(cell / 4, tube / 8), least = side / 64
         // Where a closed loop of the curve over a piece can be: round a
@@ -479,57 +473,161 @@ extension Slab {
             }
             return out.map { SIMD2($0.x, $0.y) }
         }
-        // The pieces the torus can meet: the plane of each, over its
-        // polygon, within the polygon's reach of the torus.
-        var pieces: [TopPiece] = []
         let lo = SIMD2(centre.x - radius, centre.y - radius), hi = SIMD2(centre.x + radius, centre.y + radius)
-        for copy in copies {
-            guard let (ir, jr) = cells(over: lo, hi, copy: copy) else { continue }
-            for j in jr {
-                for i in ir {
-                    for upper in [false, true] {
-                        for piece in tops(i, j, upper: upper, copy: copy) {
-                            let points = piece.polygon.map(piece.point)
-                            let middle = points.reduce(.zero, +) / Double(points.count)
-                            let reach = points.map { simd_distance($0, middle) }.max()!
-                            guard abs(distance(middle)) <= reach * (1 + 1e-9) + 1e-300 else { continue }
-                            pieces.append(piece)
-                        }
-                    }
-                }
+        // The cells the torus can meet, found from blocks of cells: a block
+        // is passed over where the torus is farther from the middle of the
+        // box that holds its terrain than the box's half-diagonal.
+        let ranges = cellRanges()
+        var cells: [(copy: Int, i: Int, j: Int)] = []
+        for (k, copy) in copies.enumerated() {
+            guard let (ir, jr) = self.cells(over: lo, hi, copy: copy) else { continue }
+            let back = copy.linear.inverse
+            func reaches(_ i0: Int, _ i1: Int, _ j0: Int, _ j1: Int, _ z: (lo: Double, hi: Double)) -> Bool {
+                guard z.lo.isFinite, z.hi.isFinite else { return true }
+                let corners = [SIMD2(Double(i0), Double(j0)), SIMD2(Double(i1 + 1), Double(j0)),
+                               SIMD2(Double(i0), Double(j1 + 1)), SIMD2(Double(i1 + 1), Double(j1 + 1))]
+                    .map { back * ($0 - copy.offset) }
+                let blo = SIMD3(corners.reduce(corners[0], simd_min), z.lo), bhi = SIMD3(corners.reduce(corners[0], simd_max), z.hi)
+                return abs(distance(0.5 * (blo + bhi))) <= 0.5 * simd_distance(blo, bhi) * (1 + 1e-9)
             }
+            func descend(_ level: Int, _ bi: Int, _ bj: Int) {
+                let size = 1 << level
+                let i0 = max(bi * size, ir.lowerBound), i1 = min((bi + 1) * size - 1, ir.upperBound)
+                let j0 = max(bj * size, jr.lowerBound), j1 = min((bj + 1) * size - 1, jr.upperBound)
+                guard i0 <= i1, j0 <= j1 else { return }
+                let (w, z) = (ranges[level].width, ranges[level].z)
+                guard reaches(i0, i1, j0, j1, z[bj * w + bi]) else { return }
+                if level == 0 { cells.append((k, i0, j0)); return }
+                for (di, dj) in [(0, 0), (1, 0), (0, 1), (1, 1)] { descend(level - 1, 2 * bi + di, 2 * bj + dj) }
+            }
+            descend(ranges.count - 1, 0, 0)
         }
-        let found = Heightfield.parallelMap(pieces, chunk: 4) { piece in
-            Slab.zeros(of: distance, on: piece, side: side, least: least, within: (lo, hi), loopsRound: critical(piece))
+        // The pieces over them that the torus can meet.
+        let pieces = Heightfield.parallelMap(cells, chunk: 64) { cell -> [TopPiece] in
+            [false, true].flatMap { self.tops(cell.i, cell.j, upper: $0, copy: self.copies[cell.copy]) }.filter { piece in
+                let points = piece.polygon.map(piece.point)
+                let middle = points.reduce(.zero, +) / Double(points.count)
+                let reach = points.map { simd_distance($0, middle) }.max()!
+                return abs(distance(middle)) <= reach * (1 + 1e-9) + 1e-300
+            }
+        }.flatMap { $0 }
+        let tolerance = start
+        let found = Heightfield.parallelMap(pieces, chunk: 4) { piece -> [(SIMD3<Double>, SIMD3<Double>)] in
+            if piece.gradient == .zero {
+                return Slab.circles(on: piece, axis: SIMD2(centre.x, centre.y), height: centre.z, ring: ring, tube: tube,
+                                    least: least, tolerance: tolerance)
+            }
+            return Slab.zeros(of: distance, on: piece, side: side, least: least, within: (lo, hi), loopsRound: critical(piece))
         }
         return Slab.chains(found.flatMap { $0 }, tolerance: start)
     }
 
+    /// The range of the terrain's height over each cell, and over blocks of
+    /// 2ᵏ by 2ᵏ cells, level by level, up to one block: what bounds the top
+    /// over a cell, the least of its triangles' planes and the truncation,
+    /// from below and above. Unbounded over a cell with a corner not a
+    /// number.
+    func cellRanges() -> [(width: Int, z: [(lo: Double, hi: Double)])] {
+        let least = bands.map(\.height).min() ?? .infinity
+        let (cx, cy) = (nx - 1, ny - 1)
+        var z = [(lo: Double, hi: Double)](repeating: (0, 0), count: cx * cy)
+        for j in 0..<cy {
+            for i in 0..<cx {
+                let h = [heights[j * nx + i], heights[j * nx + i + 1], heights[(j + 1) * nx + i], heights[(j + 1) * nx + i + 1]]
+                z[j * cx + i] = h.allSatisfy(\.isFinite) ? (min(h.min()!, least), h.max()!) : (-.infinity, .infinity)
+            }
+        }
+        var levels = [(width: cx, z: z)]
+        var (w, hgt) = (cx, cy)
+        while w > 1 || hgt > 1 {
+            let (w2, h2) = ((w + 1) / 2, (hgt + 1) / 2)
+            let below = levels[levels.count - 1].z
+            var up = [(lo: Double, hi: Double)](repeating: (.infinity, -.infinity), count: w2 * h2)
+            for j in 0..<hgt {
+                for i in 0..<w {
+                    let a = below[j * w + i], k = (j / 2) * w2 + i / 2
+                    up[k] = (min(up[k].lo, a.lo), max(up[k].hi, a.hi))
+                }
+            }
+            levels.append((w2, up)); (w, hgt) = (w2, h2)
+        }
+        return levels
+    }
+
+    /// Where a level piece, z = h over its polygon, meets the torus about a
+    /// vertical axis through `axis`, its core of radius `ring` at `height`
+    /// and its tube of radius `tube`: the circles about the axis of radius
+    /// ring ± √(tube² − (h − height)²), clipped to the polygon, each arc cut
+    /// into chords whose sagitta is under half of `least`. A plane the torus
+    /// reaches past by no more than `tolerance`, or not at all, meets it
+    /// nowhere.
+    static func circles(on piece: TopPiece, axis: SIMD2<Double>, height: Double, ring: Double, tube: Double,
+                        least: Double, tolerance: Double) -> [(SIMD3<Double>, SIMD3<Double>)] {
+        let h = piece.constant, dz = h - height
+        guard tube - abs(dz) > tolerance else { return [] }
+        let half = (tube * tube - dz * dz).squareRoot()
+        let polygon = piece.polygon
+        var out: [(SIMD3<Double>, SIMD3<Double>)] = []
+        for rho in [ring - half, ring + half] where rho > 0 {
+            func at(_ t: Double) -> SIMD2<Double> { axis + rho * SIMD2(cos(t), sin(t)) }
+            // Where the circle crosses each side, solved on the side, and
+            // its angle about the axis.
+            var crossings: [(angle: Double, point: SIMD2<Double>)] = []
+            for k in polygon.indices {
+                let a = polygon[k], e = polygon[(k + 1) % polygon.count] - a, w = a - axis
+                // |w + t e|² = ρ²: t² (e·e) + 2t (w·e) + (w·w − ρ²) = 0.
+                let qa = simd_dot(e, e), qb = simd_dot(w, e), qc = (simd_length(w) - rho) * (simd_length(w) + rho)
+                guard qa > 0 else { continue }
+                let disc = qb * qb - qa * qc
+                guard disc >= 0 else { continue }
+                let root = disc.squareRoot()
+                // The roots without cancellation.
+                let q = -(qb + (qb >= 0 ? root : -root))
+                for t in [q / qa, q != 0 ? qc / q : 0] where t >= 0 && t <= 1 {
+                    let p = a + t * e
+                    crossings.append((atan2(p.y - axis.y, p.x - axis.x), p))
+                }
+            }
+            crossings.sort { $0.angle < $1.angle }
+            if crossings.isEmpty { crossings = [(0, at(0))] }
+            // The arcs between consecutive crossings whose middle is inside.
+            for k in crossings.indices {
+                let (t0, p0) = crossings[k]
+                let (t1, p1) = k + 1 < crossings.count ? crossings[k + 1] : (crossings[0].angle + 2 * .pi, crossings[0].point)
+                guard t1 - t0 > 0, piece.contains(at(0.5 * (t0 + t1))) else { continue }
+                let step = 2 * acos(max(1 - 0.5 * least / rho, -1))
+                let count = max(Int(((t1 - t0) / step).rounded(.up)), 1)
+                var previous = p0
+                for m in 1...count {
+                    let next = m == count ? p1 : at(t0 + (t1 - t0) * Double(m) / Double(count))
+                    out.append((SIMD3(previous.x, previous.y, h), SIMD3(next.x, next.y, h)))
+                    previous = next
+                }
+            }
+        }
+        return out
+    }
+
     /// The zero set of a function with Lipschitz constant 1 in space on a
-    /// piece's plane over its polygon, as segments: squares of `side` on a
-    /// grid of the plane's (x, y) inside `box`, each clipped to the polygon.
-    /// A square, or a part of one, that the bound shows holds no zero is
-    /// passed over. Each side of a square is searched for every zero, its
-    /// halves while the bound allows one, down to `least`, and each zero
-    /// bisected to the last bit. A closed loop of the zero set lies round a
-    /// critical point of f, so a square that holds none of `loopsRound` holds
-    /// arcs alone, each from one zero on its sides to another: with none it
-    /// holds no zero, and with two it draws the chord between them where
-    /// Newton's step from each of its quarters to the zero set is within
-    /// `least`. A square with more, or a chord
+    /// piece's plane over its polygon, as segments. The polygon, clipped to
+    /// `box`, is passed over where the bound shows no zero and split in four
+    /// otherwise, down to squares of `side`. Each side of such a square is
+    /// searched for every zero, its halves while the bound allows one, down
+    /// to `least`, and each zero bisected to the last bit. A closed loop of
+    /// the zero set lies round a critical point of f, so a square that holds
+    /// none of `loopsRound` holds arcs alone, each from one zero on its sides
+    /// to another: with none it holds no zero, and with two it draws the
+    /// chord between them where Newton's step from each of its quarters to
+    /// the zero set is within half of `least`. A square with more, or a chord
     /// that strays, or a critical point, is split in four, down to `least`,
-    /// where the zeros on its sides are joined in pairs in turn. So every
-    /// arc is found that crosses a side of a square apart from its
-    /// neighbours by `least`, and every loop larger than `least`.
+    /// where the zeros on its sides are joined in pairs in turn. So every arc
+    /// is found that crosses a side of a square apart from its neighbours by
+    /// `least`, and every loop larger than `least`.
     static func zeros(of f: @Sendable (SIMD3<Double>) -> Double, on piece: TopPiece, side: Double, least: Double,
                       within box: (lo: SIMD2<Double>, hi: SIMD2<Double>),
                       loopsRound critical: [SIMD2<Double>]) -> [(SIMD3<Double>, SIMD3<Double>)] {
-        let polygon = piece.polygon
-        let plo = simd_max(polygon.reduce(polygon[0], simd_min), box.lo)
-        let phi = simd_min(polygon.reduce(polygon[0], simd_max), box.hi)
-        guard plo.x <= phi.x, plo.y <= phi.y else { return [] }
         func value(_ p: SIMD2<Double>) -> Double { f(piece.point(p)) }
-        // Every zero along a ← b, in order from a.
+        // Every zero along a → b, in order from a.
         func along(_ a: SIMD2<Double>, _ fa: Double, _ b: SIMD2<Double>, _ fb: Double) -> [SIMD2<Double>] {
             let length = simd_distance(piece.point(a), piece.point(b))
             if abs(fa) + abs(fb) > length * (1 + 1e-9) { return [] }
@@ -547,11 +645,11 @@ extension Slab {
             return along(a, fa, m, fm) + along(m, fm, b, fb)
         }
         // Whether Newton's step from p to the zero set, along f's gradient
-        // in the plane's (x, y), is within `least`.
+        // in the plane's (x, y), is within half of `least`.
         func near(_ p: SIMD2<Double>) -> Bool {
             let v = value(p), h = 1e-3 * least
             let g = SIMD2(value(p + SIMD2(h, 0)) - value(p - SIMD2(h, 0)), value(p + SIMD2(0, h)) - value(p - SIMD2(0, h))) / (2 * h)
-            return abs(v) <= least * simd_length(g)
+            return abs(v) <= 0.5 * least * simd_length(g)
         }
         func split(_ cut: [SIMD2<Double>]) -> [[SIMD2<Double>]] {
             let clo = cut.reduce(cut[0], simd_min), chi = cut.reduce(cut[0], simd_max), mid = 0.5 * (clo + chi)
@@ -565,19 +663,18 @@ extension Slab {
             let middle = cut.reduce(.zero, +) / Double(cut.count)
             let reach = points.map { simd_distance($0, piece.point(middle)) }.max()!
             guard abs(value(middle)) <= reach * (1 + 1e-9) else { return [] }
+            let clo = cut.reduce(cut[0], simd_min), chi = cut.reduce(cut[0], simd_max)
+            let size = max(chi.x - clo.x, chi.y - clo.y)
+            if size > side * (1 + 1e-9) { return split(cut).flatMap(inside) }
             let values = cut.map(value)
             var crossings: [SIMD2<Double>] = []
             for k in cut.indices {
                 let l = (k + 1) % cut.count
                 crossings += along(cut[k], values[k], cut[l], values[l])
             }
-            let clo = cut.reduce(cut[0], simd_min), chi = cut.reduce(cut[0], simd_max)
-            let size = max(chi.x - clo.x, chi.y - clo.y)
             let loops = critical.contains { all(simd_min(chi + least, simd_max($0, clo - least)) .== $0) }
             if !loops, crossings.isEmpty { return [] }
-            if crossings.count == 2, size <= side * (1 + 1e-9), !loops || size <= least * 2 {
-                // The chord, where it stays within `least` of the zero set
-                // at its quarters, as Newton's step from each reckons it.
+            if crossings.count == 2, !loops || size <= least * 2 {
                 let a = crossings[0], b = crossings[1]
                 if size <= least * 2 || [0.25, 0.5, 0.75].allSatisfy({ near(a + $0 * (b - a)) }) {
                     return [(piece.point(a), piece.point(b))]
@@ -590,28 +687,9 @@ extension Slab {
             }
             return split(cut).flatMap(inside)
         }
-        // The polygon as half-planes, counter-clockwise: inside is left of
-        // each side.
-        let halfPlanes = polygon.indices.map { k -> (SIMD2<Double>, SIMD2<Double>) in (polygon[k], polygon[(k + 1) % polygon.count]) }
-        func clipped(_ square: [SIMD2<Double>]) -> [SIMD2<Double>] {
-            var cut = square
-            for (a, b) in halfPlanes {
-                let e = b - a
-                cut = clip2D(cut) { e.y * ($0.x - a.x) - e.x * ($0.y - a.y) }
-                if cut.count < 3 { return [] }
-            }
-            return cut
-        }
-        var out: [(SIMD3<Double>, SIMD3<Double>)] = []
-        let i0 = Int((plo.x / side).rounded(.down)), i1 = Int((phi.x / side).rounded(.down))
-        let j0 = Int((plo.y / side).rounded(.down)), j1 = Int((phi.y / side).rounded(.down))
-        for j in j0...j1 {
-            for i in i0...i1 {
-                let x0 = Double(i) * side, y0 = Double(j) * side
-                let cut = clipped([SIMD2(x0, y0), SIMD2(x0 + side, y0), SIMD2(x0 + side, y0 + side), SIMD2(x0, y0 + side)])
-                if cut.count >= 3 { out += inside(cut) }
-            }
-        }
-        return out
+        var cut = piece.polygon
+        cut = clip2D(clip2D(cut) { box.lo.x - $0.x }) { $0.x - box.hi.x }
+        cut = clip2D(clip2D(cut) { box.lo.y - $0.y }) { $0.y - box.hi.y }
+        return cut.count >= 3 ? inside(cut) : []
     }
 }

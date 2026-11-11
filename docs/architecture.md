@@ -98,11 +98,14 @@ line (`Composite.contact(of:)`) in the part's outline style: the points of
 the part with z = H(x, y), H the slab's top. It is solved piece by piece of
 the top, where H is affine, so every point lies on both surfaces, every chord
 on the terrain, and the curve ends exactly on a step of H. On a polyhedron
-each face is solved exactly; on the round torus the curve is the zero set of
-the torus's distance on each piece's plane, found on squares a quarter of a
-cell at most, with every closed loop sought round a critical point of that
-distance. Contact along a face's edge, within the scene's tolerance, is the
-edge, and is not drawn again. The line is tested by its own part as any curve
+each face is solved exactly; on the round torus, upright as any placement
+leaves it, a level piece meets it in circles about its axis, and any other
+piece in the zero set of the torus's distance on its plane, found by passing
+over blocks of cells, the piece and squares where the distance's Lipschitz
+bound shows no zero, so the work goes with the curve's length; every closed
+loop is sought round a critical point of that distance. Contact along a
+face's edge, or a level piece the torus only grazes, within the scene's
+tolerance, is not drawn. The line is tested by its own part as any curve
 on it is, then cut by every other part, the landscape among them: on the
 slab's boundary, it is hidden only where its line of sight goes in.
 
