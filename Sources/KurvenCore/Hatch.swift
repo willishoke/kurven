@@ -59,9 +59,10 @@ public extension Surface {
         if let hatched = hatch(spec.source, in: context, refine: refine) {
             return hatched
         }
-        if case .contour(let field, let levels, let restriction, let faces) = spec.source, !field.isFieldOfF {
+        if case .contour(let field, let levels, let restriction, let faces, let light) = spec.source,
+           !field.isFieldOfF {
             return PolylineSet(paths: contours(of: field, levels, on: faces, restriction: restriction,
-                                               in: context, refine: refine))
+                                               in: context, refine: refine, light: light))
         }
         return derive(spec.source, policy: spec.heightPolicy,
                       region: occluder.region, tiles: occluder.tiles, refine: refine)
@@ -83,8 +84,13 @@ public extension Surface {
         case .file, .contour, .coordinateCurves, .linearCurves, .foldCurves, .trajectory, .edges,
              .hatching(_, .solid):
             return nil
-        case .hatching(_, .graph), .hatching(_, .surface):
-            // Not laid on a curved face; decoding refuses it.
+        case .hatching(let hatching, .graph(let tiled)):
+            // Along a coordinate, cut to the footprint already, every width
+            // step's pieces in turn (`graphHatching(_:tiled:in:refine:)`).
+            return PolylineSet(paths: graphHatching(hatching, tiled: tiled, in: context, refine: refine)
+                .flatMap(\.paths))
+        case .hatching(_, .surface):
+            // A landscape has no parametric surface; decoding refuses it.
             return .empty
         case .hatching(let hatching, .walls(let edges, let endLines, let base, let top)):
             guard let perimeter = context.perimeter else { return .empty }
@@ -100,7 +106,7 @@ public extension Surface {
             // Decoding holds the angle to an axis; one built in code at any
             // other draws nothing.
             guard let axis = DomainAxis(angle: hatching.angle),
-                  case .contour(let field, let levels, let restriction, let faces)
+                  case .contour(let field, let levels, let restriction, let faces, _)
                     = plateauHatching(axis: axis, spacing: hatching.spacing, tiled: tiled) else { return .empty }
             return PolylineSet(paths: contours(of: field, levels, on: faces, restriction: restriction,
                                                in: context, refine: refine))

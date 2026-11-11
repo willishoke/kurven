@@ -962,7 +962,7 @@ func periodicTorusTests() {
         var worst = 0.0, off = 0.0, vertices = 0, singular = 0
         var worstWhere = ""
         for layer in drawing.layers {
-            guard case .contour(let field, let levels, _, _) = layer.spec.source else { continue }
+            guard case .contour(let field, let levels, _, _, _) = layer.spec.source else { continue }
             let coords = layer.paths.coords!
             for (k, c) in coords.enumerated() {
                 vertices += 1
@@ -1071,7 +1071,7 @@ func periodicTorusTests() {
         var loose: [String] = []
         var seam: [(text: String, at: SIMD3<Double>)] = []
         for layer in drawing.layers {
-            guard case .contour(let field, let list, _, _) = layer.spec.source, field == .phase,
+            guard case .contour(let field, let list, _, _, _) = layer.spec.source, field == .phase,
                   let coords = layer.paths.coords else { continue }
             // The cut, ±π, is drawn once.
             levels += list.filter { $0 > -.pi + 1e-9 }.count

@@ -168,7 +168,7 @@ extension Document {
             do { try request.check() } catch { return "\(error)" }
             var names = Set<String>()
             for layer in next.layers {
-                if let why = SurfaceManifest.unsupported(layer.source, on: request) { return "layer '\(layer.name)': \(why)" }
+                if let why = request.unsupported(layer.source) { return "layer '\(layer.name)': \(why)" }
                 guard names.insert(layer.name).inserted else { return "two layers named '\(layer.name)'" }
             }
             return nil

@@ -510,9 +510,12 @@ public enum HeightPolicy: String, Sendable, CaseIterable {
 /// and `v`, or its height. On the graph and a plateau u and v are Re z and
 /// Im z, and the height |f| and h(x); on a wall and a riser, (s, z), the
 /// distance along the line it stands on and the height, which is z again.
-/// A parametric surface and a polyhedron face expose their own.
+/// A parametric surface and a polyhedron face expose their own. `isophote`
+/// is n · l, the outward unit normal against the unit direction toward a
+/// light the layer names, on a curved face that bounds a solid: its level
+/// sets are the isophotes (Koenderink and van Doorn 1980).
 public enum ContourField: String, Sendable, CaseIterable {
-    case magnitude, phase, u, v, height
+    case magnitude, phase, u, v, height, isophote
 
     /// Whether this is one of f's fields, placed by the refiner.
     public var isFieldOfF: Bool { self == .magnitude || self == .phase }
@@ -521,7 +524,7 @@ public enum ContourField: String, Sendable, CaseIterable {
     public var fieldClass: FieldClass {
         switch self {
         case .u, .v: .coordinate
-        case .height: .embedding
+        case .height, .isophote: .embedding
         case .magnitude, .phase: .function
         }
     }
@@ -642,8 +645,11 @@ public enum LayerSource: Sendable, Equatable {
     /// layer's height policy, over the truncation onto a plateau unless the
     /// restriction keeps them below it; a coordinate or the height lies on
     /// its face, where the face puts it
-    /// (`Surface.contours(of:_:on:restriction:in:refine:)`).
-    case contour(field: ContourField, levels: [Double], restriction: Restriction, faces: FaceSelector)
+    /// (`Surface.contours(of:_:on:restriction:in:refine:light:)`). `light`,
+    /// the direction toward a light, is an isophote's, and only an
+    /// isophote's: not normalized, as a half-Lambert tone keeps its own.
+    case contour(field: ContourField, levels: [Double], restriction: Restriction, faces: FaceSelector,
+                 light: SIMD3<Double>? = nil)
     /// Hatching (`Hatching`) laid on `faces`: a landscape's walls, risers
     /// or plateaus, or every face of a solid, which a polyhedron's manifest
     /// takes (`PolyhedronManifest`). The landscape's hatchings are
@@ -716,14 +722,11 @@ public enum LayerSource: Sendable, Equatable {
         }
         if onSurface {
             switch kind {
-            case "contour", "coordinateCurves", "linearCurves", "foldCurves", "trajectory":
+            case "contour", "coordinateCurves", "linearCurves", "foldCurves", "trajectory", "hatching":
                 break
             case "file":
                 throw ManifestError.unsupported("a dumped layer on a parametric surface: its curves are drawn "
                                                 + "from its request, not stored")
-            case "hatching":
-                throw ManifestError.unsupported("hatching on a parametric surface: it is curved, and hatching "
-                                                + "is laid on flat faces")
             default:
                 throw ManifestError.unsupported("a \(kind) layer on a parametric surface: it is one face, with no "
                                                 + "walls, truncation edge or edges of a solid")
@@ -750,14 +753,39 @@ public enum LayerSource: Sendable, Equatable {
                 throw ManifestError.unsupported("belowTruncation on the \(faces.name): it is membership in the graph, "
                                                 + "and holds nothing of another face")
             }
+            let light: SIMD3<Double>?
+            if field == .isophote {
+                let l = try o.doubles("light", "LayerSource.contour")
+                guard l.count == 3, Tone.hasDirection(SIMD3(l[0], l[1], l[2])) else {
+                    throw JSONError.wrongType("light", expected: "three numbers, not all zero",
+                                              found: "LayerSource.contour")
+                }
+                light = SIMD3(l[0], l[1], l[2])
+            } else {
+                if o["light"] != nil {
+                    throw ManifestError.unsupported("a light on a contour of \(field.rawValue): only an isophote "
+                                                    + "has one")
+                }
+                light = nil
+            }
             self = .contour(field: field, levels: try o.doubles("levels", "LayerSource.contour"),
-                            restriction: restriction, faces: faces)
+                            restriction: restriction, faces: faces, light: light)
         case "hatching" where geometry == .polyhedron:
             let faces = try FaceSelector(json: o.value("faces", "LayerSource.hatching"))
             guard faces == .solid else {
                 throw ManifestError.unsupported("hatching on the \(faces.name) of a polyhedron: it is laid on "
                                                 + "the solid's faces, `solid`")
             }
+            let hatching = try Hatching(fields: o)
+            if let why = faces.unsupported(hatching) { throw ManifestError.unsupported(why) }
+            self = .hatching(hatching, faces: faces)
+        case "hatching" where onSurface:
+            let faces = try FaceSelector(json: o.value("faces", "LayerSource.hatching"))
+            guard faces == .surface else {
+                throw ManifestError.unsupported("hatching on the \(faces.name) of a parametric surface: the surface "
+                                                + "is one face, `surface`")
+            }
+            if o["step"] != nil { throw LayerSource.curvedStep }
             let hatching = try Hatching(fields: o)
             if let why = faces.unsupported(hatching) { throw ManifestError.unsupported(why) }
             self = .hatching(hatching, faces: faces)
@@ -825,6 +853,13 @@ public enum LayerSource: Sendable, Equatable {
     private static let landscapeStep = ManifestError.unsupported(
         "a step on a landscape's hatching: a line is its two ends on a wall or a riser, and has a vertex "
             + "at each grid line on a plateau, so schema 3 writes none")
+    /// A hatch line on a curved face has a vertex wherever it crosses a
+    /// sample of the face's parameter rectangle, as a contour of the
+    /// coordinate across it does, and its tone is read there, so there is no
+    /// step to write either.
+    private static let curvedStep = ManifestError.unsupported(
+        "a step on a curved face's hatching: a line has a vertex wherever it crosses a sample of the face's "
+            + "parameter rectangle, so schema 3 writes none")
     private static let wallEdgesStep = ManifestError.unsupported(
         "a step on wall edges: an edge up a corner is its two ends, and schema 3 writes none")
 
@@ -832,16 +867,17 @@ public enum LayerSource: Sendable, Equatable {
         switch self {
         case .file(let v, let o):
             .object(["kind": .string("file"), "vertices": .string(v), "offsets": .string(o)])
-        case .contour(let field, let levels, let restriction, let faces):
+        case .contour(let field, let levels, let restriction, let faces, let light):
             .object(["kind": .string("contour"), "field": .string(field.rawValue),
                      "levels": .array(levels.map(JSONValue.double)),
-                     "restriction": restriction.json, "faces": faces.json])
+                     "restriction": restriction.json, "faces": faces.json]
+                .merging(light.map { ["light": .array([.double($0.x), .double($0.y), .double($0.z)])] } ?? [:]) { $1 })
         case .hatching(let hatching, let faces):
             .object(hatching.fields.merging(["kind": .string("hatching"), "faces": faces.json]) { $1 }
                 .filter { key, _ in
                     switch faces {
-                    case .graph, .plateaus, .walls, .risers: key != "step"
-                    case .surface, .solid: true
+                    case .graph, .plateaus, .walls, .risers, .surface: key != "step"
+                    case .solid: true
                     }
                 })
         case .wallEdges(let edges, let base):
@@ -883,6 +919,49 @@ public enum LayerSource: Sendable, Equatable {
     public static func plateauHatching(axis: DomainAxis, spacing: Double, tiled: Bool = false) -> LayerSource {
         .hatching(Hatching(angle: axis.angle, spacing: spacing),
                   faces: .plateaus(tiled: tiled))
+    }
+
+    /// Its kind as a manifest names it, an isophote and a half-Lambert tone
+    /// by what they are.
+    public var kind: String {
+        switch self {
+        case .file: "file"
+        case .contour(.isophote, _, _, _, _): "isophotes"
+        case .contour: "contour"
+        case .hatching(let hatching, _): if case .halfLambert = hatching.tone { "half-Lambert tone" } else { "hatching" }
+        case .wallEdges: "wallEdges"
+        case .truncationEdge: "truncationEdge"
+        case .coordinateCurves: "coordinateCurves"
+        case .linearCurves: "linearCurves"
+        case .foldCurves: "foldCurves"
+        case .trajectory: "trajectory"
+        case .edges: "edges"
+        }
+    }
+
+    /// The direction toward the light the layer is read under: an
+    /// isophote's, or a hatching's half-Lambert tone's. Nil for any other.
+    public var light: SIMD3<Double>? {
+        switch self {
+        case .contour(.isophote, _, _, _, let light): light
+        case .hatching(let hatching, _): if case .halfLambert(let light) = hatching.tone { light } else { nil }
+        default: nil
+        }
+    }
+
+    /// The same layer under a light toward `light`, or nil for a layer read
+    /// under none (`light`).
+    public func lit(_ light: SIMD3<Double>) -> LayerSource? {
+        switch self {
+        case .contour(.isophote, let levels, let restriction, let faces, _?):
+            return .contour(field: .isophote, levels: levels, restriction: restriction, faces: faces, light: light)
+        case .hatching(var hatching, let faces):
+            guard case .halfLambert = hatching.tone else { return nil }
+            hatching.tone = .halfLambert(light: light)
+            return .hatching(hatching, faces: faces)
+        default:
+            return nil
+        }
     }
 
     /// The axis plateau hatching runs along, or nil for any other source.
@@ -942,9 +1021,16 @@ public struct LayerSpec: Sendable, Equatable {
             throw ManifestError.unknownKind(policyText, of: "HeightPolicy",
                                             known: HeightPolicy.allCases.map(\.rawValue))
         }
+        let width = try o.double("width", "LayerSpec")
+        // A polyhedron's manifest refuses one in its own words
+        // (`PolyhedronManifest.unsupported(_:on:)`).
+        guard geometry == .polyhedron || (width.isFinite && width >= 0) else {
+            throw ManifestError.invalid("layer '\((try? o.string("name", "LayerSpec")) ?? "")': a width must be a "
+                                        + "number not below 0, not \(width)")
+        }
         self.init(name: try o.string("name", "LayerSpec"), role: role,
                   source: try LayerSource(json: o.value("source", "LayerSpec"), on: geometry),
-                  width: try o.double("width", "LayerSpec"),
+                  width: width,
                   heightPolicy: policy,
                   color: (try? o.string("color", "LayerSpec")) ?? "#000000",
                   clipped: try o.bool("clipped", "LayerSpec", default: true))
@@ -1221,8 +1307,15 @@ public struct SurfaceManifest: Sendable, Equatable {
     /// below a truncation the function does not have, a trajectory on a
     /// torus no flow winds round.
     public static func unsupported(_ source: LayerSource, on request: SurfaceRequest) -> String? {
+        // n · l needs the surface's outward side, which a surface bounding
+        // no solid has not.
+        if source.light != nil, request.boundsSolid == false {
+            return "\(source.kind) on a surface that bounds no solid, which has no outward normal"
+        }
         switch source {
-        case .contour(let field, _, let restriction, _):
+        case .contour(.isophote, _, _, _, nil):
+            return "an isophote with no light to read n · l by"
+        case .contour(let field, _, let restriction, _, _):
             if field.isFieldOfF, !request.paintsFunction {
                 return "a contour of \(field.rawValue) on a surface that paints no function"
             }

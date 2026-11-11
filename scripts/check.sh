@@ -356,6 +356,16 @@ paint() {
     undone solid-hatching "$c/polyhedron_frame.kurven" 300,250 --add hatching
     undone solid-strokes "$c/polyhedron_frame.kurven" 300,250 --strokes hatching=30
     undone solid-remove "$c/polyhedron_frame.kurven" 300,250 --remove hatching
+    undone isophotes "$dir/torus.kurven" 300,600 --add surface_isophote
+    undone tone "$dir/torus.kurven" 300,600 --add surface_tone
+    undone graph-isophotes "$c/landscape.kurven" 300,500 --add graph_isophote
+    undone graph-tone "$c/landscape.kurven" 300,500 --add graph_tone
+    "$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --add surface_isophote --add surface_tone \
+        --save "$dir/lit.kurven" >/dev/null || return 1
+    undone light "$dir/lit.kurven" 300,600 --light surface_isophote=0,0,1
+    undone tone-light "$dir/lit.kurven" 300,600 --light surface_tone=1,-1,1.5
+    undone tone-remove "$dir/lit.kurven" 300,600 --remove surface_tone
+    undone isophotes-remove "$dir/lit.kurven" 300,600 --remove surface_isophote
     [ "$failed" = 0 ] || return 1
     # A history, saved after each edit and at each undo.
     history() {
@@ -469,6 +479,88 @@ paint() {
     printf '%s\n' "$out" | grep -q 'refused: a period must be a positive number, not 0.0' || { printf '%s\n' "$out"; return 1; }
 }
 step "the app paints the picked face, and undoes and redoes every kind of edit, with no window" paint
+
+# Light on curved faces, with no window: isophotes and half-Lambert tone
+# added from the Add menu on the torus and on a landscape's graph, a light
+# set as the sliders set it, saved, and baked by the app and by `bake`: the
+# same drawing byte for byte, the tone in a stroke layer per width. The
+# CLI's flags add the same layers, hatched a 48th of the coordinate across
+# by default; a light with no direction, a tone along no coordinate, a width
+# not positive, and a flag with no layer to apply it to are refused, saying
+# why. A relief lit while it bounds a solid is not raised past the tube's
+# reach, where it would bound none: the step is refused, and a drag rests
+# at the last step that bounds one.
+shading() {
+    local dir="$PACKAGE/.build/shading-check" c="$ROOT/tests/fixtures/contract" out
+    rm -rf "$dir" && mkdir -p "$dir" || return 1
+    "$BIN/kurven-cli" surface torus --save "$dir/torus.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/torus.kurven" --pick 300,600 --add surface_isophote --add surface_tone \
+        --light surface_tone=1,-1,1.5 --save "$dir/lit.kurven" --bake "$dir/lit-app.svg" >/dev/null &&
+    "$BIN/kurven-cli" bake "$dir/lit.kurven" --dump "$dir/lit" -o "$dir/lit-cli.svg" >/dev/null &&
+    cmp "$dir/lit-app.svg" "$dir/lit-cli.svg" || { echo "the torus lit: the app's bake is not the CLI's"; return 1; }
+    grep -q '"field":"isophote"' "$dir/lit.kurven/manifest.json" &&
+    grep -q '"light":\[1.0,-1.0,1.5\]' "$dir/lit.kurven/manifest.json" &&
+    grep -q '"layers":\[.*"surface_tone 1/4",.*"surface_tone 4/4"' "$dir/lit.frame.json" ||
+        { echo "the torus lit: not the layers asked for, or the tone not in a layer per width"; return 1; }
+    "$BIN/KurvenApp" "$c/landscape.kurven" --pick 300,500 --add graph_isophote --add graph_tone \
+        --light graph_isophote=0.3,0.2,1 --save "$dir/graph.kurven" --bake "$dir/graph-app.svg" >/dev/null &&
+    "$BIN/kurven-cli" bake "$dir/graph.kurven" -o "$dir/graph-cli.svg" >/dev/null &&
+    cmp "$dir/graph-app.svg" "$dir/graph-cli.svg" &&
+    grep -q '"light":\[0.3,0.2,1.0\]' "$dir/graph.kurven/manifest.json" ||
+        { echo "the graph lit: the app's bake is not the CLI's, or the light not the one set"; return 1; }
+    "$BIN/kurven-cli" surface torus --isophotes -0.75,-0.5,-0.25,0,0.25,0.5,0.75 --hatching half-lambert \
+        --width-steps 4 --spacing 0.1308996938995747 --hatch-width 0.4 --isophote-width 0.2 \
+        --save "$dir/flags.kurven" -o "$dir/flags.svg" >/dev/null &&
+    "$BIN/kurven-cli" bake "$dir/flags.kurven" -o "$dir/flags-bake.svg" >/dev/null &&
+    cmp "$dir/flags.svg" "$dir/flags-bake.svg" || { echo "surface torus --isophotes --hatching: not what its bundle bakes"; return 1; }
+    for refused in "--isophotes 0.5 --light 0,0,0|--light wants X,Y,Z" \
+                   "--hatching half-lambert --angle 30|runs along a coordinate" \
+                   "--hatching turing|unknown tone 'turing'" \
+                   "--isophotes 0.5 --isophote-width -1|--isophote-width wants a positive number" \
+                   "--hatching half-lambert --hatch-width 0|--hatch-width wants a positive number" \
+                   "--light 0,0,1|--light applies to --isophotes or --hatching" \
+                   "--isophotes 0.5 --angle 90|--angle applies to --hatching" \
+                   "--isophotes 0.5 --width-steps 4|--width-steps applies to --hatching" \
+                   "--spacing 0.2|--spacing applies to --hatching" \
+                   "--hatching uniform --isophote-width 0.2|--isophote-width applies to --isophotes"; do
+        out=$("$BIN/kurven-cli" surface torus ${refused%|*} --save "$dir/refused.kurven" 2>&1) &&
+            { echo "surface torus ${refused%|*} was drawn"; return 1; }
+        printf '%s\n' "$out" | grep -q -- "${refused#*|}" && [ ! -e "$dir/refused.kurven" ] ||
+            { printf '%s\n' "$out"; echo "surface torus ${refused%|*} was not refused, saying why, with nothing written"; return 1; }
+    done
+    # By default a line every 48th of the coordinate across: v's along u,
+    # u's along v, which on sn's rectangle, 4K by 2K', differ.
+    "$BIN/kurven-cli" surface sn --grid 120 --hatching uniform --save "$dir/along-u.kurven" >/dev/null &&
+    "$BIN/kurven-cli" surface sn --grid 120 --hatching uniform --angle 90 --save "$dir/along-v.kurven" >/dev/null &&
+    [ "$(grep -o '"spacing":[^,}]*' "$dir/along-u.kurven/manifest.json")" = '"spacing":0.07294807512148968' ] &&
+    [ "$(grep -o '"spacing":[^,}]*' "$dir/along-v.kurven/manifest.json")" = '"spacing":0.16627523147206077' ] ||
+        { echo "the hatching's default spacing is not a 48th of the coordinate across"; return 1; }
+    # A relief lit while it bounds a solid: raised past the tube's reach it
+    # would bound none, and the app refuses the step, saying why, with
+    # nothing written; a drag rests at its last step that bounds one, one
+    # undo from where it began.
+    "$BIN/kurven-cli" surface sn --relief 0.3 --grid 200 --isophotes -0.5,0,0.5 --save "$dir/r03.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/r03.kurven" --save "$dir/r03-again.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/r03.kurven" --relief 0.33 --save "$dir/r033.kurven" >/dev/null || return 1
+    out=$("$BIN/KurvenApp" "$dir/r03.kurven" --relief 0.4 --save "$dir/r04.kurven" 2>&1) &&
+        { echo "the app raised a lit relief past the tube's reach"; return 1; }
+    printf '%s\n' "$out" | grep -q "isophotes on a surface that bounds no solid" && [ ! -e "$dir/r04.kurven" ] ||
+        { printf '%s\n' "$out"; echo "a lit relief raised past its reach was not refused, saying why, with nothing written"; return 1; }
+    out=$("$BIN/KurvenApp" "$dir/r03.kurven" --drag relief=0.31,0.33,0.4 --save "$dir/r-dragged.kurven" \
+        --undo --save "$dir/r-undone.kurven" 2>&1) &&
+    printf '%s\n' "$out" | grep -q 'refused — .*isophotes on a surface that bounds no solid' &&
+    diff -r "$dir/r-dragged.kurven" "$dir/r033.kurven" >/dev/null &&
+    diff -r "$dir/r-undone.kurven" "$dir/r03-again.kurven" >/dev/null ||
+        { printf '%s\n' "$out"; echo "a drag of a lit relief past its reach did not rest at 0.33, one undo from where it began"; return 1; }
+    out=$("$BIN/kurven-cli" surface sn --relief 0.4 --grid 200 --isophotes 0.5 --save "$dir/r04.kurven" 2>&1) &&
+        { echo "surface sn --relief 0.4 --isophotes was drawn"; return 1; }
+    printf '%s\n' "$out" | grep -q "bounds no solid" && [ ! -e "$dir/r04.kurven" ] ||
+        { printf '%s\n' "$out"; echo "surface sn --relief 0.4 --isophotes was not refused, saying why"; return 1; }
+    out=$("$BIN/KurvenApp" "$dir/lit.kurven" --pick 300,600 --light folds=0,0,1 2>&1) &&
+        { echo "a light was set on the folds"; return 1; }
+    printf '%s\n' "$out" | grep -q "no layer 'folds' read under a light" || { printf '%s\n' "$out"; return 1; }
+}
+step "the app lights a curved face with isophotes and half-Lambert tone, undoes it, and bakes it as the CLI does, with no window" shading
 
 # Picking, with no window: a click at a pixel reads the depth the frame left
 # there, takes it back through the camera, and names the face under it. The

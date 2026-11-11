@@ -44,14 +44,14 @@ extension Document {
         // A contour whose selector names the surface lies on it, the
         // relief's truncation edge among them, though its role is an
         // outline's and visibility treats it as one.
-        if case .contour(_, _, _, .surface) = spec.source { return pick.face == .surface }
+        if case .contour(_, _, _, .surface, _) = spec.source { return pick.face == .surface }
         guard geometry.face(of: spec) == pick.face.kind else { return false }
         switch spec.source {
-        case .contour(_, _, _, .walls(let edges, _, _, _)), .hatching(_, .walls(let edges, _, _, _)),
+        case .contour(_, _, _, .walls(let edges, _, _, _), _), .hatching(_, .walls(let edges, _, _, _)),
              .wallEdges(let edges, _):
             guard case .wall(let edge) = pick.face else { return false }
             return edges.contains(edge)
-        case .contour(_, _, _, let faces), .hatching(_, let faces):
+        case .contour(_, _, _, let faces, _), .hatching(_, let faces):
             // A riser at a tile boundary stands between two copies, which
             // only risers selected on every tile reach.
             if case .tileBoundaryRiser = pick.face { return Self.tiled(faces) == true }
@@ -139,6 +139,22 @@ extension Document {
         func catalog(_ spec: LayerSpec, _ label: String) {
             choices.append(PaintChoice(label: label, spec: spec))
         }
+        /// Isophotes at seven levels of n · l, and half-Lambert tone along u
+        /// at `spacing`, under the light a half-Lambert solid is drawn
+        /// under: on a curved face with an outward side.
+        func shading(on faces: FaceSelector, spacing: Double) {
+            guard !face.isFlat, face.copies.first?.outward != nil, spacing > 0, spacing.isFinite else { return }
+            catalog(LayerSpec(name: "\(faces.name)_isophote", role: .scaffold,
+                              source: .contour(field: .isophote, levels: Self.isophoteLevels, restriction: .all,
+                                               faces: faces, light: Self.light),
+                              width: 0.2, heightPolicy: .surface),
+                    "Isophotes")
+            catalog(LayerSpec(name: "\(faces.name)_tone", role: .scaffold,
+                              source: .hatching(Hatching(angle: 0, spacing: spacing, tone: .halfLambert(light: Self.light),
+                                                         widthSteps: 4), faces: faces),
+                              width: 0.4, heightPolicy: .surface),
+                    "Half-Lambert tone")
+        }
 
         switch state {
         case .ready(.landscape(let bundle)):
@@ -161,11 +177,17 @@ extension Document {
                 for (name, label) in [("mag_major", "|f| at the major levels"), ("mag_minor", "|f| at the minor levels"),
                                       ("ang_major", "arg f at the major levels"), ("ang_minor", "arg f at the minor levels")] {
                     guard var spec = template(name),
-                          case .contour(let field, let levels, let restriction, _) = spec.source else { continue }
-                    spec.source = .contour(field: field, levels: levels, restriction: restriction, faces: .graph(tiled: tiled))
+                          case .contour(let field, let levels, let restriction, _, let light) = spec.source else { continue }
+                    spec.source = .contour(field: field, levels: levels, restriction: restriction, faces: .graph(tiled: tiled),
+                                           light: light)
                     catalog(spec, label)
                 }
                 contours([.u, .v, .height], on: .graph(tiled: tiled))
+                // Hatched at the plateaus' spacing, so its lines continue
+                // theirs across the truncation edge.
+                let plateau: Double? = if case .hatching(let h, _)? = template("plateau_hatch")?.source { h.spacing } else { nil }
+                shading(on: .graph(tiled: tiled),
+                        spacing: plateau ?? max(abs(m.domain.real.length), abs(m.domain.imag.length)) / 70)
                 if !has(.foldCurves), let folds = template("folds") { catalog(folds, "Fold curves") }
             case .plateau:
                 if var spec = template("plateau_hatch"), case .hatching(let hatching, _) = spec.source {
@@ -201,6 +223,7 @@ extension Document {
                 }
             }
             contours([.u, .v, .height], on: .surface)
+            shading(on: .surface, spacing: abs(face.domain.v.range.length) / 48)
             if request.lines == nil {
                 catalog(LayerSpec(name: "lines", role: .scaffold, source: .coordinateCurves(u: 36, v: 18),
                                   width: request.style.lines, heightPolicy: .surface), "Coordinate curves")
@@ -332,6 +355,18 @@ extension Document {
         edit("Reset Levels of \(name)") { $0.levelCounts.removeValue(forKey: name) }
     }
 
+    /// Set the light a layer is read under (`LayerSource.lit(_:)`) as its
+    /// sliders do: a step of a drag, or, with none under way, an edit of its
+    /// own.
+    func paintLight(_ light: SIMD3<Double>, ofLayer name: String) {
+        editing("Light of \(name)") {
+            guard var next = edited, let index = next.layers.firstIndex(where: { $0.name == name }),
+                  let source = next.layers[index].source.lit(light) else { return }
+            next.layers[index].source = source
+            setEdited(next)
+        }
+    }
+
     /// Run the plateaus' hatching along an axis.
     func paintAxis(_ axis: DomainAxis) {
         editing("Hatching along \(axis == .real ? "Re" : "Im")") { setPlateauHatchAxis(axis) }
@@ -350,8 +385,17 @@ extension Document {
         case .u: "u"
         case .v: "v"
         case .height: "the height"
+        case .isophote: "n · l"
         }
     }
+
+    /// The levels an isophote layer is added at: n · l at every quarter
+    /// strictly between −1 and 1.
+    static let isophoteLevels = [-0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75]
+
+    /// The light an isophote or a half-Lambert tone is added under: the one
+    /// `kurven-cli surface solid --hatching half-lambert` draws a solid under.
+    static let light = SIMD3<Double>(-0.4, -0.6, 0.7)
 
     /// Seven levels evenly across a field's range on a face, its ends left
     /// out: a coordinate's from the face's parameter rectangle, the height's
@@ -360,6 +404,7 @@ extension Document {
         let (u, v) = face.domain
         var lo = Double.infinity, hi = -Double.infinity
         switch field {
+        case .isophote: return isophoteLevels
         case .u: (lo, hi) = (u.range.lo, u.range.hi)
         case .v: (lo, hi) = (v.range.lo, v.range.hi)
         case .height, .magnitude, .phase:

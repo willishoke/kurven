@@ -327,6 +327,14 @@ width is set by a tone (uniform, Turing's pattern, or the darkness under half-La
 line clipped to the face's pieces and joined across the diagonals. The
 details and the picture frame are in [solids.md](solids.md).
 
+A curved face, the graph or a parametric surface, is hatched along one of
+its coordinates instead, the lines spaced in the other: lines at an angle
+are evenly spaced only where the parameter rectangle is an isometry. The
+tone is read along each line from the normal there, and its width step
+changes where the tone crosses a step, so under half-Lambert on the
+isophotes, the level sets of n · l, which any curved face also draws as a
+contour (`Face.coordinateHatching`, `ContourField.isophote`).
+
 ## The oblique projection
 
 The plates are **oblique parallel projections**. The imaginary axis is

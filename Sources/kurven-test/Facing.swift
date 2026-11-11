@@ -1089,7 +1089,7 @@ func riserFaceTests() {
             if c.tiles.count > 1 { manifest.occluder.walls = .perimeter(riserPerimeter([(-0.5, -1), (3.5, -1), (3.5, 1), (-0.5, 1)]), base: 0) }
             for k in manifest.layers.indices where c.tiles.count > 1 {
                 switch manifest.layers[k].source {
-                case .contour(let field, let levels, let restriction, _):
+                case .contour(let field, let levels, let restriction, _, _):
                     manifest.layers[k].source = .contour(field: field, levels: levels, restriction: restriction, faces: .graph(tiled: true))
                 case .hatching(let hatching, .plateaus): manifest.layers[k].source = .hatching(hatching, faces: .plateaus(tiled: true))
                 case .hatching(let hatching, .risers(_, let endLines)):

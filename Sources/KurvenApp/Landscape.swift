@@ -359,7 +359,7 @@ extension Document {
             guard isLandscape, LandscapeStyle.ceiling(of: truncation) != nil else { return }
             let levels = LandscapeStyle.levels(under: truncation)
             for i in manifest.layers.indices {
-                guard case .contour(let field, _, let restriction, let faces)
+                guard case .contour(let field, _, let restriction, let faces, let light)
                         = manifest.layers[i].source else { continue }
                 let chosen: [Double]
                 switch manifest.layers[i].name {
@@ -368,7 +368,7 @@ extension Document {
                 default: continue
                 }
                 manifest.layers[i].source = .contour(field: field, levels: chosen,
-                                                     restriction: restriction, faces: faces)
+                                                     restriction: restriction, faces: faces, light: light)
             }
         }
     }

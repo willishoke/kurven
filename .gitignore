@@ -13,6 +13,7 @@ venv/
 !docs/**/*.svg
 !docs/**/*.png
 !tests/fixtures/composite/*.svg
+!tests/fixtures/fields/*.svg
 
 .ipynb_checkpoints/
 .DS_Store
@@ -21,6 +22,7 @@ venv/
 !tests/fixtures/contract/*.kurven/
 !tests/fixtures/expr/*.kurven/
 !tests/fixtures/hatch/*.kurven/
+!tests/fixtures/fields/*.kurven/
 
 .build/
 *.xcodeproj/

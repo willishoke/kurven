@@ -712,7 +712,7 @@ public extension Surface {
         case .phase:
             guard let phase else { return nil }
             samples = phase
-        case .u, .v, .height: return nil
+        case .u, .v, .height, .isophote: return nil
         }
         return ScalarField(samples: samples) { level, paths in
             let isCut = tag == .phase && Contour.isCut(level)
@@ -753,7 +753,7 @@ public extension Surface {
     /// way the Jahnke-Emde plates draw it.
     func derive(_ source: LayerSource, policy: HeightPolicy, region: Region,
                 tiles: [Affine2], refine: ContourRefine? = nil) -> PolylineSet<WorldSpace> {
-        guard case .contour(let tag, let levels, let restriction, .graph(let tiled)) = source,
+        guard case .contour(let tag, let levels, let restriction, .graph(let tiled), _) = source,
               tag.isFieldOfF, let rectangle = parameterRectangle else {
             return .empty
         }

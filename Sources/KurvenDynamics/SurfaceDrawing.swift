@@ -313,7 +313,7 @@ public struct SurfaceDrawing: Sendable {
         let sameRectangle = previous.map { $0.surface.u == surface.u && $0.surface.v == surface.v } ?? false
         let sameSurface = previous?.content == content
         func carried(_ spec: LayerSpec) -> PolylineSet<WorldSpace>? {
-            guard case .contour(let field, _, _, _) = spec.source,
+            guard case .contour(let field, _, _, _, _) = spec.source,
                   field.fieldClass == .coordinate ? sameRectangle : field.fieldClass == .embedding && sameSurface,
                   let old = previous?.layers.first(where: { $0.spec.source == spec.source }),
                   let coords = old.paths.coords else { return nil }
@@ -322,7 +322,7 @@ public struct SurfaceDrawing: Sendable {
                                coords: coords)
         }
         let ofF = specs.filter { spec in
-            if drawn(spec) == nil, case .contour(let field, _, _, _) = spec.source { field.isFieldOfF } else { false }
+            if drawn(spec) == nil, case .contour(let field, _, _, _, _) = spec.source { field.isFieldOfF } else { false }
         }
         // On a surface with no function they are refused below, one by one.
         let placed = ofF.isEmpty ? [] : contours?(ofF) ?? []
@@ -367,7 +367,7 @@ public struct SurfaceDrawing: Sendable {
 
     /// The curves of a layer the request does not draw, on this surface.
     private func curves(_ spec: LayerSpec) throws -> PolylineSet<WorldSpace> {
-        if let why = SurfaceManifest.unsupported(spec.source, on: request) {
+        if let why = request.unsupported(spec.source) {
             throw ManifestError.unsupported("layer '\(spec.name)': \(why)")
         }
         switch spec.source {
@@ -380,7 +380,27 @@ public struct SurfaceDrawing: Sendable {
         case .trajectory:
             guard let torus, case .forced(_, _, _, _, _, _, let turns) = request.shape else { return .empty }
             return torus.trajectory(on: surface, turns: turns)
-        case .contour(let field, let levels, _, .surface) where !field.isFieldOfF:
+        case .contour(.isophote, _, _, _, nil):
+            // Refused above (`SurfaceManifest.unsupported`), and here again
+            // in so many words: never drawn as another field's contours.
+            throw ManifestError.unsupported("layer '\(spec.name)': an isophote with no light to read n · l by")
+        case .contour(.isophote, let levels, _, .surface, let light?):
+            // A forced torus bounds a solid only where its revolution is
+            // embedded, which its build decides.
+            guard surface.outward != nil else {
+                throw ManifestError.unsupported("layer '\(spec.name)': isophotes on a surface that bounds no solid, "
+                                                + "which has no outward normal")
+            }
+            return surface.isophotes(light: light, levels)
+        case .hatching(let hatching, .surface):
+            if case .halfLambert = hatching.tone, surface.outward == nil {
+                throw ManifestError.unsupported("layer '\(spec.name)': half-Lambert tone on a surface that bounds "
+                                                + "no solid, which has no outward normal")
+            }
+            let steps = surface.coordinateHatching(hatching)
+            return PolylineSet(paths: steps.flatMap { step in (0..<step.paths.count).map { Array(step.paths[path: $0]) } },
+                               coords: steps.flatMap { step in (0..<step.paths.count).map { Array(step.paths.coords(path: $0)!) } })
+        case .contour(let field, let levels, _, .surface, _) where !field.isFieldOfF:
             let face = surface.face, map = surface.map
             let value: @Sendable (P2<ParamSpace>) -> Double = switch field {
             case .u: { $0.x }
@@ -453,6 +473,39 @@ public struct FunctionRefusal: Error, CustomStringConvertible, Equatable {
 }
 
 public extension SurfaceRequest {
+    /// The sides of the surface's parameter rectangle: a whole turn each
+    /// way on a torus of revolution and a forced torus, the rectangle of
+    /// periods of sn or a periodic function, and in relief sn's rectangle
+    /// times its repeats.
+    var rectangle: SIMD2<Double> {
+        switch shape {
+        case .torus, .forced: return SIMD2(2 * .pi, 2 * .pi)
+        case .sn(let m, _, _, _): return SIMD2(4 * Jacobi.quarterPeriod(m), 2 * Jacobi.quarterPeriod(1 - m))
+        case .periodic(_, let p, _, _, _): return p
+        case .relief(let m, _, _, _, let k, _, _, _, _):
+            return SIMD2(4 * Jacobi.quarterPeriod(m) * Double(k.x), 2 * Jacobi.quarterPeriod(1 - m) * Double(k.y))
+        }
+    }
+
+    /// Why a layer cannot be drawn on the surface this request builds, or
+    /// nil: what its manifest refuses (`SurfaceManifest.unsupported`), and
+    /// hatching whose lines would hold more vertices than a layer does, a
+    /// line a vertex at every sample along it (`sampleBound`) and a line
+    /// every spacing across. Asked before an edit is taken, so the window
+    /// refuses what the build would, and by the build itself.
+    func unsupported(_ source: LayerSource) -> String? {
+        if let why = SurfaceManifest.unsupported(source, on: self) { return why }
+        guard case .hatching(let hatching, .surface) = source, let axis = DomainAxis(angle: hatching.angle) else {
+            return nil
+        }
+        let alongU = axis == .real
+        let lines = max(1, (abs(alongU ? rectangle.y : rectangle.x) / hatching.spacing).rounded())
+        let vertices = lines * Double((alongU ? sampleBound.u : sampleBound.v) + 1)
+        guard vertices > Double(Self.maxVertices) else { return nil }
+        return "hatching every \(hatching.spacing) would take " + String(format: "%.3g", vertices)
+            + " vertices, more than the \(Self.maxVertices) a layer holds"
+    }
+
     /// Whether a function can be painted on the surface: a round torus,
     /// plain or carrying one already. A forced torus is fitted to a flow,
     /// and sn in relief is built from sn.

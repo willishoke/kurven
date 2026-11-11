@@ -85,8 +85,8 @@ func paintTests() {
                      && restyledOnly.layers.map(\.paths) == fewerFresh.layers.map(\.paths),
                      "an edit that keeps the surface keeps the height's contours, and draws what it draws afresh")
         Check.expect(ContourField.allCases.map(\.fieldClass) == [.function, .function, .coordinate, .coordinate,
-                                                                 .embedding],
-                     "|f| and arg f are the function's, u and v coordinates, the height the embedding's")
+                                                                 .embedding, .embedding],
+                     "|f| and arg f are the function's, u and v coordinates, the height and an isophote the embedding's")
 
         // sn's torus sizes its tube's samples by its radii, so a radius
         // moves its rectangle's samples and a coordinate is contoured again.

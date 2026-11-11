@@ -34,6 +34,9 @@ import KurvenMath
 ///     composite/ the cubic landscape of expr/ on its grid with the
 ///                contract's cube, torus and frame standing on it, drawn as
 ///                `kurven-cli scene --no-refine` draws them.
+///     fields/    the round torus's isophotes, the torus hatched along u in
+///                half-Lambert widths, and isophotes on the cubic landscape's
+///                graph on f: each a bundle and its drawing.
 ///
 /// Some files in these sets are *inputs*, not answers: the seeded noise in the
 /// contract bundles' dumped layers, the camera's point cloud, and the clip
@@ -56,6 +59,7 @@ enum GoldenFixtures {
         try hatch(root.appendingPathComponent("hatch"))
         try landscapes(root.appendingPathComponent("expr"))
         try composites(root)
+        try fields(root.appendingPathComponent("fields"))
     }
 
     // MARK: shared
@@ -651,6 +655,55 @@ extension GoldenFixtures {
     }
 }
 
+extension GoldenFixtures {
+    /// Isophotes and half-Lambert tone on curved faces, under the light a
+    /// half-Lambert solid is drawn under: the round torus's isophotes at
+    /// every quarter of n · l, the torus hatched along u in eight widths, and
+    /// isophotes on the cubic landscape's graph, each a bundle and its
+    /// drawing as `Scene.visibleLayers` draws it, with no depth buffer: the
+    /// landscape on f, as `bake` draws it.
+    static func fields(_ dir: URL) throws {
+        try directory(dir)
+        let light = SIMD3<Double>(-0.4, -0.6, 0.7)
+        let levels = [-0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75]
+        let folds = LayerSpec(name: "folds", role: .outline, source: .foldCurves, width: 0.6, heightPolicy: .surface)
+        let torus = SurfaceRequest(.torus(major: 2, minor: 1), name: "torus")
+        func surface(_ name: String, _ layer: LayerSpec) throws {
+            let url = dir.appendingPathComponent("\(name).kurven")
+            try directory(url)
+            try text(SurfaceManifest(surface: torus, layers: [layer, folds], presets: [SurfaceRequest.preset],
+                                     provenance: Provenance(function: "torus", example: "fields", params: [:],
+                                                            cpuCount: 1, gitSha: gitSha)).canonicalJSON,
+                     to: url.appendingPathComponent("manifest.json"))
+        }
+        try surface("torus_isophotes",
+                    LayerSpec(name: "isophotes", role: .scaffold,
+                              source: .contour(field: .isophote, levels: levels, restriction: .all, faces: .surface,
+                                               light: light),
+                              width: 0.4, heightPolicy: .surface))
+        try surface("torus_tone",
+                    LayerSpec(name: "tone", role: .scaffold,
+                              source: .hatching(Hatching(angle: 0, spacing: 2 * .pi / 48, tone: .halfLambert(light: light),
+                                                         widthSteps: 8), faces: .surface),
+                              width: 1.6, heightPolicy: .surface))
+        guard let cubic = Catalog.native.preset("cubic") else { throw CLIError("the catalog has lost cubic") }
+        var request = LandscapeRequest(preset: cubic, resolution: 64)
+        let kept = try NativeLandscape.build(request, gitSha: gitSha, refine: false).manifest.layers
+            .filter { ["truncation_edge", "wall_edges", "folds"].contains($0.name) }
+        request.layers = adding([LayerSpec(name: "isophotes", role: .scaffold,
+                                           source: .contour(field: .isophote, levels: levels, restriction: .all,
+                                                            faces: .graph(tiled: false), light: light),
+                                           width: 0.4, heightPolicy: .surface)], to: kept)
+        try NativeLandscape.build(request, gitSha: gitSha, refine: false)
+            .write(to: dir.appendingPathComponent("landscape_isophotes.kurven"))
+        for name in ["torus_isophotes", "torus_tone", "landscape_isophotes"] {
+            let (_, _, _, scene) = try loadDrawing(Args(["bake", dir.appendingPathComponent("\(name).kurven").path]))
+            let strokes = Strokes(layers: scene.visibleLayers().map { layer, seen in (Style(layer.spec), HiddenLine.pass(seen)) })
+            try text(SVG.render(strokes), to: dir.appendingPathComponent("\(name).svg"))
+        }
+    }
+}
+
 func fixturesCommand(_ args: Args) throws {
     try args.only("fixtures", [])
     guard let dir = args.positional.dropFirst().first else {
@@ -659,5 +712,5 @@ func fixturesCommand(_ args: Args) throws {
     let clock = ContinuousClock()
     let elapsed = try clock.measure { try GoldenFixtures.write(to: URL(fileURLWithPath: dir)) }
     print("wrote the golden sets under \(dir) in \(elapsed): contract, camera, clip, hatch, "
-          + "expr/landscape_*, composite")
+          + "expr/landscape_*, composite, fields")
 }

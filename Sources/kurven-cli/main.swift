@@ -124,6 +124,10 @@ struct Args {
     static let previewOptions = ["draft", "slope", "stroke-width"]
     /// The options an oblique camera is set by.
     static let projection = ["shear", "x-angle", "z-angle"]
+    /// The flags that add isophotes and hatching along a coordinate to a
+    /// curved face (`shadingLayers(_:on:spacing:)`).
+    static let shading = ["isophotes", "light", "isophote-width", "hatching", "angle", "spacing", "width-steps",
+                          "hatch-width"]
 }
 
 let usage = """
@@ -164,6 +168,8 @@ usage: kurven-cli <command> [options]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N]
           [--tiles N] [--width W] [--folds W] [--save out.kurven] -o out.svg
           [--mode M] [--width-px N] [--height-px N] -o out.png
+          [--isophotes C1,C2,... [--isophote-width W]] [--light X,Y,Z]
+          [--hatching uniform|half-lambert [--angle 0|90] [--spacing S] [--width-steps N] [--hatch-width W]]
         Bake a surface to SVG, hidden lines decided by where on the surface
         each vertex lies rather than by depth. torus draws its coordinate
         curves. sn and periodic draw a doubly periodic function's |f| and
@@ -194,7 +200,15 @@ usage: kurven-cli <command> [options]
         renders one frame of the realtime preview instead of baking. --save
         writes the drawing as a .kurven bundle that keeps its request, its
         layers and this camera, which bake draws again byte for byte; -o
-        may then be left out.
+        may then be left out. --isophotes draws the level sets of n · l,
+        the outward unit normal against the direction toward --light
+        (-0.4,-0.6,0.7 by default), at the levels listed; --hatching hatches
+        the surface along u (--angle 0) or v (90), a line every --spacing of
+        the other coordinate (a 48th of its range by default), its width set
+        by the tone, as on a solid: on half-lambert it changes on the
+        isophotes. Widths are positive, and a flag with no layer to apply it
+        to is refused. The landscape command
+        takes the same flags, for the graph.
 
   surface solid [--kind K] [--size R] [--hole H] [--depth D] [--width W]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N] [--color C]
@@ -286,7 +300,7 @@ usage: kurven-cli <command> [options]
 
   landscape [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI]
             [--res N] [--truncation H | --bands BELOW:HEIGHT,... --beyond H]
-            [--spacing S] -o out.kurven
+            [--spacing S] [--isophotes C1,C2,... --light X,Y,Z --hatching T ...] -o out.kurven
         Sample a function over a rectangle and write its bundle. Every layer
         is a description, so the result's truncation, levels and hatch spacing are
         editable afterwards -- in the app, or by `preview --levels`.
@@ -294,7 +308,9 @@ usage: kurven-cli <command> [options]
         does: each BELOW:HEIGHT is the height where Re z < BELOW, the first band
         that matches wins, and --beyond is the height past the last. The
         contour levels are chosen up to the highest of them, so set the
-        truncation here rather than in the manifest afterwards.
+        truncation here rather than in the manifest afterwards. --isophotes
+        and --hatching light the graph as `surface` lights a surface, the
+        hatching at the plateaus' spacing unless --spacing says.
 
   refine [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI] [--res N]
          [--truncation H] [--tolerance CELLS] [--depth N]
@@ -517,6 +533,78 @@ func compositeDrawing(_ bundles: [(path: String, placement: Placement)], preset:
     return (parts.map(\.name), layers, strokes)
 }
 
+/// The layers `--isophotes` and `--hatching` add to a curved face, `faces`:
+/// isophotes at the levels listed, `--isophotes C1,C2,...`, and hatching
+/// along a coordinate, `--hatching uniform|half-lambert`, at `--angle` 0
+/// (along u, the default) or 90 (along v), every `--spacing` of the
+/// coordinate across, by default `spacing`'s for that coordinate (`v` for
+/// lines along u, `u` along v), in `--width-steps` widths; both read under
+/// `--light X,Y,Z`, the direction toward the light, by default the one
+/// `surface solid --hatching half-lambert` draws under. Widths are
+/// positive. A flag with no layer to apply it to is refused, as is what a
+/// manifest refuses (`FaceSelector.unsupported`). `spacingIsOwn` says the
+/// command reads `--spacing` itself, as `landscape` does for its plateaus.
+func shadingLayers(_ args: Args, on faces: FaceSelector, spacing: (u: Double, v: Double),
+                   spacingIsOwn: Bool = false) throws -> [LayerSpec] {
+    let isophotes = args.flags["isophotes"] != nil, hatching = args.flags["hatching"] != nil
+    let orphans = (isophotes || hatching ? [] : ["light"])
+        + (isophotes ? [] : ["isophote-width"])
+        + (hatching ? [] : ["angle", "width-steps", "hatch-width"] + (spacingIsOwn ? [] : ["spacing"]))
+    if let orphan = orphans.first(where: { args.flags[$0] != nil || args.switches.contains($0) }) {
+        let wants = orphan == "light" ? "--isophotes or --hatching" : orphan == "isophote-width" ? "--isophotes" : "--hatching"
+        throw CLIError("--\(orphan) applies to \(wants), and none is given")
+    }
+    var light = SIMD3<Double>(-0.4, -0.6, 0.7)
+    if let text = args.flags["light"] {
+        let l = text.split(separator: ",").compactMap { Double($0) }
+        guard l.count == 3, l.allSatisfy(\.isFinite), l != [0, 0, 0] else {
+            throw CLIError("--light wants X,Y,Z, a direction toward the light, as in -0.4,-0.6,0.7")
+        }
+        light = SIMD3(l[0], l[1], l[2])
+    }
+    var layers: [LayerSpec] = []
+    if let text = args.flags["isophotes"] {
+        let levels = text.split(separator: ",").compactMap { Double($0) }
+        guard !levels.isEmpty, levels.count == text.split(separator: ",").count, levels.allSatisfy(\.isFinite) else {
+            throw CLIError("--isophotes wants levels of n · l, as in -0.5,0,0.5")
+        }
+        if let why = faces.unsupported(ContourField.isophote) { throw CLIError(why) }
+        layers.append(LayerSpec(name: "isophotes", role: .scaffold,
+                                source: .contour(field: .isophote, levels: levels, restriction: .all, faces: faces,
+                                                 light: light),
+                                width: try args.positive("isophote-width") ?? 0.3, heightPolicy: .surface))
+    }
+    if let kind = args.flags["hatching"] {
+        let tone: Tone
+        switch kind {
+        case "uniform": tone = .uniform
+        case "half-lambert": tone = .halfLambert(light: light)
+        case let other: throw CLIError("unknown tone '\(other)' on a curved face; the tones are uniform, half-lambert")
+        }
+        let widthSteps = try args.int("width-steps", 1)
+        guard (1...PolyhedronManifest.maxWidthSteps).contains(widthSteps) else {
+            throw CLIError("--width-steps wants 1 to \(PolyhedronManifest.maxWidthSteps), got \(widthSteps)")
+        }
+        let angle = (try args.double("angle") ?? 0) * .pi / 180
+        let across = DomainAxis(angle: angle) == .imag ? spacing.u : spacing.v
+        let hatching = Hatching(angle: angle, spacing: try args.positive("spacing") ?? across, tone: tone,
+                                widthSteps: widthSteps)
+        if let why = faces.unsupported(hatching) { throw CLIError(why) }
+        layers.append(LayerSpec(name: "hatching", role: .scaffold, source: .hatching(hatching, faces: faces),
+                                width: try args.positive("hatch-width") ?? 0.4, heightPolicy: .surface))
+    }
+    return layers
+}
+
+/// `layers` with `added` drawn before the outlines that close the list, as
+/// the window adds a layer.
+func adding(_ added: [LayerSpec], to layers: [LayerSpec]) -> [LayerSpec] {
+    let outline = layers.reversed().prefix { $0.role == .outline }.count
+    var out = layers
+    out.insert(contentsOf: added, at: layers.count - outline)
+    return out
+}
+
 func surfaceCommand(_ args: Args) throws {
     let shape = args.positional.dropFirst().first ?? "torus"
     if shape == "solid" { return try solidCommand(args) }
@@ -525,7 +613,7 @@ func surfaceCommand(_ args: Args) throws {
         throw CLIError("--relief puts sn in relief; surface \(shape) has none")
     }
     if relief {
-        try args.only("surface sn --relief", Args.projection
+        try args.only("surface sn --relief", Args.projection + Args.shading
                       + ["relief", "modulus", "major", "minor", "repeat", "samples", "grid", "turn",
                          "soft", "floor", "resolution", "tiles", "output", "save"])
     } else {
@@ -538,7 +626,7 @@ func surfaceCommand(_ args: Args) throws {
         default: nil
         }
         if let own {
-            try args.only("surface \(shape)", own + Args.projection + Args.previewOptions
+            try args.only("surface \(shape)", own + Args.projection + Args.previewOptions + Args.shading
                           + ["major", "minor", "width", "samples", "linear-curves", "trajectory-width",
                              "folds", "resolution", "tiles", "output", "preview", "width-px",
                              "height-px", "mode", "save"])
@@ -638,6 +726,17 @@ func surfaceCommand(_ args: Args) throws {
     let clock = ContinuousClock()
     var drawing: SurfaceDrawing!
     let built = try clock.measure { drawing = try SurfaceDrawing.build(request) }
+    // `--isophotes`, `--hatching`: the surface's one face lit, its spacing
+    // a 48th of the tube's turn by default.
+    let shading = try shadingLayers(args, on: .surface, spacing: (abs(drawing.surface.u.range.length) / 48,
+                                                                  abs(drawing.surface.v.range.length) / 48))
+    if !shading.isEmpty {
+        do {
+            drawing = try drawing.restyled(adding(shading, to: drawing.layers.map(\.spec)))
+        } catch ManifestError.unsupported(let why) {
+            throw CLIError(why)
+        }
+    }
     let surface = drawing.surface
     if let torus = drawing.torus {
         let rho = torus.rotationNumber
@@ -1274,12 +1373,12 @@ func landscapeCosts(_ args: Args) throws {
         m.truncation = truncation
         let levels = LandscapeStyle.levels(under: truncation)
         for i in m.layers.indices {
-            guard case .contour(let field, _, let restriction, let faces) = m.layers[i].source else { continue }
+            guard case .contour(let field, _, let restriction, let faces, let light) = m.layers[i].source else { continue }
             switch m.layers[i].name {
             case "mag_major": m.layers[i].source = .contour(field: field, levels: levels.major,
-                                                            restriction: restriction, faces: faces)
+                                                            restriction: restriction, faces: faces, light: light)
             case "mag_minor": m.layers[i].source = .contour(field: field, levels: levels.minor,
-                                                            restriction: restriction, faces: faces)
+                                                            restriction: restriction, faces: faces, light: light)
             default: break
             }
         }
@@ -1548,7 +1647,8 @@ func realBands(_ text: String, beyond: String?) throws -> Truncation {
 
 func landscapeCommand(_ args: Args) throws {
     try args.only("landscape", ["function", "re", "im", "res", "truncation", "bands", "beyond",
-                                "no-truncation", "spacing", "repeat", "output"])
+                                "no-truncation", "spacing", "repeat", "output", "isophotes", "light",
+                                "isophote-width", "hatching", "angle", "width-steps", "hatch-width"])
     let output = URL(fileURLWithPath: try args.string("output"))
     let catalog = Catalog.native
 
@@ -1581,6 +1681,18 @@ func landscapeCommand(_ args: Args) throws {
     // enough look at one build.
     for _ in 1..<(try args.int("repeat", 1)) { _ = try NativeLandscape.build(request) }
     let sampled = try clock.measure { bundle = try NativeLandscape.build(request) }
+    // `--isophotes`, `--hatching`: the graph lit, the hatching at the
+    // plateaus' spacing unless `--spacing` says.
+    let plateauSpacing: Double? = bundle.manifest.layers.lazy.compactMap { spec -> Double? in
+        if case .hatching(let h, .plateaus) = spec.source { h.spacing } else { nil }
+    }.first
+    let spacing = plateauSpacing ?? max(abs(request.domain.real.length), abs(request.domain.imag.length)) / 70
+    let shading = try shadingLayers(args, on: .graph(tiled: false), spacing: (spacing, spacing), spacingIsOwn: true)
+    if !shading.isEmpty {
+        var m = bundle.manifest
+        m.layers = adding(shading, to: m.layers)
+        bundle = bundle.restyled(m)
+    }
     try bundle.write(to: output)
     let m = bundle.manifest
     print("""
@@ -1646,7 +1758,7 @@ func fmt(_ x: Double) -> String { String(format: "%g", x) }
 func sourceName(_ source: LayerSource) -> String {
     switch source {
     case .file: "dumped"
-    case .contour(let field, let levels, _, let faces): "\(levels.count) levels of \(field.rawValue) on the \(faces.name)"
+    case .contour(let field, let levels, _, let faces, _): "\(levels.count) levels of \(field.rawValue) on the \(faces.name)"
     case .hatching(let h, .walls(let edges, _, _, _)):
         "wall hatching, \(edges.count) walls every \(fmt(h.spacing))"
     case .hatching(let h, .risers):
@@ -1656,7 +1768,9 @@ func sourceName(_ source: LayerSource) -> String {
     case .hatching(let h, .solid):
         "hatching every \(fmt(h.spacing)) at \(fmt(h.angle * 180 / .pi))°, "
             + "\(h.widthSteps) width\(h.widthSteps == 1 ? "" : "s")"
-    case .hatching(_, .graph), .hatching(_, .surface): "hatching on a curved face, not drawn"
+    case .hatching(let h, .graph), .hatching(let h, .surface):
+        "hatching along \(DomainAxis(angle: h.angle) == .real ? "u" : "v") every \(fmt(h.spacing)), "
+            + "\(h.widthSteps) width\(h.widthSteps == 1 ? "" : "s")"
     case .wallEdges(let edges, _): "edges of \(edges.count) walls"
     case .truncationEdge: "truncation edge"
     case .coordinateCurves(let u, let v): "\(u) + \(v) coordinate curves"
