@@ -101,7 +101,9 @@ public enum PeriodicTorus {
         /// and its back faces are kept.
         public func relief(amplitude: Double, reach: Double) -> Drawing {
             guard let height, amplitude != 0 else { return self }
-            let encloses = surface.outward != nil && amplitude * ceiling < reach
+            // The displacement lies within ±|amplitude| · ceiling only for a
+            // height in [0, ceiling], so a ceiling below 0 encloses nothing.
+            let encloses = surface.outward != nil && ceiling >= 0 && abs(amplitude) * ceiling < reach
             let displaced = surface.displaced(by: height, amplitude: amplitude, ceiling: ceiling,
                                               encloses: encloses)
             return carrying({ $0.placed(on: displaced) }, onto: displaced, radii: radii)
@@ -311,12 +313,12 @@ public enum PeriodicTorus {
     /// are on the outer equator.
     public static func jacobiSN(modulus m: Double, major R: Double = 2, minor r: Double = 1,
                                 resolution: Int = 600, grid: Int = 1024,
-                                truncated: Bool = false, turn: Double = 0,
+                                ceiling: Double = 3, truncated: Bool = false, turn: Double = 0,
                                 contours: [LayerSpec]? = nil) throws -> Drawing {
         let K = Jacobi.quarterPeriod(m), Kp = Jacobi.quarterPeriod(1 - m)
         return try drawing("sn(z, \(m))", origin: Complex(0, turn * 2 * Kp),
                            periods: (4 * K, 2 * Kp), major: R, minor: r,
-                           resolution: resolution, grid: grid, truncated: truncated,
+                           resolution: resolution, ceiling: ceiling, grid: grid, truncated: truncated,
                            contours: contours)
     }
 }

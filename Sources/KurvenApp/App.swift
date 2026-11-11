@@ -394,7 +394,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         .joined(separator: ", ") + "\n").utf8))
                 exit(1)
             }
-            document.surface?[field] = value
+            // A value the request refuses ends the run, saying why, before
+            // anything is built from it or written.
+            guard value.isFinite else {
+                FileHandle.standardError.write(Data("Kurven: --set \(name) wants a finite number, not \(value)\n".utf8))
+                exit(1)
+            }
+            do { document.surface = try document.surface?.setting(field, to: value) } catch {
+                FileHandle.standardError.write(Data("Kurven: refused: \(error)\n".utf8))
+                exit(1)
+            }
             document.surfaceEdited(draft: false)
             while document.building { try? await Task.sleep(for: .milliseconds(25)) }
             print("Kurven: \(name) = \(value) — \(document.surfaceStatus ?? "")")
@@ -707,13 +716,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // A number typed into a control: a surface's field
                 // (`SurfaceSection`), or a landscape's window or resolution,
                 // as `--resample` spells them (`LandscapeSection`).
+                // A number the request refuses ends the run, saying why,
+                // before anything after it is written.
                 let (key, text) = pair(value)
                 guard let number = Double(text) else { fail("--set wants KEY=NUMBER") }
-                if document.surface != nil {
-                    guard let field = SurfaceRequest.Field(rawValue: key), document.surface?[field] != nil else {
+                guard number.isFinite else { fail("--set \(key) wants a finite number, not \(text)") }
+                if let surface = document.surface {
+                    guard let field = SurfaceRequest.Field(rawValue: key), surface[field] != nil else {
                         fail("the surface has no field '\(key)'")
                     }
+                    do { _ = try surface.setting(field, to: number) } catch { fail("refused: \(error)") }
                     await edit { SurfaceFieldSlider(document: document, field: field, label: key).set(number) }
+                    if document.paintStatus != nil { fail("--set \(key)=\(text) was refused, and nothing after it is done") }
                 } else if document.landscape != nil {
                     await edit { LandscapeSlider(document: document, label: key).set { $0 = $0.applying(overrides: [key: number]) } }
                 } else {
@@ -733,6 +747,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     fail("--relief sets sn in relief's amplitude; this surface's shape is \(surface.shape.kind), "
                          + "which has none (`kurven-cli surface sn --relief A` makes one)")
                 }
+                // Refused as the CLI refuses it, in the CLI's words.
+                do { _ = try surface.setting(.relief, to: number, naming: { $0 == "shape.amplitude" ? "--relief" : "surface." + $0 }) }
+                catch ManifestError.invalid(let why) { fail(why) } catch { fail("\(error)") }
                 await edit { SurfaceFieldSlider(document: document, field: .relief, label: "Relief").set(number) }
                 if document.paintStatus != nil { fail("--relief \(value) was refused, and nothing after it is done") }
                 print("Kurven: relief = \(number)")
@@ -740,9 +757,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // A drag of a surface's or a landscape's control through its
                 // slider's callbacks (`SurfaceFieldSlider`, `LandscapeSlider`):
                 // KEY=V1,V2,... taken hold of, moved through the values, let go.
+                // A step the request refuses is not taken, as the slider
+                // takes none: the drag rests at the last value taken, and the
+                // refusal is printed once it is let go.
                 let (key, text) = pair(value)
                 let values = text.split(separator: ",").compactMap { Double($0) }
                 guard !values.isEmpty else { fail("--drag wants KEY=V1,V2,...") }
+                guard values.allSatisfy(\.isFinite) else { fail("--drag \(key) wants finite numbers, not \(text)") }
+                document.paintStatus = nil
                 if document.surface != nil {
                     guard let field = SurfaceRequest.Field(rawValue: key), document.surface?[field] != nil else {
                         fail("the surface has no field '\(key)'")
@@ -763,6 +785,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     fail("--drag moves a surface's or a landscape's control; this bundle has none")
                 }
                 if !atOnce { await settle() }
+                if let status = document.paintStatus { print("Kurven: refused — \(status)") }
                 print("Kurven: dragged \(key) through \(values.count) values")
             case "--draft-resolution":
                 // The resolution a landscape's drag samples at while it lasts.

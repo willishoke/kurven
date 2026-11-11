@@ -205,8 +205,12 @@ public extension SurfaceRequest {
             }
         }
         set {
-            guard let x = newValue, x.isFinite else { return }
-            let n = Int(x.rounded())
+            guard var x = newValue, x.isFinite else { return }
+            // −0 is 0, so a bundle saved after it is byte for byte the one
+            // saved after 0; a count past what an Int holds is a count
+            // `check()` refuses, not a trap.
+            if x == 0 { x = 0 }
+            let n = Int(min(max(x.rounded(), -1e18), 1e18))
             switch field {
             case .slope: linearCurves?.slope = x; return
             case .turns: linearCurves?.turns = max(n, 1); return
@@ -259,6 +263,25 @@ public extension SurfaceRequest {
                                 turn: turn, floor: floor, soft: soft)
             }
         }
+    }
+}
+
+public extension SurfaceRequest {
+    /// This request with `field` set to `value`, as a control sets it, or
+    /// the refusal `check()` makes of the result, naming the field as `name`
+    /// spells its key. A value that is not a number is refused rather than
+    /// ignored, as the subscript ignores it.
+    func setting(_ field: Field, to value: Double,
+                 naming name: (String) -> String = { "surface." + $0 }) throws -> SurfaceRequest {
+        guard value.isFinite else {
+            throw field == .relief
+                ? ManifestError.invalid("\(name("shape.amplitude")) must be from 0 to 1, not \(value)")
+                : ManifestError.invalid("\(field.rawValue) must be a finite number, not \(value)")
+        }
+        var next = self
+        next[field] = value
+        try next.check(naming: name)
+        return next
     }
 }
 
@@ -323,35 +346,37 @@ public extension SurfaceRequest {
     }
 
     var json: JSONValue {
+        // −0 is written as 0, so a request is one bundle however it was made.
+        func double(_ x: Double) -> JSONValue { .double(x == 0 ? 0 : x) }
         var shape: [String: JSONValue]
         switch self.shape {
         case .torus(let R, let r):
-            shape = ["major": .double(R), "minor": .double(r)]
+            shape = ["major": double(R), "minor": double(r)]
         case .sn(let m, let R, let r, let grid):
-            shape = ["modulus": .double(m), "major": .double(R), "minor": .double(r),
+            shape = ["modulus": double(m), "major": double(R), "minor": double(r),
                      "grid": .int(grid)]
         case .periodic(let e, let p, let R, let r, let grid):
             shape = ["expression": .string(e),
-                     "periods": .array([.double(p.x), .double(p.y)]),
-                     "major": .double(R), "minor": .double(r), "grid": .int(grid)]
+                     "periods": .array([double(p.x), double(p.y)]),
+                     "major": double(R), "minor": double(r), "grid": .int(grid)]
         case .forced(let system, let fit, let harmonics, let radial, let axial, let radius, let turns):
-            shape = ["system": .string(system), "fit": .double(fit),
+            shape = ["system": .string(system), "fit": double(fit),
                      "harmonics": .int(harmonics), "radial": .int(radial), "axial": .int(axial),
-                     "radius": .double(radius), "turns": .int(turns)]
+                     "radius": double(radius), "turns": .int(turns)]
         case .relief(let m, let R, let r, let a, let k, let grid, let turn, let floor, let soft):
-            shape = ["modulus": .double(m), "major": .double(R), "minor": .double(r),
-                     "amplitude": .double(a), "repeats": .array([.int(k.x), .int(k.y)]), "grid": .int(grid),
-                     "turn": .double(turn), "floor": floor.map(JSONValue.double) ?? .null, "soft": .bool(soft)]
+            shape = ["modulus": double(m), "major": double(R), "minor": double(r),
+                     "amplitude": double(a), "repeats": .array([.int(k.x), .int(k.y)]), "grid": .int(grid),
+                     "turn": double(turn), "floor": floor.map(double) ?? .null, "soft": .bool(soft)]
         }
         shape["kind"] = .string(self.shape.kind)
         return .object([
             "shape": .object(shape), "grid": .int(grid),
             "lines": lines.map { .object(["u": .int($0.x), "v": .int($0.y)]) } ?? .null,
             "linearCurves": linearCurves.map {
-                .object(["slope": .double($0.slope), "turns": .int($0.turns), "count": .int($0.count)])
+                .object(["slope": double($0.slope), "turns": .int($0.turns), "count": .int($0.count)])
             } ?? .null,
-            "style": .object(["lines": .double(style.lines), "trajectory": .double(style.trajectory),
-                              "folds": .double(style.folds), "linearCurves": .double(style.linearCurves)]),
+            "style": .object(["lines": double(style.lines), "trajectory": double(style.trajectory),
+                              "folds": double(style.folds), "linearCurves": double(style.linearCurves)]),
             "name": .string(name),
         ])
     }
@@ -424,7 +449,10 @@ public extension SurfaceRequest {
                 throw refuse("shape.amplitude", "must be from 0 to 1, not \(a)")
             }
             try finite(turn, "shape.turn")
-            if let floor { try finite(floor, "shape.floor") }
+            if let floor, !(0 <= floor && floor < Self.reliefCeiling) {
+                throw refuse("shape.floor", "must be at least 0 and below the truncation height "
+                             + "\(Self.reliefCeiling), not \(floor)")
+            }
             try within(k.x, 1...Self.maxRepeats, "shape.repeats", "whole periods each way")
             try within(k.y, 1...Self.maxRepeats, "shape.repeats", "whole periods each way")
             try within(g, 8...Self.maxFunctionGrid, "shape.grid", "samples")
@@ -464,10 +492,14 @@ public extension SurfaceRequest {
     /// A relief's amplitudes. Not below 0: displaced inward past its
     /// reach, the torus would pass through itself while the relief still
     /// claimed to bound a solid (`PeriodicTorus.Drawing.relief`). At most 1,
-    /// a displacement of at most the truncation height, 3. A relief past its
+    /// a displacement of at most the truncation height. A relief past its
     /// reach is drawn with its back faces kept, so the bound is on cost, not
     /// on embedding.
     static let reliefRange = 0.0...1.0
+    /// The height |sn| is truncated at in relief. A floor is at least 0 and
+    /// below it, so the height displaced, |sn| less the floor, lies in
+    /// [0, ceiling − floor] with ceiling − floor positive.
+    static let reliefCeiling = 3.0
 
     /// At most how many samples the surface's grid has round the ring and
     /// round the tube: exactly, but for sn, whose rectangle's aspect its

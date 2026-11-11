@@ -375,9 +375,16 @@ struct SurfaceFieldSlider {
         }
     }
 
+    /// A value the request refuses -- not a number, or out of its range --
+    /// is not taken, a step of a drag included, and the status says why: the
+    /// drawing and what a save writes stay at the last value taken.
     func set(_ value: Double) {
-        guard var next = document.surface, next[field] != value else { return }
-        next[field] = value
+        guard let current = document.surface, current[field] != value else { return }
+        let next: SurfaceRequest
+        do { next = try current.setting(field, to: value) } catch {
+            document.paintStatus = "\(error)"
+            return
+        }
         if document.editedBeforeDrag != nil {
             document.dragSurface(next, draft: drafts)
         } else {

@@ -206,9 +206,13 @@ step "the app saves, restyles, paints and bakes a surface and a polyhedron as th
 # and by `bake`, draws it again. Opened and saved untouched, a relief keeps
 # its bundle, the contract's fixture too. Raised, undone and redone, the
 # drawings and the bundles are the ones before and after; a drag let go where
-# it began leaves nothing to undo. A relief outside 0 to 1, or on a surface
-# with none -- a torus, plain sn, periodic -- is refused, saying why, with
-# nothing written.
+# it began leaves nothing to undo. Dragged past 1, or sn's modulus past 1,
+# the step out of range is refused and the drag rests at the last step in
+# range: saved, the bundle of that value, and one undo back to the start. A
+# relief outside 0 to 1 or not a number, a modulus outside (0, 1), a floor
+# outside [0, 3), and a relief on a surface with none -- a torus, plain sn,
+# periodic -- are refused, saying why, with nothing written; a relief of −0
+# is the bundle of 0.
 relief() {
     local dir="$PACKAGE/.build/relief-check" c="$ROOT/tests/fixtures/contract" out refused
     rm -rf "$dir" && mkdir -p "$dir" || return 1
@@ -239,8 +243,31 @@ relief() {
     diff -r "$dir/drag-before.kurven" "$dir/drag-after.kurven" >/dev/null ||
         { echo "a drag of the relief let go where it began left a step, or another bundle"; return 1; }
     "$BIN/kurven-cli" surface sn --save "$dir/sn.kurven" >/dev/null || return 1
-    for refused in "$dir/zero.kurven --relief 1.5|surface.shape.amplitude must be from 0 to 1, not 1.5" \
-                   "$dir/zero.kurven --relief -0.1|surface.shape.amplitude must be from 0 to 1, not -0.1" \
+    out=$("$BIN/KurvenApp" "$dir/zero.kurven" --drag relief=0.2,0.4,1.5 --save "$dir/dragged.kurven" \
+        --undo --save "$dir/dragged-undone.kurven" 2>&1) &&
+    printf '%s\n' "$out" | grep -q 'refused — .*amplitude must be from 0 to 1, not 1.5' &&
+    diff -r "$dir/dragged.kurven" "$dir/app.kurven" >/dev/null &&
+    diff -r "$dir/dragged-undone.kurven" "$dir/zero-again.kurven" >/dev/null ||
+        { printf '%s\n' "$out"; echo "a drag of the relief past 1 did not rest at 0.4, one undo from where it began"; return 1; }
+    out=$("$BIN/KurvenApp" "$dir/sn.kurven" --drag modulus=0.7,1.5 --save "$dir/modulus-dragged.kurven" 2>&1) &&
+    "$BIN/KurvenApp" "$dir/sn.kurven" --set modulus=0.7 --save "$dir/modulus-set.kurven" >/dev/null &&
+    printf '%s\n' "$out" | grep -q 'refused — .*modulus must lie strictly between 0 and 1, not 1.5' &&
+    diff -r "$dir/modulus-dragged.kurven" "$dir/modulus-set.kurven" >/dev/null &&
+    ! diff -r "$dir/modulus-dragged.kurven" "$dir/sn.kurven" >/dev/null ||
+        { printf '%s\n' "$out"; echo "a drag of sn's modulus past 1 did not rest at 0.7"; return 1; }
+    "$BIN/kurven-cli" surface sn --relief -0 --save "$dir/negative-zero.kurven" >/dev/null &&
+    cmp "$dir/negative-zero.kurven/manifest.json" "$dir/zero.kurven/manifest.json" ||
+        { echo "a relief of −0 is not the bundle of 0"; return 1; }
+    for refused in "$dir/zero.kurven --relief 1.5|--relief must be from 0 to 1, not 1.5" \
+                   "$dir/zero.kurven --relief -0.1|--relief must be from 0 to 1, not -0.1" \
+                   "$dir/zero.kurven --relief nan|--relief must be from 0 to 1, not nan" \
+                   "$dir/zero.kurven --relief inf|--relief must be from 0 to 1, not inf" \
+                   "$dir/zero.kurven --relief -inf|--relief must be from 0 to 1, not -inf" \
+                   "$dir/zero.kurven --set relief=nan|--set relief wants a finite number, not nan" \
+                   "$dir/zero.kurven --pick 300,600 --set relief=nan|--set relief wants a finite number, not nan" \
+                   "$dir/sn.kurven --set modulus=1.5|modulus must lie strictly between 0 and 1, not 1.5" \
+                   "$dir/sn.kurven --pick 300,600 --set modulus=1.5|modulus must lie strictly between 0 and 1, not 1.5" \
+                   "$dir/zero.kurven --drag relief=0.2,nan|--drag relief wants finite numbers" \
                    "$c/surface_torus.kurven --relief 0.4|shape is torus, which has none" \
                    "$dir/sn.kurven --relief 0.4|shape is sn, which has none"; do
         rm -rf "$dir/refused.kurven"
@@ -251,6 +278,8 @@ relief() {
     done
     for refused in "sn --relief 1.5|--relief must be from 0 to 1, not 1.5" \
                    "sn --relief -0.1|--relief must be from 0 to 1, not -0.1" \
+                   "sn --relief 0.3 --floor 4|--floor must be at least 0 and below the truncation height 3.0, not 4.0" \
+                   "sn --relief 0.3 --floor -1|--floor must be at least 0 and below the truncation height 3.0, not -1.0" \
                    "torus --relief 0.4|surface torus has none" \
                    "periodic --expression sn(z,0.5) --periods 1,1 --relief 0.4|surface periodic has none"; do
         rm -rf "$dir/refused.kurven" "$dir/refused.svg"
@@ -260,7 +289,7 @@ relief() {
             { printf '%s\n' "$out"; echo "surface ${refused%|*} was not refused, saying why, with nothing written"; return 1; }
     done
 }
-step "the app's relief slider raises sn in relief as surface sn --relief does, saves it, undoes it, and refuses a relief out of range or on a surface with none" relief
+step "the app's relief slider raises sn in relief as surface sn --relief does, saves it, undoes it, rests a drag at its last step in range, and refuses a relief, modulus or floor out of range, or a relief on a surface with none" relief
 
 # Painting, with no window, as the "Curves on" section paints the picked
 # face. Plateau hatching painted on the hatch fixture's landscape, at the

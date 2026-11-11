@@ -175,7 +175,7 @@ usage: kurven-cli <command> [options]
         tiling isotropic; a pole's plateau is a round disc only then). --turn
         starts the rectangle T imaginary periods up the plane, turning the
         function round the tube: 0 puts the zeros on the outer equator,
-        1/4 the poles on top. --floor B displaces only |f| above B, so each
+        1/4 the poles on top. --floor B, from 0 up to 3, displaces only |f| above B, so each
         pole stands alone on the bare torus; --soft truncates smoothly, as
         c tanh(|f|/c), instead of with a crease. --samples is the grid round the ring in all.
         forced finds a forced system's invariant torus in the spectrum of a

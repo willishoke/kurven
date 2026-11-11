@@ -185,6 +185,22 @@ func surfaceBundleTests() {
         Check.expect(relief == raised && relief.fields.last == .relief && plain == before && plain[.relief] == nil
                      && !plain.fields.contains(.relief) && opened.manifest.surface[.relief] == nil,
                      "the relief slider sets a relief's amplitude, and is no field of any other shape")
+        // A control's value is refused, not ignored or trapped on, where the
+        // request would refuse it; −0 is set and saved as 0.
+        func refused(_ field: SurfaceRequest.Field, _ value: Double, on request: SurfaceRequest) -> String? {
+            do { _ = try request.setting(field, to: value); return nil } catch { return "\(error)" }
+        }
+        let zeroed = try raised.setting(.relief, to: -0.0)
+        Check.expect(refused(.relief, .nan, on: raised)?.contains("amplitude must be from 0 to 1, not nan") == true
+                     && refused(.relief, 1.5, on: raised)?.contains("amplitude must be from 0 to 1, not 1.5") == true
+                     && refused(.modulus, 1.5, on: raised)?.contains("modulus must lie strictly between 0 and 1") == true
+                     && refused(.grid, 1e300, on: raised)?.contains("must be 8 to 4096 samples") == true
+                     && refused(.major, .infinity, on: before)?.contains("major must be a finite number, not inf") == true
+                     && (try? raised.setting(.relief, to: 0.5))?[.relief] == 0.5
+                     && zeroed[.relief]?.sign == .plus
+                     && !SurfaceRequest(.relief(modulus: 0.64, major: 2, minor: 1, amplitude: -0.0, repeats: SIMD2(1, 1),
+                                                grid: 120, turn: -0.0, floor: nil, soft: false)).json.canonical.contains("-0"),
+                     "a value the request refuses is refused by name, a huge count with no trap, and −0 is 0")
 
         // A level slider resamples a family over its own range, and never to
         // fewer than two levels, so a family saved at them keeps its range.
@@ -328,6 +344,11 @@ func surfaceBundleTests() {
                 })
         refuses("refuses a relief repeated more than it holds", saying: "must be 1 to 16 whole periods",
                 shape(relief.merging(["repeats": .array([.int(17), .int(1)])]) { $1 }))
+        for floor in [-1, 3, 4, -1e300] {
+            refuses("refuses a relief floored at \(floor)",
+                    saying: "surface.shape.floor must be at least 0 and below the truncation height 3.0, not \(floor)",
+                    shape(relief.merging(["repeats": .array([.int(1), .int(1)]), "floor": .double(floor)]) { $1 }))
+        }
         for amplitude in [-0.1, 1.5, .infinity, .nan] {
             refuses("refuses a relief of amplitude \(amplitude)", saying: "surface.shape.amplitude must be from 0 to 1, not \(amplitude)",
                     shape(relief.merging(["repeats": .array([.int(1), .int(1)]),
