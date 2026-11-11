@@ -1132,8 +1132,12 @@ private func trimLoops(_ l: Landscape, margin: Double) -> TrimTally? {
         guard let copyLoops = copy.trimLoops else { continue }
         let cut = Segments(copyLoops.map { $0.map(\.v) }, cell: cell)
         let footprint = l.region
+        // On f the truncation edge is |f| = h(x) itself, which the loops
+        // follow as chords: a contour is held to it, ending on it and kept
+        // where |f| is under it (`Face.truncationExcess`).
+        let excess = graph.truncationExcess
         func held(_ q: SIMD2<Double>) -> Bool {
-            own.inside(q) && footprint.contains(copy.tile(P3(q.x, q.y, 0)).xy)
+            (excess.map { $0(P2(q)) < 0 } ?? own.inside(q)) && footprint.contains(copy.tile(P3(q.x, q.y, 0)).xy)
         }
         var families: [(ScalarField, [Double])] = [
             (ScalarField { $0.x }, (1...13).map { real.lo + real.length * (Double($0) - 0.29) / 13 }),
@@ -1154,7 +1158,7 @@ private func trimLoops(_ l: Landscape, margin: Double) -> TrimTally? {
             for run in runs {
                 for e in [run[0], run[run.count - 1]] where !pathEnds.contains(e) {
                     let d = cut.distance(e.v, within: cell)
-                    if !(d <= tolerance) {
+                    if !(d <= tolerance), !(excess.map { abs($0(e)) <= 1e-9 } ?? false) {
                         t.endsOff += 1; t.worstEnd = max(t.worstEnd, d / cell)
                         t.note("clipped", "a run ends at \(e.v), \(d.isFinite ? "\(d / cell)" : "over a") cell(s) off the loops")
                     }
@@ -2590,8 +2594,8 @@ func faceTests() {
             // A footprint that holds none of the graph keeps no run of it.
             Check.expect((t.runs > 0 || t.held == 0) && t.endsOff == 0 && t.samples > 200 && t.misclipped == 0,
                          "\(l.name): lines of x and y and level sets of |f| on each copy are cut where they cross its loops, "
-                            + "and kept where the loops and the footprint hold them",
-                         "\(t.endsOff) of \(t.runs) runs end off the loops (worst \(t.worstEnd) cells), \(t.misclipped) of \(t.samples) "
+                            + "on f on the truncation edge itself, and kept where the graph and the footprint hold them",
+                         "\(t.endsOff) of \(t.runs) runs end off the loops and the edge (worst \(t.worstEnd) cells), \(t.misclipped) of \(t.samples) "
                             + "samples misclipped: \(t.examples("clipped"))")
         }
     }
