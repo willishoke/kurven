@@ -234,11 +234,112 @@ struct SegmentIndex {
     }
 }
 
+/// A landscape's drawn triangles (`solid`), and those that face up -- its
+/// top -- bucketed over (x, y): the top's normals at a point on it, and a
+/// cast from such a point.
+struct TerrainTops: Sendable {
+    let solid: Mesh<WorldSpace>
+    let triangles: [(a: SIMD3<Double>, b: SIMD3<Double>, c: SIMD3<Double>, n: SIMD3<Double>)]
+    let lo: SIMD2<Double>, cell: SIMD2<Double>, n: Int
+    let buckets: [[Int]]
+    /// The landscape's size, the larger side of its box, and how far off a
+    /// triangle's plane a point of it may lie: a billionth of its cell, the
+    /// composite's tolerance.
+    let size: Double, tolerance: Double
+
+    init(_ h: Heightfield, n: Int = 128) {
+        let box = slabBox(h)
+        let mesh = drawnTriangles(h, base: box.lo.z)
+        solid = mesh
+        size = max(box.hi.x - box.lo.x, box.hi.y - box.lo.y)
+        tolerance = 1e-9 * landscapeCell(h)
+        var triangles: [(a: SIMD3<Double>, b: SIMD3<Double>, c: SIMD3<Double>, n: SIMD3<Double>)] = []
+        for t in mesh.triangles {
+            let a = mesh.vertices[Int(t.x)].v, b = mesh.vertices[Int(t.y)].v, c = mesh.vertices[Int(t.z)].v
+            var normal = simd_cross(b - a, c - a)
+            guard simd_length(normal) > 0 else { continue }
+            normal = simd_normalize(normal)
+            if normal.z < 0 { normal = -normal }
+            guard normal.z > 1e-9 else { continue }
+            triangles.append((a, b, c, normal))
+        }
+        let xs = triangles.flatMap { [$0.a, $0.b, $0.c] }
+        let lo = xs.reduce(SIMD3(repeating: .infinity), simd_min), hi = xs.reduce(SIMD3(repeating: -.infinity), simd_max)
+        self.lo = SIMD2(lo.x, lo.y); self.n = n
+        cell = SIMD2(max(hi.x - lo.x, 1e-9), max(hi.y - lo.y, 1e-9)) / Double(n)
+        var buckets = [[Int]](repeating: [], count: n * n)
+        for (k, t) in triangles.enumerated() {
+            let tlo = simd_min(simd_min(t.a, t.b), t.c), thi = simd_max(simd_max(t.a, t.b), t.c)
+            let i0 = max(Int((tlo.x - lo.x) / cell.x) - 1, 0), i1 = min(Int((thi.x - lo.x) / cell.x) + 1, n - 1)
+            let j0 = max(Int((tlo.y - lo.y) / cell.y) - 1, 0), j1 = min(Int((thi.y - lo.y) / cell.y) + 1, n - 1)
+            for j in j0...j1 { for i in i0...i1 { buckets[j * n + i].append(k) } }
+        }
+        self.triangles = triangles; self.buckets = buckets
+    }
+
+    /// The cast from a point on the top, in the landscape's own
+    /// coordinates (`model`): hidden where every triangle of the top it lies
+    /// on faces away from the eye, since its line of sight goes into the
+    /// solid there; where every one faces the eye, clear when the line
+    /// meets no triangle past a billionth of the landscape's size, as
+    /// `triangleCast` casts. Nil where they disagree or one is edge-on, off
+    /// the top, and where a nudge of a ten-millionth of its size along the
+    /// top and across the line of sight changes the verdict.
+    func cast(model: @escaping @Sendable (SIMD3<Double>) -> SIMD3<Double>) -> Cast {
+        { p, toEye in
+            let q = model(p)
+            let normals = self.normals(at: q)
+            guard !normals.isEmpty else { return nil }
+            let facing = normals.map { simd_dot($0, toEye) }
+            if facing.allSatisfy({ $0 < -1e-9 }) { return false }
+            guard facing.allSatisfy({ $0 > 1e-9 }) else { return nil }
+            func clear(_ x: SIMD3<Double>) -> Bool { firstHit(solid, from: x, along: toEye, after: 1e-9 * size) == nil }
+            let truth = clear(q)
+            let nudges = normals.flatMap { n -> [SIMD3<Double>] in
+                let v = simd_cross(toEye, n)
+                return simd_length(v) > 1e-9 ? [simd_normalize(v), -simd_normalize(v)] : []
+            }
+            return nudges.allSatisfy { clear(q + 1e-7 * size * $0) == truth } ? truth : nil
+        }
+    }
+
+    /// The normals of every triangle of the top `q` lies on, within the
+    /// tolerance.
+    func normals(at q: SIMD3<Double>) -> [SIMD3<Double>] {
+        let i = Int((q.x - lo.x) / cell.x), j = Int((q.y - lo.y) / cell.y)
+        guard i >= 0, i < n, j >= 0, j < n else { return [] }
+        var out: [SIMD3<Double>] = []
+        for k in buckets[j * n + i] {
+            let t = triangles[k]
+            // Barycentric in (x, y), and the plane's height there.
+            let e1 = SIMD2(t.b.x - t.a.x, t.b.y - t.a.y), e2 = SIMD2(t.c.x - t.a.x, t.c.y - t.a.y)
+            let r = SIMD2(q.x - t.a.x, q.y - t.a.y)
+            let det = e1.x * e2.y - e1.y * e2.x
+            guard det != 0 else { continue }
+            let u = (r.x * e2.y - r.y * e2.x) / det, v = (e1.x * r.y - e1.y * r.x) / det
+            guard u >= -1e-9, v >= -1e-9, u + v <= 1 + 1e-9 else { continue }
+            let z = t.a.z + u * (t.b.z - t.a.z) + v * (t.c.z - t.a.z)
+            if abs(z - q.z) <= tolerance { out.append(t.n) }
+        }
+        return out
+    }
+}
+
 /// What the gate found for one composition.
 struct CompositeVerdict {
     var compared = 0, wrong = 0, hiddenByOther = 0, undecided = 0, outsideAlone = 0
     var ownCompared = 0, ownWrong = 0
+    /// Of the comparisons, those on a contact line, and of them those
+    /// another part hides.
+    var contactCompared = 0, contactHidden = 0
+    /// Samples of a contact line on no landscape's top: each a failure.
+    var offTerrain = 0
     var example = "", ownExample = ""
+}
+
+/// Whether a layer is a composite's contact line (`Composite.visibleContact(of:)`).
+func isContact(_ spec: LayerSpec) -> Bool {
+    spec.name == "contact" && spec.source == .file(vertices: "", offsets: "")
 }
 
 /// The gate for one composite under one camera. Each layer's composite
@@ -263,10 +364,30 @@ func compositeVerdict(_ composite: Composite, casts: [Cast]) throws -> Composite
     }
     let view = composite.camera.view, world = view.inverse
     let toEye = -view.projectionDirection
+    let terrainTops: [TerrainTops?] = composite.parts.map { part in
+        guard case .heightfield(let h) = part.scene.geometry else { return nil }
+        return TerrainTops(h)
+    }
     var index = 0
     for (i, part) in composite.parts.enumerated() {
-        let alone = part.scene.visibleLayers()
+        let contact = composite.contact(of: i)
+        let alone = part.scene.visibleLayers() + (composite.visibleContact(of: i).map { [$0] } ?? [])
         let others = casts.indices.filter { $0 != i }.map { casts[$0] }
+        // A point of a contact line lies on one landscape's top: cast
+        // against that one from where it lies (`TerrainTops.cast`), and
+        // against the others as any point is.
+        let otherParts = casts.indices.filter { $0 != i }
+        let topCasts: [Cast?] = otherParts.map { j in
+            guard let tops = terrainTops[j] else { return nil }
+            let o = composite.parts[j].placement.offset
+            return tops.cast(model: { $0 - o })
+        }
+        let owner: @Sendable (SIMD3<Double>) -> Int? = { w in
+            otherParts.indices.first { k in
+                guard let tops = terrainTops[otherParts[k]] else { return false }
+                return !tops.normals(at: w - composite.parts[otherParts[k]].placement.offset).isEmpty
+            }
+        }
         let partView = part.scene.camera.view
         for (layer, seen) in alone {
             defer { index += 1 }
@@ -348,24 +469,43 @@ func compositeVerdict(_ composite: Composite, casts: [Cast]) throws -> Composite
                     }
                 }
             }
-            let results = Heightfield.parallelMap(samples, chunk: 64) { sample -> (decided: Bool, truth: Bool, drawn: Bool) in
+            let onTerrain = isContact(layer.spec)
+            let results = Heightfield.parallelMap(samples, chunk: 64) {
+                sample -> (decided: Bool, truth: Bool, drawn: Bool, offTerrain: Bool) in
                 let p = sample.p
                 // At a run end the truth is a boundary.
                 if min(aloneIndex.nearestEnd(p), composedIndex.nearestEnd(p)) < max(1e-6 * sample.length, 1e-12 * size) {
-                    return (false, false, false)
+                    return (false, false, false, false)
                 }
                 let w = world(P3<ViewSpace>(p)).v
+                var cast = others
+                if onTerrain {
+                    guard let k = owner(w) else { return (false, false, false, true) }
+                    cast[k] = topCasts[k]!
+                }
                 var truth = true
-                for cast in others {
-                    guard let clear = cast(w, toEye) else { return (false, false, false) }
+                for c in cast {
+                    guard let clear = c(w, toEye) else { return (false, false, false, false) }
                     if !clear { truth = false }
                 }
-                return (true, truth, composedIndex.holds(p, tolerance: tolerance))
+                return (true, truth, composedIndex.holds(p, tolerance: tolerance), false)
             }
             for (sample, r) in zip(samples, results) {
+                if r.offTerrain {
+                    verdict.offTerrain += 1
+                    if verdict.example.isEmpty {
+                        let w = world(P3<ViewSpace>(sample.p))
+                        verdict.example = String(format: " e.g. %@ of %@ at (%.4f, %.4f, %.4f) is on no landscape's top",
+                                                 layer.spec.name, part.name, w.x, w.y, w.z)
+                    }
+                }
                 guard r.decided else { verdict.undecided += 1; continue }
                 verdict.compared += 1
                 if !r.truth { verdict.hiddenByOther += 1 }
+                if isContact(layer.spec) {
+                    verdict.contactCompared += 1
+                    if !r.truth { verdict.contactHidden += 1 }
+                }
                 if r.truth != r.drawn {
                     verdict.wrong += 1
                     if verdict.example.isEmpty {
@@ -381,7 +521,7 @@ func compositeVerdict(_ composite: Composite, casts: [Cast]) throws -> Composite
                 if aloneIndex.nearestEnd(p) < 1e-6 * size { return nil }
                 return aloneIndex.holds(p, tolerance: tolerance)
             }
-            let own = ownTruths(part, layer: layer, view: partView)
+            let own = ownTruths(part, layer: layer, view: partView, contact: contact)
             for (q, truth) in own {
                 guard let truth, let shown = aloneHolds(q) else { continue }
                 verdict.ownCompared += 1
@@ -403,9 +543,41 @@ func compositeVerdict(_ composite: Composite, casts: [Cast]) throws -> Composite
 /// own brute-force cast says of each (nil: undecided): a polyhedron's edges
 /// and hatch lines sampled anywhere along them, as the solids suite samples
 /// edges; a landscape's graph curves and the torus's curves at their
-/// vertices, as the stress and surface suites test them.
-func ownTruths(_ part: Composite.Part, layer: Layer, view: Transform<WorldSpace, ViewSpace>) -> [(SIMD3<Double>, Bool?)] {
+/// vertices, as the stress and surface suites test them. Its contact line
+/// likewise: on a polyhedron sampled along each path, cast from its face,
+/// on the torus at its vertices.
+func ownTruths(_ part: Composite.Part, layer: Layer, view: Transform<WorldSpace, ViewSpace>,
+               contact: ContactCurves) -> [(SIMD3<Double>, Bool?)] {
     let toEye = -view.projectionDirection
+    if isContact(layer.spec) {
+        switch part.scene.geometry {
+        case .solid(let s):
+            var out: [(SIMD3<Double>, Bool?)] = []
+            for (path, f) in zip(contact.paths, contact.faces) {
+                guard abs(simd_dot(s.normals[s.faces[f][0]], toEye)) > 1e-9 else { continue }
+                let own = Set(s.faces[f])
+                for (a, b) in zip(path, path.dropFirst()) {
+                    for k in 0..<8 {
+                        let q = a.v + (Double(k) + 0.5) / 8 * (b.v - a.v)
+                        out.append((q, rayVisible(s, at: q, own: own, toEye: toEye)))
+                    }
+                }
+            }
+            return out
+        case .parametric(let s):
+            let (R, r) = torusRadii(s)
+            let cast = torusCast(R: R, r: r, model: { $0 })
+            let coords = Array(contact.coords.joined())
+            return Heightfield.parallelMap(coords) { c -> (SIMD3<Double>, Bool?) in
+                let q = s.map(c).position
+                guard let f = s.facing(c, sight: -toEye), abs(f) > 1e-9 else { return (q, nil) }
+                guard f > 0 else { return (q, false) }
+                return (q, cast(q, toEye))
+            }
+        case .heightfield:
+            return []
+        }
+    }
     switch part.scene.geometry {
     case .solid(let s):
         var lines: [(path: [SIMD3<Double>], own: Set<Int>)] = []
@@ -467,6 +639,77 @@ func ownTruths(_ part: Composite.Part, layer: Layer, view: Transform<WorldSpace,
     }
 }
 
+/// The composite gate's compositions on the cubic landscape's grid and the
+/// spike's, and its three cameras.
+func gateCompositions() throws -> (cameras: [(String, Camera)], compositions: [(String, [(String, Scene, Placement)])]) {
+    let contract = Fixtures.dir.appendingPathComponent("contract")
+    func polyhedron(_ name: String) throws -> Scene {
+        let b = try PolyhedronBundle.read(at: contract.appendingPathComponent("polyhedron_\(name).kurven"))
+        return b.scene(preset: b.manifest.presets[0])
+    }
+    func surface(_ name: String) throws -> Scene {
+        let b = try SurfaceBundle.read(at: contract.appendingPathComponent("surface_\(name).kurven"))
+        return b.scene(preset: b.manifest.presets[0])
+    }
+    // The cubic landscape's grid: its solid is the drawn triangles, which
+    // the cast is against. Three towers at the cube roots of unity.
+    let bundle = try KurvenBundle.read(at: Fixtures.dir.appendingPathComponent("expr/landscape_cubic.kurven"))
+    let landscape = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
+    let cube = try polyhedron("cube"), frame = try polyhedron("frame"), torus = try surface("torus")
+    let cubeMinY = cube.solid!.vertices.map(\.y).min()!
+    // A spike, exp(-20 |z|), on a grid of 64 cells: an apex no step
+    // along a segment can be trusted to find.
+    let spikeBundle = try NativeLandscape.build(
+        LandscapeRequest(expression: "exp(-20*abs(z))",
+                         domain: Domain(real: Interval(lo: -2, hi: 2), imag: Interval(lo: -2, hi: 2)),
+                         resolution: 65, truncation: .uniform(5)), refine: false)
+    let spike = Scene(bundle: spikeBundle, preset: spikeBundle.manifest.presets[0])
+    let cameras: [(String, Camera)] = [
+        ("the landscape's", landscape.camera),
+        ("el 30° az 37°", Camera(view: testCamera(elevation: -30, azimuth: 37), projection: .orthographic(oblique: nil))),
+        ("el 55° sheared", Camera(view: testCamera(elevation: -55, azimuth: 160, shear: 0.5), projection: .orthographic(oblique: nil))),
+    ]
+    let compositions: [(String, [(String, Scene, Placement)])] = [
+        ("a cube standing on the landscape behind a tower",
+         [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(-1.2, 0.1, 0.3)))]),
+        ("the round torus ringing a tower",
+         [("landscape", landscape, .identity), ("torus", torus, Placement(scale: 0.35, offset: SIMD3(1, 0, 1.6)))]),
+        ("the round torus sunk into the foot of a tower",
+         [("landscape", landscape, .identity), ("torus", torus, Placement(scale: 0.3, offset: SIMD3(0.4, 1.3, 0.3)))]),
+        ("a frame sunk into the slope of a tower",
+         [("landscape", landscape, .identity), ("frame", frame, Placement(scale: 0.3, offset: SIMD3(0.3, -1.3, 0.2)))]),
+        // Moved together, the landscape too.
+        ("all three, moved",
+         [("landscape", landscape, Placement(offset: SIMD3(0.4, 0.2, -0.1))),
+          ("cube", cube, Placement(scale: 0.35, offset: SIMD3(-0.8, 0.3, 0.2))),
+          ("torus", torus, Placement(scale: 0.35, offset: SIMD3(1.4, 0.2, 1.5)))]),
+        // Under the slab's floor at its front, its front face a hair
+        // inside the front wall: lines of sight from the face's lower
+        // part leave the footprint before they reach the floor, and
+        // from its upper part come up through it.
+        ("a cube under the landscape's base",
+         [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -1.56, -0.86)))]),
+        // Standing on the base, sunk into the slab, its front face in
+        // the plane of the front wall, to rounding: on the slab's
+        // boundary, seen from outside.
+        ("a cube flush against the landscape's front wall",
+         [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -2 - 0.35 * cubeMinY, 0)))]),
+        ("a cube seen through the notch between two towers",
+         [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.4, offset: SIMD3(-0.2, 1.8, 0.5)))]),
+        ("a cube over the towers, where a tower's corner hid a hatch line's span",
+         [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(-1, 1, 1)))]),
+        ("a cube behind the spike's apex",
+         [("landscape", spike, .identity), ("cube", cube, Placement(offset: SIMD3(-0.3712, 1.162, -0.249)))]),
+        // Two landscapes side by side, the cube standing across the gap:
+        // each contact point lies on one of them, and the other hides it as
+        // it hides any point.
+        ("two landscapes side by side, a cube across the gap",
+         [("landscape", landscape, .identity), ("spike", spike, Placement(offset: SIMD3(4.1, 0, 0))),
+          ("cube", cube, Placement(scale: 0.35, offset: SIMD3(2.05, 0.1, -0.05)))]),
+    ]
+    return (cameras, compositions)
+}
+
 func compositeTests() {
     let contract = Fixtures.dir.appendingPathComponent("contract")
     func polyhedron(_ name: String) throws -> Scene {
@@ -479,56 +722,16 @@ func compositeTests() {
     }
 
     Check.suite("composite: every curve is seen exactly where no geometry's brute-force cast meets its line of sight") {
-        // The cubic landscape's grid: its solid is the drawn triangles, which
-        // the cast is against. Three towers at the cube roots of unity.
-        let bundle = try KurvenBundle.read(at: Fixtures.dir.appendingPathComponent("expr/landscape_cubic.kurven"))
-        let landscape = Scene(bundle: bundle, preset: bundle.manifest.presets[0])
-        let cube = try polyhedron("cube"), frame = try polyhedron("frame"), torus = try surface("torus")
-        let cubeMinY = cube.solid!.vertices.map(\.y).min()!
-        // A spike, exp(-20 |z|), on a grid of 64 cells: an apex no step
-        // along a segment can be trusted to find.
-        let spikeBundle = try NativeLandscape.build(
-            LandscapeRequest(expression: "exp(-20*abs(z))",
-                             domain: Domain(real: Interval(lo: -2, hi: 2), imag: Interval(lo: -2, hi: 2)),
-                             resolution: 65, truncation: .uniform(5)), refine: false)
-        let spike = Scene(bundle: spikeBundle, preset: spikeBundle.manifest.presets[0])
-        let cameras: [(String, Camera)] = [
-            ("the landscape's", landscape.camera),
-            ("el 30° az 37°", Camera(view: testCamera(elevation: -30, azimuth: 37), projection: .orthographic(oblique: nil))),
-            ("el 55° sheared", Camera(view: testCamera(elevation: -55, azimuth: 160, shear: 0.5), projection: .orthographic(oblique: nil))),
-        ]
-        let compositions: [(String, [(String, Scene, Placement)])] = [
-            ("a cube standing on the landscape behind a tower",
-             [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(-1.2, 0.1, 0.3)))]),
-            ("the round torus ringing a tower",
-             [("landscape", landscape, .identity), ("torus", torus, Placement(scale: 0.35, offset: SIMD3(1, 0, 1.6)))]),
-            ("the round torus sunk into the foot of a tower",
-             [("landscape", landscape, .identity), ("torus", torus, Placement(scale: 0.3, offset: SIMD3(0.4, 1.3, 0.3)))]),
-            ("a frame sunk into the slope of a tower",
-             [("landscape", landscape, .identity), ("frame", frame, Placement(scale: 0.3, offset: SIMD3(0.3, -1.3, 0.2)))]),
-            // Moved together, the landscape too.
-            ("all three, moved",
-             [("landscape", landscape, Placement(offset: SIMD3(0.4, 0.2, -0.1))),
-              ("cube", cube, Placement(scale: 0.35, offset: SIMD3(-0.8, 0.3, 0.2))),
-              ("torus", torus, Placement(scale: 0.35, offset: SIMD3(1.4, 0.2, 1.5)))]),
-            // Under the slab's floor at its front, its front face a hair
-            // inside the front wall: lines of sight from the face's lower
-            // part leave the footprint before they reach the floor, and
-            // from its upper part come up through it.
-            ("a cube under the landscape's base",
-             [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -1.56, -0.86)))]),
-            // Standing on the base, sunk into the slab, its front face in
-            // the plane of the front wall, to rounding: on the slab's
-            // boundary, seen from outside.
-            ("a cube flush against the landscape's front wall",
-             [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(0, -2 - 0.35 * cubeMinY, 0)))]),
-            ("a cube seen through the notch between two towers",
-             [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.4, offset: SIMD3(-0.2, 1.8, 0.5)))]),
-            ("a cube over the towers, where a tower's corner hid a hatch line's span",
-             [("landscape", landscape, .identity), ("cube", cube, Placement(scale: 0.35, offset: SIMD3(-1, 1, 1)))]),
-            ("a cube behind the spike's apex",
-             [("landscape", spike, .identity), ("cube", cube, Placement(offset: SIMD3(-0.3712, 1.162, -0.249)))]),
-        ]
+        let (cameras, compositions) = try gateCompositions()
+        // The compositions whose part meets the terrain: their contact line
+        // is drawn, and partly hidden by another part. The others draw none.
+        let touching: Set<String> = ["a cube standing on the landscape behind a tower",
+                                     "the round torus sunk into the foot of a tower",
+                                     "a frame sunk into the slope of a tower", "all three, moved",
+                                     "a cube flush against the landscape's front wall",
+                                     "a cube over the towers, where a tower's corner hid a hatch line's span",
+                                     "a cube behind the spike's apex",
+                                     "two landscapes side by side, a cube across the gap"]
         let clock = ContinuousClock()
         for (name, parts) in compositions {
             var total = CompositeVerdict()
@@ -539,16 +742,28 @@ func compositeTests() {
                     total.compared += v.compared; total.wrong += v.wrong; total.undecided += v.undecided
                     total.hiddenByOther += v.hiddenByOther; total.outsideAlone += v.outsideAlone
                     total.ownCompared += v.ownCompared; total.ownWrong += v.ownWrong
+                    total.contactCompared += v.contactCompared; total.contactHidden += v.contactHidden
+                    total.offTerrain += v.offTerrain
                     if total.example.isEmpty { total.example = v.example }
                     if total.ownExample.isEmpty { total.ownExample = v.ownExample }
                 }
             }
-            Check.expect(total.wrong == 0 && total.outsideAlone == 0 && total.compared > 20_000
+            Check.expect(total.wrong == 0 && total.outsideAlone == 0 && total.offTerrain == 0 && total.compared > 20_000
                          && total.hiddenByOther > 0,
                          "\(name): drawn exactly where no other geometry's cast meets the line of sight",
                          "\(total.wrong) of \(total.compared) disagree, \(total.hiddenByOther) hidden by another, "
                          + "\(total.undecided) at a boundary, \(total.outsideAlone) vertices off the drawing alone, "
+                         + "\(total.contactCompared) on a contact line, \(total.contactHidden) of them hidden by another, "
+                         + "\(total.offTerrain) of them on no landscape's top, "
                          + "\(elapsed)\(total.example)")
+            if touching.contains(name) {
+                Check.expect(total.contactCompared > 1_000 && total.contactHidden > 0
+                             && total.contactHidden < total.contactCompared,
+                             "\(name): its contact line is drawn, and partly hidden by another part",
+                             "\(total.contactCompared) compared, \(total.contactHidden) hidden")
+            } else {
+                Check.expect(total.contactCompared == 0, "\(name): no part meets the terrain, and no contact line is drawn")
+            }
             Check.expect(total.ownWrong == 0 && total.ownCompared > 2_000,
                          "\(name): each geometry alone is its own cast",
                          "\(total.ownWrong) of \(total.ownCompared) disagree\(total.ownExample)")
