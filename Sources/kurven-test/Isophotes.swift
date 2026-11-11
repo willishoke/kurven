@@ -155,16 +155,22 @@ func isophoteTests() {
                      "the isophote at c is the line Re z = ½ log(1/c² − 1), across the whole domain",
                      String(format: "worst %.1e off the line; ", closed) + "paths per level \(counts)")
         // Under a light at a slant the isophotes curve; still on n · l = c.
+        // Held both to the graph's own jet and to its normal in closed form,
+        // (−e^x, 0, 1)/√(1 + e^{2x}), which no code under test computes.
         let slant = SIMD3<Double>(1, 0.5, 2), l = simd_normalize(slant)
-        var slanted = 0.0, vertices = 0
+        var slanted = 0.0, slantedClosed = 0.0, vertices = 0
         for contour in graph.isophotes(light: slant, [0.5, 0.7, 0.85, 0.95], on: g) {
             for p in contour.paths.joined() {
                 vertices += 1
                 slanted = max(slanted, abs(simd_dot(graph.outwardNormal(at: p, on: g)!, l) - contour.level))
+                let e = exp(p.x), n = SIMD3(-e, 0, 1) / (1 + e * e).squareRoot()
+                slantedClosed = max(slantedClosed, abs(simd_dot(n, l) - contour.level))
             }
         }
-        Check.expect(slanted <= 1e-10 && vertices > 40, "under a light at a slant, every vertex is on n · l = c",
-                     String(format: "worst %.1e over %d vertices", slanted, vertices))
+        Check.expect(slanted <= 1e-10 && slantedClosed <= 1e-10 && vertices > 40,
+                     "under a light at a slant, every vertex is on n · l = c, n the jet's and the closed form's",
+                     String(format: "worst %.1e by the jet, %.1e by the closed form, over %d vertices",
+                            slanted, slantedClosed, vertices))
         // Through the layer's own path: lifted onto |f|.
         let layer = surface.contours(of: .isophote, levels, on: .graph(tiled: false), restriction: .all,
                                      in: Surface.HatchContext(built.manifest.occluder), refine: refine,
@@ -172,6 +178,75 @@ func isophoteTests() {
         let lifted = layer.joined().map { abs($0.z - exp($0.x)) / exp($0.x) }.max() ?? .infinity
         Check.expect(layer.count == levels.count && lifted <= 1e-12, "the layer's curves lie on the graph, at |f|",
                      String(format: "%d paths, worst %.1e", layer.count, lifted))
+    }
+
+    Check.suite("isophotes and tone: on a tiled graph, each copy under its own normal, reflected and turned") {
+        // exp(z) over [−1, 1]², copied by a reflection across Re z = 2 and
+        // a quarter turn moved to Re z = 8: each copy's outward normal is
+        // the closed form's, (−e^x, 0, 1)/√(1 + e^{2x}) at the point of the
+        // domain it came from, its xy turned by the tile's linear part.
+        let built = try NativeLandscape.build(
+            LandscapeRequest(expression: "exp(z)", domain: Domain(real: Interval(lo: -1, hi: 1), imag: Interval(lo: -1, hi: 1)),
+                             resolution: 48, truncation: Truncation.none, layers: []),
+            refine: true)
+        let tiles = [Affine2.identity, Affine2(a: -1, b: 0, tx: 4, c: 0, d: 1, ty: 0),
+                     Affine2(a: 0, b: -1, tx: 8, c: 1, d: 0, ty: 0)]
+        let context = Surface.HatchContext(perimeter: nil, region: .full, tiles: tiles)
+        let light = SIMD3<Double>(0.6, -0.8, 1.2), l = simd_normalize(light)
+        /// The tile a world point is a copy of, the point of the domain it
+        /// came from, and the copy's outward normal there in closed form.
+        func origin(_ w: P3<WorldSpace>) -> (tile: Int, p: SIMD2<Double>, n: SIMD3<Double>)? {
+            for (k, tile) in tiles.enumerated() {
+                let q = tile.inverse!(w)
+                guard abs(q.x) <= 1 + 1e-9, abs(q.y) <= 1 + 1e-9 else { continue }
+                let e = exp(q.x)
+                let xy = SIMD2(tile.a * -e + tile.b * 0, tile.c * -e + tile.d * 0)
+                return (k, SIMD2(q.x, q.y), SIMD3(xy.x, xy.y, 1) / (1 + e * e).squareRoot())
+            }
+            return nil
+        }
+        let levels = [0.3, 0.5, 0.7, 0.85]
+        let isophotes = built.surface.contours(of: .isophote, levels, on: .graph(tiled: true), restriction: .all,
+                                               in: context, refine: built.refine, light: light)
+        var off = 0.0, offF = 0.0, lost = 0, perTile = [0, 0, 0]
+        for path in isophotes {
+            guard let first = origin(path[0]) else { lost += 1; continue }
+            perTile[first.tile] += 1
+            // The path's level: the nearest to its first vertex's n · l.
+            let c = levels.min { abs($0 - simd_dot(first.n, l)) < abs($1 - simd_dot(first.n, l)) }!
+            for w in path {
+                guard let o = origin(w) else { lost += 1; continue }
+                off = max(off, abs(simd_dot(o.n, l) - c))
+                offF = max(offF, abs(w.z - exp(o.p.x)) / exp(o.p.x))
+            }
+        }
+        Check.expect(off <= 1e-10 && offF <= 1e-12 && lost == 0 && perTile.allSatisfy { $0 > 0 },
+                     "every isophote vertex of every copy is on n · l = c, the copy's normal in closed form",
+                     String(format: "worst %.1e, off |f| by %.1e; paths per tile ", off, offF) + "\(perTile)")
+        let hatching = Hatching(angle: 0, spacing: 0.05, tone: .halfLambert(light: light), widthSteps: 6)
+        var wrong = 0, samples = 0, changes = 0, tilesHatched = Set<Int>()
+        for (step, paths) in built.surface.graphHatching(hatching, tiled: true, in: context, refine: built.refine) {
+            for path in paths {
+                for (a, b) in zip(path, path.dropFirst()) {
+                    for t in [0.0, 0.5, 1.0] {
+                        guard let o = origin(P3(a.v + (b.v - a.v) * t)) else { wrong += 1; continue }
+                        tilesHatched.insert(o.tile)
+                        let nd = 6 * (1 - simd_dot(o.n, l)) / 2
+                        guard abs(nd - nd.rounded()) > 1e-9 else { continue }
+                        samples += 1
+                        if Int(nd.rounded(.up)) != step { wrong += 1 }
+                    }
+                }
+                for end in [path.first!, path.last!] {
+                    guard let o = origin(end), abs(o.p.x) < 1 - 1e-12 else { continue }
+                    let nd = 6 * (1 - simd_dot(o.n, l)) / 2
+                    if abs(nd - nd.rounded()) <= 1e-10 { changes += 1 } else { wrong += 1 }
+                }
+            }
+        }
+        Check.expect(wrong == 0 && samples > 3000 && changes > 30 && tilesHatched == [0, 1, 2],
+                     "the tone on every copy has the width step of the copy's darkness at every sample, changing on its isophotes",
+                     "\(wrong) wrong of \(samples) samples, \(changes) changes, tiles \(tilesHatched.sorted())")
     }
 
     /// The torus's hatching held to the darkness in closed form: each piece
@@ -448,5 +523,52 @@ func isophoteTests() {
                                     + #"{"kind": "surface"}}"#, on: "surface", saying: "a step on a curved face")
                          && refused(tone + #"{"kind": "solid"}}"#, on: "surface", saying: "one face"),
                      "hatching on a curved face at a slant, in too many widths, under Turing's tone, with a step, or on another face is refused")
+        // Read off the request before anything is built, as the window asks
+        // before an edit is taken: the outward side, and the most vertices a
+        // hatching may take.
+        func relief(_ amplitude: Double, floor: Double? = nil) -> SurfaceRequest {
+            SurfaceRequest(.relief(modulus: 0.64, major: 2, minor: 1, amplitude: amplitude, repeats: SIMD2(1, 1),
+                                   grid: 120, turn: 0, floor: floor, soft: false))
+        }
+        let lit = LayerSource.contour(field: .isophote, levels: [0.5], restriction: .all, faces: .surface,
+                                      light: SIMD3(0, 0, 1))
+        let toneSource = LayerSource.hatching(Hatching(angle: 0, spacing: 0.1, tone: .halfLambert(light: SIMD3(0, 0, 1))),
+                                              faces: .surface)
+        Check.expect(relief(0.3).boundsSolid == true && relief(1 / 3).boundsSolid == false
+                         && relief(0.4).boundsSolid == false && relief(0.4, floor: 1).boundsSolid == true
+                         && SurfaceRequest(.torus(major: 1, minor: 1)).boundsSolid == false
+                         && relief(0.3).unsupported(lit) == nil && relief(0.3).unsupported(toneSource) == nil
+                         && relief(0.4).unsupported(lit)?.contains("bounds no solid") == true
+                         && relief(0.4).unsupported(toneSource)?.contains("bounds no solid") == true
+                         && relief(0.4).unsupported(.coordinateCurves(u: 4, v: 4)) == nil,
+                     "a relief bounds a solid while |A| times the height it displaces stays under the tube's reach, "
+                         + "and isophotes and half-Lambert tone are refused on one that does not")
+        // And the rule is the build's: the surface built has an outward side
+        // exactly where the request says it bounds a solid.
+        var agree = 0, disagree: [String] = []
+        for amplitude in [0.3, 1.0 / 3, 0.4] {
+            for floor in [nil, 2.5] as [Double?] {
+                var request = relief(amplitude, floor: floor)
+                request.grid = 64
+                let built = try SurfaceDrawing.build(request).surface.outward != nil
+                if built == request.boundsSolid { agree += 1 } else { disagree.append("\(amplitude), \(floor ?? 0)") }
+            }
+        }
+        Check.expect(disagree.isEmpty && agree == 6, "the relief built bounds a solid exactly where its request says",
+                     "disagree at \(disagree)")
+        let tooFine = LayerSource.hatching(Hatching(angle: .pi / 2, spacing: 1e-6), faces: .surface)
+        let unlit = LayerSource.contour(field: .isophote, levels: [0.5], restriction: .all, faces: .surface)
+        Check.expect(SurfaceRequest(.torus(major: 2, minor: 1)).unsupported(tooFine)?.contains("more than the") == true
+                         && SurfaceRequest(.torus(major: 2, minor: 1)).unsupported(unlit)?.contains("no light") == true,
+                     "hatching past a layer's vertices, and an isophote with no light, are refused before anything is built")
+        var unlitRefused = false
+        do {
+            _ = try SurfaceDrawing.build(SurfaceRequest(.torus(major: 2, minor: 1), grid: 64))
+                .restyled([LayerSpec(name: "x", role: .scaffold, source: unlit, width: 0.3, heightPolicy: .surface)])
+        } catch { unlitRefused = "\(error)".contains("no light") }
+        Check.expect(unlitRefused, "an isophote with no light, built in code, is refused, not drawn as the height")
+        let negative = #"{"name": "x", "role": "scaffold", "width": -1, "heightPolicy": "surface", "source": {"kind": "contour", "field": "u", "levels": [0.5], "restriction": {"kind": "all"}, "faces": {"kind": "graph"}}}"#
+        Check.expect((try? LayerSpec(json: JSONValue.parse(Data(negative.utf8)))) == nil,
+                     "a layer of negative width is refused")
     }
 }
