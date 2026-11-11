@@ -387,8 +387,8 @@ lies on every plateau, and one on a wall on that wall. Every edit that
 changes what a save writes -- painting, a truncation, a surface's or a
 landscape's numbers -- and each drag of a slider, is one step of ⌘Z, and
 undoing it puts back what was saved before it; with no window, `--add`,
-`--remove`, `--function`, `--set`, `--truncation`, `--levels`, `--strokes`,
-`--undo` and the rest run the same edits in order.
+`--remove`, `--function`, `--set`, `--relief`, `--truncation`, `--levels`,
+`--strokes`, `--undo` and the rest run the same edits in order.
 
 ⌘N opens a picker: the catalog as pictures, each cell the landscape it
 names, drawn small by the same renderer that draws it full size. A name

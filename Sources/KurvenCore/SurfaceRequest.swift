@@ -37,6 +37,17 @@ public struct SurfaceRequest: Sendable, Equatable {
         /// c · tanh(|sn| / c), instead of creasing it.
         case relief(modulus: Double, major: Double, minor: Double, amplitude: Double,
                     repeats: SIMD2<Int>, grid: Int, turn: Double, floor: Double?, soft: Bool)
+
+        /// The shape's name: its `kind` in a manifest.
+        public var kind: String {
+            switch self {
+            case .torus: "torus"
+            case .sn: "sn"
+            case .periodic: "periodic"
+            case .forced: "forced"
+            case .relief: "relief"
+            }
+        }
     }
 
     /// Stroke widths. A fold width of zero leaves the folds out.
@@ -145,6 +156,9 @@ public extension SurfaceRequest {
         /// The linear curve's, present when one is drawn: its slope, its length
         /// in turns, and how many strands.
         case slope, turns, strands
+        /// A relief's amplitude: how far along the normal the torus is
+        /// displaced per unit of the truncated |f|. `--relief` on the CLI.
+        case relief
     }
 
     /// The fields this request's shape has, in the order a panel lists them.
@@ -152,7 +166,8 @@ public extension SurfaceRequest {
     var fields: [Field] {
         switch shape {
         case .torus: [.major, .minor]
-        case .sn, .relief: [.modulus, .major, .minor, .grid]
+        case .sn: [.modulus, .major, .minor, .grid]
+        case .relief: [.modulus, .major, .minor, .grid, .relief]
         case .periodic: [.major, .minor, .grid]
         case .forced: [.radius, .radial, .axial, .trajectoryTurns, .harmonics, .fit]
         }
@@ -177,6 +192,7 @@ public extension SurfaceRequest {
             case (.torus(_, let r), .minor), (.sn(_, _, let r, _), .minor),
                  (.periodic(_, _, _, let r, _), .minor), (.relief(_, _, let r, _, _, _, _, _, _), .minor): r
             case (.sn(let m, _, _, _), .modulus), (.relief(let m, _, _, _, _, _, _, _, _), .modulus): m
+            case (.relief(_, _, _, let a, _, _, _, _, _), .relief): a
             case (.sn(_, _, _, let g), .grid), (.periodic(_, _, _, _, let g), .grid),
                  (.relief(_, _, _, _, _, let g, _, _, _), .grid): Double(g)
             case (.forced(_, _, _, _, _, let x, _), .radius): x
@@ -230,12 +246,13 @@ public extension SurfaceRequest {
                 }
                 shape = .forced(system: s, fit: f, harmonics: h, radial: ra, axial: ax,
                                 radius: rad, turns: t)
-            case .relief(var m, var R, var r, let a, let k, var g, let turn, let floor, let soft):
+            case .relief(var m, var R, var r, var a, let k, var g, let turn, let floor, let soft):
                 switch field {
                 case .modulus: m = x
                 case .major: R = x
                 case .minor: r = x
                 case .grid: g = n
+                case .relief: a = x
                 default: return
                 }
                 shape = .relief(modulus: m, major: R, minor: r, amplitude: a, repeats: k, grid: g,
@@ -306,26 +323,27 @@ public extension SurfaceRequest {
     }
 
     var json: JSONValue {
-        let shape: [String: JSONValue]
+        var shape: [String: JSONValue]
         switch self.shape {
         case .torus(let R, let r):
-            shape = ["kind": .string("torus"), "major": .double(R), "minor": .double(r)]
+            shape = ["major": .double(R), "minor": .double(r)]
         case .sn(let m, let R, let r, let grid):
-            shape = ["kind": .string("sn"), "modulus": .double(m), "major": .double(R), "minor": .double(r),
+            shape = ["modulus": .double(m), "major": .double(R), "minor": .double(r),
                      "grid": .int(grid)]
         case .periodic(let e, let p, let R, let r, let grid):
-            shape = ["kind": .string("periodic"), "expression": .string(e),
+            shape = ["expression": .string(e),
                      "periods": .array([.double(p.x), .double(p.y)]),
                      "major": .double(R), "minor": .double(r), "grid": .int(grid)]
         case .forced(let system, let fit, let harmonics, let radial, let axial, let radius, let turns):
-            shape = ["kind": .string("forced"), "system": .string(system), "fit": .double(fit),
+            shape = ["system": .string(system), "fit": .double(fit),
                      "harmonics": .int(harmonics), "radial": .int(radial), "axial": .int(axial),
                      "radius": .double(radius), "turns": .int(turns)]
         case .relief(let m, let R, let r, let a, let k, let grid, let turn, let floor, let soft):
-            shape = ["kind": .string("relief"), "modulus": .double(m), "major": .double(R), "minor": .double(r),
+            shape = ["modulus": .double(m), "major": .double(R), "minor": .double(r),
                      "amplitude": .double(a), "repeats": .array([.int(k.x), .int(k.y)]), "grid": .int(grid),
                      "turn": .double(turn), "floor": floor.map(JSONValue.double) ?? .null, "soft": .bool(soft)]
         }
+        shape["kind"] = .string(self.shape.kind)
         return .object([
             "shape": .object(shape), "grid": .int(grid),
             "lines": lines.map { .object(["u": .int($0.x), "v": .int($0.y)]) } ?? .null,
@@ -340,10 +358,10 @@ public extension SurfaceRequest {
 
     /// Refuse a request no drawing can be built from, or one whose drawing
     /// would cost without bound, naming the number: a radius that is not
-    /// positive, a modulus outside (0, 1), a grid too coarse to span its
-    /// rectangle or too fine to hold (`maxSamples`), curves of more vertices
-    /// than a layer holds (`maxVertices`), a forced torus revolved on one
-    /// state component twice. What only building can find -- a system the
+    /// positive, a modulus outside (0, 1), a relief outside [0, 1], a grid
+    /// too coarse to span its rectangle or too fine to hold (`maxSamples`),
+    /// curves of more vertices than a layer holds (`maxVertices`), a forced
+    /// torus revolved on one state component twice. What only building can find -- a system the
     /// catalog does not have, an expression that does not parse --
     /// `SurfaceDrawing.build` refuses. `name` spells a field, given its key
     /// in the request (`shape.modulus`), as the refusal names it: by its key
@@ -402,7 +420,10 @@ public extension SurfaceRequest {
             }
         case .relief(let m, let R, let r, let a, let k, let g, let turn, let floor, _):
             try modulus(m); try radii(R, r)
-            try finite(a, "shape.amplitude"); try finite(turn, "shape.turn")
+            guard Self.reliefRange.contains(a) else {
+                throw refuse("shape.amplitude", "must be from 0 to 1, not \(a)")
+            }
+            try finite(turn, "shape.turn")
             if let floor { try finite(floor, "shape.floor") }
             try within(k.x, 1...Self.maxRepeats, "shape.repeats", "whole periods each way")
             try within(k.y, 1...Self.maxRepeats, "shape.repeats", "whole periods each way")
@@ -440,6 +461,13 @@ public extension SurfaceRequest {
     static let maxFit = 100_000.0, maxHarmonics = 64
     /// The most periods a relief repeats each way.
     static let maxRepeats = 16
+    /// A relief's amplitudes. Not below 0: displaced inward past its
+    /// reach, the torus would pass through itself while the relief still
+    /// claimed to bound a solid (`PeriodicTorus.Drawing.relief`). At most 1,
+    /// a displacement of at most the truncation height, 3. A relief past its
+    /// reach is drawn with its back faces kept, so the bound is on cost, not
+    /// on embedding.
+    static let reliefRange = 0.0...1.0
 
     /// At most how many samples the surface's grid has round the ring and
     /// round the tube: exactly, but for sn, whose rectangle's aspect its

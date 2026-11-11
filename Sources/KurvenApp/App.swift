@@ -133,10 +133,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // PATH` (the section, drawn) and `--dump LAYER=PREFIX` (the layer's
         // curves, as `kurven-cli fixtures` writes a hatching's) among them.
         // `--set KEY=NUMBER` and `--truncation H` edit as the surface's and the
-        // landscape's controls do, `--hide LAYER` as the layer list does, and
-        // `--at-once` makes the edits without waiting for what each draws.
+        // landscape's controls do, `--relief A` as a relief's slider does,
+        // `--hide LAYER` as the layer list does, and `--at-once` makes the
+        // edits without waiting for what each draws.
         let painting: Set<String> = ["--add", "--remove", "--function", "--undo", "--redo", "--axis",
-                                     "--dump", "--inspector", "--truncation", "--hide", "--drag"]
+                                     "--dump", "--inspector", "--truncation", "--hide", "--drag", "--relief"]
         // A pick followed by an edit or a save is painting too.
         let editing: Set<String> = ["--set", "--save", "--bake", "--levels", "--strokes"]
         if args.contains(where: painting.contains) || (args.contains("--pick") && args.contains(where: editing.contains)),
@@ -719,6 +720,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     fail("--set edits a surface's or a landscape's request; this bundle has none to edit")
                 }
                 print("Kurven: \(key) = \(number)")
+            case "--relief":
+                // The relief slider set to A: one step of its own, through
+                // the slider's callback (`SurfaceFieldSlider`). Only sn in
+                // relief has one; an amplitude the request refuses ends the
+                // run, saying why, before anything after it is written.
+                guard let number = Double(value) else { fail("--relief wants an amplitude, as in 0.4") }
+                guard let surface = document.surface else {
+                    fail("--relief sets a surface's relief; this bundle has no surface request")
+                }
+                guard surface[.relief] != nil else {
+                    fail("--relief sets sn in relief's amplitude; this surface's shape is \(surface.shape.kind), "
+                         + "which has none (`kurven-cli surface sn --relief A` makes one)")
+                }
+                await edit { SurfaceFieldSlider(document: document, field: .relief, label: "Relief").set(number) }
+                if document.paintStatus != nil { fail("--relief \(value) was refused, and nothing after it is done") }
+                print("Kurven: relief = \(number)")
             case "--drag":
                 // A drag of a surface's or a landscape's control through its
                 // slider's callbacks (`SurfaceFieldSlider`, `LandscapeSlider`):

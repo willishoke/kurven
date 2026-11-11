@@ -200,6 +200,68 @@ app() {
 }
 step "the app saves, restyles, paints and bakes a surface and a polyhedron as the CLI does, with no window" app
 
+# Relief, with no window: sn in relief at 0, raised to 0.4 by the relief
+# slider's callback (`--relief`), bakes and saves `surface sn --relief 0.4`'s
+# drawing and bundle byte for byte, and saved, reopened and baked by the app
+# and by `bake`, draws it again. Opened and saved untouched, a relief keeps
+# its bundle, the contract's fixture too. Raised, undone and redone, the
+# drawings and the bundles are the ones before and after; a drag let go where
+# it began leaves nothing to undo. A relief outside 0 to 1, or on a surface
+# with none -- a torus, plain sn, periodic -- is refused, saying why, with
+# nothing written.
+relief() {
+    local dir="$PACKAGE/.build/relief-check" c="$ROOT/tests/fixtures/contract" out refused
+    rm -rf "$dir" && mkdir -p "$dir" || return 1
+    "$BIN/kurven-cli" surface sn --relief 0.4 --save "$dir/cli.kurven" -o "$dir/cli.svg" >/dev/null &&
+    "$BIN/kurven-cli" surface sn --relief 0 --save "$dir/zero.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/zero.kurven" --relief 0.4 --bake "$dir/app.svg" --save "$dir/app.kurven" >/dev/null &&
+    cmp "$dir/app.svg" "$dir/cli.svg" && cmp "$dir/app.kurven/manifest.json" "$dir/cli.kurven/manifest.json" ||
+        { echo "the app's relief of 0.4 is not surface sn --relief 0.4's, drawing and bundle"; return 1; }
+    "$BIN/KurvenApp" "$dir/app.kurven" --bake "$dir/reopened.svg" >/dev/null &&
+    "$BIN/kurven-cli" bake "$dir/app.kurven" -o "$dir/rebaked.svg" >/dev/null &&
+    cmp "$dir/reopened.svg" "$dir/cli.svg" && cmp "$dir/rebaked.svg" "$dir/cli.svg" ||
+        { echo "the app's relief, saved and reopened, does not bake as surface sn --relief 0.4"; return 1; }
+    "$BIN/KurvenApp" "$dir/zero.kurven" --save "$dir/zero-again.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$c/surface_relief.kurven" --save "$dir/fixture.kurven" >/dev/null &&
+    cmp "$dir/zero.kurven/manifest.json" "$dir/zero-again.kurven/manifest.json" &&
+    cmp "$c/surface_relief.kurven/manifest.json" "$dir/fixture.kurven/manifest.json" ||
+        { echo "a relief opened and saved untouched is not the bundle it was"; return 1; }
+    "$BIN/KurvenApp" "$dir/zero.kurven" --save "$dir/before.kurven" --bake "$dir/before.svg" --relief 0.4 \
+        --save "$dir/after.kurven" --bake "$dir/after.svg" --undo --save "$dir/undone.kurven" --bake "$dir/undone.svg" \
+        --redo --save "$dir/redone.kurven" --bake "$dir/redone.svg" >/dev/null &&
+    diff -r "$dir/before.kurven" "$dir/undone.kurven" >/dev/null && cmp "$dir/before.svg" "$dir/undone.svg" &&
+    diff -r "$dir/after.kurven" "$dir/redone.kurven" >/dev/null && cmp "$dir/after.svg" "$dir/redone.svg" &&
+    cmp "$dir/after.svg" "$dir/cli.svg" && ! cmp -s "$dir/before.svg" "$dir/after.svg" ||
+        { echo "the relief raised, undone and redone, is not what was drawn and saved before and after"; return 1; }
+    out=$("$BIN/KurvenApp" "$dir/zero.kurven" --save "$dir/drag-before.kurven" --drag relief=0.2,0.5,0 \
+        --save "$dir/drag-after.kurven" --undo 2>&1) &&
+    printf '%s\n' "$out" | grep -q 'undo: nothing to undo' &&
+    diff -r "$dir/drag-before.kurven" "$dir/drag-after.kurven" >/dev/null ||
+        { echo "a drag of the relief let go where it began left a step, or another bundle"; return 1; }
+    "$BIN/kurven-cli" surface sn --save "$dir/sn.kurven" >/dev/null || return 1
+    for refused in "$dir/zero.kurven --relief 1.5|surface.shape.amplitude must be from 0 to 1, not 1.5" \
+                   "$dir/zero.kurven --relief -0.1|surface.shape.amplitude must be from 0 to 1, not -0.1" \
+                   "$c/surface_torus.kurven --relief 0.4|shape is torus, which has none" \
+                   "$dir/sn.kurven --relief 0.4|shape is sn, which has none"; do
+        rm -rf "$dir/refused.kurven"
+        out=$("$BIN/KurvenApp" ${refused%|*} --save "$dir/refused.kurven" 2>&1) &&
+            { echo "the app took ${refused%|*}"; return 1; }
+        printf '%s\n' "$out" | grep -q -- "${refused#*|}" && [ ! -e "$dir/refused.kurven" ] ||
+            { printf '%s\n' "$out"; echo "the app did not refuse ${refused%|*}, saying why, with nothing written"; return 1; }
+    done
+    for refused in "sn --relief 1.5|--relief must be from 0 to 1, not 1.5" \
+                   "sn --relief -0.1|--relief must be from 0 to 1, not -0.1" \
+                   "torus --relief 0.4|surface torus has none" \
+                   "periodic --expression sn(z,0.5) --periods 1,1 --relief 0.4|surface periodic has none"; do
+        rm -rf "$dir/refused.kurven" "$dir/refused.svg"
+        out=$("$BIN/kurven-cli" surface ${refused%|*} --save "$dir/refused.kurven" -o "$dir/refused.svg" 2>&1) &&
+            { echo "surface ${refused%|*} was drawn"; return 1; }
+        printf '%s\n' "$out" | grep -q -- "${refused#*|}" && [ ! -e "$dir/refused.kurven" ] && [ ! -e "$dir/refused.svg" ] ||
+            { printf '%s\n' "$out"; echo "surface ${refused%|*} was not refused, saying why, with nothing written"; return 1; }
+    done
+}
+step "the app's relief slider raises sn in relief as surface sn --relief does, saves it, undoes it, and refuses a relief out of range or on a surface with none" relief
+
 # Painting, with no window, as the "Curves on" section paints the picked
 # face. Plateau hatching painted on the hatch fixture's landscape, at the
 # fixture's spacing as the strokes slider sets it (18 and 15 along the longer

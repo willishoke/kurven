@@ -132,6 +132,11 @@ struct SurfaceSection: View {
         case .strands:
             Control(label: "Strands", range: 1...12, step: 1, digits: 0,
                     help: "Parallel linear curves, evenly spaced through the tube.")
+        case .relief:
+            Control(label: "Relief", range: SurfaceRequest.reliefRange, step: 0.01,
+                    help: "How far the torus is displaced along its normal per unit of |sn|, "
+                        + "truncated at 3. Past the torus's reach the relief passes through "
+                        + "itself, and its back faces are kept.")
         }
     }
 

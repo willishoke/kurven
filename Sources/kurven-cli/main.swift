@@ -170,7 +170,7 @@ usage: kurven-cli <command> [options]
         arg f contours on the torus its period rectangle glues into: sn(z, M)
         on [0, 4K) x [0, 2K'), or any expression over [0, P1) x [0, P2).
         sn --relief A puts the landscape in relief: the torus displaced
-        along its normal by A times the truncated |f|, over --repeat
+        along its normal by A, from 0 to 1, times the truncated |f|, over --repeat
         N periods round the ring and M round the tube (N near M keeps the
         tiling isotropic; a pole's plateau is a round disc only then). --turn
         starts the rectangle T imaginary periods up the plane, turning the
@@ -521,6 +521,9 @@ func surfaceCommand(_ args: Args) throws {
     let shape = args.positional.dropFirst().first ?? "torus"
     if shape == "solid" { return try solidCommand(args) }
     let relief = shape == "sn" && args.flags["relief"] != nil
+    if args.flags["relief"] != nil, ["torus", "periodic", "forced"].contains(shape) {
+        throw CLIError("--relief puts sn in relief; surface \(shape) has none")
+    }
     if relief {
         try args.only("surface sn --relief", Args.projection
                       + ["relief", "modulus", "major", "minor", "repeat", "samples", "grid", "turn",

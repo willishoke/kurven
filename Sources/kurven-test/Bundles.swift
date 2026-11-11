@@ -172,6 +172,20 @@ func surfaceBundleTests() {
                         == .linearCurves(slope: 0.25, turns: 4, count: 2),
                      "a linear curve the request moves is drawn as it now says")
 
+        // The relief is a field of sn in relief alone: listed and set
+        // there, and nil, listed nowhere and set to nothing, elsewhere.
+        var relief = SurfaceRequest(.relief(modulus: 0.64, major: 2, minor: 1, amplitude: 0.3, repeats: SIMD2(1, 1),
+                                            grid: 120, turn: 0, floor: nil, soft: false))
+        relief[.relief] = 0.4
+        let raised = SurfaceRequest(.relief(modulus: 0.64, major: 2, minor: 1, amplitude: 0.4, repeats: SIMD2(1, 1),
+                                            grid: 120, turn: 0, floor: nil, soft: false))
+        var plain = SurfaceRequest(.sn(modulus: 0.64, major: 2, minor: 1, grid: 120))
+        let before = plain
+        plain[.relief] = 0.4
+        Check.expect(relief == raised && relief.fields.last == .relief && plain == before && plain[.relief] == nil
+                     && !plain.fields.contains(.relief) && opened.manifest.surface[.relief] == nil,
+                     "the relief slider sets a relief's amplitude, and is no field of any other shape")
+
         // A level slider resamples a family over its own range, and never to
         // fewer than two levels, so a family saved at them keeps its range.
         let family = LayerSpec(name: "mag", role: .magnitude,
@@ -314,6 +328,11 @@ func surfaceBundleTests() {
                 })
         refuses("refuses a relief repeated more than it holds", saying: "must be 1 to 16 whole periods",
                 shape(relief.merging(["repeats": .array([.int(17), .int(1)])]) { $1 }))
+        for amplitude in [-0.1, 1.5, .infinity, .nan] {
+            refuses("refuses a relief of amplitude \(amplitude)", saying: "surface.shape.amplitude must be from 0 to 1, not \(amplitude)",
+                    shape(relief.merging(["repeats": .array([.int(1), .int(1)]),
+                                          "amplitude": .double(amplitude)]) { $1 }))
+        }
         refuses("refuses a fit longer than a run holds", saying: "surface.shape.fit must be at most 100000",
                 shape(forced.merging(["radial": .int(0), "fit": .double(1e6)]) { $1 }))
         refuses("refuses more harmonics than a fit holds", saying: "surface.shape.harmonics must be 1 to 64",
