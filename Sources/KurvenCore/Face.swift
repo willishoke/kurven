@@ -122,6 +122,14 @@ public struct Face: Sendable {
     /// domain is its whole rectangle, and, not built yet, a plateau, a riser
     /// and a wall.
     public var trimLoops: [[P2<ParamSpace>]]? { loops?.value }
+    /// On the graph of f under a truncation, |f| less the truncation
+    /// height: negative on the graph, zero on the truncation edge, whose
+    /// chords the trim loops are. A contour on the face is cut where it
+    /// reaches 0, on the edge itself rather than on a chord of it
+    /// (`contours(of:_:on:)`). Nil on every other face, on the graph where
+    /// nothing is truncated, and on a grid's graph, whose truncation edge is
+    /// the loops' chords themselves, solved linearly on the grid.
+    public let truncationExcess: (@Sendable (P2<ParamSpace>) -> Double)?
 
     /// The contours of a field on one copy of the face, clipped to its
     /// trimmed domain: cut where they cross the face's trim loops or the
@@ -129,14 +137,22 @@ public struct Face: Sendable {
     /// hold them even-odd and the footprint holds them
     /// (`Contour.levels(of:_:over:trimLoops:contains:cuts:)`). On a face with
     /// no trim loops they are kept where the copy's `contains` holds, a
-    /// segment at a time.
+    /// segment at a time. On the graph they are cut on the truncation edge
+    /// exactly (`truncationExcess`), and a chord is refined where it sags
+    /// off the graph as well as where it strays from the level set: the
+    /// graph's parameter plane is the world's xy, so its sag is a length in
+    /// the cell's own units.
     public func contours(of field: ScalarField, _ levels: [Double], on copy: Copy)
         -> [(level: Double, paths: [[P2<ParamSpace>]])] {
         guard let loops = trimLoops else {
             return Contour.levels(of: field, levels, over: domain, contains: copy.contains)
         }
+        let map = self.map
+        var lift: (@Sendable (P2<ParamSpace>) -> SIMD3<Double>)?
+        if id.kind == .graph { lift = { @Sendable p in map(p).position } }
         return Contour.levels(of: field, levels, over: domain, trimLoops: loops,
-                              contains: copy.footprint?.contains, cuts: copy.footprint?.perimeter ?? [])
+                              contains: copy.footprint?.contains, cuts: copy.footprint?.perimeter ?? [],
+                              excess: truncationExcess, lift: lift)
     }
 
     /// One copy of a face: where it is, which way it faces, and how much of
@@ -203,11 +219,13 @@ public struct Face: Sendable {
                 tiles: [Affine2], trimLoops: (@Sendable () -> [[P2<ParamSpace>]])? = nil,
                 footprint: (@Sendable (Affine2) -> (perimeter: [[P2<ParamSpace>]],
                                                      contains: @Sendable (P2<ParamSpace>) -> Bool)?)? = nil,
+                truncationExcess: (@Sendable (P2<ParamSpace>) -> Double)? = nil,
                 foot: @escaping @Sendable (SIMD3<Double>) -> P2<ParamSpace>,
                 bounding: @escaping @Sendable (Affine2) -> [[P2<ParamSpace>]],
                 contains: @escaping @Sendable (P2<ParamSpace>, Affine2) -> Bool) {
         let loops = trimLoops.map(Computed.init)
         self.id = id; self.domain = domain; self.map = map; self.loops = loops
+        self.truncationExcess = truncationExcess
         self.foot = foot; self.bounding = bounding
         copies = tiles.map { tile in
             let turn: Double = tile.a * tile.d - tile.b * tile.c < 0 ? -1 : 1
@@ -410,6 +428,13 @@ public extension Surface {
         let magnitude = faceMagnitude(refine)
         let surface = self
         let loops = graphLoops(refine: refine)
+        var excess: (@Sendable (P2<ParamSpace>) -> Double)?
+        if truncation != .none, refine?.magnitude != nil {
+            excess = { @Sendable p in
+                let h = surface.truncationHeight(atX: p.x)
+                return h.isFinite ? magnitude(P2(p.x, p.y)) - h : -.infinity
+            }
+        }
         return Face(
             id: .graph, domain: rectangle,
             map: { p in
@@ -420,6 +445,7 @@ public extension Surface {
             outward: 1, tiles: tiles,
             trimLoops: { loops.value },
             footprint: { tile in Surface.footprint(region, on: tile) },
+            truncationExcess: excess,
             foot: { P2($0.x, $0.y) },
             bounding: { tile in surface.topBoundary(.graph, loops: loops.value, region: region, tile: tile) },
             contains: { p, tile in
