@@ -128,6 +128,9 @@ struct Args {
     /// curved face (`shadingLayers(_:on:spacing:)`).
     static let shading = ["isophotes", "light", "isophote-width", "hatching", "angle", "spacing", "width-steps",
                           "hatch-width"]
+    /// The flags that add lines of curvature to a surface
+    /// (`curvatureLayers(_:over:width:)`).
+    static let curvature = ["lines-of-curvature", "curvature-seeds", "curvature-width"]
 }
 
 let usage = """
@@ -170,6 +173,7 @@ usage: kurven-cli <command> [options]
           [--mode M] [--width-px N] [--height-px N] -o out.png
           [--isophotes C1,C2,... [--isophote-width W]] [--light X,Y,Z]
           [--hatching uniform|half-lambert [--angle 0|90] [--spacing S] [--width-steps N] [--hatch-width W]]
+          [--lines-of-curvature greater|lesser|both [--curvature-seeds N] [--curvature-width W]]
         Bake a surface to SVG, hidden lines decided by where on the surface
         each vertex lies rather than by depth. torus draws its coordinate
         curves. sn and periodic draw a doubly periodic function's |f| and
@@ -208,7 +212,14 @@ usage: kurven-cli <command> [options]
         by the tone, as on a solid: on half-lambert it changes on the
         isophotes. Widths are positive, and a flag with no layer to apply it
         to is refused. The landscape command
-        takes the same flags, for the graph.
+        takes the same flags, for the graph. --lines-of-curvature draws the
+        surface's lines of curvature, the integral curves of its principal
+        directions, of the greater principal curvature, the lesser, or both:
+        the greater's through --curvature-seeds N points (24 by default)
+        evenly round the coordinate curve v = 0, the lesser's round u = 0,
+        so on a torus of revolution the meridians and the parallels. Each
+        runs both ways until it closes, reaches an umbilic, where the two
+        curvatures are equal, or reaches the step limit. Not on sn in relief.
 
   surface solid [--kind K] [--size R] [--hole H] [--depth D] [--width W]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N] [--color C]
@@ -603,6 +614,44 @@ func shadingLayers(_ args: Args, on faces: FaceSelector, spacing: (u: Double, v:
     return layers
 }
 
+/// The layers `--lines-of-curvature greater|lesser|both` adds to a surface
+/// over `rectangle`: one family of lines of curvature, or both, each through
+/// `--curvature-seeds` N seeds (24 by default) round a coordinate curve
+/// (`LayerSpec.linesOfCurvature(_:over:count:width:)`), drawn
+/// `--curvature-width` wide, by default `width`, the coordinate curves'.
+/// A flag with no layer to apply it to is refused, and so is what the
+/// surface `request` builds cannot draw, sn in relief, as its manifest
+/// refuses it: before the surface is built, so the flags are read once
+/// for the refusals and again, with the surface's own rectangle, for the
+/// layers.
+func curvatureLayers(_ args: Args, over rectangle: (u: ParamAxis, v: ParamAxis), width: Double,
+                     on request: SurfaceRequest) throws -> [LayerSpec] {
+    guard let text = args.flags["lines-of-curvature"] else {
+        if let orphan = ["curvature-seeds", "curvature-width"].first(where: { args.flags[$0] != nil || args.switches.contains($0) }) {
+            throw CLIError("--\(orphan) applies to --lines-of-curvature, and none is given")
+        }
+        return []
+    }
+    let families: [PrincipalCurvature]
+    switch text {
+    case "greater": families = [.greater]
+    case "lesser": families = [.lesser]
+    case "both": families = [.greater, .lesser]
+    default: throw CLIError("--lines-of-curvature wants greater, lesser or both, not '\(text)'")
+    }
+    let count = try args.int("curvature-seeds", 24)
+    let most = ParametricSurface.maxIntegralCurves()
+    guard (1...most).contains(count) else {
+        throw CLIError("--curvature-seeds wants 1 to \(most) seeds, got \(count)")
+    }
+    let w = try args.positive("curvature-width") ?? width
+    let layers = families.map { LayerSpec.linesOfCurvature($0, over: rectangle, count: count, width: w) }
+    if let why = layers.lazy.compactMap({ SurfaceManifest.unsupported($0.source, on: request) }).first {
+        throw CLIError(why)
+    }
+    return layers
+}
+
 /// The layer `--slope-lines C` adds to the graph: the slope lines of |f|,
 /// seeded on the contour |f| = C at the angles of arg f `--seeds` lists, in
 /// radians, by default every 30°, or every `--seed-spacing` along it, drawn
@@ -661,7 +710,7 @@ func surfaceCommand(_ args: Args) throws {
         throw CLIError("--relief puts sn in relief; surface \(shape) has none")
     }
     if relief {
-        try args.only("surface sn --relief", Args.projection + Args.shading
+        try args.only("surface sn --relief", Args.projection + Args.shading + Args.curvature
                       + ["relief", "modulus", "major", "minor", "repeat", "samples", "grid", "turn",
                          "soft", "floor", "resolution", "tiles", "output", "save"])
     } else {
@@ -674,7 +723,7 @@ func surfaceCommand(_ args: Args) throws {
         default: nil
         }
         if let own {
-            try args.only("surface \(shape)", own + Args.projection + Args.previewOptions + Args.shading
+            try args.only("surface \(shape)", own + Args.projection + Args.previewOptions + Args.shading + Args.curvature
                           + ["major", "minor", "width", "samples", "linear-curves", "trajectory-width",
                              "folds", "resolution", "tiles", "output", "preview", "width-px",
                              "height-px", "mode", "save"])
@@ -771,6 +820,8 @@ func surfaceCommand(_ args: Args) throws {
     } catch ManifestError.invalid(let why) {
         throw CLIError(why)
     }
+    // `--lines-of-curvature`: refused before anything is built.
+    _ = try curvatureLayers(args, over: (.angle(samples: 2), .angle(samples: 2)), width: width, on: request)
     let clock = ContinuousClock()
     var drawing: SurfaceDrawing!
     let built = try clock.measure { drawing = try SurfaceDrawing.build(request) }
@@ -778,6 +829,7 @@ func surfaceCommand(_ args: Args) throws {
     // a 48th of the tube's turn by default.
     let shading = try shadingLayers(args, on: .surface, spacing: (abs(drawing.surface.u.range.length) / 48,
                                                                   abs(drawing.surface.v.range.length) / 48))
+        + curvatureLayers(args, over: (drawing.surface.u, drawing.surface.v), width: width, on: request)
     if !shading.isEmpty {
         do {
             drawing = try drawing.restyled(adding(shading, to: drawing.layers.map(\.spec)))
@@ -1845,6 +1897,13 @@ func sourceName(_ source: LayerSource) -> String {
     case .trajectory: "a trajectory"
     case .integralCurves(.slope(let of), let seeds, let faces):
         "slope lines of \(fieldName(of)) on the \(faces.name), seeded on \(fieldName(seeds.field)) = \(fmt(seeds.level))"
+            + { switch seeds.spacing {
+                case .values(let at, let values): " at \(values.count) values of \(fieldName(at))"
+                case .arcLength(let spacing): " every \(fmt(spacing))"
+                } }()
+    case .integralCurves(.principalDirection(let of), let seeds, let faces):
+        "lines of curvature of the \(of.rawValue) principal curvature on the \(faces.name), seeded on "
+            + "\(fieldName(seeds.field)) = \(fmt(seeds.level))"
             + { switch seeds.spacing {
                 case .values(let at, let values): " at \(values.count) values of \(fieldName(at))"
                 case .arcLength(let spacing): " every \(fmt(spacing))"

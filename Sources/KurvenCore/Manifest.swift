@@ -52,8 +52,9 @@ public enum ManifestError: Error, CustomStringConvertible, Equatable {
 /// added to schema 3 without a bump: no key of a landscape's manifest
 /// changed, so every bundle that read before reads and writes as it did, and
 /// nothing outside this repository writes schema 3. So were isophotes, a
-/// field and a light on a contour, and a layer of integral curves
-/// (`LayerSource.integralCurves`), a kind of its own.
+/// field and a light on a contour, a layer of integral curves
+/// (`LayerSource.integralCurves`), a kind of its own, and the principal
+/// directions, a direction field it can follow, on a parametric surface.
 public let kurvenSchema = 3
 /// The axis convention every bundle states about itself. A bundle that says
 /// anything else is not readable by this code, and saying so up front is the
@@ -540,11 +541,12 @@ public enum ContourField: String, Sendable, CaseIterable {
 }
 
 /// A direction field on a face, by name: what a layer of integral curves
-/// follows (`LayerSource.integralCurves`). For now a signed vector field
-/// (D9), whose integral curves are traced both ways from each seed
-/// (`VectorField`). A direction field in the standard sense is unsigned, a
-/// field of line elements, as the principal directions lines of curvature
-/// follow (11c) will be.
+/// follows (`LayerSource.integralCurves`). Each is a vector field (D9),
+/// whose integral curves are traced both ways from each seed
+/// (`VectorField`): signed, as a slope is, or standing for a field of line
+/// elements, unsigned, as the principal directions are, which the
+/// integrator orients as it goes (`VectorField.signed`). There is no
+/// line-field type.
 public enum DirectionField: Sendable, Equatable {
     /// The gradient of a scalar field in the face's own metric: its integral
     /// curves are the field's slope lines (Cayley 1859, "On contour and slope
@@ -553,6 +555,12 @@ public enum DirectionField: Sendable, Equatable {
     /// descent, and where f is analytic and not zero they are its phase
     /// contours, since log f is analytic too.
     case slope(of: ContourField)
+    /// The principal direction of one principal curvature, the greater or
+    /// the lesser (do Carmo §3-2): its integral curves are the lines of
+    /// curvature of that family, and the two families cross at right angles
+    /// in space. Unsigned, and undefined at an umbilic, where the two
+    /// curvatures are equal. A layer draws one family; both are two layers.
+    case principalDirection(of: PrincipalCurvature)
 
     init(json: JSONValue) throws {
         let o = try json.object("DirectionField")
@@ -563,16 +571,35 @@ public enum DirectionField: Sendable, Equatable {
                 throw ManifestError.unknownKind(text, of: "ContourField", known: ContourField.allCases.map(\.rawValue))
             }
             self = .slope(of: field)
+        case "principalDirection":
+            let text = try o.string("of", "DirectionField.principalDirection")
+            guard let curvature = PrincipalCurvature(rawValue: text) else {
+                throw ManifestError.unknownKind(text, of: "PrincipalCurvature",
+                                                known: PrincipalCurvature.allCases.map(\.rawValue))
+            }
+            self = .principalDirection(of: curvature)
         case let other:
-            throw ManifestError.unknownKind(other, of: "DirectionField", known: ["slope"])
+            throw ManifestError.unknownKind(other, of: "DirectionField", known: ["slope", "principalDirection"])
         }
     }
 
     public var json: JSONValue {
         switch self {
         case .slope(let field): .object(["kind": .string("slope"), "of": .string(field.rawValue)])
+        case .principalDirection(let curvature):
+            .object(["kind": .string("principalDirection"), "of": .string(curvature.rawValue)])
         }
     }
+}
+
+/// One of a surface's two principal curvatures at each point, by order: the
+/// greater or the lesser, measured against the normal into the solid the
+/// surface bounds, so a convex surface's are positive
+/// (`Face.principalCurvatures(at:on:)`). On the round torus the greater is
+/// the tube's, 1/r, and its lines of curvature are the meridians; the
+/// lesser's are the parallels.
+public enum PrincipalCurvature: String, Sendable, CaseIterable {
+    case greater, lesser
 }
 
 /// Where a layer's integral curves start (`LayerSource.integralCurves`): on
@@ -636,15 +663,16 @@ public struct Seeds: Sendable, Equatable {
     }
 
     /// Why these seeds cannot be placed on `faces`, or nil when they can: a
-    /// level or a value that is not a number, a level set of |f| or the
-    /// height at 0 or below, which is a set of points or empty, no values, a
+    /// level or a value that is not a number, a level set of |f| at 0 or
+    /// below, or of the height on the graph, where it is |f|, which is a set
+    /// of points or empty (a parametric surface's height takes any sign), no values, a
     /// spacing that is not positive, or under `cell`, the grid's cell where
     /// it is known, a field the faces do not expose, an isophote, whose light
     /// a layer of integral curves does not keep, and values of the function
     /// whose level set the seeds lie on, under its name or another
     /// (`ContourField.function(on:)`), which takes one value there.
     public func unsupported(on faces: FaceSelector, cell: Double? = nil) -> String? {
-        func positive(_ field: ContourField) -> Bool { field == .magnitude || field == .height }
+        func positive(_ field: ContourField) -> Bool { field.function(on: faces) == .magnitude }
         var fields = [field]
         guard level.isFinite else { return "seeds on a level set at \(level): a level is a number" }
         if positive(field), level <= 0 {
@@ -828,13 +856,17 @@ public enum LayerSource: Sendable, Equatable {
     /// on the invariant surface it winds round.
     case trajectory
     /// Integral curves of `field` on `faces`, one through each of `seeds`,
-    /// traced both ways from it (`Face.integralCurve(of:through:on:limits:)`)
-    /// and replicated once per occluder tile where the faces are `tiled`.
-    /// They lie on the graph, lifted to |f|
-    /// (`Surface.integralCurves(of:seeds:on:in:refine:)`). `linearCurves` and
-    /// `trajectory` are integral curves too, of a constant field on a torus,
-    /// in closed form, and keep their own kinds, as D2 keeps the special-case
-    /// kinds: defined by that expansion in code (`VectorField.constant`).
+    /// traced both ways from it
+    /// (`Face.integralCurve(of:through:on:limits:returningTo:)`) and
+    /// replicated once per occluder tile where the faces are `tiled`. Slope
+    /// lines lie on the graph, lifted to |f|
+    /// (`Surface.integralCurves(of:seeds:on:in:refine:)`); lines of
+    /// curvature on a parametric surface, each once round where it does not
+    /// close (`ParametricSurface.integralCurves(of:seeds:limits:)`).
+    /// `linearCurves` and `trajectory` are integral curves too, of a
+    /// constant field on a torus, in closed form, and keep their own kinds,
+    /// as D2 keeps the special-case kinds: defined by that expansion in code
+    /// (`VectorField.constant`).
     case integralCurves(field: DirectionField, seeds: Seeds, faces: FaceSelector)
     /// The edges of a solid, tested per edge by its two faces and cut
     /// exactly where something else hides them (`Solid.visibleEdges`).
@@ -876,14 +908,12 @@ public enum LayerSource: Sendable, Equatable {
         }
         if onSurface {
             switch kind {
-            case "contour", "coordinateCurves", "linearCurves", "foldCurves", "trajectory", "hatching":
+            case "contour", "coordinateCurves", "linearCurves", "foldCurves", "trajectory", "hatching",
+                 "integralCurves":
                 break
             case "file":
                 throw ManifestError.unsupported("a dumped layer on a parametric surface: its curves are drawn "
                                                 + "from its request, not stored")
-            case "integralCurves":
-                throw ManifestError.unsupported("integral curves on a parametric surface: they lie on a landscape's "
-                                                + "graph so far")
             default:
                 throw ManifestError.unsupported("a \(kind) layer on a parametric surface: it is one face, with no "
                                                 + "walls, truncation edge or edges of a solid")
@@ -965,7 +995,8 @@ public enum LayerSource: Sendable, Equatable {
         case "trajectory":
             self = .trajectory
         case "integralCurves":
-            let faces = try LayerSource.landscapeFaces(o, "LayerSource.integralCurves")
+            let faces = onSurface ? try LayerSource.surfaceFaces(o, "LayerSource.integralCurves")
+                : try LayerSource.landscapeFaces(o, "LayerSource.integralCurves")
             let field = try DirectionField(json: o.value("field", "LayerSource.integralCurves"))
             let seeds = try Seeds(json: o.value("seeds", "LayerSource.integralCurves"))
             if let why = LayerSource.unsupported(field, seeds, on: faces) { throw ManifestError.unsupported(why) }
@@ -989,29 +1020,49 @@ public enum LayerSource: Sendable, Equatable {
     }
 
     /// Why integral curves of `field` from `seeds` cannot lie on `faces`, or
-    /// nil when they can: on the graph alone so far, the slope of a field the
-    /// graph exposes but an isophote, whose light they do not keep, from
-    /// seeds the graph can place, no closer than `cell` where it is known
-    /// (`Seeds.unsupported(on:cell:)`).
+    /// nil when they can. Slope lines lie on the graph alone so far, the
+    /// slope of a field the graph exposes but an isophote, whose light they
+    /// do not keep. Lines of curvature lie on a parametric surface alone,
+    /// whose map has second derivatives in closed form: on the graph |f|'s
+    /// would be its central differences differenced again. Seeds are placed
+    /// by fields the faces expose, no closer than `cell` where it is known
+    /// (`Seeds.unsupported(on:cell:)`), and on a surface by its coordinates
+    /// and its height, not by f's fields, which its map does not carry.
     public static func unsupported(_ field: DirectionField, _ seeds: Seeds, on faces: FaceSelector,
                                    cell: Double? = nil) -> String? {
-        guard faces.kind == .graph else {
-            return "integral curves on the \(faces.name): they lie on the graph so far"
-        }
         switch field {
         case .slope(of: .isophote):
+            guard faces.kind == .graph else {
+                return "slope lines on the \(faces.name): they lie on the graph so far"
+            }
             return "the slope of an isophote: integral curves keep no light to read n · l by"
         case .slope(let of):
+            guard faces.kind == .graph else {
+                return "slope lines on the \(faces.name): they lie on the graph so far"
+            }
             if let why = faces.unsupported(of) { return why }
+        case .principalDirection:
+            guard faces == .surface else {
+                return "lines of curvature on the \(faces.name): they lie on a parametric surface, whose map has "
+                    + "second derivatives in closed form"
+            }
+            var fields = [seeds.field]
+            if case .values(let of, _) = seeds.spacing { fields.append(of) }
+            if let f = fields.first(where: { $0.isFieldOfF }) {
+                return "seeds placed by \(f.rawValue) on a parametric surface: lines of curvature are seeded by its "
+                    + "coordinates or its height"
+            }
         }
         return seeds.unsupported(on: faces, cell: cell)
     }
 
     /// The face a contour on a parametric surface names: its one face.
-    private static func surfaceFaces(_ o: [String: JSONValue]) throws -> FaceSelector {
-        let faces = try FaceSelector(json: o.value("faces", "LayerSource.contour"))
+    private static func surfaceFaces(_ o: [String: JSONValue],
+                                     _ what: String = "LayerSource.contour") throws -> FaceSelector {
+        let faces = try FaceSelector(json: o.value("faces", what))
         guard faces == .surface else {
-            throw ManifestError.unsupported("a contour on the \(faces.name) of a parametric surface: "
+            let layer = what == "LayerSource.contour" ? "a contour" : "integral curves"
+            throw ManifestError.unsupported("\(layer) on the \(faces.name) of a parametric surface: "
                                             + "the surface is one face, `surface`")
         }
         return faces
@@ -1120,6 +1171,7 @@ public enum LayerSource: Sendable, Equatable {
         case .foldCurves: "foldCurves"
         case .trajectory: "trajectory"
         case .integralCurves(.slope, _, _): "slope lines"
+        case .integralCurves(.principalDirection, _, _): "lines of curvature"
         case .edges: "edges"
         }
     }
@@ -1454,9 +1506,10 @@ public struct Manifest: Sendable, Equatable {
 /// Its layers lie on the surface's one face: contours of its coordinates and
 /// its height, and of |f| and arg f where the request paints a function
 /// (kept below the truncation where it truncates one, as sn's relief does);
-/// coordinate curves, linear curves, the fold curves, and a forced torus's
-/// trajectory. They are the drawing as it was kept, restyled or not, and a
-/// reader draws each on the surface the request builds.
+/// coordinate curves, linear curves, the fold curves, a forced torus's
+/// trajectory, and its lines of curvature (`DirectionField.principalDirection`)
+/// but in relief. They are the drawing as it was kept, restyled or not, and
+/// a reader draws each on the surface the request builds.
 public struct SurfaceManifest: Sendable, Equatable {
     public var schema: Int
     public var surface: SurfaceRequest
@@ -1506,7 +1559,8 @@ public struct SurfaceManifest: Sendable, Equatable {
     /// Why a layer cannot lie on the surface `request` builds, or nil when
     /// it can: |f| and arg f where no function is painted, a contour kept
     /// below a truncation the function does not have, a trajectory on a
-    /// torus no flow winds round.
+    /// torus no flow winds round, lines of curvature on sn in relief, whose
+    /// map has no second derivatives in closed form.
     public static func unsupported(_ source: LayerSource, on request: SurfaceRequest) -> String? {
         // n · l needs the surface's outward side, which a surface bounding
         // no solid has not.
@@ -1534,6 +1588,13 @@ public struct SurfaceManifest: Sendable, Equatable {
         case .linearCurves(let slope, let turns, let count):
             return request.vertices(linearCurves: SurfaceRequest.LinearCurves(slope: slope, turns: turns, count: count))
                 .map { "a linear curve that \($0)" }
+        case .integralCurves(let field, let seeds, let faces):
+            if let why = LayerSource.unsupported(field, seeds, on: faces) { return why }
+            if case .relief = request.shape {
+                return "lines of curvature on sn in relief: its map is displaced by central differences, with no "
+                    + "second derivatives in closed form, and creased where it is truncated"
+            }
+            return nil
         default:
             return nil
         }

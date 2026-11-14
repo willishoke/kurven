@@ -295,8 +295,8 @@ public struct SurfaceDrawing: Sendable {
     /// a coordinate or the height by the plain routine (`Face.contours(of:_:on:)`),
     /// of |f| or arg f from the request's function as it was sampled once,
     /// all of them in one pass (`contours`); coordinate curves, linear
-    /// curves, the trajectory. The surface and its identity are kept, so a
-    /// restyle redraws curves alone.
+    /// curves, the trajectory, lines of curvature. The surface and its
+    /// identity are kept, so a restyle redraws curves alone.
     public func restyled(_ specs: [LayerSpec]) throws -> SurfaceDrawing {
         try restyled(specs, carrying: nil)
     }
@@ -400,6 +400,10 @@ public struct SurfaceDrawing: Sendable {
             let steps = surface.coordinateHatching(hatching)
             return PolylineSet(paths: steps.flatMap { step in (0..<step.paths.count).map { Array(step.paths[path: $0]) } },
                                coords: steps.flatMap { step in (0..<step.paths.count).map { Array(step.paths.coords(path: $0)!) } })
+        case .integralCurves(let field, let seeds, .surface):
+            // Lines of curvature, read off the map's second derivatives,
+            // which sn in relief has not (refused above).
+            return try surface.integralCurves(of: field, seeds: seeds)
         case .contour(let field, let levels, _, .surface, _) where !field.isFieldOfF:
             let face = surface.face, map = surface.map
             let value: @Sendable (P2<ParamSpace>) -> Double = switch field {
