@@ -613,6 +613,11 @@ public extension ParametricSurface {
     /// trajectory of a forced system, in the coordinates of its fitted torus,
     /// is the one with the system's own rotation number.
     ///
+    /// It is an integral curve of a constant field (`VectorField.constant`),
+    /// read off its closed form, not integrated (D9): the field is one step
+    /// of the curve, so the vertex at whole time m is the strand's start
+    /// moved by m steps, `flow(start, m)`.
+    ///
     /// `count` strands start at `start` -- the rectangle's origin unless
     /// given -- and evenly spaced from it along `v`, and each runs `turns`
     /// turns of `u` -- or, when `slope` is a fraction `p/q` with `q ≤
@@ -632,6 +637,7 @@ public extension ParametricSurface {
         let drawn = Self.linearCurveCloses(slope: slope, within: turns) ?? turns
         let steps = max(u.cells, Int((abs(slope) * Double(v.cells)).rounded(.up)))
         let du = u.range.length / Double(steps), dv = slope * v.range.length / Double(steps)
+        let line = VectorField.constant(SIMD2(du, dv)).flow!
         let span = 8 * u.range.length
         let origin = start ?? P2(u.range.lo, v.range.lo)
         var paths: [[P3<WorldSpace>]] = [], coords: [[P2<ParamSpace>]] = []
@@ -639,8 +645,9 @@ public extension ParametricSurface {
             let v0 = origin.y + v.range.length * Double(strand) / Double(count)
             var path: [P3<WorldSpace>] = [], coord: [P2<ParamSpace>] = []
             var offset = SIMD2(0.0, 0.0)
+            let start = P2<ParamSpace>(origin.x, v0)
             for m in 0...(drawn * steps) {
-                let c = P2<ParamSpace>(origin.x + Double(m) * du, v0 + Double(m) * dv)
+                let c = line(start, Double(m))
                 if !path.isEmpty, c.x - origin.x - offset.x > span {
                     // The seam of a path: the same vertex ends one and
                     // begins the next, its coordinates brought back near

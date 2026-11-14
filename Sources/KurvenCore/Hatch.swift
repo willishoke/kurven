@@ -48,7 +48,8 @@ public extension Surface {
         }
     }
 
-    /// Any described layer's curves: a contour family, or a hatching.
+    /// Any described layer's curves: a contour family, a hatching, or
+    /// integral curves.
     ///
     /// The one place that knows which kinds of description exist, so a reader,
     /// a re-derivation after an edit and a bake all produce the same strokes
@@ -58,6 +59,9 @@ public extension Surface {
         let context = HatchContext(occluder)
         if let hatched = hatch(spec.source, in: context, refine: refine) {
             return hatched
+        }
+        if case .integralCurves(let field, let seeds, let faces) = spec.source {
+            return PolylineSet(paths: integralCurves(of: field, seeds: seeds, on: faces, in: context, refine: refine))
         }
         if case .contour(let field, let levels, let restriction, let faces, let light) = spec.source,
            !field.isFieldOfF {
@@ -81,7 +85,7 @@ public extension Surface {
                refine: ContourRefine? = nil) -> PolylineSet<WorldSpace>? {
         var paths: [[P3<WorldSpace>]]
         switch source {
-        case .file, .contour, .coordinateCurves, .linearCurves, .foldCurves, .trajectory, .edges,
+        case .file, .contour, .coordinateCurves, .linearCurves, .foldCurves, .trajectory, .integralCurves, .edges,
              .hatching(_, .solid):
             return nil
         case .hatching(let hatching, .graph(let tiled)):

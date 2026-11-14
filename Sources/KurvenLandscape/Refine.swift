@@ -174,6 +174,7 @@ public struct ContourRefiner: Sendable {
                              },
                              rings: rings,
                              magnitude: { p in self.magnitude(Complex(p.x, p.y)) },
+                             phase: { p in self.phase(Complex(p.x, p.y)) },
                              zero: { p in self.zero(near: p) },
                              tolerance: tolerance,
                              fork: {

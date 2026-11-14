@@ -59,7 +59,7 @@ public extension ContourRefine {
                                  }
                              },
                              rings: rings,
-                             magnitude: magnitude, zero: zero, tolerance: tolerance,
+                             magnitude: magnitude, phase: phase, zero: zero, tolerance: tolerance,
                              fork: forked)
     }
 }

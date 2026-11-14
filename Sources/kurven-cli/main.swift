@@ -1778,6 +1778,12 @@ func sourceName(_ source: LayerSource) -> String {
         "\(count) linear curve\(count == 1 ? "" : "s") at slope \(fmt(slope)), \(turns) turns"
     case .foldCurves: "fold curves"
     case .trajectory: "a trajectory"
+    case .integralCurves(.slope(let of), let seeds, let faces):
+        "slope lines of \(of.rawValue) on the \(faces.name), seeded on \(seeds.field.rawValue) = \(fmt(seeds.level))"
+            + { switch seeds.spacing {
+                case .values(let at, let values): " at \(values.count) values of \(at.rawValue)"
+                case .arcLength(let spacing): " every \(fmt(spacing))"
+                } }()
     case .edges: "the edges of a solid"
     }
 }

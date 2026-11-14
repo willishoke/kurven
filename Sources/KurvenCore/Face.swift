@@ -296,7 +296,8 @@ public extension SceneGeometry {
         switch self {
         case .heightfield:
             switch spec.source {
-            case .contour(_, _, _, let faces, _), .hatching(_, let faces): return faces.kind
+            case .contour(_, _, _, let faces, _), .hatching(_, let faces), .integralCurves(_, _, let faces):
+                return faces.kind
             case .wallEdges: return .wall
             default: return spec.role == .magnitude || spec.role == .phase ? .graph : nil
             }
