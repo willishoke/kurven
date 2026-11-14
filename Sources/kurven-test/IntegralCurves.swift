@@ -168,11 +168,12 @@ func integralCurveTests() {
                                                           region: .full, refine: open.refine)[0].curves
         let poleOff = poleCurves.map { min(simd_distance($0.path.last!.v, SIMD2(0, 1)),
                                            simd_distance($0.path.last!.v, SIMD2(0, -1))) / c }.max() ?? .infinity
-        // Up a pole's spire the lifted chords bend ever harder, so the step
-        // that keeps them on the graph shrinks below the least, under a
-        // tenth of a cell from the pole.
-        Check.expect(poleCurves.count == 8 && poleCurves.allSatisfy { $0.forward == .singular } && poleOff <= 0.1,
-                     "untruncated, each runs up into a pole of f and ends beside it, under a tenth of a cell short",
+        // Into a pole the field turns against any step that would cross
+        // it, so the steps shrink to the least, the curve at the pole: the
+        // lifted chords' sag is refined only so far, and a steep spire does
+        // not stop it.
+        Check.expect(poleCurves.count == 8 && poleCurves.allSatisfy { $0.forward == .singular } && poleOff <= 1e-3,
+                     "untruncated, each runs up into a pole of f and ends at it, under a thousandth of a cell short",
                      String(format: "%d curves, worst %.1e cell short; ends ", poleCurves.count, poleOff)
                          + "\(poleCurves.map(\.forward))")
         // exp(z): the slope lines are the lines Im z = θ, out to the
@@ -235,6 +236,108 @@ func integralCurveTests() {
                          && graph.integralCurve(of: field, through: P2(3, 0), on: graph.copies[0]) == nil
                          && graph.integralCurve(of: field, through: P2(0.5, 0.5), on: graph.copies[0]) != nil,
                      "a seed over the truncation, or off the domain, starts no curve")
+    }
+
+    Check.suite("integral curves: the slope of a coordinate is raised by the graph's metric, and a steep graph is followed to its end") {
+        // The graph of |exp(z²/2)| = h = e^{(x² − y²)/2}: h_x = x h, h_y = −y h.
+        // Its first fundamental form is g = I + ∇h ∇hᵀ, so the slope of u is
+        // g⁻¹e₁ ∝ (1 + h_y², −h_x h_y) and of v g⁻¹e₂ ∝ (−h_x h_y, 1 + h_x²):
+        // not along the axes where h_x h_y ≠ 0, as the plane's gradient is.
+        let b = try landscape("exp(z^2/2)", re: (-1, 1), im: (-1, 1), resolution: 48, truncation: Truncation.none)
+        let graph = b.surface.graph(refine: b.refine)!
+        let su = graph.slope(of: { $0.x }), sv = graph.slope(of: { $0.y })
+        var worst = 0.0, turned = 0.0, sampled = 0
+        for i in 0..<9 {
+            for j in 0..<9 {
+                let x = -0.9 + 0.225 * Double(i), y = -0.9 + 0.225 * Double(j)
+                let h = exp((x * x - y * y) / 2), hx = x * h, hy = -y * h
+                for (field, closed) in [(su, SIMD2(1 + hy * hy, -hx * hy)), (sv, SIMD2(-hx * hy, 1 + hx * hx))] {
+                    guard let w = field.value(P2(x, y)) else { worst = .infinity; continue }
+                    sampled += 1
+                    worst = max(worst, simd_length(simd_normalize(w) - simd_normalize(closed)))
+                    turned = max(turned, 1 - abs(simd_normalize(closed).x == 0 ? 1 : simd_dot(simd_normalize(closed), simd_normalize(SIMD2(closed.x, 0)))))
+                }
+            }
+        }
+        // The general rule, the adjugate of g from the jet, agrees where the
+        // graph is gentle.
+        var general = 0.0
+        for p in [P2<ParamSpace>(0.3, -0.4), P2(-0.7, 0.2), P2(0.5, 0.5)] {
+            let jet = graph.map(p)
+            for d in [SIMD2(1.0, 0), SIMD2(0, 1.0), SIMD2(0.3, -2)] {
+                let x = Face.raised(d, overGraphOf: SIMD2(jet.du.z, jet.dv.z))!, y = Face.raised(d, jet)!
+                general = max(general, simd_length(x - y) / simd_length(x))
+            }
+        }
+        Check.expect(sampled == 162 && worst <= 1e-8 && turned > 0.05 && general <= 1e-12,
+                     "on |exp(z²/2)|'s graph the slope of u is ∝ (1 + h_y², −h_x h_y) and of v ∝ (−h_x h_y, 1 + h_x²), g⁻¹ raised",
+                     String(format: "%d samples, worst %.1e off the closed form's direction, which leaves its axis by up to %.2f; "
+                                + "the jet's adjugate agrees to %.1e", sampled, worst, turned, general))
+        // exp(20z): its slope lines are the lines Im z = θ, straight in the
+        // plane, on a graph that rises to e^20. The chord's sag in space is
+        // refined at most five halvings below the longest step, so the line
+        // reaches the domain's edge at Re z = 1.
+        let steep = try landscape("exp(20*z)", re: (-1, 1), im: (-0.3, 0.3), resolution: 48, truncation: Truncation.none)
+        let line = steep.surface.graphIntegralCurves(of: .slope(of: .magnitude),
+                                                     seeds: Seeds(on: .magnitude, at: 1, .values(of: .phase, [0])),
+                                                     tiles: [.identity], region: .full, refine: steep.refine)[0].curves
+        let c = cell(steep.surface)
+        let offAxis = line.first.map { $0.path.map { abs($0.y) }.max()! } ?? .infinity
+        Check.expect(line.count == 1 && line[0].backward == .boundary && line[0].forward == .boundary
+                         && abs(line[0].path.first!.x + 1) <= 1e-12 && abs(line[0].path.last!.x - 1) <= 1e-12
+                         && line[0].path.count <= Int(2 / c * 64) && offAxis <= 1e-9,
+                     "on exp(20z) the slope line runs from Re z = −1 to Re z = 1, to the domain's edge both ways, its vertices bounded",
+                     line.map { String(format: "%@/%@ from %.6f to %.6f, %d vertices (%.0f a cell), off Im z = 0 by %.1e",
+                                       "\($0.backward)", "\($0.forward)", $0.path.first!.x, $0.path.last!.x,
+                                       $0.path.count, Double($0.path.count) / (2 / c), offAxis) }.joined())
+    }
+
+    Check.suite("integral curves: seeds once each, and no closer than the grid resolves") {
+        let rational = try landscape("(z^2 - 1)/(z^2 + 1)", re: (-2.5, 2.5), im: (-2, 2), resolution: 160,
+                                     truncation: .uniform(4))
+        func count(_ values: [Double]) -> Int {
+            rational.surface.graphIntegralCurves(of: .slope(of: .magnitude), seeds: Seeds(on: .magnitude, at: 0.5, .values(of: .phase, values)),
+                                                 tiles: [.identity], region: .full, refine: rational.refine)[0].curves.count
+        }
+        let one = count([1]), cut = count([.pi]), twice = [count([1, 1 + 2 * .pi]), count([.pi, -.pi]), count([1, 1])]
+        Check.expect(one == 2 && cut == 2 && twice == [2, 2, 2],
+                     "values the same modulo 2π seed once: |f| = 1/2 round each zero meets arg f = 1 once, and π once",
+                     "arg f = 1: \(one), π: \(cut); 1 and 1 + 2π, π and −π, 1 twice: \(twice)")
+        // A value read exactly at a vertex: once, whether the field crosses
+        // it there (−, 0, +) or touches it (−, 0, −), and a closed path's
+        // first vertex once.
+        let line = [P2<ParamSpace>(0, 0), P2(1, 0), P2(2, 0)]
+        let seedsAt = Seeds(on: .magnitude, at: 1, .values(of: .u, [0]))
+        let touch = seedsAt.points(along: [line], value: { -($0.x - 1) * ($0.x - 1) }) { SIMD3($0.x, $0.y, 0) }
+        let cross = seedsAt.points(along: [line], value: { $0.x - 1 }) { SIMD3($0.x, $0.y, 0) }
+        let square = [P2<ParamSpace>(0, 0), P2(1, 0), P2(1, 1), P2(0, 1), P2(0, 0)]
+        let corner = seedsAt.points(along: [square], value: { $0.x + $0.y }) { SIMD3($0.x, $0.y, 0) }
+        Check.expect(touch == [P2(1, 0)] && cross == [P2(1, 0)] && corner == [P2(0, 0)],
+                     "a value read at a vertex seeds the vertex once, touched or crossed, and a closed path's first vertex once",
+                     "touched \(touch), crossed \(cross), closed \(corner)")
+        // By arc length a piece of the level set takes round(L / spacing)
+        // seeds: none under half the spacing; and a ratio no grid resolves
+        // seeds nothing rather than trapping.
+        let unit = [P2<ParamSpace>(0, 0), P2(1, 0)]
+        func spaced(_ s: Double) -> Int {
+            Seeds(on: .magnitude, at: 1, .arcLength(s)).points(along: [unit], value: nil) { SIMD3($0.x, $0.y, 0) }.count
+        }
+        Check.expect(spaced(3) == 0 && spaced(1.5) == 1 && spaced(0.25) == 4 && spaced(1e-300) == 0 && spaced(.leastNonzeroMagnitude) == 0,
+                     "a unit stretch spaced 3 apart takes no seed, 1.5 one, a quarter four, and 1e-300 none, without trapping",
+                     "\([3, 1.5, 0.25, 1e-300].map(spaced))")
+        // Every path refuses seeds closer than a cell: the layer's own
+        // check, given the cell, and the derivation, which draws nothing.
+        let c = cell(rational.surface)
+        let close = Seeds(on: .magnitude, at: 0.5, .arcLength(0.5 * c))
+        let refused = LayerSource.unsupported(.slope(of: .magnitude), close, on: .graph(tiled: false), cell: c)
+        let drawn = rational.surface.integralCurves(of: .slope(of: .magnitude), seeds: close, on: .graph(tiled: false),
+                                                    in: Surface.HatchContext(perimeter: nil), refine: rational.refine)
+        let far = rational.surface.integralCurves(of: .slope(of: .magnitude), seeds: Seeds(on: .magnitude, at: 0.5, .arcLength(2 * c)),
+                                                  on: .graph(tiled: false), in: Surface.HatchContext(perimeter: nil),
+                                                  refine: rational.refine)
+        Check.expect(refused?.contains("closer than a cell of the grid") == true && drawn.isEmpty && !far.isEmpty,
+                     "seeds closer than a cell are refused by the layer's check and draw nothing; two cells apart they draw",
+                     "\(refused ?? "accepted"); \(drawn.count) and \(far.count) curves")
     }
 
     Check.suite("integral curves: seeds by arc length, and on a tiled graph each copy's own") {
@@ -358,9 +461,15 @@ func integralCurveTests() {
             (byValues.replacingOccurrences(of: #""level": 0.6"#, with: #""level": 0"#), "f's zeros or nothing"),
             (byValues.replacingOccurrences(of: #""level": 0.6"#, with: #""level": -1"#), "f's zeros or nothing"),
             (byValues.replacingOccurrences(of: "[-1, 0.5]", with: "[]"), "no values"),
-            (byValues.replacingOccurrences(of: #""field": "phase""#, with: #""field": "magnitude""#), "its own level set"),
+            (byValues.replacingOccurrences(of: #""field": "phase""#, with: #""field": "magnitude""#), "they are one function"),
             (byValues.replacingOccurrences(of: #""field": "phase", "values": [-1, 0.5]"#,
-                                           with: #""field": "height", "values": [0, 1]"#), "it is positive"),
+                                           with: #""field": "height", "values": [0.5]"#), "they are one function"),
+            (byValues.replacingOccurrences(of: #""on": {"field": "magnitude""#, with: #""on": {"field": "height""#)
+                .replacingOccurrences(of: #""field": "phase", "values": [-1, 0.5]"#,
+                                      with: #""field": "magnitude", "values": [0.5]"#), "they are one function"),
+            (byValues.replacingOccurrences(of: #""on": {"field": "magnitude""#, with: #""on": {"field": "phase""#)
+                .replacingOccurrences(of: #""field": "phase", "values": [-1, 0.5]"#,
+                                      with: #""field": "height", "values": [0, 1]"#), "it is positive"),
             (byValues.replacingOccurrences(of: #""field": "phase""#, with: #""field": "isophote""#), "isophote"),
             (byValues.replacingOccurrences(of: #""of": "magnitude""#, with: #""of": "isophote""#), "no light"),
             (byValues.replacingOccurrences(of: #""of": "magnitude""#, with: #""of": "curl""#), "not one of"),
@@ -377,7 +486,7 @@ func integralCurveTests() {
         ]
         let missed = refusals.filter { !refused($0.0, saying: $0.1) }.map(\.1)
         Check.expect(missed.isEmpty,
-                     "seeds on |f| or the height at 0 or below, at no values, at values of the seeds' own field or a height not "
+                     "seeds on |f| or the height at 0 or below, at no values, at values of the function they lie on, by any name, or a height not "
                          + "positive, by an isophote, the slope of an isophote, a field or kind unknown, a spacing not positive, "
                          + "and integral curves off the graph are refused, saying why",
                      "not refused: \(missed)")
