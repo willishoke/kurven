@@ -22,11 +22,18 @@ import simd
 /// chord to it sags off the curve by more than half the refiner's
 /// tolerance, or, on the graph, where the lifted chord sags off the graph
 /// by as much: so every chord of the polyline is within the tolerance of
-/// the curve it stands for, on the face and in space. A curve ends:
+/// the curve it stands for, on the face, and in space but where the graph
+/// is steeper than that resolves. A step is halved for its sag in space at
+/// most five times below the longest step (`Limits.liftedHalvings`), as the
+/// plain contour routine halves a grid chord at most five times, so a
+/// steep but smooth graph costs a bounded number of vertices a cell and is
+/// followed to its end. A curve ends:
 ///
-/// - at a singular point, where the steps refused there have shrunk below
-///   `leastStep`, carried to the point itself when the field can name it
-///   (`VectorField.singularPoint`: a zero of f);
+/// - at a singular point, where the field is undefined or every step turns
+///   against the heading, so the steps refused there have shrunk below
+///   `leastStep`: a zero of f, which the curve runs down into, carried to
+///   the point itself when the field can name it
+///   (`VectorField.singularPoint`), or a pole, which it runs up into;
 /// - where it leaves the copy's trimmed domain, at the domain's edge, the
 ///   footprint's perimeter or the truncation edge, bisected on membership
 ///   (`Face.Copy.contains`) along the step to the last bit, so on the
@@ -92,11 +99,14 @@ public enum IntegralCurve {
         public var accuracy: Double
         /// The most steps each way from the seed.
         public var maxSteps: Int
+        /// How many times a step may be halved below the longest for its
+        /// chord's sag in space: past it the chord is kept.
+        public var liftedHalvings: Int
 
         public init(tolerance: Double = 0.02, largestStep: Double = 0.5, leastStep: Double = 1e-4,
-                    accuracy: Double = 1e-7, maxSteps: Int = 20_000) {
+                    accuracy: Double = 1e-7, maxSteps: Int = 20_000, liftedHalvings: Int = 5) {
             self.tolerance = tolerance; self.largestStep = largestStep; self.leastStep = leastStep
-            self.accuracy = accuracy; self.maxSteps = maxSteps
+            self.accuracy = accuracy; self.maxSteps = maxSteps; self.liftedHalvings = liftedHalvings
         }
     }
 
@@ -172,7 +182,10 @@ public extension Face {
             return path + [s.v]
         }
 
+        // The shortest step whose chord is still held to the face in space.
+        let liftedLeast = largest * Foundation.pow(0.5, Double(limits.liftedHalvings))
         var path = [seed], p = seed
+        var lifted: SIMD3<Double>?
         var h = largest, steps = 0, attempts = 0
         var left = false
         let start = direction(seed)
@@ -192,8 +205,10 @@ public extension Face {
             }
             let error = simd_distance(q, whole)
             var sagged = simd_distance(mid, 0.5 * (p + q)) > sag
-            if !sagged, let lift {
-                sagged = simd_distance(lift(P2(mid)), 0.5 * (lift(P2(p)) + lift(P2(q)))) > sag
+            if !sagged, let lift, h > liftedLeast {
+                let from = lifted ?? lift(P2(p))
+                lifted = from
+                sagged = simd_distance(lift(P2(mid)), 0.5 * (from + lift(P2(q)))) > sag
             }
             if !(error <= accuracy) || sagged {
                 h *= 0.5
@@ -202,18 +217,14 @@ public extension Face {
             }
             // Out of the trimmed domain within the step: the half that
             // leaves it bisected on membership, a step of that half's own
-            // from its start, to the last bit, and the last point inside
-            // kept. At the half's whole length the step is the half itself,
-            // outside, and at none its start, inside.
+            // from its start, and the last point inside kept. At the half's
+            // whole length the step is the half itself, outside, and at none
+            // its start, inside.
             if !inside(mid) || !inside(q) {
                 let (from, k) = inside(mid) ? (mid, k1Mid) : (p, k1)
                 if from == mid { path.append(mid) }
-                var lo = 0.0, hi = 0.5 * h
-                for _ in 0..<64 where hi - lo > 1e-15 * h {
-                    let t = 0.5 * (lo + hi)
-                    if let r = step(from, t, k, heading: k1), inside(r) { lo = t } else { hi = t }
-                }
-                if lo > 0, let end = step(from, lo, k, heading: k1) { path.append(end) }
+                let t = bisect(0, 0.5 * h) { t in step(from, t, k, heading: k1).map(inside) ?? false }.holds
+                if t > 0, let end = step(from, t, k, heading: k1) { path.append(end) }
                 return (path, .boundary)
             }
             // Back at the seed, heading the way it set out: closed, on the
@@ -231,6 +242,8 @@ public extension Face {
             }
             path.append(q)
             p = q
+            lifted = nil
+            // The direction at q is the next step's first stage.
             heading = direction(q)
             steps += 1
             if !left, simd_distance(q, seed) > 4 * closeTo { left = true }
@@ -249,28 +262,49 @@ public extension Face {
     /// vanishes or the map's derivatives are degenerate.
     func slope(of value: @escaping @Sendable (P2<ParamSpace>) -> Double, period: Double? = nil,
                singularPoint: (@Sendable (P2<ParamSpace>) -> P2<ParamSpace>?)? = nil) -> VectorField {
-        let h = 1e-4 * cell, map = self.map
+        let h = 1e-4 * cell, map = self.map, gradient = heightGradient
         @Sendable func difference(_ a: Double, _ b: Double) -> Double {
-            guard let period else { return a - b }
-            let d = a - b
-            return d - period * (d / period).rounded()
+            period.map { shortWay(a - b, period: $0) } ?? a - b
         }
         return VectorField(value: { p in
             let du = difference(value(P2(p.x + h, p.y)), value(P2(p.x - h, p.y))) / (2 * h)
             let dv = difference(value(P2(p.x, p.y + h)), value(P2(p.x, p.y - h))) / (2 * h)
+            if let gradient { return Face.raised(SIMD2(du, dv), overGraphOf: gradient(p)) }
             return Face.raised(SIMD2(du, dv), map(p))
         }, singularPoint: singularPoint)
     }
 
     /// The slope of the height, the map's z, read off the map's own jet:
     /// `dφ` is the z of its two derivatives. On the graph the height is |f|,
-    /// and its slope lines are the lines of steepest ascent and descent.
+    /// and its slope lines are the lines of steepest ascent and descent; its
+    /// jet is the height's derivatives alone there (`heightGradient`), the
+    /// same numbers without its point.
     func heightSlope(singularPoint: (@Sendable (P2<ParamSpace>) -> P2<ParamSpace>?)? = nil) -> VectorField {
         let map = self.map
+        if let gradient = heightGradient {
+            return VectorField(value: { p in
+                let a = gradient(p)
+                return Face.raised(a, overGraphOf: a)
+            }, singularPoint: singularPoint)
+        }
         return VectorField(value: { p in
             let jet = map(p)
             return Face.raised(SIMD2(jet.du.z, jet.dv.z), jet)
         }, singularPoint: singularPoint)
+    }
+
+    /// A differential raised to a vector over the graph of a height whose
+    /// gradient is `a`, where the parameter plane is the world's xy: there
+    /// g = I + a aᵀ, and g⁻¹ = (I + a⊥ a⊥ᵀ) / (1 + |a|²) for a⊥ = (−a_y, a_x),
+    /// since |a|² I = a aᵀ + a⊥ a⊥ᵀ. Read so, nothing cancels however steep
+    /// the graph: the adjugate's terms in |a|³ cancel to |a|, and on a pole's
+    /// spire, |a| some 10⁶, turned the direction by a thousandth. The slope
+    /// of the height itself, dφ = a, is a / (1 + |a|²) to the bit.
+    static func raised(_ d: SIMD2<Double>, overGraphOf a: SIMD2<Double>) -> SIMD2<Double>? {
+        let perpendicular = SIMD2(-a.y, a.x)
+        let w = (d + perpendicular * simd_dot(perpendicular, d)) / (1 + simd_length_squared(a))
+        guard w != .zero, w.x.isFinite, w.y.isFinite else { return nil }
+        return w
     }
 
     /// A differential raised to a vector by the first fundamental form of
@@ -288,42 +322,57 @@ public extension Face {
 
 public extension Seeds {
     /// The seeds along `paths`, polylines of the level set in the parameter
-    /// plane, in order along each. At listed values of a second field,
-    /// `value` read along each chord, taken the short way round a field of
-    /// `period`: each crossing of a value bisected along its chord to the last
-    /// bit, a chord across the jump half a period from the value skipped, and
-    /// a crossing at a vertex counted once. Nothing without `value`. By arc
-    /// length, measured on the curve in space, the polyline's vertices
-    /// carried there by `position`.
+    /// plane, in order along each.
+    ///
+    /// At listed values of a second field, `value`, read the short way round
+    /// a field of `period`, and the values the same modulo it taken once.
+    /// Where a value falls strictly between a chord's two readings it is
+    /// bisected along the chord to the last bit, a chord across the jump half
+    /// a period from the value skipped; where a vertex reads the value
+    /// exactly, the seed is the vertex, once, whether the field crosses the
+    /// value there or touches it, and a closed path's last vertex, its first
+    /// again, is not read twice. Nothing without `value`.
+    ///
+    /// By arc length, measured on the curve in space, the polyline's vertices
+    /// carried there by `position`: a path of length L takes round(L /
+    /// spacing) seeds at the middles of as many equal stretches, so a piece
+    /// of the level set shorter than half the spacing, a fragment the trimmed
+    /// domain cuts off or a small ring, takes none, and no two seeds on one
+    /// piece are closer than three quarters of the spacing. A path whose ratio is
+    /// not a number or past ten million takes none: a layer's spacing is held
+    /// to a cell at least (`Seeds.unsupported(on:cell:)`).
     func points(along paths: [[P2<ParamSpace>]], value: ((P2<ParamSpace>) -> Double)?, period: Double? = nil,
                 position: (P2<ParamSpace>) -> SIMD3<Double>) -> [P2<ParamSpace>] {
         var seeds: [P2<ParamSpace>] = []
         switch spacing {
-        case .values(_, let values):
+        case .values(_, let listed):
             guard let value else { return [] }
             func residual(_ x: Double, _ c: Double) -> Double {
-                guard let period else { return x - c }
-                let d = x - c
-                return d - period * (d / period).rounded()
+                period.map { shortWay(x - c, period: $0) } ?? x - c
+            }
+            var values: [Double] = []
+            for c in listed where !values.contains(where: { abs(residual($0, c)) <= 1e-12 * max(1, abs(c)) }) {
+                values.append(c)
             }
             for path in paths where path.count >= 2 {
                 let read = path.map(value)
-                for k in 1..<path.count {
-                    let a = path[k - 1].v, b = path[k].v
-                    for c in values {
-                        let ra = residual(read[k - 1], c), rb = residual(read[k], c)
-                        guard ra.isFinite, rb.isFinite, (ra >= 0) != (rb >= 0) else { continue }
-                        if let period, abs(ra - rb) > period / 2 { continue }
-                        var lo = 0.0, hi = 1.0
-                        for _ in 0..<64 {
-                            let t = 0.5 * (lo + hi)
-                            guard t > lo, t < hi else { break }
-                            let r = residual(value(P2(a + t * (b - a))), c)
-                            guard r.isFinite else { break }
-                            if (r >= 0) == (ra >= 0) { lo = t } else { hi = t }
+                let closed = path.first == path.last
+                for k in path.indices {
+                    if k > 0 {
+                        let a = path[k - 1].v, b = path[k].v
+                        for c in values {
+                            let ra = residual(read[k - 1], c), rb = residual(read[k], c)
+                            guard ra.isFinite, rb.isFinite, ra != 0, rb != 0, (ra > 0) != (rb > 0) else { continue }
+                            if let period, abs(ra - rb) > period / 2 { continue }
+                            let t = bisect(0, 1) { t in
+                                let r = residual(value(P2(a + t * (b - a))), c)
+                                return r.isFinite && (r > 0) == (ra > 0)
+                            }
+                            seeds.append(P2(a + 0.5 * (t.holds + t.fails) * (b - a)))
                         }
-                        seeds.append(P2(a + 0.5 * (lo + hi) * (b - a)))
                     }
+                    if closed, k == path.count - 1 { continue }
+                    for c in values where residual(read[k], c) == 0 { seeds.append(path[k]) }
                 }
             }
         case .arcLength(let spacing):
@@ -331,9 +380,9 @@ public extension Seeds {
                 let placed = path.map(position)
                 var lengths = [0.0]
                 for k in 1..<path.count { lengths.append(lengths[k - 1] + simd_distance(placed[k], placed[k - 1])) }
-                let total = lengths[lengths.count - 1]
-                guard total > 0, total.isFinite else { continue }
-                let n = max(1, Int((total / spacing).rounded()))
+                let total = lengths[lengths.count - 1], ratio = total / spacing
+                guard total > 0, ratio.isFinite, ratio < 1e7 else { continue }
+                let n = Int(ratio.rounded())
                 var k = 1
                 for i in 0..<n {
                     let s = (Double(i) + 0.5) * total / Double(n)
@@ -354,7 +403,7 @@ public extension Surface {
     /// (`graphIntegralCurves(of:seeds:tiles:region:refine:limits:)`), lifted
     /// to |f|, f's own with a refiner, and carried to the copy's tile, on
     /// every tile where `tiled`. Nothing on another face, nor where the
-    /// layer could not be decoded (`LayerSource.unsupported(_:_:on:)`).
+    /// layer could not be decoded (`LayerSource.unsupported(_:_:on:cell:)`).
     func integralCurves(of field: DirectionField, seeds: Seeds, on faces: FaceSelector, in context: HatchContext,
                         refine: ContourRefine? = nil,
                         limits: IntegralCurve.Limits = IntegralCurve.Limits()) -> [[P3<WorldSpace>]] {
@@ -379,34 +428,39 @@ public extension Surface {
     /// f's fields end their slope lines on the zeros of f where the refiner
     /// finds one (`ContourRefine.zero`). arg f is read off f, so without a
     /// refiner that has it there are no seeds placed by it, and no slope of
-    /// it. Nothing where the layer could not be decoded
-    /// (`LayerSource.unsupported(_:_:on:)`).
+    /// it. Nothing where the layer could not be decoded or its seeds lie
+    /// closer than a cell of the grid
+    /// (`LayerSource.unsupported(_:_:on:cell:)`). The seeds are traced in
+    /// parallel, each thread with a refiner of its own (`ContourRefine.fork`).
     func graphIntegralCurves(of field: DirectionField, seeds: Seeds, tiles: [Affine2], region: Region,
                              refine: ContourRefine?, limits: IntegralCurve.Limits = IntegralCurve.Limits())
         -> [(tile: Affine2, curves: [IntegralCurve.Traced])] {
-        guard LayerSource.unsupported(field, seeds, on: .graph(tiled: false)) == nil,
-              let face = graph(tiles: tiles, region: region, refine: refine) else { return [] }
+        guard let face = graph(tiles: tiles, region: region, refine: refine),
+              LayerSource.unsupported(field, seeds, on: .graph(tiled: false), cell: face.cell) == nil else { return [] }
         let magnitude = faceMagnitude(refine)
-        let zero: (@Sendable (P2<ParamSpace>) -> P2<ParamSpace>?)? = refine?.zero.map { zero in
-            { @Sendable p in zero(P2(p.v)).map { P2($0.v) } }
-        }
         let phase: (@Sendable (P2<ParamSpace>) -> Double)? = refine?.phase.map { phase in
             { @Sendable p in phase(P2(p.v)) }
         }
-        let vectors: VectorField
-        switch field {
-        case .slope(of: .magnitude), .slope(of: .height):
-            vectors = face.heightSlope(singularPoint: zero)
-        case .slope(of: .phase):
-            guard let phase else { return [] }
-            vectors = face.slope(of: phase, period: 2 * .pi, singularPoint: zero)
-        case .slope(of: .u):
-            vectors = face.slope(of: { $0.x })
-        case .slope(of: .v):
-            vectors = face.slope(of: { $0.y })
-        case .slope(of: .isophote):
-            return []
+        /// The field on a graph read with `refine`, a thread's own.
+        @Sendable func vectors(on face: Face, _ refine: ContourRefine?) -> VectorField? {
+            let zero: (@Sendable (P2<ParamSpace>) -> P2<ParamSpace>?)? = refine?.zero.map { zero in
+                { @Sendable p in zero(P2(p.v)).map { P2($0.v) } }
+            }
+            switch field {
+            case .slope(of: .magnitude), .slope(of: .height):
+                return face.heightSlope(singularPoint: zero)
+            case .slope(of: .phase):
+                guard let phase = refine?.phase else { return nil }
+                return face.slope(of: { phase(P2($0.v)) }, period: 2 * .pi, singularPoint: zero)
+            case .slope(of: .u):
+                return face.slope(of: { $0.x })
+            case .slope(of: .v):
+                return face.slope(of: { $0.y })
+            case .slope(of: .isophote):
+                return nil
+            }
         }
+        guard vectors(on: face, refine) != nil else { return [] }
         /// A field on the graph by name: its scalar field, to contour, and
         /// its value and period, to read along a curve.
         func named(_ name: ContourField) -> (scalar: ScalarField?, value: ((P2<ParamSpace>) -> Double)?, period: Double?) {
@@ -419,7 +473,7 @@ public extension Surface {
             case .isophote: (nil, nil, nil)
             }
         }
-        guard let scalar = named(seeds.field).scalar else { return [] }
+        guard let scalar = named(seeds.field).scalar, let lift = face.lift else { return [] }
         let at: (value: ((P2<ParamSpace>) -> Double)?, period: Double?)
         if case .values(let of, _) = seeds.spacing {
             let n = named(of)
@@ -427,13 +481,20 @@ public extension Surface {
         } else {
             at = (nil, nil)
         }
-        let map = face.map
-        let traced: [Face.Copy] = if case .inside = region { face.copies } else { Array(face.copies.prefix(1)) }
-        let curves = traced.map { copy -> [IntegralCurve.Traced] in
-            let level = face.contours(of: scalar, [seeds.level], on: copy).flatMap(\.paths)
-            let points = seeds.points(along: level, value: at.value, period: at.period) { map($0).position }
-            return Heightfield.parallelMap(points, chunk: 1) { seed in
-                face.integralCurve(of: vectors, through: seed, on: copy, limits: limits)
+        let surface = self
+        let traced = if case .inside = region { Array(face.copies.indices) } else { [0] }
+        let curves = traced.map { k -> [IntegralCurve.Traced] in
+            let level = face.contours(of: scalar, [seeds.level], on: face.copies[k]).flatMap(\.paths)
+            let points = seeds.points(along: level, value: at.value, period: at.period, position: lift)
+            // Each thread its own refiner, f compiled again into closures of
+            // its own (`ContourRefine.fork`), and the graph and field on it.
+            return Heightfield.parallelMap(points, chunk: 1, worker: { () -> (face: Face, vectors: VectorField)? in
+                let own = refine?.forked()
+                guard let face = surface.graph(tiles: tiles, region: region, refine: own),
+                      let vectors = vectors(on: face, own) else { return nil }
+                return (face, vectors)
+            }) { worker, seed in
+                worker.flatMap { $0.face.integralCurve(of: $0.vectors, through: seed, on: $0.face.copies[k], limits: limits) }
             }.compactMap { $0 }.filter { $0.path.count >= 2 }
         }
         return face.copies.indices.map { k in (face.copies[k].tile, curves[min(k, curves.count - 1)]) }

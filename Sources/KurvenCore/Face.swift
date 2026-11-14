@@ -135,6 +135,11 @@ public struct Face: Sendable {
     /// the cell's own units, and the plain routine refines it
     /// (`contours(of:_:on:)`). Nil on every other face.
     let lift: (@Sendable (P2<ParamSpace>) -> SIMD3<Double>)?
+    /// The derivatives of the height, the map's z, in the parameter plane,
+    /// where the face is the graph of a height over the world's xy, as the
+    /// graph's is: its slope read without its point (`heightSlope`). Nil on
+    /// every other face.
+    let heightGradient: (@Sendable (P2<ParamSpace>) -> SIMD2<Double>)?
 
     /// The contours of a field on one copy of the face, clipped to its
     /// trimmed domain: cut where they cross the face's trim loops or the
@@ -223,12 +228,13 @@ public struct Face: Sendable {
                                                      contains: @Sendable (P2<ParamSpace>) -> Bool)?)? = nil,
                 truncationExcess: (@Sendable (P2<ParamSpace>) -> Double)? = nil,
                 lift: (@Sendable (P2<ParamSpace>) -> SIMD3<Double>)? = nil,
+                heightGradient: (@Sendable (P2<ParamSpace>) -> SIMD2<Double>)? = nil,
                 foot: @escaping @Sendable (SIMD3<Double>) -> P2<ParamSpace>,
                 bounding: @escaping @Sendable (Affine2) -> [[P2<ParamSpace>]],
                 contains: @escaping @Sendable (P2<ParamSpace>, Affine2) -> Bool) {
         let loops = trimLoops.map(Computed.init)
         self.id = id; self.domain = domain; self.map = map; self.loops = loops
-        self.truncationExcess = truncationExcess; self.lift = lift
+        self.truncationExcess = truncationExcess; self.lift = lift; self.heightGradient = heightGradient
         self.foot = foot; self.bounding = bounding
         copies = tiles.map { tile in
             let turn: Double = tile.a * tile.d - tile.b * tile.c < 0 ? -1 : 1
@@ -451,6 +457,10 @@ public extension Surface {
             footprint: { tile in Surface.footprint(region, on: tile) },
             truncationExcess: excess,
             lift: { p in SIMD3(p.x, p.y, magnitude(P2(p.x, p.y))) },
+            heightGradient: { p in
+                let n = surface.graphNormal(at: P2(p.x, p.y), tiles: [.identity], refine: refine)
+                return SIMD2(-n.x, -n.y)
+            },
             foot: { P2($0.x, $0.y) },
             bounding: { tile in surface.topBoundary(.graph, loops: loops.value, region: region, tile: tile) },
             contains: { p, tile in

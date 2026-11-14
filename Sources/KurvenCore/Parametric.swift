@@ -46,8 +46,7 @@ public struct ParamAxis: Sendable, Equatable {
     /// axis; plain subtraction on a bounded one.
     public func difference(_ a: Double, _ b: Double) -> Double {
         guard let period else { return a - b }
-        let d = a - b
-        return d - period * (d / period).rounded()
+        return shortWay(a - b, period: period)
     }
 }
 

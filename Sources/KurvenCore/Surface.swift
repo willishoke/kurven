@@ -526,6 +526,8 @@ public struct ContourRefine: Sendable {
     public typealias Rings = @Sendable (Double, [[P2<DomainSpace>]]) -> [[P2<DomainSpace>]]
     /// |f| at a domain point, untruncated, as the grid would hold it.
     public typealias Magnitude = @Sendable (P2<DomainSpace>) -> Double
+    /// arg f at a domain point, in (−π, π].
+    public typealias Phase = @Sendable (P2<DomainSpace>) -> Double
     /// A zero of f within a few cells of a domain point, or nil.
     public typealias Zero = @Sendable (P2<DomainSpace>) -> P2<DomainSpace>?
 
@@ -544,7 +546,7 @@ public struct ContourRefine: Sendable {
     /// angles of arg f, and the slope of arg f read (`Seeds`,
     /// `Surface.integralCurves(of:seeds:on:in:refine:)`). Nil for a consumer
     /// with no function.
-    public let phase: Magnitude?
+    public let phase: Phase?
     /// With it, a fold curve that ends beside a zero of f is carried to the
     /// zero (`Heightfield.foldCurves`), as the refiner carries the phase lines.
     public let zero: Zero?
@@ -563,7 +565,7 @@ public struct ContourRefine: Sendable {
     public let fork: (@Sendable () -> ContourRefine)?
 
     public init(contours: @escaping Contours, rings: Rings?, magnitude: Magnitude? = nil,
-                phase: Magnitude? = nil, zero: Zero? = nil, tolerance: Double = 0.02,
+                phase: Phase? = nil, zero: Zero? = nil, tolerance: Double = 0.02,
                 fork: (@Sendable () -> ContourRefine)? = nil) {
         self.tolerance = tolerance
         self.contours = contours; self.rings = rings; self.magnitude = magnitude; self.phase = phase; self.zero = zero

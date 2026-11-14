@@ -1811,6 +1811,15 @@ func refineCommand(_ args: Args) throws {
 
 func fmt(_ x: Double) -> String { String(format: "%g", x) }
 
+/// A field as a drawing names it: |f| and arg f by their symbols.
+func fieldName(_ field: ContourField) -> String {
+    switch field {
+    case .magnitude: "|f|"
+    case .phase: "arg f"
+    case .u, .v, .height, .isophote: field.rawValue
+    }
+}
+
 func sourceName(_ source: LayerSource) -> String {
     switch source {
     case .file: "dumped"
@@ -1835,9 +1844,9 @@ func sourceName(_ source: LayerSource) -> String {
     case .foldCurves: "fold curves"
     case .trajectory: "a trajectory"
     case .integralCurves(.slope(let of), let seeds, let faces):
-        "slope lines of \(of.rawValue) on the \(faces.name), seeded on \(seeds.field.rawValue) = \(fmt(seeds.level))"
+        "slope lines of \(fieldName(of)) on the \(faces.name), seeded on \(fieldName(seeds.field)) = \(fmt(seeds.level))"
             + { switch seeds.spacing {
-                case .values(let at, let values): " at \(values.count) values of \(at.rawValue)"
+                case .values(let at, let values): " at \(values.count) values of \(fieldName(at))"
                 case .arcLength(let spacing): " every \(fmt(spacing))"
                 } }()
     case .edges: "the edges of a solid"

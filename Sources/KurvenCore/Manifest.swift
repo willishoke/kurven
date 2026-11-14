@@ -522,6 +522,13 @@ public enum ContourField: String, Sendable, CaseIterable {
     /// Whether this is one of f's fields, placed by the refiner.
     public var isFieldOfF: Bool { self == .magnitude || self == .phase }
 
+    /// The function this field is on `faces`, by the name of one field that
+    /// is it: on the graph the height is |f|, so `.height` is `.magnitude`
+    /// there; any other field is itself.
+    public func function(on faces: FaceSelector) -> ContourField {
+        self == .height && faces.kind == .graph ? .magnitude : self
+    }
+
     /// What the field's values are computed from (`FieldClass`).
     public var fieldClass: FieldClass {
         switch self {
@@ -533,8 +540,11 @@ public enum ContourField: String, Sendable, CaseIterable {
 }
 
 /// A direction field on a face, by name: what a layer of integral curves
-/// follows (`LayerSource.integralCurves`). A vector field, signed (D9), whose
-/// integral curves are traced both ways from each seed (`VectorField`).
+/// follows (`LayerSource.integralCurves`). For now a signed vector field
+/// (D9), whose integral curves are traced both ways from each seed
+/// (`VectorField`). A direction field in the standard sense is unsigned, a
+/// field of line elements, as the principal directions lines of curvature
+/// follow (11c) will be.
 public enum DirectionField: Sendable, Equatable {
     /// The gradient of a scalar field in the face's own metric: its integral
     /// curves are the field's slope lines (Cayley 1859, "On contour and slope
@@ -628,11 +638,12 @@ public struct Seeds: Sendable, Equatable {
     /// Why these seeds cannot be placed on `faces`, or nil when they can: a
     /// level or a value that is not a number, a level set of |f| or the
     /// height at 0 or below, which is a set of points or empty, no values, a
-    /// spacing that is not positive, a field the faces do not expose, an
-    /// isophote, whose light a layer of integral curves does not keep, and
-    /// values of the field whose level set the seeds lie on, which takes
-    /// one value there.
-    public func unsupported(on faces: FaceSelector) -> String? {
+    /// spacing that is not positive, or under `cell`, the grid's cell where
+    /// it is known, a field the faces do not expose, an isophote, whose light
+    /// a layer of integral curves does not keep, and values of the function
+    /// whose level set the seeds lie on, under its name or another
+    /// (`ContourField.function(on:)`), which takes one value there.
+    public func unsupported(on faces: FaceSelector, cell: Double? = nil) -> String? {
         func positive(_ field: ContourField) -> Bool { field == .magnitude || field == .height }
         var fields = [field]
         guard level.isFinite else { return "seeds on a level set at \(level): a level is a number" }
@@ -642,13 +653,19 @@ public struct Seeds: Sendable, Equatable {
         switch spacing {
         case .values(let of, let values):
             fields.append(of)
-            if of == field { return "seeds at values of \(field.rawValue) along its own level set, where it takes one value" }
+            if of.function(on: faces) == field.function(on: faces) {
+                return "seeds at values of \(of.rawValue) along a level set of \(field.rawValue): on the \(faces.name) "
+                    + "they are one function, which takes one value there"
+            }
             guard !values.isEmpty else { return "seeds at no values of \(of.rawValue)" }
             if let bad = values.first(where: { !$0.isFinite || (positive(of) && $0 <= 0) }) {
                 return "seeds where \(of.rawValue) is \(bad): " + (bad.isFinite ? "it is positive" : "a value is a number")
             }
         case .arcLength(let spacing):
             guard spacing.isFinite, spacing > 0 else { return "seeds spaced \(spacing) apart: a spacing is positive" }
+            if let cell, spacing < cell {
+                return "seeds spaced \(spacing) apart, closer than a cell of the grid, \(cell)"
+            }
         }
         for f in fields {
             if f == .isophote { return "seeds placed by an isophote, whose light integral curves do not keep" }
@@ -974,8 +991,10 @@ public enum LayerSource: Sendable, Equatable {
     /// Why integral curves of `field` from `seeds` cannot lie on `faces`, or
     /// nil when they can: on the graph alone so far, the slope of a field the
     /// graph exposes but an isophote, whose light they do not keep, from
-    /// seeds the graph can place (`Seeds.unsupported(on:)`).
-    public static func unsupported(_ field: DirectionField, _ seeds: Seeds, on faces: FaceSelector) -> String? {
+    /// seeds the graph can place, no closer than `cell` where it is known
+    /// (`Seeds.unsupported(on:cell:)`).
+    public static func unsupported(_ field: DirectionField, _ seeds: Seeds, on faces: FaceSelector,
+                                   cell: Double? = nil) -> String? {
         guard faces.kind == .graph else {
             return "integral curves on the \(faces.name): they lie on the graph so far"
         }
@@ -985,7 +1004,7 @@ public enum LayerSource: Sendable, Equatable {
         case .slope(let of):
             if let why = faces.unsupported(of) { return why }
         }
-        return seeds.unsupported(on: faces)
+        return seeds.unsupported(on: faces, cell: cell)
     }
 
     /// The face a contour on a parametric surface names: its one face.
@@ -1386,12 +1405,10 @@ public struct Manifest: Sendable, Equatable {
     /// curves seeded closer than a cell apart along their level set, which
     /// asks for more curves than the grid resolves.
     public static func unsupported(_ source: LayerSource, domain: Domain, shape: (ny: Int, nx: Int)) -> String? {
-        guard case .integralCurves(_, let seeds, _) = source, case .arcLength(let spacing) = seeds.spacing else {
-            return nil
-        }
+        guard case .integralCurves(let field, let seeds, let faces) = source else { return nil }
         let cell = max(abs(domain.real.length) / Double(max(shape.nx - 1, 1)),
                        abs(domain.imag.length) / Double(max(shape.ny - 1, 1)))
-        return spacing < cell ? "seeds spaced \(spacing) apart, closer than a cell of the grid, \(cell)" : nil
+        return LayerSource.unsupported(field, seeds, on: faces, cell: cell)
     }
 
     public static func read(contentsOf url: URL) throws -> Manifest {
