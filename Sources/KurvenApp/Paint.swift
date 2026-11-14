@@ -51,7 +51,7 @@ extension Document {
              .wallEdges(let edges, _):
             guard case .wall(let edge) = pick.face else { return false }
             return edges.contains(edge)
-        case .contour(_, _, _, let faces, _), .hatching(_, let faces):
+        case .contour(_, _, _, let faces, _), .hatching(_, let faces), .integralCurves(_, _, let faces):
             // A riser at a tile boundary stands between two copies, which
             // only risers selected on every tile reach.
             if case .tileBoundaryRiser = pick.face { return Self.tiled(faces) == true }
@@ -188,6 +188,18 @@ extension Document {
                 let plateau: Double? = if case .hatching(let h, _)? = template("plateau_hatch")?.source { h.spacing } else { nil }
                 shading(on: .graph(tiled: tiled),
                         spacing: plateau ?? max(abs(m.domain.real.length), abs(m.domain.imag.length)) / 70)
+                // Slope lines of |f| from the contour |f| = 1, at every 30° of
+                // arg f, which only f itself can place: the phase contours
+                // they are, drawn as integral curves.
+                if bundle.refine?.phase != nil {
+                    catalog(LayerSpec(name: "graph_slope_lines", role: .scaffold,
+                                      source: .integralCurves(field: .slope(of: .magnitude),
+                                                              seeds: Seeds(on: .magnitude, at: 1,
+                                                                           .values(of: .phase, Self.slopeAngles)),
+                                                              faces: .graph(tiled: tiled)),
+                                      width: 0.3, heightPolicy: .surface),
+                            "Slope lines of |f|")
+                }
                 if !has(.foldCurves), let folds = template("folds") { catalog(folds, "Fold curves") }
             case .plateau:
                 if var spec = template("plateau_hatch"), case .hatching(let hatching, _) = spec.source {
@@ -392,6 +404,9 @@ extension Document {
     /// The levels an isophote layer is added at: n · l at every quarter
     /// strictly between −1 and 1.
     static let isophoteLevels = [-0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75]
+
+    /// The angles of arg f slope lines are added at: every 30°, from −π.
+    static let slopeAngles = (0..<12).map { -Double.pi + Double($0) * Double.pi / 6 }
 
     /// The light an isophote or a half-Lambert tone is added under: the one
     /// `kurven-cli surface solid --hatching half-lambert` draws a solid under.

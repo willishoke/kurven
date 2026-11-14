@@ -300,7 +300,8 @@ usage: kurven-cli <command> [options]
 
   landscape [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI]
             [--res N] [--truncation H | --bands BELOW:HEIGHT,... --beyond H]
-            [--spacing S] [--isophotes C1,C2,... --light X,Y,Z --hatching T ...] -o out.kurven
+            [--spacing S] [--isophotes C1,C2,... --light X,Y,Z --hatching T ...]
+            [--slope-lines C [--seeds A1,A2,... | --seed-spacing S] [--slope-width W]] -o out.kurven
         Sample a function over a rectangle and write its bundle. Every layer
         is a description, so the result's truncation, levels and hatch spacing are
         editable afterwards -- in the app, or by `preview --levels`.
@@ -310,7 +311,13 @@ usage: kurven-cli <command> [options]
         contour levels are chosen up to the highest of them, so set the
         truncation here rather than in the manifest afterwards. --isophotes
         and --hatching light the graph as `surface` lights a surface, the
-        hatching at the plateaus' spacing unless --spacing says.
+        hatching at the plateaus' spacing unless --spacing says. --slope-lines
+        draws the slope lines of |f|, its lines of steepest ascent and descent,
+        through seeds on the contour |f| = C: at the angles of arg f --seeds
+        lists, in radians (every 30° by default), where each is the phase
+        contour at its angle, or every --seed-spacing along the contour, no
+        closer than a cell of the grid. Each runs both ways until it reaches a
+        zero or a pole of f, the truncation edge or the domain's edge.
 
   refine [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI] [--res N]
          [--truncation H] [--tolerance CELLS] [--depth N]
@@ -594,6 +601,47 @@ func shadingLayers(_ args: Args, on faces: FaceSelector, spacing: (u: Double, v:
                                 width: try args.positive("hatch-width") ?? 0.4, heightPolicy: .surface))
     }
     return layers
+}
+
+/// The layer `--slope-lines C` adds to the graph: the slope lines of |f|,
+/// seeded on the contour |f| = C at the angles of arg f `--seeds` lists, in
+/// radians, by default every 30°, or every `--seed-spacing` along it, drawn
+/// `--slope-width` wide. Nil without `--slope-lines`. What a manifest
+/// refuses is refused here (`LayerSource.unsupported(_:_:on:)`), and so is a
+/// flag with no layer to apply it to, and seeds placed both ways at once.
+func slopeLayer(_ args: Args) throws -> LayerSpec? {
+    guard let text = args.flags["slope-lines"] else {
+        if let orphan = ["seeds", "seed-spacing", "slope-width"].first(where: { args.flags[$0] != nil || args.switches.contains($0) }) {
+            throw CLIError("--\(orphan) applies to --slope-lines, and none is given")
+        }
+        return nil
+    }
+    guard let level = Double(text), level.isFinite, level > 0 else {
+        throw CLIError("--slope-lines wants a level of |f|, a positive number, not '\(text)'")
+    }
+    let spacing: Seeds.Spacing
+    switch (args.flags["seeds"], args.flags["seed-spacing"]) {
+    case (_?, _?):
+        throw CLIError("--seeds and --seed-spacing place the seeds two ways; give one")
+    case (let listed?, nil):
+        let angles = listed.split(separator: ",").compactMap { Double($0) }
+        guard !angles.isEmpty, angles.count == listed.split(separator: ",").count, angles.allSatisfy(\.isFinite) else {
+            throw CLIError("--seeds wants angles of arg f in radians, as in -1.5,0,1.5")
+        }
+        spacing = .values(of: .phase, angles)
+    case (nil, _?):
+        spacing = .arcLength(try args.positive("seed-spacing")!)
+    case (nil, nil):
+        spacing = .values(of: .phase, (0..<12).map { -Double.pi + Double($0) * Double.pi / 6 })
+    }
+    let source = LayerSource.integralCurves(field: .slope(of: .magnitude), seeds: Seeds(on: .magnitude, at: level, spacing),
+                                            faces: .graph(tiled: false))
+    if case .integralCurves(let field, let seeds, let faces) = source,
+       let why = LayerSource.unsupported(field, seeds, on: faces) {
+        throw CLIError(why)
+    }
+    return LayerSpec(name: "slope_lines", role: .scaffold, source: source,
+                     width: try args.positive("slope-width") ?? 0.3, heightPolicy: .surface)
 }
 
 /// `layers` with `added` drawn before the outlines that close the list, as
@@ -1648,7 +1696,8 @@ func realBands(_ text: String, beyond: String?) throws -> Truncation {
 func landscapeCommand(_ args: Args) throws {
     try args.only("landscape", ["function", "re", "im", "res", "truncation", "bands", "beyond",
                                 "no-truncation", "spacing", "repeat", "output", "isophotes", "light",
-                                "isophote-width", "hatching", "angle", "width-steps", "hatch-width"])
+                                "isophote-width", "hatching", "angle", "width-steps", "hatch-width",
+                                "slope-lines", "seeds", "seed-spacing", "slope-width"])
     let output = URL(fileURLWithPath: try args.string("output"))
     let catalog = Catalog.native
 
@@ -1674,6 +1723,7 @@ func landscapeCommand(_ args: Args) throws {
     if let bands = args.flags["bands"] { request.truncation = try realBands(bands, beyond: args.flags["beyond"]) }
     if args.switches.contains("no-truncation") { request.truncation = Truncation.none }
     if let v = try args.positive("spacing") { request.spacing = v }
+    let slope = try slopeLayer(args)
 
     let clock = ContinuousClock()
     var bundle: KurvenBundle!
@@ -1688,9 +1738,15 @@ func landscapeCommand(_ args: Args) throws {
     }.first
     let spacing = plateauSpacing ?? max(abs(request.domain.real.length), abs(request.domain.imag.length)) / 70
     let shading = try shadingLayers(args, on: .graph(tiled: false), spacing: (spacing, spacing), spacingIsOwn: true)
-    if !shading.isEmpty {
+    // `--slope-lines`: seeds no closer than the grid resolves.
+    if let slope, let why = Manifest.unsupported(slope.source, domain: bundle.manifest.domain,
+                                                 shape: bundle.manifest.height.shape) {
+        throw CLIError("--seed-spacing: \(why)")
+    }
+    let added = shading + (slope.map { [$0] } ?? [])
+    if !added.isEmpty {
         var m = bundle.manifest
-        m.layers = adding(shading, to: m.layers)
+        m.layers = adding(added, to: m.layers)
         bundle = bundle.restyled(m)
     }
     try bundle.write(to: output)
@@ -1755,6 +1811,15 @@ func refineCommand(_ args: Args) throws {
 
 func fmt(_ x: Double) -> String { String(format: "%g", x) }
 
+/// A field as a drawing names it: |f| and arg f by their symbols.
+func fieldName(_ field: ContourField) -> String {
+    switch field {
+    case .magnitude: "|f|"
+    case .phase: "arg f"
+    case .u, .v, .height, .isophote: field.rawValue
+    }
+}
+
 func sourceName(_ source: LayerSource) -> String {
     switch source {
     case .file: "dumped"
@@ -1778,6 +1843,12 @@ func sourceName(_ source: LayerSource) -> String {
         "\(count) linear curve\(count == 1 ? "" : "s") at slope \(fmt(slope)), \(turns) turns"
     case .foldCurves: "fold curves"
     case .trajectory: "a trajectory"
+    case .integralCurves(.slope(let of), let seeds, let faces):
+        "slope lines of \(fieldName(of)) on the \(faces.name), seeded on \(fieldName(seeds.field)) = \(fmt(seeds.level))"
+            + { switch seeds.spacing {
+                case .values(let at, let values): " at \(values.count) values of \(fieldName(at))"
+                case .arcLength(let spacing): " every \(fmt(spacing))"
+                } }()
     case .edges: "the edges of a solid"
     }
 }

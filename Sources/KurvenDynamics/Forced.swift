@@ -268,9 +268,10 @@ public extension InvariantTorus {
     /// The fitted torus holds the trajectory to within `residual`, a
     /// fraction of a pixel at any drawing resolution, so nothing is
     /// integrated: the trajectory is the straight line `φ = Ωt, θ = ωt` in
-    /// the torus's own coordinates, placed from the grid as any linear curve
-    /// is. The integrated one, `trajectory(_:from:duration:every:)`, is the
-    /// check that this is so.
+    /// the torus's own coordinates, the integral curve in closed form of the
+    /// constant field at the rotation number's slope (`VectorField.constant`),
+    /// placed from the grid as any linear curve is. The integrated one,
+    /// `trajectory(_:from:duration:every:)`, is the check that this is so.
     func trajectory(on surface: ParametricSurface, turns: Int) -> PolylineSet<WorldSpace> {
         surface.linearCurves(slope: rotationNumber, turns: turns, start: startPhase)
     }

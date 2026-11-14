@@ -111,7 +111,7 @@ public struct ContourRefiner: Sendable {
 
     /// An angle brought into [-π, π]: the short way round.
     static func wrapped(_ angle: Double) -> Double {
-        angle - (angle / (2 * .pi)).rounded() * 2 * .pi
+        shortWay(angle, period: 2 * .pi)
     }
 
     /// How far a sample is from the level: for the phase, the short way round.
@@ -174,6 +174,7 @@ public struct ContourRefiner: Sendable {
                              },
                              rings: rings,
                              magnitude: { p in self.magnitude(Complex(p.x, p.y)) },
+                             phase: { p in self.phase(Complex(p.x, p.y)) },
                              zero: { p in self.zero(near: p) },
                              tolerance: tolerance,
                              fork: {

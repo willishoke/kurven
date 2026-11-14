@@ -1,6 +1,16 @@
 import Foundation
 import simd
 
+/// `d` taken the short way round a circle of `period`: the representative
+/// of d modulo the period nearest zero, in [−period/2, period/2]. How a
+/// circle-valued field's differences and residuals are read: arg f's, by
+/// the refiner and the seeds of integral curves, and a coordinate's along a
+/// periodic axis.
+@inlinable
+public func shortWay(_ d: Double, period: Double) -> Double {
+    d - period * (d / period).rounded()
+}
+
 /// A scalar field on a face's parameter rectangle: what a level set is taken
 /// of. A coordinate, a height, |f| or arg f, the facing.
 ///

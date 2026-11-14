@@ -51,7 +51,9 @@ public enum ManifestError: Error, CustomStringConvertible, Equatable {
 /// its vertices and loops (`PolyhedronManifest`), not a landscape. Both were
 /// added to schema 3 without a bump: no key of a landscape's manifest
 /// changed, so every bundle that read before reads and writes as it did, and
-/// nothing outside this repository writes schema 3.
+/// nothing outside this repository writes schema 3. So were isophotes, a
+/// field and a light on a contour, and a layer of integral curves
+/// (`LayerSource.integralCurves`), a kind of its own.
 public let kurvenSchema = 3
 /// The axis convention every bundle states about itself. A bundle that says
 /// anything else is not readable by this code, and saying so up front is the
@@ -520,6 +522,13 @@ public enum ContourField: String, Sendable, CaseIterable {
     /// Whether this is one of f's fields, placed by the refiner.
     public var isFieldOfF: Bool { self == .magnitude || self == .phase }
 
+    /// The function this field is on `faces`, by the name of one field that
+    /// is it: on the graph the height is |f|, so `.height` is `.magnitude`
+    /// there; any other field is itself.
+    public func function(on faces: FaceSelector) -> ContourField {
+        self == .height && faces.kind == .graph ? .magnitude : self
+    }
+
     /// What the field's values are computed from (`FieldClass`).
     public var fieldClass: FieldClass {
         switch self {
@@ -527,6 +536,142 @@ public enum ContourField: String, Sendable, CaseIterable {
         case .height, .isophote: .embedding
         case .magnitude, .phase: .function
         }
+    }
+}
+
+/// A direction field on a face, by name: what a layer of integral curves
+/// follows (`LayerSource.integralCurves`). For now a signed vector field
+/// (D9), whose integral curves are traced both ways from each seed
+/// (`VectorField`). A direction field in the standard sense is unsigned, a
+/// field of line elements, as the principal directions lines of curvature
+/// follow (11c) will be.
+public enum DirectionField: Sendable, Equatable {
+    /// The gradient of a scalar field in the face's own metric: its integral
+    /// curves are the field's slope lines (Cayley 1859, "On contour and slope
+    /// lines"), which cross its level sets at right angles on the face. The
+    /// slope lines of |f| on the graph are the lines of steepest ascent and
+    /// descent, and where f is analytic and not zero they are its phase
+    /// contours, since log f is analytic too.
+    case slope(of: ContourField)
+
+    init(json: JSONValue) throws {
+        let o = try json.object("DirectionField")
+        switch try o.string("kind", "DirectionField") {
+        case "slope":
+            let text = try o.string("of", "DirectionField.slope")
+            guard let field = ContourField(rawValue: text) else {
+                throw ManifestError.unknownKind(text, of: "ContourField", known: ContourField.allCases.map(\.rawValue))
+            }
+            self = .slope(of: field)
+        case let other:
+            throw ManifestError.unknownKind(other, of: "DirectionField", known: ["slope"])
+        }
+    }
+
+    public var json: JSONValue {
+        switch self {
+        case .slope(let field): .object(["kind": .string("slope"), "of": .string(field.rawValue)])
+        }
+    }
+}
+
+/// Where a layer's integral curves start (`LayerSource.integralCurves`): on
+/// the level set of `field` at `level`, at the points along it where a
+/// second field takes listed values, or evenly spaced by arc length along
+/// it. Cayley's construction: slope lines seeded along a contour.
+public struct Seeds: Sendable, Equatable {
+    /// How the seeds are placed along the level set.
+    public enum Spacing: Sendable, Equatable {
+        /// Where `field` takes each of `values` along it: arg f at listed
+        /// angles along a contour of |f|, say.
+        case values(of: ContourField, [Double])
+        /// About `spacing` apart along each of its curves, measured in space:
+        /// a curve of length L takes n = max(1, round(L / spacing)) seeds, at
+        /// the middles of its n equal stretches.
+        case arcLength(Double)
+    }
+
+    public var field: ContourField
+    public var level: Double
+    public var spacing: Spacing
+
+    public init(on field: ContourField, at level: Double, _ spacing: Spacing) {
+        self.field = field; self.level = level; self.spacing = spacing
+    }
+
+    init(json: JSONValue) throws {
+        let o = try json.object("Seeds")
+        let on = try o.value("on", "Seeds").object("Seeds.on")
+        let fieldText = try on.string("field", "Seeds.on")
+        guard let field = ContourField(rawValue: fieldText) else {
+            throw ManifestError.unknownKind(fieldText, of: "ContourField", known: ContourField.allCases.map(\.rawValue))
+        }
+        let level = try on.double("level", "Seeds.on")
+        let at = try o.value("at", "Seeds").object("Seeds.at")
+        let spacing: Spacing
+        switch try at.string("kind", "Seeds.at") {
+        case "values":
+            let text = try at.string("field", "Seeds.at")
+            guard let of = ContourField(rawValue: text) else {
+                throw ManifestError.unknownKind(text, of: "ContourField", known: ContourField.allCases.map(\.rawValue))
+            }
+            spacing = .values(of: of, try at.doubles("values", "Seeds.at"))
+        case "arcLength":
+            spacing = .arcLength(try at.double("spacing", "Seeds.at"))
+        case let other:
+            throw ManifestError.unknownKind(other, of: "Seeds.at", known: ["values", "arcLength"])
+        }
+        self.init(on: field, at: level, spacing)
+    }
+
+    public var json: JSONValue {
+        let at: JSONValue = switch spacing {
+        case .values(let of, let values):
+            .object(["kind": .string("values"), "field": .string(of.rawValue),
+                     "values": .array(values.map(JSONValue.double))])
+        case .arcLength(let spacing):
+            .object(["kind": .string("arcLength"), "spacing": .double(spacing)])
+        }
+        return .object(["on": .object(["field": .string(field.rawValue), "level": .double(level)]), "at": at])
+    }
+
+    /// Why these seeds cannot be placed on `faces`, or nil when they can: a
+    /// level or a value that is not a number, a level set of |f| or the
+    /// height at 0 or below, which is a set of points or empty, no values, a
+    /// spacing that is not positive, or under `cell`, the grid's cell where
+    /// it is known, a field the faces do not expose, an isophote, whose light
+    /// a layer of integral curves does not keep, and values of the function
+    /// whose level set the seeds lie on, under its name or another
+    /// (`ContourField.function(on:)`), which takes one value there.
+    public func unsupported(on faces: FaceSelector, cell: Double? = nil) -> String? {
+        func positive(_ field: ContourField) -> Bool { field == .magnitude || field == .height }
+        var fields = [field]
+        guard level.isFinite else { return "seeds on a level set at \(level): a level is a number" }
+        if positive(field), level <= 0 {
+            return "seeds on the level set \(field.rawValue) = \(level): it is f's zeros or nothing, no curve to seed along"
+        }
+        switch spacing {
+        case .values(let of, let values):
+            fields.append(of)
+            if of.function(on: faces) == field.function(on: faces) {
+                return "seeds at values of \(of.rawValue) along a level set of \(field.rawValue): on the \(faces.name) "
+                    + "they are one function, which takes one value there"
+            }
+            guard !values.isEmpty else { return "seeds at no values of \(of.rawValue)" }
+            if let bad = values.first(where: { !$0.isFinite || (positive(of) && $0 <= 0) }) {
+                return "seeds where \(of.rawValue) is \(bad): " + (bad.isFinite ? "it is positive" : "a value is a number")
+            }
+        case .arcLength(let spacing):
+            guard spacing.isFinite, spacing > 0 else { return "seeds spaced \(spacing) apart: a spacing is positive" }
+            if let cell, spacing < cell {
+                return "seeds spaced \(spacing) apart, closer than a cell of the grid, \(cell)"
+            }
+        }
+        for f in fields {
+            if f == .isophote { return "seeds placed by an isophote, whose light integral curves do not keep" }
+            if let why = faces.unsupported(f) { return why }
+        }
+        return nil
     }
 }
 
@@ -682,6 +827,15 @@ public enum LayerSource: Sendable, Equatable {
     /// A trajectory of a flow, integrated and carried with its coordinates
     /// on the invariant surface it winds round.
     case trajectory
+    /// Integral curves of `field` on `faces`, one through each of `seeds`,
+    /// traced both ways from it (`Face.integralCurve(of:through:on:limits:)`)
+    /// and replicated once per occluder tile where the faces are `tiled`.
+    /// They lie on the graph, lifted to |f|
+    /// (`Surface.integralCurves(of:seeds:on:in:refine:)`). `linearCurves` and
+    /// `trajectory` are integral curves too, of a constant field on a torus,
+    /// in closed form, and keep their own kinds, as D2 keeps the special-case
+    /// kinds: defined by that expansion in code (`VectorField.constant`).
+    case integralCurves(field: DirectionField, seeds: Seeds, faces: FaceSelector)
     /// The edges of a solid, tested per edge by its two faces and cut
     /// exactly where something else hides them (`Solid.visibleEdges`).
     case edges
@@ -727,6 +881,9 @@ public enum LayerSource: Sendable, Equatable {
             case "file":
                 throw ManifestError.unsupported("a dumped layer on a parametric surface: its curves are drawn "
                                                 + "from its request, not stored")
+            case "integralCurves":
+                throw ManifestError.unsupported("integral curves on a parametric surface: they lie on a landscape's "
+                                                + "graph so far")
             default:
                 throw ManifestError.unsupported("a \(kind) layer on a parametric surface: it is one face, with no "
                                                 + "walls, truncation edge or edges of a solid")
@@ -807,6 +964,12 @@ public enum LayerSource: Sendable, Equatable {
             self = .foldCurves
         case "trajectory":
             self = .trajectory
+        case "integralCurves":
+            let faces = try LayerSource.landscapeFaces(o, "LayerSource.integralCurves")
+            let field = try DirectionField(json: o.value("field", "LayerSource.integralCurves"))
+            let seeds = try Seeds(json: o.value("seeds", "LayerSource.integralCurves"))
+            if let why = LayerSource.unsupported(field, seeds, on: faces) { throw ManifestError.unsupported(why) }
+            self = .integralCurves(field: field, seeds: seeds, faces: faces)
         case "edges":
             self = .edges
         case "coordinateCurves":
@@ -821,8 +984,27 @@ public enum LayerSource: Sendable, Equatable {
                                             known: ["file", "contour", "hatching", "wallEdges",
                                                     "truncationEdge", "coordinateCurves",
                                                     "linearCurves", "foldCurves", "trajectory",
-                                                    "edges"])
+                                                    "integralCurves", "edges"])
         }
+    }
+
+    /// Why integral curves of `field` from `seeds` cannot lie on `faces`, or
+    /// nil when they can: on the graph alone so far, the slope of a field the
+    /// graph exposes but an isophote, whose light they do not keep, from
+    /// seeds the graph can place, no closer than `cell` where it is known
+    /// (`Seeds.unsupported(on:cell:)`).
+    public static func unsupported(_ field: DirectionField, _ seeds: Seeds, on faces: FaceSelector,
+                                   cell: Double? = nil) -> String? {
+        guard faces.kind == .graph else {
+            return "integral curves on the \(faces.name): they lie on the graph so far"
+        }
+        switch field {
+        case .slope(of: .isophote):
+            return "the slope of an isophote: integral curves keep no light to read n · l by"
+        case .slope(let of):
+            if let why = faces.unsupported(of) { return why }
+        }
+        return seeds.unsupported(on: faces, cell: cell)
     }
 
     /// The face a contour on a parametric surface names: its one face.
@@ -894,6 +1076,8 @@ public enum LayerSource: Sendable, Equatable {
             .object(["kind": .string("foldCurves")])
         case .trajectory:
             .object(["kind": .string("trajectory")])
+        case .integralCurves(let field, let seeds, let faces):
+            .object(["kind": .string("integralCurves"), "field": field.json, "seeds": seeds.json, "faces": faces.json])
         case .edges:
             .object(["kind": .string("edges")])
         }
@@ -935,6 +1119,7 @@ public enum LayerSource: Sendable, Equatable {
         case .linearCurves: "linearCurves"
         case .foldCurves: "foldCurves"
         case .trajectory: "trajectory"
+        case .integralCurves(.slope, _, _): "slope lines"
         case .edges: "edges"
         }
     }
@@ -1208,6 +1393,22 @@ public struct Manifest: Sendable, Equatable {
         layers = try o.array("layers", "Manifest").map(LayerSpec.init(json:))
         presets = try o.array("presets", "Manifest").map(CameraPreset.init(json:))
         provenance = try Provenance(json: o.value("provenance", "Manifest"))
+        for layer in layers {
+            if let why = Manifest.unsupported(layer.source, domain: domain, shape: height.shape) {
+                throw ManifestError.unsupported("layer '\(layer.name)': \(why)")
+            }
+        }
+    }
+
+    /// Why a layer cannot be drawn on a landscape over `domain` sampled on a
+    /// grid of `shape`, beyond what the layer says of itself: integral
+    /// curves seeded closer than a cell apart along their level set, which
+    /// asks for more curves than the grid resolves.
+    public static func unsupported(_ source: LayerSource, domain: Domain, shape: (ny: Int, nx: Int)) -> String? {
+        guard case .integralCurves(let field, let seeds, let faces) = source else { return nil }
+        let cell = max(abs(domain.real.length) / Double(max(shape.nx - 1, 1)),
+                       abs(domain.imag.length) / Double(max(shape.ny - 1, 1)))
+        return LayerSource.unsupported(field, seeds, on: faces, cell: cell)
     }
 
     public static func read(contentsOf url: URL) throws -> Manifest {

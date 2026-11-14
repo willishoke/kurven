@@ -49,8 +49,10 @@ face, coordinate curves on a torus, hatch lines on a wall, a riser or a
 plateau. A layer whose curves can lie on more than one kind of face, a
 contour or a hatching, names its faces (`FaceSelector`). The others are a face's edges (the truncation edge,
 where the graph meets a plateau; a wall's top, bottom and vertical edges;
-a polyhedron's edges), flow lines (a trajectory, the linear curves on a
-torus), and fold curves, which depend on the camera. A curve is a polyline
+a polyhedron's edges), integral curves of a vector field (the slope lines
+of |f| on the graph, seeded along a contour; a trajectory and the linear
+curves on a torus, a constant field's, in closed form), and fold curves,
+which depend on the camera. A curve is a polyline
 in world space; on a parametric surface each vertex also carries its
 surface coordinate.
 
@@ -214,6 +216,23 @@ draws each wall's top, bottom and vertical edges, and the truncation edge's
 layer each riser's. A riser's hatching is a line at each whole gap along the
 line it stands on, from its bottom edge up to its top, in place or on every
 tile, so a plateau's lines along Re z turn up a riser where they meet it.
+
+**Slope lines.** The slope lines of |f| (`integralCurves`) are integral
+curves of its gradient on the graph, seeded on a contour of |f| at listed
+angles of arg f, or evenly along it: Cayley's construction. Where f is
+analytic and not zero, log f is too, so they are the phase contours, and
+the suite holds them to the refiner's tolerance of them. Each is traced
+from its seed both ways by RK4 at unit speed, a step refused and halved
+where the field turns against the heading, where a whole step and two
+halves disagree, or where its chord, on the face or lifted to |f|, sags
+off the curve by half that tolerance, the sag in space refined at most five
+halvings below the longest step, as the plain routine refines a chord, so a
+steep graph is followed to its end. It ends at a zero of f, carried to the
+zero, at a pole, on the truncation edge or the domain's or the footprint's
+edge, bisected there on membership, or at the step limit. On the graph the
+slope is raised by its metric as (I + a⊥a⊥ᵀ)/(1 + |a|²), a the height's
+gradient, which does not cancel however steep the graph.
+They lie on the graph, a copy per tile, and are tested as any curve on it.
 
 **Visibility.** The solid is the region under the truncated graph, down to
 the floor, closed by the walls. Every clipped layer is tested per vertex

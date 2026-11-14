@@ -35,8 +35,9 @@ import KurvenMath
 ///                contract's cube, torus and frame standing on it, drawn as
 ///                `kurven-cli scene --no-refine` draws them.
 ///     fields/    the round torus's isophotes, the torus hatched along u in
-///                half-Lambert widths, and isophotes on the cubic landscape's
-///                graph on f: each a bundle and its drawing.
+///                half-Lambert widths, isophotes on the cubic landscape's
+///                graph on f, and slope lines of |f| on (z² − 1)/(z² + 1)'s:
+///                each a bundle and its drawing.
 ///
 /// Some files in these sets are *inputs*, not answers: the seeded noise in the
 /// contract bundles' dumped layers, the camera's point cloud, and the clip
@@ -661,7 +662,8 @@ extension GoldenFixtures {
     /// every quarter of n · l, the torus hatched along u in eight widths, and
     /// isophotes on the cubic landscape's graph, each a bundle and its
     /// drawing as `Scene.visibleLayers` draws it, with no depth buffer: the
-    /// landscape on f, as `bake` draws it.
+    /// landscape on f, as `bake` draws it. And the slope lines of |f| on a
+    /// rational function's graph, integral curves, drawn the same way.
     static func fields(_ dir: URL) throws {
         try directory(dir)
         let light = SIMD3<Double>(-0.4, -0.6, 0.7)
@@ -696,7 +698,22 @@ extension GoldenFixtures {
                                            width: 0.4, heightPolicy: .surface)], to: kept)
         try NativeLandscape.build(request, gitSha: gitSha, refine: false)
             .write(to: dir.appendingPathComponent("landscape_isophotes.kurven"))
-        for name in ["torus_isophotes", "torus_tone", "landscape_isophotes"] {
+        // Slope lines of |f| on (z² − 1)/(z² + 1), from the contours |f| =
+        // 1/2 round its zeros at every 30° of arg f: down into the zeros, up
+        // to the truncation edge round its poles or out to the domain's edge.
+        guard let moebius = Catalog.native.preset("moebius") else { throw CLIError("the catalog has lost moebius") }
+        var slopes = LandscapeRequest(preset: moebius, resolution: 64)
+        let edges = try NativeLandscape.build(slopes, gitSha: gitSha, refine: false).manifest.layers
+            .filter { ["mag_major", "truncation_edge", "wall_edges", "folds"].contains($0.name) }
+        slopes.layers = adding([LayerSpec(name: "slope_lines", role: .scaffold,
+                                          source: .integralCurves(field: .slope(of: .magnitude),
+                                                                  seeds: Seeds(on: .magnitude, at: 0.5, .values(
+                                                                      of: .phase, (0..<12).map { -Double.pi + Double($0) * .pi / 6 })),
+                                                                  faces: .graph(tiled: false)),
+                                          width: 0.4, heightPolicy: .surface)], to: edges)
+        try NativeLandscape.build(slopes, gitSha: gitSha, refine: false)
+            .write(to: dir.appendingPathComponent("landscape_slope_lines.kurven"))
+        for name in ["torus_isophotes", "torus_tone", "landscape_isophotes", "landscape_slope_lines"] {
             let (_, _, _, scene) = try loadDrawing(Args(["bake", dir.appendingPathComponent("\(name).kurven").path]))
             let strokes = Strokes(layers: scene.visibleLayers().map { layer, seen in (Style(layer.spec), HiddenLine.pass(seen)) })
             try text(SVG.render(strokes), to: dir.appendingPathComponent("\(name).svg"))
