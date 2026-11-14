@@ -562,6 +562,52 @@ shading() {
 }
 step "the app lights a curved face with isophotes and half-Lambert tone, undoes it, and bakes it as the CLI does, with no window" shading
 
+# Slope lines, with no window: `landscape --slope-lines` saves a bundle that
+# bakes as the CLI baked it, the layer as written; the app adds the slope
+# lines of |f| to a landscape's graph from the Add menu, undoes and redoes
+# it, and bakes what it saved as `bake` does. Seeds a cell apart or closer,
+# a level of |f| not positive, angles that are not numbers, both ways of
+# placing seeds at once, and a flag with no layer to apply it to are
+# refused, saying why, with nothing written.
+slopes() {
+    local dir="$PACKAGE/.build/slope-check" out refused
+    rm -rf "$dir" && mkdir -p "$dir" || return 1
+    "$BIN/kurven-cli" landscape "(z^2 - 1)/(z^2 + 1)" --re -2.5,2.5 --im -2,2 --res 120 --truncation 4 \
+        --slope-lines 0.5 --seeds -2,-1,0.5,1.5 --slope-width 0.25 -o "$dir/cli.kurven" >/dev/null &&
+    grep -q '"kind":"integralCurves"' "$dir/cli.kurven/manifest.json" &&
+    grep -q '"values":\[-2.0,-1.0,0.5,1.5\]' "$dir/cli.kurven/manifest.json" &&
+    "$BIN/kurven-cli" bake "$dir/cli.kurven" -o "$dir/cli.svg" > "$dir/cli.txt" &&
+    grep -q '^ *slope_lines  *[1-9][0-9]* *paths' "$dir/cli.txt" ||
+        { cat "$dir/cli.txt" 2>/dev/null; echo "landscape --slope-lines: not the layer asked for, or none of it seen"; return 1; }
+    "$BIN/kurven-cli" landscape "(z^2 - 1)/(z^2 + 1)" --re -2.5,2.5 --im -2,2 --res 120 --truncation 4 \
+        -o "$dir/plain.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/plain.kurven" --pick 600,400 --save "$dir/before.kurven" --add graph_slope_lines \
+        --save "$dir/after.kurven" --bake "$dir/after-app.svg" --undo --save "$dir/undone.kurven" \
+        --redo --save "$dir/redone.kurven" >/dev/null &&
+    diff -r "$dir/before.kurven" "$dir/undone.kurven" >/dev/null &&
+    diff -r "$dir/after.kurven" "$dir/redone.kurven" >/dev/null &&
+    grep -q '"name":"graph_slope_lines"' "$dir/after.kurven/manifest.json" &&
+    "$BIN/kurven-cli" bake "$dir/after.kurven" -o "$dir/after-cli.svg" >/dev/null &&
+    cmp "$dir/after-app.svg" "$dir/after-cli.svg" &&
+    ! cmp -s "$dir/after-app.svg" "$dir/cli.svg" ||
+        { echo "the app's slope lines: not undone and redone as saved, or its bake not the CLI's"; return 1; }
+    for refused in "--slope-lines 0.5 --seed-spacing 0.001|closer than a cell of the grid" \
+                   "--slope-lines 0|--slope-lines wants a level of |f|, a positive number" \
+                   "--slope-lines nan|--slope-lines wants a level of |f|, a positive number" \
+                   "--slope-lines 0.5 --seeds 1,x|--seeds wants angles of arg f" \
+                   "--slope-lines 0.5 --seeds 1 --seed-spacing 0.1|give one" \
+                   "--seeds 1,2|--seeds applies to --slope-lines" \
+                   "--slope-width 0.3|--slope-width applies to --slope-lines" \
+                   "--slope-lines 0.5 --slope-width -1|--slope-width wants a positive number"; do
+        rm -rf "$dir/refused.kurven"
+        out=$("$BIN/kurven-cli" landscape "(z^2 - 1)/(z^2 + 1)" --res 120 ${refused%|*} -o "$dir/refused.kurven" 2>&1) &&
+            { echo "landscape ${refused%|*} was written"; return 1; }
+        printf '%s\n' "$out" | grep -q -- "${refused#*|}" && [ ! -e "$dir/refused.kurven" ] ||
+            { printf '%s\n' "$out"; echo "landscape ${refused%|*} was not refused, saying why, with nothing written"; return 1; }
+    done
+}
+step "the CLI and the app draw slope lines of |f| on a landscape's graph, the same drawing, and refuse seeds they cannot place" slopes
+
 # Picking, with no window: a click at a pixel reads the depth the frame left
 # there, takes it back through the camera, and names the face under it. The
 # frame's top face, holes and all, and a wall of its hole; the torus, and its
