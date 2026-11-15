@@ -85,7 +85,8 @@ public struct SurfaceDrawing: Sendable {
         var g = SurfaceRequest(r.shape, grid: r.grid)
         switch r.shape {
         case .torus: break
-        case .sn(let m, let R, let rr, _): g.shape = .sn(modulus: m, major: R, minor: rr, grid: 0)
+        case .sn(let m, let R, let rr, _, let conformal):
+            g.shape = .sn(modulus: m, major: R, minor: rr, grid: 0, conformal: conformal)
         case .periodic(_, let periods, let R, let rr, _):
             g.shape = .periodic(expression: "", periods: periods, major: R, minor: rr, grid: 0)
         case .forced(let s, let f, let h, let radial, let axial, let radius, _):
@@ -100,10 +101,11 @@ public struct SurfaceDrawing: Sendable {
     }
 
     /// Everything a periodic drawing's contours are built from: the function,
-    /// its periods and its sampling, and not the torus they are drawn on.
+    /// its periods and its sampling, and not the torus they are drawn on, nor
+    /// how it is parametrized round its tube.
     static func contours(_ r: SurfaceRequest) -> SurfaceRequest.Shape? {
         switch r.shape {
-        case .sn(let m, _, _, let grid): .sn(modulus: m, major: 0, minor: 0, grid: grid)
+        case .sn(let m, _, _, let grid, _): .sn(modulus: m, major: 0, minor: 0, grid: grid)
         case .periodic(let e, let p, _, _, let grid):
             .periodic(expression: e, periods: p, major: 0, minor: 0, grid: grid)
         default: nil
@@ -159,13 +161,15 @@ public struct SurfaceDrawing: Sendable {
                 ?? ParametricSurface.torus(major: R, minor: r, samples: (n, max(n / 2, 8)))
             layers = lines(on: surface, resolution: request.lineResolution).map { [$0] } ?? []
 
-        case .sn(_, let R, let r, _), .periodic(_, _, let R, let r, _):
+        case .sn(_, let R, let r, _, _), .periodic(_, _, let R, let r, _):
             let drawing: PeriodicTorus.Drawing
             if let previous, let key = Self.contours(request), Self.contours(previous.request) == key {
-                // The same contours: as they are, or re-placed on new radii.
+                // The same contours: as they are, or re-placed on new radii,
+                // or on the same torus parametrized conformally or not.
                 let old = PeriodicTorus.Drawing(surface: previous.surface, layers: previous.own,
                                                 contours: previous.contours)
-                drawing = kept != nil ? old : old.placed(major: R, minor: r, grid: request.grid)
+                drawing = kept != nil ? old : old.placed(major: R, minor: r, grid: request.grid,
+                                                         isothermal: request.conformal)
             } else {
                 drawing = try periodic(request)
             }
@@ -254,9 +258,9 @@ public struct SurfaceDrawing: Sendable {
         switch request.shape {
         case .torus, .forced:
             preconditionFailure("a torus of revolution or a forced torus paints no function")
-        case .sn(let m, let R, let r, let grid):
+        case .sn(let m, let R, let r, let grid, let conformal):
             return try PeriodicTorus.jacobiSN(modulus: m, major: R, minor: r, resolution: grid,
-                                              grid: request.grid)
+                                              grid: request.grid, isothermal: conformal)
         case .periodic(let expression, let periods, let R, let r, let grid):
             return try PeriodicTorus.drawing(expression, periods: (periods.x, periods.y), major: R, minor: r,
                                              resolution: grid, grid: request.grid)
@@ -481,7 +485,7 @@ public extension SurfaceRequest {
     var rectangle: SIMD2<Double> {
         switch shape {
         case .torus, .forced: return SIMD2(2 * .pi, 2 * .pi)
-        case .sn(let m, _, _, _): return SIMD2(4 * Jacobi.quarterPeriod(m), 2 * Jacobi.quarterPeriod(1 - m))
+        case .sn(let m, _, _, _, _): return SIMD2(4 * Jacobi.quarterPeriod(m), 2 * Jacobi.quarterPeriod(1 - m))
         case .periodic(_, let p, _, _, _): return p
         case .relief(let m, _, _, _, let k, _, _, _, _):
             return SIMD2(4 * Jacobi.quarterPeriod(m) * Double(k.x), 2 * Jacobi.quarterPeriod(1 - m) * Double(k.y))
@@ -522,7 +526,7 @@ public extension SurfaceRequest {
     var periods: SIMD2<Double>? {
         switch shape {
         case .torus: SIMD2(2 * .pi, 2 * .pi)
-        case .sn(let m, _, _, _): SIMD2(4 * Jacobi.quarterPeriod(m), 2 * Jacobi.quarterPeriod(1 - m))
+        case .sn(let m, _, _, _, _): SIMD2(4 * Jacobi.quarterPeriod(m), 2 * Jacobi.quarterPeriod(1 - m))
         case .periodic(_, let p, _, _, _): p
         case .forced, .relief: nil
         }
@@ -543,15 +547,17 @@ public extension SurfaceRequest {
     /// periodic --expression E --periods P1,P2` asks for it: the radii and
     /// the grid kept, f sampled as the catalog's sn is, unless a function
     /// was sampled before, and then as that one was. The surface then has
-    /// |f| and arg f to contour. Refused, saying why: a surface that takes
+    /// |f| and arg f to contour. A conformal sn's torus is kept as a round
+    /// torus of its radii, in its angles: the pin was sn's rectangle's, and
+    /// another function's has another aspect. Refused, saying why: a surface that takes
     /// no function, an expression the language does not parse, and what
     /// `check()` refuses, a period that is not positive among it.
     func painting(_ expression: String, periods: SIMD2<Double>) throws -> SurfaceRequest {
-        let catalog: Int = if case .sn(_, _, _, let g)? = SurfacePreset.named("sn")?.request.shape { g } else { 600 }
+        let catalog: Int = if case .sn(_, _, _, let g, _)? = SurfacePreset.named("sn")?.request.shape { g } else { 600 }
         let (R, r, samples): (Double, Double, Int)
         switch shape {
         case .torus(let major, let minor): (R, r, samples) = (major, minor, catalog)
-        case .sn(_, let major, let minor, let g), .periodic(_, _, let major, let minor, let g): (R, r, samples) = (major, minor, g)
+        case .sn(_, let major, let minor, let g, _), .periodic(_, _, let major, let minor, let g): (R, r, samples) = (major, minor, g)
         case .forced:
             throw FunctionRefusal("a function is painted on a round torus; a forced torus is fitted to its flow")
         case .relief:

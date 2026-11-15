@@ -56,7 +56,7 @@ public struct SurfaceBundle: Sendable {
     static func function(_ request: SurfaceRequest) -> String {
         switch request.shape {
         case .torus: "torus"
-        case .sn(let m, _, _, _), .relief(let m, _, _, _, _, _, _, _, _): "sn(z, \(m))"
+        case .sn(let m, _, _, _, _), .relief(let m, _, _, _, _, _, _, _, _): "sn(z, \(m))"
         case .periodic(let expression, _, _, _, _): expression
         case .forced(let system, _, _, _, _, _, _): system
         }

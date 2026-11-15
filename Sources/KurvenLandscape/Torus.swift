@@ -34,6 +34,9 @@ public enum PeriodicTorus {
         public let ceiling: Double
         /// The torus's radii, for a drawing to be re-placed on the same torus.
         public let radii: (major: Double, minor: Double)
+        /// Whether the torus is parametrized isothermally round its tube
+        /// (`ParametricSurface.torus(major:minor:u:v:isothermal:)`).
+        public let isothermal: Bool
         /// Contours of |f| and arg f for other layers, drawn as this
         /// drawing's are: from the function as it was sampled once, carried
         /// through whatever the drawing was repeated, re-placed or displaced
@@ -43,20 +46,20 @@ public enum PeriodicTorus {
         public init(surface: ParametricSurface, layers: [Layer],
                     height: (@Sendable (P2<ParamSpace>) -> Double)? = nil,
                     ceiling: Double = .infinity, radii: (major: Double, minor: Double) = (2, 1),
-                    contours: (@Sendable ([LayerSpec]) -> [Layer])? = nil) {
+                    isothermal: Bool = false, contours: (@Sendable ([LayerSpec]) -> [Layer])? = nil) {
             self.surface = surface; self.layers = layers
             self.height = height; self.ceiling = ceiling; self.radii = radii
-            self.contours = contours
+            self.isothermal = isothermal; self.contours = contours
         }
 
         /// The same curves, each layer carried by `carry`, and the contours
         /// drawn later carried by it too.
         private func carrying(_ carry: @escaping @Sendable (Layer) -> Layer, onto surface: ParametricSurface,
-                              radii: (major: Double, minor: Double)) -> Drawing {
+                              radii: (major: Double, minor: Double), isothermal: Bool? = nil) -> Drawing {
             var carried: (@Sendable ([LayerSpec]) -> [Layer])?
             if let contours { carried = { specs in contours(specs).map(carry) } }
             return Drawing(surface: surface, layers: layers.map(carry), height: height, ceiling: ceiling,
-                           radii: radii, contours: carried)
+                           radii: radii, isothermal: isothermal ?? self.isothermal, contours: carried)
         }
 
         /// The same function over several periods: a torus whose rectangle
@@ -73,7 +76,8 @@ public enum PeriodicTorus {
                                 imag: Interval(lo: surface.v.range.lo, hi: surface.v.range.lo + Double(imag) * pv))
             let torus = PeriodicTorus.torus(over: domain, major: radii.major, minor: radii.minor,
                                             samples: (u: min(surface.u.samples * real, grid),
-                                                      v: max(surface.v.samples * imag, 32)))
+                                                      v: max(surface.v.samples * imag, 32)),
+                                            isothermal: isothermal)
             return carrying({ layer in
                 guard let coords = layer.paths.coords else { return layer }
                 var all: [[P2<ParamSpace>]] = []
@@ -109,13 +113,14 @@ public enum PeriodicTorus {
             return carrying({ $0.placed(on: displaced) }, onto: displaced, radii: radii)
         }
 
-        /// The same function on a torus of other radii. The contours are the
-        /// function's, which the radii do not touch: only where each vertex
-        /// sits in space moves, read from its coordinate on the new torus.
-        public func placed(major R: Double, minor r: Double, grid: Int) -> Drawing {
+        /// The same function on a torus of other radii, or parametrized
+        /// otherwise round its tube. The contours are the function's, which
+        /// neither touches: only where each vertex sits in space moves, read
+        /// from its coordinate on the new torus.
+        public func placed(major R: Double, minor r: Double, grid: Int, isothermal: Bool = false) -> Drawing {
             let domain = Domain(real: surface.u.range, imag: surface.v.range)
-            let torus = PeriodicTorus.torus(over: domain, major: R, minor: r, grid: grid)
-            return carrying({ $0.placed(on: torus) }, onto: torus, radii: (R, r))
+            let torus = PeriodicTorus.torus(over: domain, major: R, minor: r, grid: grid, isothermal: isothermal)
+            return carrying({ $0.placed(on: torus) }, onto: torus, radii: (R, r), isothermal: isothermal)
         }
     }
 
@@ -134,16 +139,18 @@ public enum PeriodicTorus {
     /// runs through its pole. `contours`: the contours of |f| and arg f to
     /// draw, each kept below the ceiling where its restriction says so;
     /// nil for the four families and the truncation edge (`contours(ceiling:truncated:)`).
+    /// `isothermal`: the torus parametrized isothermally round its tube
+    /// (`ParametricSurface.torus(major:minor:u:v:isothermal:)`).
     public static func drawing(_ expression: String, origin: Complex = Complex(0),
                                periods: (real: Double, imag: Double),
                                major R: Double = 2, minor r: Double = 1,
                                resolution: Int = 600, ceiling: Double = 3,
-                               grid: Int = 1024, truncated: Bool = false,
+                               grid: Int = 1024, truncated: Bool = false, isothermal: Bool = false,
                                contours: [LayerSpec]? = nil) throws -> Drawing {
         let compiled = try KurvenMath.Expression.compile(expression)
         let domain = Domain(real: Interval(lo: origin.re, hi: origin.re + periods.real),
                             imag: Interval(lo: origin.im, hi: origin.im + periods.imag))
-        let surface = torus(over: domain, major: R, minor: r, grid: grid)
+        let surface = torus(over: domain, major: R, minor: r, grid: grid, isothermal: isothermal)
         let group = PeriodLattice(cell: domain)
 
         // The window: the rectangle's grid, extended `padding` cells each
@@ -264,7 +271,7 @@ public enum PeriodicTorus {
             return v.isFinite ? min(v.magnitude, ceiling) : ceiling
         }
         return Drawing(surface: surface, layers: layers, height: relief, ceiling: ceiling, radii: (R, r),
-                       contours: { $0.compactMap(draw) })
+                       isothermal: isothermal, contours: { $0.compactMap(draw) })
     }
 
     /// The contours a drawing draws unless told otherwise: |f| and arg f, each
@@ -291,18 +298,19 @@ public enum PeriodicTorus {
     /// points around the real period and enough around the imaginary one to
     /// keep the cells square on the tube.
     static func torus(over domain: Domain, major R: Double, minor r: Double,
-                      grid: Int) -> ParametricSurface {
+                      grid: Int, isothermal: Bool = false) -> ParametricSurface {
         let aspect = domain.imag.length / domain.real.length
         return torus(over: domain, major: R, minor: r,
-                     samples: (grid, max(Int(Double(grid) * min(aspect, 1) * r / R), 32)))
+                     samples: (grid, max(Int(Double(grid) * min(aspect, 1) * r / R), 32)), isothermal: isothermal)
     }
 
     /// The same torus with the grid's samples given outright.
     static func torus(over domain: Domain, major R: Double, minor r: Double,
-                      samples: (u: Int, v: Int)) -> ParametricSurface {
+                      samples: (u: Int, v: Int), isothermal: Bool = false) -> ParametricSurface {
         ParametricSurface.torus(major: R, minor: r,
                                 u: ParamAxis(domain.real, periodic: true, samples: samples.u),
-                                v: ParamAxis(domain.imag, periodic: true, samples: samples.v))
+                                v: ParamAxis(domain.imag, periodic: true, samples: samples.v),
+                                isothermal: isothermal)
     }
 
     /// sn(z, m) on its fundamental rectangle, [0, 4K) × [0, 2K').
@@ -310,16 +318,19 @@ public enum PeriodicTorus {
     /// which turns the function that fraction round the tube: at 0 the
     /// real axis, with sn's zeros, lies on the outer equator and the poles
     /// on the inner; at 1/4 the poles sit on top of the tube; at 1/2 they
-    /// are on the outer equator.
+    /// are on the outer equator. The real period goes round the ring and the
+    /// imaginary round the tube, so the rectangle's aspect, tube over ring,
+    /// is K′ / (2K); `isothermal` on the torus whose minor radius
+    /// `SurfaceRequest.Shape.conformalMinor(modulus:major:)` pins, the map is conformal.
     public static func jacobiSN(modulus m: Double, major R: Double = 2, minor r: Double = 1,
                                 resolution: Int = 600, grid: Int = 1024,
                                 ceiling: Double = 3, truncated: Bool = false, turn: Double = 0,
-                                contours: [LayerSpec]? = nil) throws -> Drawing {
+                                isothermal: Bool = false, contours: [LayerSpec]? = nil) throws -> Drawing {
         let K = Jacobi.quarterPeriod(m), Kp = Jacobi.quarterPeriod(1 - m)
         return try drawing("sn(z, \(m))", origin: Complex(0, turn * 2 * Kp),
                            periods: (4 * K, 2 * Kp), major: R, minor: r,
                            resolution: resolution, ceiling: ceiling, grid: grid, truncated: truncated,
-                           contours: contours)
+                           isothermal: isothermal, contours: contours)
     }
 }
 

@@ -714,6 +714,16 @@ func surfaceCommand(_ args: Args) throws {
     if args.flags["relief"] != nil, ["torus", "periodic", "forced"].contains(shape) {
         throw CLIError("--relief puts sn in relief; surface \(shape) has none")
     }
+    // `--conformal`: plain sn in isothermal coordinates, on the torus its
+    // modulus pins (`SurfaceRequest.Shape.conformalMinor(modulus:major:)`).
+    let conformal = args.switches.contains("conformal")
+    if conformal, shape != "sn" || relief {
+        throw CLIError("--conformal draws plain sn in isothermal coordinates; "
+                       + (relief ? "sn in relief has none" : "surface \(shape) has none"))
+    }
+    if conformal, args.flags["minor"] != nil {
+        throw CLIError("--minor is pinned by the modulus under --conformal; give --modulus and --major")
+    }
     if relief {
         try args.only("surface sn --relief", Args.projection + Args.shading + Args.curvature
                       + ["relief", "modulus", "major", "minor", "repeat", "samples", "grid", "turn",
@@ -721,7 +731,7 @@ func surfaceCommand(_ args: Args) throws {
     } else {
         let own: [String]? = switch shape {
         case "torus": ["coordinate-curves"]
-        case "sn": ["modulus", "grid"]
+        case "sn": ["modulus", "grid", "conformal"]
         case "periodic": ["expression", "periods", "grid"]
         case "forced": ["system", "fit", "harmonics", "radial", "axial", "radius", "turns",
                         "coordinate-curves"]
@@ -765,8 +775,10 @@ func surfaceCommand(_ args: Args) throws {
                                          grid: try args.int("grid", 600), turn: try args.double("turn") ?? 0,
                                          floor: try args.double("floor"), soft: args.switches.contains("soft")))
     case "sn":
-        request = SurfaceRequest(.sn(modulus: try args.double("modulus") ?? 0.64, major: R, minor: r,
-                                     grid: try args.int("grid", 600)))
+        let m = try args.double("modulus") ?? 0.64
+        request = SurfaceRequest(.sn(modulus: m, major: R,
+                                     minor: conformal ? SurfaceRequest.Shape.conformalMinor(modulus: m, major: R) : r,
+                                     grid: try args.int("grid", 600), conformal: conformal))
     case "periodic":
         let periods = (args.flags["periods"] ?? "").split(separator: ",").compactMap { Double($0) }
         guard periods.count == 2 else {
@@ -843,6 +855,10 @@ func surfaceCommand(_ args: Args) throws {
         }
     }
     let surface = drawing.surface
+    if case .sn(let m, let R, let r, _, true) = request.shape {
+        print(String(format: "sn(z, %@) conformal: the modulus pins the minor radius at %.12g round a ring of %@ "
+                     + "(r/R = %.12g)", "\(m)", r, "\(R)", r / R))
+    }
     if let torus = drawing.torus {
         let rho = torus.rotationNumber
         let convergents = ContinuedFraction.convergents(of: rho, maxDenominator: 2000)
@@ -907,7 +923,7 @@ func surfaceCommand(_ args: Args) throws {
     let elapsed = try clock.measure { result = try renderer.bake(scene, options: options) }
     try SVG.render(result.strokes).write(to: output, atomically: true, encoding: .utf8)
     print("""
-        \(shape)\(shape == "forced" ? "" : " R=\(fmt(R)) r=\(fmt(r))") -> \(output.lastPathComponent)
+        \(shape)\(shape == "forced" ? "" : " R=\(fmt(R)) r=\(fmt(request[.minor] ?? r))") -> \(output.lastPathComponent)
           grid    \(surface.u.samples)x\(surface.v.samples)\
         \(surface.outward == nil ? ", bounds no solid, back faces kept" : ", closed")
           depth      \(result.depth.frame.rows)x\(result.depth.frame.cols) \

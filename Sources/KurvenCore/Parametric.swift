@@ -728,6 +728,19 @@ public extension ParametricSurface {
     /// The same torus over any two periodic axes: each axis's range is one
     /// turn, so a rectangle of periods -- a doubly periodic function's
     /// fundamental domain -- glues into it edge to edge.
+    ///
+    /// `isothermal`: `v` runs evenly round the tube in isothermal coordinates
+    /// rather than in its angle θ. The round torus's metric is
+    /// (R + r cos θ)² dφ² + r² dθ², and with w(θ) = ∫₀^θ r dθ′ / (R + r cos θ′)
+    /// it is (R + r cos θ)² (dφ² + dw²), a multiple of the flat one (do Carmo
+    /// §4-2). A whole turn of the tube is 2πr / √(R² − r²) in w, so the map
+    /// is conformal where `v`'s range is r / √(R² − r²) of `u`'s. A torus
+    /// that reaches its axis has no such coordinates.
+    static func torus(major R: Double, minor r: Double,
+                      u: ParamAxis, v: ParamAxis, isothermal: Bool) -> ParametricSurface {
+        isothermal ? isothermalTorus(major: R, minor: r, u: u, v: v) : torus(major: R, minor: r, u: u, v: v)
+    }
+
     static func torus(major R: Double, minor r: Double,
                       u: ParamAxis, v: ParamAxis) -> ParametricSurface {
         precondition(u.periodic && v.periodic, "a torus is periodic both ways")
@@ -773,6 +786,74 @@ public extension ParametricSurface {
             return SurfaceJet(position: SIMD3(ring * ca, ring * sa, r * sb),
                               du: ku * SIMD3(-ring * sa, ring * ca, 0),
                               dv: kv * SIMD3(-r * sb * ca, -r * sb * sa, r * cb))
+        }
+    }
+
+    /// The round torus with `v` isothermal (`torus(major:minor:u:v:isothermal:)`).
+    ///
+    /// With t = w √(R² − r²) / r, w's turn scaled to a whole one, the tube
+    /// angle is θ = 2 atan(k tan(t/2)), k = √((R + r) / (R − r)). Written so,
+    /// it is cut at t = π; it is computed as
+    /// θ = t + 2 atan((k − 1) sin t / ((k + 1) − (k − 1) cos t)), the same angle,
+    /// whose denominator is at least 2: θ − t is smooth and 2π-periodic, so θ
+    /// runs on across the seam, and on unwrapped coordinates, with no branch
+    /// to choose. Its inverse is the same with 1/k for k, and
+    /// dθ/dt = (R + r cos θ) / √(R² − r²).
+    private static func isothermalTorus(major R: Double, minor r: Double,
+                                        u: ParamAxis, v: ParamAxis) -> ParametricSurface {
+        precondition(u.periodic && v.periodic, "a torus is periodic both ways")
+        precondition(R > r && r > 0, "only a torus that does not reach its axis has isothermal coordinates")
+        let (su0, sv0) = (u.range.lo, v.range.lo)
+        let (ku, kv) = (2 * Double.pi / u.range.length, 2 * Double.pi / v.range.length)
+        let s = ((R - r) * (R + r)).squareRoot(), k = ((R + r) / (R - r)).squareRoot()
+        @Sendable func angle(_ t: Double, _ k: Double) -> Double {
+            t + 2 * atan((k - 1) * sin(t) / ((k + 1) - (k - 1) * cos(t)))
+        }
+        // The round torus's solid, its tube angle read back to t; t moves at
+        // most k times as fast as θ, on the inner equator.
+        let neighbourhood = TubularNeighbourhood(
+            foot: { q in
+                var a = atan2(q.y, q.x), rho = (q.x * q.x + q.y * q.y).squareRoot()
+                var b = atan2(q.z, rho - R)
+                if a < 0 { a += 2 * .pi }
+                if b < 0 { b += 2 * .pi }
+                let tube = ((rho - R) * (rho - R) + q.z * q.z).squareRoot()
+                return (P2(su0 + a / ku, sv0 + angle(b, 1 / k) / kv), tube - r)
+            },
+            normalOffset: { _ in 0 }, above: 0, below: 0, lipschitz: 1,
+            spread: { outside, inside in
+                SIMD2(1 / (ku * max(R - r - outside, 1e-12)), k / (kv * max(r - inside, 1e-12)))
+            },
+            centre: .zero, radius: R + r)
+        // The tube angle at a coordinate, and its first two derivatives along v.
+        @Sendable func tube(_ c: P2<ParamSpace>) -> (theta: Double, d: Double, dd: Double) {
+            let theta = angle(kv * (c.y - sv0), k)
+            let d = kv * (R + r * cos(theta)) / s
+            return (theta, d, -kv * r * sin(theta) * d / s)
+        }
+        // The chain rule through θ(v): x_v = θ′ x_θ, x_uv = θ′ x_uθ,
+        // x_vv = θ′² x_θθ + θ″ x_θ.
+        let second: @Sendable (P2<ParamSpace>) -> SecondOrderJet = { c in
+            let a = ku * (c.x - su0), b = tube(c)
+            let (ca, sa, cb, sb) = (cos(a), sin(a), cos(b.theta), sin(b.theta))
+            let ring = R + r * cb
+            let along = SIMD3(-r * sb * ca, -r * sb * sa, r * cb)
+            return SecondOrderJet(
+                jet: SurfaceJet(position: SIMD3(ring * ca, ring * sa, r * sb),
+                                du: ku * SIMD3(-ring * sa, ring * ca, 0), dv: b.d * along),
+                second: SecondDerivatives(uu: ku * ku * SIMD3(-ring * ca, -ring * sa, 0),
+                                          uv: ku * b.d * SIMD3(r * sb * sa, -r * sb * ca, 0),
+                                          vv: b.d * b.d * SIMD3(-r * cb * ca, -r * cb * sa, -r * sb)
+                                              + b.dd * along))
+        }
+        return ParametricSurface(u: u, v: v, encloses: true, neighbourhood: neighbourhood,
+                                 secondOrderJet: second) { c in
+            let a = ku * (c.x - su0), b = tube(c)
+            let (ca, sa, cb, sb) = (cos(a), sin(a), cos(b.theta), sin(b.theta))
+            let ring = R + r * cb
+            return SurfaceJet(position: SIMD3(ring * ca, ring * sa, r * sb),
+                              du: ku * SIMD3(-ring * sa, ring * ca, 0),
+                              dv: b.d * SIMD3(-r * sb * ca, -r * sb * sa, r * cb))
         }
     }
 }

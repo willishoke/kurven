@@ -18,8 +18,8 @@ import KurvenMath
 ///
 /// The sets, and what each pins:
 ///
-///     contract/  seventeen tiny bundles, five landscapes, a parametric
-///                surface of each shape and a polyhedron of each kind, that
+///     contract/  eighteen tiny bundles, five landscapes, a parametric
+///                surface of each shape, sn conformal, and a polyhedron of each kind, that
 ///                between them use every arm of every sum type in the schema;
 ///                `kurven-cli contract` and kurven-test round trip their
 ///                manifests.
@@ -36,9 +36,9 @@ import KurvenMath
 ///                `kurven-cli scene --no-refine` draws them.
 ///     fields/    the round torus's isophotes, the torus hatched along u in
 ///                half-Lambert widths, isophotes on the cubic landscape's
-///                graph on f, slope lines of |f| on (z² − 1)/(z² + 1)'s, and
-///                the round torus's lines of curvature: each a bundle and its
-///                drawing.
+///                graph on f, slope lines of |f| on (z² − 1)/(z² + 1)'s,
+///                the round torus's lines of curvature, and sn's contours on
+///                its conformal torus: each a bundle and its drawing.
 ///
 /// Some files in these sets are *inputs*, not answers: the seeded noise in the
 /// contract bundles' dumped layers, the camera's point cloud, and the clip
@@ -321,11 +321,12 @@ enum GoldenFixtures {
                                    cpuCount: 1, gitSha: gitSha)).canonicalJSON,
                  to: surface.appendingPathComponent("manifest.json"))
 
-        // (7)-(10) a parametric surface of each other shape, with the layer
+        // (7)-(11) a parametric surface of each other shape, with the layer
         //     kinds that are its own: the torus of revolution's coordinate
         //     curves and strands, a periodic expression's |f| and arg f, a
-        //     forced torus's trajectory, and a relief's phase lines kept below
-        //     its truncation and its truncation edge.
+        //     forced torus's trajectory, a relief's phase lines kept below
+        //     its truncation and its truncation edge; and sn drawn
+        //     conformally, on the minor radius its modulus pins.
         try surfaceBundle("surface_torus.kurven",
                           SurfaceRequest(.torus(major: 2, minor: 0.75), grid: 64, lines: SIMD2(12, 6),
                                          linearCurves: SurfaceRequest.LinearCurves(slope: 0.4, turns: 5, count: 3),
@@ -378,8 +379,23 @@ enum GoldenFixtures {
                                                       faces: .surface),
                                      width: 0.6, heightPolicy: .surface),
                            folds])
+        try surfaceBundle("surface_sn_conformal.kurven",
+                          SurfaceRequest(.sn(modulus: 0.5, major: 2,
+                                             minor: SurfaceRequest.Shape.conformalMinor(modulus: 0.5, major: 2),
+                                             grid: 120, conformal: true),
+                                         grid: 64, name: "sn"),
+                          "sn(z, 0.5)",
+                          [LayerSpec(name: "mag", role: .magnitude,
+                                     source: .contour(field: .magnitude, levels: [0.5, 1, 2], restriction: .all,
+                                                      faces: .surface),
+                                     width: 0.35, heightPolicy: .surface),
+                           LayerSpec(name: "ang", role: .phase,
+                                     source: .contour(field: .phase, levels: [-1.5707963267948966, 0, 1.5707963267948966],
+                                                      restriction: .all, faces: .surface),
+                                     width: 0.35, heightPolicy: .surface),
+                           folds])
 
-        // (11)-(17) a polyhedron of each kind `surface solid` builds, stored
+        // (12)-(18) a polyhedron of each kind `surface solid` builds, stored
         //     as its vertices and loops, its edges drawn and its faces
         //     hatched in each tone: uniform, at its own step and crossed;
         //     Turing's pattern in one width and in four; half-Lambert in one
@@ -664,8 +680,9 @@ extension GoldenFixtures {
     /// isophotes on the cubic landscape's graph, each a bundle and its
     /// drawing as `Scene.visibleLayers` draws it, with no depth buffer: the
     /// landscape on f, as `bake` draws it. And the slope lines of |f| on a
-    /// rational function's graph, integral curves, drawn the same way, and
-    /// the round torus's lines of curvature, both families.
+    /// rational function's graph, integral curves, drawn the same way, the
+    /// round torus's lines of curvature, both families, and sn's contours on
+    /// its conformal torus, where they cross square.
     static func fields(_ dir: URL) throws {
         try directory(dir)
         let light = SIMD3<Double>(-0.4, -0.6, 0.7)
@@ -728,8 +745,20 @@ extension GoldenFixtures {
                                  provenance: Provenance(function: "torus", example: "fields", params: [:], cpuCount: 1,
                                                         gitSha: gitSha)).canonicalJSON,
                  to: url.appendingPathComponent("manifest.json"))
+        // sn(z, 0.64) on its conformal torus, its |f| and arg f contours at
+        // the catalog's levels: a net of curved squares.
+        let conformal = dir.appendingPathComponent("sn_conformal.kurven")
+        try directory(conformal)
+        try text(SurfaceManifest(surface: SurfaceRequest(.sn(modulus: 0.64, major: 2,
+                                                             minor: SurfaceRequest.Shape.conformalMinor(modulus: 0.64, major: 2),
+                                                             grid: 240, conformal: true),
+                                                         grid: 256, name: "sn"),
+                                 layers: PeriodicTorus.contours() + [folds], presets: [SurfaceRequest.preset],
+                                 provenance: Provenance(function: "sn(z, 0.64)", example: "fields", params: [:], cpuCount: 1,
+                                                        gitSha: gitSha)).canonicalJSON,
+                 to: conformal.appendingPathComponent("manifest.json"))
         for name in ["torus_isophotes", "torus_tone", "landscape_isophotes", "landscape_slope_lines",
-                     "torus_lines_of_curvature"] {
+                     "torus_lines_of_curvature", "sn_conformal"] {
             let (_, _, _, scene) = try loadDrawing(Args(["bake", dir.appendingPathComponent("\(name).kurven").path]))
             let strokes = Strokes(layers: scene.visibleLayers().map { layer, seen in (Style(layer.spec), HiddenLine.pass(seen)) })
             try text(SVG.render(strokes), to: dir.appendingPathComponent("\(name).svg"))

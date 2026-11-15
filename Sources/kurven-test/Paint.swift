@@ -15,7 +15,7 @@ func paintTests() {
     Check.suite("paint: sn painted on the plain torus over its period rectangle draws surface sn") {
         let torus = SurfacePreset.named("torus")!.request
         let sn = SurfacePreset.named("sn")!.request
-        guard case .sn(let m, _, _, _) = sn.shape, let periods = sn.periods else {
+        guard case .sn(let m, _, _, _, _) = sn.shape, let periods = sn.periods else {
             Check.expect(false, "the catalog's sn has a modulus and a period rectangle")
             return
         }

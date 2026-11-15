@@ -312,6 +312,18 @@ func surfaceDrawingTests() {
         try edit("sn, radii", sn(), sn(R: 2.5, r: 0.8), keepsSurface: false)
         try edit("sn, grid", sn(), sn(grid: 150), keepsSurface: true)
         try edit("sn, modulus", sn(), sn(m: 0.5), keepsSurface: false)
+        // Conformal, sn's contours are re-placed on the torus its modulus
+        // pins, parametrized isothermally round the tube; off again, on the
+        // same torus in its angles.
+        func pinned(m: Double = 0.64, R: Double = 2, grid: Int = 200) -> SurfaceRequest {
+            SurfaceRequest(.sn(modulus: m, major: R, minor: SurfaceRequest.Shape.conformalMinor(modulus: m, major: R),
+                               grid: grid, conformal: true), grid: 256)
+        }
+        try edit("sn, conformal on", sn(), try sn().setting(.conformal, to: 1), keepsSurface: false)
+        try edit("sn, conformal off", pinned(), try pinned().setting(.conformal, to: 0), keepsSurface: false)
+        try edit("conformal sn, modulus", pinned(), pinned(m: 0.5), keepsSurface: false)
+        try edit("conformal sn, major radius", pinned(), pinned(R: 2.5), keepsSurface: false)
+        try edit("conformal sn, grid", pinned(), pinned(grid: 150), keepsSurface: true)
         try edit("forced, turns", forcedRequest(), forcedRequest(turns: 19),
                  keepsSurface: true)
         try edit("forced, lines", forcedRequest(), forcedRequest(lines: SIMD2(12, 6)),
