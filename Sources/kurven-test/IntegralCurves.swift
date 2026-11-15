@@ -492,7 +492,7 @@ func integralCurveTests() {
                      "not refused: \(missed)")
         let nan = byValues.replacingOccurrences(of: #""level": 0.6"#, with: #""level": 1e999"#)
         Check.expect((try? source(nan)) == nil, "a level that is not a number is refused")
-        // A parametric surface's manifest and a polyhedron's take none.
+        // A parametric surface's manifest takes none on the graph, which it has not.
         let empty = SurfaceManifest(surface: SurfaceRequest(.torus(major: 2, minor: 1)), layers: [], presets: [],
                                     provenance: Provenance(function: "", example: "", params: [:], cpuCount: 1, gitSha: ""))
         let layer = #"{"name": "x", "role": "scaffold", "width": 0.3, "heightPolicy": "surface", "source": "# + byValues + "}"
@@ -501,8 +501,8 @@ func integralCurveTests() {
             _ = try SurfaceManifest(json: JSONValue.parse(Data(empty.canonicalJSON
                 .replacingOccurrences(of: #""layers":[]"#, with: #""layers":["# + layer + "]").utf8)))
             onSurface = false
-        } catch { onSurface = "\(error)".contains("integral curves on a parametric surface") }
-        Check.expect(onSurface, "a parametric surface's manifest refuses integral curves, saying they lie on the graph so far")
+        } catch { onSurface = "\(error)".contains("integral curves on the graph of a parametric surface") }
+        Check.expect(onSurface, "a parametric surface's manifest refuses integral curves on the graph, saying it is one face")
         // A landscape's manifest: seeds closer than a cell of its grid.
         let cubic = try Data(contentsOf: Fixtures.dir.appendingPathComponent("expr/landscape_cubic.kurven/manifest.json"))
         let m = try Manifest(json: JSONValue.parse(cubic))

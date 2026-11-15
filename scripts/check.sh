@@ -608,6 +608,50 @@ slopes() {
 }
 step "the CLI and the app draw slope lines of |f| on a landscape's graph, the same drawing, and refuse seeds they cannot place" slopes
 
+# Lines of curvature, with no window: `surface torus --lines-of-curvature`
+# saves a bundle that bakes as the CLI baked it, both families as written;
+# the app adds the greater family to a torus from the Add menu, undoes and
+# redoes it, and bakes what it saved as `bake` does. A family not named, a
+# seed count out of range, a width not positive, a flag with no layer to
+# apply it to, and sn in relief, whose map has no second derivatives in
+# closed form, are refused, saying why, with nothing written.
+curvature() {
+    local dir="$PACKAGE/.build/curvature-check" out refused
+    rm -rf "$dir" && mkdir -p "$dir" || return 1
+    "$BIN/kurven-cli" surface torus --coordinate-curves 0,0 --lines-of-curvature both --curvature-seeds 12 \
+        --curvature-width 0.25 --save "$dir/cli.kurven" -o "$dir/cli.svg" > "$dir/cli.txt" &&
+    grep -q '"kind":"principalDirection","of":"greater"' "$dir/cli.kurven/manifest.json" &&
+    grep -q '"kind":"principalDirection","of":"lesser"' "$dir/cli.kurven/manifest.json" &&
+    "$BIN/kurven-cli" bake "$dir/cli.kurven" -o "$dir/cli-bake.svg" >/dev/null &&
+    cmp "$dir/cli.svg" "$dir/cli-bake.svg" ||
+        { cat "$dir/cli.txt" 2>/dev/null; echo "surface torus --lines-of-curvature: not the layers asked for, or not what its bundle bakes"; return 1; }
+    "$BIN/kurven-cli" surface torus --save "$dir/plain.kurven" -o "$dir/plain.svg" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/plain.kurven" --pick 300,600 --save "$dir/before.kurven" --add lines_of_curvature_greater \
+        --save "$dir/after.kurven" --bake "$dir/after-app.svg" --undo --save "$dir/undone.kurven" \
+        --redo --save "$dir/redone.kurven" >/dev/null &&
+    diff -r "$dir/before.kurven" "$dir/undone.kurven" >/dev/null &&
+    diff -r "$dir/after.kurven" "$dir/redone.kurven" >/dev/null &&
+    grep -q '"name":"lines_of_curvature_greater"' "$dir/after.kurven/manifest.json" &&
+    "$BIN/kurven-cli" bake "$dir/after.kurven" -o "$dir/after-cli.svg" >/dev/null &&
+    cmp "$dir/after-app.svg" "$dir/after-cli.svg" &&
+    ! cmp -s "$dir/after-app.svg" "$dir/plain.svg" ||
+        { echo "the app's lines of curvature: not undone and redone as saved, or its bake not the CLI's"; return 1; }
+    for refused in "torus --lines-of-curvature middle|--lines-of-curvature wants greater, lesser or both" \
+                   "torus --lines-of-curvature both --curvature-seeds 0|--curvature-seeds wants 1 to 419 seeds" \
+                   "torus --lines-of-curvature both --curvature-seeds 420|--curvature-seeds wants 1 to 419 seeds" \
+                   "torus --lines-of-curvature lesser --curvature-width -1|--curvature-width wants a positive number" \
+                   "torus --curvature-seeds 6|--curvature-seeds applies to --lines-of-curvature" \
+                   "torus --curvature-width 0.3|--curvature-width applies to --lines-of-curvature" \
+                   "sn --relief 0.3 --grid 64 --lines-of-curvature both|lines of curvature on sn in relief"; do
+        rm -rf "$dir/refused.kurven"
+        out=$("$BIN/kurven-cli" surface ${refused%|*} --save "$dir/refused.kurven" 2>&1) &&
+            { echo "surface ${refused%|*} was drawn"; return 1; }
+        printf '%s\n' "$out" | grep -q -- "${refused#*|}" && [ ! -e "$dir/refused.kurven" ] ||
+            { printf '%s\n' "$out"; echo "surface ${refused%|*} was not refused, saying why, with nothing written"; return 1; }
+    done
+}
+step "the CLI and the app draw a torus's lines of curvature, the same drawing, and refuse what they cannot draw" curvature
+
 # Picking, with no window: a click at a pixel reads the depth the frame left
 # there, takes it back through the camera, and names the face under it. The
 # frame's top face, holes and all, and a wall of its hole; the torus, and its

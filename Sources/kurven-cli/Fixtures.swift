@@ -36,8 +36,9 @@ import KurvenMath
 ///                `kurven-cli scene --no-refine` draws them.
 ///     fields/    the round torus's isophotes, the torus hatched along u in
 ///                half-Lambert widths, isophotes on the cubic landscape's
-///                graph on f, and slope lines of |f| on (z² − 1)/(z² + 1)'s:
-///                each a bundle and its drawing.
+///                graph on f, slope lines of |f| on (z² − 1)/(z² + 1)'s, and
+///                the round torus's lines of curvature: each a bundle and its
+///                drawing.
 ///
 /// Some files in these sets are *inputs*, not answers: the seeded noise in the
 /// contract bundles' dumped layers, the camera's point cloud, and the clip
@@ -663,7 +664,8 @@ extension GoldenFixtures {
     /// isophotes on the cubic landscape's graph, each a bundle and its
     /// drawing as `Scene.visibleLayers` draws it, with no depth buffer: the
     /// landscape on f, as `bake` draws it. And the slope lines of |f| on a
-    /// rational function's graph, integral curves, drawn the same way.
+    /// rational function's graph, integral curves, drawn the same way, and
+    /// the round torus's lines of curvature, both families.
     static func fields(_ dir: URL) throws {
         try directory(dir)
         let light = SIMD3<Double>(-0.4, -0.6, 0.7)
@@ -713,7 +715,21 @@ extension GoldenFixtures {
                                           width: 0.4, heightPolicy: .surface)], to: edges)
         try NativeLandscape.build(slopes, gitSha: gitSha, refine: false)
             .write(to: dir.appendingPathComponent("landscape_slope_lines.kurven"))
-        for name in ["torus_isophotes", "torus_tone", "landscape_isophotes", "landscape_slope_lines"] {
+        // The round torus's lines of curvature, twelve of each family: its
+        // meridians and parallels, the integral curves of its principal
+        // directions, each closed after one turn.
+        let rectangle = (ParamAxis.angle(samples: torus.grid), ParamAxis.angle(samples: torus.grid / 2))
+        let url = dir.appendingPathComponent("torus_lines_of_curvature.kurven")
+        try directory(url)
+        try text(SurfaceManifest(surface: torus,
+                                 layers: [LayerSpec.linesOfCurvature(.greater, over: rectangle, count: 12, width: 0.4),
+                                          LayerSpec.linesOfCurvature(.lesser, over: rectangle, count: 12, width: 0.4), folds],
+                                 presets: [SurfaceRequest.preset],
+                                 provenance: Provenance(function: "torus", example: "fields", params: [:], cpuCount: 1,
+                                                        gitSha: gitSha)).canonicalJSON,
+                 to: url.appendingPathComponent("manifest.json"))
+        for name in ["torus_isophotes", "torus_tone", "landscape_isophotes", "landscape_slope_lines",
+                     "torus_lines_of_curvature"] {
             let (_, _, _, scene) = try loadDrawing(Args(["bake", dir.appendingPathComponent("\(name).kurven").path]))
             let strokes = Strokes(layers: scene.visibleLayers().map { layer, seen in (Style(layer.spec), HiddenLine.pass(seen)) })
             try text(SVG.render(strokes), to: dir.appendingPathComponent("\(name).svg"))

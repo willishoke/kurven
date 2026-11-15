@@ -140,6 +140,11 @@ public struct Face: Sendable {
     /// graph's is: its slope read without its point (`heightSlope`). Nil on
     /// every other face.
     let heightGradient: (@Sendable (P2<ParamSpace>) -> SIMD2<Double>)?
+    /// The map's jet of order two, where the face's surface has it in
+    /// closed form (`ParametricSurface.secondOrderJet`): its second
+    /// fundamental form, and so its principal directions
+    /// (`principalDirections(of:on:)`). Nil on every other face.
+    public let secondOrderJet: (@Sendable (P2<ParamSpace>) -> SecondOrderJet)?
 
     /// The contours of a field on one copy of the face, clipped to its
     /// trimmed domain: cut where they cross the face's trim loops or the
@@ -210,10 +215,12 @@ public struct Face: Sendable {
                 contains: @escaping @Sendable (P2<ParamSpace>) -> Bool,
                 trimLoops: (@Sendable () -> [[P2<ParamSpace>]])? = nil,
                 map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet, outward: Double?,
+                secondOrderJet: (@Sendable (P2<ParamSpace>) -> SecondOrderJet)? = nil,
                 foot: @escaping @Sendable (SIMD3<Double>) -> P2<ParamSpace>,
                 bounding: @escaping @Sendable (Affine2) -> [[P2<ParamSpace>]]) {
         self.init(id: id, domain: domain, map: map, outward: outward, tiles: [.identity],
-                  trimLoops: trimLoops, foot: foot, bounding: bounding) { p, _ in contains(p) }
+                  trimLoops: trimLoops, secondOrderJet: secondOrderJet, foot: foot,
+                  bounding: bounding) { p, _ in contains(p) }
     }
 
     /// A face copied by `tiles`: each copy faces as `outward` says, turned by
@@ -229,12 +236,14 @@ public struct Face: Sendable {
                 truncationExcess: (@Sendable (P2<ParamSpace>) -> Double)? = nil,
                 lift: (@Sendable (P2<ParamSpace>) -> SIMD3<Double>)? = nil,
                 heightGradient: (@Sendable (P2<ParamSpace>) -> SIMD2<Double>)? = nil,
+                secondOrderJet: (@Sendable (P2<ParamSpace>) -> SecondOrderJet)? = nil,
                 foot: @escaping @Sendable (SIMD3<Double>) -> P2<ParamSpace>,
                 bounding: @escaping @Sendable (Affine2) -> [[P2<ParamSpace>]],
                 contains: @escaping @Sendable (P2<ParamSpace>, Affine2) -> Bool) {
         let loops = trimLoops.map(Computed.init)
         self.id = id; self.domain = domain; self.map = map; self.loops = loops
         self.truncationExcess = truncationExcess; self.lift = lift; self.heightGradient = heightGradient
+        self.secondOrderJet = secondOrderJet
         self.foot = foot; self.bounding = bounding
         copies = tiles.map { tile in
             let turn: Double = tile.a * tile.d - tile.b * tile.c < 0 ? -1 : 1
@@ -325,8 +334,8 @@ public extension ParametricSurface {
         let (u, v) = (self.u, self.v)
         let surface = self
         return Face(id: .surface, domain: (u, v), contains: { u.covers($0.x) && v.covers($0.y) },
-                    map: map, outward: outward, foot: { surface.nearestParameter(to: $0) },
-                    bounding: { _ in surface.seams })
+                    map: map, outward: outward, secondOrderJet: secondOrderJet,
+                    foot: { surface.nearestParameter(to: $0) }, bounding: { _ in surface.seams })
     }
 }
 

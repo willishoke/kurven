@@ -236,6 +236,15 @@ extension Document {
             }
             contours([.u, .v, .height], on: .surface)
             shading(on: .surface, spacing: abs(face.domain.v.range.length) / 48)
+            // Lines of curvature, each family through 24 seeds round a
+            // coordinate curve, where the map has second derivatives.
+            if face.secondOrderJet != nil {
+                for (curvature, label) in [(PrincipalCurvature.greater, "Lines of curvature, greater"),
+                                           (.lesser, "Lines of curvature, lesser")] {
+                    catalog(LayerSpec.linesOfCurvature(curvature, over: face.domain, count: 24,
+                                                       width: request.style.lines), label)
+                }
+            }
             if request.lines == nil {
                 catalog(LayerSpec(name: "lines", role: .scaffold, source: .coordinateCurves(u: 36, v: 18),
                                   width: request.style.lines, heightPolicy: .surface), "Coordinate curves")

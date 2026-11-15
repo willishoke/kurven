@@ -7,21 +7,31 @@ import simd
 /// contour and slope lines"); a linear curve on a torus is one of a constant
 /// field, and so is a forced system's trajectory on its fitted torus.
 ///
-/// A field is a vector field, signed (D9). Where its integral curves are
-/// known in closed form, as a constant field's straight lines are, they are
-/// read off it (`VectorField.flow`); otherwise they are integrated on the
-/// face's parameter plane with RK4 at unit speed, from a seed both ways
-/// (`Face.integralCurve(of:through:on:limits:)`).
+/// A field is a vector field (D9). Where its integral curves are known in
+/// closed form, as a constant field's straight lines are, they are read off
+/// it (`VectorField.flow`); otherwise they are integrated on the face's
+/// parameter plane with RK4 at unit speed, from a seed both ways
+/// (`Face.integralCurve(of:through:on:limits:returningTo:)`). A field is
+/// signed, as a slope is, or stands for a field of line elements, whose
+/// sign means nothing, as the principal directions do (`VectorField.signed`).
 ///
-/// The integrator keeps the heading continuous: a step along which the
-/// field turns a right angle or more from the heading it began with is
-/// refused and halved, so no step crosses a singular point of the field,
-/// where its direction is undefined, as at a zero or a pole of f for the
-/// slope of |f|. Each step is RK4 taken once whole and once in two halves,
-/// and is refused where the two disagree by more than `accuracy`, where the
-/// chord to it sags off the curve by more than half the refiner's
-/// tolerance, or, on the graph, where the lifted chord sags off the graph
-/// by as much: so every chord of the polyline is within the tolerance of
+/// The integrator keeps the heading continuous, by two rules that do not
+/// meet. Of an unsigned field, every value sampled, each RK4 stage, is first
+/// oriented to agree with the heading: of its two signs, the one within a
+/// right angle of it (D9). Then, of either field, a step is refused and
+/// halved where a stage turns too far from the heading the step began with:
+/// a right angle or more for a signed field, which has turned against the
+/// heading only where a singular point lies within the step, as a zero or a
+/// pole of f does for the slope of |f|, so no step crosses one. An oriented
+/// stage never turns a right angle, so for an unsigned field the bound is
+/// half that, 45°: past it the line element is nearer perpendicular to the
+/// heading than along it, its orientation no longer clear, and the step is
+/// halved until it is, which keeps the step off an umbilic, where the
+/// principal directions turn fast. Each step is RK4 taken once whole and
+/// once in two halves, and is refused where the two disagree by more than
+/// `accuracy`, where the chord to it sags off the curve by more than half
+/// the refiner's tolerance, or, on the graph, where the lifted chord sags
+/// off the graph by as much: so every chord of the polyline is within the tolerance of
 /// the curve it stands for, on the face, and in space but where the graph
 /// is steeper than that resolves. A step is halved for its sag in space at
 /// most five times below the longest step (`Limits.liftedHalvings`), as the
@@ -33,16 +43,24 @@ import simd
 ///   against the heading, so the steps refused there have shrunk below
 ///   `leastStep`: a zero of f, which the curve runs down into, carried to
 ///   the point itself when the field can name it
-///   (`VectorField.singularPoint`), or a pole, which it runs up into;
+///   (`VectorField.singularPoint`), or a pole, which it runs up into; or
+///   an umbilic, where the principal directions are undefined
+///   (`Face.principalDirections(of:on:)`);
 /// - where it leaves the copy's trimmed domain, at the domain's edge, the
 ///   footprint's perimeter or the truncation edge, bisected on membership
 ///   (`Face.Copy.contains`) along the step to the last bit, so on the
 ///   truncation edge it ends where |f| is the truncation height;
-/// - back at its seed, a closed curve, which needs nothing traced backward;
+/// - back at its seed, a closed curve, which needs nothing traced backward:
+///   on a periodic face, at the seed's own image a whole number of periods
+///   along, across the seams;
+/// - back on the level set it was seeded on, where it is traced to return
+///   to it, once round a closed face (`IntegralCurve.Section`), which needs
+///   nothing traced backward either;
 /// - at `maxSteps` steps each way, the step limit.
 public struct VectorField: Sendable {
     /// The field at a point of the face's parameter plane, in its
     /// coordinates; nil where it is undefined or zero: at a singular point.
+    /// Of an unsigned field, either sign of the line element there.
     public let value: @Sendable (P2<ParamSpace>) -> SIMD2<Double>?
     /// The point a time `t` along the integral curve through `p`, where the
     /// curves are known in closed form; nil where they are integrated.
@@ -51,11 +69,18 @@ public struct VectorField: Sendable {
     /// where the field knows its singular points: a zero of f, for the slope
     /// of |f|. Nil, or nil from it, where it does not.
     public let singularPoint: (@Sendable (P2<ParamSpace>) -> P2<ParamSpace>?)?
+    /// Whether the field's sign means anything: false where it stands for a
+    /// field of line elements, the principal directions, whose value has
+    /// either sign at a point and is oriented by the heading as the curve is
+    /// traced. A line field is a vector field so (D9); there is no type of
+    /// its own.
+    public let signed: Bool
 
     public init(value: @escaping @Sendable (P2<ParamSpace>) -> SIMD2<Double>?,
                 flow: (@Sendable (P2<ParamSpace>, Double) -> P2<ParamSpace>)? = nil,
-                singularPoint: (@Sendable (P2<ParamSpace>) -> P2<ParamSpace>?)? = nil) {
-        self.value = value; self.flow = flow; self.singularPoint = singularPoint
+                singularPoint: (@Sendable (P2<ParamSpace>) -> P2<ParamSpace>?)? = nil,
+                signed: Bool = true) {
+        self.value = value; self.flow = flow; self.singularPoint = singularPoint; self.signed = signed
     }
 
     /// The constant field `w`: its integral curves are the straight lines
@@ -77,8 +102,59 @@ public enum IntegralCurve {
         case boundary
         /// Back at its seed.
         case closed
+        /// Back across the level set its seed lies on, once round, where it
+        /// was traced to return to it (`Section`). The seed is on it too, so
+        /// such a curve is traced forward alone, and both its ends are
+        /// `.returned`.
+        case returned
         /// At `Limits.maxSteps`.
         case stepLimit
+    }
+
+    /// The level set a curve is traced back to, as the first return to a
+    /// Poincaré section is: the seeds' own (`Seeds`), a scalar field at a
+    /// level, read the short way round a circle-valued field's `period`. On
+    /// a closed face, as a torus is, a curve with no singular point to run
+    /// into need never end, and one that does not close winds round for
+    /// ever. Ended at its first return, each seed draws its curve once round,
+    /// from that level set back to it, with nothing traced backward, as a
+    /// closed curve has nothing; traced both ways, each seed would draw two
+    /// turns, and the second of one seed's would run beside the first of
+    /// another's, a double line.
+    ///
+    /// The return is counted on the field read continuously along the curve
+    /// from its seed, a circle-valued one unwrapped. Of a circle-valued
+    /// field, as a coordinate of a periodic axis is, it is where the field
+    /// has run a whole period from the seed's level, either way: a curve that
+    /// turns back across the section and winds round the other way returns
+    /// too, and one that only wanders back across it and on again does not.
+    /// Of another field, which cannot wind, it is where the curve crosses
+    /// the level again the way it left it: a meridian of the round torus
+    /// seeded on its equators, z = 0, crosses the inner one downward, runs on
+    /// and closes.
+    ///
+    /// A curve that returns away from its seed is followed on for
+    /// `Limits.closingReturns` more returns: if it closes on its seed within
+    /// them it is kept whole, closed, and otherwise cut at its first return.
+    /// So a closed curve that crosses the section up to that many times more
+    /// than once is drawn whole, as a (p, q) torus curve crossing u = 0 p
+    /// times is for p up to four; past that it is cut at its first return,
+    /// a part of it. Following on costs that many more turns of every curve
+    /// that does not close.
+    public struct Section: Sendable {
+        public var value: @Sendable (P2<ParamSpace>) -> Double
+        public var level: Double
+        public var period: Double?
+
+        public init(value: @escaping @Sendable (P2<ParamSpace>) -> Double, level: Double, period: Double? = nil) {
+            self.value = value; self.level = level; self.period = period
+        }
+
+        /// The field less the level at `p`, the short way round.
+        func residual(_ p: SIMD2<Double>) -> Double {
+            let d = value(P2(p)) - level
+            return period.map { shortWay(d, period: $0) } ?? d
+        }
     }
 
     /// The tolerances a curve is traced to, lengths in cells of the face's
@@ -102,18 +178,26 @@ public enum IntegralCurve {
         /// How many times a step may be halved below the longest for its
         /// chord's sag in space: past it the chord is kept.
         public var liftedHalvings: Int
+        /// How many more returns to its section a curve that comes back to
+        /// it away from its seed is followed for, to see whether it closes
+        /// on its seed (`Section`): a closed curve that crosses the section
+        /// up to this many times more is drawn whole.
+        public var closingReturns: Int
 
         public init(tolerance: Double = 0.02, largestStep: Double = 0.5, leastStep: Double = 1e-4,
-                    accuracy: Double = 1e-7, maxSteps: Int = 20_000, liftedHalvings: Int = 5) {
+                    accuracy: Double = 1e-7, maxSteps: Int = 20_000, liftedHalvings: Int = 5,
+                    closingReturns: Int = 3) {
             self.tolerance = tolerance; self.largestStep = largestStep; self.leastStep = leastStep
             self.accuracy = accuracy; self.maxSteps = maxSteps; self.liftedHalvings = liftedHalvings
+            self.closingReturns = closingReturns
         }
     }
 
     /// An integral curve traced from a seed both ways: its polyline in the
     /// parameter plane, from its backward end to its forward end, and why
     /// each end is where it is. A closed curve begins and ends at its seed,
-    /// both ends `.closed`.
+    /// both ends `.closed`; one that returns to its section begins at its
+    /// seed and ends back on the section, both ends `.returned`.
     public struct Traced: Sendable {
         public var path: [P2<ParamSpace>]
         public var backward: End
@@ -131,16 +215,38 @@ public extension Face {
     /// trimmed domain or the field is undefined there. Coordinates run on
     /// along a periodic axis, unwrapped, so the polyline never jumps a
     /// period.
+    ///
+    /// Given a `section`, the level set the seed lies on, the curve ends at
+    /// its first return to it, once round (`IntegralCurve.Section`),
+    /// bisected onto it, unless it closes within a few more returns, and a
+    /// curve that returns is not traced backward; where the forward way ends
+    /// otherwise first, the backward way ends at its own first return. A
+    /// return counts once the curve is twice the tolerance from its seed,
+    /// and only where it crosses the section at its seed, at more than a
+    /// hundredth of a radian, so a curve that runs along the level set it
+    /// was seeded on, as a meridian of the round torus seeded on itself does,
+    /// is not ended by rounding.
     func integralCurve(of field: VectorField, through seed: P2<ParamSpace>, on copy: Copy,
-                       limits: IntegralCurve.Limits = IntegralCurve.Limits()) -> IntegralCurve.Traced? {
+                       limits: IntegralCurve.Limits = IntegralCurve.Limits(),
+                       returningTo section: IntegralCurve.Section? = nil) -> IntegralCurve.Traced? {
         guard copy.contains(seed), let w = field.value(seed), simd_length(w) > 0, simd_length(w).isFinite else {
             return nil
         }
-        let forward = trace(field, from: seed.v, sign: 1, on: copy, limits: limits)
-        if forward.end == .closed {
-            return IntegralCurve.Traced(path: forward.path.map { P2($0) }, backward: .closed, forward: .closed)
+        // Whether the curve crosses the section at its seed: the section's
+        // gradient, by central differences a ten-thousandth of a cell wide,
+        // against the field there.
+        let crossing = section.flatMap { section -> IntegralCurve.Section? in
+            let h = 1e-4 * cell, x = seed.v
+            let g = SIMD2(section.residual(x + SIMD2(h, 0)) - section.residual(x - SIMD2(h, 0)),
+                          section.residual(x + SIMD2(0, h)) - section.residual(x - SIMD2(0, h)))
+            let along = simd_length(g) * simd_length(w)
+            return along > 0 && abs(simd_dot(g, w)) > 0.01 * along ? section : nil
         }
-        let backward = trace(field, from: seed.v, sign: -1, on: copy, limits: limits)
+        let forward = trace(field, from: seed.v, sign: 1, on: copy, limits: limits, section: crossing)
+        if forward.end == .closed || forward.end == .returned {
+            return IntegralCurve.Traced(path: forward.path.map { P2($0) }, backward: forward.end, forward: forward.end)
+        }
+        let backward = trace(field, from: seed.v, sign: -1, on: copy, limits: limits, section: crossing)
         let path = backward.path.reversed() + forward.path.dropFirst()
         return IntegralCurve.Traced(path: path.map { P2($0) }, backward: backward.end, forward: forward.end)
     }
@@ -148,28 +254,36 @@ public extension Face {
     /// One way of an integral curve from `seed`, along the field's own sign
     /// or against it: the polyline from the seed, and why it ends.
     private func trace(_ field: VectorField, from seed: SIMD2<Double>, sign: Double, on copy: Copy,
-                       limits: IntegralCurve.Limits) -> (path: [SIMD2<Double>], end: IntegralCurve.End) {
+                       limits: IntegralCurve.Limits,
+                       section: IntegralCurve.Section?) -> (path: [SIMD2<Double>], end: IntegralCurve.End) {
         let cell = self.cell
         let largest = limits.largestStep * cell, least = limits.leastStep * cell
         let accuracy = limits.accuracy * cell, sag = 0.5 * limits.tolerance * cell
         let closeTo = 0.5 * limits.tolerance * cell
         let periods = SIMD2(domain.u.period ?? 0, domain.v.period ?? 0)
         let lift = self.lift
+        // The cosine a stage must exceed against the heading: a right
+        // angle's for a signed field, 45°'s for a line field, its stages
+        // oriented first.
+        let turn = field.signed ? 0 : 0.5.squareRoot()
         func inside(_ p: SIMD2<Double>) -> Bool { copy.contains(P2(p)) }
-        /// The unit direction of travel at `p`, nil at a singular point.
-        func direction(_ p: SIMD2<Double>) -> SIMD2<Double>? {
+        /// The unit direction of travel at `p`, nil at a singular point; of
+        /// an unsigned field, oriented to agree with `heading`.
+        func direction(_ p: SIMD2<Double>, toward heading: SIMD2<Double>?) -> SIMD2<Double>? {
             guard let w = field.value(P2(p)) else { return nil }
             let n = simd_length(w)
             guard n > 0, n.isFinite else { return nil }
-            return sign * w / n
+            let d = sign * w / n
+            if !field.signed, let heading, simd_dot(d, heading) < 0 { return -d }
+            return d
         }
         /// One RK4 step of length `h` from `p`, whose direction is `k1`;
-        /// nil where a stage is undefined or turns a right angle or more
-        /// from `heading`.
+        /// nil where a stage is undefined or turns from `heading` as far as
+        /// `turn` allows or further.
         func step(_ p: SIMD2<Double>, _ h: Double, _ k1: SIMD2<Double>, heading: SIMD2<Double>) -> SIMD2<Double>? {
-            guard let k2 = direction(p + 0.5 * h * k1), simd_dot(k2, heading) > 0,
-                  let k3 = direction(p + 0.5 * h * k2), simd_dot(k3, heading) > 0,
-                  let k4 = direction(p + h * k3), simd_dot(k4, heading) > 0 else { return nil }
+            guard let k2 = direction(p + 0.5 * h * k1, toward: heading), simd_dot(k2, heading) > turn,
+                  let k3 = direction(p + 0.5 * h * k2, toward: heading), simd_dot(k3, heading) > turn,
+                  let k4 = direction(p + h * k3, toward: heading), simd_dot(k4, heading) > turn else { return nil }
             let middle: SIMD2<Double> = k2 + k3
             let sum: SIMD2<Double> = k1 + k4 + 2 * middle
             return p + (h / 6) * sum
@@ -188,19 +302,34 @@ public extension Face {
         var lifted: SIMD3<Double>?
         var h = largest, steps = 0, attempts = 0
         var left = false
-        let start = direction(seed)
+        // The section's residual at the last vertex, and unwrapped along the
+        // curve from its seed, so that on a circle-valued field it runs on
+        // past a period; the side the curve left its seed for; how often it
+        // has come back; and the curve cut at its first return, kept while
+        // it is followed on to see whether it closes.
+        var residual = section?.residual(seed) ?? 0
+        var unwrapped = residual, departure = 0.0, returns = 0
+        var cut: [SIMD2<Double>]?
+        let lookahead = sign > 0 ? limits.closingReturns : 0
+        /// The curve as it ends: cut at its first return where it came back
+        /// to its section and did not close.
+        func finish(_ path: [SIMD2<Double>], _ end: IntegralCurve.End) -> (path: [SIMD2<Double>], end: IntegralCurve.End) {
+            if let cut, end != .closed { return (cut, .returned) }
+            return (path, end)
+        }
+        let start = direction(seed, toward: nil)
         var heading = start
         while true {
-            guard steps < limits.maxSteps, attempts < 10 * limits.maxSteps else { return (path, .stepLimit) }
+            guard steps < limits.maxSteps, attempts < 10 * limits.maxSteps else { return finish(path, .stepLimit) }
             attempts += 1
-            guard let k1 = heading else { return (ended(path), .singular) }
+            guard let k1 = heading else { return finish(ended(path), .singular) }
             // The step whole, and in two halves; the halves are kept.
             guard let whole = step(p, h, k1, heading: k1),
                   let mid = step(p, 0.5 * h, k1, heading: k1),
-                  let k1Mid = direction(mid), simd_dot(k1Mid, k1) > 0,
+                  let k1Mid = direction(mid, toward: k1), simd_dot(k1Mid, k1) > turn,
                   let q = step(mid, 0.5 * h, k1Mid, heading: k1) else {
                 h *= 0.5
-                if h < least { return (ended(path), .singular) }
+                if h < least { return finish(ended(path), .singular) }
                 continue
             }
             let error = simd_distance(q, whole)
@@ -212,7 +341,7 @@ public extension Face {
             }
             if !(error <= accuracy) || sagged {
                 h *= 0.5
-                if h < least { return (ended(path), .singular) }
+                if h < least { return finish(ended(path), .singular) }
                 continue
             }
             // Out of the trimmed domain within the step: the half that
@@ -225,7 +354,7 @@ public extension Face {
                 if from == mid { path.append(mid) }
                 let t = bisect(0, 0.5 * h) { t in step(from, t, k, heading: k1).map(inside) ?? false }.holds
                 if t > 0, let end = step(from, t, k, heading: k1) { path.append(end) }
-                return (path, .boundary)
+                return finish(path, .boundary)
             }
             // Back at the seed, heading the way it set out: closed, on the
             // seed's own image a whole number of periods along.
@@ -240,13 +369,50 @@ public extension Face {
                     return (path, .closed)
                 }
             }
+            // Back across the section it was seeded on, once round
+            // (`IntegralCurve.Section`): the half that crosses it bisected onto
+            // it. The residual is unwrapped from the last vertex across each
+            // half, a step being far shorter than half a period.
+            if let section {
+                let period = section.period
+                let p0 = residual, u0 = unwrapped
+                /// The unwrapped residual at a point a step from the last vertex.
+                func along(_ x: SIMD2<Double>) -> Double {
+                    let r = section.residual(x)
+                    return period.map { u0 + shortWay(r - p0, period: $0) } ?? r
+                }
+                /// Whether the unwrapped residual `r` is short of the next
+                /// return: a whole period more from the seed's level, either
+                /// way, on a circle-valued field; back across the level the
+                /// way the curve left it on another.
+                func short(_ r: Double) -> Bool {
+                    period.map { abs(r) < Double(returns + 1) * $0 } ?? (r * departure < 0 || departure == 0)
+                }
+                let next = along(q)
+                if left, departure != 0, !short(next), short(u0) {
+                    let first = !short(along(mid))
+                    let (from, k) = first ? (p, k1) : (mid, k1Mid)
+                    var back = path
+                    if !first { back.append(mid) }
+                    let t = bisect(0, 0.5 * h) { t in step(from, t, k, heading: k1).map { short(along($0)) } ?? false }
+                    if let end = step(from, 0.5 * (t.holds + t.fails), k, heading: k1) { back.append(end) }
+                    returns += 1
+                    if returns == 1 { cut = back }
+                    if returns > lookahead { return (cut!, .returned) }
+                }
+                residual = section.residual(q)
+                unwrapped = next
+            }
             path.append(q)
             p = q
             lifted = nil
             // The direction at q is the next step's first stage.
-            heading = direction(q)
+            heading = direction(q, toward: k1)
             steps += 1
-            if !left, simd_distance(q, seed) > 4 * closeTo { left = true }
+            if !left, simd_distance(q, seed) > 4 * closeTo {
+                left = true
+                departure = unwrapped > 0 ? 1 : unwrapped < 0 ? -1 : 0
+            }
             let grow = error > 0 ? min(2, 0.9 * Foundation.pow(accuracy / error, 0.2)) : 2
             h = min(largest, h * max(grow, 1))
         }
@@ -331,7 +497,9 @@ public extension Seeds {
     /// a period from the value skipped; where a vertex reads the value
     /// exactly, the seed is the vertex, once, whether the field crosses the
     /// value there or touches it, and a closed path's last vertex, its first
-    /// again, is not read twice. Nothing without `value`.
+    /// again, is not read twice: on a face periodic by `periods` (zero on a
+    /// bounded axis), its first a whole number of periods along, as a level
+    /// set that closes across a seam ends. Nothing without `value`.
     ///
     /// By arc length, measured on the curve in space, the polyline's vertices
     /// carried there by `position`: a path of length L takes round(L /
@@ -342,6 +510,7 @@ public extension Seeds {
     /// not a number or past ten million takes none: a layer's spacing is held
     /// to a cell at least (`Seeds.unsupported(on:cell:)`).
     func points(along paths: [[P2<ParamSpace>]], value: ((P2<ParamSpace>) -> Double)?, period: Double? = nil,
+                periods: SIMD2<Double> = .zero,
                 position: (P2<ParamSpace>) -> SIMD3<Double>) -> [P2<ParamSpace>] {
         var seeds: [P2<ParamSpace>] = []
         switch spacing {
@@ -356,7 +525,7 @@ public extension Seeds {
             }
             for path in paths where path.count >= 2 {
                 let read = path.map(value)
-                let closed = path.first == path.last
+                let closed = Seeds.closes(path, periods: periods)
                 for k in path.indices {
                     if k > 0 {
                         let a = path[k - 1].v, b = path[k].v
@@ -394,6 +563,23 @@ public extension Seeds {
             }
         }
         return seeds
+    }
+
+    /// Whether a path ends where it begins, or a whole number of `periods`
+    /// along on an axis whose period is not zero, to rounding: a trillionth
+    /// of a period.
+    static func closes(_ path: [P2<ParamSpace>], periods: SIMD2<Double>) -> Bool {
+        guard let a = path.first?.v, let b = path.last?.v else { return false }
+        if a == b { return true }
+        for axis in 0..<2 {
+            let d = b[axis] - a[axis]
+            if periods[axis] > 0 {
+                guard abs(shortWay(d, period: periods[axis])) <= 1e-12 * periods[axis] else { return false }
+            } else if d != 0 {
+                return false
+            }
+        }
+        return true
     }
 }
 
@@ -456,7 +642,7 @@ public extension Surface {
                 return face.slope(of: { $0.x })
             case .slope(of: .v):
                 return face.slope(of: { $0.y })
-            case .slope(of: .isophote):
+            case .slope(of: .isophote), .principalDirection:
                 return nil
             }
         }

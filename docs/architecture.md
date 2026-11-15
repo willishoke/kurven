@@ -50,8 +50,9 @@ plateau. A layer whose curves can lie on more than one kind of face, a
 contour or a hatching, names its faces (`FaceSelector`). The others are a face's edges (the truncation edge,
 where the graph meets a plateau; a wall's top, bottom and vertical edges;
 a polyhedron's edges), integral curves of a vector field (the slope lines
-of |f| on the graph, seeded along a contour; a trajectory and the linear
-curves on a torus, a constant field's, in closed form), and fold curves,
+of |f| on the graph, seeded along a contour; the lines of curvature on a
+parametric surface; a trajectory and the linear curves on a torus, a
+constant field's, in closed form), and fold curves,
 which depend on the camera. A curve is a polyline
 in world space; on a parametric surface each vertex also carries its
 surface coordinate.
@@ -321,6 +322,28 @@ The facing test is the same sign. For occlusion there are two rules:
 Fold curves are traced as on a landscape: the facing sampled on the grid,
 each vertex bisected onto the exact fold, and a fold that meets a crease
 seeded from it.
+
+**Lines of curvature** (`integralCurves` of `principalDirection`) are the
+integral curves of the principal directions, the greater principal
+curvature's or the lesser's, a layer a family (do Carmo §3-2). They are read
+off the surface's first and second fundamental forms, the second from the
+map's second derivatives in closed form: the round torus has them, and so
+has a forced torus, its Fourier series differentiated term by term. sn in
+relief, whose map is displaced by central differences and creased where it
+is truncated, draws none. The principal directions have no sign, so they
+are traced as a vector field whose every sampled value is turned to agree
+with the heading; a step whose direction turns 45° or more from it is
+halved. At an umbilic, where the two curvatures are equal, the directions
+are undefined, and a line that runs into one ends there, a singular point;
+a seed on one draws nothing. On the round torus they are the meridians and
+the parallels, and close after one turn across the seams. A line that does
+not close, as on the forced torus, ends at its first return to the level
+set it was seeded on, its Poincaré section: once round either way on a
+coordinate of a periodic axis, back across it the way it left on another
+field. It is traced forward only, so each seed draws its line once round,
+unless it closes within three more returns, when it is drawn whole. They
+carry their coordinates, unwrapped across the seams, and are seen as the
+coordinate curves are.
 
 ## Polyhedra
 
