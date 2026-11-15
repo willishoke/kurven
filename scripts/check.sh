@@ -298,9 +298,9 @@ step "the app's relief slider raises sn in relief as surface sn --relief does, s
 # dragged there, it saves and bakes `surface sn --conformal --modulus 0.5`,
 # the tube moved with the rectangle; switched off, it is plain sn on the
 # minor radius the pin left. A minor radius set on a conformal sn, a switch
-# at neither 0 nor 1, --minor with --conformal, and --conformal on any other
-# surface, sn in relief among them, are refused, saying why, with nothing
-# written.
+# at neither 0 nor 1, --minor with --conformal, --conformal (or --soft)
+# given a value, and --conformal on any other surface, sn in relief among
+# them, are refused, saying why, with nothing written.
 conformal() {
     local dir="$PACKAGE/.build/conformal-check" out refused minor
     rm -rf "$dir" && mkdir -p "$dir" || return 1
@@ -335,6 +335,8 @@ conformal() {
             { printf '%s\n' "$out"; echo "the app did not refuse ${refused%|*}, saying why, with nothing written"; return 1; }
     done
     for refused in "sn --conformal --minor 1|--minor is pinned by the modulus under --conformal" \
+                   "sn --conformal 1|--conformal is a switch and takes no value, not '1'" \
+                   "sn --relief 0.4 --soft 1|--soft is a switch and takes no value, not '1'" \
                    "sn --relief 0.4 --conformal|sn in relief has none" \
                    "torus --conformal|surface torus has none" \
                    "forced --conformal|surface forced has none" \

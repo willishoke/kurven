@@ -71,6 +71,16 @@ struct Args {
         }
     }
 
+    /// Whether the switch `name` is given. The parser cannot tell a switch
+    /// from a flag that takes a value, so `--conformal 1` is the flag
+    /// `conformal` with the value 1, which a switch read from `switches`
+    /// alone took as off: the drawing was plain sn, and nothing said so.
+    /// A switch given a value is refused.
+    func switchedOn(_ name: String) throws -> Bool {
+        if let value = flags[name] { throw CLIError("--\(name) is a switch and takes no value, not '\(value)'") }
+        return switches.contains(name)
+    }
+
     func string(_ name: String) throws -> String {
         guard let v = flags[name] else { throw CLIError("missing --\(name)") }
         return v
@@ -362,7 +372,7 @@ func loadScene(_ args: Args) throws -> (KurvenBundle, CameraPreset, Scene) {
     // (`Document.refineContours`), whenever the bundle names a function to
     // place them by. `--no-refine` draws the grid's contours instead, which
     // is the stage the fixtures pin.
-    if !args.switches.contains("no-refine"), let refiner = NativeLandscape.refiner(for: bundle) {
+    if !(try args.switchedOn("no-refine")), let refiner = NativeLandscape.refiner(for: bundle) {
         bundle = bundle.refined(by: refiner.refine)
     }
     let preset: CameraPreset
@@ -714,9 +724,13 @@ func surfaceCommand(_ args: Args) throws {
     if args.flags["relief"] != nil, ["torus", "periodic", "forced"].contains(shape) {
         throw CLIError("--relief puts sn in relief; surface \(shape) has none")
     }
-    // `--conformal`: plain sn in isothermal coordinates, on the torus its
-    // modulus pins (`SurfaceRequest.Shape.conformalMinor(modulus:major:)`).
-    let conformal = args.switches.contains("conformal")
+    // The switches, read before anything is built or written, so one given
+    // a value is refused up front (`Args.switchedOn`). `--conformal`: plain
+    // sn in isothermal coordinates, on the torus its modulus pins
+    // (`SurfaceRequest.Shape.conformalMinor(modulus:major:)`).
+    let conformal = try args.switchedOn("conformal"), soft = try args.switchedOn("soft")
+    let preview = try args.switchedOn("preview")
+    _ = try args.switchedOn("draft")
     if conformal, shape != "sn" || relief {
         throw CLIError("--conformal draws plain sn in isothermal coordinates; "
                        + (relief ? "sn in relief has none" : "surface \(shape) has none"))
@@ -773,7 +787,7 @@ func surfaceCommand(_ args: Args) throws {
                                          amplitude: try args.double("relief") ?? 0,
                                          repeats: SIMD2(repeats[0], repeats.count > 1 ? repeats[1] : 1),
                                          grid: try args.int("grid", 600), turn: try args.double("turn") ?? 0,
-                                         floor: try args.double("floor"), soft: args.switches.contains("soft")))
+                                         floor: try args.double("floor"), soft: soft))
     case "sn":
         let m = try args.double("modulus") ?? 0.64
         request = SurfaceRequest(.sn(modulus: m, major: R,
@@ -896,7 +910,7 @@ func surfaceCommand(_ args: Args) throws {
     }
     let output = URL(fileURLWithPath: try args.string("output"))
 
-    if args.switches.contains("preview") || output.pathExtension.lowercased() == "png" {
+    if preview || output.pathExtension.lowercased() == "png" {
         // The realtime preview, one frame, offscreen: what the app would show.
         let viewport = Viewport(width: try args.int("width-px", 1600),
                                 height: try args.int("height-px", 1200))
@@ -1139,7 +1153,7 @@ func bench(_ args: Args) throws {
     // Dragging a level slider: re-derive the described layers, rebuild the line
     // buffer, redraw. The whole point of keeping the curves' identity separate
     // from the geometry's is that this does not touch the height texture.
-    if args.switches.contains("editing") {
+    if try args.switchedOn("editing") {
         // One slider, one layer: dragging a level control changes one level set
         // and the others are reused, which is what the app does.
         guard let edited = bundle.manifest.layers.enumerated().first(where: {
@@ -1209,7 +1223,7 @@ func bench(_ args: Args) throws {
     // wall curves are the camera's, so the preview derives and tests them per
     // camera change; each step is timed on its own, on f (what the preview
     // does) and on the grid without the function (what a draft could do).
-    guard args.switches.contains("visibility"), let h = base.heightfield else { return }
+    guard try args.switchedOn("visibility"), let h = base.heightfield else { return }
     let view = camera(1).view
     let grid = Heightfield(surface: h.surface, occluder: h.occluder, tiles: h.tiles,
                            region: h.region, step: h.step, refine: nil, walls: h.walls)
@@ -1575,7 +1589,7 @@ func previewMode(_ args: Args) throws -> PreviewMode {
 /// widest stroke in pixels, which is what a Retina window doubles.
 func previewOptions(_ args: Args, mode: PreviewMode) throws -> PreviewOptions {
     var options = PreviewOptions(mode: mode)
-    options.draft = args.switches.contains("draft")
+    options.draft = try args.switchedOn("draft")
     if let k = try args.double("slope") { options.slopeScale = Float(k) }
     if let w = try args.double("stroke-width") { options.strokeWidth = Float(w) }
     return options
@@ -1794,7 +1808,7 @@ func landscapeCommand(_ args: Args) throws {
     request.resolution = try args.int("res", request.resolution)
     if let z = try args.positive("truncation") { request.truncation = .uniform(z) }
     if let bands = args.flags["bands"] { request.truncation = try realBands(bands, beyond: args.flags["beyond"]) }
-    if args.switches.contains("no-truncation") { request.truncation = Truncation.none }
+    if try args.switchedOn("no-truncation") { request.truncation = Truncation.none }
     if let v = try args.positive("spacing") { request.spacing = v }
     let slope = try slopeLayer(args)
 

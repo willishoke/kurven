@@ -158,7 +158,8 @@ radius set outright is refused:
 
 ```bash
 kurven-cli surface sn --conformal --save square.kurven
-KurvenApp sn.kurven --set conformal=1 --set modulus=0.5 --save square-half.kurven
+KurvenApp square.kurven --set modulus=0.5 --save square-half.kurven
+KurvenApp square.kurven --set conformal=0 --save round.kurven
 ```
 
 A polyhedron's bundle is its vertices and loops, so what opens editable is
