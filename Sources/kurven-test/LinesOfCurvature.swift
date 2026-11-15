@@ -100,20 +100,21 @@ func lineOfCurvatureTests() {
         // on the equator v = 0, where cos u = √((a² − b²)/(a² − c²)) up to
         // sign and sin u = √((b² − c²)/(a² − c²)) likewise.
         let (a, b, c) = (3.0, 2.0, 1.0)
+        @Sendable func jet(_ p: P2<ParamSpace>) -> SurfaceJet {
+            let (cu, su, cv, sv) = (cos(p.x), sin(p.x), cos(p.y), sin(p.y))
+            return SurfaceJet(position: SIMD3(a * cv * cu, b * sv, c * cv * su),
+                              du: SIMD3(-a * cv * su, 0, c * cv * cu),
+                              dv: SIMD3(-a * sv * cu, b * cv, -c * sv * su))
+        }
         let ellipsoid = ParametricSurface(
             u: .angle(samples: 256), v: ParamAxis(Interval(lo: -.pi / 2, hi: .pi / 2), periodic: false, samples: 129),
             encloses: true,
-            secondDerivatives: { p in
+            secondOrderJet: { p in
                 let (cu, su, cv, sv) = (cos(p.x), sin(p.x), cos(p.y), sin(p.y))
-                return SecondDerivatives(uu: SIMD3(-a * cv * cu, 0, -c * cv * su),
-                                         uv: SIMD3(a * sv * su, 0, -c * sv * cu),
-                                         vv: SIMD3(-a * cv * cu, -b * sv, -c * cv * su))
-            }) { p in
-                let (cu, su, cv, sv) = (cos(p.x), sin(p.x), cos(p.y), sin(p.y))
-                return SurfaceJet(position: SIMD3(a * cv * cu, b * sv, c * cv * su),
-                                  du: SIMD3(-a * cv * su, 0, c * cv * cu),
-                                  dv: SIMD3(-a * sv * cu, b * cv, -c * sv * su))
-            }
+                return SecondOrderJet(jet: jet(p), second: SecondDerivatives(uu: SIMD3(-a * cv * cu, 0, -c * cv * su),
+                                                                             uv: SIMD3(a * sv * su, 0, -c * sv * cu),
+                                                                             vv: SIMD3(-a * cv * cu, -b * sv, -c * cv * su)))
+            }, map: jet)
         let face = ellipsoid.face, copy = face.copies[0]
         let u0 = atan2(((b * b - c * c) / (a * a - c * c)).squareRoot(), ((a * a - b * b) / (a * a - c * c)).squareRoot())
         let umbilics = [u0, .pi - u0, .pi + u0, twoPi - u0].map { P2<ParamSpace>($0, 0) }
@@ -158,10 +159,93 @@ func lineOfCurvatureTests() {
                      "\(onOne.count) from the umbilics, \(seeded.count) of two seeds")
     }
 
+    /// The forced torus as `surface forced` builds it, fitted once for the
+    /// suites that ask.
+    var forcedSurface: ParametricSurface?
+    func forced() throws -> ParametricSurface {
+        if let forcedSurface { return forcedSurface }
+        let built = try SurfaceDrawing.build(SurfaceRequest(.forced(system: "jerk", fit: 8000, harmonics: 24, radial: 0,
+                                                                    axial: 1, radius: 2.5, turns: 1))).surface
+        forcedSurface = built
+        return built
+    }
+
+    Check.suite("lines of curvature: the jet of order two is the map's, its second derivatives converging as h² on both tori") {
+        // Central differences of the map's own first derivatives, at three
+        // widths: off the closed form by O(h²), so a hundredth of it each
+        // tenth of h, down to rounding, about 1e-10 at the narrowest; a wrong
+        // term stays put.
+        for (name, surface) in [("round torus", torus), ("forced torus", try forced())] {
+            guard let second = surface.secondOrderJet else { Check.expect(false, "the \(name) has a jet of order two"); continue }
+            var off: [Double] = [], jetOff = 0.0
+            for h in [1e-3, 1e-4, 1e-5] {
+                var worst = 0.0
+                for k in 0..<500 {
+                    let p = SIMD2(twoPi * Double((k * 37) % 500) / 500 + 0.013, twoPi * Double((k * 91) % 500) / 500 + 0.029)
+                    let j = second(P2(p))
+                    let up = surface.map(P2(p.x + h, p.y)), um = surface.map(P2(p.x - h, p.y))
+                    let vp = surface.map(P2(p.x, p.y + h)), vm = surface.map(P2(p.x, p.y - h))
+                    let uu = (up.du - um.du) / (2 * h), vv = (vp.dv - vm.dv) / (2 * h)
+                    let uv = (vp.du - vm.du) / (2 * h), vu = (up.dv - um.dv) / (2 * h)
+                    worst = max(worst, simd_length(uu - j.second.uu), simd_length(vv - j.second.vv),
+                                simd_length(uv - j.second.uv), simd_length(vu - j.second.uv))
+                    if h == 1e-3 {
+                        let m = surface.map(P2(p))
+                        jetOff = max(jetOff, simd_length(m.position - j.jet.position), simd_length(m.du - j.jet.du),
+                                     simd_length(m.dv - j.jet.dv))
+                    }
+                }
+                off.append(worst)
+            }
+            Check.expect(jetOff <= 1e-12 && off[1] <= off[0] / 50 && off[2] <= max(off[1] / 50, 1e-9) && off[2] <= 1e-7,
+                         "the \(name)'s second derivatives are its first derivatives' differences in the limit, as h²",
+                         String(format: "off %.1e at h = 1e-3, %.1e at 1e-4, %.1e at 1e-5; its first-order jet off the map's by %.1e",
+                                off[0], off[1], off[2], jetOff))
+        }
+    }
+
+    Check.suite("lines of curvature: a closed curve that returns away from its seed closes; one that turns back returns the other way") {
+        let face = torus.face, copy = face.copies[0]
+        let section = IntegralCurve.Section(value: { $0.x }, level: 0, period: twoPi)
+        // A (p, q) torus curve, a constant field, crosses u = 0 p times the
+        // same way: followed past its first return, it closes on its seed
+        // after p turns of u for p up to four, and past that is cut at its
+        // first return.
+        var whole: [String] = []
+        for p in 1...5 {
+            let line = face.integralCurve(of: .constant(SIMD2(Double(p), 1)), through: P2(0, 0.3), on: copy,
+                                          returningTo: section)!
+            let run = (line.path.last!.v - line.path.first!.v) / twoPi
+            whole.append(String(format: "%d: %@ %.0f×%.0f", p, "\(line.forward)", run.x, run.y))
+        }
+        Check.expect(whole == ["1: closed 1×1", "2: closed 2×1", "3: closed 3×1", "4: closed 4×1", "5: returned 1×0"],
+                     "a (p, 1) curve closes whole for p up to four, crossing u = 0 p times; at five it is cut at its first return",
+                     "\(whole)")
+        // Leaving u = 0 forward, it turns back across it and winds round the
+        // other way: it returns once round that way, and is not traced
+        // backward, where the old rule ran it to the step limit both ways.
+        // Its drift, 0.37 turns of u a turn of v, closes it after a hundred,
+        // far past the returns it is followed for; as 0.45 does below.
+        let back = VectorField(value: { p in SIMD2(cos(p.y) - 0.37, 1) })
+        let line = face.integralCurve(of: back, through: P2(0, 0), on: copy, returningTo: section)!
+        let u = line.path.map(\.x)
+        Check.expect(line.backward == .returned && line.forward == .returned && abs(u.last! + twoPi) <= 1e-12
+                         && u.max()! > 0.1,
+                     "a line that turns back across its section and winds the other way returns once round that way",
+                     String(format: "ends %@/%@, from u = 0 out to %.3f and back round to %.15f, %d vertices",
+                            "\(line.backward)", "\(line.forward)", u.max()!, u.last!, u.count))
+        // One that only wanders back across the section and on again has
+        // not returned: it runs on to the next turn.
+        let wander = VectorField(value: { p in SIMD2(3 * cos(p.y) + 0.45, 1) })
+        let on = face.integralCurve(of: wander, through: P2(0, 0), on: copy, returningTo: section)!
+        let reached = on.path.map(\.x)
+        Check.expect(on.forward == .returned && abs(reached.last! - twoPi) <= 1e-12 && reached.min()! < -0.1,
+                     "a line that wanders back across its section and on again returns only once round",
+                     String(format: "back to u = %.3f, on to %.15f", reached.min()!, reached.last!))
+    }
+
     Check.suite("lines of curvature: on the forced torus the two families cross at right angles in space, each once round") {
-        let drawing = try SurfaceDrawing.build(SurfaceRequest(.forced(system: "jerk", fit: 8000, harmonics: 24, radial: 0,
-                                                                      axial: 1, radius: 2.5, turns: 1)))
-        let surface = drawing.surface, face = surface.face, copy = face.copies[0]
+        let surface = try forced(), face = surface.face, copy = face.copies[0]
         // No umbilic: the principal curvatures stay apart everywhere.
         var least = Double.infinity
         for j in 0..<128 {
@@ -172,11 +256,22 @@ func lineOfCurvatureTests() {
         }
         var families: [[[SIMD2<Double>]]] = []
         var returned = 0, curves = 0, offSection = 0.0
+        let clock = ContinuousClock()
+        var took: [Duration] = [.zero, .zero]
         for curvature in [PrincipalCurvature.greater, .lesser] {
             let layer = LayerSpec.linesOfCurvature(curvature, over: (surface.u, surface.v), count: 24, width: 0.3)
             guard case .integralCurves(let field, let seeds, _) = layer.source else { return }
-            let traced = surface.tracedIntegralCurves(of: field, through: surface.seedPoints(seeds),
-                                                      returningTo: surface.section(seeds))
+            let points = surface.seedPoints(seeds)
+            // Timed with the returns a curve is followed for past its first,
+            // and without.
+            took[1] += clock.measure {
+                _ = surface.tracedIntegralCurves(of: field, through: points, returningTo: surface.section(seeds),
+                                                 limits: IntegralCurve.Limits(closingReturns: 0))
+            }
+            var traced: [IntegralCurve.Traced] = []
+            took[0] += clock.measure {
+                traced = surface.tracedIntegralCurves(of: field, through: points, returningTo: surface.section(seeds))
+            }
             let fixed = curvature == .greater ? 1 : 0
             for curve in traced {
                 curves += 1
@@ -186,6 +281,44 @@ func lineOfCurvatureTests() {
                 }
             }
             families.append(traced.map { $0.path.map(\.v) })
+        }
+        // Each chord against its family's principal direction at its middle,
+        // read independently of the jet of order two: the shape operator
+        // I⁻¹ II from central differences of the map's positions alone, a
+        // width of 3e-4. So a wrong second derivative, which the right angle
+        // between the families cannot show, turns the lines off it.
+        @Sendable func independent(_ p: SIMD2<Double>, _ curvature: PrincipalCurvature) -> (SIMD3<Double>, SIMD3<Double>, SIMD3<Double>) {
+            let h = 3e-4
+            func x(_ du: Double, _ dv: Double) -> SIMD3<Double> { surface.map(P2(p.x + du * h, p.y + dv * h)).position }
+            let c = x(0, 0)
+            let xu = (x(1, 0) - x(-1, 0)) / (2 * h), xv = (x(0, 1) - x(0, -1)) / (2 * h)
+            let xuu = (x(1, 0) - 2 * c + x(-1, 0)) / (h * h), xvv = (x(0, 1) - 2 * c + x(0, -1)) / (h * h)
+            let xuv = (x(1, 1) - x(1, -1) - x(-1, 1) + x(-1, -1)) / (4 * h * h)
+            let n = -(copy.outward ?? 1) * simd_normalize(simd_cross(xu, xv))
+            let (e, f, g) = (simd_dot(xu, xu), simd_dot(xu, xv), simd_dot(xv, xv))
+            let (l, m, nn) = (simd_dot(xuu, n), simd_dot(xuv, n), simd_dot(xvv, n))
+            let det = e * g - f * f
+            let s11 = (g * l - f * m) / det, s12 = (g * m - f * nn) / det
+            let s21 = (e * m - f * l) / det, s22 = (e * nn - f * m) / det
+            let mean = 0.5 * (s11 + s22), gap = (max(0, mean * mean - (s11 * s22 - s12 * s21))).squareRoot()
+            let k = curvature == .greater ? mean + gap : mean - gap
+            let a = SIMD2(s12, k - s11), b = SIMD2(k - s22, s21)
+            let w = simd_length(a) > simd_length(b) ? a : b
+            return (simd_normalize(w.x * xu + w.y * xv), xu, xv)
+        }
+        var chordOff = 0.0, chords = 0
+        for (family, curvature) in zip(families, [PrincipalCurvature.greater, .lesser]) {
+            let worst = Heightfield.parallelMap(family, chunk: 1) { path -> (Double, Int) in
+                var w = 0.0
+                for (a, b) in zip(path, path.dropFirst()) {
+                    let (d, xu, xv) = independent(0.5 * (a + b), curvature)
+                    let chord = simd_normalize((b - a).x * xu + (b - a).y * xv)
+                    w = max(w, acos(min(1, abs(simd_dot(chord, d)))))
+                }
+                return (w, path.count - 1)
+            }
+            chordOff = max(chordOff, worst.map(\.0).max() ?? .infinity)
+            chords += worst.map(\.1).reduce(0, +)
         }
         // Where a chord of one family crosses a chord of the other, each
         // carried into the period rectangle by whole turns, the angle between
@@ -253,11 +386,15 @@ func lineOfCurvatureTests() {
             }
         }
         let degrees = 180 / Double.pi
+        Check.expect(chords > 50_000 && chordOff * degrees <= 0.25,
+                     "each chord runs along its family's principal direction, read from the map's positions alone",
+                     String(format: "%d chords, off it by at most %.3f°", chords, chordOff * degrees))
         Check.expect(least > 0.3 && curves == 48 && returned == 48 && offSection <= 1e-12,
                      "the forced torus has no umbilic, and each of 24 lines of either family runs once round, from the "
                          + "coordinate curve it was seeded on back to it",
-                     String(format: "k₁ − k₂ ≥ %.3f; %d curves, %d returned, ends off the section by %.1e",
-                            least, curves, returned, offSection))
+                     String(format: "k₁ − k₂ ≥ %.3f; %d curves, %d returned, ends off the section by %.1e; ",
+                            least, curves, returned, offSection)
+                         + "traced in \(took[0]), \(took[1]) once round alone")
         // Each of 24 lines of one family crosses each of the other's about once.
         Check.expect(crossings > 500 && tangentWorst * degrees <= 0.3 && chordWorst * degrees <= 4 && fieldWorst <= 1e-12,
                      "where a line of one family crosses one of the other, they meet at right angles in space",
@@ -344,6 +481,17 @@ func lineOfCurvatureTests() {
         do { _ = try torus.integralCurves(of: .principalDirection(of: .greater), seeds: many); tooMany = false }
         catch { tooMany = "\(error)".contains("more than the \(most) a layer holds") }
         Check.expect(most == 419 && tooMany, "more than \(most) seeds, \(2 * 20_000 + 1) vertices each at most, are refused")
+        // By arc length they are counted off the level set's length before
+        // any is placed: a hundred-thousandth apart round the outer equator
+        // would be some two million.
+        let clock = ContinuousClock()
+        var tiny = false
+        let took = clock.measure {
+            do { _ = try torus.integralCurves(of: .principalDirection(of: .greater), seeds: Seeds(on: .v, at: 0, .arcLength(1e-5))) }
+            catch { tiny = "\(error)".contains("more than the \(most) a layer holds") }
+        }
+        Check.expect(tiny && took < .seconds(2), "seeds a hundred-thousandth apart by arc length are refused before any is placed",
+                     "in \(took)")
     }
 
     Check.suite("lines of curvature: on the round torus, seen exactly where its coordinate curves are") {

@@ -405,14 +405,11 @@ public struct SurfaceDrawing: Sendable {
             // which sn in relief has not (refused above).
             return try surface.integralCurves(of: field, seeds: seeds)
         case .contour(let field, let levels, _, .surface, _) where !field.isFieldOfF:
-            let face = surface.face, map = surface.map
-            let value: @Sendable (P2<ParamSpace>) -> Double = switch field {
-            case .u: { $0.x }
-            case .v: { $0.y }
-            default: { map($0).position.z }
+            guard let named = surface.field(field) else {
+                throw ManifestError.unsupported("layer '\(spec.name)': a contour of \(field.rawValue) on a parametric surface")
             }
-            let period = field == .u ? surface.u.period : field == .v ? surface.v.period : nil
-            let coords = face.contours(of: ScalarField(period: period, value: value), levels, on: face.copies[0])
+            let face = surface.face, map = surface.map
+            let coords = face.contours(of: ScalarField(period: named.period, value: named.value), levels, on: face.copies[0])
                 .flatMap(\.paths)
             return PolylineSet(paths: coords.map { $0.map { P3(map($0).position) } }, coords: coords)
         default:

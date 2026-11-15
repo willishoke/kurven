@@ -203,24 +203,29 @@ public struct Revolution: Sendable, Equatable {
                           dv: SIMD3(drPhi * c, drPhi * s, scale * k.dPhi[axial]))
     }
 
-    /// The fitted torus's second partial derivatives through this embedding,
-    /// in closed form, the series' own (`FourierTorus.secondDerivatives`):
-    /// the point is (ρ cos θ, ρ sin θ, z), its radius ρ and height z the
-    /// series' components scaled, so x_θθ = (ρ_θθ − ρ) (cos θ, sin θ, 0)
-    /// + 2ρ_θ (−sin θ, cos θ, 0) + z_θθ e_z, and the rest likewise.
-    public func secondDerivatives(_ torus: FourierTorus<SIMD3<Double>>, _ theta: Double,
-                                  _ phi: Double) -> SecondDerivatives {
-        let k = torus.jet(theta, phi), second = torus.secondDerivatives(theta, phi)
+    /// The fitted torus's jet of order two through this embedding, in closed
+    /// form, the series' own and in one pass over it
+    /// (`FourierTorus.secondOrderJet`): the point is (ρ cos θ, ρ sin θ, z),
+    /// its radius ρ and height z the series' components scaled, so
+    /// x_θθ = (ρ_θθ − ρ) (cos θ, sin θ, 0) + 2ρ_θ (−sin θ, cos θ, 0) + z_θθ e_z,
+    /// and the rest likewise.
+    public func secondOrderJet(_ torus: FourierTorus<SIMD3<Double>>, _ theta: Double,
+                               _ phi: Double) -> SecondOrderJet {
+        let k = torus.secondOrderJet(theta, phi)
         let r = radius + scale * (k.value[radial] - centre.x)
         let (c, s) = (cos(theta), sin(theta))
         let rT = scale * k.dTheta[radial], rP = scale * k.dPhi[radial]
-        let rTT = scale * second.thetaTheta[radial], rTP = scale * second.thetaPhi[radial]
-        let rPP = scale * second.phiPhi[radial]
+        let rTT = scale * k.thetaTheta[radial], rTP = scale * k.thetaPhi[radial]
+        let rPP = scale * k.phiPhi[radial]
         let out = SIMD3(c, s, 0), around = SIMD3(-s, c, 0)
-        return SecondDerivatives(
-            uu: (rTT - r) * out + 2 * rT * around + SIMD3(0, 0, scale * second.thetaTheta[axial]),
-            uv: rTP * out + rP * around + SIMD3(0, 0, scale * second.thetaPhi[axial]),
-            vv: rPP * out + SIMD3(0, 0, scale * second.phiPhi[axial]))
+        return SecondOrderJet(
+            jet: SurfaceJet(position: SIMD3(r * c, r * s, scale * (k.value[axial] - centre.y)),
+                            du: rT * out + r * around + SIMD3(0, 0, scale * k.dTheta[axial]),
+                            dv: rP * out + SIMD3(0, 0, scale * k.dPhi[axial])),
+            second: SecondDerivatives(
+                uu: (rTT - r) * out + 2 * rT * around + SIMD3(0, 0, scale * k.thetaTheta[axial]),
+                uv: rTP * out + rP * around + SIMD3(0, 0, scale * k.thetaPhi[axial]),
+                vv: rPP * out + SIMD3(0, 0, scale * k.phiPhi[axial])))
     }
 }
 
@@ -277,7 +282,7 @@ public extension InvariantTorus {
         }
         let embedded = Revolution.slicesAreSimple(positions, grid)
         let surface = ParametricSurface(u: u, v: v, encloses: embedded, positions: positions,
-                                        secondDerivatives: { e.secondDerivatives(fit, $0.x, $0.y) }) {
+                                        secondOrderJet: { e.secondOrderJet(fit, $0.x, $0.y) }) {
             e.jet(fit, $0.x, $0.y)
         }
         return (surface, embedded)

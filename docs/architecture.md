@@ -337,11 +337,13 @@ halved. At an umbilic, where the two curvatures are equal, the directions
 are undefined, and a line that runs into one ends there, a singular point;
 a seed on one draws nothing. On the round torus they are the meridians and
 the parallels, and close after one turn across the seams. A line that does
-not close, as on the forced torus, ends where it first comes back across
-the level set it was seeded on, the way it left it, so each seed draws its
-line once round.
-They carry their coordinates, unwrapped across the seams, and are seen as
-the coordinate curves are.
+not close, as on the forced torus, ends at its first return to the level
+set it was seeded on, its Poincaré section: once round either way on a
+coordinate of a periodic axis, back across it the way it left on another
+field. It is traced forward only, so each seed draws its line once round,
+unless it closes within three more returns, when it is drawn whole. They
+carry their coordinates, unwrapped across the seams, and are seen as the
+coordinate curves are.
 
 ## Polyhedra
 

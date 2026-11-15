@@ -79,6 +79,19 @@ public struct SecondDerivatives: Sendable, Equatable {
     }
 }
 
+/// A point of a surface with its first and second partial derivatives, its
+/// jet of order two: what the first and second fundamental forms are read
+/// from, in one evaluation of the map where it costs, as a Fourier series
+/// does.
+public struct SecondOrderJet: Sendable, Equatable {
+    public var jet: SurfaceJet
+    public var second: SecondDerivatives
+
+    public init(jet: SurfaceJet, second: SecondDerivatives) {
+        self.jet = jet; self.second = second
+    }
+}
+
 /// The solid a surface bounds, for sphere tracing along a line of sight.
 ///
 /// A point of space is inside the solid exactly when its signed distance
@@ -154,20 +167,21 @@ public struct ParametricSurface: Sendable {
     /// one in closed form; nil otherwise, and the curves are then tested by the
     /// coordinate image.
     public let neighbourhood: TubularNeighbourhood?
-    /// The map's second partial derivatives, where the surface has them in
-    /// closed form, as the round torus and a fitted Fourier series do: what
-    /// its lines of curvature are read from. Nil otherwise, and it has none
-    /// drawn: a displaced surface's derivatives are central differences
-    /// already, and sn in relief is creased where it is truncated.
-    public let secondDerivatives: (@Sendable (P2<ParamSpace>) -> SecondDerivatives)?
+    /// The map's jet of order two, its second partial derivatives with its
+    /// first, where the surface has them in closed form, as the round torus
+    /// and a fitted Fourier series do: what its lines of curvature are read
+    /// from. Nil otherwise, and it has none drawn: a displaced surface's
+    /// derivatives are central differences already, and sn in relief is
+    /// creased where it is truncated.
+    public let secondOrderJet: (@Sendable (P2<ParamSpace>) -> SecondOrderJet)?
 
     /// - Parameter encloses: the surface is closed, embedded and orientable.
     ///   Declaring it for a surface that passes through itself, or has a
     ///   boundary, culls curves that are in plain view.
     public init(u: ParamAxis, v: ParamAxis, encloses: Bool, neighbourhood: TubularNeighbourhood? = nil,
-                secondDerivatives: (@Sendable (P2<ParamSpace>) -> SecondDerivatives)? = nil,
+                secondOrderJet: (@Sendable (P2<ParamSpace>) -> SecondOrderJet)? = nil,
                 map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet) {
-        self.u = u; self.v = v; self.map = map; self.secondDerivatives = secondDerivatives
+        self.u = u; self.v = v; self.map = map; self.secondOrderJet = secondOrderJet
         self.neighbourhood = encloses ? neighbourhood : nil
         var positions: [P3<WorldSpace>] = []
         positions.reserveCapacity(u.samples * v.samples)
@@ -202,12 +216,12 @@ public struct ParametricSurface: Sendable {
     /// fine enough to draw is fine enough for the sign of its volume.
     public init(u: ParamAxis, v: ParamAxis, encloses: Bool, neighbourhood: TubularNeighbourhood? = nil,
                 positions: [P3<WorldSpace>],
-                secondDerivatives: (@Sendable (P2<ParamSpace>) -> SecondDerivatives)? = nil,
+                secondOrderJet: (@Sendable (P2<ParamSpace>) -> SecondOrderJet)? = nil,
                 map: @escaping @Sendable (P2<ParamSpace>) -> SurfaceJet) {
         precondition(positions.count == u.samples * v.samples,
                      "\(positions.count) positions for a \(u.samples)x\(v.samples) grid")
         self.u = u; self.v = v; self.map = map; self.positions = positions
-        self.secondDerivatives = secondDerivatives
+        self.secondOrderJet = secondOrderJet
         self.neighbourhood = encloses ? neighbourhood : nil
         guard encloses else { outward = nil; return }
         func at(_ i: Int, _ j: Int) -> SIMD3<Double> {
@@ -737,18 +751,22 @@ public extension ParametricSurface {
                 SIMD2(1 / (ku * max(R - r - outside, 1e-12)), 1 / (kv * max(r - inside, 1e-12)))
             },
             centre: .zero, radius: R + r)
-        // Its second derivatives in closed form, for its lines of curvature:
+        // Its jet of order two in closed form, for its lines of curvature:
         // the parallels and the meridians, as on any surface of revolution.
-        let second: @Sendable (P2<ParamSpace>) -> SecondDerivatives = { c in
+        let second: @Sendable (P2<ParamSpace>) -> SecondOrderJet = { c in
             let a = ku * (c.x - su0), b = kv * (c.y - sv0)
             let (ca, sa, cb, sb) = (cos(a), sin(a), cos(b), sin(b))
             let ring = R + r * cb
-            return SecondDerivatives(uu: ku * ku * SIMD3(-ring * ca, -ring * sa, 0),
-                                     uv: ku * kv * SIMD3(r * sb * sa, -r * sb * ca, 0),
-                                     vv: kv * kv * SIMD3(-r * cb * ca, -r * cb * sa, -r * sb))
+            return SecondOrderJet(
+                jet: SurfaceJet(position: SIMD3(ring * ca, ring * sa, r * sb),
+                                du: ku * SIMD3(-ring * sa, ring * ca, 0),
+                                dv: kv * SIMD3(-r * sb * ca, -r * sb * sa, r * cb)),
+                second: SecondDerivatives(uu: ku * ku * SIMD3(-ring * ca, -ring * sa, 0),
+                                          uv: ku * kv * SIMD3(r * sb * sa, -r * sb * ca, 0),
+                                          vv: kv * kv * SIMD3(-r * cb * ca, -r * cb * sa, -r * sb)))
         }
         return ParametricSurface(u: u, v: v, encloses: R > r, neighbourhood: neighbourhood,
-                                 secondDerivatives: second) { c in
+                                 secondOrderJet: second) { c in
             let a = ku * (c.x - su0), b = kv * (c.y - sv0)
             let (ca, sa, cb, sb) = (cos(a), sin(a), cos(b), sin(b))
             let ring = R + r * cb

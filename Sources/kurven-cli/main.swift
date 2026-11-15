@@ -218,8 +218,13 @@ usage: kurven-cli <command> [options]
         the greater's through --curvature-seeds N points (24 by default)
         evenly round the coordinate curve v = 0, the lesser's round u = 0,
         so on a torus of revolution the meridians and the parallels. Each
-        runs both ways until it closes, reaches an umbilic, where the two
-        curvatures are equal, or reaches the step limit. Not on sn in relief.
+        is traced forward from its seed until it closes on it, or first
+        returns once round to the coordinate curve it was seeded on (its
+        first return; one that would close within three more returns is
+        followed on and closes), and then nothing is traced backward. One
+        that reaches an umbilic first, where the two curvatures are equal,
+        or the step limit, is traced backward too, to its first return the
+        other way. Not on sn in relief.
 
   surface solid [--kind K] [--size R] [--hole H] [--depth D] [--width W]
           [--x-angle DEG] [--z-angle DEG] [--shear S] [--resolution N] [--color C]

@@ -35,7 +35,7 @@ public extension Face {
     /// parametrization's own. With them, each one's principal direction in
     /// the parameter plane, unit length in space, and whether the point is
     /// an umbilic (`umbilicTolerance`). Nil where the face's map has no
-    /// second derivatives (`secondDerivatives`) or the point is singular.
+    /// second derivatives (`secondOrderJet`) or the point is singular.
     ///
     /// Read from the first and second fundamental forms, the second off the
     /// map's second derivatives as they are given, in closed form: in an
@@ -49,8 +49,9 @@ public extension Face {
     func principalCurvatures(at p: P2<ParamSpace>, on copy: Copy)
         -> (greater: Double, lesser: Double, directions: (greater: SIMD2<Double>, lesser: SIMD2<Double>),
             umbilic: Bool)? {
-        guard let second = secondDerivatives else { return nil }
-        return Face.principal(map(p), second(p), inward: -(copy.outward ?? 1))
+        guard let second = secondOrderJet else { return nil }
+        let j = second(p)
+        return Face.principal(j.jet, j.second, inward: -(copy.outward ?? 1))
     }
 
     /// The principal directions of `curvature` on `copy`, as an unsigned
@@ -58,10 +59,12 @@ public extension Face {
     /// family's lines of curvature. Undefined at an umbilic. Nil where the
     /// face's map has no second derivatives.
     func principalDirections(of curvature: PrincipalCurvature, on copy: Copy) -> VectorField? {
-        guard let second = secondDerivatives else { return nil }
-        let map = self.map, inward = -(copy.outward ?? 1)
+        guard let second = secondOrderJet else { return nil }
+        let inward = -(copy.outward ?? 1)
+        // One evaluation of the map's jet of order two a sample.
         return VectorField(value: { p in
-            guard let k = Face.principal(map(p), second(p), inward: inward), !k.umbilic else { return nil }
+            let j = second(p)
+            guard let k = Face.principal(j.jet, j.second, inward: inward), !k.umbilic else { return nil }
             return curvature == .greater ? k.directions.greater : k.directions.lesser
         }, signed: false)
     }
@@ -97,11 +100,30 @@ public extension Face {
 }
 
 public extension ParametricSurface {
-    /// The most curves one layer of integral curves traces: each runs up to
-    /// `maxSteps` steps each way, and a layer holds at most
-    /// `SurfaceRequest.maxVertices` vertices.
+    /// The most seeds one layer of integral curves takes: each curve runs up
+    /// to `maxSteps` steps each way, and a layer holds
+    /// `SurfaceRequest.maxVertices` vertices. A bound on the seeds, not a
+    /// count of vertices, so approximate: a curve also takes the point its
+    /// end is bisected to and the middle of its last step, and a vertex again
+    /// at each split every eight turns, which at the bound is a few percent
+    /// more.
     static func maxIntegralCurves(_ limits: IntegralCurve.Limits = IntegralCurve.Limits()) -> Int {
         SurfaceRequest.maxVertices / (2 * limits.maxSteps + 1)
+    }
+
+    /// A field on the surface by name, and its period where it is
+    /// circle-valued: a coordinate, or the height, the map's z. Nil for f's
+    /// fields and an isophote, which the map does not carry. What a contour
+    /// of a coordinate or the height is taken of, and what seeds are placed
+    /// by.
+    func field(_ name: ContourField) -> (value: @Sendable (P2<ParamSpace>) -> Double, period: Double?)? {
+        let map = self.map
+        switch name {
+        case .u: return ({ $0.x }, u.period)
+        case .v: return ({ $0.y }, v.period)
+        case .height: return ({ map($0).position.z }, nil)
+        case .magnitude, .phase, .isophote: return nil
+        }
     }
 
     /// Where `seeds` lie on the surface's one face: along its level set of a
@@ -112,38 +134,44 @@ public extension ParametricSurface {
     /// modulo its period are one, and a level set that closes across a seam
     /// is read once round. Nothing where the seeds are placed by a field the
     /// surface does not carry.
-    func seedPoints(_ seeds: Seeds) -> [P2<ParamSpace>] {
+    func seedPoints(_ seeds: Seeds) -> [P2<ParamSpace>] { placed(seeds, most: nil).points }
+
+    /// The seeds' points, or none and how many there would be where they are
+    /// placed by arc length and would be more than `most`: counted off the
+    /// level set's length before any is placed.
+    private func placed(_ seeds: Seeds, most: Int?) -> (points: [P2<ParamSpace>], over: Int?) {
         let face = self.face, copy = face.copies[0], map = self.map
-        guard let on = named(seeds.field) else { return [] }
+        guard let on = field(seeds.field) else { return ([], nil) }
         let level = face.contours(of: ScalarField(period: on.period, value: on.value), [seeds.level], on: copy)
             .flatMap(\.paths)
         var at: (value: @Sendable (P2<ParamSpace>) -> Double, period: Double?)?
-        if case .values(let of, _) = seeds.spacing {
-            guard let field = named(of) else { return [] }
-            at = field
+        switch seeds.spacing {
+        case .values(let of, _):
+            guard let named = field(of) else { return ([], nil) }
+            at = named
+        case .arcLength(let spacing):
+            // As `Seeds.points` counts them, round(L / spacing) a piece,
+            // and past ten million, where it places none, too many as well.
+            if let most {
+                var count = 0.0
+                for path in level where path.count >= 2 {
+                    var length = 0.0
+                    for (a, b) in zip(path, path.dropFirst()) { length += simd_distance(map(a).position, map(b).position) }
+                    let ratio = length / spacing
+                    count += ratio.isFinite ? ratio.rounded() : .infinity
+                }
+                if count > Double(most) { return ([], count.isFinite ? Int(count) : Int.max) }
+            }
         }
-        return seeds.points(along: level, value: at?.value, period: at?.period,
-                            periods: SIMD2(u.period ?? 0, v.period ?? 0), position: { map($0).position })
+        return (seeds.points(along: level, value: at?.value, period: at?.period,
+                             periods: SIMD2(u.period ?? 0, v.period ?? 0), position: { map($0).position }), nil)
     }
 
     /// The level set `seeds` lie on as a section their curves return to
     /// (`IntegralCurve.Section`), or nil where the surface does not carry
     /// its field.
     func section(_ seeds: Seeds) -> IntegralCurve.Section? {
-        named(seeds.field).map { IntegralCurve.Section(value: $0.value, level: seeds.level, period: $0.period) }
-    }
-
-    /// A field on the surface by name, and its period where it is
-    /// circle-valued: a coordinate, or the height. Nil for f's fields and an
-    /// isophote.
-    private func named(_ field: ContourField) -> (value: @Sendable (P2<ParamSpace>) -> Double, period: Double?)? {
-        let map = self.map
-        switch field {
-        case .u: return ({ $0.x }, u.period)
-        case .v: return ({ $0.y }, v.period)
-        case .height: return ({ map($0).position.z }, nil)
-        case .magnitude, .phase, .isophote: return nil
-        }
+        field(seeds.field).map { IntegralCurve.Section(value: $0.value, level: seeds.level, period: $0.period) }
     }
 
     /// The integral curves of `field` through `points` on the surface's one
@@ -169,23 +197,24 @@ public extension ParametricSurface {
     /// as the coordinate curves are. A curve runs on across the seams, its
     /// coordinates unwrapped, and closes on its seed's image a whole number
     /// of periods along; one that does not close ends where it first comes
-    /// back across the level set its seeds lie on, the way it left it
-    /// (`section(_:)`), so each seed draws its curve once round. As a linear
-    /// curve's, its coordinates are kept within eight turns of the
-    /// rectangle, for the preview's float32: a path is ended and the next
-    /// begun from the same vertex, brought back by whole periods, wherever
-    /// it would run further. Refused where the
-    /// layer could not be decoded on the surface
+    /// back across the level set its seeds lie on, once round
+    /// (`section(_:)`, `IntegralCurve.Section`). As a linear curve's, its
+    /// coordinates are kept within eight turns of the rectangle, for the
+    /// preview's float32: a path is ended and the next begun from the same
+    /// vertex, brought back by whole periods, wherever it would run
+    /// further.
+    ///
+    /// Refused where the layer could not be decoded on the surface
     /// (`LayerSource.unsupported(_:_:on:cell:)`), and where its seeds are
-    /// more than `maxIntegralCurves` -- more than a layer's vertices could
-    /// hold -- before any is traced.
+    /// more than `maxIntegralCurves`, before any is traced; by arc length,
+    /// before any is placed.
     func integralCurves(of field: DirectionField, seeds: Seeds,
                         limits: IntegralCurve.Limits = IntegralCurve.Limits()) throws -> PolylineSet<WorldSpace> {
         if let why = LayerSource.unsupported(field, seeds, on: .surface) { throw ManifestError.unsupported(why) }
-        let points = seedPoints(seeds)
-        guard points.count <= Self.maxIntegralCurves(limits) else {
-            throw ManifestError.unsupported("\(points.count) seeds of integral curves, more than the "
-                                            + "\(Self.maxIntegralCurves(limits)) a layer holds at "
+        let most = Self.maxIntegralCurves(limits)
+        let (points, over) = placed(seeds, most: most)
+        if let count = over ?? (points.count > most ? points.count : nil) {
+            throw ManifestError.unsupported("\(count) seeds of integral curves, more than the \(most) a layer holds at "
                                             + "\(limits.maxSteps) steps each way")
         }
         let traced = tracedIntegralCurves(of: field, through: points, returningTo: section(seeds), limits: limits)

@@ -102,11 +102,10 @@ public enum IntegralCurve {
         case boundary
         /// Back at its seed.
         case closed
-        /// Back on the level set its seed lies on, crossing it the way it left
-        /// it, where it was traced to return to it (`Section`): once round a
-        /// periodic face. The seed
-        /// is on it too, so such a curve is traced forward alone, and both
-        /// its ends are `.returned`.
+        /// Back across the level set its seed lies on, once round, where it
+        /// was traced to return to it (`Section`). The seed is on it too, so
+        /// such a curve is traced forward alone, and both its ends are
+        /// `.returned`.
         case returned
         /// At `Limits.maxSteps`.
         case stepLimit
@@ -117,15 +116,31 @@ public enum IntegralCurve {
     /// level, read the short way round a circle-valued field's `period`. On
     /// a closed face, as a torus is, a curve with no singular point to run
     /// into need never end, and one that does not close winds round for
-    /// ever; ended where it first comes back across the level set it was
-    /// seeded on, the way it left it, each seed draws its curve once round,
+    /// ever. Ended at its first return, each seed draws its curve once round,
     /// from that level set back to it, with nothing traced backward, as a
-    /// closed curve has nothing. Across it the other way it runs on: a
-    /// meridian of the round torus seeded on the equator z = 0 crosses the
-    /// inner equator downward, and closes. A
-    /// closed one still closes first. Traced both ways, each seed would draw
-    /// two turns, and the second of one seed's would run beside the first of
+    /// closed curve has nothing; traced both ways, each seed would draw two
+    /// turns, and the second of one seed's would run beside the first of
     /// another's, a double line.
+    ///
+    /// The return is counted on the field read continuously along the curve
+    /// from its seed, a circle-valued one unwrapped. Of a circle-valued
+    /// field, as a coordinate of a periodic axis is, it is where the field
+    /// has run a whole period from the seed's level, either way: a curve that
+    /// turns back across the section and winds round the other way returns
+    /// too, and one that only wanders back across it and on again does not.
+    /// Of another field, which cannot wind, it is where the curve crosses
+    /// the level again the way it left it: a meridian of the round torus
+    /// seeded on its equators, z = 0, crosses the inner one downward, runs on
+    /// and closes.
+    ///
+    /// A curve that returns away from its seed is followed on for
+    /// `Limits.closingReturns` more returns: if it closes on its seed within
+    /// them it is kept whole, closed, and otherwise cut at its first return.
+    /// So a closed curve that crosses the section up to that many times more
+    /// than once is drawn whole, as a (p, q) torus curve crossing u = 0 p
+    /// times is for p up to four; past that it is cut at its first return,
+    /// a part of it. Following on costs that many more turns of every curve
+    /// that does not close.
     public struct Section: Sendable {
         public var value: @Sendable (P2<ParamSpace>) -> Double
         public var level: Double
@@ -163,11 +178,18 @@ public enum IntegralCurve {
         /// How many times a step may be halved below the longest for its
         /// chord's sag in space: past it the chord is kept.
         public var liftedHalvings: Int
+        /// How many more returns to its section a curve that comes back to
+        /// it away from its seed is followed for, to see whether it closes
+        /// on its seed (`Section`): a closed curve that crosses the section
+        /// up to this many times more is drawn whole.
+        public var closingReturns: Int
 
         public init(tolerance: Double = 0.02, largestStep: Double = 0.5, leastStep: Double = 1e-4,
-                    accuracy: Double = 1e-7, maxSteps: Int = 20_000, liftedHalvings: Int = 5) {
+                    accuracy: Double = 1e-7, maxSteps: Int = 20_000, liftedHalvings: Int = 5,
+                    closingReturns: Int = 3) {
             self.tolerance = tolerance; self.largestStep = largestStep; self.leastStep = leastStep
             self.accuracy = accuracy; self.maxSteps = maxSteps; self.liftedHalvings = liftedHalvings
+            self.closingReturns = closingReturns
         }
     }
 
@@ -194,12 +216,12 @@ public extension Face {
     /// along a periodic axis, unwrapped, so the polyline never jumps a
     /// period.
     ///
-    /// Given a `section`, the level set the seed lies on, the curve ends
-    /// where it first crosses the section again the way it left it
-    /// (`IntegralCurve.Section`), bisected onto it, and once round is not
-    /// traced backward; where it
-    /// ends otherwise first, its backward way ends on the section too. A
-    /// crossing counts once the curve is twice the tolerance from its seed,
+    /// Given a `section`, the level set the seed lies on, the curve ends at
+    /// its first return to it, once round (`IntegralCurve.Section`),
+    /// bisected onto it, unless it closes within a few more returns, and a
+    /// curve that returns is not traced backward; where the forward way ends
+    /// otherwise first, the backward way ends at its own first return. A
+    /// return counts once the curve is twice the tolerance from its seed,
     /// and only where it crosses the section at its seed, at more than a
     /// hundredth of a radian, so a curve that runs along the level set it
     /// was seeded on, as a meridian of the round torus seeded on itself does,
@@ -280,22 +302,34 @@ public extension Face {
         var lifted: SIMD3<Double>?
         var h = largest, steps = 0, attempts = 0
         var left = false
-        // The side of the section the curve left its seed for, the side it
-        // is on, and the residual at the last vertex: 0 until it has left.
-        var departure = 0.0, side = 0.0, residual = 0.0
+        // The section's residual at the last vertex, and unwrapped along the
+        // curve from its seed, so that on a circle-valued field it runs on
+        // past a period; the side the curve left its seed for; how often it
+        // has come back; and the curve cut at its first return, kept while
+        // it is followed on to see whether it closes.
+        var residual = section?.residual(seed) ?? 0
+        var unwrapped = residual, departure = 0.0, returns = 0
+        var cut: [SIMD2<Double>]?
+        let lookahead = sign > 0 ? limits.closingReturns : 0
+        /// The curve as it ends: cut at its first return where it came back
+        /// to its section and did not close.
+        func finish(_ path: [SIMD2<Double>], _ end: IntegralCurve.End) -> (path: [SIMD2<Double>], end: IntegralCurve.End) {
+            if let cut, end != .closed { return (cut, .returned) }
+            return (path, end)
+        }
         let start = direction(seed, toward: nil)
         var heading = start
         while true {
-            guard steps < limits.maxSteps, attempts < 10 * limits.maxSteps else { return (path, .stepLimit) }
+            guard steps < limits.maxSteps, attempts < 10 * limits.maxSteps else { return finish(path, .stepLimit) }
             attempts += 1
-            guard let k1 = heading else { return (ended(path), .singular) }
+            guard let k1 = heading else { return finish(ended(path), .singular) }
             // The step whole, and in two halves; the halves are kept.
             guard let whole = step(p, h, k1, heading: k1),
                   let mid = step(p, 0.5 * h, k1, heading: k1),
                   let k1Mid = direction(mid, toward: k1), simd_dot(k1Mid, k1) > turn,
                   let q = step(mid, 0.5 * h, k1Mid, heading: k1) else {
                 h *= 0.5
-                if h < least { return (ended(path), .singular) }
+                if h < least { return finish(ended(path), .singular) }
                 continue
             }
             let error = simd_distance(q, whole)
@@ -307,7 +341,7 @@ public extension Face {
             }
             if !(error <= accuracy) || sagged {
                 h *= 0.5
-                if h < least { return (ended(path), .singular) }
+                if h < least { return finish(ended(path), .singular) }
                 continue
             }
             // Out of the trimmed domain within the step: the half that
@@ -320,7 +354,7 @@ public extension Face {
                 if from == mid { path.append(mid) }
                 let t = bisect(0, 0.5 * h) { t in step(from, t, k, heading: k1).map(inside) ?? false }.holds
                 if t > 0, let end = step(from, t, k, heading: k1) { path.append(end) }
-                return (path, .boundary)
+                return finish(path, .boundary)
             }
             // Back at the seed, heading the way it set out: closed, on the
             // seed's own image a whole number of periods along.
@@ -335,33 +369,39 @@ public extension Face {
                     return (path, .closed)
                 }
             }
-            // Back across the section it was seeded on, the way it left it:
-            // the half that crosses it bisected onto it. Across it the other
-            // way, it runs on, on the other side. A circle-valued residual
-            // jumps by a period half way round, which is no crossing, and the
-            // side it is on turns over there.
-            if let section, left {
-                let r = section.residual(q)
-                let jump = section.period.map { abs(r - residual) > $0 / 2 } ?? false
-                let now: Double = r > 0 ? 1 : r < 0 ? -1 : 0
-                if departure == 0 {
-                    departure = now
-                    side = now
-                } else if side == 0 || jump {
-                    side = now
-                } else if side == -departure, r * side <= 0 {
-                    let first = section.residual(mid) * side <= 0
-                    let (from, k) = first ? (p, k1) : (mid, k1Mid)
-                    if !first { path.append(mid) }
-                    let t = bisect(0, 0.5 * h) { t in
-                        step(from, t, k, heading: k1).map { section.residual($0) * side > 0 } ?? false
-                    }
-                    if let end = step(from, 0.5 * (t.holds + t.fails), k, heading: k1) { path.append(end) }
-                    return (path, .returned)
-                } else if now != 0 {
-                    side = now
+            // Back across the section it was seeded on, once round
+            // (`IntegralCurve.Section`): the half that crosses it bisected onto
+            // it. The residual is unwrapped from the last vertex across each
+            // half, a step being far shorter than half a period.
+            if let section {
+                let period = section.period
+                let p0 = residual, u0 = unwrapped
+                /// The unwrapped residual at a point a step from the last vertex.
+                func along(_ x: SIMD2<Double>) -> Double {
+                    let r = section.residual(x)
+                    return period.map { u0 + shortWay(r - p0, period: $0) } ?? r
                 }
-                residual = r
+                /// Whether the unwrapped residual `r` is short of the next
+                /// return: a whole period more from the seed's level, either
+                /// way, on a circle-valued field; back across the level the
+                /// way the curve left it on another.
+                func short(_ r: Double) -> Bool {
+                    period.map { abs(r) < Double(returns + 1) * $0 } ?? (r * departure < 0 || departure == 0)
+                }
+                let next = along(q)
+                if left, departure != 0, !short(next), short(u0) {
+                    let first = !short(along(mid))
+                    let (from, k) = first ? (p, k1) : (mid, k1Mid)
+                    var back = path
+                    if !first { back.append(mid) }
+                    let t = bisect(0, 0.5 * h) { t in step(from, t, k, heading: k1).map { short(along($0)) } ?? false }
+                    if let end = step(from, 0.5 * (t.holds + t.fails), k, heading: k1) { back.append(end) }
+                    returns += 1
+                    if returns == 1 { cut = back }
+                    if returns > lookahead { return (cut!, .returned) }
+                }
+                residual = section.residual(q)
+                unwrapped = next
             }
             path.append(q)
             p = q
@@ -371,11 +411,7 @@ public extension Face {
             steps += 1
             if !left, simd_distance(q, seed) > 4 * closeTo {
                 left = true
-                if let section {
-                    residual = section.residual(q)
-                    departure = residual > 0 ? 1 : residual < 0 ? -1 : 0
-                    side = departure
-                }
+                departure = unwrapped > 0 ? 1 : unwrapped < 0 ? -1 : 0
             }
             let grow = error > 0 ? min(2, 0.9 * Foundation.pow(accuracy / error, 0.2)) : 2
             h = min(largest, h * max(grow, 1))

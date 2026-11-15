@@ -238,7 +238,7 @@ extension Document {
             shading(on: .surface, spacing: abs(face.domain.v.range.length) / 48)
             // Lines of curvature, each family through 24 seeds round a
             // coordinate curve, where the map has second derivatives.
-            if face.secondDerivatives != nil {
+            if face.secondOrderJet != nil {
                 for (curvature, label) in [(PrincipalCurvature.greater, "Lines of curvature, greater"),
                                            (.lesser, "Lines of curvature, lesser")] {
                     catalog(LayerSpec.linesOfCurvature(curvature, over: face.domain, count: 24,

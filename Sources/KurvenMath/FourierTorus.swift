@@ -115,28 +115,35 @@ public struct FourierTorus<V: SIMD>: Sendable where V.Scalar == Double, V: Senda
         }
     }
 
-    /// The torus's three second partial derivatives at `(θ, φ)`, exact as
-    /// the series is: Re(−k k' c e) for the frequencies k, k' each takes.
+    /// The torus at `(θ, φ)` with its two first and three second partial
+    /// derivatives, in one pass over the series, exact as the series is: the
+    /// first Re(i k c e), the second Re(−k k' c e), for the frequencies k, k'
+    /// each takes.
     @inlinable
-    public func secondDerivatives(_ theta: Double, _ phi: Double) -> (thetaTheta: V, thetaPhi: V, phiPhi: V) {
+    public func secondOrderJet(_ theta: Double, _ phi: Double)
+        -> (value: V, dTheta: V, dPhi: V, thetaTheta: V, thetaPhi: V, phiPhi: V) {
         let M = harmonics, width = self.width
         return withUnsafeTemporaryAllocation(of: Complex.self, capacity: M + 1 + width) { buf in
             let a = buf.baseAddress!, b = a + (M + 1)
             Self.phasors(theta, phi, M, a, b)
-            var tt = V(), tp = V(), pp = V()
+            var value = V(), dTheta = V(), dPhi = V(), tt = V(), tp = V(), pp = V()
             for m in 0...M {
                 let mu = m == 0 ? 1.0 : 2.0
                 for j in 0..<width {
                     let e = a[m] * b[j]
                     let i = m * width + j
                     let real = e.re * re[i] - e.im * im[i]
-                    let (km, kn) = (Double(m), Double(j - M))
-                    tt -= (mu * km * km) * real
-                    tp -= (mu * km * kn) * real
-                    pp -= (mu * kn * kn) * real
+                    let imag = e.re * im[i] + e.im * re[i]
+                    let (km, kn) = (mu * Double(m), mu * Double(j - M))
+                    value += mu * real
+                    dTheta -= km * imag
+                    dPhi -= kn * imag
+                    tt -= (km * Double(m)) * real
+                    tp -= (km * Double(j - M)) * real
+                    pp -= (kn * Double(j - M)) * real
                 }
             }
-            return (tt, tp, pp)
+            return (value, dTheta, dPhi, tt, tp, pp)
         }
     }
 
