@@ -151,6 +151,17 @@ kurven-cli surface sn --relief 0 --save flat.kurven
 KurvenApp flat.kurven --relief 0.4 --save raised.kurven
 ```
 
+sn drawn conformally, in isothermal coordinates on the torus its modulus
+pins, has a Conformal switch, which `--set conformal=1` (or 0) sets; while it
+is on, the modulus and the major radius set the minor radius, and a minor
+radius set outright is refused:
+
+```bash
+kurven-cli surface sn --conformal --save square.kurven
+KurvenApp square.kurven --set modulus=0.5 --save square-half.kurven
+KurvenApp square.kurven --set conformal=0 --save round.kurven
+```
+
 A polyhedron's bundle is its vertices and loops, so what opens editable is
 its layers: `--strokes LAYER=COUNT` sets a hatching's strokes as its slider
 does, counted across the largest face (on a landscape, which takes it too,

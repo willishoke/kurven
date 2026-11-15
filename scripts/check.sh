@@ -291,6 +291,65 @@ relief() {
 }
 step "the app's relief slider raises sn in relief as surface sn --relief does, saves it, undoes it, rests a drag at its last step in range, and refuses a relief, modulus or floor out of range, or a relief on a surface with none" relief
 
+# sn drawn conformally, with no window. `surface sn --conformal`, opened and
+# saved untouched by the app, is the same bundle, and the app's bake and
+# `bake`'s are its drawing. The catalog's sn switched on (`--set
+# conformal=1`) saves and bakes it byte for byte; at another modulus, set or
+# dragged there, it saves and bakes `surface sn --conformal --modulus 0.5`,
+# the tube moved with the rectangle; switched off, it is plain sn on the
+# minor radius the pin left. A minor radius set on a conformal sn, a switch
+# at neither 0 nor 1, --minor with --conformal, --conformal (or --soft)
+# given a value, and --conformal on any other surface, sn in relief among
+# them, are refused, saying why, with nothing written.
+conformal() {
+    local dir="$PACKAGE/.build/conformal-check" out refused minor
+    rm -rf "$dir" && mkdir -p "$dir" || return 1
+    "$BIN/kurven-cli" surface sn --conformal --save "$dir/cli.kurven" -o "$dir/cli.svg" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/cli.kurven" --save "$dir/app.kurven" --bake "$dir/app.svg" >/dev/null &&
+    "$BIN/kurven-cli" bake "$dir/app.kurven" -o "$dir/baked.svg" >/dev/null &&
+    grep -q '"conformal":true' "$dir/cli.kurven/manifest.json" &&
+    cmp "$dir/cli.kurven/manifest.json" "$dir/app.kurven/manifest.json" &&
+    cmp "$dir/app.svg" "$dir/cli.svg" && cmp "$dir/baked.svg" "$dir/cli.svg" ||
+        { echo "surface sn --conformal, opened and saved by the app, is not one bundle and one drawing"; return 1; }
+    "$BIN/kurven-cli" surface sn --save "$dir/sn.kurven" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/sn.kurven" --set conformal=1 --save "$dir/on.kurven" --bake "$dir/on.svg" >/dev/null &&
+    cmp "$dir/on.kurven/manifest.json" "$dir/cli.kurven/manifest.json" && cmp "$dir/on.svg" "$dir/cli.svg" ||
+        { echo "the catalog's sn switched conformal is not surface sn --conformal, bundle and drawing"; return 1; }
+    "$BIN/kurven-cli" surface sn --conformal --modulus 0.5 --save "$dir/half-cli.kurven" -o "$dir/half-cli.svg" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/cli.kurven" --set modulus=0.5 --save "$dir/half.kurven" --bake "$dir/half.svg" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/cli.kurven" --drag modulus=0.6,0.5 --save "$dir/dragged.kurven" >/dev/null &&
+    cmp "$dir/half.kurven/manifest.json" "$dir/half-cli.kurven/manifest.json" && cmp "$dir/half.svg" "$dir/half-cli.svg" &&
+    cmp "$dir/dragged.kurven/manifest.json" "$dir/half-cli.kurven/manifest.json" ||
+        { echo "a conformal sn's modulus set or dragged to 0.5 is not surface sn --conformal --modulus 0.5"; return 1; }
+    minor=$(grep -o '"minor":[0-9.e-]*' "$dir/cli.kurven/manifest.json" | cut -d: -f2)
+    "$BIN/kurven-cli" surface sn --minor "$minor" --save "$dir/off-cli.kurven" -o "$dir/off-cli.svg" >/dev/null &&
+    "$BIN/KurvenApp" "$dir/cli.kurven" --set conformal=0 --save "$dir/off.kurven" --bake "$dir/off.svg" >/dev/null &&
+    cmp "$dir/off.kurven/manifest.json" "$dir/off-cli.kurven/manifest.json" && cmp "$dir/off.svg" "$dir/off-cli.svg" ||
+        { echo "a conformal sn switched off is not plain sn on the minor radius $minor"; return 1; }
+    for refused in "$dir/cli.kurven --set minor=1|minor is pinned by the modulus on a conformal sn" \
+                   "$dir/sn.kurven --set conformal=0.5|conformal must be 1 (on) or 0 (off), not 0.5"; do
+        rm -rf "$dir/refused.kurven"
+        out=$("$BIN/KurvenApp" ${refused%|*} --save "$dir/refused.kurven" 2>&1) &&
+            { echo "the app took ${refused%|*}"; return 1; }
+        printf '%s\n' "$out" | grep -q -- "${refused#*|}" && [ ! -e "$dir/refused.kurven" ] ||
+            { printf '%s\n' "$out"; echo "the app did not refuse ${refused%|*}, saying why, with nothing written"; return 1; }
+    done
+    for refused in "sn --conformal --minor 1|--minor is pinned by the modulus under --conformal" \
+                   "sn --conformal 1|--conformal is a switch and takes no value, not '1'" \
+                   "sn --relief 0.4 --soft 1|--soft is a switch and takes no value, not '1'" \
+                   "sn --relief 0.4 --conformal|sn in relief has none" \
+                   "torus --conformal|surface torus has none" \
+                   "forced --conformal|surface forced has none" \
+                   "periodic --expression sn(z,0.5) --periods 1,1 --conformal|surface periodic has none"; do
+        rm -rf "$dir/refused.kurven" "$dir/refused.svg"
+        out=$("$BIN/kurven-cli" surface ${refused%|*} --save "$dir/refused.kurven" -o "$dir/refused.svg" 2>&1) &&
+            { echo "surface ${refused%|*} was drawn"; return 1; }
+        printf '%s\n' "$out" | grep -q -- "${refused#*|}" && [ ! -e "$dir/refused.kurven" ] && [ ! -e "$dir/refused.svg" ] ||
+            { printf '%s\n' "$out"; echo "surface ${refused%|*} was not refused, saying why, with nothing written"; return 1; }
+    done
+}
+step "the app switches sn conformal as surface sn --conformal draws it, moves its tube with its modulus, and refuses a minor radius it pins or the switch where there is none" conformal
+
 # Painting, with no window, as the "Curves on" section paints the picked
 # face. Plateau hatching painted on the hatch fixture's landscape, at the
 # fixture's spacing as the strokes slider sets it (18 and 15 along the longer

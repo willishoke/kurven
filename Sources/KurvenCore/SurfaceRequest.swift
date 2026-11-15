@@ -14,8 +14,12 @@ public struct SurfaceRequest: Sendable, Equatable {
         case torus(major: Double, minor: Double)
         /// sn(z, m) on its fundamental rectangle, glued into a torus. Its own
         /// case rather than a `periodic` expression, because the modulus
-        /// decides the periods as well as the function.
-        case sn(modulus: Double, major: Double, minor: Double, grid: Int)
+        /// decides the periods as well as the function. `conformal`: drawn in
+        /// isothermal coordinates on the one round torus whose flat rectangle
+        /// has the aspect of sn's, so the modulus pins the minor radius
+        /// (`conformalMinor(modulus:major:)`) and every |f| contour crosses
+        /// every arg f contour at a right angle in space.
+        case sn(modulus: Double, major: Double, minor: Double, grid: Int, conformal: Bool = false)
         /// Any function with a rectangle of periods, glued into a torus.
         case periodic(expression: String, periods: SIMD2<Double>, major: Double, minor: Double,
                       grid: Int)
@@ -113,8 +117,8 @@ public struct SurfaceRequest: Sendable, Equatable {
         r.grid = min(grid, 256)
         switch shape {
         case .torus, .forced: break
-        case .sn(let m, let R, let rr, let grid):
-            r.shape = .sn(modulus: m, major: R, minor: rr, grid: min(grid, 240))
+        case .sn(let m, let R, let rr, let grid, let conformal):
+            r.shape = .sn(modulus: m, major: R, minor: rr, grid: min(grid, 240), conformal: conformal)
         case .periodic(let e, let p, let R, let rr, let grid):
             r.shape = .periodic(expression: e, periods: p, major: R, minor: rr, grid: min(grid, 240))
         case .relief(let m, let R, let rr, let a, let n, let grid, let turn, let floor, let soft):
@@ -145,6 +149,40 @@ public struct SurfaceRequest: Sendable, Equatable {
         if case .relief = shape { return true }
         return false
     }
+
+    /// Whether the surface is sn drawn conformally.
+    public var conformal: Bool {
+        if case .sn(_, _, _, _, true) = shape { return true }
+        return false
+    }
+}
+
+public extension SurfaceRequest.Shape {
+    /// The minor radius on which sn(z, m) is drawn conformally round a ring
+    /// of radius `major`. The round torus is isothermal in
+    /// w(θ) = ∫₀^θ r dθ′ / (R + r cos θ′), whose whole turn is 2πr / √(R² − r²),
+    /// so its flat rectangle has the aspect r / √(R² − r²), tube over ring.
+    /// sn's rectangle is 4K round the ring and 2K′ round the tube
+    /// (`PeriodicTorus.jacobiSN`), of aspect a = K′ / (2K), and the two agree
+    /// where r / R = a / √(1 + a²). Not a number, or not under `major`,
+    /// where the modulus is so near 0 that K′ is out of reach.
+    static func conformalMinor(modulus m: Double, major R: Double) -> Double {
+        let a = quarterPeriod(1 - m) / (2 * quarterPeriod(m))
+        return R * a / (1 + a * a).squareRoot()
+    }
+
+    /// K(m), the quarter period, as `Jacobi.quarterPeriod` computes it, to
+    /// the bit (which the test suite holds): the pin is checked here, and
+    /// KurvenCore depends on nothing.
+    private static func quarterPeriod(_ m: Double) -> Double {
+        guard m >= 0, m < 1 else { return m == 1 ? .infinity : .nan }
+        var a = 1.0, b = (1 - m).squareRoot()
+        for _ in 0..<64 where a != b {
+            (a, b) = (0.5 * (a + b), (a * b).squareRoot())
+            if abs(a - b) <= a.ulp { break }
+        }
+        return .pi / (2 * a)
+    }
 }
 
 public extension SurfaceRequest {
@@ -159,14 +197,20 @@ public extension SurfaceRequest {
         /// A relief's amplitude: how far along the normal the torus is
         /// displaced per unit of the truncated |f|. `--relief` on the CLI.
         case relief
+        /// Whether sn is drawn conformally, 1 or 0: a switch, which
+        /// `setting(_:to:naming:)` refuses at any other value. On, the
+        /// modulus and the major radius pin the minor radius.
+        case conformal
     }
 
     /// The fields this request's shape has, in the order a panel lists them.
-    /// The linear curve's are listed by `linearCurveFields` when there is one.
+    /// The linear curve's are listed by `linearCurveFields` when there is one;
+    /// sn's switch, `conformal`, is a field but no slider, and is not listed;
+    /// nor, while it is on, is the minor radius it pins.
     var fields: [Field] {
         switch shape {
         case .torus: [.major, .minor]
-        case .sn: [.modulus, .major, .minor, .grid]
+        case .sn(_, _, _, _, let conformal): conformal ? [.modulus, .major, .grid] : [.modulus, .major, .minor, .grid]
         case .relief: [.modulus, .major, .minor, .grid, .relief]
         case .periodic: [.major, .minor, .grid]
         case .forced: [.radius, .radial, .axial, .trajectoryTurns, .harmonics, .fit]
@@ -187,13 +231,14 @@ public extension SurfaceRequest {
             case (_, .slope): linearCurves?.slope
             case (_, .turns): linearCurves.map { Double($0.turns) }
             case (_, .strands): linearCurves.map { Double($0.count) }
-            case (.torus(let R, _), .major), (.sn(_, let R, _, _), .major),
+            case (.torus(let R, _), .major), (.sn(_, let R, _, _, _), .major),
                  (.periodic(_, _, let R, _, _), .major), (.relief(_, let R, _, _, _, _, _, _, _), .major): R
-            case (.torus(_, let r), .minor), (.sn(_, _, let r, _), .minor),
+            case (.torus(_, let r), .minor), (.sn(_, _, let r, _, _), .minor),
                  (.periodic(_, _, _, let r, _), .minor), (.relief(_, _, let r, _, _, _, _, _, _), .minor): r
-            case (.sn(let m, _, _, _), .modulus), (.relief(let m, _, _, _, _, _, _, _, _), .modulus): m
+            case (.sn(let m, _, _, _, _), .modulus), (.relief(let m, _, _, _, _, _, _, _, _), .modulus): m
+            case (.sn(_, _, _, _, let conformal), .conformal): conformal ? 1 : 0
             case (.relief(_, _, _, let a, _, _, _, _, _), .relief): a
-            case (.sn(_, _, _, let g), .grid), (.periodic(_, _, _, _, let g), .grid),
+            case (.sn(_, _, _, let g, _), .grid), (.periodic(_, _, _, _, let g), .grid),
                  (.relief(_, _, _, _, _, let g, _, _, _), .grid): Double(g)
             case (.forced(_, _, _, _, _, let x, _), .radius): x
             case (.forced(_, _, _, _, _, _, let x), .trajectoryTurns): Double(x)
@@ -221,15 +266,20 @@ public extension SurfaceRequest {
             case .torus(var R, var r):
                 if field == .major { R = x } else if field == .minor { r = x } else { return }
                 shape = .torus(major: R, minor: r)
-            case .sn(var m, var R, var r, var g):
+            case .sn(var m, var R, var r, var g, var conformal):
                 switch field {
                 case .modulus: m = x
                 case .major: R = x
                 case .minor: r = x
                 case .grid: g = n
+                case .conformal: conformal = x != 0
                 default: return
                 }
-                shape = .sn(modulus: m, major: R, minor: r, grid: g)
+                // Conformal, the modulus and the major radius pin the minor
+                // radius, which moves with them; one set outright is what
+                // `check()` refuses.
+                if conformal, field != .minor { r = Shape.conformalMinor(modulus: m, major: R) }
+                shape = .sn(modulus: m, major: R, minor: r, grid: g, conformal: conformal)
             case .periodic(let e, let p, var R, var r, var g):
                 switch field {
                 case .major: R = x
@@ -278,6 +328,9 @@ public extension SurfaceRequest {
                 ? ManifestError.invalid("\(name("shape.amplitude")) must be from 0 to 1, not \(value)")
                 : ManifestError.invalid("\(field.rawValue) must be a finite number, not \(value)")
         }
+        guard field != .conformal || value == 0 || value == 1 else {
+            throw ManifestError.invalid("\(name("shape.conformal")) must be 1 (on) or 0 (off), not \(value)")
+        }
         var next = self
         next[field] = value
         try next.check(naming: name)
@@ -300,8 +353,11 @@ public extension SurfaceRequest {
         case "torus":
             shape = .torus(major: try s.double("major", what), minor: try s.double("minor", what))
         case "sn":
+            // A bundle saved before sn could be drawn conformally has no
+            // `conformal`, and is drawn as it was.
             shape = .sn(modulus: try s.double("modulus", what), major: try s.double("major", what),
-                        minor: try s.double("minor", what), grid: try s.int("grid", what))
+                        minor: try s.double("minor", what), grid: try s.int("grid", what),
+                        conformal: try s.bool("conformal", what, default: false))
         case "periodic":
             let p = try s.doubles("periods", what)
             guard p.count == 2 else { throw ManifestError.badShape("SurfaceRequest periods", [p.count]) }
@@ -325,6 +381,10 @@ public extension SurfaceRequest {
         case let other:
             throw ManifestError.unknownKind(other, of: "SurfaceRequest.shape",
                                             known: ["torus", "sn", "periodic", "forced", "relief"])
+        }
+        if s["conformal"] != nil, shape.kind != "sn" {
+            throw ManifestError.unsupported("conformal on a \(shape.kind) shape: only plain sn is drawn in "
+                                            + "isothermal coordinates")
         }
         let w = "SurfaceRequest.linearCurves", st = "SurfaceRequest.style"
         let lines: SIMD2<Int>? = o["lines"] == .null ? nil : try {
@@ -352,9 +412,12 @@ public extension SurfaceRequest {
         switch self.shape {
         case .torus(let R, let r):
             shape = ["major": double(R), "minor": double(r)]
-        case .sn(let m, let R, let r, let grid):
+        case .sn(let m, let R, let r, let grid, let conformal):
             shape = ["modulus": double(m), "major": double(R), "minor": double(r),
                      "grid": .int(grid)]
+            // Written only when on, so a bundle that is not is the bundle
+            // it was before sn could be.
+            if conformal { shape["conformal"] = .bool(true) }
         case .periodic(let e, let p, let R, let r, let grid):
             shape = ["expression": .string(e),
                      "periods": .array([double(p.x), double(p.y)]),
@@ -383,7 +446,8 @@ public extension SurfaceRequest {
 
     /// Refuse a request no drawing can be built from, or one whose drawing
     /// would cost without bound, naming the number: a radius that is not
-    /// positive, a modulus outside (0, 1), a relief outside [0, 1], a grid
+    /// positive, a modulus outside (0, 1), a conformal sn's minor radius
+    /// other than the one its modulus pins, a relief outside [0, 1], a grid
     /// too coarse to span its rectangle or too fine to hold (`maxSamples`),
     /// curves of more vertices than a layer holds (`maxVertices`), a forced
     /// torus revolved on one state component twice. What only building can find -- a system the
@@ -416,8 +480,21 @@ public extension SurfaceRequest {
         switch shape {
         case .torus(let R, let r):
             try radii(R, r)
-        case .sn(let m, let R, let r, let g):
-            try modulus(m); try radii(R, r)
+        case .sn(let m, let R, let r, let g, let conformal):
+            try modulus(m)
+            if conformal {
+                try positive(R, "shape.major")
+                let pinned = Shape.conformalMinor(modulus: m, major: R)
+                guard pinned.isFinite, pinned > 0, pinned < R else {
+                    throw refuse("shape.modulus", "is too near 0 for sn to be drawn conformally, \(m): K′ is "
+                                 + "out of reach, and the tube it pins would close on the axis")
+                }
+                guard r == pinned else {
+                    throw refuse("shape.minor", "is pinned by the modulus on a conformal sn, to \(pinned) round a "
+                                 + "ring of \(R), not \(r)")
+                }
+            }
+            try radii(R, r)
             try within(g, 8...Self.maxFunctionGrid, "shape.grid", "samples")
         case .periodic(let e, let p, let R, let r, let g):
             guard !e.trimmingCharacters(in: .whitespaces).isEmpty else { throw refuse("shape.expression", "is empty") }
@@ -511,7 +588,7 @@ public extension SurfaceRequest {
     /// nowhere: that is decided when it is built.
     var boundsSolid: Bool? {
         switch shape {
-        case .torus(let R, let r), .sn(_, let R, let r, _), .periodic(_, _, let R, let r, _):
+        case .torus(let R, let r), .sn(_, let R, let r, _, _), .periodic(_, _, let R, let r, _):
             return R > r
         case .relief(_, let R, let r, let amplitude, _, _, _, let floor, _):
             let ceiling = floor.map { Self.reliefCeiling - $0 } ?? Self.reliefCeiling
@@ -534,7 +611,7 @@ public extension SurfaceRequest {
         switch shape {
         case .torus: return (grid, max(grid / 2, 8))
         case .forced: return (grid, grid / 2)
-        case .sn(_, let R, let r, _): return (grid, tube(grid, aspect: 1, R, r))
+        case .sn(_, let R, let r, _, _): return (grid, tube(grid, aspect: 1, R, r))
         case .periodic(_, let p, let R, let r, _): return (grid, tube(grid, aspect: p.y / p.x, R, r))
         case .relief(_, let R, let r, _, let k, _, _, _, _):
             let base = min(grid, 1024)

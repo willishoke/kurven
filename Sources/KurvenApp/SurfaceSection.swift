@@ -60,6 +60,15 @@ struct SurfaceSection: View {
             ForEach(request.fields, id: \.self) { field in
                 row(field, request)
             }
+            if request[.conformal] != nil {
+                // sn's switch, set as its field is (`SurfaceFieldSlider`).
+                Toggle("Conformal", isOn: Binding(get: { request.conformal }, set: { on in
+                    SurfaceFieldSlider(document: document, field: .conformal, label: "Conformal").set(on ? 1 : 0)
+                }))
+                .controlSize(.small)
+                .help("Isothermal coordinates round the tube, on the torus whose minor radius the modulus pins: "
+                      + "every |sn| contour then crosses every arg sn contour at a right angle on the surface.")
+            }
             lines(request)
             linearCurves(request)
         }
@@ -96,7 +105,8 @@ struct SurfaceSection: View {
         case .modulus:
             Control(label: "Modulus", range: 0.01...0.99, step: 0.01,
                     help: "m in sn(z, m). It sets the periods, so the rectangle the torus is "
-                        + "rolled from changes with it, and the function is sampled again.")
+                        + "rolled from changes with it, and the function is sampled again. Conformal, "
+                        + "it sets the minor radius too.")
         case .grid:
             Control(label: "Samples", range: 120...1200, step: 20, digits: 0,
                     help: "Samples across the period rectangle that the contours are traced "
@@ -132,6 +142,8 @@ struct SurfaceSection: View {
         case .strands:
             Control(label: "Strands", range: 1...12, step: 1, digits: 0,
                     help: "Parallel linear curves, evenly spaced through the tube.")
+        case .conformal:
+            Control(label: "Conformal", range: 0...1, step: 1, digits: 0)
         case .relief:
             Control(label: "Relief", range: SurfaceRequest.reliefRange, step: 0.01,
                     help: "How far the torus is displaced along its normal per unit of |sn|, "
