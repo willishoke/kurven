@@ -272,6 +272,19 @@ No tolerance was loosened.
 - `Camera.perspectiveClip(fovY:aspect:near:)` takes `near` and never reads
   it (its doc says depth travels in the colour attachment); the port drops
   the parameter and says so.
+- `Camera.pageCoordinates(of:)` under perspective divides by
+  `max(v.z, .leastNormalMagnitude)`, but view z grows toward the viewer and
+  a visible point has z < 0 (`perspectiveClip`'s w is −z), so every visible
+  point is divided by 2.2e-308 rather than by its distance. Reproduction:
+  the recip orbit with distance 10 and a 50° field of view; the point one
+  unit right of the target in view space, at view z = −10, comes out at page
+  x = 1 · cot(25°) / 2.2e-308 ≈ 9.6e307 instead of cot(25°) / 10 ≈ 0.214
+  (`camera::tests::perspective_page_coordinates_divide_by_the_least_normal_as_swift_does`
+  pins it). Nothing reaches it: the only caller in `Sources/` is a test
+  (`TopEdge.swift`) on a bundle preset, which is orthographic; a bake
+  refuses a perspective camera (`BakeError.perspective`), the app disables
+  baking under it, a composite refuses it, and the preview projects on the
+  GPU with `perspectiveClip`. Ported as it is.
 
 ## 2026-11-15 · The wasm module grew to 503,030 bytes
 

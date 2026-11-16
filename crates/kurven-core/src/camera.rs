@@ -74,6 +74,9 @@ impl Camera {
             Projection::Perspective { fov_y } => {
                 // Not reachable from a bundle preset; kept total so a future
                 // navigation camera cannot silently fall through to orthographic.
+                // A visible point has z < 0, so this divides by the least
+                // normal, not by its distance: Swift's, ported as it is
+                // (FINDINGS). Nothing calls it under perspective.
                 let f = 1.0 / real::tan(fov_y.radians / 2.0);
                 let d = v.z().max(f64::MIN_POSITIVE);
                 P2::new(v.x() * f / d, v.y() * f / d)
@@ -137,6 +140,7 @@ mod tests {
     use super::*;
     use crate::fixtures;
     use crate::json::JsonValue;
+    use crate::navigation::Orbit;
 
     /// "camera: each projection preset lands on the committed projection".
     /// The projections were scipy's Rotation composed as the Python plates
@@ -159,6 +163,27 @@ mod tests {
             assert!(world.len() == want.len() && worst < 1e-9, "{name}: worst |Δ| = {worst} over {}", world.len());
             assert!(matches!(spec, JsonValue::Object(_)));
         }
+    }
+
+    /// Swift's perspective branch divides by max(z, least normal), but a
+    /// visible point has z < 0, so it divides by 2.2e-308: a point a unit
+    /// off the target, ten in front of the eye, lands about 1e308 out. Ported
+    /// as it is (FINDINGS, "Where the Swift looks wrong"); nothing reaches it.
+    #[test]
+    fn perspective_page_coordinates_divide_by_the_least_normal_as_swift_does() {
+        let projection =
+            ObliqueProjection { shear: 0.5, x_angle: -55.0, z_angle: -90.0, flip_x: true, y_scale: None };
+        let mut orbit = Orbit::matching(&projection, P3::new(0.0, 0.0, 0.0));
+        orbit.distance = Some(10.0);
+        orbit.field_of_view = Angle::from_degrees(50.0);
+        let camera = orbit.camera();
+        let p = camera.view.inverse().apply(P3::new(1.0, 0.0, -10.0));
+        let v = camera.view.apply(p);
+        assert!((v.x() - 1.0).abs() < 1e-12 && (v.z() + 10.0).abs() < 1e-12, "in front of the eye, z < 0");
+        let page = camera.page_coordinates(p);
+        let f = 1.0 / real::tan(Angle::from_degrees(50.0).radians / 2.0);
+        assert_eq!(page.x(), v.x() * f / f64::MIN_POSITIVE, "divided by the least normal, not by -z = 10");
+        assert!(page.x() > 9e307);
     }
 
     /// "camera: the projection matrix is the composition it claims to be"
