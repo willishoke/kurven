@@ -9,11 +9,12 @@
 //! names of its non-empty stroke layers in the order the SVG's groups stand,
 //! and their stroke counts).
 //!
-//! The port draws the landscapes so far. Swift's list also holds sn flat and
-//! in relief, a torus with a linear curve, a periodic expression and the
-//! frame's two gallery drawings (parametric surfaces and solids built by
-//! `surface`, Phase 4 and 5), the seven solids (Phase 5) and the composite
-//! (Phase 5); they join this list with their phases.
+//! The port draws the landscapes, the seven solids and the frame's two
+//! gallery drawings so far. Swift's list also holds sn flat and in relief, a
+//! torus with a linear curve and a periodic expression (parametric surfaces,
+//! Phase 4), and the composite of the cubic, a cube and a torus, whose
+//! torus part waits for Phase 4 (`composite_three`); they join this list
+//! with it.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -286,8 +287,36 @@ pub fn all(fixtures: &Path) -> Vec<Reference> {
             Box::new(move |scratch| surface(&words(&["solid", "--kind", kind]), scratch, &format!("solid-{kind}"))),
         ));
     }
-    // PORT: phase 5 -- composite-three.
+    // PORT: phase 4 -- composite-three, the cubic landscape on its grid
+    // with the contract's cube and torus standing on it: `composite_three`
+    // below draws it, and joins this list once the torus's bundle
+    // (contract/surface_torus.kurven, a `SurfaceBundle`) can be read.
     references
+}
+
+/// composite-three: tests/fixtures/composite/three.svg, byte for byte in
+/// Swift, as `scene` draws it. Its torus part is a parametric surface's
+/// bundle, which the port reads from Phase 4 on; until then it is refused,
+/// and the drawing is not in `all`.
+pub fn composite_three(fixtures: &Path) -> Reference {
+    let parts: Vec<(String, kurven_core::composite::Placement)> = [
+        ("expr/landscape_cubic.kurven", "0,0,0,1"),
+        ("contract/polyhedron_cube.kurven", "-1.2,0.1,0.3,0.35"),
+        ("contract/surface_torus.kurven", "1,0,1.6,0.35"),
+    ]
+    .iter()
+    .map(|(p, at)| (fixtures.join(p).to_string_lossy().into_owned(), crate::scene::placement(at).expect("a placement")))
+    .collect();
+    plate(
+        "composite-three",
+        "scene expr/landscape_cubic.kurven contract/polyhedron_cube.kurven --at -1.2,0.1,0.3,0.35 \
+         contract/surface_torus.kurven --at 1,0,1.6,0.35 --no-refine"
+            .to_string(),
+        Box::new(move |_| {
+            let drawing = crate::scene::composite_drawing(&parts, None, false)?;
+            Ok((drawing.strokes, drawing.layers.iter().map(|(l, _)| l.spec.name.clone()).collect()))
+        }),
+    )
 }
 
 /// Bake every reference whose name `only` holds (all of them for an empty

@@ -17,6 +17,8 @@
 pub mod bisection;
 pub mod bundle;
 pub mod camera;
+pub mod composite;
+pub mod contact;
 pub mod contour;
 pub mod contour_memo;
 pub mod convex_partition;
@@ -43,6 +45,7 @@ pub mod polyline;
 pub mod scalar_field;
 pub mod scene;
 pub mod simd;
+pub mod slab;
 pub mod solid;
 pub mod spaces;
 pub mod splitmix;
