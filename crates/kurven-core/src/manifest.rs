@@ -542,7 +542,7 @@ impl Truncation {
                     }
                 }
                 // Stable, as Swift's sort is.
-                out.sort_by(|x, y| x.lo.total_cmp(&y.lo));
+                out.sort_by(|x, y| kurven_math::real::total_order(x.lo, y.lo));
                 out
             }
         }

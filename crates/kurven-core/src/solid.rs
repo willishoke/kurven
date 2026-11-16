@@ -50,6 +50,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 
+use kurven_math::real;
+
 use crate::convex_partition;
 use crate::polyline::PolylineSet;
 use crate::simd::{Vec2, Vec3};
@@ -308,7 +310,7 @@ impl Solid {
             }
         }
         // Stable, as Swift's sort is in practice.
-        sides.sort_by(|s, t| s.p.x.min(s.q.x).total_cmp(&t.p.x.min(t.q.x)));
+        sides.sort_by(|s, t| real::total_order(s.p.x.min(s.q.x), t.p.x.min(t.q.x)));
         let tolerance = 1e-9 * frame.extent;
         let cross = |a: Vec2, b: Vec2| a.x * b.y - a.y * b.x;
         // The side of the line through `s` that `r` lies on, beyond the

@@ -40,7 +40,7 @@ pub fn g3(x: f64) -> String {
         return if x > 0.0 { "inf" } else { "-inf" }.to_string();
     }
     if x == 0.0 {
-        return if x.is_sign_negative() { "-0" } else { "0" }.to_string();
+        return if kurven_math::real::sign_minus(x) { "-0" } else { "0" }.to_string();
     }
     let scientific = format!("{x:.2e}");
     let (mantissa, exponent) = scientific.split_once('e').expect("{:e} writes an exponent");

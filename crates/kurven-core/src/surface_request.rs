@@ -1028,7 +1028,7 @@ mod tests {
         let mut r = SurfaceRequest::new(Shape::Torus { major: 2.0, minor: 1.0 });
         assert_eq!(r.get(Field::Modulus), None);
         r.set(Field::Major, -0.0);
-        assert!(r.get(Field::Major).unwrap().is_sign_positive(), "−0 is 0");
+        assert!(!kurven_math::real::sign_minus(r.get(Field::Major).unwrap()), "−0 is 0");
         r.set(Field::Modulus, 0.3);
         assert_eq!(r.shape, Shape::Torus { major: 0.0, minor: 1.0 }, "a field the shape has not changes nothing");
         assert_eq!(linear_curve_closes(0.4, 24), Some(5));
