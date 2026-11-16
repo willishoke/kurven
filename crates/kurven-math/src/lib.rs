@@ -9,6 +9,7 @@
 
 pub mod bessel;
 pub mod complex;
+pub mod continued_fraction;
 pub mod erf;
 pub mod expint;
 pub mod format;
@@ -16,13 +17,16 @@ pub mod gamma;
 pub mod jacobi;
 pub mod lambert_w;
 pub mod real;
+pub mod root;
 pub mod zeta;
 
 pub use bessel::{Airy, Bessel};
 pub use complex::Complex;
+pub use continued_fraction::ContinuedFraction;
 pub use erf::Faddeeva;
 pub use expint::ExpInt;
 pub use gamma::{Gamma, Trig};
 pub use jacobi::Jacobi;
 pub use lambert_w::LambertW;
+pub use root::Root;
 pub use zeta::Zeta;
