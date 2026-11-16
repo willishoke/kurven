@@ -8,8 +8,11 @@ use kurven_math::real;
 
 use crate::json::{JsonError, JsonObject, JsonValue, Members, object, string};
 use crate::manifest::{ContourField, DomainAxis, ManifestError, SchemaError};
+use crate::parametric::PortRefusal;
+use crate::polyline::PolylineSet;
 use crate::simd::{Vec2, Vec3};
-use crate::solid::FaceFrame;
+use crate::solid::{FaceFrame, Solid};
+use crate::spaces::{P3, Transform, ViewSpace, WorldSpace};
 use crate::text;
 
 /// The kind of a face: what a selector picks and what a face is
@@ -541,6 +544,58 @@ impl Turing {
     /// The pattern: the sum over twice its deviation, clamped to `[-1, 1]`.
     pub fn value(p: Vec2, seed: u64) -> f64 {
         (Turing::sum(p, seed) / (2.0 * Turing::deviation())).clamp(-1.0, 1.0)
+    }
+}
+
+// MARK: - hatching a solid
+
+/// One hatch line on a solid: the face it lies on, its width step, and its
+/// path in world space (Swift's `Solid.HatchLine`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HatchLine {
+    pub face: usize,
+    pub width_step: i64,
+    pub path: Vec<P3<WorldSpace>>,
+}
+
+/// The hatching of one width step before visibility and after
+/// (`Solid.visibleHatching(_:view:)`'s answer).
+pub type VisibleHatching = Vec<(i64, PolylineSet<WorldSpace>, PolylineSet<ViewSpace>)>;
+
+impl Solid {
+    /// The hatching laid over every face, before visibility (`hatchLines(_:)`).
+    pub fn hatch_lines(&self, _hatching: &Hatching) -> Result<Vec<HatchLine>, PortRefusal> {
+        // PORT: phase 5 -- lines at the hatching's angle over each face's frame, clipped to its convex pieces, joined across diagonals, graded by the tone.
+        Err(PortRefusal { phase: 5, what: "Solid.hatchLines" })
+    }
+
+    /// Every hatch line's path, before visibility (`hatchPaths(_:)`).
+    pub fn hatch_paths(&self, _hatching: &Hatching) -> Result<PolylineSet<WorldSpace>, PortRefusal> {
+        // PORT: phase 5 -- the paths of hatch_lines, as one polyline set.
+        Err(PortRefusal { phase: 5, what: "Solid.hatchPaths" })
+    }
+
+    /// The hatching laid over face `i` (`hatchLines(_:onFace:)`).
+    pub fn hatch_lines_on_face(&self, _hatching: &Hatching, _face: usize) -> Result<Vec<HatchLine>, PortRefusal> {
+        // PORT: phase 5 -- one face's hatch lines: the plane covered at the spacing through the frame's origin, clipped to each piece, a line on a side left out.
+        Err(PortRefusal { phase: 5, what: "Solid.hatchLines(_:onFace:)" })
+    }
+
+    /// The hatch lines by width step (`hatchLinesByWidth(_:)`).
+    pub fn hatch_lines_by_width(&self, _hatching: &Hatching) -> Result<Vec<(i64, Vec<HatchLine>)>, PortRefusal> {
+        // PORT: phase 5 -- hatch_lines grouped by width step, the steps in increasing order.
+        Err(PortRefusal { phase: 5, what: "Solid.hatchLinesByWidth" })
+    }
+
+    /// The hatching for a camera, per width step, before visibility and after
+    /// (`visibleHatching(_:view:)`).
+    pub fn visible_hatching(
+        &self,
+        _hatching: &Hatching,
+        _view: &Transform<WorldSpace, ViewSpace>,
+    ) -> Result<VisibleHatching, PortRefusal> {
+        // PORT: phase 5 -- each width step's hatch lines tested by the solid's occlusion (Solid.visible).
+        Err(PortRefusal { phase: 5, what: "Solid.visibleHatching" })
     }
 }
 
