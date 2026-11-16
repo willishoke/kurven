@@ -55,8 +55,13 @@ fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     Some(&tag[start..start + end])
 }
 
+/// A finite number. Rust reads "nan" and "inf" as numbers, and SVG.swift
+/// writes neither, so they are refused here rather than let into a distance.
 fn number(text: &str, what: &str) -> Result<f64, String> {
-    text.trim().parse::<f64>().map_err(|_| format!("{what} is not a number: {text:?}"))
+    match text.trim().parse::<f64>() {
+        Ok(v) if v.is_finite() => Ok(v),
+        _ => Err(format!("{what} is not a finite number: {text:?}")),
+    }
 }
 
 fn points(text: &str) -> Result<Vec<Point>, String> {
@@ -85,7 +90,8 @@ pub fn parse(text: &str) -> Result<Drawing, String> {
         let tag = &rest[open..=close];
         rest = &rest[close + 1..];
         // The element's name, a closing tag's with its slash.
-        let end = tag[2..].find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/').map_or(tag.len(), |i| i + 2);
+        let after = tag.get(2..).ok_or_else(|| format!("a tag that is not one: {tag:?}"))?;
+        let end = after.find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/').map_or(tag.len(), |i| i + 2);
         let name = &tag[1..end];
         match name {
             _ if tag.starts_with("<?") => {}
@@ -128,10 +134,9 @@ pub fn parse(text: &str) -> Result<Drawing, String> {
                 if groups.last() != Some(&Group::Layer) {
                     return Err("a <polyline> outside a layer".into());
                 }
+                // SVG.swift writes every path of a layer, so a path of no
+                // vertices is `points=""`: a stroke counted, with no geometry.
                 let p = points(attribute(tag, "points").ok_or("a <polyline> without points")?)?;
-                if p.is_empty() {
-                    return Err("a <polyline> with no points".into());
-                }
                 layers.last_mut().expect("a layer is open").paths.push(p);
             }
             "/svg" => closed = true,
@@ -175,6 +180,20 @@ mod tests {
         assert!((d.width_points(&d.layers[0]) - 0.002 * 1152.0 / 4.0).abs() < 1e-15);
     }
 
+    /// An empty path in a layer that has others: counted, and no geometry.
+    #[test]
+    fn an_empty_polyline() {
+        let d = parse(
+            &SMALL.replace("<polyline points=\"2,2 3,3\"/>", "<polyline points=\"2,2 3,3\"/>\n<polyline points=\"\"/>"),
+        )
+        .unwrap();
+        assert_eq!(d.layers[1].paths, vec![vec![[2.0, 2.0], [3.0, 3.0]], vec![]]);
+        let e = parse(SMALL).unwrap();
+        let report = crate::compare::compare(&d, &e, crate::compare::Tolerance::default());
+        assert!(report.same(), "{report}");
+        assert_eq!(report.notes.len(), 1, "the count differs: {report}");
+    }
+
     #[test]
     fn an_empty_drawing() {
         let d = parse("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"/>\n").unwrap();
@@ -189,6 +208,12 @@ mod tests {
             SMALL.replace("2.5,-1.5", "2.5;-1.5"),
             SMALL.replace("viewBox=\"-1 -2 4 3\"", "viewBox=\"0 0 0 1\""),
             SMALL.replace("</g>\n</g>", "</g>"),
+            SMALL.replace("2.5,-1.5", "2.5,nan"),
+            SMALL.replace("2.5,-1.5", "inf,-1.5"),
+            SMALL.replace("stroke-width=\"0.001\"", "stroke-width=\"NaN\""),
+            SMALL.replace("viewBox=\"-1 -2 4 3\"", "viewBox=\"-1 -2 4 inf\""),
+            SMALL.replace("<polyline points=\"2,2 3,3\"/>", "<\u{e9}>"),
+            SMALL.replace("<polyline points=\"2,2 3,3\"/>", "<\u{1F600} points=\"2,2\"/>"),
         ] {
             assert!(parse(&bad).is_err(), "read {bad}");
         }
