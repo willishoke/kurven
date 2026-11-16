@@ -17,11 +17,13 @@
 pub mod bisection;
 pub mod camera;
 pub mod contour;
+pub mod contour_memo;
 pub mod convex_partition;
 pub mod depth;
 pub mod fixtures;
 pub mod grid;
 pub mod hatching;
+pub mod hidden_line;
 pub mod json;
 pub mod manifest;
 pub mod navigation;
