@@ -72,6 +72,23 @@ pub fn all() -> Vec<Golden> {
     out
 }
 
+/// One of the drawings above, by name, baked in memory: for timing the
+/// engine natively and under Node (`crates/kurven-wasm/bench.mjs`).
+/// "dodecahedron" is `surface solid`'s default, "frame-turing" the gallery's
+/// frame (`--x-angle -55 --z-angle -60 --shear 0` aside), "composite" the
+/// cubic with a cube and a frame on it.
+pub fn bake_named(name: &str) -> Option<Bake> {
+    Some(match name {
+        "dodecahedron" => drawn(Solid::platonic(Platonic::Dodecahedron, 2.0).resting(0), None),
+        "frame-turing" => drawn(
+            Solid::frame(4.0, 2.0, 0.8),
+            Some(Hatching::new(30f64.to_radians_exact(), 0.035, None, Tone::Turing { scale: 0.18, seed: 3 }, 4)),
+        ),
+        "composite" => composite(),
+        _ => return None,
+    })
+}
+
 /// Degrees to radians as Swift writes it, `deg * .pi / 180`.
 trait Radians {
     fn to_radians_exact(self) -> f64;
@@ -150,4 +167,20 @@ fn composite() -> Bake {
         layers: visible.iter().map(|(layer, seen)| (Style::of(&layer.spec), HiddenLine::pass(seen))).collect(),
     };
     Bake { strokes, specs: visible.into_iter().map(|(layer, _)| layer.spec).collect() }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The bench's drawings, timed natively in one thread, against
+    /// `bench.mjs` under Node: `cargo test --release -p kurven-golden --
+    /// --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measure, not a check"]
+    fn bake_times() {
+        for name in ["dodecahedron", "frame-turing", "composite"] {
+            let started = std::time::Instant::now();
+            let baked = super::bake_named(name).expect("a drawing");
+            eprintln!("{name}: {} strokes in {:.3} s", baked.strokes.path_count(), started.elapsed().as_secs_f64());
+        }
+    }
 }

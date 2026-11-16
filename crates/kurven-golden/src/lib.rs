@@ -46,7 +46,7 @@ mod core_values;
 pub mod gallery;
 mod landscapes;
 mod math;
-mod polyhedra;
+pub mod polyhedra;
 
 /// One golden file: where it goes under the set's root, and its bytes.
 pub struct Golden {
