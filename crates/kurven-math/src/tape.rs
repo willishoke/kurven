@@ -4,6 +4,7 @@ use crate::complex::Complex;
 use crate::expression::Node;
 use crate::gamma::Gamma;
 use crate::language::Language;
+use crate::scratch;
 
 /// An expression as a list of instructions, each writing one register from
 /// the registers before it: the tree in vertical edge-order, the last
@@ -15,7 +16,7 @@ use crate::language::Language;
 /// counted object every thread shares; with the lines of sight of a
 /// landscape traversed on every core, most of a core's time went to retaining
 /// and releasing them rather than to f. The tape is read through a slice
-/// nothing counts, into registers on the stack.
+/// nothing counts, into registers in the thread's scratch.
 #[derive(Clone, Debug)]
 pub struct Tape {
     ops: Vec<Op>,
@@ -41,9 +42,6 @@ enum Op {
     Apply(&'static str, Vec<usize>),
 }
 
-/// Registers that fit on the stack; a longer tape takes a vector.
-const STACK_REGISTERS: usize = 64;
-
 impl Tape {
     pub fn new(node: &Node) -> Tape {
         let mut list = Vec::new();
@@ -51,15 +49,11 @@ impl Tape {
         Tape { ops: list }
     }
 
+    /// f(z), in registers from the thread's scratch (`scratch`): as many as
+    /// the tape has instructions, neither allocated nor cleared, since each
+    /// instruction writes its register before any later one reads it.
     pub fn call(&self, z: Complex) -> Complex {
-        let n = self.ops.len();
-        if n <= STACK_REGISTERS {
-            let mut r = [Complex::ZERO; STACK_REGISTERS];
-            self.run(z, &mut r[..n])
-        } else {
-            let mut r = vec![Complex::ZERO; n];
-            self.run(z, &mut r)
-        }
+        scratch::with_complex(self.ops.len(), |r| self.run(z, r))
     }
 
     fn run(&self, z: Complex, r: &mut [Complex]) -> Complex {
@@ -143,10 +137,14 @@ mod tests {
     }
 
     #[test]
-    fn a_long_tape_spills_to_the_heap() {
-        let text = (0..80).map(|k| format!("{k}z")).collect::<Vec<_>>().join("+");
-        let node = Expression::parse(&text).unwrap();
+    /// A long tape after a short one, and the short one again, on the same
+    /// scratch: what an earlier evaluation left there is never read.
+    fn tapes_of_any_length_share_the_scratch() {
+        let long = (0..80).map(|k| format!("{k}z")).collect::<Vec<_>>().join("+");
         let z = Complex::new(0.5, -0.25);
-        assert_eq!(Tape::new(&node).call(z), node.evaluate(z));
+        for text in ["gamma(z)", long.as_str(), "z", "sin(z)/z"] {
+            let node = Expression::parse(text).unwrap();
+            assert_eq!(Tape::new(&node).call(z), node.evaluate(z), "{text}");
+        }
     }
 }

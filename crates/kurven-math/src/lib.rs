@@ -24,6 +24,7 @@ pub mod literals;
 pub mod ode;
 pub mod real;
 pub mod root;
+pub mod scratch;
 pub mod simd;
 pub mod swift;
 pub mod tape;
