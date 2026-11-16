@@ -564,5 +564,11 @@ fn the_cut_through_a_saddle_draws_every_branch_and_two_of_them_twice_as_swift() 
             runs.iter().filter(|r| distance_to(p, std::slice::from_ref(*r)) <= 0.05 * cell).count()
         })
         .collect();
-    assert_eq!(times, vec![1, 1, 1, 1, 2, 2], "branches at 0°, 60°, ..., 300°, each drawn so many times");
+    assert_eq!(
+        times,
+        vec![1, 1, 1, 1, 2, 2],
+        "branches at 0°, 60°, ..., 300°, each drawn so many times: Swift's, with the 240° and 300° \
+         branches drawn twice. Once `drawnOnce` drops a stretch lying along another, in Swift and \
+         the port together (crates/FINDINGS.md, 2026-11-16), the answer is [1, 1, 1, 1, 1, 1]"
+    );
 }
