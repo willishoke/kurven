@@ -4,6 +4,7 @@
 use crate::complex::Complex;
 use crate::frequency::Frequency;
 use crate::real;
+use crate::scratch;
 use crate::simd::Simd;
 
 /// An invariant torus as a two-dimensional Fourier series,
@@ -92,29 +93,32 @@ impl<const N: usize> FourierTorus<N> {
         FourierTorus { frequencies, harmonics, re, im }
     }
 
-    /// The torus at `(θ, φ)`, with its two partial derivatives.
+    /// The torus at `(θ, φ)`, with its two partial derivatives. Allocates
+    /// nothing: the phasors live in the thread's scratch for the call, as
+    /// Swift's live on the stack.
     #[allow(clippy::needless_range_loop)]
     pub fn jet(&self, theta: f64, phi: f64) -> Jet<N> {
         let m_max = self.harmonics;
         let width = self.width();
-        let mut a = vec![Complex::ZERO; m_max + 1];
-        let mut b = vec![Complex::ZERO; width];
-        phasors(theta, phi, m_max, &mut a, &mut b);
-        let (mut value, mut d_theta, mut d_phi) = (Simd::ZERO, Simd::ZERO, Simd::ZERO);
-        for m in 0..=m_max {
-            let mu = if m == 0 { 1.0 } else { 2.0 };
-            for j in 0..width {
-                let e = a[m] * b[j];
-                let i = m * width + j;
-                // Re(c e), and Re(i k c e) = -k Im(c e), lane by lane.
-                let real = e.re * self.re[i] - e.im * self.im[i];
-                let imag = e.re * self.im[i] + e.im * self.re[i];
-                value += mu * real;
-                d_theta -= (mu * m as f64) * imag;
-                d_phi -= (mu * (j as f64 - m_max as f64)) * imag;
+        scratch::with_complex(m_max + 1 + width, |buffer| {
+            let (a, b) = buffer.split_at_mut(m_max + 1);
+            phasors(theta, phi, m_max, a, b);
+            let (mut value, mut d_theta, mut d_phi) = (Simd::ZERO, Simd::ZERO, Simd::ZERO);
+            for m in 0..=m_max {
+                let mu = if m == 0 { 1.0 } else { 2.0 };
+                for j in 0..width {
+                    let e = a[m] * b[j];
+                    let i = m * width + j;
+                    // Re(c e), and Re(i k c e) = -k Im(c e), lane by lane.
+                    let real = e.re * self.re[i] - e.im * self.im[i];
+                    let imag = e.re * self.im[i] + e.im * self.re[i];
+                    value += mu * real;
+                    d_theta -= (mu * m as f64) * imag;
+                    d_phi -= (mu * (j as f64 - m_max as f64)) * imag;
+                }
             }
-        }
-        Jet { value, d_theta, d_phi }
+            Jet { value, d_theta, d_phi }
+        })
     }
 
     /// The torus at `(θ, φ)` with its two first and three second partial
@@ -125,35 +129,36 @@ impl<const N: usize> FourierTorus<N> {
     pub fn second_order_jet(&self, theta: f64, phi: f64) -> SecondOrderJet<N> {
         let m_max = self.harmonics;
         let width = self.width();
-        let mut a = vec![Complex::ZERO; m_max + 1];
-        let mut b = vec![Complex::ZERO; width];
-        phasors(theta, phi, m_max, &mut a, &mut b);
-        let mut out = SecondOrderJet {
-            value: Simd::ZERO,
-            d_theta: Simd::ZERO,
-            d_phi: Simd::ZERO,
-            theta_theta: Simd::ZERO,
-            theta_phi: Simd::ZERO,
-            phi_phi: Simd::ZERO,
-        };
-        for m in 0..=m_max {
-            let mu = if m == 0 { 1.0 } else { 2.0 };
-            for j in 0..width {
-                let e = a[m] * b[j];
-                let i = m * width + j;
-                let real = e.re * self.re[i] - e.im * self.im[i];
-                let imag = e.re * self.im[i] + e.im * self.re[i];
-                let n = j as f64 - m_max as f64;
-                let (km, kn) = (mu * m as f64, mu * n);
-                out.value += mu * real;
-                out.d_theta -= km * imag;
-                out.d_phi -= kn * imag;
-                out.theta_theta -= (km * m as f64) * real;
-                out.theta_phi -= (km * n) * real;
-                out.phi_phi -= (kn * n) * real;
+        scratch::with_complex(m_max + 1 + width, |buffer| {
+            let (a, b) = buffer.split_at_mut(m_max + 1);
+            phasors(theta, phi, m_max, a, b);
+            let mut out = SecondOrderJet {
+                value: Simd::ZERO,
+                d_theta: Simd::ZERO,
+                d_phi: Simd::ZERO,
+                theta_theta: Simd::ZERO,
+                theta_phi: Simd::ZERO,
+                phi_phi: Simd::ZERO,
+            };
+            for m in 0..=m_max {
+                let mu = if m == 0 { 1.0 } else { 2.0 };
+                for j in 0..width {
+                    let e = a[m] * b[j];
+                    let i = m * width + j;
+                    let real = e.re * self.re[i] - e.im * self.im[i];
+                    let imag = e.re * self.im[i] + e.im * self.re[i];
+                    let n = j as f64 - m_max as f64;
+                    let (km, kn) = (mu * m as f64, mu * n);
+                    out.value += mu * real;
+                    out.d_theta -= km * imag;
+                    out.d_phi -= kn * imag;
+                    out.theta_theta -= (km * m as f64) * real;
+                    out.theta_phi -= (km * n) * real;
+                    out.phi_phi -= (kn * n) * real;
+                }
             }
-        }
-        out
+            out
+        })
     }
 
     pub fn value(&self, theta: f64, phi: f64) -> Simd<N> {
