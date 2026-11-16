@@ -48,11 +48,14 @@ fn a_tiled_bake_draws_what_a_single_pass_bake_draws() {
     assert_eq!(finer.strokes, whole.strokes, "the resolution changes no stroke");
 }
 
+/// A landscape's outline is traced from the depth pass, which the port
+/// renders with the GPU preview (Phase 7); a parametric surface's comes
+/// from its coordinate image's depth.
 #[test]
-fn an_outline_is_refused_until_there_is_a_depth_buffer() {
+fn a_landscapes_outline_is_refused_until_there_is_a_depth_pass() {
     let (_, scene) = uniform_mesh();
     match bake(&scene, &BakeOptions { outline: Some(0.5), ..BakeOptions::new(64) }) {
-        Err(BakeError::Port(refusal)) => assert_eq!(refusal.phase, 4),
+        Err(BakeError::Port(refusal)) => assert_eq!(refusal.phase, 7),
         other => panic!("an outline is a typed refusal: {other:?}"),
     }
 }
