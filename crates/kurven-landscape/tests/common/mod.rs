@@ -5,82 +5,23 @@
 
 #![allow(dead_code, clippy::neg_cmp_op_on_partial_ord, clippy::manual_range_contains)]
 
-use std::path::PathBuf;
-
 use kurven_core::bundle::KurvenBundle;
 use kurven_core::camera::{rotation_x, rotation_z};
 use kurven_core::grid::Grid2D;
-use kurven_core::json::{JsonObject, JsonValue};
-use kurven_core::manifest::{
-    Affine2, CameraPreset, Domain, GridRef, Interval, Manifest, Occluder, Provenance, Region, Truncation, Walls,
-};
+use kurven_core::manifest::{Affine2, Domain, Interval, Region, Truncation, Walls};
 use kurven_core::mesh::Mesh;
-use kurven_core::npy::NpyDType;
 use kurven_core::scene::Heightfield;
 use kurven_core::simd::{Mat3, Vec3};
 use kurven_core::spaces::{Angle, P3, Transform, ViewSpace, WorldSpace};
 use kurven_core::splitmix::SplitMix;
 use kurven_core::surface::Surface;
-use kurven_landscape::{ContourRefiner, LandscapeRequest, NativeLandscape};
-use kurven_math::{Expression, swift};
+use kurven_landscape::{LandscapeRequest, NativeLandscape};
+use kurven_math::swift;
 
-/// `NativeLandscape.build(request, refine:)`: the grids sampled and
-/// quantized, the manifest's defaults, and with `refine` the refiner's hook,
-/// every described layer derived through it.
+/// `NativeLandscape.build(request, refine:)`, as Swift's suites call it:
+/// the git sha "native", the error unwrapped.
 pub fn build(request: &LandscapeRequest, refine: bool) -> KurvenBundle {
-    let compiled = Expression::compile(&request.expression).unwrap();
-    let canonical = compiled.expression().to_string();
-    let samples = NativeLandscape::sample(&compiled, request.domain, request.resolution).unwrap();
-    let shape = samples.shape;
-    let domain = request.domain;
-    let truncation =
-        request.truncation.clone().unwrap_or_else(|| NativeLandscape::default_truncation(&samples.magnitude));
-    let density = NativeLandscape::wall_density(domain, shape).unwrap();
-    let perimeter = NativeLandscape::rectangle(domain, &density);
-    let layers = request.layers.clone().unwrap_or_else(|| {
-        NativeLandscape::default_layers(
-            domain,
-            &truncation,
-            NativeLandscape::ceiling(&truncation, &samples.magnitude),
-            request.spacing,
-            true,
-        )
-    });
-    let step = 1.max(shape.n_real.max(shape.n_imag) as i64 / NativeLandscape::OCCLUDER_RESOLUTION);
-    let grid_shape = (shape.n_imag as i64, shape.n_real as i64);
-    let mut params = JsonObject::new();
-    params.insert("expression".into(), JsonValue::String(canonical.clone()));
-    params.insert("name".into(), JsonValue::String(request.name.clone()));
-    params.insert("resolution".into(), JsonValue::Int(request.resolution));
-    params.insert("nReal".into(), JsonValue::Int(shape.n_real as i64));
-    params.insert("nImag".into(), JsonValue::Int(shape.n_imag as i64));
-    let manifest = Manifest::new(
-        domain,
-        GridRef { file: "height.npy".into(), shape: grid_shape, dtype: NpyDType::Float32 },
-        Some(GridRef { file: "phase.npy".into(), shape: grid_shape, dtype: NpyDType::Float32 }),
-        truncation.clone(),
-        Occluder {
-            step,
-            tiles: vec![Affine2::IDENTITY],
-            walls: Walls::Perimeter { perimeter, base: 0.0 },
-            region: Region::Full,
-            base: 0.0,
-        },
-        layers,
-        vec![CameraPreset {
-            name: "oblique".into(),
-            projection: NativeLandscape::PROJECTION,
-            depth_tolerance: NativeLandscape::DEFAULT_DEPTH_TOLERANCE,
-            buffer: NativeLandscape::DEFAULT_BUFFER,
-        }],
-        Provenance { function: canonical, example: "function".into(), params, cpu_count: 1, git_sha: "native".into() },
-    );
-    let height = Grid2D::new(shape.n_real, shape.n_imag, domain, NativeLandscape::quantize(&samples.magnitude));
-    let phase = Grid2D::new(shape.n_real, shape.n_imag, domain, NativeLandscape::quantize(&samples.phase));
-    let surface = Surface::new(height, Some(phase), truncation, false);
-    let refine = refine.then(|| ContourRefiner::new(compiled, domain, shape.n_real, shape.n_imag).refine_hook());
-    let name = if request.name.is_empty() { "landscape".to_string() } else { request.name.clone() };
-    KurvenBundle::described(PathBuf::from(format!("/native/{name}.kurven")), manifest, surface, refine)
+    NativeLandscape::build(request, "native", refine).unwrap_or_else(|e| panic!("{}: {e:?}", request.expression))
 }
 
 /// The test suites' camera: `rotationX(elevation) * rotationZ(azimuth) * shear`,
