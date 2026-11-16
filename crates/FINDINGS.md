@@ -182,3 +182,101 @@ Rust by the same name in the same place.
   installs the pin, and CI installs it the same way.
 - **References.** The four cubic corners now come from one sampled bundle, as
   make.py does. The 25 drawings are byte-identical to the ones committed.
+
+## 2026-11-15 · Phase 2: what came across, and what did not
+
+Ported into `kurven-core`: Spaces, Camera, Navigation, Depth (DepthFrame,
+DepthImage: a `Framing`'s raster is a `DepthFrame`), Grid, Polyline,
+Bisection, Contour, JSON (the writer), NPY (the writer), SVG, Manifest whole
+and SurfaceRequest whole. simd's vectors and matrices are `simd.rs` (Vec2/3/4,
+Mat3/4, by columns, every product unfused in one order).
+
+Ported ahead of their phase, because the schema decodes into them: the
+construction half of Solid.swift (`Solid::checking`, `FaceFrame`, Euler
+characteristic, shells, genus, convexity, edge paths) with all of
+ConvexPartition.swift, since a polyhedron's manifest is checked by building
+its solid; and the values of Hatching.swift (`Hatching`, `FaceSelector`,
+`Tone`, `Turing`). The solid's occlusion, hatching, mesh, rigid motions and
+named solids (convex hull, Platonic, frame) are left for Phase 5.
+
+Left out, each for a later phase: **Bundle.swift** (`KurvenBundle` holds a
+`Surface`, its walls a `Mesh`, its derived layers come from
+`Surface.curves` and a `ContourRefine`: Phase 3; the schema it reads is
+here), **ContourMemo.swift** (the refiner's memo, an extension of
+`ContourRefine`: Phase 3), and the suite "contract: bundles decode into
+consistent values", which builds every bundle's drawing
+(`KurvenBundle.read`, `SurfaceBundle.read`, `PolyhedronBundle.read`:
+Phases 3 to 5). In its place a test that every contract manifest decodes as
+its kind (five landscapes, six surfaces, seven polyhedra).
+
+Nothing needed Phase 1. A `periodic` surface keeps its expression as text,
+as Swift's `SurfaceRequest` does (KurvenCore depends on no parser), and
+round trips as text; what does not parse is refused when the drawing is
+built (`SurfaceDrawing.build`, Phase 4).
+
+## 2026-11-15 · Canonical numbers are Swift's, not Python's
+
+`JSONValue.number` writes `Double.description` and says it agrees with
+Python's `repr`. It does not, between 2^53 and 1e16: Swift writes
+9007199254740994.0 as `9.007199254740994e+15`, Python as
+`9007199254740994.0`. (The suite's "canonical JSON writes numbers the way
+Python's json does" checks none of those.) The port follows Swift, which
+wrote the golden files: positional from 1e-4 up to 2^53 inclusive,
+`d.ddde±XX` outside, digits from Rust's shortest round-trip formatting. I
+asked Swift for thirty-two values on this machine, the thresholds among
+them, and the tests pin its answers; no contract fixture holds a number in
+the disputed range. serde is not used: no stock serializer writes either
+rule.
+
+## 2026-11-15 · Phase 2 tolerances, all Swift's
+
+- **camera/**: 1e-9 per component, Swift's. Measured worst: 7.1e-15
+  (recip, elliptic), 3.6e-15 (zeta), over 264 points each; the cosines are
+  the libm crate's here and Darwin's there.
+- **contour/**: every segment midpoint within 1e-9 of one in contourpy's
+  set, and the same path and segment counts, Swift's rule. All thirteen
+  levels pass with no midpoint unmatched.
+- **navigation**: Swift's, unchanged (1e-9, 1e-12, 1e-6 through a turn),
+  and exact equality for "an orbit matching a preset IS the oblique
+  camera", which holds here as in Swift because one is the other.
+- **contract/**, **npy/**: byte for byte. The npy writer also re-encodes
+  numpy's own four fixtures to numpy's bytes.
+
+No tolerance was loosened.
+
+## 2026-11-15 · Small differences from Swift, by construction (Phase 2)
+
+- `Contour.levels` runs its levels in turn, not with `concurrentPerform`;
+  each level is contoured whole, so the answer is the same.
+- `Solid::checking` walks its directed edges in order (a `BTreeMap`), so
+  which open edge a refusal names is fixed. Swift walks a dictionary there,
+  whose order is per process, so its message can name a different edge
+  from run to run. Only the message differs.
+- `JsonError` now has Swift's cases (`NotAnObject`, `MissingKey`,
+  `WrongType`, `BadSyntax`); a parse error is `BadSyntax`. Decode errors from
+  any part of the schema are a `SchemaError` whose message is Swift's.
+- Swift's `min(max(x, lo), hi)` is `clamp` here, which propagates a NaN as
+  Swift's does. Elsewhere Rust's `f64::max` and `min` drop a NaN where
+  Swift's `max` and `min` may keep it, by argument order (`AABB`, a grid's
+  range). Only a NaN input tells them apart.
+- `if !(x > 0.0)` stands for Swift's `guard x > 0 else`, so a NaN is
+  refused as Swift refuses it; clippy's `neg_cmp_op_on_partial_ord` is
+  allowed in `kurven-core` for that reason.
+
+## 2026-11-15 · Where the Swift looks wrong (ported as it is)
+
+- `DepthFrame.tile` builds its sub-frame with the default raster order,
+  `.buffer`, whatever the frame's own order. A screen-order frame's tiles
+  come back in buffer order. The bake tiles only buffer-order frames, so
+  nothing draws wrong today.
+- `Camera.perspectiveClip(fovY:aspect:near:)` takes `near` and never reads
+  it (its doc says depth travels in the colour attachment); the port drops
+  the parameter and says so.
+
+## 2026-11-15 · The wasm module grew to 503,030 bytes
+
+From 86,969 in Phase 0; its code section is 455 KB. The golden generator
+now links kurven-core: the manifest decoders with their refusal messages,
+float formatting, contouring. The `web` profile is opt-level 3 with LTO; an
+opt-level for size, and what the page's module exports, are Phase 6
+decisions, so this is recorded, not tuned.
