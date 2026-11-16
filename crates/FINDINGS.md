@@ -1541,6 +1541,162 @@ From the review of PR #67.
   The goldens and references are unchanged; the ceiling decides only
   whether a vertex's |f| is over it.
 
+## 2026-11-16 · Phase 5: the polyhedra and composites, what came across
+
+Ported, a module per Swift file: the rest of Solid.swift into `solid.rs`
+(the mesh, `transformed`, `resting`, `convex_hull`, `platonic` with the
+`Platonic` enum, `csaszar`, `frame`, `visible_edges`, `visible_curves`,
+`visible_curves_on_surface`, `along`); `Solid.Occlusion` into
+`occlusion.rs` as `SolidOcclusion` with its `OcclusionTest` conformance;
+Hatching.swift's solid half into `hatching.rs` (`hatch_lines`,
+`hatch_lines_on_face`, `graded`, `hatch_lines_by_width`,
+`visible_hatching`); PolyhedronBundle.swift into `polyhedron_bundle.rs`;
+Isophotes.swift whole into `isophotes.rs` (`Face::is_flat`,
+`outward_normal`, `isophote`, `isophotes`, `hatch_levels`,
+`coordinate_hatching`, `graded`; `ParametricSurface::coordinate_hatching`
+and `isophotes`; `Surface::graph_hatching`, moved out of `hatch.rs`, where
+Phase 3 kept its stub); Composite.swift into `composite.rs`, Slab.swift into
+`slab.rs`, Contact.swift into `contact.rs`. `Scene::visible` draws a
+solid's clipped edges, its hatching by width step and a clipped file's
+curves on it, and a graph's hatching by width step; `Face`'s isophote
+contours on the graph (`face_contour.rs`) draw. kurven-cli gains `surface
+solid` (`kurven-cli/src/solid.rs`, with `surface_command`, which sends
+every other shape to Phase 4) and `scene` (`kurven-cli/src/scene.rs`,
+`composite_drawing`); `bake` and `load_drawing` read a polyhedron's bundle.
+No `PORT: phase 5` is left in the code.
+
+Spelled otherwise: Swift's static `Slab.tops(_:_:origin:_:_:size:tolerance:)`
+is `Slab::sides_on_tops`, beside `tops` of a cell; `contact(onFace:of:...)`
+and `contact(on:...)` are `contact_on_face` and `contact_on_surface`;
+`sweep(ofBall:...)` is `sweep_of_ball`; `simd_double2x2` is `slab::Mat2`
+(its inverse the adjugate over the determinant); `zeros`'s nested
+functions, which recurse, are the methods of a struct (`Zeros`).
+`Composite.visibleLayers` answers a `CompositeError`, and a part whose own
+layers the port refuses (a parametric surface, Phase 4) is refused through
+it by the refusal's text. `Solid.HatchLine`'s width step is an i64.
+
+## 2026-11-16 · Phase 5: differences from Swift, by construction
+
+- **Where Swift's `Int(x)` traps** (all on values no finite input
+  reaches): a face's range of hatch lines past Int lays none; `graded`'s
+  count of readings past Int reads once; `hatch_levels` on a periodic axis
+  past Int lays none; a slab's strip whose footprint is not finite passes
+  the copy over; `Slab::cells` past Int reaches none; `chains` keys a point
+  that is not finite as a node of its own; `circles`' chord count past Int
+  is one chord.
+- **Orders.** Every dictionary and set Swift iterates here is sorted there
+  already (`hatchLinesByWidth`'s and `visibleHatching`'s keys, the
+  isophote hatching's steps), so the port's `BTreeMap`s give Swift's order;
+  the sets and dictionaries that are only asked (`diagonals`, `seen` in the
+  hull and in `chains`, `chains`' buckets) are hashed. `platonic`'s
+  `Array(Set(scaled))` then sorted is deduplicated in order, then sorted
+  the same way.
+- **Threads.** `Composite.cut`'s `parallelMap` over segments and
+  `contact(on:)`'s over cells and pieces are loops in order, each item
+  independent. The descent over blocks of cells, a recursion in Swift, is
+  a stack visited in the recursion's order, so the cells, the pieces and
+  the chained curve come out in Swift's order.
+- **simd.** `simd_double3x3(simd_quatd(angle:axis:))` (`resting`) is the
+  quaternion `(sin(θ/2) axis, cos(θ/2))` through simd's quaternion-to-matrix
+  formula, term for term, in `solid.rs`.
+- **A stub's type.** Phase 3's stub of `VisibleHatching` held its visible
+  spans in view space; Swift's are in world space, and so are the port's.
+- **Float π.** Nothing ported here uses `Float.pi` (Swift's is 0x40490FDA,
+  not `f32::consts::PI`); every π is a double.
+- **ParametricSurface's hatching and isophotes are here.** Isophotes.swift
+  holds `ParametricSurface.coordinateHatching` and `isophotes`, so
+  `isophotes.rs` ports them; Phase 4's `Scene::visible` on a surface should
+  call these, not port them again.
+- **`SurfaceRequest.unsupported` is not ported.** It lives in
+  KurvenDynamics' SurfaceDrawing.swift (Phase 4). The isophote manifest
+  suite checks its first clause through `SurfaceManifest::unsupported` and
+  leaves its hatching-vertex rule to an ignored Phase 4 test.
+
+## 2026-11-16 · Phase 5: the drawings against Swift's
+
+Each at Hausdorff 0 and length 0 at the SVG's four decimals, with Swift's
+stroke counts, so each is held to the 1.5e-4 / 1e-5 floor the landscapes
+are (`references.txt`): the five Platonic solids, Császár's torus and the
+frame (5, 9, 8, 20, 18, 15, 18 edges); gallery-frame-edges (18) and
+gallery-frame-turing (18 edges, 796, 767, 635 and 314 hatch strokes by
+width). The composites Swift's fixtures hold without a torus,
+`tests/fixtures/composite/cube.svg` and `frame.svg`, drawn by the port's
+`scene` path, are at 0 too, every layer and count (kurven-cli
+`tests/composite.rs`, the same floor). composite-three is not baked: its
+torus part is a `SurfaceBundle`, Phase 4's. `references::composite_three`
+draws it and joins the list when that merges.
+
+Bake times, single-threaded, in memory (`kurven_golden::polyhedra::
+bake_named`; native by the ignored `bake_times` test, wasm by `bench.mjs`
+under Node 26): the dodecahedron 0.001 s native, 0.002 s wasm; the frame
+under Turing's pattern (2530 strokes) 0.61 s and 0.90 s; the composite of
+the cubic at 48 on its grid with a cube and a frame (627 strokes) 0.028 s
+and 0.042 s. Through the CLI, `scene` of the cube on the 120-sample cubic
+fixture takes 0.053 s. The wasm module is 1,782,351 bytes.
+
+## 2026-11-16 · Phase 5 status
+
+**Ported**: everything the handoff's Phase 5 names, and every `PORT:
+phase 5` hole (none is left). **Goldens**: `crates/fixtures/rust/polyhedra/`,
+ten drawings with summaries, written alike by native and wasm.
+
+**Suites at Swift's tolerances, all passing**: Solids.swift whole (15 tests),
+Hatchings.swift's six on a solid, the polyhedra of Occlusion.swift,
+Faces.swift's polyhedron hatching, Isophotes.swift but its torus parts (6
+pass), Chords.swift's isophote parts (3), Composite.swift's three (the
+composite gate takes about 90 s on all cores). No tolerance was loosened.
+
+**Left for Phase 4** (`PORT: phase 4`): the contact line on a parametric
+surface (`Composite::visible_contact`, Swift's `clipOnChords`, which needs
+SurfaceVisibility's `isVisible` and `test`); composite-three; `surface`
+for the parametric shapes (`kurven-cli/src/solid.rs`'s `surface_command`);
+the torus halves of the isophote, composite and contact suites, each an
+ignored test saying what it holds.
+
+**Contact.swift** (`kurven-landscape/tests/contact.rs`): five suites pass
+(the contact line on the terrain and its part over the eight gate
+compositions, the box sunk into a plane, a part floating, the sweep of
+polyhedra, a face flush with the terrain) and five torus parts are ignored
+for Phase 4. Swift's "over 150 parts met" counts the tori with the
+polyhedra, so it is held in the ignored torus sweep; the polyhedra alone
+are held to their crossings (over 100,000, none missed). The grid half of
+"isophotes and tone: seen exactly where the torus's own cast and the grid
+landscape's cast say" passes; its torus half is ignored.
+
+## 2026-11-16 · Where the Swift looks wrong (Phase 5, ported as it is)
+
+Both found in review of PR #68; Swift has each, so the port keeps it, a
+test pins it, and the fix is the owner's call.
+
+- **The floor of a footprint that is not convex.** `Slab.floorSpan` finds
+  the span of a segment whose lines of sight cross the slab's floor in each
+  of the footprint's convex pieces, then returns their hull (`best.map {
+  (min($0.0, lo), max($0.1, hi)) }`), not the pieces' spans. On a footprint
+  with a notch the stretch between two pieces' spans, whose lines cross the
+  floor's plane outside the footprint, is reported hidden, and
+  `Composite.cut` erases another part's ink there. Reproduction: a flat
+  terrain at 1 on the L of [-1, 1]² less the quarter x > 0, y > 0 (17
+  samples, no walls, so base and top are 1), seen from below along +z; the
+  segment at z = 0 from (-0.5, 0.8) to (0.8, -0.5) is under the L for
+  s ≤ 0.385 and s ≥ 0.615 and under the notch between, but its floor span
+  is [0, 1] and nothing of it is seen
+  (`contact.rs`, `the_floor_of_a_footprint_that_is_not_convex_hides_the_notch_as_swift_does`).
+  It takes a line of sight that reaches the floor from below, so another
+  part under a footprint with a notch, seen from below the landscape.
+  Returning every piece's span (the cut merges them) would fix it.
+- **A change of width on a vertex.** When a line's width step changes
+  exactly at a vertex b, `Solid.graded` bisects the change to b itself (the
+  step at every double below b is the old one), and the interval it would
+  start there is empty and dropped. `Face.graded` therefore keeps the old
+  step, appends b, and meets the change again at the next segment's start
+  (t = 0), appending b a second time: the piece before ends in a segment of
+  no length. On the last segment the change is not seen at all, which
+  changes nothing drawn. Reproduction: the path (0, 0), (1, 0), (2, 0)
+  with the step 2 where x ≥ 1 and 1 elsewhere grades to [step 1: (0, 0),
+  (1, 0), (1, 0)], [step 2: (1, 0), (2, 0)]
+  (`isophotes::tests::a_change_of_width_on_a_vertex_doubles_it_as_swift_does`).
+  The zero-length segment draws nothing, so no reference differs.
+
 ## 2026-11-16 · Phase 4: parametric surfaces, what came across
 
 Ported whole, a module per Swift file: Parametric.swift's behaviour into

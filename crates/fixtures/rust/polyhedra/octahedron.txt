@@ -1,0 +1,2 @@
+# surface solid --kind octahedron: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
+edges paths 8 vertices 16 length 40333056645832f4 19.18881823685929 hash 5568f09a9f0afa1b

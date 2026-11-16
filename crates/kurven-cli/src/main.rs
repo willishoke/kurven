@@ -22,6 +22,16 @@
 //!     Sample a function over a rectangle and write its bundle, as Swift's
 //!     `landscape` does.
 //!
+//! kurven-cli surface solid [--kind NAME] [--size S] [--hole H] [--depth D]
+//!           [--hatching uniform|turing|half-lambert ...] [--save B] [-o out.svg]
+//!     A polyhedron by name, baked to SVG or kept as a bundle, as Swift's
+//!     `surface solid` does.
+//!
+//! kurven-cli scene A.kurven [--at X,Y,Z[,S]] B.kurven [--at ...] ... [--preset NAME]
+//!           [--no-refine] -o out.svg
+//!     Several bundles drawn as one composite, each placed by the --at after
+//!     it, as Swift's `scene` does.
+//!
 //! kurven-cli bake <bundle> [--preset NAME] [--no-refine] [--resolution N]
 //!           [--tiles N] [--depth-tolerance T] -o out.svg
 //!     A landscape's or a parametric surface's bundle drawn to SVG, as Swift's
@@ -46,6 +56,7 @@ use kurven_cli::args::{Args, CliError};
 use kurven_cli::commands::{bake_command, landscape_command};
 use kurven_cli::compare::{Tolerance, compare_skipping};
 use kurven_cli::references::references_command;
+use kurven_cli::scene::scene_command;
 use kurven_cli::surface::surface_command;
 use kurven_cli::svg;
 
@@ -53,8 +64,10 @@ const USAGE: &str = "usage: kurven-cli fixtures <dir>
        kurven-cli compare A.svg B.svg [--tolerance D] [--length-tolerance R] [--skip I,J,...]
        kurven-cli landscape [EXPRESSION | --function NAME] [options] -o out.kurven
        kurven-cli bake <bundle> [--preset NAME] [--no-refine] [--outline W] [--dump PREFIX] -o out.svg
+       kurven-cli references <fixtures> <dir> [--only NAME,...]
        kurven-cli surface [torus | sn | periodic | forced] [options] [--save B] [-o out.svg]
-       kurven-cli references <fixtures> <dir> [--only NAME,...]";
+       kurven-cli surface solid [--kind NAME] [options] [--save B] [-o out.svg]
+       kurven-cli scene A.kurven B.kurven [--at X,Y,Z[,S]] ... [--preset NAME] [--no-refine] -o out.svg";
 
 /// A command ported from Swift's kurven-cli: Swift's argument reading, and
 /// its exit status 1 with `kurven-cli: <error>` on a refusal.
@@ -128,6 +141,15 @@ fn main() -> ExitCode {
         Some("bake") => return swift_command(bake_command),
         Some("references") => return swift_command(references_command),
         Some("surface") => return swift_command(surface_command),
+        Some("scene") => {
+            return match scene_command(&args[1..]) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("kurven-cli: {error}");
+                    ExitCode::from(1)
+                }
+            };
+        }
         _ => Err(USAGE.into()),
     };
     result.unwrap_or_else(|message| {

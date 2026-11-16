@@ -9,11 +9,10 @@
 //! names of its non-empty stroke layers in the order the SVG's groups stand,
 //! and their stroke counts).
 //!
-//! The port draws the landscapes, and sn flat and in relief, a torus with a
-//! linear curve and a periodic expression (`surface ... --save B; bake B`).
-//! Swift's list also holds the frame's two gallery drawings and the seven
-//! solids (polyhedra built by `surface solid`, Phase 5) and the composite
-//! (Phase 5); they join this list with their phase.
+//! The port draws every drawing of Swift's list: the landscapes, the
+//! surfaces (sn flat and in relief, a torus with a linear curve, a periodic
+//! expression), the seven solids, the frame's two gallery drawings and the
+//! composite of the cubic, a cube and a torus.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -71,10 +70,10 @@ pub fn baked(bundle: &Path, preset: Option<&str>, refine: bool) -> Result<Drawn,
 }
 
 /// `surface ... --save B; bake B`.
-pub fn surface(list: &[String], scratch: &Path, stem: &str) -> Result<Drawn, CliError> {
+pub fn surface(words: &[String], scratch: &Path, stem: &str) -> Result<Drawn, CliError> {
     let bundle = scratch.join(format!("{stem}.kurven"));
     let mut argv = vec!["surface".to_string()];
-    argv.extend(list.iter().cloned());
+    argv.extend(words.iter().cloned());
     argv.extend(["--save".to_string(), bundle.to_string_lossy().into_owned()]);
     surface_command(&Args::new(&argv))?;
     baked(&bundle, None, true)
@@ -199,9 +198,53 @@ pub fn gallery() -> Vec<Reference> {
             }),
         ));
     }
-    // PORT: phase 5 -- gallery-frame-edges and gallery-frame-turing, the
-    // picture frame built by `surface solid --kind frame ...` (a polyhedron,
-    // its edges and Turing hatching), `--save B; bake B`.
+    let frame = words(&[
+        "solid",
+        "--kind",
+        "frame",
+        "--size",
+        "2",
+        "--hole",
+        "2",
+        "--depth",
+        "0.8",
+        "--x-angle",
+        "-55",
+        "--z-angle",
+        "-60",
+        "--shear",
+        "0",
+        "--width",
+        "0.6",
+    ]);
+    let turing = words(&[
+        "--hatching",
+        "turing",
+        "--angle",
+        "30",
+        "--spacing",
+        "0.035",
+        "--width-steps",
+        "4",
+        "--scale",
+        "0.18",
+        "--seed",
+        "3",
+        "--hatch-width",
+        "0.5",
+    ]);
+    let w = frame.clone();
+    references.push(plate(
+        "gallery-frame-edges",
+        format!("docs/gallery/make.py: surface {} --save B; bake B", frame.join(" ")),
+        Box::new(move |scratch| surface(&w, scratch, "frame-edges")),
+    ));
+    let w: Vec<String> = frame.iter().chain(&turing).cloned().collect();
+    references.push(plate(
+        "gallery-frame-turing",
+        format!("docs/gallery/make.py: surface {} --save B; bake B", w.join(" ")),
+        Box::new(move |scratch| surface(&w, scratch, "frame-turing")),
+    ));
     references
 }
 
@@ -247,9 +290,41 @@ pub fn all(fixtures: &Path) -> Vec<Reference> {
             Ok((strokes, layers.iter().map(|(l, _)| l.spec.name.clone()).collect()))
         }),
     ));
-    // PORT: phase 5 -- solid-{tetrahedron, cube, octahedron, dodecahedron,
-    // icosahedron, csaszar, frame} and composite-three.
+    for kind in ["tetrahedron", "cube", "octahedron", "dodecahedron", "icosahedron", "csaszar", "frame"] {
+        references.push(plate(
+            &format!("solid-{kind}"),
+            format!("surface solid --kind {kind} --save B; bake B"),
+            Box::new(move |scratch| surface(&words(&["solid", "--kind", kind]), scratch, &format!("solid-{kind}"))),
+        ));
+    }
+    // The cubic landscape on its grid with the contract's cube and torus
+    // standing on it: tests/fixtures/composite/three.svg.
+    references.push(composite_three(fixtures));
     references
+}
+
+/// composite-three: tests/fixtures/composite/three.svg, byte for byte in
+/// Swift, as `scene` draws it: the cubic landscape on its grid, a
+/// polyhedron's bundle and a parametric surface's.
+pub fn composite_three(fixtures: &Path) -> Reference {
+    let parts: Vec<(String, kurven_core::composite::Placement)> = [
+        ("expr/landscape_cubic.kurven", "0,0,0,1"),
+        ("contract/polyhedron_cube.kurven", "-1.2,0.1,0.3,0.35"),
+        ("contract/surface_torus.kurven", "1,0,1.6,0.35"),
+    ]
+    .iter()
+    .map(|(p, at)| (fixtures.join(p).to_string_lossy().into_owned(), crate::scene::placement(at).expect("a placement")))
+    .collect();
+    plate(
+        "composite-three",
+        "scene expr/landscape_cubic.kurven contract/polyhedron_cube.kurven --at -1.2,0.1,0.3,0.35 \
+         contract/surface_torus.kurven --at 1,0,1.6,0.35 --no-refine"
+            .to_string(),
+        Box::new(move |_| {
+            let drawing = crate::scene::composite_drawing(&parts, None, false)?;
+            Ok((drawing.strokes, drawing.layers.iter().map(|(l, _)| l.spec.name.clone()).collect()))
+        }),
+    )
 }
 
 /// Bake every reference whose name `only` holds (all of them for an empty

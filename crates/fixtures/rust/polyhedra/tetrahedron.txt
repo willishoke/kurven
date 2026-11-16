@@ -1,0 +1,2 @@
+# surface solid --kind tetrahedron: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
+edges paths 5 vertices 10 length 40290423f77b06ec 12.508086904304456 hash 01dbf1394e7036b4

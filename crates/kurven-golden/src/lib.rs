@@ -35,6 +35,10 @@
 //!                  memory: sn, sn in relief, the torus with a linear curve,
 //!                  a torus tested by its coordinate image, and that image
 //!                  as bits (`surfaces`).
+//! polyhedra/       the seven named solids, the frame under Turing's pattern,
+//!                  the dodecahedron under half-Lambert, and a composite of
+//!                  the cubic on its grid with a cube and a frame on it
+//!                  (Phase 5), each baked in memory, as its SVG and summary.
 //! ```
 //!
 //! The set grows a module at a time: once a module passes against Swift, its
@@ -46,6 +50,7 @@ mod core_values;
 pub mod gallery;
 mod landscapes;
 mod math;
+pub mod polyhedra;
 pub mod surfaces;
 
 /// One golden file: where it goes under the set's root, and its bytes.
@@ -64,6 +69,7 @@ pub fn all() -> Vec<Golden> {
     ];
     all.extend(core_values::all());
     all.extend(landscapes::all());
+    all.extend(polyhedra::all());
     all.extend(surfaces::all());
     all
 }

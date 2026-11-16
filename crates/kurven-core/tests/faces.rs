@@ -19,10 +19,12 @@ use kurven_core::manifest::{
 };
 use kurven_core::parametric::{JetMap, ParamAxis, ParametricSurface, SurfaceJet};
 use kurven_core::polyline::{Layer, PolylineSet};
+use kurven_core::scalar_field::ScalarField;
 use kurven_core::scene::{PreviewMode, Scene, SceneGeometry};
 use kurven_core::simd::{Vec2, Vec3};
-use kurven_core::solid::Solid;
+use kurven_core::solid::{Platonic, Solid};
 use kurven_core::spaces::{P2, P3, ParamSpace, WorldSpace};
+use kurven_math::{real, swift};
 
 /// The parameter at which `copy` of `face` passes through `q`, if it does.
 /// The graph and the plateaus lie over the domain, so a point's parameter is
@@ -284,11 +286,81 @@ fn a_parametric_surface_is_one_face_its_whole_parameter_rectangle() {
 }
 
 /// "faces: a polyhedron face's trim loops are its loops, and a contour cut
-/// at them is its hatching": each face of the seven solids, its lines at
-/// angle 0.37 (`Solid.hatchLines(_:onFace:)`) matched one for one with the
-/// contours of the coordinate across them cut at the face's trim loops.
+/// at them is its hatching"
+///
+/// Hatching clips each line to the face's convex pieces, half-plane by
+/// half-plane, and joins the intervals across the diagonals; a contour of
+/// the coordinate across the hatching's angle, cut where it crosses the
+/// face's loops, is the same lines. At an angle and a spacing that put no
+/// line on a vertex or along a side. Over the seven solids built by name, as
+/// Swift builds them.
 #[test]
-#[ignore = "PORT: phase 5 -- Solid::hatch_lines_on_face refuses until then"]
 fn a_polyhedron_faces_trim_loops_are_its_loops_and_a_contour_cut_at_them_is_its_hatching() {
-    panic!("Phase 5: Solid::hatch_lines_on_face is not ported");
+    let mut solids: Vec<(String, Solid)> =
+        Platonic::ALL.iter().map(|&k| (k.name().to_string(), Solid::platonic(k, 1.0))).collect();
+    solids.push(("the picture frame".to_string(), Solid::frame(2.0, 1.0, 0.8)));
+    solids.push(("Császár's torus".to_string(), Solid::csaszar()));
+    for (name, s) in &solids {
+        let (mut lines, mut unmatched, mut worst, mut closed) = (0, 0, 0.0, true);
+        for (i, face) in SceneGeometry::Solid(s.clone()).faces().iter().enumerate() {
+            let (frame, copy) = (s.frames[i], &face.copies[0]);
+            let Some(loops) = copy.trim_loops() else {
+                closed = false;
+                continue;
+            };
+            closed = closed && loops.len() == s.loops[i].len() && loops.iter().all(|l| l.first() == l.last());
+            let (u, v) = (face.domain.u, face.domain.v);
+            let extent = Vec2::new(u.range.length(), v.range.length()).length();
+            let hatching = Hatching::plain(0.37, extent / 23.7);
+            let per = Vec2::new(-real::sin(hatching.angle), real::cos(hatching.angle));
+            // The hatch lines by level, in frame coordinates.
+            let mut drawn: BTreeMap<i64, Vec<(Vec2, Vec2)>> = BTreeMap::new();
+            for line in s.hatch_lines_on_face(&hatching, i) {
+                let a = frame.coordinates(line.path[0].v);
+                let b = frame.coordinates(line.path[line.path.len() - 1].v);
+                drawn.entry((a.dot(per) / hatching.spacing).round() as i64).or_default().push((a, b));
+            }
+            let (Some(&first), Some(&last)) = (drawn.keys().next(), drawn.keys().next_back()) else { continue };
+            let levels: Vec<f64> = (first..=last).map(|k| k as f64 * hatching.spacing).collect();
+            let field = ScalarField::new(None, move |p| p.v.dot(per));
+            for (level, runs) in face.contours(&field, &levels, copy) {
+                let mut expected = drawn.get(&((level / hatching.spacing).round() as i64)).cloned().unwrap_or_default();
+                lines += runs.len();
+                for run in &runs {
+                    let (a, b) = (run[0].v, run[run.len() - 1].v);
+                    // The same segment, either way round: the first nearest,
+                    // as Swift's `min(by:)` picks it.
+                    let cost = |(p, q): (Vec2, Vec2)| {
+                        swift::min((p - a).length() + (q - b).length(), (p - b).length() + (q - a).length())
+                    };
+                    let mut best: Option<usize> = None;
+                    for j in 0..expected.len() {
+                        if best.is_none_or(|k| cost(expected[j]) < cost(expected[k])) {
+                            best = Some(j);
+                        }
+                    }
+                    let Some(j) = best else {
+                        unmatched += 1;
+                        continue;
+                    };
+                    let (p, q) = expected.remove(j);
+                    worst = swift::max(
+                        worst,
+                        swift::min(
+                            swift::max((p - a).length(), (q - b).length()),
+                            swift::max((p - b).length(), (q - a).length()),
+                        ) / extent,
+                    );
+                }
+                unmatched += expected.len();
+            }
+        }
+        eprintln!("{name}: {unmatched} of {lines} unmatched, ends off by {worst:e} of the extent");
+        assert!(
+            closed && lines > 50 && unmatched == 0 && worst < 1e-12,
+            "{name}: each face's trim loops are its loops, closed, and its lines cut at them are its hatching: \
+             {}{unmatched} of {lines} unmatched, ends off by {worst} of the extent",
+            if closed { "" } else { "loops not its own; " }
+        );
+    }
 }

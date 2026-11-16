@@ -239,7 +239,7 @@ impl SurfaceVisibility {
     /// Curves at surface coordinate `c`, placed by the map: whether it is seen,
     /// and where it is in the view. `on_folds` asks only sphere tracing, for
     /// curves on the folds, where the facing is zero by construction.
-    fn test(&self, c: P2<ParamSpace>, on_folds: bool) -> Result<(bool, P3<ViewSpace>), NoImage> {
+    pub fn test(&self, c: P2<ParamSpace>, on_folds: bool) -> Result<(bool, P3<ViewSpace>), NoImage> {
         let world = (self.surface.map)(c).position;
         let p = self.view.apply(P3::from_vec(world));
         if !on_folds

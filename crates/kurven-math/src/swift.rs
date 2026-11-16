@@ -7,6 +7,8 @@
 //! - `int`: Swift's `Int(x)` traps on a double that is not finite or does
 //!   not fit; Rust's `as` saturates. Where Swift would trap, the port
 //!   answers NaN (`crates/FINDINGS.md`), so the callers take `None` as that.
+//! - `ascending`: Swift's `sort { $0 < $1 }` on doubles, an ordering for
+//!   Rust's sort, which like Swift's is stable.
 
 /// Swift's `min(x, y)`: `y < x ? y : x`.
 #[inline]
@@ -26,6 +28,20 @@ pub fn max(x: f64, y: f64) -> f64 {
 #[inline]
 pub fn int(x: f64) -> Option<i64> {
     if (-9223372036854775808.0..9223372036854775808.0).contains(&x) { Some(x as i64) } else { None }
+}
+
+/// Swift's `sort { $0 < $1 }` on doubles as an ordering for Rust's stable
+/// sort: before where `a < b`, after where `b < a`, and otherwise (equal,
+/// or a NaN) a tie, kept in order as Swift's stable sort keeps it.
+#[inline]
+pub fn ascending(a: f64, b: f64) -> core::cmp::Ordering {
+    if a < b {
+        core::cmp::Ordering::Less
+    } else if b < a {
+        core::cmp::Ordering::Greater
+    } else {
+        core::cmp::Ordering::Equal
+    }
 }
 
 #[cfg(test)]

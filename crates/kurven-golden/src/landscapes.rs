@@ -65,6 +65,13 @@ fn summary(request: &LandscapeRequest, baked: &Bake) -> String {
         request.domain.json().canonical(),
         request.resolution
     );
+    out += &layers(baked);
+    out
+}
+
+/// Each stroke layer's name, counts, length bits and vertex hash, a line each.
+pub(crate) fn layers(baked: &Bake) -> String {
+    let mut out = String::new();
     for (spec, (_, paths)) in baked.specs.iter().zip(&baked.strokes.layers) {
         let offsets = paths.offsets.iter().map(|&o| o as u64);
         let vertices = paths.vertices.iter().flat_map(|v| [v.x().to_bits(), v.y().to_bits(), v.v.z.to_bits()]);

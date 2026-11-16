@@ -1,0 +1,2 @@
+# surface solid --kind dodecahedron: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
+edges paths 20 vertices 40 length 4036cf82d2fa7d05 22.810589967874893 hash b03ed07630cc8877

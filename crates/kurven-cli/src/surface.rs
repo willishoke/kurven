@@ -101,15 +101,12 @@ pub fn curvature_layers(
 
 /// `surface [torus | sn | periodic | forced] [options]`: the drawing a
 /// request builds, saved as a bundle with `--save`, baked to `-o` otherwise.
-/// `surface solid` is a polyhedron's (Phase 5), and a preview (`--preview`,
-/// a `.png` output) is the GPU's (Phase 7); both are refused.
+/// `surface solid` is a polyhedron's (`solid::solid_command`); a preview
+/// (`--preview`, a `.png` output) is the GPU's (Phase 7), and is refused.
 pub fn surface_command(args: &Args) -> Result<(), CliError> {
     let shape = args.positional.get(1).map(String::as_str).unwrap_or("torus");
     if shape == "solid" {
-        // PORT: phase 5 -- `solidCommand`: a named solid, its edges and hatching, saved or baked.
-        return Err(CliError(
-            "surface solid draws a polyhedron, which the port does not draw yet (phase 5)".to_string(),
-        ));
+        return crate::solid::solid_command(args);
     }
     let relief = shape == "sn" && args.flags.contains_key("relief");
     if args.flags.contains_key("relief") && ["torus", "periodic", "forced"].contains(&shape) {

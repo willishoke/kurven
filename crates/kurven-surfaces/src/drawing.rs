@@ -630,7 +630,13 @@ impl SurfaceDrawing {
                 ))
                 .into())
             }
-            LayerSource::Contour { field: ContourField::Isophote, faces: FaceSelector::Surface, .. } => {
+            LayerSource::Contour {
+                field: ContourField::Isophote,
+                levels,
+                faces: FaceSelector::Surface,
+                light: Some(light),
+                ..
+            } => {
                 // A forced torus bounds a solid only where its revolution is
                 // embedded, which its build decides.
                 if surface.outward.is_none() {
@@ -640,8 +646,7 @@ impl SurfaceDrawing {
                     ))
                     .into());
                 }
-                // PORT: phase 5 -- `ParametricSurface.isophotes(light:_:)` (Isophotes.swift): the contours of n · l on the surface's one face.
-                Err(PortRefusal { phase: 5, what: "ParametricSurface.isophotes" }.into())
+                Ok(surface.isophotes(*light, levels))
             }
             LayerSource::Hatching { hatching, faces: FaceSelector::Surface } => {
                 if matches!(hatching.tone, Tone::HalfLambert { .. }) && surface.outward.is_none() {
@@ -651,8 +656,16 @@ impl SurfaceDrawing {
                     ))
                     .into());
                 }
-                // PORT: phase 5 -- `ParametricSurface.coordinateHatching(_:)` (Isophotes.swift), every width step's lines flattened into one set with their coordinates.
-                Err(PortRefusal { phase: 5, what: "ParametricSurface.coordinateHatching" }.into())
+                // Every width step's lines in one set, with their coordinates.
+                let mut paths: Vec<Vec<P3<WorldSpace>>> = Vec::new();
+                let mut coords = Vec::new();
+                for (_, step) in surface.coordinate_hatching(hatching) {
+                    for k in 0..step.count() {
+                        paths.push(step.path(k).to_vec());
+                        coords.push(step.coords_of_path(k).expect("a surface's hatching carries coordinates").to_vec());
+                    }
+                }
+                Ok(PolylineSet::from_paths_with_coords(&paths, &coords))
             }
             LayerSource::IntegralCurves { field, seeds, faces: FaceSelector::Surface } => {
                 // Lines of curvature, read off the map's second derivatives,

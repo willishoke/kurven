@@ -1,10 +1,12 @@
-// Times the gallery plates and two surface drawings baked by the WebAssembly module under Node.
+// Times the gallery plates, three polyhedron drawings and two surface
+// drawings, baked by the WebAssembly module under Node.
 //
 //   node crates/kurven-wasm/bench.mjs <kurven_wasm.wasm>
 //
 // Each plate is built from its request, edited as docs/gallery/make.py edits
 // it and baked in memory (`bake_gallery_plate`), once; the time is the
-// call's wall clock. Not part of the check: a measure for crates/FINDINGS.md.
+// call's wall clock. The polyhedra (`bake_polyhedron`) are the
+// dodecahedron, the frame under Turing's pattern and a composite. Not part of the check: a measure for crates/FINDINGS.md.
 
 import { readFileSync } from "node:fs";
 
@@ -25,4 +27,10 @@ for (const [which, name] of [[0, "surface sn"], [1, "surface sn --relief 0.4"]])
   const strokes = instance.exports.bake_surface_reference(which);
   const seconds = (performance.now() - started) / 1000;
   console.log(`${name}: ${strokes} strokes in ${seconds.toFixed(2)} s`);
+}
+for (const [which, name] of [[0, "dodecahedron"], [1, "frame-turing"], [2, "composite"]]) {
+  const started = performance.now();
+  const strokes = instance.exports.bake_polyhedron(which);
+  const seconds = (performance.now() - started) / 1000;
+  console.log(`${name}: ${strokes} strokes in ${seconds.toFixed(3)} s`);
 }

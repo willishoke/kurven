@@ -49,13 +49,18 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
+use std::sync::Arc;
 
-use kurven_math::real;
+use kurven_math::{real, swift};
 
 use crate::convex_partition;
+use crate::hatching::HatchMemo;
+use crate::mesh::Mesh;
+use crate::occlusion::SolidOcclusion;
 use crate::polyline::PolylineSet;
-use crate::simd::{Vec2, Vec3};
-use crate::spaces::{P3, WorldSpace};
+use crate::runs::Runs;
+use crate::simd::{Mat3, Vec2, Vec3, Vec4};
+use crate::spaces::{P3, Transform, ViewSpace, WorldSpace};
 use crate::text;
 
 /// Why vertices and loops bound no solid (`Solid::checking`).
@@ -91,7 +96,9 @@ pub struct Solid {
     /// counter-clockwise from outside, then each hole clockwise.
     pub loops: Vec<Vec<Vec<usize>>>,
     /// The convex pieces of every face, each counter-clockwise from outside.
-    pub pieces: Vec<Vec<usize>>,
+    /// Shared, so a camera's occlusion (`SolidOcclusion`) holds them without
+    /// a copy.
+    pub pieces: Arc<Vec<Vec<usize>>>,
     /// The faces, each as the indices of its pieces.
     pub faces: Vec<Vec<usize>>,
     /// Per face, the frame its hatching is laid out in.
@@ -106,6 +113,10 @@ pub struct Solid {
     pub is_diagonal: Vec<bool>,
     /// Per piece, the face it is a piece of.
     face_of_piece: Vec<usize>,
+    /// The hatch lines last laid on the solid, shared by its copies, so a
+    /// hatching drawn on a bundle and tested for a camera is laid once
+    /// (`HatchMemo`). No part of the solid's value.
+    pub(crate) hatch_memo: HatchMemo,
 }
 
 impl Solid {
@@ -286,7 +297,18 @@ impl Solid {
                 ));
             }
         }
-        Ok(Solid { vertices, loops, pieces, faces, frames, edges, normals, is_diagonal, face_of_piece })
+        Ok(Solid {
+            vertices,
+            loops,
+            pieces: Arc::new(pieces),
+            faces,
+            frames,
+            edges,
+            normals,
+            is_diagonal,
+            face_of_piece,
+            hatch_memo: HatchMemo::default(),
+        })
     }
 
     /// Why the loops of a face cross, or `None`: two of its sides cross, or a
@@ -549,6 +571,511 @@ impl FaceFrame {
             let (p, q) = (c[k], c[(k + 1) % n]);
             a + p.x * q.y - q.x * p.y
         }) / 2.0
+    }
+}
+
+// MARK: - the mesh and rigid motions
+
+impl Solid {
+    /// The pieces as triangles, fanned from each piece's first vertex: what
+    /// the depth pass rasterizes. Exact for convex pieces.
+    pub fn mesh(&self) -> Mesh<WorldSpace> {
+        let mut tris: Vec<[i32; 3]> = Vec::new();
+        for piece in self.pieces.iter() {
+            for k in 1..piece.len() - 1 {
+                tris.push([piece[0] as i32, piece[k] as i32, piece[k + 1] as i32]);
+            }
+        }
+        Mesh::new(self.vertices.clone(), tris)
+    }
+
+    /// The solid moved rigidly: rotated about the origin, then translated.
+    pub fn transformed(&self, rotation: Mat3, translation: Vec3) -> Solid {
+        Solid::new(
+            self.vertices.iter().map(|p| P3::from_vec(rotation * p.v + translation)).collect(),
+            self.index_loops(),
+        )
+    }
+
+    /// The loops as the constructor takes them.
+    fn index_loops(&self) -> Vec<Vec<Vec<i64>>> {
+        self.loops.iter().map(|f| f.iter().map(|l| l.iter().map(|&k| k as i64).collect()).collect()).collect()
+    }
+
+    /// The solid set down on a face: rotated so that face's outward normal
+    /// points straight down, and lifted so the face lies in the plane
+    /// `z = 0`, centred over the origin.
+    pub fn resting(&self, i: usize) -> Solid {
+        let n = self.normals[self.faces[i][0]];
+        let down = Vec3::new(0.0, 0.0, -1.0);
+        let axis = n.cross(down);
+        let s = axis.length();
+        let c = n.dot(down);
+        let r = if s < 1e-12 {
+            if c > 0.0 {
+                Mat3::IDENTITY
+            } else {
+                Mat3::from_rows(Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, -1.0, 0.0), Vec3::new(0.0, 0.0, -1.0))
+            }
+        } else {
+            quaternion_matrix(real::atan2(s, c), axis / s)
+        };
+        let turned: Vec<Vec3> = self.vertices.iter().map(|p| r * p.v).collect();
+        let low = turned.iter().map(|p| p.z).reduce(swift::min).unwrap_or(0.0);
+        let centre = turned.iter().fold(Vec3::ZERO, |a, &p| a + p) / turned.len().max(1) as f64;
+        self.transformed(r, Vec3::new(-centre.x, -centre.y, -low))
+    }
+}
+
+/// `simd_double3x3(simd_quatd(angle:axis:))`: the rotation by `angle` about
+/// the unit `axis`, through the quaternion `(sin(angle/2) axis, cos(angle/2))`
+/// and simd's quaternion-to-matrix formula, term for term.
+fn quaternion_matrix(angle: f64, axis: Vec3) -> Mat3 {
+    let s = real::sin(angle / 2.0);
+    let q = Vec4::new(s * axis.x, s * axis.y, s * axis.z, real::cos(angle / 2.0));
+    let (x, y, z, w) = (q.x, q.y, q.z, q.w);
+    Mat3::from_columns(
+        Vec3::new(x * x - y * y - z * z + w * w, 2.0 * (x * y + z * w), 2.0 * (x * z - y * w)),
+        Vec3::new(2.0 * (x * y - z * w), y * y - z * z + w * w - x * x, 2.0 * (y * z + x * w)),
+        Vec3::new(2.0 * (z * x + y * w), 2.0 * (y * z - x * w), z * z + w * w - x * x - y * y),
+    )
+}
+
+// MARK: - visibility
+
+impl Solid {
+    /// The solid's closed-form occlusion along `view` (`occlusion(view:)`).
+    pub fn occlusion(&self, view: &Transform<WorldSpace, ViewSpace>) -> SolidOcclusion {
+        SolidOcclusion::new(self, *view)
+    }
+
+    /// The edges as seen along `view`'s projection direction, each cut to
+    /// the spans that can be seen.
+    ///
+    /// Per edge: with `d` the direction back toward the eye and `n₁`, `n₂`
+    /// the outward normals of its two pieces, nothing of the edge shows unless
+    /// `n₁ · d > 0 ∨ n₂ · d > 0` -- both pieces turned away means the edge is
+    /// on the back of the solid, behind the solid itself. On a convex solid
+    /// that is the whole test, and an edge is whole or absent. On any other
+    /// solid an edge that passes the sign test can still run behind a piece
+    /// elsewhere on the body -- the far end of a torus's tunnel seen through
+    /// the near one -- so it is tested against every other piece (`Occlusion`).
+    pub fn visible_edges(&self, view: &Transform<WorldSpace, ViewSpace>) -> PolylineSet<WorldSpace> {
+        let occlusion = self.occlusion(view);
+        let d = occlusion.to_eye;
+        let mut paths: Vec<[P3<WorldSpace>; 2]> = Vec::new();
+        for (k, e) in self.edges.iter().enumerate() {
+            if self.is_diagonal[k] {
+                continue;
+            }
+            if !(self.normals[e.left].dot(d) > 0.0 || self.normals[e.right].dot(d) > 0.0) {
+                continue;
+            }
+            let pa = occlusion.projected[e.a];
+            let pb = occlusion.projected[e.b];
+            let dir = Vec2::new(pb.x() - pa.x(), pb.y() - pa.y());
+            if !(dir.length() > occlusion.eps) {
+                continue; // seen end-on: a point
+            }
+            let (wa, wb) = (self.vertices[e.a].v, self.vertices[e.b].v);
+            for (a, b) in occlusion.visible(pa, pb, &|f| f == e.left || f == e.right) {
+                if b - a > 1e-12 {
+                    paths.push([Solid::along(wa, wb, a), Solid::along(wa, wb, b)]);
+                }
+            }
+        }
+        PolylineSet::from_paths(&paths)
+    }
+
+    /// Curves lying on face `face`, cut to the spans that can be seen.
+    ///
+    /// Nothing of them shows unless the face faces the eye: a curve on a
+    /// back face is behind the solid itself, and one on a face seen edge-on
+    /// (`Occlusion.isEdgeOn`) lies on the outline, which is the edges'. What
+    /// remains is tested against every piece outside the face -- a piece in
+    /// the face's own plane stands in front of nothing on it -- and a path is
+    /// kept as one run wherever its consecutive spans meet, so a curve breaks
+    /// only where something hides it.
+    pub fn visible_curves(
+        &self,
+        paths: &[Vec<P3<WorldSpace>>],
+        face: usize,
+        occlusion: &SolidOcclusion,
+    ) -> Vec<Vec<P3<WorldSpace>>> {
+        let members: BTreeSet<usize> = self.faces[face].iter().copied().collect();
+        if !(self.normals[self.faces[face][0]].dot(occlusion.to_eye) > 0.0)
+            || self.faces[face].iter().all(|&f| occlusion.is_edge_on(f))
+        {
+            return Vec::new();
+        }
+        let mut runs = Runs::new();
+        for path in paths {
+            for w in path.windows(2) {
+                let (wa, wb) = (w[0], w[1]);
+                let (pa, pb) = (occlusion.view.apply(wa), occlusion.view.apply(wb));
+                let seen = occlusion.visible(pa, pb, &|f| members.contains(&f));
+                runs.segment(&seen, |t| Solid::along(wa.v, wb.v, t));
+            }
+            runs.end_path();
+        }
+        runs.finish()
+    }
+
+    /// Curves stored on the solid's surface, along its edges or across its
+    /// faces, cut to the spans that can be seen: a segment is seen where a
+    /// face whose plane holds both its ends faces the eye, and no piece of
+    /// another face stands in front of it. A picked face's boundary is
+    /// tested so (`SceneGeometry.boundary(of:faces:)`). A segment in no
+    /// face's plane is tested against every piece.
+    pub fn visible_curves_on_surface(
+        &self,
+        paths: &[Vec<P3<WorldSpace>>],
+        occlusion: &SolidOcclusion,
+    ) -> Vec<Vec<P3<WorldSpace>>> {
+        let mut runs = Runs::new();
+        for path in paths {
+            for w in path.windows(2) {
+                let (wa, wb) = (w[0], w[1]);
+                let holding: Vec<usize> = (0..self.frames.len())
+                    .filter(|&f| {
+                        let frame = &self.frames[f];
+                        let tolerance = 10.0 * frame.flatness_tolerance;
+                        (wa.v - frame.origin).dot(frame.normal).abs() <= tolerance
+                            && (wb.v - frame.origin).dot(frame.normal).abs() <= tolerance
+                    })
+                    .collect();
+                let facing = holding.is_empty()
+                    || holding.iter().any(|&f| {
+                        self.normals[self.faces[f][0]].dot(occlusion.to_eye) > 0.0
+                            && !self.faces[f].iter().all(|&p| occlusion.is_edge_on(p))
+                    });
+                let members: BTreeSet<usize> = holding.iter().flat_map(|&f| self.faces[f].iter().copied()).collect();
+                let seen = if facing {
+                    let (pa, pb) = (occlusion.view.apply(wa), occlusion.view.apply(wb));
+                    occlusion.visible(pa, pb, &|f| members.contains(&f))
+                } else {
+                    Vec::new()
+                };
+                runs.segment(&seen, |t| Solid::along(wa.v, wb.v, t));
+            }
+            runs.end_path();
+        }
+        runs.finish()
+    }
+
+    /// The point `t` of the way from `a` to `b`: the ends themselves at 0
+    /// and 1, to the bit, so a segment seen whole is the segment it was.
+    pub fn along(a: Vec3, b: Vec3, t: f64) -> P3<WorldSpace> {
+        if t == 0.0 {
+            P3::from_vec(a)
+        } else if t == 1.0 {
+            P3::from_vec(b)
+        } else {
+            P3::from_vec(a + t * (b - a))
+        }
+    }
+}
+
+// MARK: - construction
+
+/// The five Platonic solids (`Solid.Platonic`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platonic {
+    Tetrahedron,
+    Cube,
+    Octahedron,
+    Dodecahedron,
+    Icosahedron,
+}
+
+impl Platonic {
+    pub const ALL: [Platonic; 5] =
+        [Platonic::Tetrahedron, Platonic::Cube, Platonic::Octahedron, Platonic::Dodecahedron, Platonic::Icosahedron];
+
+    /// Its raw value, the name the CLI takes.
+    pub fn name(self) -> &'static str {
+        match self {
+            Platonic::Tetrahedron => "tetrahedron",
+            Platonic::Cube => "cube",
+            Platonic::Octahedron => "octahedron",
+            Platonic::Dodecahedron => "dodecahedron",
+            Platonic::Icosahedron => "icosahedron",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Platonic> {
+        Platonic::ALL.into_iter().find(|p| p.name() == name)
+    }
+}
+
+impl Solid {
+    /// The convex hull of a few points, as a solid: every supporting plane
+    /// through three of them, with every point on it as one face, ordered
+    /// round the face's centroid and turned away from the rest. Every face
+    /// of a convex solid is convex and has no hole, so each is one loop and
+    /// one piece.
+    ///
+    /// Cubic in the number of points and meant for the dozen or two a
+    /// polyhedron table has, where it is the difference between faces that
+    /// are computed and faces that are typed.
+    pub fn convex_hull(points: &[P3<WorldSpace>]) -> Solid {
+        assert!(points.len() >= 4, "a solid needs four points");
+        let scale = points.iter().map(|p| p.v.length()).reduce(swift::max).unwrap_or(1.0);
+        let tol = 1e-9 * swift::max(scale, 1.0);
+        let mut seen: HashSet<Vec<usize>> = HashSet::new();
+        let mut faces: Vec<Vec<Vec<i64>>> = Vec::new();
+        let n = points.len();
+        for i in 0..n {
+            for j in i + 1..n {
+                for k in j + 1..n {
+                    let mut normal = (points[j].v - points[i].v).cross(points[k].v - points[i].v);
+                    let len = normal.length();
+                    if !(len > tol * tol) {
+                        continue;
+                    }
+                    normal /= len;
+                    let heights: Vec<f64> = points.iter().map(|p| (p.v - points[i].v).dot(normal)).collect();
+                    let above = heights.iter().any(|&h| h > tol);
+                    let below = heights.iter().any(|&h| h < -tol);
+                    if above && below {
+                        continue;
+                    }
+                    if above {
+                        normal = -normal;
+                    }
+                    let on: Vec<usize> = (0..n).filter(|&m| heights[m].abs() <= tol).collect();
+                    if !seen.insert(on.clone()) {
+                        continue;
+                    }
+                    // Round the centroid, counter-clockwise about the normal.
+                    let centroid = on.iter().fold(Vec3::ZERO, |a, &m| a + points[m].v) / on.len() as f64;
+                    let u = (points[on[0]].v - centroid).normalized();
+                    let v = normal.cross(u);
+                    let angle = |m: usize| {
+                        let a = points[m].v - centroid;
+                        real::atan2(a.dot(v), a.dot(u))
+                    };
+                    let mut sorted = on.clone();
+                    // Stable, as Swift's sort is.
+                    sorted.sort_by(|&a, &b| swift::ascending(angle(a), angle(b)));
+                    faces.push(vec![sorted.iter().map(|&m| m as i64).collect()]);
+                }
+            }
+        }
+        Solid::new(points.to_vec(), faces)
+    }
+
+    /// One of the five, by its vertex coordinates alone, scaled to the given
+    /// circumradius; the faces are found by the hull.
+    pub fn platonic(kind: Platonic, circumradius: f64) -> Solid {
+        let phi = (1.0 + real::sqrt(5.0)) / 2.0;
+        let signs = |body: &dyn Fn(f64, f64, f64) -> Vec3| -> Vec<Vec3> {
+            let mut out = Vec::new();
+            for sx in [-1.0, 1.0] {
+                for sy in [-1.0, 1.0] {
+                    for sz in [-1.0, 1.0] {
+                        out.push(body(sx, sy, sz));
+                    }
+                }
+            }
+            out
+        };
+        let points: Vec<Vec3> = match kind {
+            Platonic::Tetrahedron => vec![
+                Vec3::new(1.0, 1.0, 1.0),
+                Vec3::new(1.0, -1.0, -1.0),
+                Vec3::new(-1.0, 1.0, -1.0),
+                Vec3::new(-1.0, -1.0, 1.0),
+            ],
+            Platonic::Cube => signs(&Vec3::new),
+            Platonic::Octahedron => vec![
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(-1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(0.0, -1.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(0.0, 0.0, -1.0),
+            ],
+            Platonic::Icosahedron => {
+                let mut p = Vec::new();
+                for s in [-1.0, 1.0] {
+                    for t in [-1.0, 1.0] {
+                        p.extend([Vec3::new(0.0, s, t * phi), Vec3::new(s, t * phi, 0.0), Vec3::new(t * phi, 0.0, s)]);
+                    }
+                }
+                p
+            }
+            Platonic::Dodecahedron => {
+                let mut p = signs(&Vec3::new);
+                for s in [-1.0, 1.0] {
+                    for t in [-1.0, 1.0] {
+                        p.extend([
+                            Vec3::new(0.0, s / phi, t * phi),
+                            Vec3::new(s / phi, t * phi, 0.0),
+                            Vec3::new(t * phi, 0.0, s / phi),
+                        ]);
+                    }
+                }
+                p
+            }
+        };
+        let r = points.iter().map(|p| p.length()).reduce(swift::max).expect("points");
+        let scaled: Vec<Vec3> = points.iter().map(|&p| p / r * circumradius).collect();
+        // `Array(Set(scaled))` sorted by x, then y, then z: the points once
+        // each, in that order.
+        let mut unique: Vec<Vec3> = Vec::new();
+        for p in scaled {
+            if !unique.contains(&p) {
+                unique.push(p);
+            }
+        }
+        unique.sort_by(|a, b| {
+            let less = if a.x != b.x {
+                a.x < b.x
+            } else if a.y != b.y {
+                a.y < b.y
+            } else {
+                a.z < b.z
+            };
+            if less {
+                std::cmp::Ordering::Less
+            } else if a == b {
+                std::cmp::Ordering::Equal
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        });
+        Solid::convex_hull(&unique.into_iter().map(P3::from_vec).collect::<Vec<_>>())
+    }
+
+    /// One of the solids `kurven-cli surface solid` builds, by name: a
+    /// Platonic solid of circumradius `size` set down on a face, Császár's
+    /// torus scaled to about that size, or a picture frame `2 size` across
+    /// with a hole `hole` wide (`size` by default), `depth` thick (`size / 2`
+    /// by default). Swift's `namedSolid`, in kurven-cli; here so the goldens
+    /// draw what the CLI draws.
+    pub fn named(kind: &str, size: f64, hole: Option<f64>, depth: Option<f64>) -> Result<Solid, String> {
+        if kind == "csaszar" {
+            // Császár's own coordinates stand on the table already; scaled so
+            // its base is about the size of the others.
+            let c = Solid::csaszar();
+            let r = c.vertices.iter().map(|p| Vec2::new(p.x(), p.y()).length()).reduce(swift::max).unwrap_or(1.0);
+            let s = size / r;
+            // `matrix_identity_double3x3 * (size / r)`.
+            let scale = Mat3::from_columns(Vec3::new(s, 0.0, 0.0), Vec3::new(0.0, s, 0.0), Vec3::new(0.0, 0.0, s));
+            return Ok(c.transformed(scale, Vec3::ZERO));
+        }
+        if kind == "frame" {
+            let hole = hole.unwrap_or(size);
+            // Swift's `guard hole < 2 * size`, which refuses a NaN as well.
+            #[allow(clippy::neg_cmp_op_on_partial_ord)]
+            let too_wide = !(hole < 2.0 * size);
+            if too_wide {
+                return Err(format!(
+                    "--hole wants less than the frame's width, 2 × --size = {}, got {}",
+                    crate::json::number(2.0 * size),
+                    crate::json::number(hole)
+                ));
+            }
+            return Ok(Solid::frame(2.0 * size, hole, depth.unwrap_or(size / 2.0)));
+        }
+        if let Some(platonic) = Platonic::from_name(kind) {
+            return Ok(Solid::platonic(platonic, size).resting(0));
+        }
+        let names: Vec<&str> = Platonic::ALL.iter().map(|p| p.name()).collect();
+        Err(format!("unknown solid '{kind}'; the table has: {}, csaszar, frame", names.join(", ")))
+    }
+
+    /// The Császár polyhedron: the seven-vertex torus, the fewest vertices a
+    /// flat-faced torus can have, and the only polyhedron besides the
+    /// tetrahedron with no diagonals -- every pair of its vertices is an
+    /// edge, K₇ drawn on the torus.
+    ///
+    /// Combinatorially unique: vertices mod 7, faces {i, i+1, i+3} and
+    /// {i, i+2, i+3}, 21 edges, 14 triangles. The coordinates are Császár's
+    /// own (1949), with the faces as Szilassi tabulates them (Bridges 2008);
+    /// of the 5040 ways to put that abstract triangulation on these seven
+    /// points, exactly the 42 automorphic ones embed, so the face list is
+    /// determined by the coordinates. It is a torus, not a ball, and not
+    /// convex: the sign test is necessary and not sufficient, and the
+    /// occlusion test earns its keep.
+    pub fn csaszar() -> Solid {
+        let v = [
+            (-3.0, 3.0, 0.0),
+            (-3.0, -3.0, 1.0),
+            (-1.0, -2.0, 3.0),
+            (1.0, 2.0, 3.0),
+            (3.0, 3.0, 1.0),
+            (3.0, -3.0, 0.0),
+            (0.0, 0.0, 15.0),
+        ];
+        // Szilassi's list, one-based and inward; reversed here to face out.
+        let listed: [[i64; 3]; 14] = [
+            [1, 2, 6],
+            [1, 4, 2],
+            [5, 3, 2],
+            [4, 1, 3],
+            [2, 7, 6],
+            [3, 7, 2],
+            [1, 7, 3],
+            [6, 5, 1],
+            [6, 3, 5],
+            [2, 4, 5],
+            [3, 6, 4],
+            [5, 7, 1],
+            [4, 7, 5],
+            [6, 7, 4],
+        ];
+        Solid::new(
+            v.iter().map(|&(x, y, z)| P3::new(x, y, z)).collect(),
+            listed.iter().map(|f| vec![f.iter().rev().map(|k| k - 1).collect()]).collect(),
+        )
+    }
+
+    /// A picture frame: a square `outer` across with a square hole `inner`
+    /// across, `depth` thick, lying flat on `z = 0` and centred.
+    ///
+    /// The other torus here, and the plainer test of everything a convex
+    /// solid never asks. Its front and back faces are annuli, each an outer
+    /// loop and a hole, which no convex polygon is: the partition cuts each
+    /// into convex pieces by diagonals, which must not be drawn and must hide
+    /// nothing. Its hole is a window: the far inner wall and the far edges of
+    /// the back are seen through it, cut by the near part of the front, so an
+    /// edge's visible spans are decided by occlusion and not by the signs. And
+    /// every edge lies in the planes of the faces beside it, where the gap
+    /// between curve and face is exactly zero.
+    pub fn frame(outer: f64, inner: f64, depth: f64) -> Solid {
+        assert!(
+            inner > 0.0 && inner < outer && depth > 0.0,
+            "a frame has a hole smaller than itself and some thickness"
+        );
+        let (a, b) = (outer / 2.0, inner / 2.0);
+        let corners = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
+        let mut v: Vec<P3<WorldSpace>> = Vec::new();
+        for z in [0.0, depth] {
+            for r in [a, b] {
+                for (cx, cy) in corners {
+                    v.push(P3::new(cx * r, cy * r, z));
+                }
+            }
+        }
+        // Outer bottom 0-3, inner bottom 4-7, outer top 8-11, inner top 12-15,
+        // each ring counter-clockwise seen from above.
+        let ob = |k: i64| k % 4;
+        let ib = |k: i64| 4 + k % 4;
+        let ot = |k: i64| 8 + k % 4;
+        let it = |k: i64| 12 + k % 4;
+        // The top seen from above, the bottom from below: each outer loop
+        // counter-clockwise from outside and its hole clockwise.
+        let mut faces: Vec<Vec<Vec<i64>>> = vec![
+            vec![vec![ot(0), ot(1), ot(2), ot(3)], vec![it(0), it(3), it(2), it(1)]],
+            vec![vec![ob(1), ob(0), ob(3), ob(2)], vec![ib(1), ib(2), ib(3), ib(0)]],
+        ];
+        for k in 0..4 {
+            faces.push(vec![vec![ob(k), ob(k + 1), ot(k + 1), ot(k)]]); // outer wall
+            faces.push(vec![vec![ib(k + 1), ib(k), it(k), it(k + 1)]]); // inner wall, facing the hole
+        }
+        Solid::new(v, faces)
     }
 }
 

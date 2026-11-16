@@ -1,16 +1,16 @@
 //! What hides a point of a curve beyond its own face's facing: the port of
 //! `Sources/KurvenCore/Occlusion.swift`.
 //!
-//! The landscape's test, the grid traversal, is whole. Sphere tracing is
-//! ported whole too, ahead of Phase 4 (it reads only a
-//! `TubularNeighbourhood`, whose type is here); nothing in Phase 3 builds a
-//! surface with one, so it is held to the ray cast only when the torus comes.
-//! A polyhedron's point form waits for Phase 5 with the rest of
-//! `Solid.Occlusion`.
+//! Whole: the landscape's test, the grid traversal; sphere tracing, ported
+//! ahead of Phase 4 (it reads only a `TubularNeighbourhood`, whose type is
+//! here); and a polyhedron's closed-form occlusion (`Solid.Occlusion`, here
+//! `SolidOcclusion`, which Swift nests in Solid.swift).
+
+use std::sync::Arc;
 
 use kurven_math::swift;
 
-use crate::parametric::{ParametricSurface, PortRefusal, TubularNeighbourhood};
+use crate::parametric::{ParametricSurface, TubularNeighbourhood};
 use crate::simd::Vec3;
 use crate::solid::Solid;
 use crate::spaces::{P3, Transform, ViewSpace, WorldSpace};
@@ -188,8 +188,9 @@ impl OcclusionTest for SphereTracing {
     }
 }
 
-/// Closed-form occlusion by a polyhedron's flat pieces: Swift's
-/// `Solid.Occlusion`, declared with its fields for the types' sake.
+/// Closed-form occlusion by a polyhedron's flat pieces (`Solid.Occlusion`):
+/// the pieces projected to the picture plane, ready to test against, built
+/// once per camera, then asked about any flat segment.
 ///
 /// Under an orthographic camera a segment and a piece both project to
 /// the picture plane, their overlap along the segment is an interval,
@@ -198,30 +199,185 @@ impl OcclusionTest for SphereTracing {
 /// intervals are subtracted from the segment, exactly.
 #[derive(Debug, Clone)]
 pub struct SolidOcclusion {
-    #[allow(dead_code)] // read by the segment form, Phase 5's
-    solid: Solid,
+    /// The solid's convex pieces, shared with it.
+    pieces: Arc<Vec<Vec<usize>>>,
     pub view: Transform<WorldSpace, ViewSpace>,
-    #[allow(dead_code)]
-    projected: Vec<P3<ViewSpace>>,
+    pub projected: Vec<P3<ViewSpace>>,
     /// Twice each piece's signed area in projection; zero when seen
     /// edge-on, where it hides nothing.
-    #[allow(dead_code)]
     area2: Vec<f64>,
     /// The solid's size in view space: the farthest any vertex lies from
     /// the centre of its bounds. The tolerances are fractions of it, so
     /// they are the same wherever the solid stands.
-    #[allow(dead_code)]
-    scale: f64,
-    #[allow(dead_code)]
-    eps: f64,
+    pub scale: f64,
+    pub eps: f64,
     /// The direction back toward the eye, in world space.
     pub to_eye: Vec3,
 }
 
-impl Solid {
-    /// The solid's closed-form occlusion along `view` (`occlusion(view:)`).
-    pub fn occlusion(&self, _view: &Transform<WorldSpace, ViewSpace>) -> Result<SolidOcclusion, PortRefusal> {
-        // PORT: phase 5 -- Solid.Occlusion's init (the vertices projected, each piece's doubled signed area from the bounds' centre, the scale and eps), its segment form `hidden(from:to:excluding:)` and `visible`, and its conformance to OcclusionTest: the point form, the segment from p to itself (`hidden(from: q, to: q, excluding: { _ in false }).isEmpty`), the same for a point of another solid.
-        Err(PortRefusal { phase: 5, what: "Solid.Occlusion" })
+impl SolidOcclusion {
+    pub fn new(solid: &Solid, view: Transform<WorldSpace, ViewSpace>) -> SolidOcclusion {
+        let to_eye = -view.projection_direction();
+        let projected: Vec<P3<ViewSpace>> = solid.vertices.iter().map(|&p| view.apply(p)).collect();
+        let points: Vec<Vec3> = projected.iter().map(|p| p.v).collect();
+        let lo = points.iter().fold(points[0], |a, &p| a.min(p));
+        let hi = points.iter().fold(points[0], |a, &p| a.max(p));
+        let centre = 0.5 * (lo + hi);
+        let scale = points.iter().map(|&p| (p - centre).length()).reduce(swift::max).expect("a vertex");
+        let eps = 1e-9 * scale;
+        // From the centre, so a solid far from the origin is not measured
+        // in the rounding of its distance from it.
+        let area2 = solid
+            .pieces
+            .iter()
+            .map(|piece| {
+                let mut a = 0.0;
+                for k in 0..piece.len() {
+                    let p = points[piece[k]] - centre;
+                    let q = points[piece[(k + 1) % piece.len()]] - centre;
+                    a += p.x * q.y - q.x * p.y;
+                }
+                a
+            })
+            .collect();
+        SolidOcclusion { pieces: solid.pieces.clone(), view, projected, area2, scale, eps, to_eye }
+    }
+
+    /// Whether piece `f` is seen edge-on: it projects to a line, of no
+    /// area, and hides nothing and shows nothing.
+    pub fn is_edge_on(&self, f: usize) -> bool {
+        self.area2[f].abs() <= 1e-9 * self.scale * self.scale
+    }
+
+    /// The sub-intervals of `[0, 1]` along the segment `pa -> pb` (in
+    /// view space) over which a piece not `excluding` stands in front:
+    /// sorted and disjoint.
+    pub fn hidden(&self, pa: P3<ViewSpace>, pb: P3<ViewSpace>, excluding: &dyn Fn(usize) -> bool) -> Vec<(f64, f64)> {
+        let projected = &self.projected;
+        let eps = self.eps;
+        let mut hidden: Vec<(f64, f64)> = Vec::new();
+        for (f, piece) in self.pieces.iter().enumerate() {
+            if excluding(f) || self.is_edge_on(f) {
+                continue;
+            }
+            let sign = if self.area2[f] > 0.0 { 1.0 } else { -1.0 };
+            // The segment's overlap with the piece's projection: clipped
+            // against each side's half-plane.
+            let (mut lo, mut hi) = (0.0, 1.0);
+            for k in 0..piece.len() {
+                let p = projected[piece[k]];
+                let q = projected[piece[(k + 1) % piece.len()]];
+                let (ex, ey) = (q.x() - p.x(), q.y() - p.y());
+                // Inside is to the left of p -> q when the polygon winds
+                // positively, to the right otherwise.
+                let f0 = sign * (ex * (pa.y() - p.y()) - ey * (pa.x() - p.x()));
+                let f1 = sign * (ex * (pb.y() - p.y()) - ey * (pb.x() - p.x()));
+                // f(t) = f0 + t (f1 - f0) must be >= 0.
+                if f0 < 0.0 && f1 < 0.0 {
+                    lo = 1.0;
+                    hi = 0.0;
+                    break;
+                }
+                if f0 < 0.0 {
+                    lo = swift::max(lo, f0 / (f0 - f1));
+                }
+                if f1 < 0.0 {
+                    hi = swift::min(hi, f0 / (f0 - f1));
+                }
+            }
+            if !(lo < hi) {
+                continue;
+            }
+            // The piece's view depth over the picture plane is affine:
+            // z = z0 + (gx, gy) · (x - x0, y - y0), from the plane's
+            // normal in view space. A piece can have straight corners,
+            // so the normal is taken from its first corner and the first
+            // two after it that are not in line with it.
+            let o = projected[piece[0]].v;
+            let mut n = Vec3::ZERO;
+            for k in 1..piece.len() - 1 {
+                let a = projected[piece[k]].v - o;
+                let b = projected[piece[k + 1]].v - o;
+                n = a.cross(b);
+                if n.length() > 1e-9 * a.length() * b.length() {
+                    break;
+                }
+            }
+            if !(n.z.abs() > 1e-9 * self.scale * self.scale) {
+                continue;
+            }
+            let gap = |t: f64| {
+                let p = pa.v + t * (pb.v - pa.v);
+                let z = o.z - (n.x * (p.x - o.x) + n.y * (p.y - o.y)) / n.z;
+                z - p.z
+            };
+            // gap > eps means the piece is in front, and gap is linear.
+            let (g0, g1) = (gap(lo), gap(hi));
+            let (mut a, mut b) = (lo, hi);
+            if g0 <= eps && g1 <= eps {
+                continue;
+            }
+            if g0 <= eps {
+                a = lo + (hi - lo) * (eps - g0) / (g1 - g0);
+            }
+            if g1 <= eps {
+                b = lo + (hi - lo) * (eps - g0) / (g1 - g0);
+            }
+            if a < b {
+                hidden.push((a, b));
+            }
+        }
+        sort_by_start(&mut hidden);
+        let mut merged: Vec<(f64, f64)> = Vec::new();
+        for (a, b) in hidden {
+            match merged.last_mut() {
+                Some(last) if a <= last.1 => last.1 = swift::max(last.1, b),
+                _ => merged.push((a, b)),
+            }
+        }
+        merged
+    }
+
+    /// The complement: the spans of the segment that can be seen, as
+    /// fractions of the way along it.
+    pub fn visible(&self, pa: P3<ViewSpace>, pb: P3<ViewSpace>, excluding: &dyn Fn(usize) -> bool) -> Vec<(f64, f64)> {
+        let mut t = 0.0;
+        let mut spans = Vec::new();
+        for (a, b) in self.hidden(pa, pb, excluding) {
+            if a > t {
+                spans.push((t, a));
+            }
+            t = swift::max(t, b);
+        }
+        if t < 1.0 {
+            spans.push((t, 1.0));
+        }
+        spans
+    }
+}
+
+/// Intervals sorted by their start, stably, as Swift's `sort { $0.0 < $1.0 }`
+/// sorts them (ties keep their order).
+pub fn sort_by_start(spans: &mut [(f64, f64)]) {
+    spans.sort_by(|x, y| swift::ascending(x.0, y.0));
+}
+
+impl OcclusionTest for SolidOcclusion {
+    /// The point form: the segment form asked of the segment from `p` to
+    /// itself, which a piece hides whole or not at all. A piece through `p`
+    /// stands in front of it by nothing, and a piece seen edge-on hides
+    /// nothing, as on a segment. Nothing draws with it: a polyhedron's
+    /// edges and hatching are tested by the segment form, and so are the
+    /// segments of another geometry's curves in a composite (`Composite`).
+    /// The `occlusion:` suite holds it to a ray cast.
+    fn is_clear(&self, p: P3<WorldSpace>) -> bool {
+        let q = self.view.apply(p);
+        self.hidden(q, q, &|_| false).is_empty()
+    }
+
+    /// The same test, which excludes no piece: a point inside the solid has
+    /// one in front of it.
+    fn is_clear_of_another_solid(&self, p: P3<WorldSpace>) -> bool {
+        self.is_clear(p)
     }
 }
