@@ -33,6 +33,15 @@ pub enum BundleError {
         last: i64,
         vertices: usize,
     },
+    /// Offsets that do not start at 0 or that decrease somewhere: the
+    /// paths they name overlap or begin past the first vertex. Swift checks
+    /// only the last offset, and an array like [1, 5] or [0, 4, 2, 5] then
+    /// traps in `PolylineSet`; the port refuses it here.
+    UnorderedOffsets {
+        layer: String,
+        index: usize,
+        offset: i64,
+    },
     MissingWalls(String),
     /// The manifest could not be read or decoded.
     Schema(SchemaError),
@@ -51,6 +60,12 @@ impl fmt::Display for BundleError {
             }
             BundleError::BadOffsets { layer, last, vertices } => {
                 write!(f, "bundle: layer {layer} offsets end at {last} but there are {vertices} vertices")
+            }
+            BundleError::UnorderedOffsets { layer, index, offset } => {
+                write!(
+                    f,
+                    "bundle: layer {layer} offsets must start at 0 and never decrease, but offset {index} is {offset}"
+                )
             }
             BundleError::MissingWalls(file) => {
                 write!(f, "bundle: manifest names a wall mesh at {file}, which is absent")
@@ -233,6 +248,13 @@ impl KurvenBundle {
             let last = offsets.last().copied().unwrap_or(0);
             if last != verts.len() as i64 || offsets.iter().any(|&k| k < 0) {
                 return Err(BundleError::BadOffsets { layer: spec.name.clone(), last, vertices: verts.len() });
+            }
+            let mut previous = 0;
+            for (index, &offset) in offsets.iter().enumerate() {
+                if (index == 0 && offset != 0) || offset < previous {
+                    return Err(BundleError::UnorderedOffsets { layer: spec.name.clone(), index, offset });
+                }
+                previous = offset;
             }
             let offsets: Vec<usize> = offsets.into_iter().map(|k| k as usize).collect();
             layers.push(Layer { spec: spec.clone(), paths: PolylineSet::new(verts, offsets, None) });

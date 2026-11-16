@@ -102,3 +102,39 @@ fn a_written_bundle_reads_back_the_same() {
     assert!(dumped.write(dir.join("dumped.kurven")).is_err(), "a bundle with dumped layers is refused");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A copy of a directory tree, for a bundle edited on disk.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// A dumped layer's offsets must start at 0 and never decrease, or the
+/// paths they name overlap or begin past the first vertex; such a bundle is
+/// refused when it is read, where Swift checks only the last offset and
+/// traps in `PolylineSet`.
+#[test]
+fn offsets_that_do_not_start_at_zero_or_that_decrease_are_refused() {
+    let source = fixtures::shared("contract/uniform_mesh.kurven");
+    let vertices = kurven_core::npy::read(source.join("layers/mag.npy")).unwrap().rows3().unwrap().len() as i64;
+    assert!(vertices >= 4, "the fixture's layer has room for the offsets below");
+    let dir = std::env::temp_dir().join(format!("kurven-offsets-{}", std::process::id()));
+    for (name, offsets) in [("late start", vec![1, vertices]), ("decreasing", vec![0, 3, 2, vertices])] {
+        let bundle = dir.join(name.replace(' ', "-")).join("uniform_mesh.kurven");
+        copy_tree(&source, &bundle);
+        kurven_core::npy::write_i64(&offsets, &[offsets.len()], bundle.join("layers/mag.idx.npy")).unwrap();
+        match KurvenBundle::read(&bundle) {
+            Err(e) => assert!(e.to_string().contains("must start at 0 and never decrease"), "{name}: {e}"),
+            Ok(_) => panic!("{name}: offsets {offsets:?} were read"),
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
