@@ -18,22 +18,20 @@
 # on the diagonal: 1.5e-4 is that floor, and no drawing is held looser.
 # Lengths are held to 1e-5, a hundred times the worst measured.
 #
-# Skipped: layer 1, ang_major, of gallery-cn, the four cubic corners and
-# landscape-gamma (crates/FINDINGS.md, "The phase lines Swift and the port
-# draw differently"): at a saddle of f, where phase lines cross, and on the
-# ±π cut where it lies along the window's edge, rounding decides which way a
-# line continues and whether a stretch is drawn twice. Measured there:
-# gallery-cn 2.18e-4 and 3.19e-2 of length; the corners tm90s0.5 1.55e-3 and
-# 6.87e-2, tm90sm0.5 1.11e-4 and 4.98e-2, t90s0.5 1.17e-4 and 1.03e-1,
-# t90sm0.5 1.37e-3 and 1.44e-1 (one stroke fewer in each corner);
-# landscape-gamma 1.13 and 2.68e-1 (one stroke fewer).
+# No layer is skipped. Until 2026-11-16 ang_major of gallery-cn, the four
+# cubic corners and landscape-gamma was (crates/FINDINGS.md, "The phase
+# lines Swift and the port draw differently"); the cause was not rounding at
+# a saddle or on the window's edge but the half turn the branch cut's grid
+# is turned by, π rounded to nearest where Swift's Float.pi is rounded toward
+# zero ("The six phase-line drawings were the port's Float.pi"). With
+# Swift's, ang_major of all six is at 0 and Swift's stroke counts.
 gallery-gamma           1.5e-4  1e-5  -
-gallery-cn              1.5e-4  1e-5  1
-gallery-cubic-tm90s0.5  1.5e-4  1e-5  1
-gallery-cubic-tm90sm0.5 1.5e-4  1e-5  1
-gallery-cubic-t90s0.5   1.5e-4  1e-5  1
-gallery-cubic-t90sm0.5  1.5e-4  1e-5  1
-landscape-gamma         1.5e-4  1e-5  1
+gallery-cn              1.5e-4  1e-5  -
+gallery-cubic-tm90s0.5  1.5e-4  1e-5  -
+gallery-cubic-tm90sm0.5 1.5e-4  1e-5  -
+gallery-cubic-t90s0.5   1.5e-4  1e-5  -
+gallery-cubic-t90sm0.5  1.5e-4  1e-5  -
+landscape-gamma         1.5e-4  1e-5  -
 landscape-cubic         1.5e-4  1e-5  -
 landscape-typed         1.5e-4  1e-5  -
 landscape-tower         1.5e-4  1e-5  -
