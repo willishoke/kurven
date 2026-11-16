@@ -1167,3 +1167,41 @@ fn a_face_flush_with_the_terrain_draws_the_same_at_a_rounding_either_side() {
     }
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// Where the Swift looks wrong, pinned (crates/FINDINGS.md, "the floor of a
+/// footprint that is not convex"): `Slab.floorSpan` takes the hull of the
+/// spans it finds in each of the footprint's convex pieces, so a stretch of
+/// a segment whose lines of sight cross the floor's plane in the notch
+/// between two pieces, where there is no floor, is reported hidden. A flat
+/// terrain at 1 (its slab's base and top) on an L of [-1, 1]² less the
+/// quarter x > 0, y > 0, seen from below along +z; the segment at z = 0 from
+/// (-0.5, 0.8) to (0.8, -0.5) is under the L for s ≤ 0.5/1.3 and s ≥
+/// 0.8/1.3, and under the notch between. Swift and the port hide all of it.
+#[test]
+fn the_floor_of_a_footprint_that_is_not_convex_hides_the_notch_as_swift_does() {
+    let corners = [(-1.0, -1.0), (1.0, -1.0), (1.0, 0.0), (0.0, 0.0), (0.0, 1.0), (-1.0, 1.0)];
+    let footprint = BoundaryPerimeter::new(
+        (0..corners.len())
+            .map(|k| {
+                let (a, b) = (corners[k], corners[(k + 1) % corners.len()]);
+                PerimeterEdge { start: P2::new(a.0, a.1), end: P2::new(b.0, b.1), density: 8 }
+            })
+            .collect(),
+    );
+    let scene = grid_landscape(17, Truncation::None, Region::Inside(footprint), &[], sweep_camera(), |_, _| 1.0);
+    let slab = kurven_core::slab::Slab::new(scene.heightfield().unwrap(), "L").unwrap();
+    assert_eq!((slab.base, slab.top), (1.0, 1.0));
+    let (a, b, up) = (Vec3::new(-0.5, 0.8, 0.0), Vec3::new(0.8, -0.5, 0.0), Vec3::new(0.0, 0.0, 1.0));
+    let floor = slab.copies.iter().filter_map(|copy| {
+        let flat = |p: Vec3, moved| kurven_core::slab::Slab::flat(copy, p, moved);
+        slab.floor_span(flat(a, true), flat(b - a, false), flat(up, false), copy)
+    });
+    let spans: Vec<(f64, f64)> = floor.collect();
+    let seen = Composite::seen(slab.hidden(a, b, up));
+    let (leaves, enters) = (0.5 / 1.3, 0.8 / 1.3);
+    assert!(
+        spans.len() == 1 && spans[0].0 <= 1e-12 && spans[0].1 >= 1.0 - 1e-12 && seen.is_empty(),
+        "the floor's span is the hull of the L's two pieces, [0, 1], and nothing of the segment is seen, though \
+         its lines of sight between s = {leaves:.4} and {enters:.4} cross no floor: spans {spans:?}, seen {seen:?}"
+    );
+}

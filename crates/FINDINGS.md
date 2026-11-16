@@ -1662,3 +1662,37 @@ polyhedra, so it is held in the ignored torus sweep; the polyhedra alone
 are held to their crossings (over 100,000, none missed). The grid half of
 "isophotes and tone: seen exactly where the torus's own cast and the grid
 landscape's cast say" passes; its torus half is ignored.
+
+## 2026-11-16 · Where the Swift looks wrong (Phase 5, ported as it is)
+
+Both found in review of PR #68; Swift has each, so the port keeps it, a
+test pins it, and the fix is the owner's call.
+
+- **The floor of a footprint that is not convex.** `Slab.floorSpan` finds
+  the span of a segment whose lines of sight cross the slab's floor in each
+  of the footprint's convex pieces, then returns their hull (`best.map {
+  (min($0.0, lo), max($0.1, hi)) }`), not the pieces' spans. On a footprint
+  with a notch the stretch between two pieces' spans, whose lines cross the
+  floor's plane outside the footprint, is reported hidden, and
+  `Composite.cut` erases another part's ink there. Reproduction: a flat
+  terrain at 1 on the L of [-1, 1]² less the quarter x > 0, y > 0 (17
+  samples, no walls, so base and top are 1), seen from below along +z; the
+  segment at z = 0 from (-0.5, 0.8) to (0.8, -0.5) is under the L for
+  s ≤ 0.385 and s ≥ 0.615 and under the notch between, but its floor span
+  is [0, 1] and nothing of it is seen
+  (`contact.rs`, `the_floor_of_a_footprint_that_is_not_convex_hides_the_notch_as_swift_does`).
+  It takes a line of sight that reaches the floor from below, so another
+  part under a footprint with a notch, seen from below the landscape.
+  Returning every piece's span (the cut merges them) would fix it.
+- **A change of width on a vertex.** When a line's width step changes
+  exactly at a vertex b, `Solid.graded` bisects the change to b itself (the
+  step at every double below b is the old one), and the interval it would
+  start there is empty and dropped. `Face.graded` therefore keeps the old
+  step, appends b, and meets the change again at the next segment's start
+  (t = 0), appending b a second time: the piece before ends in a segment of
+  no length. On the last segment the change is not seen at all, which
+  changes nothing drawn. Reproduction: the path (0, 0), (1, 0), (2, 0)
+  with the step 2 where x ≥ 1 and 1 elsewhere grades to [step 1: (0, 0),
+  (1, 0), (1, 0)], [step 2: (1, 0), (2, 0)]
+  (`isophotes::tests::a_change_of_width_on_a_vertex_doubles_it_as_swift_does`).
+  The zero-length segment draws nothing, so no reference differs.

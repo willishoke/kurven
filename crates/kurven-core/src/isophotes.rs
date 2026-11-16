@@ -267,3 +267,25 @@ impl Surface {
         by_step.into_iter().collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Where the Swift looks wrong, pinned (crates/FINDINGS.md, "a change of
+    /// width on a vertex"): when a polyline's width step changes exactly at a
+    /// vertex b, `Solid.graded` bisects the change to b itself, and the
+    /// interval it would start there is empty and dropped; `Face.graded`
+    /// keeps the step it had, appends b, and finds the change again at the
+    /// next segment's start, appending b a second time. The piece before
+    /// ends in a segment of no length, and on the last segment the change is
+    /// not seen at all.
+    #[test]
+    fn a_change_of_width_on_a_vertex_doubles_it_as_swift_does() {
+        let p = |x: f64| P2::<ParamSpace>::new(x, 0.0);
+        let step = |q: P2<ParamSpace>| if q.x() >= 1.0 { 2 } else { 1 };
+        let pieces = Face::graded(&[p(0.0), p(1.0), p(2.0)], &step);
+        assert_eq!(pieces, vec![(1, vec![p(0.0), p(1.0), p(1.0)]), (2, vec![p(1.0), p(2.0)])]);
+        assert_eq!(Face::graded(&[p(0.0), p(1.0)], &step), vec![(1, vec![p(0.0), p(1.0)])]);
+    }
+}
