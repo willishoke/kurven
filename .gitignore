@@ -14,6 +14,7 @@ venv/
 !docs/**/*.png
 !tests/fixtures/composite/*.svg
 !tests/fixtures/fields/*.svg
+!crates/fixtures/swift/*.svg
 
 .ipynb_checkpoints/
 .DS_Store
@@ -28,6 +29,11 @@ venv/
 *.xcodeproj/
 
 build/
+
+# The web port: Cargo's build tree, the page's packages and its build.
+crates/target/
+web/app/node_modules/
+web/app/dist/
 
 # local handoffs and notes, never committed
 *.local.md

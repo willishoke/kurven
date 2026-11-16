@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2.0174 -0.6181 4.0348 3.8399" width="1536" height="1461.813">
+<g fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(0,2.6038) scale(1,-1)">
+<g stroke="#000000" stroke-width="0.002101">
+<polyline points="0.7656,-0.5405 -1.1989,-0.1101"/>
+<polyline points="0.7656,-0.5405 1.9398,1.1727"/>
+<polyline points="0.7656,-0.5405 -0.701,-0.0581"/>
+<polyline points="0.7656,-0.5405 1.2388,0.7347"/>
+<polyline points="-1.1989,-0.1101 -0.701,-0.0581"/>
+<polyline points="-1.1989,-0.1101 -1.9398,1.4311"/>
+<polyline points="1.9398,1.1727 1.2388,0.7347"/>
+<polyline points="1.9398,1.1727 1.1989,2.7138"/>
+<polyline points="-0.701,-0.0581 1.2388,0.7347"/>
+<polyline points="-0.701,-0.0581 -1.9398,1.4311"/>
+<polyline points="-0.701,-0.0581 -0.4332,1.9532"/>
+<polyline points="1.2388,0.7347 1.1989,2.7138"/>
+<polyline points="1.2388,0.7347 -0.4332,1.9532"/>
+<polyline points="-1.9398,1.4311 -0.7656,3.1442"/>
+<polyline points="-1.9398,1.4311 -0.4332,1.9532"/>
+<polyline points="1.1989,2.7138 -0.7656,3.1442"/>
+<polyline points="1.1989,2.7138 -0.4332,1.9532"/>
+<polyline points="-0.7656,3.1442 -0.4332,1.9532"/>
+</g>
+</g>
+</svg>
