@@ -547,3 +547,110 @@ writer and in Solid's text, three sorts by `total_cmp`, a test) go through
 so nothing changed; the goldens are byte-identical. kurven-core's other
 bit read, `ulp` in `surface_request.rs`, takes `abs` and refuses a value
 that is not finite first, so it reads no NaN's sign either.
+
+## 2026-11-15 · Phase 3: the landscape's core, what came across
+
+Ported into `kurven-core`, a module per Swift file: Surface.swift
+(`surface.rs`, beside the `ContourRefine` already there), ScalarField.swift
+(`scalar_field.rs`: `ScalarField`, Swift's `Contour.levels(of:...)` and
+`Contour.clipped` as the free functions `levels` and `clipped`, the plain
+routine and its chord refinement, trimming, `TrimIndex`, `short_way`),
+Face.swift (`face.rs`, `Solid::face` included, built from what `solid.rs`
+has), FaceContour.swift (`face_contour.rs`), Mesh.swift (`mesh.rs`),
+Parametric.swift (`parametric.rs`, every type whole), Bundle.swift
+(`bundle.rs`) and Pick.swift (`pick.rs`), which no wave named: a face's
+boundary cuts and chains its pieces with `Face.pieces`, `snapped` and
+`chained`, and a parametric face reads its foot and seams from it. Grid.swift
+was already whole. Hatching.swift has nothing a landscape reaches that is
+not in `hatching.rs`: the rest lays hatching on a solid's faces, Phase 5's.
+
+Of Scene.swift, `scene.rs` has the types (`ContentID`, `Heightfield`,
+`SceneGeometry`, `Scene`, `PreviewMode`, `Lighting`) and these methods:
+`Heightfield.init`, `forked`, `onGrid`, `forEachSample`, `normal`,
+`graphNormal`, `surfaceHeight`, `drawnHeight`; `Scene`'s four initializers,
+`heightfield`, `parametric`, `solid`, `looking`, `drawing`, `creases`. The
+fold curves, the visibility of curves and layers, `GridTraversal`,
+`FoldPlacer`, the bounds and `parallelMap` are the next wave's and are not
+declared.
+
+## 2026-11-15 · Hatch.swift stands in as hatch_stub.rs until its wave
+
+Surface, Mesh, Face, FaceContour and Bundle call into Hatch.swift, a later
+wave. `hatch_stub.rs` holds what they call, every item marked `PORT: phase 3
+stub (Hatch.swift)`, and the file goes whole when `hatch.rs` lands. The small
+pure helpers are ported as Swift has them, so their callers are right
+meanwhile: `cell`, `edgeTolerance`, `point(on:at:)`, `point(from:to:at:)`,
+`clip`, `replicate`, `HatchContext` and `tileBoundaryCrossings`. The rest
+answers empty: `topEdge` (so a wall face's boundary is its bottom and ends
+only), `tileBoundaryStretches` (no riser mesh at a tile boundary),
+`plateauContours`, `riserStretches`, and `curves`' hatchings, wall edges,
+truncation edge and integral curves. `graphTrimLoops` answers the domain's
+edge, which is all of an untruncated graph's loops; a truncated graph lacks
+its plateaus' loops until the port, so its faces' contours are not cut at
+the truncation edge yet. `curves` dispatches as Swift's does otherwise: a
+contour of |f| or arg f to `derive`, of a coordinate or the height to the
+face contours.
+
+## 2026-11-15 · Phase 3 core: differences from Swift, by construction
+
+- **Shared grids.** `Surface` holds its grids behind `Arc`. Swift's arrays
+  are shared until written, so a face's closures capture the surface by
+  value for nothing; a clone of the port's surface shares its samples the
+  same way. `restyled` shares them with the bundle it came from.
+- **Names.** `Face.Copy` is `FaceCopy` (`Copy` is a Rust trait); `Computed`
+  makes its value once under a `OnceLock`. Swift's defaulted arguments are
+  structs whose `Default` is Swift's defaults: `Trim` for the trim loops,
+  `contains`, cuts, excess and lift of `Contour.levels`, `FaceInit` for the
+  tiled face initializer (`Face::single` is the one-copy one). Overloads
+  take two names: `Surface::height_at`/`height_at_tiles`,
+  `lift`/`lift_path`, `KurvenBundle::layer`/`layer_at_levels`,
+  `levels`/`levels_resampled`, `SceneGeometry::face_of` (Swift's
+  `face(of:)`), `face_at`, `boundary_of`; `Scene`'s initializers are
+  `heightfield_scene`, `parametric_scene`, `solid_scene`, `from_bundle`.
+- **Scene's identity.** `ContentID` counts from one per process where Swift
+  mints a UUID; a memo needs only uniqueness. `Scene`'s geometry, layers and
+  identities are private with getters, since a public Rust field could be
+  reassigned and leave `content` stale, the premise Swift's `let` keeps.
+- **Preconditions.** `ParametricSurface::new` and `with_positions` answer
+  `ParametricError::NoVolume` (or a position count) where Swift's
+  precondition traps; `ParamAxis::new` asserts two samples, as
+  `Grid2D::new` asserts its count, every caller computing a floor of 2.
+- **Where Swift's `Int(x)` traps.** On a point that is not a number:
+  `drawnSurface` and `clampedHeight` answer NaN, `interpolate` a point of
+  NaNs, `TrimIndex` files the point in its first bucket, `Face.pieces` in
+  its first cell, `snapped` in a cell of its own; a tile boundary riser or a
+  vertical face whose sample count does not fit takes 2, a picked boundary's
+  segment 4096 steps. No finite input reaches any of these.
+- **Concurrency.** `parallelMap` and `concurrentPerform` are loops in
+  order; each piece is independent, so the answers are the same.
+- **Mesh.** Triangles are `[i32; 3]`; `concat` offsets them with wrapping
+  addition, as Swift's `&+` does. `Lighting` holds its direction as
+  `[f32; 3]`, normalized as `simd_normalize` does.
+- **Writing a bundle.** The manifest is written to a temporary file and
+  renamed into place, Swift's `atomically: true`.
+
+## 2026-11-15 · Phase 3 core: the suites, and how two of them stand in
+
+Ported, with Swift's tolerances: Fields.swift all but its torus case
+(seven passing; the torus case ignored as Phase 4's, expressed against
+`ParametricSurface::torus`); Chords.swift's "the plain routine's chords
+stay within its tolerance" (its isophote part split off and ignored as
+Phase 5's) and "cuts on a domain whose edge the loops follow"; Faces.swift's
+"each layer says the kind of face its curves lie on" and "a polyhedron's
+faces are its loops, and membership agrees with the convex pieces" ("a
+parametric surface is one face" ignored as Phase 4's); `main.swift`'s
+restyle suite, its wall hatch ignored until Hatch.swift. The `core:` suites
+were already ported in Phase 2. New: the landscape half of "contract:
+bundles decode into consistent values", the four landscapes of
+`tests/fixtures/expr` reading and building their scenes and faces, and a
+described bundle written and read back the same.
+
+Two stand-ins. Swift builds the chord suite's landscapes with
+`NativeLandscape.build(..., refine: true)`, which needs the refiner; the
+faces it contours read f only through `ContourRefine.magnitude`, so the
+port's landscape is the grid of |f| with |f| in closed form as that
+magnitude and contours that move nothing. Swift names its polyhedra
+(`Solid.platonic`, `Solid.frame`, `.csaszar`, Phase 5's); the port reads the
+same seven solids from the contract's polyhedron fixtures, and the face-kind
+suite carries sn's layer specs on a plane patch, since the rule reads only a
+layer's role and source.
