@@ -568,7 +568,10 @@ pub struct HatchLine {
 /// anew starts empty. It is no part of the solid's value: two solids are
 /// equal whatever their memos hold. At most `HatchMemo::SIZE` hatchings.
 #[derive(Clone, Default)]
-pub struct HatchMemo(Arc<Mutex<Vec<(Hatching, Arc<Vec<HatchLine>>)>>>);
+pub struct HatchMemo(Arc<Mutex<Vec<Laid>>>);
+
+/// A hatching, and the lines it laid.
+type Laid = (Hatching, Arc<Vec<HatchLine>>);
 
 impl HatchMemo {
     pub const SIZE: usize = 8;
