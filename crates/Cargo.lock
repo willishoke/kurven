@@ -45,6 +45,7 @@ dependencies = [
 name = "kurven-math"
 version = "0.1.0"
 dependencies = [
+ "kurven-core",
  "libm",
 ]
 

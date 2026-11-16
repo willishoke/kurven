@@ -12,3 +12,9 @@ libm.workspace = true
 
 [lints]
 workspace = true
+
+# The oracle suites read tests/fixtures through Phase 0's readers. A dev
+# dependency only: kurven-core depends on this crate, and Cargo builds the one
+# kurven-math both use for the integration tests in tests/.
+[dev-dependencies]
+kurven-core.workspace = true
