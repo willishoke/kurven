@@ -992,3 +992,49 @@ riser, and none is hidden that the walk up the line of sight sees",
 vertical stroke is its two ends, however high |f| stands", and the contour
 layers' half of "faces: a contour or a fold carried to the truncation edge
 across a band boundary ends on the drawn top".
+
+## 2026-11-15 · Phase 3: the bake and the CLI's landscape commands
+
+Bake.swift is `kurven-bake/src/lib.rs`: `BakeOptions` (with `tile_count`),
+`BakeError` with Swift's two messages and a third case for what the port has
+not brought across, `Bake` and `bake`. No stroke of a landscape reads the
+depth buffer (`Scene::visible_layers` decides), so the port renders none: a
+`Bake` holds the strokes and the specs, and Swift's `depth`, `surface` and
+`tiles` are left out. The outline (traced from the buffer), a parametric
+scene (its coordinate image comes from the depth pass) and `bake --dump`
+(it writes the buffer's frame) are typed refusals, `PORT: phase 4`, until
+the CPU rasterizer arrives with `SurfaceImage`. The perspective and empty
+scene refusals are Swift's, checked in Swift's order. kurven-bake depends
+on kurven-core alone; kurven-surfaces is Phase 4's and joins when the
+parametric bake does. Swift's suites "a perspective camera is refused" and
+the strokes' half of "a tiled bake draws what a single-pass bake draws"
+are ported (`kurven-bake/tests/bake.rs`); the depth half waits for the
+rasterizer.
+
+Swift's perspective message is a multi-line literal whose source lines
+were joined by hand, so it holds four runs of thirteen spaces ("indexes by
+an             affine map"). The port writes it as it is, and a test pins
+it.
+
+`kurven-cli` gains `landscape`, `bake` and `references`, read with Swift's
+`Args` (`args.rs`) and refusing as Swift refuses (exit 1, `kurven-cli:
+<error>`). `landscape` is whole (presets, interval, bands, isophotes and
+hatching on the graph, slope lines, `--repeat`); its console summary names
+the layers and does not describe their sources (Swift's `sourceName` and its
+`%g`), and prints the truncation as Rust's Debug: stdout is not compared.
+`bake` and `loadDrawing` read landscape bundles; a surface's bundle (`PORT:
+phase 4`) and a polyhedron's (`PORT: phase 5`) are told apart by the
+manifest's top-level key as Swift tells them and refused with a message.
+Numbers on the command line are read by Rust's `f64` parser where Swift
+calls `Double(String)`, which also reads C's hexadecimal floats; no flag is
+given one.
+
+`references` bakes what is ported of Swift's list: the six gallery
+landscapes (make.py's manifest edit, one sampled cubic for the four corners,
+cn's quarter periods by the AGM, its words written with Swift's
+`description` so each `how` is byte for byte Swift's), the four native
+landscapes and the slope lines. sn, sn in relief, the torus, `periodic` and
+the frame's two gallery drawings (Phase 4), the seven solids and the
+composite (Phase 5) are left out of the list with a PORT comment. It takes
+`--only NAME,...`, which Swift's does not, so a single drawing can be
+measured.

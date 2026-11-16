@@ -7,16 +7,17 @@ name = "kurven-bake"
 version = "0.1.0"
 dependencies = [
  "kurven-core",
- "kurven-landscape",
- "kurven-surfaces",
 ]
 
 [[package]]
 name = "kurven-cli"
 version = "0.1.0"
 dependencies = [
+ "kurven-bake",
  "kurven-core",
  "kurven-golden",
+ "kurven-landscape",
+ "kurven-math",
 ]
 
 [[package]]
