@@ -547,3 +547,854 @@ writer and in Solid's text, three sorts by `total_cmp`, a test) go through
 so nothing changed; the goldens are byte-identical. kurven-core's other
 bit read, `ulp` in `surface_request.rs`, takes `abs` and refuses a value
 that is not finite first, so it reads no NaN's sign either.
+
+## 2026-11-15 · Phase 3: the landscape's core, what came across
+
+Ported into `kurven-core`, a module per Swift file: Surface.swift
+(`surface.rs`, beside the `ContourRefine` already there), ScalarField.swift
+(`scalar_field.rs`: `ScalarField`, Swift's `Contour.levels(of:...)` and
+`Contour.clipped` as the free functions `levels` and `clipped`, the plain
+routine and its chord refinement, trimming, `TrimIndex`, `short_way`),
+Face.swift (`face.rs`, `Solid::face` included, built from what `solid.rs`
+has), FaceContour.swift (`face_contour.rs`), Mesh.swift (`mesh.rs`),
+Parametric.swift (`parametric.rs`, every type whole), Bundle.swift
+(`bundle.rs`) and Pick.swift (`pick.rs`), which no wave named: a face's
+boundary cuts and chains its pieces with `Face.pieces`, `snapped` and
+`chained`, and a parametric face reads its foot and seams from it. Grid.swift
+was already whole. Hatching.swift has nothing a landscape reaches that is
+not in `hatching.rs`: the rest lays hatching on a solid's faces, Phase 5's.
+
+Of Scene.swift, `scene.rs` has the types (`ContentID`, `Heightfield`,
+`SceneGeometry`, `Scene`, `PreviewMode`, `Lighting`) and these methods:
+`Heightfield.init`, `forked`, `onGrid`, `forEachSample`, `normal`,
+`graphNormal`, `surfaceHeight`, `drawnHeight`; `Scene`'s four initializers,
+`heightfield`, `parametric`, `solid`, `looking`, `drawing`, `creases`. The
+fold curves, the visibility of curves and layers, `GridTraversal`,
+`FoldPlacer`, the bounds and `parallelMap` are the next wave's and are not
+declared.
+
+## 2026-11-15 · Hatch.swift stands in as hatch_stub.rs until its wave
+
+Surface, Mesh, Face, FaceContour and Bundle call into Hatch.swift, a later
+wave. `hatch_stub.rs` holds what they call, every item marked `PORT: phase 3
+stub (Hatch.swift)`, and the file goes whole when `hatch.rs` lands. The small
+pure helpers are ported as Swift has them, so their callers are right
+meanwhile: `cell`, `edgeTolerance`, `point(on:at:)`, `point(from:to:at:)`,
+`clip`, `replicate`, `HatchContext` and `tileBoundaryCrossings`. The rest
+answers empty: `topEdge` (so a wall face's boundary is its bottom and ends
+only), `tileBoundaryStretches` (no riser mesh at a tile boundary),
+`plateauContours`, `riserStretches`, and `curves`' hatchings, wall edges,
+truncation edge and integral curves. `graphTrimLoops` answers the domain's
+edge, which is all of an untruncated graph's loops; a truncated graph lacks
+its plateaus' loops until the port, so its faces' contours are not cut at
+the truncation edge yet. `curves` dispatches as Swift's does otherwise: a
+contour of |f| or arg f to `derive`, of a coordinate or the height to the
+face contours.
+
+## 2026-11-15 · Phase 3 core: differences from Swift, by construction
+
+- **Shared grids.** `Surface` holds its grids behind `Arc`. Swift's arrays
+  are shared until written, so a face's closures capture the surface by
+  value for nothing; a clone of the port's surface shares its samples the
+  same way. `restyled` shares them with the bundle it came from.
+- **Names.** `Face.Copy` is `FaceCopy` (`Copy` is a Rust trait); `Computed`
+  makes its value once under a `OnceLock`. Swift's defaulted arguments are
+  structs whose `Default` is Swift's defaults: `Trim` for the trim loops,
+  `contains`, cuts, excess and lift of `Contour.levels`, `FaceInit` for the
+  tiled face initializer (`Face::single` is the one-copy one). Overloads
+  take two names: `Surface::height_at`/`height_at_tiles`,
+  `lift`/`lift_path`, `KurvenBundle::layer`/`layer_at_levels`,
+  `levels`/`levels_resampled`, `SceneGeometry::face_of` (Swift's
+  `face(of:)`), `face_at`, `boundary_of`; `Scene`'s initializers are
+  `heightfield_scene`, `parametric_scene`, `solid_scene`, `from_bundle`.
+- **Scene's identity.** `ContentID` counts from one per process where Swift
+  mints a UUID; a memo needs only uniqueness. `Scene`'s geometry, layers and
+  identities are private with getters, since a public Rust field could be
+  reassigned and leave `content` stale, the premise Swift's `let` keeps.
+- **Preconditions.** `ParametricSurface::new` and `with_positions` answer
+  `ParametricError::NoVolume` (or a position count) where Swift's
+  precondition traps; `ParamAxis::new` asserts two samples, as
+  `Grid2D::new` asserts its count, every caller computing a floor of 2.
+- **Where Swift's `Int(x)` traps.** On a point that is not a number:
+  `drawnSurface` and `clampedHeight` answer NaN, `interpolate` a point of
+  NaNs, `TrimIndex` files the point in its first bucket, `Face.pieces` in
+  its first cell, `snapped` in a cell of its own; a tile boundary riser or a
+  vertical face whose sample count does not fit takes 2, a picked boundary's
+  segment 4096 steps. No finite input reaches any of these.
+- **Concurrency.** `parallelMap` and `concurrentPerform` are loops in
+  order; each piece is independent, so the answers are the same.
+- **Mesh.** Triangles are `[i32; 3]`; `concat` offsets them with wrapping
+  addition, as Swift's `&+` does. `Lighting` holds its direction as
+  `[f32; 3]`, normalized as `simd_normalize` does.
+- **Writing a bundle.** The manifest is written to a temporary file and
+  renamed into place, Swift's `atomically: true`.
+
+## 2026-11-15 · Phase 3 core: the suites, and how two of them stand in
+
+Ported, with Swift's tolerances: Fields.swift all but its torus case
+(seven passing; the torus case ignored as Phase 4's, expressed against
+`ParametricSurface::torus`); Chords.swift's "the plain routine's chords
+stay within its tolerance" (its isophote part split off and ignored as
+Phase 5's) and "cuts on a domain whose edge the loops follow"; Faces.swift's
+"each layer says the kind of face its curves lie on" and "a polyhedron's
+faces are its loops, and membership agrees with the convex pieces" ("a
+parametric surface is one face" ignored as Phase 4's); `main.swift`'s
+restyle suite, its wall hatch ignored until Hatch.swift. The `core:` suites
+were already ported in Phase 2. New: the landscape half of "contract:
+bundles decode into consistent values", the four landscapes of
+`tests/fixtures/expr` reading and building their scenes and faces, and a
+described bundle written and read back the same.
+
+Two stand-ins. Swift builds the chord suite's landscapes with
+`NativeLandscape.build(..., refine: true)`, which needs the refiner; the
+faces it contours read f only through `ContourRefine.magnitude`, so the
+port's landscape is the grid of |f| with |f| in closed form as that
+magnitude and contours that move nothing. Swift names its polyhedra
+(`Solid.platonic`, `Solid.frame`, `.csaszar`, Phase 5's); the port reads the
+same seven solids from the contract's polyhedron fixtures, and the face-kind
+suite carries sn's layer specs on a plane patch, since the rule reads only a
+layer's role and source.
+
+## 2026-11-15 · The restriction suite, over the grid's landscapes
+
+Faces.swift's "restriction: a contour's copy is cut to the footprint where
+it lands, exactly" is ported over the landscapes of Swift's
+`faceLandscapes()` drawn on the grid (`kurven-core/tests/restriction.rs`):
+the contract's bundles and the hatch fixture's twenty variants on
+footprints, reflected, turned and in four tiles. It passes at Swift's
+tolerances (1e-9 of the domain for a kept point or an end off the
+perimeter). The landscapes on f (Γ, the towers, the reviewer's tower) are
+built with `NativeLandscape.build(..., refine: true)` and wait for the
+refiner.
+
+## 2026-11-15 · Phase 3: the refiner, the catalog, the sampling, the memo, the depth clip
+
+Ported whole: `Refine.swift` to `kurven-landscape/src/refine.rs`, but for
+`NativeLandscape.refiner(for: bundle)` and `benchmarkRefinement`, which
+read a `KurvenBundle` and its `Surface` (the core wave); `Catalog.swift` to
+`catalog.rs`; `Landscape.swift` to `landscape.rs`, but for
+`NativeLandscape.build`, which builds the bundle; `ContourMemo.swift` to
+`kurven-core/src/contour_memo.rs`; and the depth-buffer half of
+`HiddenLine.swift` (`foldCrossing`, `HiddenLine.clip` and `pass`,
+`DepthImage.outline`) to `kurven-core/src/hidden_line.rs`.
+`HeightfieldVisibility` waits for the grid traversal. `RefinementReport`
+and `summarize` are ported, so the benchmark is a loop over them.
+
+One stub: `short_way` in `refine.rs`, Swift's free `shortWay` from
+`ScalarField.swift`, which the core wave ports; it goes at the merge.
+
+Spelled otherwise: Swift's refiner keeps f as four closures (`value`,
+`magnitude`, `phase`, `turnedPhase`) and passes one as `g`; here they are
+methods over one tape, and `g` is a `Scalar` (magnitude, phase, turned
+phase). The `refine` property is `refine_hook()` (the method `refine(field:
+...)` keeps the name); `zero(near:)` and `pole(near:)` are `zero_near` and
+`pole_near`; `turn(_:around:)` and `turn(between:_:)` are `turn_around` and
+`turn_between`; `ended(atSingularPoints:)` is `ended`. Default arguments are
+explicit. `concurrentPerform` over paths, rows and edges is a loop: each
+iteration writes its own slot.
+
+## 2026-11-15 · The handoff discs in a fixed order, where Swift walks a Set
+
+`ContourRefiner.refine` collects the singular points whose rays reach the
+handoff radius in a `Set` and maps it to the discs, and a point inside two
+discs (two singular points closer than six cells) is cut back to the first
+disc that holds it: in Swift that is the `Set`'s per-process order, so the
+drawing can differ from run to run there. The port walks the points in
+ascending order. Nothing else in the refiner depends on a hash order:
+`unaccounted` sorts its cells, `drawnOnce` only asks whether any segment is
+near, and the memo forgets by a clock.
+
+## 2026-11-15 · Where the refiner traps or never returns in Swift
+
+- **A field that is not f's.** `field(_:)` is `preconditionFailure` for u,
+  v, the height and an isophote. Here `ContourRefiner::field` answers None;
+  `refine` hands the paths back as the grid placed them, and
+  `position_errors` answers NaN for every vertex. No caller asks.
+- **A NaN ceiling.** `refine` copies itself with the call's ceiling and span
+  and recurses whenever they differ from its own, and NaN never equals NaN,
+  so a phase line asked under a NaN ceiling recursed until the stack ran
+  out. The port always places on a copy, which gives the same curves
+  wherever Swift returns, and returns for NaN too.
+- **`Int` of a coordinate.** `drawnOnce` bins vertices by `Int` of x / cell,
+  `snap` takes `Int` of the grid position, `seededRings` of the zero's.
+  Each traps on a value that is not finite. A vertex that is not finite is
+  binned in a cell of its own, `snap` leaves such a vertex where it is (as
+  it does one off the grid), and `seeded_rings` passes such a zero over.
+- **The landscape's rounding.** `pyRound`, and so `gridShape` and
+  `wallDensity`, trap on a domain whose side is not a number. The port's
+  `py_round`, `grid_shape`, `wall_density` and `sample` answer None.
+
+## 2026-11-15 · A zero exactly on a node is not a singular point (ported as is)
+
+`root(near:of:)` refuses a start where g is zero (`guard g0.magnitude > 0`),
+and a zero that falls on a grid node is found only from that node, the
+least of |f| beside it. So z³ on [-1, 1]² at 41 samples has no singular
+point: its phase lines are carried onto the zero by `ended` rather than
+seeded from the normal form. Ported as is. The port's analytic tests of
+rays and the branch cut shift the window by a quarter cell so the zero
+lies inside a cell.
+
+## 2026-11-15 · The memo's keys, and a NaN in them
+
+Swift's `ContourMemo.Key` compares the paths as `Hashable` points do, by
+`==` (so -0 is 0), and the level, ceiling and span by their bits. The port
+does the same, hashing each coordinate plus 0.0 so -0 and 0 hash alike. A
+path with a NaN coordinate makes a key unequal to itself, which Swift's
+dictionary stores and never finds again; Rust's `HashMap` needs a key equal
+to itself, so the port does not store such a key and solves it each time,
+which is the answer Swift gives. `Synchronization.Mutex` is
+`std::sync::Mutex`, a poisoned lock read through (an entry is inserted
+whole). Forgetting by least recent use sorts by a clock no two entries
+share, so which entry goes is fixed in both.
+
+## 2026-11-15 · Phase 3 refiner tests and their tolerances
+
+Swift's, with Swift's tolerances: "refine: a zero or pole of order more
+than one is found" and "... the grid's nodes do not see is found, by the
+winding number of its cell" (1e-9 cells), "... by an accumulation of zeros
+or poles" (sin(1/z) and 1/sin(1/z) at 400), "refine: a phase line is placed
+only where it can be drawn" (0.05 cells; tan at 240). Each built the
+bundle and asked `refiner(for: bundle)`, which reads the canonical
+expression, the domain and the height grid's shape; the port asks
+`refiner(expression, domain, grid_shape(...))`, the same refiner, and takes
+the phase grid from `sample` and `quantize` as `build` does. Also "landscape:
+the derived numbers", "... are the committed ones" (hatch/index.json),
+"expression: the language table is the frozen one" through the catalog, the
+three "clip:" suites (bit for bit), and the half of "landscape: built here,
+it is the committed bundle" that needs no bundle: the four committed
+landscapes' grids at Swift's 1e-6 relative, their manifests' shape,
+truncation, walls, occluder step, projection and layers exactly. All pass,
+none ignored.
+
+The port's own, against closed forms: |z| = r circles, every vertex on the
+circle and every chord's sagitta within the stated 0.02 cells; |z³ − 1| = c,
+three ovals and one curve, chords within 0.02 cells by the refiner's own
+estimate; a ring round a zero the grid cannot see, on its circle; the phase
+lines of z³ as three rays from the zero a third of a turn apart, on their
+rays to 1e-9; the branch cut of z and of z³ drawn once, as one and three
+lines; Newton, Schröder and the winding number on z²(z − 0.5)/(z + 0.3i)³;
+the hook's contours the refiner's, remembered and forked to the bit.
+
+One thing the closed forms showed: a vertex is not always on the level to
+the root finder's tolerance. Where the float32 grid puts a vertex within
+rounding of a node, `snap` leaves it there if its residual over the gradient
+is under a hundredth of the tolerance (`1e-2 * tolerance * cell`): on |z| =
+0.8 at 41 samples one vertex is 1.2e-8 off, 2.4e-7 cells. That is Swift's
+rule, so the circle test holds vertices to that bound, and nine in ten to
+1e-9.
+
+## 2026-11-15 · Phase 3: slope lines and the landscape builder
+
+Ported whole: IntegralCurves.swift to `kurven-core/src/integral_curves.rs`
+(`VectorField` with its constant field's closed form, the integrator and
+its stopping rules, `Face::slope`, `height_slope`, the slope raised by the
+graph's metric, `Seeds::points` and `closes`, `Surface::integral_curves`
+and `graph_integral_curves`); `NativeLandscape.build` to
+`kurven-landscape/src/landscape.rs`; Refine.swift's `refiner(for: bundle)`
+and `benchmarkRefinement` to `refine.rs`. That empties Landscape.swift and
+Refine.swift of PORT holes. Lines of curvature and every integral curve on
+a parametric surface are LinesOfCurvature.swift's, Phase 4's; on the graph
+the principal directions answer no field, as in Swift.
+
+Spelled otherwise: Swift's `IntegralCurve` namespace is the module, so
+`IntegralCurve.End` is `integral_curves::End`, with `Section`, `Limits`
+and `Traced` beside it; `Face.raised(_:overGraphOf:)` and `raised(_:_:)`
+are `raised_over_graph` and `raised`; `refiner(for: bundle)` is
+`refiner_for_bundle`, beside the expression's `refiner`. Default arguments
+are explicit (`Limits::default()` is Swift's defaults). `build` answers a
+`BuildError`: Swift's thrown compile error, or a domain whose side is not
+a number, on which Swift's rounding traps.
+
+Merge note: `Surface::curves`' stub for `LayerSource::IntegralCurves`
+(`hatch_stub.rs`) becomes `PolylineSet::from_paths(&self.integral_curves(field,
+seeds, faces, &context, refine, &Limits::default()))`, as Hatch.swift's
+`curves` calls it. `integral_curves.rs` takes `HatchContext` from
+`crate::hatch_stub`; the import moves to `crate::hatch` when Hatch.swift
+lands.
+
+## 2026-11-15 · Slope lines: differences from Swift, by construction
+
+- **Parallel seeds.** Swift traces a copy's seeds with
+  `Heightfield.parallelMap`, each thread making a worker of its own: a
+  forked refiner (`ContourRefine.fork`) and the graph and field on it. The
+  port makes one worker per traced copy and traces its seeds in turn. A
+  fork is f compiled again and its hook is pure, so the curves are the
+  same.
+- **Where Swift traps.** `Seeds.points` by arc length counts its seeds with
+  `Int(ratio.rounded())` and then `0..<n`, which traps for a negative n: a
+  spacing below zero, which `Seeds.unsupported` refuses when a manifest is
+  decoded but a hand-built `Seeds` can hold. The port places no seed there.
+  The `cut!` of the first return cannot be nil (it is set at the first
+  return, before any later one), and the port reads it without a panic.
+- **The benchmark is native alone.** `benchmark_refinement` times with
+  `std::time::Instant`, which panics on wasm32-unknown-unknown, so it is
+  compiled out there. Nothing on the page asks for it.
+
+## 2026-11-15 · Slope lines: the suites, and what the golden draws
+
+IntegralCurves.swift's suites, at Swift's tolerances, none loosened (in
+`kurven-landscape/tests/integral_curves.rs` where they build a landscape
+with the refiner, `kurven-core/tests/integral_curves.rs` where they do
+not): slope lines of |f| on their phase contours on sn, the rational
+function and exp(z) (0.02 cells); each stopping rule (a zero 1e-12, the
+truncation edge 1e-12, a pole within 1e-3 cells, the domain's edge and a
+footprint 1e-12, closed loops of arg f's slope 0.02 cells, the step limit
+at eleven vertices, a seed off the domain); the slope of a coordinate
+raised by the metric (1e-8, the adjugate 1e-12) and exp(20z) followed to
+the edge; seeds once each and no closer than a cell; seeds by arc length
+(1e-9) and on tiled graphs (1e-9, 1e-12, sn 1e-5); the manifest; the
+constant field's flow to the bit. All pass. Two are ignored: "on f, seen
+exactly where the dense cast against f says" needs Scene's visibility (a
+parallel wave), and the torus half of the linear-curve suite needs
+`SurfaceDrawing.build` (Phase 4).
+
+The slope-lines golden (`tests/fixtures/fields/landscape_slope_lines`),
+read and given `refiner_for_bundle`'s hook as the bake gives it, traces 24
+curves, each from a zero of (z² − 1)/(z² + 1) to the truncation edge or the
+domain's edge, on its phase contour to 0.02 cells, but two: arg f = −π runs
+along the real axis from each zero into f's saddle at 0 and ends there,
+singular, 6.5e-6 from it (8e-5 cells), where the field vanishes. That is
+the integrator's rule, not a defect; the test holds those two to the true
+contour alone, as Swift's sn suite holds the lines through sn's critical
+points, since the drawn contour at ±π leaves the crossing open. The drawn
+comparison waits for the bake.
+
+Expressions.swift's bundle suites now run: "landscape: built here, it is
+the committed bundle" whole (the manifest byte for byte, the samples to
+1e-6, every layer's path count and length to 1e-6; both sides derive their
+hatchings and edges through `hatch_stub` until Hatch.swift lands), and
+"refine: contours placed by the function", "... phase contours end on the
+zeros of f", "... the branch cut is drawn once", "... a restyle places only
+the curves it has not placed before", "... a chord on the level set, split
+for its sag, is placed" (`kurven-landscape/tests/refined_bundles.rs`). All
+pass. With `build` in, the chord suite's and the restriction suite's
+stand-ins (the landscapes on f) can be built as Swift builds them.
+
+## 2026-11-15 · Phase 3: the landscape's visibility, what came across
+
+The rest of Scene.swift a landscape reaches is in `kurven-core/src/scene.rs`:
+`Heightfield.foldCurves`, `endedAtZeros`, `visibleFolds`, `stop`,
+`surfaceDepthTolerance`, `onSurface`, `visibleCurves` (every face kind),
+`visibleWallCurves`, `facing`, `wallFacing`, `riserFacing`, `Tests`,
+`visibleRuns`, `turning`, `parallelMap` (both forms), `FoldPlacer` whole,
+and `Scene.visibleLayers`, `visible`, `viewBounds`, `quickBounds`.
+`GridTraversal` is `traversal.rs`, public, since the bake asks it.
+Occlusion.swift is `occlusion.rs`: the `OcclusionTest` trait, the
+traversal's conformance, and `SphereTracing` whole, ported ahead of Phase 4
+because it reads only a `TubularNeighbourhood`, whose type is here; nothing
+builds a surface with one until the torus, so it is untested until then.
+`HeightfieldVisibility` joins the rest of HiddenLine.swift in
+`hidden_line.rs`. Visibility.swift is `visibility.rs` and SurfaceImage.swift
+`surface_image.rs`: their types whole, their behaviour Phase 4's.
+
+The signatures the bake reads: `Scene::visible_layers(&self, Option<f64>,
+Option<&SurfaceImage>) -> Result<Vec<(Layer, PolylineSet<ViewSpace>)>,
+PortRefusal>`, `Scene::view_bounds(&self) -> Result<Option<AABB<ViewSpace>>,
+PortRefusal>`, `Heightfield::fold_curves(&self, &Transform<WorldSpace,
+ViewSpace>, refined: bool) -> PolylineSet<WorldSpace>`, `GridTraversal::new(
+Heightfield, &Transform<WorldSpace, ViewSpace>, depth_tolerance: f64)`. A
+landscape's layers never refuse but for a hatching on the graph.
+
+## 2026-11-15 · The landscape's visibility: holes, each a typed refusal
+
+- `Scene::visible` on a parametric surface, phase 4: coordinate hatching,
+  its fold curves, sphere tracing or the coordinate image, the image's
+  depth for curves with no coordinates. `view_bounds` refuses a parametric
+  surface with fold curves among its layers (it places them).
+- A hatching on the graph, phase 5: `Surface.graphHatching` is in
+  Isophotes.swift, which the plan puts in Phase 5, though it lays a
+  landscape's hatching. No committed landscape or gallery bake has one.
+- A solid's clipped edges, its hatching and a clipped file's curves on it,
+  phase 5 (`Solid.visibleEdges`, `visibleHatching`, `visibleCurves(onSurface:
+  occlusion:)`); its unclipped layers are drawn whole, as in Swift.
+- `Solid::occlusion`, phase 5. `Solid.Occlusion`'s type was not in
+  `solid.rs`; `SolidOcclusion` declares its fields, and its `OcclusionTest`
+  conformance is left out (not an empty impl), so nothing can ask it.
+- `SurfaceVisibility`'s footprint, front-most test, sheet, `is_visible`,
+  crease and fold crossing, `HiddenLine::clip_on` and
+  `SurfaceImage::rasterize`, phase 4. Its facing and `is_clear` are whole.
+
+## 2026-11-15 · The landscape's visibility: differences from Swift, by construction
+
+- **Workers.** `parallelMap(_:chunk:worker:_:)` makes its worker once and
+  maps in order (`parallel_map_with`); Swift makes one a thread. A forked
+  refiner answers as the one it came from, so the drawing is the same.
+- **Tests.** Swift's `Tests` holds three closures, here boxed, each worker's
+  sharing its forked traversal behind an `Rc`.
+- **Refusals.** `visible_layers`, `visible` and `view_bounds` answer a
+  `Result`, since a scene can reach a deferred branch; Swift's preconditions
+  in `SurfaceImage.init` and `SurfaceVisibility.init(sphereTracing:)` are
+  error values (`CoordinateCount`, `NoNeighbourhood`).
+- **Where Swift's `Int` traps.** The traversal's crossings of a grid family
+  take `Int` of a bound that is NaN for a point that is not a number, and the
+  fold placer's grid edges `Int` of its index: the family, or the edge, is
+  passed over. No finite input reaches either.
+- **The trace.** `explain` writes Swift's lines with C's `%.4g` and `%.3e`
+  done by hand (Rust's formatting has neither); it is a diagnostic, and no
+  test compares its text.
+- **Defaults.** Swift's defaulted arguments are explicit: `fold_curves`
+  takes `refined` (true in Swift), `visible_folds` and `visible_curves`
+  take `resolution` (0), `quick_bounds` its budget (20,000), `unoccluded`
+  its flags (`unoccluded_default` is Swift's `unoccluded(_:)`).
+
+## 2026-11-15 · A lone tile is read untransformed (ported as is)
+
+`GridTraversal.drawnSurface(at:)` and `Surface.tile(under:tiles:)` treat a
+heightfield of one tile as the domain itself: the point is read where it
+stands, not carried back through the tile. A heightfield whose one tile is
+a translation or a reflection would be tested against the domain under the
+world point, not under its image. Every manifest's one tile is the identity
+(a native landscape's, and each fixture's), and the traversal's grids do
+carry the lone tile's inverse, so only the height read differs. Ported as
+is.
+
+## 2026-11-15 · The landscape's visibility: the suites, and what stands in
+
+Stress.swift, all six suites, at Swift's tolerances: the 4x4 ray cast
+(over 40,000 decidable points, none disagreeing), the facing converging
+(under 1% at 128 cells), the reflected and turned tiles on f against the
+walk, the real drawing against the brute-force cast (14,384 facing vertices
+on the grid, 14,213 on f, none disagreeing), scaling by 8 and by 1/8
+(worst 0 exactly) and the bake at every resolution. Two stand-ins. The bake
+suite compares bakes at four depth resolutions; nothing of the visibility
+reads a depth buffer, so it holds `Scene::visible_layers` the same every
+time it is asked, the drawing drawing (230 paths, 541 units on rgamma,
+without the hatching and edges the stub leaves out) and the steep case's
+kept length. The real-drawing suite also counts what a 1000-pixel depth
+buffer hid and asks that the pit at -4 hides more by the traversal than by
+it; there is no rasterizer in the core, so that half is left out and the
+traversal and the cast are held equal in the pit instead.
+
+Occlusion.swift: the landscape part (10,000 and more points, none
+disagreeing); the polyhedra (Phase 5) and the torus (Phase 4) ignored.
+Facing.swift: the ridge's facing and folds, the pits (its bake check reads
+the fold layer of `visible_layers`), and the navigation check. Faces.swift:
+the tile-boundary riser, the three fold suites, and the folds' half of "a
+contour or a fold carried to the truncation edge across a band boundary
+ends on the drawn top". 12 tests pass, 2 are ignored.
+
+The oracles spread over threads with `std::thread::scope` in the tests
+alone. Single-threaded, the port draws rgamma at 240 refined in about a
+third of a second.
+
+Waiting for Hatch.swift's strokes (each tests hatching, wall edges, the
+truncation edge or the top edge): "walls: the hatching and edges of a cut
+face are tested by the wall", "walls: a stroke on a wall is tested by the
+wall it stands on, on a notch and at a tile boundary", "walls: a stroke is
+hidden up to where the walk up the line of sight meets terrain, on abutting
+copies and across a notch", "risers: a riser's hatching and bottom edge lie
+on it, from its bottom to its top, where it stands", "risers: only a layer
+that selects the risers hatches them, in place or on every tile", "risers:
+a riser's hatching and bottom edge are hidden up to where the walk up the
+line of sight meets the solid", "risers: no stroke is drawn through a
+riser, and none is hidden that the walk up the line of sight sees",
+"plateaus: the hatching on a plateau is tested by the plateau", "walls: a
+vertical stroke is its two ends, however high |f| stands", and the contour
+layers' half of "faces: a contour or a fold carried to the truncation edge
+across a band boundary ends on the drawn top".
+
+## 2026-11-15 · Hatch.swift is hatch.rs; the stub is gone
+
+`Sources/KurvenCore/Hatch.swift` is ported whole into
+`kurven-core/src/hatch.rs`, and `hatch_stub.rs` is deleted. The stub's
+items keep their signatures (`HatchContext::new`, `GraphTrimLoops`,
+`RiserStretch`, `TileBoundaryStop`, `Surface::cell`, `edge_tolerance`,
+`point_on`, `point_from_to`, `clip`, `replicate`, `tile_boundary_crossings`,
+`graph_trim_loops`, `top_edge`, `tile_boundary_stretches`,
+`plateau_contours`, `riser_stretches`, `curves`); what was empty now draws.
+Added beside them, Swift's other items under their snake_case names:
+`hatch`, `stroke_count`, `vertical`, `subdivided_profile`, `with_minima`,
+`top_edge_height`, `wall_hatch_lines`, `wall_edges`, `plateau_hatching`,
+`runs_at_or_above`, `bisected`, `truncation_excess`, `truncation_edge`,
+`drawn_truncation_edge`, `band_riser_stretches`,
+`tile_boundary_riser_stretches`, `riser_hatch_lines`,
+`banded_truncation_edge`, `on_boundary_truncation_crossing`, `Rectangle`
+and `PlateauLoops`, and `HatchContext::with_perimeter` for Swift's
+defaulted initializer. Hatch.swift's `truncationCrossing(from:_:to:_:excess:)`
+is `truncation_crossing_between`, since `truncation_crossing` is
+Surface.swift's overload on a lifted segment.
+
+Two holes. `curves` keeps integral curves as the stub the IntegralCurves
+wave replaces at the merge. `graph_hatching` (a `.hatching` on the graph)
+is Swift's `Surface.graphHatching`, which lives in Isophotes.swift beside
+`Face.coordinateHatching`, `Face.graded` and `Solid.graded`, and reads a
+half-Lambert tone off each copy's outward normal: Phase 5's, refused with
+`PORT: phase 5`, drawing nothing. No landscape fixture or reference
+drawing has a graph hatching.
+
+## 2026-11-15 · Hatch.rs: differences from Swift, by construction
+
+- **Closures that recurse or share state.** Swift's nested functions
+  become small structs: `Station` (the top edge's tuple), `Emitter`
+  (`bandedTruncationEdge`'s `emit` with the curves, the pieces by band and
+  the ends on each boundary), `PartSubdivider` (its `subdivided`), and free
+  functions for the two `subdivide`s. `PlateauLoops` borrows its plateau
+  test for a lifetime instead of holding a `@Sendable` closure.
+- **Dictionaries keyed by points or doubles** (the plateau loops' ends, the
+  stretches' meeting points, the ends on a boundary) key by the bits with
+  -0 read as 0, as Swift's `==` and `Hashable` have them; a point with a
+  NaN is not a key, as Swift's dictionary never finds one. The stretches by
+  band are a `BTreeMap`, Swift's `keys.sorted()`.
+- **Sorting doubles** goes through `real::total_order` of `x + 0`, so -0 and
+  0 tie and keep their order as Swift's stable sort by `<` does; a NaN sorts
+  last where Swift's order is unspecified.
+- **Where Swift's `Int` traps.** `strokeCount` on a count that is not a
+  number or does not fit answers 2 (its answer for a spacing that is not
+  one); `onBoundaryTruncationCrossing` answers None for a vertex whose grid
+  index is not a number. No finite input reaches either.
+- **`Set([0, count - 1])`** in the uniform truncation edge is iterated as
+  `[0, last]`; each end is solved alone, so the order does not matter.
+
+Ported as Swift has them: `bandedTruncationEdge` takes `beyond` and never
+reads it (`_beyond`); the rings' `drawn` segments are gathered once per
+band before that band's rings are cut, while `endsDrawn` reads the pieces
+as they grow; a tile boundary's riser edges seek no minimum of |f| between
+stops, as their doc says.
+
+## 2026-11-15 · Hatch.rs tests, and how the landscapes on f are built
+
+Ported with Swift's tolerances, all passing. In `kurven-core/tests`:
+`hatch.rs`, main.swift's four `hatch:` suites (every committed stroke of
+`tests/fixtures/hatch` to 1e-9, the truncation edge segment for segment to
+1e-9, the plateaus' contours bit for bit, the whole gaps the walls meet)
+and Hatchings.swift's "one rule for a manifest's step and angles";
+`truncation.rs`, Truncation.swift's three suites ("the grid is the
+rasterizer's" needs no GPU: it is `Mesh::truncation_edge_mesh`);
+`restyle.rs`'s wall hatch, no longer ignored. In `kurven-landscape/tests`:
+`trim_loops.rs`, Faces.swift's eleven suites from "close a plateau that
+turns back a column short of a band boundary" to "a pole beside a band
+boundary, at every resolution" (492 poles), and "the trim loops and the
+truncation edge the same in whatever order the tiles are listed";
+`faces.rs`, "the graph's trim loops are its truncation edge, closed, and a
+contour on it is cut where it crosses them" over 63 landscapes;
+`tiling.rs`, "a landscape's faces tile its boundary", "walls: a wall on a
+band boundary reads its footprint's band" whole, and the two `depth:`
+suites; `chords.rs`, Chords.swift's truncated-graph suite for u, v and the
+height, its isophote and graph hatching families ignored as Phase 5's.
+
+Stand-ins. Swift builds every landscape on f with
+`NativeLandscape.build(_:refine: true)`, which is the IntegralCurves wave's;
+`common::build` makes what the suites read from it the way it does (the
+float32 grids from `sample` and `quantize`, `ContourRefiner::new(...)
+.refine_hook()`, and for Γ its walls on `rectangle(domain, wall_density)`).
+The contract bundles' faces are built from their occluder directly,
+which is what `Scene(bundle:preset:)`'s geometry does. "a bundle's occluder
+holds the risers" needs a bundle with the build's occluder: its manifest is
+a contract landscape's with the build's domain, truncation and occluder,
+all that `KurvenBundle::occluder` reads. No suite was skipped for needing
+Scene's fold curves or visibility.
+
+## 2026-11-15 · The suites' landscapes on f are built by NativeLandscape::build
+
+The stand-ins the earlier waves recorded are gone, and no result changed.
+`common::build` (the visibility and stress suites) is now
+`NativeLandscape::build(request, "native", refine)`. `support::build` (the
+face suites) calls it too, with `layers: []`. The surface and the refiner do
+not depend on the layers, and deriving the default layers through the
+refiner would cost a landscape on f most of its build for curves those
+suites never read. The plain routine's chord suite no longer uses a
+closed-form |f| with a do-nothing hook. It builds "z" and "z^2" over [-2, 2]²
+as Swift does (`layers: []`, the occluder's context) and has moved to
+`kurven-landscape/tests/chords.rs`, beside the other chord suite.
+`kurven-core/tests/chords.rs` keeps the cuts suite, which builds no
+landscape. Every suite that used a stand-in passes as before.
+
+## 2026-11-15 · TopEdge.swift and Facing.swift's strokes: every suite passes
+
+`kurven-landscape/tests/top_edge.rs` holds TopEdge.swift's fourteen suites
+and `walls.rs` holds Facing.swift's nine on the strokes Hatch.swift draws.
+All use Swift's tolerances and all pass. No suite turned up a porting bug.
+None of them bakes. Facing.swift's "walls: the hatching and edges of a cut
+face are tested by the wall" ends by baking at 400 and comparing the wall
+hatch stroke for stroke. Here it compares that layer of
+`Scene::visible_layers`, passed through `HiddenLine::pass`, which is a
+landscape's bake stroke, against `visible_wall_curves`. The walks up the
+line of sight (the walls', the risers' and `SolidWalk`) are brute force, as
+in Swift, and spread over threads per camera with `common::par_map`, each
+camera's tally independent. `walls.rs` runs in about 12 s. TopEdge's banded
+suite has a loop over the riser's chords that adds `min(...) * 0.0`, which
+does nothing. It is ported as a comment, and the sag is measured below as in
+Swift. `densely_hidden` and `per_unit` move from `stress.rs` to
+`common/mod.rs`, so the slope-line suite can read them.
+
+## 2026-11-15 · PolylineSet::total_length is planar; Swift's suites measure in space
+
+`PolylineSet::total_length` ignores z, because it is the length a drawing
+comparison compares. The TopEdge and Facing suites sum segment lengths in
+space (`simd_length` of 3D differences). The pit of 1/Γ traces 0.294 units of
+fold in the plane and more than 0.5 in space, so the first port, written
+with `total_length`, failed on the test and not on the engine. The suites
+now use a 3D length of their own. Later ports should check which length a
+Swift suite means before using `total_length`.
+
+## 2026-11-15 · The last Phase 3 suites, and what stays unported
+
+All of these pass at Swift's tolerances:
+
+- IntegralCurves.swift's "on f, seen exactly where the dense cast against f
+  says", with Swift's `SegmentIndex` ported into the test.
+- The contour layers' half of Faces.swift's "a contour or a fold carried to
+  the truncation edge across a band boundary ends on the drawn top", which
+  joins its folds' half in `visibility.rs`. It checks 2,000 to 32,000
+  vertices a layer on the towers and on Γ at 600.
+- Faces.swift's restriction suite over the landscapes on f
+  (`kurven-landscape/tests/faces.rs`). These are the towers in one tile and
+  in two, and the reviewer's tower. Γ and the pole a tenth outside the tile
+  boundary stand on the whole region, which Swift's own filter passes over,
+  so the earlier entry's "Γ" was never in this suite.
+- Hatchings.swift's three suites on the value types: Turing's pattern, a
+  tone or step refused at decode, and the round trip through fields
+  (`kurven-core/tests/hatch.rs`).
+
+Not ported, each for a reason:
+
+- Faces.swift's "a polyhedron face's trim loops are its loops, and a contour
+  cut at them is its hatching" reads `Solid.hatchLines`, which is Phase 5.
+  It is ignored in `kurven-core/tests/faces.rs`. Hatchings.swift's six
+  solid suites are Phase 5 as well. So are Chords.swift's isophote parts:
+  "on the graph of sin z" is isophotes throughout, and is ignored whole.
+- In main.swift, "bake: a perspective camera is refused" belongs with the
+  bake crate, and "preview: curves on a surface steep in view ..." needs the
+  GPU preview. "bake: a tiled bake draws what a single-pass bake draws" has
+  nothing to hold here. A landscape's strokes are `visible_layers`, which
+  reads no depth buffer, so tiling the buffer cannot change them. The stress
+  suite already holds `visible_layers` the same every time it is asked.
+- Depth.swift's "the Metal pass agrees with an exact ray cast" is the GPU
+  depth pass, Phase 7.
+
+## 2026-11-15 · Phase 3: the bake and the CLI's landscape commands
+
+Bake.swift is `kurven-bake/src/lib.rs`: `BakeOptions` (with `tile_count`),
+`BakeError` with Swift's two messages and a third case for what the port has
+not brought across, `Bake` and `bake`. No stroke of a landscape reads the
+depth buffer (`Scene::visible_layers` decides), so the port renders none: a
+`Bake` holds the strokes and the specs, and Swift's `depth`, `surface` and
+`tiles` are left out. The outline (traced from the buffer), a parametric
+scene (its coordinate image comes from the depth pass) and `bake --dump`
+(it writes the buffer's frame) are typed refusals, `PORT: phase 4`, until
+the CPU rasterizer arrives with `SurfaceImage`. The perspective and empty
+scene refusals are Swift's, checked in Swift's order. kurven-bake depends
+on kurven-core alone; kurven-surfaces is Phase 4's and joins when the
+parametric bake does. Swift's suites "a perspective camera is refused" and
+the strokes' half of "a tiled bake draws what a single-pass bake draws"
+are ported (`kurven-bake/tests/bake.rs`); the depth half waits for the
+rasterizer.
+
+Swift's perspective message is a multi-line literal whose source lines
+were joined by hand, so it holds four runs of thirteen spaces ("indexes by
+an             affine map"). The port writes it as it is, and a test pins
+it.
+
+`kurven-cli` gains `landscape`, `bake` and `references`, read with Swift's
+`Args` (`args.rs`) and refusing as Swift refuses (exit 1, `kurven-cli:
+<error>`). `landscape` is whole (presets, interval, bands, isophotes and
+hatching on the graph, slope lines, `--repeat`); its console summary names
+the layers and does not describe their sources (Swift's `sourceName` and its
+`%g`), and prints the truncation as Rust's Debug: stdout is not compared.
+`bake` and `loadDrawing` read landscape bundles; a surface's bundle (`PORT:
+phase 4`) and a polyhedron's (`PORT: phase 5`) are told apart by the
+manifest's top-level key as Swift tells them and refused with a message.
+Numbers on the command line are read by Rust's `f64` parser where Swift
+calls `Double(String)`, which also reads C's hexadecimal floats; no flag is
+given one.
+
+`references` bakes what is ported of Swift's list: the six gallery
+landscapes (make.py's manifest edit, one sampled cubic for the four corners,
+cn's quarter periods by the AGM, its words written with Swift's
+`description` so each `how` is byte for byte Swift's), the four native
+landscapes and the slope lines. sn, sn in relief, the torus, `periodic` and
+the frame's two gallery drawings (Phase 4), the seven solids and the
+composite (Phase 5) are left out of the list with a PORT comment. It takes
+`--only NAME,...`, which Swift's does not, so a single drawing can be
+measured.
+
+## 2026-11-15 · The landscape references against Swift's: all but one layer at rounding
+
+`kurven-cli references` bakes eleven of Swift's reference drawings (the six
+gallery landscapes, the four native landscapes, the slope lines), and
+check-web holds each to Swift's under its line of
+`crates/fixtures/references.txt`. Every drawing has Swift's layers in Swift's
+order. In every layer but one, the stroke counts are Swift's and the Hausdorff
+distance is 0 at the SVG's four decimals, but for one coordinate printed a
+digit apart in the four cubic corners' wall_hatch (1.000e-4) and the slope
+lines (1.117e-4, length 1.05e-7 relative). So every drawing is held to
+1.5e-4 page units, the floor two drawings equal to rounding can meet
+(1e-4 on each axis, 1.414e-4 on the diagonal), and to 1e-5 of each layer's
+length: a fifteenth of the provisional 1e-3 that compare defaults to.
+compare reads both drawings from their SVGs, which hold page coordinates
+in the plane, so its lengths are planar on both sides, as a drawing's are;
+it does not use `PolylineSet::total_length`.
+
+## 2026-11-15 · The phase lines Swift and the port draw differently
+
+The one layer that differs is ang_major (arg f at 0, ±π/2 and ±π) in six
+drawings, all at the ±π level, for two causes, each found by building
+Swift's KurvenLandscape in a scratch package with the refiner's stages
+printed and comparing them with the port's stage by stage (the grid's
+contours and the singular points agree; the difference starts inside the
+refiner).
+
+- **A saddle of f.** Where f' = 0 the level lines of arg f cross: 1/(z³ − 1)
+  at z = 0, where the real axis and the rays at ±60° meet, and cn(z, 0.64)
+  at 2K and 2iK'. The chord across the crossing is placed or not by
+  rounding (the residual over a vanishing gradient), and a piece that ends
+  there is followed on f along whichever branch it meets. In the cubic Swift
+  splits the grid's path at z = 0 (pieces ending at (−0.00055, 0.00095) and
+  starting at (0.00037, 0.00064)) and follows each half on over ground
+  another curve covers, so it draws the −60° ray and the ray to the pole at
+  e^{−2πi/3} twice, 6.1 world units of ink twice over; the port places the
+  chord and draws each stretch once. In cn the pieces through 2iK' pair up
+  the other way.
+- **The ±π cut along the window's edge.** Γ and cn are real on the real axis,
+  which is the window's lower edge in landscape-gamma and gallery-cn, so the
+  cut lies on the edge, where Im f is rounding noise, and the poles (Γ) and
+  zeros (cn) on it are found a hair to either side: Newton puts Γ's pole at
+  −2 at Im z = +1.3e-38 in Swift and −1.7e-40 here, inside the window in one
+  and outside in the other, so its rays along the edge are drawn in one and
+  not the other. In cn Swift keeps the stretch of the edge from K to 2K in
+  the up-going phase line and the port cuts it there, so Swift draws it
+  twice.
+
+Both are a decision rounding makes at a degenerate point, as a bisection
+falls one way or the other at a tangency, not a run the port fails to
+place: every stretch Swift draws once, the port draws once (the cubic's six
+rays, cn's edge from K to 3K), and the difference is a stretch drawn twice,
+a pairing at a crossing, or rays of a point on the edge. Measured (Swift
+against the port): gallery-cn 19 strokes each, Hausdorff 2.18e-4, length
+3.19e-2; the corners tm90s0.5 13 against 12, 1.55e-3, 6.87e-2; tm90sm0.5 12
+against 11, 1.11e-4, 4.98e-2; t90s0.5 11 against 10, 1.17e-4, 1.03e-1;
+t90sm0.5 11 against 10, 1.37e-3, 1.44e-1; landscape-gamma 8 against 7,
+1.13, 2.68e-1. The corners' 1.4e-3 is Swift's doubled stroke crossing the
+saddle by a chord, which the port's strokes turn at. So that layer is
+skipped in those six drawings (`compare --skip 1`, measured and reported but
+left out of the verdict); every other layer of each, and every layer of the
+other five, is held. It would take an analytic reference to say which side
+of the edge a pole exactly on it belongs to; Swift's drawing does not
+decide that, so nothing in the port was changed.
+
+## 2026-11-15 · Bake times, and the landscapes' goldens
+
+Measured on this machine (Apple Silicon, 18 cores), from the request to
+the strokes, each plate built, edited as make.py edits it and baked in
+memory (`kurven_golden::gallery::bake_plate`, the same strokes as the
+references): native release, single-threaded, gallery-gamma 12.4 s and
+gallery-cn 46.3 s; the wasm module (profile `web`) under Node 26, 36.2 s and
+65.0 s (`crates/kurven-wasm/bench.mjs`, through the export
+`bake_gallery_plate`). Swift's `landscape` then `bake` of the same two
+(without the hatching edit) takes 0.9 s and 3.5 s of wall clock on all
+cores, 11.2 s and 54.4 s of CPU: the port does the same work in one thread,
+as the rules ask, and a Worker per core is Phase 6's question. Through
+`references --only`: a cubic corner 0.6 to 0.8 s, the four native
+landscapes 0.02 to 0.15 s, the slope lines 0.06 s. The references step adds
+about a minute to check-web, nearly all of it cn and gamma.
+
+`kurven-golden` gains `landscape/`: the cubic at 64 and Γ by bands at 90,
+built on their function and baked in memory (so the wasm module bakes them
+too), each as its SVG and as each layer's stroke and vertex counts, length
+bits and an FNV-1a hash of its vertex bits, which hold native and wasm to
+the bit where the SVG holds them to four decimals. The two take 0.5 s
+natively. With the bake and the gallery linked in, the wasm module is
+1,567,692 bytes (from 704,201 after Hatch.swift merged).
+
+## 2026-11-16 · Phase 3 status: what is ported, what is left, every hole
+
+**Ported** (Swift file to Rust module). kurven-core: Grid, Mesh (`mesh.rs`),
+Surface with ContourRefine (`surface.rs`), ScalarField (`scalar_field.rs`),
+Face (`face.rs`), FaceContour (`face_contour.rs`), Hatching's drawing half
+for landscapes (`hatching.rs`), Hatch (`hatch.rs`), Parametric's types
+(`parametric.rs`), Scene whole for a landscape (`scene.rs`, with
+`GridTraversal` in `traversal.rs`), Occlusion (`occlusion.rs`, with
+SphereTracing whole but untested), Visibility's types (`visibility.rs`),
+HiddenLine whole (`hidden_line.rs`), SurfaceImage's type
+(`surface_image.rs`), ContourMemo (`contour_memo.rs`), Bundle
+(`bundle.rs`), IntegralCurves (`integral_curves.rs`), Pick (`pick.rs`).
+kurven-landscape: Refine (`refine.rs`), Catalog (`catalog.rs`), Landscape
+with `build` (`landscape.rs`). kurven-bake: Bake, strokes only. kurven-cli:
+`landscape`, `bake` (landscape bundles), `references` (the eleven landscape
+drawings), beside `fixtures` and `compare`.
+
+**The gate.** 271 tests pass and 9 are ignored, each for Phase 4, 5 or 7 (the
+suites agent's table, "The last Phase 3 suites, and what stays unported",
+names the Rust test of every Swift suite). The eleven landscape reference
+drawings are compared with Swift's by `crates/fixtures/references.txt`:
+every layer at 1.5e-4 page units and 1e-5 of length, but ang_major in six
+drawings, skipped with the reason in "The phase lines Swift and the port
+draw differently". In five of them Swift draws more ink over the same
+ground (a stretch twice); in landscape-gamma it is the port that draws
+more, 4.13 page units of rays along the window's lower edge (Im z = 0,
+where Γ's pole at −2 lands either side by 1e-38), 8 strokes in Swift
+against 7 here.
+
+**Left for Phase 4** (each a typed refusal marked `// PORT: phase 4`): the
+parametric bake and the depth buffer's outline (`kurven-bake/src/lib.rs`),
+`SurfaceBundle.read` and `bake --dump` (`kurven-cli/src/commands.rs`), the
+surface references (`kurven-cli/src/references.rs`), a parametric surface's
+layers in `Scene::visible` (`scene.rs`), the rasterizer
+(`surface_image.rs`), the parametric fold curves, grid normals,
+interpolated normals, linear curves, the two tori and the displacement
+(`parametric.rs`), and SurfaceVisibility's footprint, front-most test,
+sheet, `is_visible`, `onto_crease`, `fold_crossing` and `clip_on`
+(`visibility.rs`). Torus.swift, Cover.swift, LinesOfCurvature.swift and
+KurvenDynamics are not started.
+
+**Left for Phase 5** (`// PORT: phase 5`): hatching a solid's faces
+(`hatching.rs`, five places), Solid.Occlusion (`occlusion.rs`), a solid's
+layers in `Scene::visible` (`scene.rs`), `PolyhedronBundle.read`
+(`kurven-cli/src/commands.rs`), the solid and composite references
+(`kurven-cli/src/references.rs`), isophotes (`face_contour.rs`), and
+hatching on the graph (`hatch.rs` and `scene.rs`). The last is a landscape
+feature: Swift keeps `Surface.graphHatching` in Isophotes.swift with
+`Face.coordinateHatching`, so it waits for that file. No landscape
+reference drawing uses it, and a bundle that asks for it is refused when
+it is drawn.
+
+No `PORT: phase 3` stub is left in the code; `hatch_stub.rs` is gone.
+
+## 2026-11-16 · The CLI refuses a value option given bare, where Swift runs on its default
+
+Swift's `Args` cannot tell a switch from an option whose value was left
+off: `--preset` at the end of a line, or before another option, lands in
+`switches`, which no reader of a value looks at, and `only` accepts it, so
+`bake B --preset` bakes the first preset and `landscape z --truncation -o
+x.kurven` samples untruncated, saying nothing. A command line that ignores
+what was typed is not behaviour worth porting, so the port differs on
+purpose: `Args::SWITCHES` lists the eight switches Swift reads with
+`switchedOn` (conformal, draft, editing, no-refine, no-truncation, preview,
+soft, visibility), and `only` refuses any other option given bare, "--preset
+wants a value", as `switched_on` refuses a switch given a value. `bake
+--outline` and `--dump` are refused as Phase 4 in either form, before
+`only`: bare, they used to parse as switches and bake on, exit 0.
+
+## 2026-11-16 · A bundle draws its described layers when first asked
+
+Swift's `KurvenBundle` derives every described layer when it is made:
+`read` derives them on the grids, then `loadScene` attaches the refiner and
+`refined` derives them all again, the first set thrown away; `landscape`
+built a bundle with its refiner, derived every layer through it, and wrote
+the manifest and two grids. The port's `KurvenBundle::layers()` derives on
+first call, once (a `OnceLock`), from the bundle's own surface, occluder
+and refiner; `layers` is no longer a public field. What each layer is does
+not change: a dumped layer is the one read, `refined` and `restyled` carry
+a dumped layer by name as Swift's `redrawn` finds it (by spec, when a
+restyle keeps it), a restyle keeps a described layer already drawn whose
+spec and inputs did not move, and every other is drawn as Swift draws it.
+The goldens and the eleven references are unchanged, and a test counts
+the refiner's calls: none until the layers are asked for, then once.
+
+## 2026-11-16 · `landscape` builds no refiner, and refuses its flags before it samples
+
+Swift's `landscape` builds the bundle with its refiner and writes it, and
+`KurvenBundle.write` writes the manifest and two grids, in which the
+refiner changes nothing. The port builds without one (and draws no layer,
+above), so the bundle written is byte for byte the same, which five
+command lines checked against the previous build (the gamma preset, cn at
+600, gamma banded, the cubic with slope lines, isophotes and hatching, and
+exp(1/z) with a seed spacing); gamma's preset took 0.13 s and now 0.01 s.
+`--repeat` builds the same way, so it no longer times a refiner. Swift also
+reads `--isophotes`, `--hatching` and the seed spacing after the build, so
+a mistyped flag cost a whole build to report; the port reads them first.
+Only the hatching's default spacing reads the bundle (the plateaus'), so
+the shading layers are made again with it once built; the seed spacing is
+held to the shape `grid_shape` gives the build. Where a flag and the
+expression are both wrong, the port names the flag and Swift the
+expression.

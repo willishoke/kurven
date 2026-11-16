@@ -1,0 +1,40 @@
+# The reference drawings scripts/check-web.sh holds the port's to: each
+# baked by `kurven-cli references`, then held to crates/fixtures/swift/<name>.svg
+# by `kurven-cli compare` under these tolerances. One drawing a line:
+#
+#   name  distance  length  skip
+#
+# distance is the Hausdorff distance per layer in page units, length the
+# relative difference of each layer's total length, skip the layers (by their
+# place in the SVG) left out of the verdict, or -. The check fails on a
+# drawing the port bakes that has no line here.
+#
+# Where the numbers come from (measured 2026-11-15, the port after Hatch.swift
+# merged, against the Swift bakes of 864b81b): every compared layer of every
+# drawing is at 0, but for one coordinate printed one digit apart in the four
+# cubic corners' wall_hatch (1.000e-4) and slope-lines' slope_lines (1.117e-4,
+# length 1.05e-7 relative). SVG.swift writes four decimals, so two drawings
+# that agree to rounding can print a point 1e-4 apart on each axis, 1.414e-4
+# on the diagonal: 1.5e-4 is that floor, and no drawing is held looser.
+# Lengths are held to 1e-5, a hundred times the worst measured.
+#
+# Skipped: layer 1, ang_major, of gallery-cn, the four cubic corners and
+# landscape-gamma (crates/FINDINGS.md, "The phase lines Swift and the port
+# draw differently"): at a saddle of f, where phase lines cross, and on the
+# ±π cut where it lies along the window's edge, rounding decides which way a
+# line continues and whether a stretch is drawn twice. Measured there:
+# gallery-cn 2.18e-4 and 3.19e-2 of length; the corners tm90s0.5 1.55e-3 and
+# 6.87e-2, tm90sm0.5 1.11e-4 and 4.98e-2, t90s0.5 1.17e-4 and 1.03e-1,
+# t90sm0.5 1.37e-3 and 1.44e-1 (one stroke fewer in each corner);
+# landscape-gamma 1.13 and 2.68e-1 (one stroke fewer).
+gallery-gamma           1.5e-4  1e-5  -
+gallery-cn              1.5e-4  1e-5  1
+gallery-cubic-tm90s0.5  1.5e-4  1e-5  1
+gallery-cubic-tm90sm0.5 1.5e-4  1e-5  1
+gallery-cubic-t90s0.5   1.5e-4  1e-5  1
+gallery-cubic-t90sm0.5  1.5e-4  1e-5  1
+landscape-gamma         1.5e-4  1e-5  1
+landscape-cubic         1.5e-4  1e-5  -
+landscape-typed         1.5e-4  1e-5  -
+landscape-tower         1.5e-4  1e-5  -
+slope-lines             1.5e-4  1e-5  -
