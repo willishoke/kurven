@@ -113,7 +113,7 @@ pub fn parse(bytes: &[u8]) -> Result<NpyArray, NpyError> {
         return Err(NpyError::BadMagic);
     }
     let (major, minor) = (bytes[6], bytes[7]);
-    let (header_length, header_start) = match (major, minor) {
+    let (header_length, header_start): (usize, usize) = match (major, minor) {
         (1, 0) => (usize::from(bytes[8]) | usize::from(bytes[9]) << 8, 10),
         (2, 0) | (3, 0) => {
             if bytes.len() < 12 {
@@ -124,10 +124,14 @@ pub fn parse(bytes: &[u8]) -> Result<NpyArray, NpyError> {
         }
         _ => return Err(NpyError::UnsupportedVersion { major, minor }),
     };
-    if bytes.len() < header_start + header_length {
+    // On wasm32 a usize is 32 bits, and a v2 header's length alone can pass it.
+    let start = header_start
+        .checked_add(header_length)
+        .ok_or_else(|| NpyError::MalformedHeader(format!("a header of {header_length} bytes")))?;
+    if bytes.len() < start {
         return Err(NpyError::TooShort("its declared header".into()));
     }
-    let header = String::from_utf8_lossy(&bytes[header_start..header_start + header_length]);
+    let header = String::from_utf8_lossy(&bytes[header_start..start]);
 
     let descr = dict_value(&header, "descr")?;
     let fortran = dict_value(&header, "fortran_order")?;
@@ -144,8 +148,10 @@ pub fn parse(bytes: &[u8]) -> Result<NpyArray, NpyError> {
     })?;
     let shape = parse_shape(&shape_text)?;
 
-    let start = header_start + header_length;
-    let expected = shape.iter().product::<usize>() * dtype.item_size();
+    // An empty array is empty whatever its other extents, as numpy has it.
+    let expected =
+        if shape.contains(&0) { Some(0) } else { shape.iter().try_fold(dtype.item_size(), |n, &d| n.checked_mul(d)) }
+            .ok_or_else(|| NpyError::MalformedHeader(format!("a shape {shape:?} of more bytes than a usize counts")))?;
     let found = bytes.len() - start;
     if found < expected {
         return Err(NpyError::Truncated { expected_bytes: expected, found_bytes: found });
@@ -194,8 +200,9 @@ fn parse_shape(text: &str) -> Result<Vec<usize>, NpyError> {
 }
 
 impl NpyArray {
+    /// How many elements: no overflow, since `parse` counted their bytes.
     pub fn count(&self) -> usize {
-        self.shape.iter().product()
+        if self.shape.contains(&0) { 0 } else { self.shape.iter().product() }
     }
 
     fn wrong(&self, expected: &[NpyDType]) -> NpyError {
@@ -273,6 +280,28 @@ mod tests {
         assert!(matches!(read(fixtures::shared("npy/reject_dtype.npy")), Err(NpyError::UnsupportedDType { .. })));
         assert_eq!(parse(b"not an npy file"), Err(NpyError::BadMagic));
         assert!(matches!(parse(b"short"), Err(NpyError::TooShort(_))));
+    }
+
+    /// A shape whose byte count overflows is malformed, not a wrapped size
+    /// that happens to fit the file.
+    #[test]
+    fn a_shape_too_large_to_count_is_malformed() {
+        fn file(shape: &str) -> Vec<u8> {
+            let header = format!("{{'descr': '<f4', 'fortran_order': False, 'shape': {shape}, }}\n");
+            let mut bytes = vec![0x93, b'N', b'U', b'M', b'P', b'Y', 1, 0];
+            bytes.extend((header.len() as u16).to_le_bytes());
+            bytes.extend(header.as_bytes());
+            bytes.extend([0u8; 64]);
+            bytes
+        }
+        // 2⁶² · 4 elements of 4 bytes is 2⁶⁶ bytes; wrapped, it would be 0.
+        assert!(matches!(parse(&file("(4611686018427387904, 4)")), Err(NpyError::MalformedHeader(_))));
+        assert!(matches!(parse(&file("(4611686018427387904, 0)")), Ok(a) if a.count() == 0));
+        assert!(matches!(parse(&file("(4611686018427387904, 4611686018427387904, 0)")), Ok(a) if a.count() == 0));
+        assert!(matches!(parse(&file("(4, 4)")), Ok(a) if a.floats().unwrap().len() == 16));
+        let mut v2 = vec![0x93, b'N', b'U', b'M', b'P', b'Y', 2, 0];
+        v2.extend(u32::MAX.to_le_bytes());
+        assert!(matches!(parse(&v2), Err(NpyError::TooShort(_) | NpyError::MalformedHeader(_))));
     }
 
     /// A golden set's arrays, written by Swift: the camera's frozen points.
