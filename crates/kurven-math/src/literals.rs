@@ -8,7 +8,7 @@
 //! and the expression stays the only state there is. What the text says is
 //! what the landscape is, after a drag as before it.
 
-use crate::expression::{Expression, Token, TokenKind, format_number_plain, tokenize};
+use crate::expression::{Expression, Token, TokenKind, characters, format_number_plain, tokenize};
 use crate::language::Language;
 
 #[derive(Clone, PartialEq, Debug)]
@@ -85,7 +85,7 @@ impl Expression {
     /// tokenizer refuses has no literals.
     pub fn literals(text: &str) -> Vec<Literal> {
         let Ok(tokens) = tokenize(text) else { return Vec::new() };
-        let chars: Vec<char> = text.chars().collect();
+        let chars = characters(text);
         let mut out = Vec::new();
         for (k, t) in tokens.iter().enumerate() {
             if t.kind != TokenKind::Number {
@@ -114,7 +114,7 @@ impl Expression {
                 position,
                 length: end - position,
                 value,
-                text: chars[position..end].iter().collect(),
+                text: chars[position..end].concat(),
                 signable,
             });
         }
@@ -130,7 +130,7 @@ impl Expression {
     /// expression it moves through. The literal is then found again, sign
     /// and all, at the same index.
     pub fn replacing(literal: &Literal, value: f64, significant: Option<usize>, text: &str) -> String {
-        let mut chars: Vec<char> = text.chars().collect();
+        let mut chars = characters(text);
         if literal.end() > chars.len() {
             return text.to_string();
         }
@@ -138,8 +138,9 @@ impl Expression {
         if value < 0.0 && !literal.signable {
             replacement = format!("({replacement})");
         }
-        chars.splice(literal.position..literal.end(), replacement.chars());
-        chars.into_iter().collect()
+        let replacement = characters(&replacement);
+        chars.splice(literal.position..literal.end(), replacement);
+        chars.concat()
     }
 
     /// A number as the language writes it: an integer without a point, and
@@ -285,6 +286,19 @@ mod tests {
         assert_eq!(moved("2exp(z)", 0, 2.5), "2.5exp(z)");
         let f = Expression::compile(&moved("z - 0.5", 0, -0.3)).unwrap();
         assert!((f.call(Complex::real(1.0)) - Complex::real(1.3)).magnitude() < 1e-15);
+    }
+
+    /// Positions count a CR LF pair once, as Swift does, and a rewrite keeps
+    /// the pair as it was written.
+    #[test]
+    fn a_literal_across_a_line_break_keeps_its_place_and_the_break() {
+        let text = "2^-\r\n0.5 + z";
+        let l = &Expression::literals(text)[1];
+        assert_eq!((l.position, l.length, l.value, l.text.as_str()), (2, 5, -0.5, "-\r\n0.5"));
+        assert_eq!(Expression::replacing(l, 0.25, None, text), "2^0.25 + z");
+        let m = &Expression::literals("z\r\n+ 3")[0];
+        assert_eq!((m.position, m.text.as_str()), (4, "3"));
+        assert_eq!(Expression::replacing(m, 4.0, None, "z\r\n+ 3"), "z\r\n+ 4");
     }
 
     #[test]

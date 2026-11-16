@@ -18,9 +18,13 @@
 //!             | "(" expression ")"
 //! ```
 //!
-//! Positions and lengths count Unicode scalar values (Rust's `char`), where
-//! Swift counts grapheme clusters (`Character`); the two differ only on text
-//! with combining marks, which the language refuses either way
+//! Positions and lengths count characters as Swift does for every source
+//! the language accepts: Swift counts grapheme clusters (`Character`), and
+//! this counts Unicode scalar values (Rust's `char`) but for a CR LF pair,
+//! one `Character` in Swift and one position here (`characters`). Other
+//! clusters of more than one scalar -- a letter with a combining mark, an
+//! emoji sequence -- still count as several here and one in Swift; the
+//! language refuses them either way, at a different place
 //! (`crates/FINDINGS.md`).
 
 use core::fmt;
@@ -107,8 +111,24 @@ fn is_digit(c: char) -> bool {
     c.is_ascii_digit()
 }
 
+/// The source as the positions count it: each Unicode scalar value its own
+/// slice, but a CR LF pair one, as Swift's `Array(text)` makes it one
+/// `Character`.
+pub(crate) fn characters(text: &str) -> Vec<&str> {
+    let mut out = Vec::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        let width = if rest.starts_with("\r\n") { 2 } else { c.len_utf8() };
+        out.push(&rest[..width]);
+        rest = &rest[width..];
+    }
+    out
+}
+
 pub(crate) fn tokenize(text: &str) -> Result<Vec<Token>, ExpressionError> {
-    let chars: Vec<char> = text.chars().collect();
+    // One char per position; a CR LF pair is its CR, which is whitespace like
+    // the pair. No token holds whitespace, so a token's text is its chars.
+    let chars: Vec<char> = characters(text).iter().map(|u| u.chars().next().expect("a character")).collect();
     let mut tokens = Vec::new();
     let mut i = 0;
     let n = chars.len();
@@ -564,6 +584,15 @@ mod tests {
         let z = Complex::new(1.0, 0.5);
         assert_eq!(node.compiled()(z), node.evaluate(z));
         assert_eq!(Compiled::new(node.clone()).call(z), node.evaluate(z));
+    }
+
+    /// Swift reads CR LF as one `Character`: `z\r\n+ @` is refused at
+    /// character 4 there, as `Expression.parse` built with swiftc says.
+    #[test]
+    fn a_cr_lf_pair_is_one_position() {
+        let e = Expression::parse("z\r\n+ @").unwrap_err();
+        assert_eq!((e.position, e.length), (Some(4), 1));
+        assert_eq!(characters("a\r\n\rb\n"), ["a", "\r\n", "\r", "b", "\n"]);
     }
 
     #[test]
