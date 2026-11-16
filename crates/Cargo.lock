@@ -19,6 +19,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kurven-golden"
+version = "0.1.0"
+dependencies = [
+ "kurven-math",
+]
+
+[[package]]
 name = "kurven-landscape"
 version = "0.1.0"
 dependencies = [
@@ -47,6 +54,13 @@ version = "0.1.0"
 dependencies = [
  "kurven-core",
  "kurven-math",
+]
+
+[[package]]
+name = "kurven-wasm"
+version = "0.1.0"
+dependencies = [
+ "kurven-golden",
 ]
 
 [[package]]

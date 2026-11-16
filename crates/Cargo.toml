@@ -16,6 +16,8 @@ members = [
     "kurven-surfaces",
     "kurven-bake",
     "kurven-session",
+    "kurven-golden",
+    "kurven-wasm",
 ]
 
 [workspace.package]
@@ -31,6 +33,7 @@ kurven-landscape = { path = "kurven-landscape" }
 kurven-surfaces = { path = "kurven-surfaces" }
 kurven-bake = { path = "kurven-bake" }
 kurven-session = { path = "kurven-session" }
+kurven-golden = { path = "kurven-golden" }
 libm = "0.2.16"
 
 # The std spellings of the transcendental functions are refused everywhere

@@ -1,0 +1,17 @@
+[package]
+name = "kurven-wasm"
+description = "The engine as the page's WebAssembly module"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+kurven-golden.workspace = true
+
+[lints]
+workspace = true
