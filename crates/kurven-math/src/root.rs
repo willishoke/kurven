@@ -1,5 +1,6 @@
 //! Zeros of a real function of one variable. The port of `Root.swift`.
 
+use crate::real;
 use crate::swift;
 
 pub enum Root {}
@@ -42,13 +43,13 @@ impl Root {
         if fcur == 0.0 {
             return Some(xcur);
         }
-        if fpre.is_sign_negative() == fcur.is_sign_negative() {
+        if real::sign_minus(fpre) == real::sign_minus(fcur) {
             return None;
         }
         // The other end of the bracket, and the last two step lengths.
         let (mut xblk, mut fblk, mut spre, mut scur) = (0.0, 0.0, 0.0, 0.0);
         for _ in 0..max_iterations {
-            if fpre != 0.0 && fcur != 0.0 && fpre.is_sign_negative() != fcur.is_sign_negative() {
+            if fpre != 0.0 && fcur != 0.0 && real::sign_minus(fpre) != real::sign_minus(fcur) {
                 xblk = xpre;
                 fblk = fpre;
                 spre = xcur - xpre;

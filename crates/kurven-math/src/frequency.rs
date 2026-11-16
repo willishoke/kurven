@@ -149,11 +149,11 @@ impl Frequency {
             (1..(size / 2)).filter(|&k| magnitude[k] > magnitude[k - 1] && magnitude[k] >= magnitude[k + 1]).collect();
         // Strongest first. Swift's sort is stable (since Swift 5; checked
         // with swiftc on this machine) and so is Rust's, so equal magnitudes
-        // keep their order in both. `total_cmp` orders as Swift's `>` does on
+        // keep their order in both. `real::total_order` orders as Swift's `>` does on
         // every magnitude but NaN, which only a NaN sample makes; there Rust's
-        // sort needs a total order, which `>` is not. The same holds for the
+        // sort needs a total order, which `>` is not, and a NaN of either sign is the same NaN. The same holds for the
         // lines' final sort below.
-        maxima.sort_by(|&a, &b| magnitude[b].total_cmp(&magnitude[a]));
+        maxima.sort_by(|&a, &b| real::total_order(magnitude[b], magnitude[a]));
 
         let resolution = 2.0 * PI / (dt * n as f64);
         let mut found: Vec<Line> = Vec::new();
@@ -191,7 +191,7 @@ impl Frequency {
                 break;
             }
         }
-        found.sort_by(|a, b| b.amplitude.total_cmp(&a.amplitude));
+        found.sort_by(|a, b| real::total_order(b.amplitude, a.amplitude));
         found
     }
 

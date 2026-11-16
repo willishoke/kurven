@@ -5,6 +5,7 @@ use core::f64::consts::PI;
 
 use crate::complex::Complex;
 use crate::gamma::Gamma;
+use crate::real;
 
 pub enum ExpInt {}
 
@@ -62,7 +63,7 @@ impl ExpInt {
         }
         let mut result = Complex::exp(-z) / f;
         if z.re <= 0.0 && z.im == 0.0 {
-            result -= Complex::new(0.0, if !z.im.is_sign_negative() { PI } else { -PI });
+            result -= Complex::new(0.0, if !real::sign_minus(z.im) { PI } else { -PI });
         }
         result
     }

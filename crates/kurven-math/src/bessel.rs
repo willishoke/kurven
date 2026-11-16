@@ -252,7 +252,7 @@ impl Bessel {
         if z.re < 0.0 {
             // z = z' e^{±iπ}: DLMF 10.11.
             let zr = -z;
-            let s: f64 = if z.im.is_sign_negative() { -1.0 } else { 1.0 };
+            let s: f64 = if real::sign_minus(z.im) { -1.0 } else { 1.0 };
             let c = Bessel::cylinder(nu, zr);
             let co = Trig::cos_pi(nu);
             let rot = Complex::exp(Complex::new(0.0, s * nu * PI));
@@ -265,7 +265,7 @@ impl Bessel {
             };
             return Cylinder { j, y, h1, h2 };
         }
-        if z.im.is_sign_negative() {
+        if real::sign_minus(z.im) {
             let c = Bessel::cylinder_first_quadrant(nu, z.conjugate());
             return Cylinder { j: c.j.conjugate(), y: c.y.conjugate(), h1: c.h2.conjugate(), h2: c.h1.conjugate() };
         }
@@ -283,12 +283,12 @@ impl Bessel {
             return Bessel::cylinder(nu, z).j;
         }
         if z.re < 0.0 {
-            let s: f64 = if z.im.is_sign_negative() { -1.0 } else { 1.0 };
+            let s: f64 = if real::sign_minus(z.im) { -1.0 } else { 1.0 };
             let j = Bessel::j(nu, -z);
             let rot = Complex::exp(Complex::new(0.0, s * nu * PI));
             return rot * j;
         }
-        if z.im.is_sign_negative() {
+        if real::sign_minus(z.im) {
             return Bessel::j_first_quadrant(nu, z.conjugate()).conjugate();
         }
         Bessel::j_first_quadrant(nu, z)
@@ -488,7 +488,7 @@ impl Bessel {
         if z.re < 0.0 {
             // I(z' e^{±iπ}) = e^{±iνπ} I(z') ; K(z' e^{±iπ}) = e^{∓iνπ} K(z') ∓ iπ I(z').
             let zr = -z;
-            let s: f64 = if z.im.is_sign_negative() { -1.0 } else { 1.0 };
+            let s: f64 = if real::sign_minus(z.im) { -1.0 } else { 1.0 };
             let m = Bessel::modified(nu, zr);
             let rot = Complex::exp(Complex::new(0.0, s * nu * PI));
             return Modified { i: rot * m.i, k: m.k / rot - Complex::new(0.0, s * PI) * m.i };

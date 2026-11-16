@@ -230,7 +230,7 @@ impl Language {
                 scored.push((c, ratio));
             }
         }
-        scored.sort_by(|a, b| if a.1 != b.1 { b.1.total_cmp(&a.1) } else { a.0.cmp(b.0) });
+        scored.sort_by(|a, b| if a.1 != b.1 { crate::real::total_order(b.1, a.1) } else { a.0.cmp(b.0) });
         let close: Vec<&str> = scored.iter().take(3).map(|s| s.0).collect();
         if !close.is_empty() {
             return format!("there is no '{text}'; did you mean {}?", close.join(" or "));

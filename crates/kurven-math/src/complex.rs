@@ -220,7 +220,7 @@ impl Complex {
 /// `(re+imj)`, each part as Swift's `Double.description` writes it.
 impl fmt::Display for Complex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let sign = if self.im.is_sign_negative() { "-" } else { "+" };
+        let sign = if real::sign_minus(self.im) { "-" } else { "+" };
         write!(f, "({}{}{}j)", description(self.re), sign, description(self.im.abs()))
     }
 }
@@ -410,6 +410,25 @@ mod tests {
         assert_eq!(Complex::pow(Complex::ZERO, Complex::real(2.0)), Complex::ZERO);
         assert_eq!(Complex::pow(Complex::ZERO, Complex::real(-1.0)).re, f64::INFINITY);
         assert_eq!(Complex::pow(z, Complex::ZERO), Complex::ONE);
+    }
+
+    /// asin(inf + 0i) squares inf and multiplies by 0, a NaN the hardware
+    /// makes: positive on ARM, negative on x86. `sqrt` then copies its sign
+    /// onto an infinity, and on x86 the -inf it gave turned to NaN
+    /// downstream (CI on Linux). Read as plus, the NaN gives the values
+    /// Swift gives on ARM, on every platform.
+    #[test]
+    fn a_nans_sign_decides_nothing() {
+        for nan in [f64::NAN, -f64::NAN] {
+            let r = Complex::sqrt(Complex::new(f64::NEG_INFINITY, nan));
+            assert!(r.re.is_nan() && r.im == f64::INFINITY, "sqrt(-inf, {:x}): {r}", nan.to_bits());
+            assert_eq!(format!("{}", Complex::new(1.0, nan)), "(1.0+nanj)");
+        }
+        let inf = Complex::real(f64::INFINITY);
+        let asin = Complex::asin(inf);
+        assert!(asin.re.is_nan() && asin.im == f64::NEG_INFINITY, "asin(inf): {asin}");
+        let acos = Complex::acos(inf);
+        assert!(acos.re.is_nan() && acos.im == f64::INFINITY, "acos(inf): {acos}");
     }
 
     #[test]

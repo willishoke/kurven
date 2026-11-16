@@ -101,7 +101,7 @@ impl Faddeeva {
     }
 
     pub fn w(z: Complex) -> Complex {
-        if !z.im.is_sign_negative() {
+        if !real::sign_minus(z.im) {
             return Faddeeva::upper(z);
         }
         2.0 * Complex::exp(-(z * z)) - Faddeeva::upper(-z)
@@ -109,7 +109,7 @@ impl Faddeeva {
 
     /// erfc(z) = e^{-z²} w(iz) on Re z >= 0, and 2 - erfc(-z) beyond.
     pub fn erfc(z: Complex) -> Complex {
-        if !z.re.is_sign_negative() {
+        if !real::sign_minus(z.re) {
             return Complex::exp(-(z * z)) * Faddeeva::upper(z.times_i());
         }
         2.0 - Faddeeva::erfc(-z)

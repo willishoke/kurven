@@ -23,7 +23,7 @@ pub fn description(v: f64) -> String {
         return if v < 0.0 { "-inf".to_string() } else { "inf".to_string() };
     }
     if v == 0.0 {
-        return if v.is_sign_negative() { "-0.0".to_string() } else { "0.0".to_string() };
+        return if crate::real::sign_minus(v) { "-0.0".to_string() } else { "0.0".to_string() };
     }
     let sign = if v < 0.0 { "-" } else { "" };
     let (digits, exponent) = shortest_digits(v.abs());

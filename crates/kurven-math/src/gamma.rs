@@ -101,7 +101,7 @@ impl Gamma {
         let mut w = Complex::new(z.re + 1.0, z.im);
         while w.re <= SMALL_X {
             shiftprod *= w;
-            let nsb = shiftprod.im.is_sign_negative();
+            let nsb = real::sign_minus(shiftprod.im);
             if nsb && !sb {
                 signflips += 1;
             }
@@ -134,7 +134,7 @@ impl Gamma {
             let tmp = real::copysign(2.0 * PI, z.im) * (0.5 * z.re + 0.25).floor();
             return Complex::new(*LOG_PI, tmp) - Complex::log(Trig::sin_pi_complex(z)) - Gamma::log_gamma(1.0 - z);
         }
-        if !z.im.is_sign_negative() {
+        if !real::sign_minus(z.im) {
             return Gamma::recurrence(z);
         }
         Gamma::recurrence(z.conjugate()).conjugate()
