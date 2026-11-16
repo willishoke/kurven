@@ -84,13 +84,21 @@ step "no std transcendental or fused multiply-add outside kurven_math::real" lib
 step "native tests" workspace test --release --workspace
 
 # Regenerated in place from scratch, so a file the writer no longer writes
-# shows as deleted, and compared with the commit; untracked files count.
+# shows as deleted, and compared with the commit, not the index, so a staged
+# change is a change; a file the commit does not hold, staged or not, is one
+# too. Nothing is written to the index.
 golden() {
+    local new failed=0
     workspace build --release -p kurven-cli || return 1
     rm -rf "$CRATES/fixtures/rust"
     "$CLI" fixtures "$CRATES/fixtures/rust" >/dev/null || return 1
-    git -C "$ROOT" add --intent-to-add crates/fixtures/rust
-    git -C "$ROOT" diff --exit-code --stat -- crates/fixtures/rust
+    git -C "$ROOT" diff --exit-code --stat HEAD -- crates/fixtures/rust || failed=1
+    new=$(git -C "$ROOT" ls-files --others --exclude-standard -- crates/fixtures/rust)
+    if [ -n "$new" ]; then
+        printf 'not in the commit: %s\n' $new
+        failed=1
+    fi
+    return $failed
 }
 step "the committed golden fixtures are what kurven-cli fixtures writes" golden
 
