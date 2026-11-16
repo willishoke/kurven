@@ -1,5 +1,5 @@
 //! The visibility suites of `Sources/kurven-test` that need the scene and
-//! the refiner: the landscape part of Occlusion.swift's suite, Facing.swift's
+//! the refiner: the landscape and polyhedron parts of Occlusion.swift's suite, Facing.swift's
 //! facing and fold suites and its navigation check, and Faces.swift's
 //! tile-boundary visibility and fold suites, and its contours and folds
 //! carried across a band boundary. Swift's tolerances throughout. (Facing.swift's
@@ -10,7 +10,9 @@
 
 mod common;
 
-use common::{build, drawn_triangles, first_hit, random_heightfield, stress_cameras};
+use std::collections::BTreeSet;
+
+use common::{build, drawn_triangles, first_hit, piece_meshes, random_heightfield, stress_cameras};
 use kurven_core::camera::Camera;
 use kurven_core::depth::{DepthFrame, DepthImage};
 use kurven_core::grid::Grid2D;
@@ -25,6 +27,7 @@ use kurven_core::occlusion::OcclusionTest;
 use kurven_core::polyline::PolylineSet;
 use kurven_core::scene::{Heightfield, PreviewMode, Scene};
 use kurven_core::simd::{Vec2, Vec3};
+use kurven_core::solid::{Platonic, Solid};
 use kurven_core::spaces::{Angle, DomainSpace, P2, P3, Transform, ViewSpace, WorldSpace};
 use kurven_core::splitmix::SplitMix;
 use kurven_core::surface::{ContourRefine, Surface};
@@ -83,11 +86,102 @@ fn a_landscapes_grid_traversal_is_the_cast_against_its_drawn_triangles() {
     );
 }
 
-/// The polyhedra of the occlusion suite: the cube, the frame and Császár's
-/// torus, each held to a cast against its pieces.
+/// The polyhedron part of "occlusion: each kind of solid's test is a cast of
+/// the line of sight": the cube, the frame and Császár's torus, each held to
+/// a cast against its pieces, at points on every piece, which its own face's
+/// pieces stand in front of by nothing, and at points anywhere in its box.
 #[test]
-#[ignore = "PORT: phase 5 -- Solid.Occlusion's point form (Solid::occlusion refuses until then), and the named solids (Solid.platonic, Solid.frame, Solid.csaszar)"]
-fn the_point_form_of_occlusion_by_a_polyhedrons_pieces_is_the_cast() {}
+fn the_point_form_of_occlusion_by_a_polyhedrons_pieces_is_the_cast() {
+    for (name, s) in [
+        ("cube", Solid::platonic(Platonic::Cube, 1.0)),
+        ("frame", Solid::frame(2.0, 1.0, 0.6)),
+        ("Császár", Solid::csaszar()),
+    ] {
+        let meshes = piece_meshes(&s);
+        let scale = s.vertices.iter().map(|p| p.v.length()).reduce(swift::max).expect("a vertex");
+        let lo = s.vertices.iter().fold(Vec3::splat(f64::INFINITY), |a, p| a.min(p.v));
+        let hi = s.vertices.iter().fold(Vec3::splat(f64::NEG_INFINITY), |a, p| a.max(p.v));
+        let mut rng = SplitMix::new(0x0CC1);
+        // (point, the pieces of the face it lies on, two directions in that face)
+        let mut points: Vec<(Vec3, BTreeSet<usize>, Vec<Vec3>)> = Vec::new();
+        for f in 0..s.pieces.len() {
+            let piece: Vec<Vec3> = s.pieces[f].iter().map(|&k| s.vertices[k].v).collect();
+            let face = s.face_index_of_piece(f);
+            let own: BTreeSet<usize> = (0..s.pieces.len()).filter(|&g| s.face_index_of_piece(g) == face).collect();
+            let u = (piece[1] - piece[0]).normalized();
+            let v = s.normals[f].cross(u).normalized();
+            for _ in 0..12 {
+                let k = 1 + rng.next(0.0, (piece.len() - 2) as f64 - 1e-9) as usize;
+                let (mut a, mut b) = (rng.next(0.0, 1.0), rng.next(0.0, 1.0));
+                if a + b > 1.0 {
+                    (a, b) = (1.0 - a, 1.0 - b);
+                }
+                points.push((
+                    piece[0] + a * (piece[k] - piece[0]) + b * (piece[k + 1] - piece[0]),
+                    own.clone(),
+                    vec![u, -u, v, -v],
+                ));
+            }
+        }
+        for _ in 0..200 {
+            let x = rng.next(lo.x, hi.x);
+            let y = rng.next(lo.y, hi.y);
+            let z = rng.next(lo.z, hi.z);
+            points.push((Vec3::new(x, y, z), BTreeSet::new(), Vec::new()));
+        }
+        let (mut compared, mut wrong, mut undecided, mut seen) = (0, 0, 0, 0);
+        let mut example = String::new();
+        for (camera, view) in stress_cameras() {
+            let occlusion = s.occlusion(&view);
+            let test: &dyn OcclusionTest = &occlusion;
+            let d = -view.projection_direction();
+            for (p, own, plane) in &points {
+                let cast = |q: Vec3| {
+                    meshes
+                        .iter()
+                        .enumerate()
+                        .all(|(f, m)| own.contains(&f) || first_hit(m, q, d, 1e-9 * scale).is_none())
+                };
+                // On a face seen edge-on the line of sight runs in it, along
+                // whatever it meets there.
+                if let Some(&f) = own.first()
+                    && s.normals[f].dot(d).abs() < 1e-6
+                {
+                    undecided += 1;
+                    continue;
+                }
+                let truth = cast(*p);
+                let nudges: Vec<Vec3> = if own.is_empty() { across(d).to_vec() } else { plane.clone() };
+                if !nudges.iter().all(|&n| cast(*p + 1e-7 * scale * n) == truth) {
+                    undecided += 1;
+                    continue;
+                }
+                compared += 1;
+                if truth {
+                    seen += 1;
+                }
+                if test.is_clear(P3::from_vec(*p)) != truth {
+                    wrong += 1;
+                    if example.is_empty() {
+                        example = format!(
+                            " e.g. {camera} at ({:.3}, {:.3}, {:.3}): the cast says {}",
+                            p.x,
+                            p.y,
+                            p.z,
+                            if truth { "clear" } else { "hidden" }
+                        );
+                    }
+                }
+            }
+        }
+        eprintln!("{name}: {wrong} of {compared} disagree, {seen} clear, {undecided} grazing");
+        assert!(
+            wrong == 0 && compared > 5000 && seen > compared / 10 && seen < compared,
+            "{name}: the point form of occlusion by the pieces is the cast, on the faces and off them: {wrong} of \
+             {compared} disagree, {seen} clear, {undecided} grazing{example}"
+        );
+    }
+}
 
 /// The round torus of the occlusion suite, and a parametric surface with
 /// no tubular neighbourhood having no sphere tracing.

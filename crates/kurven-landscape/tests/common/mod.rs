@@ -1,7 +1,7 @@
 //! What the visibility suites share: a landscape built as
 //! `NativeLandscape.build` builds it (its bundle needs the refiner, so it
-//! lives here rather than in kurven-core), and the cameras the Swift suites
-//! look through.
+//! lives here rather than in kurven-core), the cameras the Swift suites
+//! look through, and the ray cast a polyhedron's visibility is held to.
 
 #![allow(dead_code, clippy::neg_cmp_op_on_partial_ord, clippy::manual_range_contains)]
 
@@ -12,6 +12,7 @@ use kurven_core::manifest::{Affine2, Domain, Interval, Region, Truncation, Walls
 use kurven_core::mesh::Mesh;
 use kurven_core::scene::Heightfield;
 use kurven_core::simd::{Mat3, Vec2, Vec3};
+use kurven_core::solid::Solid;
 use kurven_core::spaces::{Angle, DomainSpace, P2, P3, Transform, ViewSpace, WorldSpace};
 use kurven_core::splitmix::SplitMix;
 use kurven_core::surface::{Magnitude, Surface};
@@ -344,6 +345,41 @@ pub fn densely_hidden(
         t = tn;
     }
     None
+}
+
+/// A piece of a solid as triangles, fanned, for the brute-force ray cast
+/// (Solids.swift's `pieceMesh`).
+pub fn piece_mesh(s: &Solid, f: usize) -> Mesh<WorldSpace> {
+    let piece = &s.pieces[f];
+    Mesh::new(
+        piece.iter().map(|&k| s.vertices[k]).collect(),
+        (1..piece.len() - 1).map(|k| [0, k as i32, k as i32 + 1]).collect(),
+    )
+}
+
+/// Every piece of a solid as its `piece_mesh`, by index.
+pub fn piece_meshes(s: &Solid) -> Vec<Mesh<WorldSpace>> {
+    (0..s.pieces.len()).map(|f| piece_mesh(s, f)).collect()
+}
+
+/// Whether a point of the solid's surface, lying in the pieces `own`, is
+/// seen along `d`: one of its own pieces faces the eye and no other piece is
+/// hit by the ray from it (Solids.swift's `rayVisible`). The brute force
+/// every occlusion test is held to. `meshes` are the solid's `piece_meshes`,
+/// made once rather than per point, as Swift makes them.
+pub fn ray_visible(s: &Solid, meshes: &[Mesh<WorldSpace>], p: Vec3, own: &[usize], d: Vec3) -> bool {
+    if !own.iter().any(|&f| s.normals[f].dot(d) > 0.0) {
+        return false;
+    }
+    for (f, mesh) in meshes.iter().enumerate() {
+        if own.contains(&f) {
+            continue;
+        }
+        if first_hit(mesh, p, d, 1e-9).is_some() {
+            return false;
+        }
+    }
+    true
 }
 
 /// The view depth per unit of travel along the line of sight.
