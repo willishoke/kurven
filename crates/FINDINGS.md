@@ -1349,3 +1349,18 @@ reference drawing uses it, and a bundle that asks for it is refused when
 it is drawn.
 
 No `PORT: phase 3` stub is left in the code; `hatch_stub.rs` is gone.
+
+## 2026-11-16 · The CLI refuses a value option given bare, where Swift runs on its default
+
+Swift's `Args` cannot tell a switch from an option whose value was left
+off: `--preset` at the end of a line, or before another option, lands in
+`switches`, which no reader of a value looks at, and `only` accepts it, so
+`bake B --preset` bakes the first preset and `landscape z --truncation -o
+x.kurven` samples untruncated, saying nothing. A command line that ignores
+what was typed is not behaviour worth porting, so the port differs on
+purpose: `Args::SWITCHES` lists the eight switches Swift reads with
+`switchedOn` (conformal, draft, editing, no-refine, no-truncation, preview,
+soft, visibility), and `only` refuses any other option given bare, "--preset
+wants a value", as `switched_on` refuses a switch given a value. `bake
+--outline` and `--dump` are refused as Phase 4 in either form, before
+`only`: bare, they used to parse as switches and bake on, exit 0.

@@ -424,6 +424,22 @@ pub fn load_drawing(args: &Args) -> Result<Drawing, CliError> {
 pub fn bake_command(args: &Args) -> Result<(), CliError> {
     let mut accepted = Args::SCENE.to_vec();
     accepted.extend(["resolution", "tiles", "depth-tolerance", "outline", "dump", "output"]);
+    // Refused whether given a value or not, before `only` would call either
+    // a bare option wanting a value: both need the depth buffer.
+    if args.given("dump") {
+        // PORT: phase 4 -- `--dump` writes each layer's strokes as npy and the
+        // depth frame as JSON; the frame is the depth buffer's.
+        return Err(CliError(
+            "--dump writes the depth buffer's frame, which the port does not render yet (phase 4)".to_string(),
+        ));
+    }
+    if args.given("outline") {
+        // PORT: phase 4 -- the outline is traced from the depth buffer
+        // (`BakeOptions.outline`, `DepthImage::outline`).
+        return Err(CliError(
+            "--outline is traced from the depth buffer, which the port does not render yet (phase 4)".to_string(),
+        ));
+    }
     args.only("bake", &accepted)?;
     let drawing = load_drawing(args)?;
     let output = PathBuf::from(args.string("output")?);
@@ -433,13 +449,6 @@ pub fn bake_command(args: &Args) -> Result<(), CliError> {
         depth_tolerance: Some(args.double("depth-tolerance")?.unwrap_or(drawing.preset.depth_tolerance)),
         outline: args.double("outline")?,
     };
-    if args.flags.contains_key("dump") {
-        // PORT: phase 4 -- `--dump` writes each layer's strokes as npy and the
-        // depth frame as JSON; the frame is the depth buffer's.
-        return Err(CliError(
-            "--dump writes the depth buffer's frame, which the port does not render yet (phase 4)".to_string(),
-        ));
-    }
     if !drawing.provenance.is_reproducible() {
         eprintln!(
             "note: this bundle was contoured with {} chunks, so its contours were stitched in thread-completion \
@@ -481,6 +490,20 @@ pub fn write_svg(strokes: &Strokes, output: &Path) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outline_and_dump_are_refused_with_a_value_or_without() {
+        for words in [
+            vec!["bake", "b.kurven", "--outline", "-o", "x.svg"],
+            vec!["bake", "b.kurven", "--outline", "0.4", "-o", "x.svg"],
+            vec!["bake", "b.kurven", "--dump", "-o", "x.svg"],
+            vec!["bake", "b.kurven", "--dump", "dir", "-o", "x.svg"],
+            vec!["bake", "b.kurven", "-o", "x.svg", "--outline"],
+        ] {
+            let e = bake_command(&Args::new(&words)).unwrap_err().0;
+            assert!(e.contains("depth buffer") && e.contains("phase 4"), "{words:?}: {e}");
+        }
+    }
 
     #[test]
     fn intervals_and_bands_read_as_swift_reads_them() {

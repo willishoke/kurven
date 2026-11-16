@@ -115,6 +115,7 @@ impl Args {
     /// refused: `--conformal 1` is the flag `conformal` with the value 1,
     /// which a switch read from `switches` alone took as off.
     pub fn switched_on(&self, name: &str) -> Result<bool, CliError> {
+        debug_assert!(Args::SWITCHES.contains(&name), "--{name} is read as a switch but not listed in Args::SWITCHES");
         if let Some(value) = self.flags.get(name) {
             return Err(CliError(format!("--{name} is a switch and takes no value, not '{value}'")));
         }
@@ -179,6 +180,14 @@ impl Args {
             .filter(|name| !accepted.contains(name))
             .collect();
         if unknown.is_empty() {
+            // The parser cannot tell a switch from an option whose value was
+            // left off, so `--preset` given bare lands in `switches`, where
+            // no reader of a value looks, and the command ran on its default.
+            // Swift's `only` accepts it; the port refuses it, as
+            // `switched_on` refuses a switch given a value.
+            if let Some(bare) = self.switches.iter().find(|name| !Args::SWITCHES.contains(&name.as_str())) {
+                return Err(CliError(format!("--{bare} wants a value")));
+            }
             return Ok(());
         }
         let spelled = |name: &str| if name == "output" { "-o".to_string() } else { format!("--{name}") };
@@ -190,6 +199,11 @@ impl Args {
         };
         Err(CliError(format!("{command} takes no {}{takes}", listed.join(", "))))
     }
+
+    /// Every switch a command reads (`switched_on`): the options that take
+    /// no value. Any other option given without one is refused by `only`.
+    pub const SWITCHES: [&'static str; 8] =
+        ["conformal", "draft", "editing", "no-refine", "no-truncation", "preview", "soft", "visibility"];
 
     /// The options `load_scene` reads.
     pub const SCENE: [&'static str; 2] = ["preset", "no-refine"];
@@ -225,5 +239,25 @@ mod tests {
             Args::new(&["catalog", "-o", "x"]).only("catalog", &[]).unwrap_err().0,
             "catalog takes no -o; it takes no options"
         );
+    }
+
+    #[test]
+    fn a_value_option_given_bare_is_refused() {
+        for (words, bare) in [
+            (vec!["bake", "b.kurven", "--preset"], "preset"),
+            (vec!["bake", "b.kurven", "--preset", "--no-refine"], "preset"),
+            (vec!["landscape", "z", "--truncation", "-o", "x.kurven"], "truncation"),
+            (vec!["landscape", "z", "--slope-lines", "-o", "x.kurven"], "slope-lines"),
+            (vec!["references", "a", "b", "--only"], "only"),
+        ] {
+            let accepted = ["preset", "no-refine", "truncation", "slope-lines", "only", "output"];
+            assert_eq!(
+                Args::new(&words).only(words[0], &accepted).unwrap_err().0,
+                format!("--{bare} wants a value"),
+                "{words:?}"
+            );
+        }
+        let args = Args::new(&["bake", "b.kurven", "--no-refine", "--preset", "plate"]);
+        assert!(args.only("bake", &["preset", "no-refine"]).is_ok(), "a switch bare and a value given are read");
     }
 }
