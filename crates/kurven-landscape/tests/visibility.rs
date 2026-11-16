@@ -16,7 +16,7 @@ use kurven_core::grid::Grid2D;
 use kurven_core::hatching::FaceKind;
 use kurven_core::hidden_line::{HeightfieldVisibility, HiddenLine};
 use kurven_core::manifest::{
-    Affine2, Domain, Interval, LayerSource, ObliqueProjection, RealBand, Region, Truncation, Walls,
+    Affine2, Domain, Interval, LayerSource, ObliqueProjection, RealBand, Region, Side, Truncation, Walls,
 };
 use kurven_core::mesh::Mesh;
 use kurven_core::navigation::Orbit;
@@ -814,6 +814,117 @@ fn every_chord_of_a_fold_lies_within_the_refiners_tolerance_of_the_fold_on_every
                 refine.tolerance,
                 off.len(),
                 off.iter().take(3).collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
+/// The folds' half of "faces: a contour or a fold carried to the truncation
+/// edge across a band boundary ends on the drawn top": every point of the
+/// folds under four cameras, vertices and seven points along each chord,
+/// lies on min(|f|, h(x)) -- on a band boundary the higher side's -- within
+/// the refiner's tolerance, in height or across the plane. The contour
+/// layers' half waits for Hatch.swift: a truncated graph's contours are cut
+/// at its trim loops (`graphTrimLoops`), which the stub has only to the
+/// domain's edge.
+#[test]
+fn a_fold_carried_to_the_truncation_edge_across_a_band_boundary_ends_on_the_drawn_top() {
+    let domain = Domain::new(Interval::new(-0.5, 1.5), Interval::new(-1.0, 1.0));
+    let cases = [
+        ("a tower", "1/(z-0.45)", domain, 200, vec![RealBand { below: 0.5, height: 2.0 }], 4.0),
+        (
+            "a tower, its boundary on a column",
+            "1/(z-0.45)",
+            domain,
+            201,
+            vec![RealBand { below: 0.5, height: 2.0 }],
+            4.0,
+        ),
+        (
+            "gamma under three bands",
+            "gamma(z)",
+            Domain::new(Interval::new(-4.5, 4.5), Interval::new(-2.5, 2.5)),
+            600,
+            vec![
+                RealBand { below: -2.5, height: 0.5 },
+                RealBand { below: -1.5, height: 1.0 },
+                RealBand { below: 0.5, height: 1.5 },
+            ],
+            2.5,
+        ),
+    ];
+    for (name, expression, domain, resolution, bands, beyond) in cases {
+        let mut request = LandscapeRequest::new(expression, domain, resolution);
+        request.truncation = Some(Truncation::RealBands { bands: bands.clone(), beyond });
+        let built = build(&request, true);
+        let refine = built.refine.clone().expect("a refiner");
+        let magnitude = refine.magnitude.clone().expect("its magnitude");
+        let surface = built.surface.clone();
+        let g = &*surface.height;
+        let cell = swift::max(
+            g.domain.real.length().abs() / (g.width - 1) as f64,
+            g.domain.imag.length().abs() / (g.height - 1) as f64,
+        );
+        // How far a point lies off the drawn top: in height, and in
+        // cells across the plane where the top is the graph.
+        let off = |v: P3<WorldSpace>| -> (f64, f64) {
+            let u = magnitude(P2::new(v.x(), v.y()));
+            let f = if u.is_nan() { f64::INFINITY } else { u };
+            let on_boundary = bands.iter().any(|b| (v.x() - b.below).abs() <= 1e-9 * cell);
+            let sides: &[Side] = if on_boundary { &[Side::Left, Side::Right] } else { &[Side::Right] };
+            let heights: Vec<f64> = sides.iter().map(|&s| surface.truncation_height_at_from(v.x(), s)).collect();
+            let h = heights[1..].iter().fold(heights[0], |m, &x| if m < x { x } else { m });
+            let d = v.z() - swift::min(f, h);
+            if !(f < h) {
+                return (d, f64::INFINITY);
+            }
+            let e = 1e-4 * cell;
+            let gx = (magnitude(P2::new(v.x() + e, v.y())) - magnitude(P2::new(v.x() - e, v.y()))) / (2.0 * e);
+            let gy = (magnitude(P2::new(v.x(), v.y() + e)) - magnitude(P2::new(v.x(), v.y() - e))) / (2.0 * e);
+            (d, d.abs() / (gx * gx + gy * gy).sqrt() / cell)
+        };
+        let h = Scene::from_bundle(&built, &built.manifest.presets[0]).heightfield().unwrap().clone();
+        for z_angle in [-90.0, 90.0, -20.0, -160.0] {
+            let camera = Camera::oblique(&ObliqueProjection {
+                shear: 0.5,
+                x_angle: -55.0,
+                z_angle,
+                flip_x: true,
+                y_scale: None,
+            });
+            let paths = h.fold_curves(&camera.view, true);
+            let (mut points, mut above, mut below, mut wrong) = (0, 0.0f64, 0.0f64, Vec::new());
+            for run in paths.paths() {
+                for w in run.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    for s in 0..=8 {
+                        let t = s as f64 / 8.0;
+                        let v = P3::<WorldSpace>::new(
+                            a.x() + t * (b.x() - a.x()),
+                            a.y() + t * (b.y() - a.y()),
+                            a.z() + t * (b.z() - a.z()),
+                        );
+                        let (d, cells) = off(v);
+                        if !d.is_finite() {
+                            continue;
+                        }
+                        points += 1;
+                        above = swift::max(above, d);
+                        below = swift::min(below, d);
+                        if !(d.abs() <= refine.tolerance * cell || cells <= refine.tolerance) {
+                            wrong.push(format!("({:.4}, {:.4}, {:.4}) {:+.4}", v.x(), v.y(), v.z(), d));
+                        }
+                    }
+                }
+            }
+            assert!(
+                points > 100 && wrong.is_empty(),
+                "{name}: every point of the folds seen from {}° on the drawn top, within {} cells: {} of {points} points \
+                 off, as far as {above:+.4} and {below:+.4}: {:?}",
+                z_angle as i64,
+                refine.tolerance,
+                wrong.len(),
+                wrong.iter().take(3).collect::<Vec<_>>()
             );
         }
     }
