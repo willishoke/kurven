@@ -147,8 +147,12 @@ impl Frequency {
         let magnitude: Vec<f64> = (0..=(size / 2)).map(|k| (re[k] * re[k] + im[k] * im[k]).sqrt()).collect();
         let mut maxima: Vec<usize> =
             (1..(size / 2)).filter(|&k| magnitude[k] > magnitude[k - 1] && magnitude[k] >= magnitude[k + 1]).collect();
-        // Swift's `sorted` is introsort, not stable; with distinct
-        // magnitudes the two orders are the same.
+        // Strongest first. Swift's sort is stable (since Swift 5; checked
+        // with swiftc on this machine) and so is Rust's, so equal magnitudes
+        // keep their order in both. `total_cmp` orders as Swift's `>` does on
+        // every magnitude but NaN, which only a NaN sample makes; there Rust's
+        // sort needs a total order, which `>` is not. The same holds for the
+        // lines' final sort below.
         maxima.sort_by(|&a, &b| magnitude[b].total_cmp(&magnitude[a]));
 
         let resolution = 2.0 * PI / (dt * n as f64);
