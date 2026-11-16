@@ -98,6 +98,14 @@ golden() {
     workspace build --release -p kurven-cli || return 1
     rm -rf "$CRATES/fixtures/rust"
     "$CLI" fixtures "$CRATES/fixtures/rust" >/dev/null || return 1
+    # A golden file .gitignore leaves out is never committed, and so never
+    # compared: every file the generator writes must be one git keeps.
+    local ignored
+    ignored=$(cd "$ROOT" && find crates/fixtures/rust -type f -print0 | xargs -0 git check-ignore --no-index --)
+    if [ -n "$ignored" ]; then
+        printf 'ignored by .gitignore, so never compared: %s\n' $ignored
+        failed=1
+    fi
     if ! git -C "$ROOT" diff --quiet HEAD -- crates/fixtures/rust; then
         # The lines themselves, not only the files: on CI the tree is gone
         # once the job ends, and a golden that differs on another platform

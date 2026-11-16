@@ -1,4 +1,4 @@
-//! A minimal `.npy` reader, the port of `Sources/KurvenCore/NPY.swift`.
+//! A minimal `.npy` reader and writer, the port of `Sources/KurvenCore/NPY.swift`.
 //!
 //! The bundle's arrays are `.npy` because that is what numpy writes without
 //! ceremony and what a reader can parse in eighty lines. This supports exactly
@@ -8,7 +8,8 @@
 //! array as C order returns a transposed landscape; that is precisely the class
 //! of failure a typed decode error exists to prevent.
 //!
-//! The writer comes with the bundle schema (Phase 2).
+//! The writer writes the bytes `np.save` writes, so a fixture written here is
+//! byte-identical to one numpy wrote.
 
 use std::fmt;
 use std::path::Path;
@@ -250,6 +251,91 @@ impl NpyArray {
         }
         Ok(self.doubles()?.as_chunks::<3>().0.to_vec())
     }
+
+    /// Rows of an `(n, 3)` integer array, as a mesh's triangles are stored.
+    pub fn rows3i(&self) -> Result<Vec<[i64; 3]>, NpyError> {
+        if self.shape.len() != 2 || self.shape[1] != 3 {
+            return Err(NpyError::ShapeMismatch { expected: vec![-1, 3], found: self.shape.clone() });
+        }
+        Ok(self.ints()?.as_chunks::<3>().0.to_vec())
+    }
+}
+
+// MARK: - writing
+
+/// The bytes `np.save` writes for a C-contiguous float32 array: a depth
+/// image, a bundle's grids.
+pub fn encode_f32(values: &[f32], shape: &[usize]) -> Vec<u8> {
+    encode(NpyDType::Float32, shape, values.len(), values.iter().flat_map(|v| v.to_le_bytes()))
+}
+
+/// The bytes of a C-order float64 array: vertices, the golden fixtures' answers.
+pub fn encode_f64(values: &[f64], shape: &[usize]) -> Vec<u8> {
+    encode(NpyDType::Float64, shape, values.len(), values.iter().flat_map(|v| v.to_le_bytes()))
+}
+
+/// The bytes of a C-order int64 array: a polyline set's offsets, a mesh's
+/// triangles.
+pub fn encode_i64(values: &[i64], shape: &[usize]) -> Vec<u8> {
+    encode(NpyDType::Int64, shape, values.len(), values.iter().flat_map(|v| v.to_le_bytes()))
+}
+
+pub fn write_f32(values: &[f32], shape: &[usize], path: impl AsRef<Path>) -> Result<(), NpyError> {
+    write_bytes(&encode_f32(values, shape), path.as_ref())
+}
+
+pub fn write_f64(values: &[f64], shape: &[usize], path: impl AsRef<Path>) -> Result<(), NpyError> {
+    write_bytes(&encode_f64(values, shape), path.as_ref())
+}
+
+pub fn write_i64(values: &[i64], shape: &[usize], path: impl AsRef<Path>) -> Result<(), NpyError> {
+    write_bytes(&encode_i64(values, shape), path.as_ref())
+}
+
+fn write_bytes(bytes: &[u8], path: &Path) -> Result<(), NpyError> {
+    std::fs::write(path, bytes).map_err(|e| NpyError::Io(format!("{}: {e}", path.display())))
+}
+
+/// The bytes `np.save` writes for a C-contiguous array of this dtype, so a
+/// fixture written here is byte-identical to one numpy wrote.
+///
+/// Version 1.0, whose header length is two bytes, as Swift writes every
+/// file. A header past 65,535 bytes (a shape of thousands of axes) does not
+/// fit there: Swift writes its length masked to two bytes, a file no reader
+/// can parse; the port writes version 2.0, a four-byte length, as numpy does
+/// (`_wrap_header_guess_version`), padded by numpy's rule.
+fn encode(dtype: NpyDType, shape: &[usize], count: usize, data: impl Iterator<Item = u8>) -> Vec<u8> {
+    assert!(shape.iter().product::<usize>() == count, "shape does not match count");
+    let shape_text = if shape.len() == 1 {
+        format!("({},)", shape[0])
+    } else {
+        format!("({})", shape.iter().map(usize::to_string).collect::<Vec<_>>().join(", "))
+    };
+    let dict = format!("{{'descr': '{}', 'fortran_order': False, 'shape': {shape_text}, }}", dtype.descr());
+    // numpy pads the header so the data starts on a 64-byte boundary.
+    let unpadded = 10 + dict.len() + 1;
+    let padding = (64 - unpadded % 64) % 64;
+    let mut out = Vec::with_capacity(unpadded + padding + 2 + count * dtype.item_size());
+    out.extend_from_slice(&MAGIC);
+    if dict.len() + 1 + padding <= 0xFFFF {
+        let n = dict.len() + 1 + padding;
+        out.extend_from_slice(&[1, 0]);
+        out.extend_from_slice(&(n as u16).to_le_bytes());
+        out.extend_from_slice(dict.as_bytes());
+        out.extend(std::iter::repeat_n(b' ', padding));
+    } else {
+        // numpy's `_wrap_header`: 64 less the preamble and header modulo
+        // 64, so a header already aligned takes 64 spaces more.
+        let padding = 64 - (12 + dict.len() + 1) % 64;
+        let n = u32::try_from(dict.len() + 1 + padding).expect("an npy header under 4 GB");
+        out.extend_from_slice(&[2, 0]);
+        out.extend_from_slice(&n.to_le_bytes());
+        out.extend_from_slice(dict.as_bytes());
+        out.extend(std::iter::repeat_n(b' ', padding));
+    }
+    out.push(b'\n');
+    out.extend(data);
+    out
 }
 
 #[cfg(test)]
@@ -312,5 +398,50 @@ mod tests {
         assert!(!points.is_empty());
         assert_eq!(points.len(), projected.len());
         assert!(points.iter().flatten().all(|v| v.is_finite()));
+    }
+
+    /// "npy: float32 round trips through the writer"
+    #[test]
+    fn float32_round_trips_through_the_writer() {
+        let values: Vec<f32> = (0..24).map(|i| i as f32 * 0.5 - 3.0).collect();
+        let back = parse(&encode_f32(&values, &[4, 6])).unwrap();
+        assert!(back.shape == [4, 6] && back.floats().unwrap() == values, "a written array reads back identically");
+        let dir = std::env::temp_dir().join(format!("kurven-npy-{}.npy", std::process::id()));
+        write_f32(&values, &[4, 6], &dir).unwrap();
+        let read_back = read(&dir).unwrap();
+        std::fs::remove_file(&dir).unwrap();
+        assert_eq!(read_back, back);
+    }
+
+    /// A header too long for version 1.0's two-byte length is written as
+    /// version 2.0, a four-byte one, and reads back; never a masked length.
+    #[test]
+    fn a_header_past_65535_bytes_is_written_as_version_2() {
+        let shape = vec![1usize; 25_000];
+        let bytes = encode_f64(&[2.5], &shape);
+        assert_eq!(&bytes[6..8], &[2, 0]);
+        let n = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+        assert_eq!((12 + n) % 64, 0, "the data starts on a 64-byte boundary");
+        assert_eq!(bytes.len(), 12 + n + 8);
+        let back = parse(&bytes).unwrap();
+        assert!(back.shape == shape && back.doubles().unwrap() == [2.5]);
+        assert_eq!(&encode_f64(&[2.5], &[1])[6..8], &[1, 0], "a short header stays version 1.0");
+    }
+
+    /// What the writer writes for numpy's own files is numpy's bytes.
+    #[test]
+    fn the_writer_writes_what_numpy_wrote() {
+        for name in ["f4", "f8", "i8", "f8_1d"] {
+            let path = fixtures::shared(&format!("npy/{name}.npy"));
+            let bytes = std::fs::read(&path).unwrap();
+            let a = parse(&bytes).unwrap();
+            let again = match a.dtype {
+                NpyDType::Float32 => encode_f32(&a.floats().unwrap(), &a.shape),
+                NpyDType::Float64 => encode_f64(&a.doubles().unwrap(), &a.shape),
+                NpyDType::Int64 => encode_i64(&a.ints().unwrap(), &a.shape),
+                NpyDType::Complex128 => unreachable!(),
+            };
+            assert!(again == bytes, "{name}: {} bytes written, numpy wrote {}", again.len(), bytes.len());
+        }
     }
 }

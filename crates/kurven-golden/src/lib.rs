@@ -21,6 +21,12 @@
 //! math/dynamics.txt   the ODE integrator, the frequency analysis, the Fourier
 //!                  torus, Brent's method, continued fractions and the
 //!                  quarter periods on fixed problems.
+//! core/            the core values (Phase 2), on fixed inputs computed in
+//!                  the generator: the plates' cameras, a navigator through
+//!                  every gesture, marching squares on a ripple and a phase
+//!                  grid's cut, doubles through the canonical writer,
+//!                  manifests of all three kinds, an npy grid, and an SVG of
+//!                  lifted contours through the recip camera.
 //! ```
 //!
 //! The set grows a module at a time: once a module passes against Swift, its
@@ -28,6 +34,7 @@
 
 use kurven_math::real;
 
+mod core_values;
 mod math;
 
 /// One golden file: where it goes under the set's root, and its bytes.
@@ -38,19 +45,21 @@ pub struct Golden {
 
 /// Every golden file, in a fixed order.
 pub fn all() -> Vec<Golden> {
-    vec![
+    let mut all = vec![
         Golden { path: "libm/table.txt", bytes: libm_table().into_bytes() },
         Golden { path: "math/functions.txt", bytes: math::functions_table().into_bytes() },
         Golden { path: "math/language.txt", bytes: math::language_table().into_bytes() },
         Golden { path: "math/dynamics.txt", bytes: math::dynamics_table().into_bytes() },
-    ]
+    ];
+    all.extend(core_values::all());
+    all
 }
 
 /// An f64 as text that is the same on every platform: its bits, and its
 /// shortest round-trip decimal for whoever reads the diff. A NaN is `nan`
 /// whatever its payload, since IEEE 754 leaves the payload of a computed NaN
 /// to the platform (wasm's are nondeterministic), so no golden writes one.
-fn bits(x: f64) -> String {
+pub(crate) fn bits(x: f64) -> String {
     if x.is_nan() { "nan".to_string() } else { format!("{:016x} {x:?}", x.to_bits()) }
 }
 
