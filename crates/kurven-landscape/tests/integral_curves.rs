@@ -12,25 +12,36 @@
 //! its own: a zero of f, a pole, the domain's edge, the footprint, the
 //! truncation edge, a closed curve and the step limit.
 
+// Swift's `guard x > 0 else` refuses a NaN, and so does `if !(x > 0.0)`.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
+mod common;
+
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
+use common::{densely_hidden, per_unit};
 use kurven_core::bundle::KurvenBundle;
 use kurven_core::face::Face;
 use kurven_core::fixtures;
 use kurven_core::hatch::HatchContext;
 use kurven_core::hatching::FaceSelector;
+use kurven_core::hidden_line::HeightfieldVisibility;
 use kurven_core::integral_curves::{End, Limits, Traced};
 use kurven_core::manifest::{
-    Affine2, BoundaryPerimeter, ContourField, DirectionField, Domain, Interval, LayerSource, PerimeterEdge, Region,
-    Seeds, Spacing, Truncation,
+    Affine2, BoundaryPerimeter, ContourField, DirectionField, Domain, HeightPolicy, Interval, LayerRole, LayerSource,
+    LayerSpec, PerimeterEdge, Region, Seeds, Spacing, Truncation,
 };
+use kurven_core::polyline::PolylineSet;
 use kurven_core::scalar_field::{self, ParamPaths, Trim};
-use kurven_core::simd::Vec2;
+use kurven_core::scene::Scene;
+use kurven_core::simd::{Vec2, Vec3};
+use kurven_core::spaces::{AABB, ViewSpace};
 use kurven_core::spaces::{P2, P3, ParamSpace, WorldSpace};
 use kurven_core::surface::{ContourRefine, Surface};
-use kurven_landscape::{LandscapeRequest, NativeLandscape};
+use kurven_landscape::{Catalog, LandscapeRequest, NativeLandscape};
 use kurven_math::real;
+use kurven_math::swift;
 
 type P = P2<ParamSpace>;
 const TWO_PI: f64 = 2.0 * PI;
@@ -668,9 +679,176 @@ fn seeds_by_arc_length_and_on_a_tiled_graph_each_copys_own() {
     );
 }
 
+/// Swift's `SegmentIndex` (Composite.swift): a drawing's segments in view
+/// space, bucketed on a 400 by 400 grid over `size` from `lo`, with the
+/// ends of its runs.
+struct SegmentIndex {
+    lo: Vec2,
+    cell: f64,
+    n: usize,
+    buckets: Vec<Vec<(Vec3, Vec3)>>,
+    ends: Vec<Vec<Vec3>>,
+}
+
+impl SegmentIndex {
+    fn new(paths: &PolylineSet<ViewSpace>, lo: Vec2, size: f64) -> SegmentIndex {
+        let n = 400;
+        let mut index = SegmentIndex {
+            lo,
+            cell: size / n as f64,
+            n,
+            buckets: vec![Vec::new(); n * n],
+            ends: vec![Vec::new(); n * n],
+        };
+        for path in paths.paths() {
+            for w in path.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                let (i0, j0) = index.key(Vec2::new(swift::min(a.x(), b.x()), swift::min(a.y(), b.y())));
+                let (i1, j1) = index.key(Vec2::new(swift::max(a.x(), b.x()), swift::max(a.y(), b.y())));
+                for i in i0..=i1 {
+                    for j in j0..=j1 {
+                        index.buckets[i * n + j].push((a.v, b.v));
+                    }
+                }
+            }
+            for e in [path[0], path[path.len() - 1]] {
+                let (i, j) = index.key(Vec2::new(e.x(), e.y()));
+                index.ends[i * n + j].push(e.v);
+            }
+        }
+        index
+    }
+
+    fn key(&self, p: Vec2) -> (usize, usize) {
+        let k = (p - self.lo) / self.cell;
+        let clamp = |x: f64| -> usize {
+            let f = x.floor();
+            if !(f > 0.0) {
+                0
+            } else if f >= (self.n - 1) as f64 {
+                self.n - 1
+            } else {
+                f as usize
+            }
+        };
+        (clamp(k.x), clamp(k.y))
+    }
+
+    /// Whether a segment passes within `tolerance` of `p`, in space.
+    fn holds(&self, p: Vec3, tolerance: f64) -> bool {
+        let (i, j) = self.key(Vec2::new(p.x, p.y));
+        self.buckets[i * self.n + j].iter().any(|&(a, b)| {
+            let ab = b - a;
+            let l2 = ab.dot(ab);
+            let t = if l2 > 0.0 { swift::min(swift::max((p - a).dot(ab) / l2, 0.0), 1.0) } else { 0.0 };
+            (p - (a + t * ab)).length() <= tolerance
+        })
+    }
+
+    /// The nearest run end to `p`, within the cells about it.
+    fn nearest_end(&self, p: Vec3) -> f64 {
+        let (i, j) = self.key(Vec2::new(p.x, p.y));
+        let mut best = f64::INFINITY;
+        for di in -1i64..=1 {
+            for dj in -1i64..=1 {
+                let (a, b) = (i as i64 + di, j as i64 + dj);
+                if a < 0 || a >= self.n as i64 || b < 0 || b >= self.n as i64 {
+                    continue;
+                }
+                for &e in &self.ends[a as usize * self.n + b as usize] {
+                    best = swift::min(best, (e - p).length());
+                }
+            }
+        }
+        best
+    }
+}
+
+/// "integral curves: on f, seen exactly where the dense cast against f
+/// says": the slope lines of the cubic at 64, twelve seeds on |f| = 1/2,
+/// each vertex drawn by `Scene::visible_layers` exactly where the dense
+/// cast against f (Stress.swift's `denselyHidden`) sees it.
 #[test]
-#[ignore = "needs Scene visibility (visibleLayers, HeightfieldVisibility, the dense cast), ported in parallel"]
-fn on_f_seen_exactly_where_the_dense_cast_against_f_says() {}
+fn on_f_seen_exactly_where_the_dense_cast_against_f_says() {
+    let built = NativeLandscape::build(
+        &LandscapeRequest::from_preset(Catalog::native().preset("cubic").unwrap(), 64),
+        "native",
+        true,
+    )
+    .unwrap();
+    let mut m = built.manifest.clone();
+    m.layers = vec![LayerSpec::new(
+        "slope",
+        LayerRole::Scaffold,
+        LayerSource::IntegralCurves {
+            field: SLOPE,
+            seeds: on_magnitude_at_phase(0.5, &(0..12).map(|k| -PI + k as f64 * PI / 6.0).collect::<Vec<_>>()),
+            faces: FaceSelector::Graph { tiled: false },
+        },
+        0.3,
+        HeightPolicy::Surface,
+    )];
+    let bundle = built.restyled(&m);
+    let scene = Scene::from_bundle(&bundle, &bundle.manifest.presets[0]);
+    let h = scene.heightfield().unwrap();
+    let view = scene.camera.view;
+    let magnitude = h.refine.as_ref().unwrap().magnitude.clone().unwrap();
+    let vis = HeightfieldVisibility::new(h.clone(), &view, scene.depth_tolerance);
+    let toward = -view.projection_direction();
+    let per_unit = per_unit(&view, toward);
+    let grid = &*h.surface.height;
+    let cell_size = swift::max(
+        grid.domain.real.length().abs() / (grid.width - 1) as f64,
+        grid.domain.imag.length().abs() / (grid.height - 1) as f64,
+    );
+    let (mut compared, mut wrong, mut seen, mut example) = (0, 0, 0, String::new());
+    for (layer, visible) in scene.visible_layers(None, None).unwrap() {
+        let mapped = layer.paths.mapped(&view);
+        let Some(bounds) = AABB::of(visible.vertices.iter().chain(&mapped.vertices)) else { continue };
+        let size = swift::max(bounds.hi.x - bounds.lo.x, bounds.hi.y - bounds.lo.y);
+        let index =
+            SegmentIndex::new(&visible, Vec2::new(bounds.lo.x, bounds.lo.y) - Vec2::splat(1e-6 * size), 1.00001 * size);
+        let vertices = &layer.paths.vertices;
+        let truths: Vec<Option<bool>> = common::par_map(vertices, |&v| {
+            let f = vis.facing(v.xy());
+            if !(f.abs() > 1e-9) {
+                return None;
+            }
+            if !(f > 0.0) {
+                return Some(false);
+            }
+            Some(densely_hidden(h, &magnitude, v.v, toward, vis.depth_tolerance, per_unit, cell_size).is_none())
+        });
+        for (v, truth) in vertices.iter().zip(truths) {
+            let p = view.apply(*v).v;
+            let Some(truth) = truth else { continue };
+            if !(index.nearest_end(p) >= 1e-6 * size) {
+                continue;
+            }
+            compared += 1;
+            if truth {
+                seen += 1;
+            }
+            if truth != index.holds(p, 1e-9 * size) {
+                wrong += 1;
+                if example.is_empty() {
+                    example = format!(
+                        " e.g. at ({:.4}, {:.4}, {:.4}): the cast says {}",
+                        v.x(),
+                        v.y(),
+                        v.z(),
+                        if truth { "seen" } else { "hidden" }
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        wrong == 0 && compared > 1000 && seen > 300 && seen < compared,
+        "every vertex of the slope lines is drawn exactly where the dense cast sees it: {compared} compared, {seen} \
+         seen, {wrong} wrong{example}"
+    );
+}
 
 /// The slope-lines golden of `tests/fixtures/fields` (PR #60), read and
 /// refined as the bake reads it (`kurven-cli`'s `loadScene` attaches

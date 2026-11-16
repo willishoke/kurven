@@ -283,3 +283,13 @@ fn a_parametric_surface_is_one_face_its_whole_parameter_rectangle() {
     }
     assert!(agree, "the torus is one face, everywhere in it, mapped by the surface's own map");
 }
+
+/// "faces: a polyhedron face's trim loops are its loops, and a contour cut
+/// at them is its hatching": each face of the seven solids, its lines at
+/// angle 0.37 (`Solid.hatchLines(_:onFace:)`) matched one for one with the
+/// contours of the coordinate across them cut at the face's trim loops.
+#[test]
+#[ignore = "PORT: phase 5 -- Solid::hatch_lines_on_face refuses until then"]
+fn a_polyhedron_faces_trim_loops_are_its_loops_and_a_contour_cut_at_them_is_its_hatching() {
+    panic!("Phase 5: Solid::hatch_lines_on_face is not ported");
+}

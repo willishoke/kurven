@@ -10,8 +10,7 @@ use kurven_core::grid::Grid2D;
 use kurven_core::manifest::{Domain, Interval, RealBand, Truncation};
 use kurven_core::simd::Vec2;
 use kurven_core::surface::{ContourRefine, Surface};
-use kurven_landscape::{ContourRefiner, NativeLandscape};
-use kurven_math::Expression;
+use kurven_landscape::{LandscapeRequest, NativeLandscape};
 
 pub fn domain(r0: f64, r1: f64, i0: f64, i1: f64) -> Domain {
     Domain::new(Interval::new(r0, r1), Interval::new(i0, i1))
@@ -36,16 +35,18 @@ impl Built {
 }
 
 /// `NativeLandscape.build(LandscapeRequest(expression:domain:resolution:
-/// truncation:), refine: true)`, its surface and refiner.
+/// truncation:), refine: true)`, its surface and refiner. The request asks
+/// for no layers: the surface and the refiner do not depend on them, and the
+/// default layers, each derived through the refiner, would cost a landscape
+/// on f most of its build for curves no suite here reads.
 pub fn build(expression: &str, domain: Domain, resolution: i64, truncation: Truncation) -> Built {
-    let compiled = Expression::compile(expression).unwrap_or_else(|e| panic!("{expression}: {e:?}"));
-    let samples = NativeLandscape::sample(&compiled, domain, resolution).expect("the domain samples");
-    let s = samples.shape;
-    let height = Grid2D::new(s.n_real, s.n_imag, domain, NativeLandscape::quantize(&samples.magnitude));
-    let phase = Grid2D::new(s.n_real, s.n_imag, domain, NativeLandscape::quantize(&samples.phase));
-    let surface = Surface::new(height, Some(phase), truncation, false);
-    let refine = ContourRefiner::new(compiled, domain, s.n_real, s.n_imag).refine_hook();
-    Built { surface, refine, shape: s }
+    let mut request = LandscapeRequest::new(expression, domain, resolution);
+    request.truncation = Some(truncation);
+    request.layers = Some(Vec::new());
+    let bundle = NativeLandscape::build(&request, "native", true).unwrap_or_else(|e| panic!("{expression}: {e:?}"));
+    let s = &bundle.manifest.height.shape;
+    let shape = kurven_landscape::GridShape { n_real: s.1 as usize, n_imag: s.0 as usize };
+    Built { surface: bundle.surface, refine: bundle.refine.expect("built with a refiner"), shape }
 }
 
 /// Polylines as segments, bucketed so that a point is met only with those

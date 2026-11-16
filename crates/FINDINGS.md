@@ -1084,6 +1084,84 @@ a contract landscape's with the build's domain, truncation and occluder,
 all that `KurvenBundle::occluder` reads. No suite was skipped for needing
 Scene's fold curves or visibility.
 
+## 2026-11-15 · The suites' landscapes on f are built by NativeLandscape::build
+
+The stand-ins the earlier waves recorded are gone, and no result changed.
+`common::build` (the visibility and stress suites) is now
+`NativeLandscape::build(request, "native", refine)`. `support::build` (the
+face suites) calls it too, with `layers: []`. The surface and the refiner do
+not depend on the layers, and deriving the default layers through the
+refiner would cost a landscape on f most of its build for curves those
+suites never read. The plain routine's chord suite no longer uses a
+closed-form |f| with a do-nothing hook. It builds "z" and "z^2" over [-2, 2]²
+as Swift does (`layers: []`, the occluder's context) and has moved to
+`kurven-landscape/tests/chords.rs`, beside the other chord suite.
+`kurven-core/tests/chords.rs` keeps the cuts suite, which builds no
+landscape. Every suite that used a stand-in passes as before.
+
+## 2026-11-15 · TopEdge.swift and Facing.swift's strokes: every suite passes
+
+`kurven-landscape/tests/top_edge.rs` holds TopEdge.swift's fourteen suites
+and `walls.rs` holds Facing.swift's nine on the strokes Hatch.swift draws.
+All use Swift's tolerances and all pass. No suite turned up a porting bug.
+None of them bakes. Facing.swift's "walls: the hatching and edges of a cut
+face are tested by the wall" ends by baking at 400 and comparing the wall
+hatch stroke for stroke. Here it compares that layer of
+`Scene::visible_layers`, passed through `HiddenLine::pass`, which is a
+landscape's bake stroke, against `visible_wall_curves`. The walks up the
+line of sight (the walls', the risers' and `SolidWalk`) are brute force, as
+in Swift, and spread over threads per camera with `common::par_map`, each
+camera's tally independent. `walls.rs` runs in about 12 s. TopEdge's banded
+suite has a loop over the riser's chords that adds `min(...) * 0.0`, which
+does nothing. It is ported as a comment, and the sag is measured below as in
+Swift. `densely_hidden` and `per_unit` move from `stress.rs` to
+`common/mod.rs`, so the slope-line suite can read them.
+
+## 2026-11-15 · PolylineSet::total_length is planar; Swift's suites measure in space
+
+`PolylineSet::total_length` ignores z, because it is the length a drawing
+comparison compares. The TopEdge and Facing suites sum segment lengths in
+space (`simd_length` of 3D differences). The pit of 1/Γ traces 0.294 units of
+fold in the plane and more than 0.5 in space, so the first port, written
+with `total_length`, failed on the test and not on the engine. The suites
+now use a 3D length of their own. Later ports should check which length a
+Swift suite means before using `total_length`.
+
+## 2026-11-15 · The last Phase 3 suites, and what stays unported
+
+All of these pass at Swift's tolerances:
+
+- IntegralCurves.swift's "on f, seen exactly where the dense cast against f
+  says", with Swift's `SegmentIndex` ported into the test.
+- The contour layers' half of Faces.swift's "a contour or a fold carried to
+  the truncation edge across a band boundary ends on the drawn top", which
+  joins its folds' half in `visibility.rs`. It checks 2,000 to 32,000
+  vertices a layer on the towers and on Γ at 600.
+- Faces.swift's restriction suite over the landscapes on f
+  (`kurven-landscape/tests/faces.rs`). These are the towers in one tile and
+  in two, and the reviewer's tower. Γ and the pole a tenth outside the tile
+  boundary stand on the whole region, which Swift's own filter passes over,
+  so the earlier entry's "Γ" was never in this suite.
+- Hatchings.swift's three suites on the value types: Turing's pattern, a
+  tone or step refused at decode, and the round trip through fields
+  (`kurven-core/tests/hatch.rs`).
+
+Not ported, each for a reason:
+
+- Faces.swift's "a polyhedron face's trim loops are its loops, and a contour
+  cut at them is its hatching" reads `Solid.hatchLines`, which is Phase 5.
+  It is ignored in `kurven-core/tests/faces.rs`. Hatchings.swift's six
+  solid suites are Phase 5 as well. So are Chords.swift's isophote parts:
+  "on the graph of sin z" is isophotes throughout, and is ignored whole.
+- In main.swift, "bake: a perspective camera is refused" belongs with the
+  bake crate, and "preview: curves on a surface steep in view ..." needs the
+  GPU preview. "bake: a tiled bake draws what a single-pass bake draws" has
+  nothing to hold here. A landscape's strokes are `visible_layers`, which
+  reads no depth buffer, so tiling the buffer cannot change them. The stress
+  suite already holds `visible_layers` the same every time it is asked.
+- Depth.swift's "the Metal pass agrees with an exact ray cast" is the GPU
+  depth pass, Phase 7.
+
 ## 2026-11-15 · Phase 3: the bake and the CLI's landscape commands
 
 Bake.swift is `kurven-bake/src/lib.rs`: `BakeOptions` (with `tile_count`),

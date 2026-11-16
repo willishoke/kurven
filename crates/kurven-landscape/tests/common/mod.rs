@@ -5,82 +5,23 @@
 
 #![allow(dead_code, clippy::neg_cmp_op_on_partial_ord, clippy::manual_range_contains)]
 
-use std::path::PathBuf;
-
 use kurven_core::bundle::KurvenBundle;
 use kurven_core::camera::{rotation_x, rotation_z};
 use kurven_core::grid::Grid2D;
-use kurven_core::json::{JsonObject, JsonValue};
-use kurven_core::manifest::{
-    Affine2, CameraPreset, Domain, GridRef, Interval, Manifest, Occluder, Provenance, Region, Truncation, Walls,
-};
+use kurven_core::manifest::{Affine2, Domain, Interval, Region, Truncation, Walls};
 use kurven_core::mesh::Mesh;
-use kurven_core::npy::NpyDType;
 use kurven_core::scene::Heightfield;
-use kurven_core::simd::{Mat3, Vec3};
-use kurven_core::spaces::{Angle, P3, Transform, ViewSpace, WorldSpace};
+use kurven_core::simd::{Mat3, Vec2, Vec3};
+use kurven_core::spaces::{Angle, DomainSpace, P2, P3, Transform, ViewSpace, WorldSpace};
 use kurven_core::splitmix::SplitMix;
-use kurven_core::surface::Surface;
-use kurven_landscape::{ContourRefiner, LandscapeRequest, NativeLandscape};
-use kurven_math::{Expression, swift};
+use kurven_core::surface::{Magnitude, Surface};
+use kurven_landscape::{LandscapeRequest, NativeLandscape};
+use kurven_math::swift;
 
-/// `NativeLandscape.build(request, refine:)`: the grids sampled and
-/// quantized, the manifest's defaults, and with `refine` the refiner's hook,
-/// every described layer derived through it.
+/// `NativeLandscape.build(request, refine:)`, as Swift's suites call it:
+/// the git sha "native", the error unwrapped.
 pub fn build(request: &LandscapeRequest, refine: bool) -> KurvenBundle {
-    let compiled = Expression::compile(&request.expression).unwrap();
-    let canonical = compiled.expression().to_string();
-    let samples = NativeLandscape::sample(&compiled, request.domain, request.resolution).unwrap();
-    let shape = samples.shape;
-    let domain = request.domain;
-    let truncation =
-        request.truncation.clone().unwrap_or_else(|| NativeLandscape::default_truncation(&samples.magnitude));
-    let density = NativeLandscape::wall_density(domain, shape).unwrap();
-    let perimeter = NativeLandscape::rectangle(domain, &density);
-    let layers = request.layers.clone().unwrap_or_else(|| {
-        NativeLandscape::default_layers(
-            domain,
-            &truncation,
-            NativeLandscape::ceiling(&truncation, &samples.magnitude),
-            request.spacing,
-            true,
-        )
-    });
-    let step = 1.max(shape.n_real.max(shape.n_imag) as i64 / NativeLandscape::OCCLUDER_RESOLUTION);
-    let grid_shape = (shape.n_imag as i64, shape.n_real as i64);
-    let mut params = JsonObject::new();
-    params.insert("expression".into(), JsonValue::String(canonical.clone()));
-    params.insert("name".into(), JsonValue::String(request.name.clone()));
-    params.insert("resolution".into(), JsonValue::Int(request.resolution));
-    params.insert("nReal".into(), JsonValue::Int(shape.n_real as i64));
-    params.insert("nImag".into(), JsonValue::Int(shape.n_imag as i64));
-    let manifest = Manifest::new(
-        domain,
-        GridRef { file: "height.npy".into(), shape: grid_shape, dtype: NpyDType::Float32 },
-        Some(GridRef { file: "phase.npy".into(), shape: grid_shape, dtype: NpyDType::Float32 }),
-        truncation.clone(),
-        Occluder {
-            step,
-            tiles: vec![Affine2::IDENTITY],
-            walls: Walls::Perimeter { perimeter, base: 0.0 },
-            region: Region::Full,
-            base: 0.0,
-        },
-        layers,
-        vec![CameraPreset {
-            name: "oblique".into(),
-            projection: NativeLandscape::PROJECTION,
-            depth_tolerance: NativeLandscape::DEFAULT_DEPTH_TOLERANCE,
-            buffer: NativeLandscape::DEFAULT_BUFFER,
-        }],
-        Provenance { function: canonical, example: "function".into(), params, cpu_count: 1, git_sha: "native".into() },
-    );
-    let height = Grid2D::new(shape.n_real, shape.n_imag, domain, NativeLandscape::quantize(&samples.magnitude));
-    let phase = Grid2D::new(shape.n_real, shape.n_imag, domain, NativeLandscape::quantize(&samples.phase));
-    let surface = Surface::new(height, Some(phase), truncation, false);
-    let refine = refine.then(|| ContourRefiner::new(compiled, domain, shape.n_real, shape.n_imag).refine_hook());
-    let name = if request.name.is_empty() { "landscape".to_string() } else { request.name.clone() };
-    KurvenBundle::described(PathBuf::from(format!("/native/{name}.kurven")), manifest, surface, refine)
+    NativeLandscape::build(request, "native", refine).unwrap_or_else(|e| panic!("{}: {e:?}", request.expression))
 }
 
 /// The test suites' camera: `rotationX(elevation) * rotationZ(azimuth) * shear`,
@@ -246,4 +187,167 @@ pub fn random_heightfield(cells: usize, seed: u64, truncation: Truncation, ampli
     let values: Vec<f32> = (0..n * n).map(|_| rng.next(0.0, amplitude) as f32).collect();
     let surface = Surface::new(Grid2D::new(n, n, domain, values), None, truncation, false);
     Heightfield::new(surface, Mesh::empty(), vec![Affine2::IDENTITY], Region::Full, 1, None, Walls::None)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub struct DenseGap {
+    pub over_f: f64,
+    pub over_truncation: f64,
+    pub cosine: f64,
+}
+
+/// Whether f hides `p` from the eye, by walking the line of sight in steps of
+/// a sixty-fourth of a cell and bisecting each crossing of the surface it
+/// finds, under the traversal's own meaning of the depth tolerance: in its own surface's
+/// neighbourhood from the start, the line is forgiven the depth tolerance
+/// perpendicular to the surface; once it has been outside, being inside at
+/// or beyond the depth tolerance's reach is occlusion. The oracle for `GridTraversal`
+/// with the function at hand. (Swift's trace is left out: it only prints.)
+#[allow(clippy::too_many_arguments)]
+pub fn densely_hidden(
+    h: &Heightfield,
+    magnitude: &Magnitude,
+    p: Vec3,
+    toward: Vec3,
+    depth_tolerance: f64,
+    per_unit: f64,
+    cell: f64,
+) -> Option<f64> {
+    let reach = depth_tolerance / swift::max(per_unit, 1e-12);
+    let mut top = f64::NEG_INFINITY;
+    h.for_each_sample(|q| top = swift::max(top, q.z()));
+    let d = toward;
+    let mut t_max = f64::INFINITY;
+    if d.z > 0.0 {
+        t_max = swift::max((top - p.z) / d.z, 0.0);
+    } else if d.z == 0.0 && p.z > top {
+        return None;
+    }
+    assert_eq!(h.tiles.len(), 1, "the dense cast reads f on the fundamental tile only");
+    let e = 1e-4 * cell;
+    let dom = h.surface.domain();
+    let (blo, bhi) = (
+        Vec2::new(swift::min(dom.real.lo, dom.real.hi), swift::min(dom.imag.lo, dom.imag.hi)),
+        Vec2::new(swift::max(dom.real.lo, dom.real.hi), swift::max(dom.imag.lo, dom.imag.hi)),
+    );
+    // The line's gaps over f and over the truncation at `t`, and f's cosine; None
+    // outside the region.
+    let gaps = |t: f64| -> Option<DenseGap> {
+        let q = P2::<WorldSpace>::new(p.x + t * d.x, p.y + t * d.y);
+        // Nothing is drawn outside the domain's box: the traversal stops at the
+        // grid's edge, and f beyond it is not the solid.
+        if !(q.x() >= blo.x && q.x() <= bhi.x && q.y() >= blo.y && q.y() <= bhi.y && h.region.contains(q)) {
+            return None;
+        }
+        let dq = P2::<DomainSpace>::new(q.x(), q.y());
+        let u = magnitude(dq);
+        let truncation_height = h.surface.truncation.height_at(dq.x());
+        let hx = (magnitude(P2::new(dq.x() + e, dq.y())) - magnitude(P2::new(dq.x() - e, dq.y()))) / (2.0 * e);
+        let hy = (magnitude(P2::new(dq.x(), dq.y() + e)) - magnitude(P2::new(dq.x(), dq.y() - e))) / (2.0 * e);
+        let cosine = 1.0 / (1.0 + hx * hx + hy * hy).sqrt();
+        let z = p.z + t * d.z;
+        Some(DenseGap {
+            over_f: z - if u.is_nan() { f64::INFINITY } else { u },
+            over_truncation: z - truncation_height,
+            cosine: if cosine.is_nan() { 0.0 } else { cosine },
+        })
+    };
+    let inside =
+        |g: Option<DenseGap>, z_eps: f64| -> bool { g.is_some_and(|g| g.over_f < z_eps && g.over_truncation < z_eps) };
+    let mut outside_yet = false;
+    let t_eps = 1e-9 * cell;
+    // As the traversal: a point on the solid's boundary -- the domain's edge --
+    // is tested only from where the line goes next.
+    let strictly_inside = p.x > blo.x + 1e-9 && p.x < bhi.x - 1e-9 && p.y > blo.y + 1e-9 && p.y < bhi.y - 1e-9;
+    let mut hidden = |t: f64, g: Option<DenseGap>| -> bool {
+        let z_eps = if t > t_eps { 0.0 } else { 1e-9 * cell };
+        let Some(g) = g.filter(|_| inside(g, z_eps)) else {
+            // As the traversal: outside by less than the depth tolerance is within the
+            // surface's skin, not outside it.
+            if let Some(g) = g {
+                let clearance = if g.over_f > g.over_truncation { g.over_f * g.cosine } else { g.over_truncation };
+                if clearance <= depth_tolerance {
+                    return false;
+                }
+            }
+            outside_yet = true;
+            return false;
+        };
+        if !(t > t_eps || strictly_inside) {
+            return false;
+        }
+        if outside_yet {
+            return t + t_eps >= reach;
+        }
+        let depth = if g.over_f > g.over_truncation { g.over_f * g.cosine } else { g.over_truncation };
+        depth + depth_tolerance < 0.0
+    };
+    // The line leaves the region eventually; walk until it has.
+    let step = cell / 64.0;
+    let mut t = 0.0;
+    let mut previous = gaps(0.0);
+    if hidden(0.0, previous) {
+        return Some(0.0);
+    }
+    let mut left = 0;
+    while t < t_max && left < 100_000 {
+        let tn = t + step;
+        let g = gaps(tn);
+        // A crossing of the surface between the two: bisect it and test
+        // just inside.
+        if inside(previous, 0.0) != inside(g, 0.0) {
+            let (mut lo, mut hi) = (t, tn);
+            let inside_lo = inside(previous, 0.0);
+            for _ in 0..50 {
+                let m = 0.5 * (lo + hi);
+                if inside(gaps(m), 0.0) == inside_lo {
+                    lo = m;
+                } else {
+                    hi = m;
+                }
+            }
+            let tc = if inside_lo { lo } else { hi };
+            if hidden(tc, gaps(tc)) {
+                return Some(tc);
+            }
+        }
+        // Leaving the region between the two: the traversal tests the exit
+        // itself, so the cast does too -- bisected, and tested a hair
+        // inside, where a line passing under a top edge is inside the solid --
+        // before the sample beyond it, which is off the region.
+        if previous.is_some() && g.is_none() {
+            let (mut lo, mut hi) = (t, tn);
+            for _ in 0..50 {
+                let m = 0.5 * (lo + hi);
+                if gaps(m).is_some() {
+                    lo = m;
+                } else {
+                    hi = m;
+                }
+            }
+            if hidden(lo, gaps(lo)) {
+                return Some(lo);
+            }
+        }
+        if hidden(tn, g) {
+            return Some(tn);
+        }
+        if g.is_none() && previous.is_none() {
+            left += 1;
+            if left > 64 {
+                break;
+            }
+        } else {
+            left = 0;
+        }
+        previous = g;
+        t = tn;
+    }
+    None
+}
+
+/// The view depth per unit of travel along the line of sight.
+pub fn per_unit(view: &Transform<WorldSpace, ViewSpace>, toward: Vec3) -> f64 {
+    let c = view.m.columns;
+    Vec3::new(c[0].z, c[1].z, c[2].z).dot(toward).abs()
 }
