@@ -15,18 +15,27 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 pub mod bisection;
+pub mod bundle;
 pub mod camera;
 pub mod contour;
 pub mod convex_partition;
 pub mod depth;
+pub mod face;
+pub mod face_contour;
 pub mod fixtures;
 pub mod grid;
+pub mod hatch_stub;
 pub mod hatching;
 pub mod json;
 pub mod manifest;
+pub mod mesh;
 pub mod navigation;
 pub mod npy;
+pub mod parametric;
+pub mod pick;
 pub mod polyline;
+pub mod scalar_field;
+pub mod scene;
 pub mod simd;
 pub mod solid;
 pub mod spaces;
