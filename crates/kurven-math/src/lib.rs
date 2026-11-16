@@ -7,8 +7,22 @@
 //! is `Gamma.gamma(z)`. Swift's enums used as namespaces are uninhabited
 //! enums here, with associated functions.
 
+pub mod bessel;
 pub mod complex;
+pub mod erf;
+pub mod expint;
 pub mod format;
+pub mod gamma;
+pub mod jacobi;
+pub mod lambert_w;
 pub mod real;
+pub mod zeta;
 
+pub use bessel::{Airy, Bessel};
 pub use complex::Complex;
+pub use erf::Faddeeva;
+pub use expint::ExpInt;
+pub use gamma::{Gamma, Trig};
+pub use jacobi::Jacobi;
+pub use lambert_w::LambertW;
+pub use zeta::Zeta;
