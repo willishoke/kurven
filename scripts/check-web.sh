@@ -160,6 +160,10 @@ references() {
     for name in $baked; do
         printf '%s\n' "$listed" | grep -qx "$name" || { echo "$name is baked and has no line in crates/fixtures/references.txt"; failed=1; }
     done
+    for name in $(printf '%s\n' "$listed" | sort | uniq -d); do
+        echo "$name has more than one line in crates/fixtures/references.txt"
+        failed=1
+    done
     # The same layer names, in the same order, as Swift's index lists.
     node -e '
         const fs = require("fs");
@@ -170,8 +174,18 @@ references() {
             if (rust[name] !== swift[name]) { console.log(`${name}: layers [${rust[name]}] against Swift [${swift[name]}]`); bad = 1; }
         }
         process.exit(bad);' "$dir/index.json" "$CRATES/fixtures/swift/index.json" || failed=1
-    while read -r name distance length skip; do
-        case "$name" in '' | '#'*) continue ;; esac
+    # Every line is four fields; a last line without its newline is read
+    # too, not dropped uncompared.
+    local line fields
+    while IFS= read -r line || [ -n "$line" ]; do
+        read -r -a fields <<< "$line"
+        case "${fields[0]:-}" in '' | '#'*) continue ;; esac
+        if [ "${#fields[@]}" != 4 ]; then
+            echo "crates/fixtures/references.txt: want name, distance, length and skip (- for none): $line"
+            failed=1
+            continue
+        fi
+        name=${fields[0]} distance=${fields[1]} length=${fields[2]} skip=${fields[3]}
         args=(--tolerance "$distance" --length-tolerance "$length")
         [ "$skip" != - ] && args+=(--skip "$skip")
         if ! out=$("$CLI" compare "$CRATES/fixtures/swift/$name.svg" "$dir/$name.svg" "${args[@]}"); then
