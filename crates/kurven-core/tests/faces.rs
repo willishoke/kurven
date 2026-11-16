@@ -267,7 +267,6 @@ fn a_polyhedrons_faces_are_its_loops_and_membership_agrees_with_the_convex_piece
 
 /// "faces: a parametric surface is one face, its whole parameter rectangle"
 #[test]
-#[ignore = "PORT: phase 4 (ParametricSurface.torus)"]
 fn a_parametric_surface_is_one_face_its_whole_parameter_rectangle() {
     let torus = ParametricSurface::torus(3.0, 1.0, (40, 20)).expect("the torus");
     let faces = SceneGeometry::Parametric(torus.clone()).faces();

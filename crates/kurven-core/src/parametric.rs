@@ -1,20 +1,24 @@
 //! Parametric surfaces: a map from a parameter rectangle into space, with its
 //! derivatives. The port of `Sources/KurvenCore/Parametric.swift`.
 //!
-//! Phase 3 ports every type of the file whole, and the behaviour a face, a
-//! scalar field or a landscape reaches: the axes, the jets, the surface's
-//! constructors (its grid and its orientation), its facing, its coordinate
-//! curves and its grid's bilinear patch. What only a parametric surface
-//! needs -- the fold curves and their grid normals, the linear curves, the
-//! torus, the displaced surface -- is Phase 4's, and each is a typed refusal
-//! ([`PortRefusal`]) until then.
+//! The whole file: the axes, the jets, the surface's constructors (its grid
+//! and its orientation), its facing, its coordinate curves, its fold curves
+//! exact and as the grid sees them, its grid's bilinear patch, the linear
+//! curves, the round torus (in its angles or isothermal) and the surface
+//! displaced along its normal. [`PortRefusal`], the port's typed refusal of
+//! what a later phase brings, lives here because Phase 3 first needed it here.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use kurven_math::swift;
+use kurven_math::{real, swift};
 
-use crate::manifest::Interval;
+use crate::bisection::bisect_points;
+use crate::contour;
+use crate::grid::Grid2D;
+use crate::integral_curves::VectorField;
+use crate::manifest::{Domain, Interval};
 use crate::polyline::PolylineSet;
 use crate::scalar_field::short_way;
 use crate::simd::{Vec2, Vec3};
@@ -252,6 +256,11 @@ pub enum ParametricError {
     NoVolume,
     /// A grid handed in whose count is not the axes' product.
     PositionCount { positions: usize, u: usize, v: usize },
+    /// Grid normals handed in whose count is not the grid's.
+    NormalCount { normals: usize, points: usize },
+    /// A torus asked for over axes that are not both periodic, or
+    /// isothermal coordinates on a torus that reaches its axis.
+    NotATorus(&'static str),
 }
 
 impl fmt::Display for ParametricError {
@@ -261,6 +270,8 @@ impl fmt::Display for ParametricError {
             ParametricError::PositionCount { positions, u, v } => {
                 write!(f, "{positions} positions for a {u}x{v} grid")
             }
+            ParametricError::NormalCount { normals, points } => write!(f, "{normals} normals for {points} grid points"),
+            ParametricError::NotATorus(why) => write!(f, "{why}"),
         }
     }
 }
@@ -466,32 +477,404 @@ impl ParametricSurface {
         PolylineSet::from_paths_with_coords(&paths, &coords)
     }
 
-    /// The fold curves for lines of sight along `sight`, where the surface
-    /// turns edge-on (`foldCurves(sight:grid:creases:)`).
+    /// The fold curves for lines of sight along `sight`: where the surface turns
+    /// edge-on, `n · sight = 0`, which is where its outline and every inner
+    /// outline lie.
+    ///
+    /// Traced by marching squares on that product over the parameter
+    /// rectangle -- sampled one step past a periodic axis's end, so a fold
+    /// crosses the seam instead of stopping at it -- and every vertex then
+    /// moved onto the exact fold by bisection along the product's gradient.
+    /// The grid decides which folds exist; the map decides where they run.
+    /// Where the sign changes across a crease rather than through a zero
+    /// -- a truncation edge, which the truncation edge's own layer draws -- the vertex is
+    /// dropped and the line cut there. From a cut the fold is traced on in
+    /// steps a sixteenth of a cell, each set onto the fold by the map, to
+    /// where it meets the crease or another cut: a fold down a steep wall
+    /// can run its whole visible length inside one cell, where the grid
+    /// has no vertex for it. Where the grid has none of a fold at all,
+    /// `creases` -- the truncation edges, in surface coordinates -- seed it: a fold
+    /// meets a crease where the facing a hair to one side of it changes
+    /// sign along it, and is traced from there both ways.
+    /// They depend on the camera, so they are derived for one, never stored.
+    ///
+    /// Swift spreads the grid's rows, the cuts and the seeds over threads;
+    /// here each is a loop in order, every iteration writing its own slot,
+    /// so the answer is the same.
     pub fn fold_curves(
         &self,
-        _sight: Vec3,
-        _grid: Option<(usize, usize)>,
-        _creases: &[Vec<P2<ParamSpace>>],
-    ) -> Result<PolylineSet<WorldSpace>, PortRefusal> {
-        // PORT: phase 4 -- the fold curves of a parametric surface: marching squares on n · sight, each vertex bisected onto the fold, traced on from cuts and seeded from creases.
-        Err(PortRefusal { phase: 4, what: "ParametricSurface.foldCurves" })
+        sight: Vec3,
+        grid: Option<(usize, usize)>,
+        creases: &[Vec<P2<ParamSpace>>],
+    ) -> PolylineSet<WorldSpace> {
+        let (u, v) = (self.u, self.v);
+        let (nu, nv) = grid.unwrap_or((u.cells(), v.cells()));
+        let map = &self.map;
+        let edge_on = |c: Vec2| -> f64 {
+            let n = map(P2::from_vec(c)).normal();
+            let len = n.length();
+            if len > 0.0 { n.dot(sight) / len } else { 0.0 }
+        };
+        let du = u.range.length() / nu as f64;
+        let dv = v.range.length() / nv as f64;
+        let mut values = Vec::with_capacity((nu + 1) * (nv + 1));
+        for j in 0..=nv {
+            for i in 0..=nu {
+                values.push(edge_on(Vec2::new(u.range.lo + i as f64 * du, v.range.lo + j as f64 * dv)) as f32);
+            }
+        }
+        let field = Grid2D::new(nu + 1, nv + 1, Domain::new(u.range, v.range), values);
+
+        // Onto the fold: bracket a sign change along the gradient within a
+        // cell either way, then bisect it to the last bit. A fold is a
+        // zero the product passes through, changing in proportion to the
+        // span across it; at a crease it changes all at once, even where a
+        // differenced normal smooths the jump over a hair, so a span a
+        // hundredth of the size holds most of it. That is no fold: None.
+        // Nor is a vertex the map finds no zero beside, within a cell
+        // either way: the grid saw a sign change the map does not have,
+        // as across a crease, where a grid cell holds the truncation and the
+        // wall.
+        let h = 0.25 * swift::min(du, dv);
+        let gradient = |c: Vec2, h: f64| -> Vec2 {
+            Vec2::new(
+                edge_on(Vec2::new(c.x + h, c.y)) - edge_on(Vec2::new(c.x - h, c.y)),
+                edge_on(Vec2::new(c.x, c.y + h)) - edge_on(Vec2::new(c.x, c.y - h)),
+            )
+        };
+        // The zero within `r` either way along the unit `e`, or None.
+        let onto = |c: Vec2, e: Vec2, r: f64| -> Option<Vec2> {
+            let d = e * r;
+            let (a, b) = (c - d, c + d);
+            let fa = edge_on(a);
+            if (fa > 0.0) == (edge_on(b) > 0.0) {
+                return None;
+            }
+            let (holds, fails) = bisect_points(a, b, |p| (edge_on(p) > 0.0) == (fa > 0.0));
+            let m = 0.5 * (holds + fails);
+            let across = |t: f64| (edge_on(m + t * d) - edge_on(m - t * d)).abs();
+            if across(1e-3) > 0.5 * across(1e-1) { None } else { Some(m) }
+        };
+        let refine = |c: Vec2| -> Option<Vec2> {
+            let g = gradient(c, h);
+            let len = g.length();
+            if !(len > 0.0) {
+                return Some(c);
+            }
+            onto(c, g / len, swift::max(du, dv))
+        };
+
+        // The runs, and which of their ends a dropped vertex cut.
+        struct Run {
+            c: Vec<Vec2>,
+            cut_start: bool,
+            cut_end: bool,
+        }
+        let mut runs: Vec<Run> = Vec::new();
+        for line in contour::lines(&field, 0.0, None) {
+            let mut run: Vec<Vec2> = Vec::new();
+            let mut cut = false;
+            for p in line {
+                if let Some(c) = refine(p.v) {
+                    run.push(c);
+                    continue;
+                }
+                if run.len() >= 2 {
+                    runs.push(Run { c: std::mem::take(&mut run), cut_start: cut, cut_end: true });
+                }
+                run.clear();
+                cut = true;
+            }
+            if run.len() >= 2 {
+                runs.push(Run { c: run, cut_start: cut, cut_end: false });
+            }
+        }
+
+        // On from each cut, a step at a time: along the fold's tangent, then
+        // onto the fold along the gradient within a step either way. Where
+        // the step no longer finds the fold it has met a crease, and the
+        // last step is cut back by bisection to just short of it. It ends
+        // at another cut it comes within a step and a half of, and where it
+        // comes back onto fold the grid already has.
+        let step = swift::min(du, dv) / 16.0;
+        let lo = Vec2::new(u.range.lo - du, v.range.lo - dv);
+        let hi = Vec2::new(u.range.hi + du, v.range.hi + dv);
+        let scale = Vec2::new(du, dv);
+        let mut ends: Vec<(usize, bool)> = Vec::new();
+        for (i, r) in runs.iter().enumerate() {
+            if r.cut_start {
+                ends.push((i, false));
+            }
+            if r.cut_end {
+                ends.push((i, true));
+            }
+        }
+        let lines: Vec<Vec<Vec2>> = runs.iter().map(|r| r.c.clone()).collect();
+        let end_point: Vec<Vec2> =
+            ends.iter().map(|&(run, at_end)| lines[run][if at_end { lines[run].len() - 1 } else { 0 }]).collect();
+        // Swift's `Int((c / d).rounded(.down))` traps on a coordinate that is
+        // not a number; such a point is filed in no cell, so nothing is near it.
+        let cell = |c: Vec2| -> Option<(i64, i64)> {
+            Some((swift::int((c.x / du).floor())?, swift::int((c.y / dv).floor())?))
+        };
+        let mut by_cell: HashMap<(i64, i64), Vec<(usize, Vec2)>> = HashMap::new();
+        for (i, r) in lines.iter().enumerate() {
+            for &c in r {
+                if let Some(k) = cell(c) {
+                    by_cell.entry(k).or_default().push((i, c));
+                }
+            }
+        }
+        // Fold the grid has, within a quarter cell: any run's but this
+        // one's own about where the trace set out.
+        let covered = |z: Vec2, run: i64, p0: Vec2| -> bool {
+            let Some((ox, oy)) = cell(z) else { return false };
+            for a in -1..=1 {
+                for b in -1..=1 {
+                    let Some(list) = by_cell.get(&(ox.wrapping_add(a), oy.wrapping_add(b))) else { continue };
+                    for &(qr, at) in list {
+                        if quotient(at - z, scale).length() < 0.25
+                            && (qr as i64 != run || quotient(at - p0, scale).length() > 0.5)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        };
+        // From `p0` on the fold, setting out along `heading`; `run` is the
+        // run it leaves, -1 for none, and `k` the cut it leaves, -1 for none.
+        let trace = |p0: Vec2, h0: Vec2, run: i64, k: i64| -> (Vec<Vec2>, Option<usize>) {
+            let mut heading = h0;
+            let mut p = p0;
+            let mut out: Vec<Vec2> = Vec::new();
+            let next = |p: Vec2, t: Vec2, tau: f64| -> Option<Vec2> {
+                let q = p + tau * step * t;
+                if !(q.x > lo.x && q.y > lo.y && q.x < hi.x && q.y < hi.y) {
+                    return None;
+                }
+                let g = gradient(q, 0.25 * step);
+                let len = g.length();
+                if len > 0.0 { onto(q, g / len, step) } else { None }
+            };
+            for _ in 0..128 {
+                let g = gradient(p, 0.25 * step);
+                let len = g.length();
+                if !(len > 0.0) {
+                    break;
+                }
+                let mut t = Vec2::new(-g.y, g.x) / len;
+                if t.dot(heading) < 0.0 {
+                    t = -t;
+                }
+                let Some(z) = next(p, t, 1.0) else {
+                    let (mut a, mut b) = (0.0, 1.0);
+                    let mut last: Option<Vec2> = None;
+                    for _ in 0..30 {
+                        let mid = 0.5 * (a + b);
+                        if let Some(z) = next(p, t, mid) {
+                            a = mid;
+                            last = Some(z);
+                        } else {
+                            b = mid;
+                        }
+                    }
+                    if let Some(last) = last {
+                        out.push(last);
+                    }
+                    break;
+                };
+                if let Some(j) =
+                    (0..end_point.len()).find(|&j| j as i64 != k && (end_point[j] - z).length() < 1.5 * step)
+                {
+                    out.push(z);
+                    out.push(end_point[j]);
+                    return (out, Some(j));
+                }
+                if covered(z, run, p0) {
+                    break;
+                }
+                out.push(z);
+                heading = z - p;
+                p = z;
+            }
+            (out, None)
+        };
+        let traced: Vec<(Vec<Vec2>, Option<usize>)> = (0..ends.len())
+            .map(|k| {
+                // The heading from a vertex half a cell back: two grid
+                // vertices in one cell can come out of refinement reversed.
+                let (run, at_end) = ends[k];
+                let r = &lines[run];
+                let p0 = end_point[k];
+                let back: Vec<Vec2> = if at_end {
+                    r.iter().rev().skip(1).copied().collect()
+                } else {
+                    r.iter().skip(1).copied().collect()
+                };
+                let behind = back.iter().copied().find(|&q| quotient(p0 - q, scale).length() > 0.5).unwrap_or(back[0]);
+                trace(p0, p0 - behind, run as i64, k as i64)
+            })
+            .collect();
+        // Two cuts traced to each other are one piece of fold: keep one.
+        for k in 0..ends.len() {
+            if traced[k].0.is_empty() {
+                continue;
+            }
+            if let Some(j) = traced[k].1
+                && traced[j].1 == Some(k)
+                && j < k
+            {
+                continue;
+            }
+            let pts = &traced[k].0;
+            let (i, at_end) = ends[k];
+            if at_end {
+                runs[i].c.extend_from_slice(pts);
+            } else {
+                let mut joined: Vec<Vec2> = pts.iter().rev().copied().collect();
+                joined.extend_from_slice(&runs[i].c);
+                runs[i].c = joined;
+            }
+        }
+        let mut coords: Vec<Vec<Vec2>> = runs.into_iter().map(|r| r.c).collect();
+
+        // From the creases: wherever the facing a fiftieth of a cell to one
+        // side of a crease changes sign between two of its vertices, a fold
+        // meets it there. One already ended within a tenth of a cell is
+        // drawn; any other is found on that line beside the crease and
+        // traced both ways, to the crease and away from it.
+        let mut drawn: HashMap<(i64, i64), Vec<Vec2>> = HashMap::new();
+        for r in &coords {
+            for &c in r {
+                if let Some(k) = cell(c) {
+                    drawn.entry(k).or_default().push(c);
+                }
+            }
+        }
+        let reached = |j: Vec2| -> bool {
+            let Some((ox, oy)) = cell(j) else { return false };
+            for a in -1..=1 {
+                for b in -1..=1 {
+                    if let Some(list) = drawn.get(&(ox.wrapping_add(a), oy.wrapping_add(b)))
+                        && list.iter().any(|&q| quotient(q - j, scale).length() < 0.1)
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        };
+        let mut seeds: Vec<(Vec2, Vec2, Vec2)> = Vec::new();
+        for line in creases.iter().filter(|l| l.len() >= 2) {
+            for i in 0..line.len() - 1 {
+                let (a, b) = (line[i].v, line[i + 1].v);
+                let along = quotient(b - a, scale);
+                if !(along.length() > 0.0) {
+                    continue;
+                }
+                let off = (0.02 * Vec2::new(-along.y, along.x) / along.length()).mul_elements(scale);
+                for side in [1.0, -1.0] {
+                    let fa = edge_on(a + side * off);
+                    let fb = edge_on(b + side * off);
+                    if (fa > 0.0) == (fb > 0.0) {
+                        continue;
+                    }
+                    if !reached(a + fa / (fa - fb) * (b - a)) {
+                        seeds.push((a + side * off, b + side * off, side * off));
+                    }
+                }
+            }
+        }
+        for &(a, b, off) in &seeds {
+            // Onto the fold along the line beside the crease, which
+            // brackets it and never crosses the crease.
+            let Some(p0) = onto(0.5 * (a + b), (b - a).normalized(), 0.5 * (b - a).length()) else { continue };
+            let toward = trace(p0, -off, -1, -1).0;
+            let away = trace(p0, off, -1, -1).0;
+            let mut c: Vec<Vec2> = toward.into_iter().rev().collect();
+            c.push(p0);
+            c.extend(away);
+            if c.len() >= 2 {
+                coords.push(c);
+            }
+        }
+
+        let coords: Vec<Vec<P2<ParamSpace>>> =
+            coords.into_iter().map(|r| r.into_iter().map(P2::from_vec).collect()).collect();
+        let paths: Vec<Vec<P3<WorldSpace>>> =
+            coords.iter().map(|r| r.iter().map(|&c| P3::from_vec(map(c).position)).collect()).collect();
+        PolylineSet::from_paths_with_coords(&paths, &coords)
     }
 
-    /// The grid's unit normals by central differences (`gridNormals`).
-    pub fn grid_normals(&self) -> Result<Vec<[f32; 3]>, PortRefusal> {
-        // PORT: phase 4 -- the grid's unit normals by central differences, one-sided at a bounded axis's ends, for the preview's grid folds.
-        Err(PortRefusal { phase: 4, what: "ParametricSurface.gridNormals" })
+    /// The grid's unit normals, by central differences on the grid --
+    /// one-sided at a bounded axis's ends -- `u` fastest, as `positions`.
+    ///
+    /// They do not depend on the camera, so they are computed once per
+    /// surface and handed to `grid_fold_curves` for every camera after.
+    /// Where the grid is degenerate the normal is zero.
+    pub fn grid_normals(&self) -> Vec<[f32; 3]> {
+        let (nu, nv) = (self.u.samples, self.v.samples);
+        let at = |i: i64, j: i64| -> Vec3 {
+            let ii = if self.u.periodic { self.u.sample(i) } else { i.clamp(0, nu as i64 - 1) as usize };
+            let jj = if self.v.periodic { self.v.sample(j) } else { j.clamp(0, nv as i64 - 1) as usize };
+            self.positions[jj * nu + ii].v
+        };
+        let mut normals = vec![[0.0f32; 3]; nu * nv];
+        for j in 0..nv as i64 {
+            for i in 0..nu as i64 {
+                let n = (at(i + 1, j) - at(i - 1, j)).cross(at(i, j + 1) - at(i, j - 1));
+                let len = n.length();
+                if len > 0.0 {
+                    let unit = n / len;
+                    normals[j as usize * nu + i as usize] = [unit.x as f32, unit.y as f32, unit.z as f32];
+                }
+            }
+        }
+        normals
     }
 
-    /// The fold curves as the grid sees them (`gridFoldCurves`).
+    /// The fold curves as the grid sees them: `fold_curves` without asking
+    /// the map anything.
+    ///
+    /// Marching squares on `n · sight` at the grid points, from normals
+    /// computed once (`grid_normals`), and each vertex placed by bilinear
+    /// interpolation of the grid -- no refinement onto the exact fold. So
+    /// a fold is as accurate as the grid is fine, which at a drawing
+    /// grid is well under a pixel, and costs a dot product per grid
+    /// point: fast enough to follow the camera. The preview draws these; the
+    /// bake keeps `fold_curves`, whose vertices are exact. The dot product is
+    /// single precision, as simd's `Float` one is, summed in component order.
     pub fn grid_fold_curves(
         &self,
-        _normals: &[[f32; 3]],
-        _sight: Vec3,
-    ) -> Result<PolylineSet<WorldSpace>, PortRefusal> {
-        // PORT: phase 4 -- marching squares on n · sight at the grid points from gridNormals, each vertex placed by interpolate.
-        Err(PortRefusal { phase: 4, what: "ParametricSurface.gridFoldCurves" })
+        normals: &[[f32; 3]],
+        sight: Vec3,
+    ) -> Result<PolylineSet<WorldSpace>, ParametricError> {
+        if normals.len() != self.positions.len() {
+            return Err(ParametricError::NormalCount { normals: normals.len(), points: self.positions.len() });
+        }
+        // One column and row past a periodic axis's end, as `fold_curves`
+        // samples: the seam's cells close on the first samples.
+        let (nu, nv, stride) = (self.u.cells(), self.v.cells(), self.u.samples);
+        let s = [sight.x as f32, sight.y as f32, sight.z as f32];
+        let mut values = vec![0.0f32; (nu + 1) * (nv + 1)];
+        for j in 0..=nv {
+            let row = self.v.sample(j as i64) * stride;
+            for i in 0..=nu {
+                let n = normals[row + self.u.sample(i as i64)];
+                values[j * (nu + 1) + i] = n[0] * s[0] + n[1] * s[1] + n[2] * s[2];
+            }
+        }
+        let field = Grid2D::new(nu + 1, nv + 1, Domain::new(self.u.range, self.v.range), values);
+        let mut paths = Vec::new();
+        let mut coords = Vec::new();
+        for line in contour::lines(&field, 0.0, None) {
+            let c: Vec<P2<ParamSpace>> = line.iter().map(|p| P2::new(p.x(), p.y())).collect();
+            paths.push(c.iter().map(|&c| self.interpolate(c)).collect());
+            coords.push(c);
+        }
+        Ok(PolylineSet::from_paths_with_coords(&paths, &coords))
     }
 
     /// The grid's bilinear patch at a coordinate: the surface as it is
@@ -513,10 +896,30 @@ impl ParametricSurface {
         P3::from_vec((1.0 - b) * ((1.0 - a) * p00 + a * p10) + b * ((1.0 - a) * p01 + a * p11))
     }
 
-    /// The grid's normals at a coordinate (`interpolateNormal(_:normals:)`).
-    pub fn interpolate_normal(&self, _c: P2<ParamSpace>, _normals: &[[f32; 3]]) -> Result<[f32; 3], PortRefusal> {
-        // PORT: phase 4 -- the grid normals at a coordinate by the bilinear patch of interpolate, in single precision, unit length.
-        Err(PortRefusal { phase: 4, what: "ParametricSurface.interpolateNormal" })
+    /// The grid's normals (`grid_normals`) at a coordinate, by the same
+    /// bilinear patch as `interpolate`, unit length; zero where the patch's
+    /// corners cancel.
+    ///
+    /// Within a grid cell of the exact normal, and so, like a grid
+    /// fold, within a pixel of where the facing changes at any drawing
+    /// grid: enough for the preview, which asks a normal of every curve
+    /// vertex and asks it again whenever the curves move. The bake keeps the
+    /// map's. Single precision throughout, as Swift's `SIMD3<Float>`; zero,
+    /// too, at a coordinate that is not a number, where Swift's `Int` traps.
+    pub fn interpolate_normal(&self, c: P2<ParamSpace>, normals: &[[f32; 3]]) -> Result<[f32; 3], ParametricError> {
+        if normals.len() != self.positions.len() {
+            return Err(ParametricError::NormalCount { normals: normals.len(), points: self.positions.len() });
+        }
+        let Some((i, j, a, b)) = self.cell(c) else { return Ok([0.0; 3]) };
+        let at = |i: i64, j: i64| normals[self.v.sample(j) * self.u.samples + self.u.sample(i)];
+        let (fa, fb) = (a as f32, b as f32);
+        let (n00, n10, n01, n11) = (at(i, j), at(i + 1, j), at(i, j + 1), at(i + 1, j + 1));
+        let mut n = [0.0f32; 3];
+        for k in 0..3 {
+            n[k] = (1.0 - fb) * ((1.0 - fa) * n00[k] + fa * n10[k]) + fb * ((1.0 - fa) * n01[k] + fa * n11[k]);
+        }
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        Ok(if len > 0.0 { [n[0] / len, n[1] / len, n[2] / len] } else { [0.0; 3] })
     }
 
     /// The grid cell a coordinate falls in, and where in it: the lower
@@ -538,18 +941,6 @@ impl ParametricSurface {
         Some((i, j, a, b))
     }
 
-    /// Linear curves on a torus (`linearCurves(slope:turns:count:start:)`).
-    pub fn linear_curves(
-        &self,
-        _slope: f64,
-        _turns: usize,
-        _count: usize,
-        _start: Option<P2<ParamSpace>>,
-    ) -> Result<PolylineSet<WorldSpace>, PortRefusal> {
-        // PORT: phase 4 -- straight lines through the parameter rectangle glued into curves on the torus, read off VectorField.constant's flow (IntegralCurves.swift).
-        Err(PortRefusal { phase: 4, what: "ParametricSurface.linearCurves" })
-    }
-
     /// The turns after which a linear curve of `slope` closes -- the
     /// denominator of a fraction, to within rounding -- when that is within
     /// `turns`; `None` for a linear curve that runs out its turns open.
@@ -563,36 +954,406 @@ impl ParametricSurface {
         })
     }
 
-    /// The torus of revolution about the z axis (`torus(major:minor:samples:)`).
-    pub fn torus(_major: f64, _minor: f64, _samples: (usize, usize)) -> Result<ParametricSurface, PortRefusal> {
-        // PORT: phase 4 -- the round torus over two whole turns, with its tubular neighbourhood and its jet of order two in closed form.
-        Err(PortRefusal { phase: 4, what: "ParametricSurface.torus(major:minor:samples:)" })
+    /// Linear curves: straight lines through the parameter rectangle, `slope`
+    /// turns of `v` per turn of `u`, glued into curves on the torus.
+    ///
+    /// A linear curve is what a torus's coordinates make of a straight line, and
+    /// the same line on every torus with these coordinates: it lives on the
+    /// flat torus, and the map -- any map -- is what puts it in space. The
+    /// coordinate curves are its two ends, slope zero and slope infinite; the
+    /// trajectory of a forced system, in the coordinates of its fitted torus,
+    /// is the one with the system's own rotation number.
+    ///
+    /// It is an integral curve of a constant field (`VectorField::constant`),
+    /// read off its closed form, not integrated (D9): the field is one step
+    /// of the curve, so the vertex at whole time m is the strand's start
+    /// moved by m steps, `flow(start, m)`.
+    ///
+    /// `count` strands start at `start` -- the rectangle's origin unless
+    /// given -- and evenly spaced from it along `v`, and each runs `turns`
+    /// turns of `u` -- or, when `slope` is a fraction `p/q` with `q ≤
+    /// turns`, the `q` turns after which it closes, so a rational linear curve is
+    /// one closed (p, q) curve and an irrational one is a stretch of a curve
+    /// that never closes. A vertex per grid cell along the steeper axis,
+    /// placed by `interpolate`, so the curves lie on the drawn surface; each
+    /// vertex carries its coordinate, continuous along a path and never more
+    /// than eight turns from zero, so the preview's float32 still resolves a
+    /// pixel's worth of it: a path is ended and the next begun from the same
+    /// vertex every eight turns.
+    ///
+    /// Swift's preconditions (a torus, a finite slope, a turn and a strand)
+    /// are assertions here, as `ParamAxis::new`'s is; a step count past
+    /// 2^63, where Swift's `Int` traps, is one too. `SurfaceRequest::check`
+    /// bounds every request's vertices first.
+    pub fn linear_curves(
+        &self,
+        slope: f64,
+        turns: usize,
+        count: usize,
+        start: Option<P2<ParamSpace>>,
+    ) -> PolylineSet<WorldSpace> {
+        let (u, v) = (self.u, self.v);
+        assert!(u.periodic && v.periodic, "a linear curve is a curve on a torus");
+        assert!(
+            turns >= 1 && count >= 1 && slope.is_finite(),
+            "a linear curve wants a finite slope and at least one turn of one strand"
+        );
+        let drawn = ParametricSurface::linear_curve_closes(slope, turns).unwrap_or(turns);
+        let steep = swift::int((slope.abs() * v.cells() as f64).ceil()).expect("a linear curve's steps fit an Int");
+        let steps = (u.cells() as i64).max(steep) as usize;
+        let du = u.range.length() / steps as f64;
+        let dv = slope * v.range.length() / steps as f64;
+        let line = VectorField::constant(Vec2::new(du, dv)).flow.expect("a constant field's flow is in closed form");
+        let span = 8.0 * u.range.length();
+        let origin = start.unwrap_or(P2::new(u.range.lo, v.range.lo));
+        let mut paths: Vec<Vec<P3<WorldSpace>>> = Vec::new();
+        let mut coords: Vec<Vec<P2<ParamSpace>>> = Vec::new();
+        for strand in 0..count {
+            let v0 = origin.y() + v.range.length() * strand as f64 / count as f64;
+            let mut path: Vec<P3<WorldSpace>> = Vec::new();
+            let mut coord: Vec<P2<ParamSpace>> = Vec::new();
+            let mut offset = Vec2::new(0.0, 0.0);
+            let start = P2::new(origin.x(), v0);
+            for m in 0..=(drawn * steps) {
+                let c = line(start, m as f64);
+                if !path.is_empty() && c.x() - origin.x() - offset.x > span {
+                    // The seam of a path: the same vertex ends one and
+                    // begins the next, its coordinates brought back near
+                    // the rectangle's origin by whole periods.
+                    let last = coord[coord.len() - 1].v + offset;
+                    let last_point = path[path.len() - 1];
+                    paths.push(std::mem::take(&mut path));
+                    coords.push(std::mem::take(&mut coord));
+                    offset = Vec2::new(
+                        u.range.length() * ((c.x() - u.range.lo) / u.range.length()).floor(),
+                        v.range.length() * ((c.y() - v.range.lo) / v.range.length()).floor(),
+                    );
+                    path = vec![last_point];
+                    coord = vec![P2::from_vec(last - offset)];
+                }
+                path.push(self.interpolate(c));
+                coord.push(P2::from_vec(c.v - offset));
+            }
+            paths.push(path);
+            coords.push(coord);
+        }
+        PolylineSet::from_paths_with_coords(&paths, &coords)
     }
 
-    /// The torus over any two periodic axes, isothermal or not
-    /// (`torus(major:minor:u:v:isothermal:)`).
+    /// The torus of revolution about the z axis: `u` around the axis, `v`
+    /// around the tube.
+    ///
+    /// It bounds a solid exactly when the tube does not reach the axis,
+    /// `major > minor`; the horn and spindle tori pass through themselves.
+    pub fn torus(major: f64, minor: f64, samples: (usize, usize)) -> Result<ParametricSurface, ParametricError> {
+        ParametricSurface::torus_round(major, minor, ParamAxis::angle(samples.0), ParamAxis::angle(samples.1))
+    }
+
+    /// The same torus over any two periodic axes: each axis's range is one
+    /// turn, so a rectangle of periods -- a doubly periodic function's
+    /// fundamental domain -- glues into it edge to edge.
+    ///
+    /// `isothermal`: `v` runs evenly round the tube in isothermal coordinates
+    /// rather than in its angle θ. The round torus's metric is
+    /// (R + r cos θ)² dφ² + r² dθ², and with w(θ) = ∫₀^θ r dθ′ / (R + r cos θ′)
+    /// it is (R + r cos θ)² (dφ² + dw²), a multiple of the flat one (do Carmo
+    /// §4-2). A whole turn of the tube is 2πr / √(R² − r²) in w, so the map
+    /// is conformal where `v`'s range is r / √(R² − r²) of `u`'s. A torus
+    /// that reaches its axis has no such coordinates.
     pub fn torus_over(
-        _major: f64,
-        _minor: f64,
-        _u: ParamAxis,
-        _v: ParamAxis,
-        _isothermal: bool,
-    ) -> Result<ParametricSurface, PortRefusal> {
-        // PORT: phase 4 -- the round torus over a rectangle of periods, with v in the tube angle or isothermal (θ = t + 2 atan((k − 1) sin t / ((k + 1) − (k − 1) cos t))).
-        Err(PortRefusal { phase: 4, what: "ParametricSurface.torus(major:minor:u:v:isothermal:)" })
+        major: f64,
+        minor: f64,
+        u: ParamAxis,
+        v: ParamAxis,
+        isothermal: bool,
+    ) -> Result<ParametricSurface, ParametricError> {
+        if isothermal {
+            ParametricSurface::isothermal_torus(major, minor, u, v)
+        } else {
+            ParametricSurface::torus_round(major, minor, u, v)
+        }
     }
 
-    /// This surface displaced along its normal (`displaced(by:amplitude:ceiling:encloses:)`).
+    /// Swift's `torus(major:minor:u:v:)`. Its precondition that both axes
+    /// are periodic is [`ParametricError::NotATorus`] here.
+    pub fn torus_round(r_major: f64, r: f64, u: ParamAxis, v: ParamAxis) -> Result<ParametricSurface, ParametricError> {
+        if !(u.periodic && v.periodic) {
+            return Err(ParametricError::NotATorus("a torus is periodic both ways"));
+        }
+        let big_r = r_major;
+        let (su0, sv0) = (u.range.lo, v.range.lo);
+        let two_pi = 2.0 * core::f64::consts::PI;
+        let (ku, kv) = (two_pi / u.range.length(), two_pi / v.range.length());
+        // The solid: a point's foot is the nearest point of the core circle
+        // turned toward it, its distance how far it stands from that circle
+        // less the tube's radius. The ring angle moves fastest where the
+        // ring is narrowest, the tube angle where the tube is.
+        let neighbourhood = TubularNeighbourhood {
+            foot: Arc::new(move |q: Vec3| {
+                let mut a = real::atan2(q.y, q.x);
+                let rho = real::sqrt(q.x * q.x + q.y * q.y);
+                let mut b = real::atan2(q.z, rho - big_r);
+                if a < 0.0 {
+                    a += two_pi;
+                }
+                if b < 0.0 {
+                    b += two_pi;
+                }
+                let tube = real::sqrt((rho - big_r) * (rho - big_r) + q.z * q.z);
+                (P2::new(su0 + a / ku, sv0 + b / kv), tube - r)
+            }),
+            normal_offset: Arc::new(|_| 0.0),
+            above: 0.0,
+            below: 0.0,
+            lipschitz: 1.0,
+            spread: Arc::new(move |outside: f64, inside: f64| {
+                Vec2::new(
+                    1.0 / (ku * swift::max(big_r - r - outside, 1e-12)),
+                    1.0 / (kv * swift::max(r - inside, 1e-12)),
+                )
+            }),
+            centre: Vec3::ZERO,
+            radius: big_r + r,
+        };
+        // Its jet of order two in closed form, for its lines of curvature:
+        // the parallels and the meridians, as on any surface of revolution.
+        let second: SecondOrderMap = Arc::new(move |c: P2<ParamSpace>| {
+            let a = ku * (c.x() - su0);
+            let b = kv * (c.y() - sv0);
+            let (ca, sa, cb, sb) = (real::cos(a), real::sin(a), real::cos(b), real::sin(b));
+            let ring = big_r + r * cb;
+            SecondOrderJet {
+                jet: SurfaceJet::new(
+                    Vec3::new(ring * ca, ring * sa, r * sb),
+                    ku * Vec3::new(-ring * sa, ring * ca, 0.0),
+                    kv * Vec3::new(-r * sb * ca, -r * sb * sa, r * cb),
+                ),
+                second: SecondDerivatives {
+                    uu: ku * ku * Vec3::new(-ring * ca, -ring * sa, 0.0),
+                    uv: ku * kv * Vec3::new(r * sb * sa, -r * sb * ca, 0.0),
+                    vv: kv * kv * Vec3::new(-r * cb * ca, -r * cb * sa, -r * sb),
+                },
+            }
+        });
+        let map: JetMap = Arc::new(move |c: P2<ParamSpace>| {
+            let a = ku * (c.x() - su0);
+            let b = kv * (c.y() - sv0);
+            let (ca, sa, cb, sb) = (real::cos(a), real::sin(a), real::cos(b), real::sin(b));
+            let ring = big_r + r * cb;
+            SurfaceJet::new(
+                Vec3::new(ring * ca, ring * sa, r * sb),
+                ku * Vec3::new(-ring * sa, ring * ca, 0.0),
+                kv * Vec3::new(-r * sb * ca, -r * sb * sa, r * cb),
+            )
+        });
+        ParametricSurface::new(u, v, big_r > r, Some(neighbourhood), Some(second), map)
+    }
+
+    /// The round torus with `v` isothermal (`torus_over(..., true)`).
+    ///
+    /// With t = w √(R² − r²) / r, w's turn scaled to a whole one, the tube
+    /// angle is θ = 2 atan(k tan(t/2)), k = √((R + r) / (R − r)). Written so,
+    /// it is cut at t = π; it is computed as
+    /// θ = t + 2 atan((k − 1) sin t / ((k + 1) − (k − 1) cos t)), the same angle,
+    /// whose denominator is at least 2: θ − t is smooth and 2π-periodic, so θ
+    /// runs on across the seam, and on unwrapped coordinates, with no branch
+    /// to choose. Its inverse is the same with 1/k for k, and
+    /// dθ/dt = (R + r cos θ) / √(R² − r²).
+    fn isothermal_torus(big_r: f64, r: f64, u: ParamAxis, v: ParamAxis) -> Result<ParametricSurface, ParametricError> {
+        if !(u.periodic && v.periodic) {
+            return Err(ParametricError::NotATorus("a torus is periodic both ways"));
+        }
+        if !(big_r > r && r > 0.0) {
+            return Err(ParametricError::NotATorus(
+                "only a torus that does not reach its axis has isothermal coordinates",
+            ));
+        }
+        let (su0, sv0) = (u.range.lo, v.range.lo);
+        let two_pi = 2.0 * core::f64::consts::PI;
+        let (ku, kv) = (two_pi / u.range.length(), two_pi / v.range.length());
+        let s = real::sqrt((big_r - r) * (big_r + r));
+        let k = real::sqrt((big_r + r) / (big_r - r));
+        fn angle(t: f64, k: f64) -> f64 {
+            t + 2.0 * real::atan((k - 1.0) * real::sin(t) / ((k + 1.0) - (k - 1.0) * real::cos(t)))
+        }
+        // The round torus's solid, its tube angle read back to t; t moves at
+        // most k times as fast as θ, on the inner equator.
+        let neighbourhood = TubularNeighbourhood {
+            foot: Arc::new(move |q: Vec3| {
+                let mut a = real::atan2(q.y, q.x);
+                let rho = real::sqrt(q.x * q.x + q.y * q.y);
+                let mut b = real::atan2(q.z, rho - big_r);
+                if a < 0.0 {
+                    a += two_pi;
+                }
+                if b < 0.0 {
+                    b += two_pi;
+                }
+                let tube = real::sqrt((rho - big_r) * (rho - big_r) + q.z * q.z);
+                (P2::new(su0 + a / ku, sv0 + angle(b, 1.0 / k) / kv), tube - r)
+            }),
+            normal_offset: Arc::new(|_| 0.0),
+            above: 0.0,
+            below: 0.0,
+            lipschitz: 1.0,
+            spread: Arc::new(move |outside: f64, inside: f64| {
+                Vec2::new(1.0 / (ku * swift::max(big_r - r - outside, 1e-12)), k / (kv * swift::max(r - inside, 1e-12)))
+            }),
+            centre: Vec3::ZERO,
+            radius: big_r + r,
+        };
+        // The tube angle at a coordinate, and its first two derivatives along v.
+        let tube = move |c: P2<ParamSpace>| -> (f64, f64, f64) {
+            let theta = angle(kv * (c.y() - sv0), k);
+            let d = kv * (big_r + r * real::cos(theta)) / s;
+            (theta, d, -kv * r * real::sin(theta) * d / s)
+        };
+        // The chain rule through θ(v): x_v = θ′ x_θ, x_uv = θ′ x_uθ,
+        // x_vv = θ′² x_θθ + θ″ x_θ.
+        let second: SecondOrderMap = Arc::new(move |c: P2<ParamSpace>| {
+            let a = ku * (c.x() - su0);
+            let (theta, d, dd) = tube(c);
+            let (ca, sa, cb, sb) = (real::cos(a), real::sin(a), real::cos(theta), real::sin(theta));
+            let ring = big_r + r * cb;
+            let along = Vec3::new(-r * sb * ca, -r * sb * sa, r * cb);
+            SecondOrderJet {
+                jet: SurfaceJet::new(
+                    Vec3::new(ring * ca, ring * sa, r * sb),
+                    ku * Vec3::new(-ring * sa, ring * ca, 0.0),
+                    d * along,
+                ),
+                second: SecondDerivatives {
+                    uu: ku * ku * Vec3::new(-ring * ca, -ring * sa, 0.0),
+                    uv: ku * d * Vec3::new(r * sb * sa, -r * sb * ca, 0.0),
+                    vv: d * d * Vec3::new(-r * cb * ca, -r * cb * sa, -r * sb) + dd * along,
+                },
+            }
+        });
+        let map: JetMap = Arc::new(move |c: P2<ParamSpace>| {
+            let a = ku * (c.x() - su0);
+            let (theta, d, _) = tube(c);
+            let (ca, sa, cb, sb) = (real::cos(a), real::sin(a), real::cos(theta), real::sin(theta));
+            let ring = big_r + r * cb;
+            SurfaceJet::new(
+                Vec3::new(ring * ca, ring * sa, r * sb),
+                ku * Vec3::new(-ring * sa, ring * ca, 0.0),
+                d * Vec3::new(-r * sb * ca, -r * sb * sa, r * cb),
+            )
+        });
+        ParametricSurface::new(u, v, true, Some(neighbourhood), Some(second), map)
+    }
+
+    /// This surface displaced along its normal: p ↦ p + amplitude · height(p) · n(p).
+    ///
+    /// A landscape is the plane displaced along its normal by |f|; the same
+    /// sentence over any base surface puts the landscape on it. The result
+    /// is the image of a section of the base's normal bundle under its
+    /// normal exponential map, which is an embedding as long as the
+    /// displacement stays under the base's reach -- for a round torus,
+    /// min(r, R − r) -- and `encloses` is the caller's statement that it
+    /// does. The jet is the chain rule, d(p + h n) = dp + dh ⊗ n + h dn,
+    /// with dh and dn, the shape operator of the base, by central
+    /// differences on the base's map.
+    /// `ceiling` bounds the height, for the displaced solid's shell: the
+    /// displacement is never more than `amplitude` times it.
     pub fn displaced(
         &self,
-        _height: ParamScalar,
-        _amplitude: f64,
-        _ceiling: f64,
-        _encloses: bool,
-    ) -> Result<ParametricSurface, PortRefusal> {
-        // PORT: phase 4 -- p ↦ p + amplitude · height(p) · n(p), its jet by the chain rule with central differences, and the lifted tubular neighbourhood.
-        Err(PortRefusal { phase: 4, what: "ParametricSurface.displaced" })
+        height: ParamScalar,
+        amplitude: f64,
+        ceiling: f64,
+        encloses: bool,
+    ) -> Result<ParametricSurface, ParametricError> {
+        let (u, v) = (self.u, self.v);
+        let base = self.map.clone();
+        let sign = self.outward.unwrap_or(1.0);
+        let eu = 1e-5 * u.spacing();
+        let ev = 1e-5 * v.spacing();
+        let unit_normal = {
+            let base = base.clone();
+            move |c: P2<ParamSpace>| -> Vec3 {
+                let n = base(c).normal();
+                sign * n / swift::max(n.length(), f64::MIN_POSITIVE)
+            }
+        };
+        let h = {
+            let height = height.clone();
+            move |c: P2<ParamSpace>| amplitude * height(c)
+        };
+        let map: JetMap = {
+            let (base, unit_normal, h) = (base.clone(), unit_normal.clone(), h.clone());
+            Arc::new(move |c: P2<ParamSpace>| {
+                let jet = base(c);
+                let n = unit_normal(c);
+                let hc = h(c);
+                let cu1 = P2::new(c.x() + eu, c.y());
+                let cu0 = P2::new(c.x() - eu, c.y());
+                let cv1 = P2::new(c.x(), c.y() + ev);
+                let cv0 = P2::new(c.x(), c.y() - ev);
+                let dnu = (unit_normal(cu1) - unit_normal(cu0)) / (2.0 * eu);
+                let dnv = (unit_normal(cv1) - unit_normal(cv0)) / (2.0 * ev);
+                let dhu = (h(cu1) - h(cu0)) / (2.0 * eu);
+                let dhv = (h(cv1) - h(cv0)) / (2.0 * ev);
+                SurfaceJet::new(jet.position + hc * n, jet.du + dhu * n + hc * dnu, jet.dv + dhv * n + hc * dnv)
+            })
+        };
+        let displaced = ParametricSurface::new(u, v, encloses, None, None, map)?;
+        // The displaced solid, when the base has one: the same foot, the
+        // displacement added to the normal offset. The gap's Lipschitz constant
+        // needs the displacement's steepest slope, read off the grid
+        // just built -- the displacement at a grid point is what was
+        // added to the base there -- in parameter units, times how fast
+        // the foot's coordinate can move; with half as much again, for the
+        // slope between grid points.
+        let Some(e) = self.neighbourhood.as_ref().filter(|_| encloses) else { return Ok(displaced) };
+        let (nu, nv) = (u.samples, v.samples);
+        let mut normal_offsets = vec![0.0; nu * nv];
+        for j in 0..nv {
+            for i in 0..nu {
+                let c = P2::new(u.coordinate(i as i64), v.coordinate(j as i64));
+                normal_offsets[j * nu + i] = (displaced.positions[j * nu + i].v - base(c).position).dot(unit_normal(c));
+            }
+        }
+        let (mut su, mut sv) = (0.0f64, 0.0f64);
+        for j in 0..nv {
+            for i in 0..nu {
+                let t = normal_offsets[j * nu + i];
+                if i + 1 < nu || u.periodic {
+                    su = swift::max(su, (normal_offsets[j * nu + u.sample(i as i64 + 1)] - t).abs() / u.spacing());
+                }
+                if j + 1 < nv || v.periodic {
+                    sv = swift::max(sv, (normal_offsets[v.sample(j as i64 + 1) * nu + i] - t).abs() / v.spacing());
+                }
+            }
+        }
+        let above = e.above + swift::max(amplitude, 0.0) * ceiling;
+        let below = e.below + swift::max(-amplitude, 0.0) * ceiling;
+        let spread = (e.spread)(above, below);
+        let normal_offset = e.normal_offset.clone();
+        let lifted = TubularNeighbourhood {
+            foot: e.foot.clone(),
+            normal_offset: Arc::new(move |c| normal_offset(c) + h(c)),
+            above,
+            below,
+            lipschitz: e.lipschitz + 1.5 * (su * spread.x + sv * spread.y),
+            spread: e.spread.clone(),
+            centre: e.centre,
+            radius: e.radius + above,
+        };
+        ParametricSurface::with_positions(
+            u,
+            v,
+            true,
+            Some(lifted),
+            (*displaced.positions).clone(),
+            None,
+            displaced.map.clone(),
+        )
     }
+}
+
+/// Component-wise division, simd's `/` of two vectors.
+fn quotient(a: Vec2, b: Vec2) -> Vec2 {
+    Vec2::new(a.x / b.x, a.y / b.y)
 }
 
 impl Transform<WorldSpace, ViewSpace> {

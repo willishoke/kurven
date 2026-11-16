@@ -12,6 +12,7 @@ use kurven_core::manifest::{
     ContourField, DirectionField, HeightPolicy, LayerRole, LayerSource, LayerSpec, Manifest, Provenance, Seeds,
     Spacing, SurfaceManifest,
 };
+use kurven_core::parametric::ParametricSurface;
 use kurven_core::simd::{Vec2, Vec3};
 use kurven_core::spaces::{P2, ParamSpace};
 use kurven_core::surface_request::{Shape, SurfaceRequest};
@@ -78,9 +79,31 @@ fn the_constant_fields_flow_is_p_plus_t_w_to_the_bit() {
     );
 }
 
+/// Its second half. Swift builds the torus as `SurfaceDrawing.build` of a
+/// torus request at grid 64, which is `ParametricSurface.torus(major: 2,
+/// minor: 1, samples: (64, 32))`; kurven-core cannot reach the drawing, so
+/// the torus is built here as the drawing builds it.
 #[test]
-#[ignore = "Phase 4: the torus's linear curves (SurfaceDrawing.build, ParametricSurface.linearCurves)"]
-fn the_torus_linear_curve_is_the_constant_fields_integral_curve() {}
+fn the_torus_linear_curve_is_the_constant_fields_integral_curve() {
+    let torus = ParametricSurface::torus(2.0, 1.0, (64, 32)).expect("the torus");
+    let (slope, turns, count) = (0.4, 5, 2);
+    let curves = torus.linear_curves(slope, turns, count, None);
+    let steps = (torus.u.cells() as f64).max((slope * torus.v.cells() as f64).ceil());
+    let du = torus.u.range.length() / steps;
+    let dv = slope * torus.v.range.length() / steps;
+    // The first strand's first path, before any seam: its vertex m is
+    // the start moved by m steps.
+    let strand = curves.coords_of_path(0).unwrap();
+    let exact = strand
+        .iter()
+        .enumerate()
+        .all(|(m, &c)| c == P::new(torus.u.range.lo + m as f64 * du, torus.v.range.lo + m as f64 * dv));
+    assert!(
+        exact && strand.len() > 10 && curves.count() > 0,
+        "the torus's linear curve is the constant field's integral curve, its vertices the closed form's to the bit: {} vertices",
+        strand.len()
+    );
+}
 
 /// "integral curves: the manifest".
 #[test]

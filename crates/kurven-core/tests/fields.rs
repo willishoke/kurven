@@ -65,7 +65,6 @@ fn levels(field: &ScalarField, at: &[f64], over: ParamRectangle) -> Vec<(f64, Pa
 
 /// "fields: the contours of u and v on the torus are its coordinate curves"
 #[test]
-#[ignore = "PORT: phase 4 (ParametricSurface.torus and its coordinate curves)"]
 fn the_contours_of_u_and_v_on_the_torus_are_its_coordinate_curves() {
     let torus = ParametricSurface::torus(3.0, 1.0, (100, 50)).expect("the torus");
     let (u, v) = (torus.u, torus.v);

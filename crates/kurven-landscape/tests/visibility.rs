@@ -11,7 +11,7 @@
 mod common;
 
 use common::{build, drawn_triangles, first_hit, random_heightfield, stress_cameras};
-use kurven_core::camera::Camera;
+use kurven_core::camera::{Camera, rotation_x, rotation_z};
 use kurven_core::depth::{DepthFrame, DepthImage};
 use kurven_core::grid::Grid2D;
 use kurven_core::hatching::FaceKind;
@@ -22,14 +22,17 @@ use kurven_core::manifest::{
 use kurven_core::mesh::Mesh;
 use kurven_core::navigation::Orbit;
 use kurven_core::occlusion::OcclusionTest;
+use kurven_core::occlusion::SphereTracing;
+use kurven_core::parametric::ParametricSurface;
 use kurven_core::polyline::PolylineSet;
 use kurven_core::scene::{Heightfield, PreviewMode, Scene};
-use kurven_core::simd::{Vec2, Vec3};
+use kurven_core::simd::{Mat3, Vec2, Vec3};
 use kurven_core::spaces::{Angle, DomainSpace, P2, P3, Transform, ViewSpace, WorldSpace};
 use kurven_core::splitmix::SplitMix;
 use kurven_core::surface::{ContourRefine, Surface};
 use kurven_landscape::{Catalog, LandscapeRequest, NativeLandscape};
 use kurven_math::{real, swift};
+use std::f64::consts::PI;
 
 /// Two directions across the line of sight, for the nudges.
 fn across(d: Vec3) -> [Vec3; 4] {
@@ -92,8 +95,83 @@ fn the_point_form_of_occlusion_by_a_polyhedrons_pieces_is_the_cast() {}
 /// The round torus of the occlusion suite, and a parametric surface with
 /// no tubular neighbourhood having no sphere tracing.
 #[test]
-#[ignore = "PORT: phase 4 -- ParametricSurface::torus refuses until then; SphereTracing itself is ported and waits on it"]
-fn the_round_toruss_sphere_tracing_is_the_walk_up_the_line_of_sight() {}
+fn the_round_toruss_sphere_tracing_is_the_walk_up_the_line_of_sight() {
+    // Points on it facing the eye and in its ball outside it, the line of
+    // sight walked a ten-thousandth of the tube at a time.
+    let (big_r, r) = (2.0, 1.0);
+    let torus = ParametricSurface::torus(big_r, r, (64, 32)).expect("the torus");
+    let clearance = |q: Vec3| -> f64 {
+        let rho = real::sqrt(q.x * q.x + q.y * q.y);
+        real::sqrt((rho - big_r) * (rho - big_r) + q.z * q.z) - r
+    };
+    let mut torus_points: Vec<Vec3> = Vec::new();
+    let mut rng = SplitMix::new(0x0CC3);
+    while torus_points.len() < 300 {
+        let q = Vec3::new(rng.next(-3.2, 3.2), rng.next(-3.2, 3.2), rng.next(-1.2, 1.2));
+        if clearance(q) > 0.01 {
+            torus_points.push(q);
+        }
+    }
+    let (mut compared, mut wrong, mut undecided, mut seen) = (0, 0, 0, 0);
+    for view in [test_camera(-60.0, 30.0, 0.0), test_camera(-20.0, 70.0, 0.0), test_camera(-35.0, -20.0, 0.5)] {
+        let sight = view.projection_direction();
+        let test = SphereTracing::new(&torus, sight).expect("the torus has a tubular neighbourhood");
+        let toward = -sight;
+        let mut on_surface: Vec<Vec3> = Vec::new();
+        while on_surface.len() < 200 {
+            let c = P2::new(rng.next(0.0, 2.0 * PI), rng.next(0.0, 2.0 * PI));
+            if let Some(f) = torus.facing(c, sight)
+                && f > 0.0
+            {
+                on_surface.push((torus.map)(c).position);
+            }
+        }
+        for &q in torus_points.iter().chain(&on_surface) {
+            let (mut t, mut least, mut clear) = (1e-5 * r, f64::INFINITY, true);
+            while t < 10.0 {
+                let gap = clearance(q + t * toward);
+                least = swift::min(least, gap);
+                if gap < 0.0 {
+                    clear = false;
+                    break;
+                }
+                t += 1e-4 * r;
+            }
+            if !(least.abs() > 1e-6 * r) {
+                undecided += 1;
+                continue;
+            }
+            compared += 1;
+            if clear {
+                seen += 1;
+            }
+            if test.is_clear(P3::from_vec(q)) != clear {
+                wrong += 1;
+            }
+        }
+    }
+    assert!(
+        wrong == 0 && compared > 1000 && seen > compared / 10 && seen < compared,
+        "the round torus's sphere tracing is the walk up the line of sight: {wrong} of {compared} disagree, {seen} clear, {undecided} grazing"
+    );
+
+    // A surface with no tubular neighbourhood has no occlusion test: the
+    // coordinate image stands in for one.
+    let bare = ParametricSurface::new(torus.u, torus.v, true, None, None, torus.map.clone()).expect("the bare torus");
+    assert!(
+        SphereTracing::new(&bare, test_camera(-60.0, 30.0, 0.0).projection_direction()).is_none(),
+        "a parametric surface with no tubular neighbourhood has none"
+    );
+}
+
+/// Elevation and azimuth as the oblique camera have them, with an optional
+/// oblique shear in front, so the view is affine but not orthonormal
+/// (Surfaces.swift's `testCamera`).
+fn test_camera(elevation: f64, azimuth: f64, shear: f64) -> Transform<WorldSpace, ViewSpace> {
+    let s = Mat3::from_rows(Vec3::new(1.0, shear, 0.0), Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 0.0, 1.0));
+    let m = rotation_x(Angle::from_degrees(elevation)) * rotation_z(Angle::from_degrees(azimuth)) * s;
+    Transform::from_rows((m.row(0), m.row(1), m.row(2)), Vec3::ZERO)
+}
 
 /// The ridge of Facing.swift: a Gaussian along y, 801 by 21.
 fn ridge() -> (Surface, Heightfield, impl Fn(f64) -> f64, impl Fn(f64) -> f64) {
