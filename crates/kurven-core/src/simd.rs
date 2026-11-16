@@ -11,7 +11,7 @@
 
 use std::ops::{Add, AddAssign, Div, DivAssign, Index, IndexMut, Mul, MulAssign, Neg, Sub, SubAssign};
 
-use kurven_math::real;
+use kurven_math::{real, swift};
 
 macro_rules! vector {
     ($name:ident, $n:literal, $($field:ident : $i:literal),+) => {
@@ -69,6 +69,24 @@ macro_rules! vector {
             /// `simd_max`, component by component.
             pub fn max(self, o: $name) -> $name {
                 $name { $($field: self.$field.max(o.$field),)+ }
+            }
+
+            /// Swift's `min` per lane (`kurven_math::swift::min`: of a NaN
+            /// and a number, the first argument's lane survives when it is
+            /// the NaN), where a Swift caller takes the lanes' `min` one by
+            /// one.
+            pub fn swift_min(self, o: $name) -> $name {
+                $name { $($field: swift::min(self.$field, o.$field),)+ }
+            }
+
+            /// Swift's `max` per lane (`kurven_math::swift::max`).
+            pub fn swift_max(self, o: $name) -> $name {
+                $name { $($field: swift::max(self.$field, o.$field),)+ }
+            }
+
+            /// Component-wise quotient, simd's `/` of two vectors.
+            pub fn div_elements(self, o: $name) -> $name {
+                $name { $($field: self.$field / o.$field,)+ }
             }
 
             /// `simd_abs`.

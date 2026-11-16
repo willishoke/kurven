@@ -170,7 +170,7 @@ impl Drawing {
             for i in 0..real {
                 for j in 0..imag {
                     let shift = (i as f64 * pu, j as f64 * pv);
-                    for k in 0..layer.paths.offsets.len() - 1 {
+                    for k in 0..layer.paths.count() {
                         all.push(
                             coords[layer.paths.offsets[k]..layer.paths.offsets[k + 1]]
                                 .iter()
@@ -405,7 +405,7 @@ impl PeriodicTorus {
                 // coordinate, and the torus says where that is.
                 let mut placed: Vec<Vec<P3<WorldSpace>>> = Vec::new();
                 let mut coords: Vec<Vec<P2<ParamSpace>>> = Vec::new();
-                for i in 0..flat.offsets.len() - 1 {
+                for i in 0..flat.count() {
                     let path: Vec<P2<DomainSpace>> = flat.vertices[flat.offsets[i]..flat.offsets[i + 1]]
                         .iter()
                         .map(|v| P2::new(v.x(), v.y()))

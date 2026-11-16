@@ -633,8 +633,8 @@ impl ParametricSurface {
                 for b in -1..=1 {
                     let Some(list) = by_cell.get(&(ox.wrapping_add(a), oy.wrapping_add(b))) else { continue };
                     for &(qr, at) in list {
-                        if quotient(at - z, scale).length() < 0.25
-                            && (qr as i64 != run || quotient(at - p0, scale).length() > 0.5)
+                        if (at - z).div_elements(scale).length() < 0.25
+                            && (qr as i64 != run || (at - p0).div_elements(scale).length() > 0.5)
                         {
                             return true;
                         }
@@ -713,7 +713,8 @@ impl ParametricSurface {
                 } else {
                     r.iter().skip(1).copied().collect()
                 };
-                let behind = back.iter().copied().find(|&q| quotient(p0 - q, scale).length() > 0.5).unwrap_or(back[0]);
+                let behind =
+                    back.iter().copied().find(|&q| (p0 - q).div_elements(scale).length() > 0.5).unwrap_or(back[0]);
                 trace(p0, p0 - behind, run as i64, k as i64)
             })
             .collect();
@@ -758,7 +759,7 @@ impl ParametricSurface {
             for a in -1..=1 {
                 for b in -1..=1 {
                     if let Some(list) = drawn.get(&(ox.wrapping_add(a), oy.wrapping_add(b)))
-                        && list.iter().any(|&q| quotient(q - j, scale).length() < 0.1)
+                        && list.iter().any(|&q| (q - j).div_elements(scale).length() < 0.1)
                     {
                         return true;
                     }
@@ -770,7 +771,7 @@ impl ParametricSurface {
         for line in creases.iter().filter(|l| l.len() >= 2) {
             for i in 0..line.len() - 1 {
                 let (a, b) = (line[i].v, line[i + 1].v);
-                let along = quotient(b - a, scale);
+                let along = (b - a).div_elements(scale);
                 if !(along.length() > 0.0) {
                     continue;
                 }
@@ -1349,11 +1350,6 @@ impl ParametricSurface {
             displaced.map.clone(),
         )
     }
-}
-
-/// Component-wise division, simd's `/` of two vectors.
-fn quotient(a: Vec2, b: Vec2) -> Vec2 {
-    Vec2::new(a.x / b.x, a.y / b.y)
 }
 
 impl Transform<WorldSpace, ViewSpace> {

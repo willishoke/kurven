@@ -10,8 +10,8 @@
 
 mod common;
 
-use common::{build, drawn_triangles, first_hit, random_heightfield, stress_cameras};
-use kurven_core::camera::{Camera, rotation_x, rotation_z};
+use common::{build, drawn_triangles, first_hit, random_heightfield, stress_cameras, test_camera};
+use kurven_core::camera::Camera;
 use kurven_core::depth::{DepthFrame, DepthImage};
 use kurven_core::grid::Grid2D;
 use kurven_core::hatching::FaceKind;
@@ -26,7 +26,7 @@ use kurven_core::occlusion::SphereTracing;
 use kurven_core::parametric::ParametricSurface;
 use kurven_core::polyline::PolylineSet;
 use kurven_core::scene::{Heightfield, PreviewMode, Scene};
-use kurven_core::simd::{Mat3, Vec2, Vec3};
+use kurven_core::simd::{Vec2, Vec3};
 use kurven_core::spaces::{Angle, DomainSpace, P2, P3, Transform, ViewSpace, WorldSpace};
 use kurven_core::splitmix::SplitMix;
 use kurven_core::surface::{ContourRefine, Surface};
@@ -162,15 +162,6 @@ fn the_round_toruss_sphere_tracing_is_the_walk_up_the_line_of_sight() {
         SphereTracing::new(&bare, test_camera(-60.0, 30.0, 0.0).projection_direction()).is_none(),
         "a parametric surface with no tubular neighbourhood has none"
     );
-}
-
-/// Elevation and azimuth as the oblique camera have them, with an optional
-/// oblique shear in front, so the view is affine but not orthonormal
-/// (Surfaces.swift's `testCamera`).
-fn test_camera(elevation: f64, azimuth: f64, shear: f64) -> Transform<WorldSpace, ViewSpace> {
-    let s = Mat3::from_rows(Vec3::new(1.0, shear, 0.0), Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 0.0, 1.0));
-    let m = rotation_x(Angle::from_degrees(elevation)) * rotation_z(Angle::from_degrees(azimuth)) * s;
-    Transform::from_rows((m.row(0), m.row(1), m.row(2)), Vec3::ZERO)
 }
 
 /// The ridge of Facing.swift: a Gaussian along y, 801 by 21.

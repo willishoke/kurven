@@ -160,14 +160,6 @@ impl Run {
     }
 }
 
-fn lane_min(a: Simd3, b: Simd3) -> Simd3 {
-    Simd([swift::min(a.0[0], b.0[0]), swift::min(a.0[1], b.0[1]), swift::min(a.0[2], b.0[2])])
-}
-
-fn lane_max(a: Simd3, b: Simd3) -> Simd3 {
-    Simd([swift::max(a.0[0], b.0[0]), swift::max(a.0[1], b.0[1]), swift::max(a.0[2], b.0[2])])
-}
-
 /// Swift's `Int((x).rounded())` of a duration over a step, which traps on
 /// what does not fit; a count that is not one is refused here.
 fn steps(x: f64) -> Result<usize, DynamicsError> {
@@ -245,8 +237,9 @@ impl InvariantTorus {
         let mut lo = Simd([f64::INFINITY; 3]);
         let mut hi = -lo;
         for &s in &samples {
-            lo = lane_min(lo, s);
-            hi = lane_max(hi, s);
+            // Swift's `simd_min` and `simd_max`, lane by lane.
+            lo = Simd(Vec3::from_array(lo.0).swift_min(Vec3::from_array(s.0)).to_array());
+            hi = Simd(Vec3::from_array(hi.0).swift_max(Vec3::from_array(s.0)).to_array());
         }
         let extent = (hi - lo).max();
         if !(residual <= acceptance * extent) {
@@ -445,8 +438,8 @@ impl Revolution {
         let mut hi = -lo;
         for s in &torus.samples {
             let p = Vec2::new(s.0[radial], s.0[axial]);
-            lo = Vec2::new(swift::min(lo.x, p.x), swift::min(lo.y, p.y));
-            hi = Vec2::new(swift::max(hi.x, p.x), swift::max(hi.y, p.y));
+            lo = lo.swift_min(p);
+            hi = hi.swift_max(p);
         }
         let span = hi - lo;
         // `(hi - lo).max()`, simd's reduction (maxNum).
