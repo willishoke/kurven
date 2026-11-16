@@ -88,16 +88,30 @@ impl Bessel {
         h
     }
 
+    /// n!, as Swift's `factorial` computes it: the product 2 · 3 ⋯ n in that
+    /// order. From 171 on that product is infinite, and stays so, so a table
+    /// of the first 171, each the one before times its index, gives every
+    /// value to the bit without the loop.
     fn factorial(n: i64) -> f64 {
-        let mut f = 1.0;
-        for k in 2..=n {
-            f *= k as f64;
-        }
-        f
+        static TABLE: LazyLock<[f64; 171]> = LazyLock::new(|| {
+            let mut t = [1.0; 171];
+            for m in 2..171 {
+                t[m] = t[m - 1] * m as f64;
+            }
+            t
+        });
+        if n < 171 { TABLE[n.max(0) as usize] } else { f64::INFINITY }
     }
 
-    /// Y_n for integer n >= 0, DLMF 10.8.1.
-    fn y_series_integer(n: i64, z: Complex) -> Complex {
+    /// Y_n for integer n >= 0, DLMF 10.8.1, given `jn` = `j_series(n, z)`.
+    ///
+    /// Swift computes J_n here a second time, rebuilds each factorial by a
+    /// loop and each harmonic number H_k and H_{n+k} from 1/1 at every term:
+    /// quadratic in n. Here J_n comes in, the factorials from a table, and
+    /// the harmonic numbers are carried from term to term, H_k = H_{k-1} +
+    /// 1/k, which is the sum Swift's `harmonic` forms, in the same order, so
+    /// every value is Swift's to the bit.
+    fn y_series_integer(n: i64, z: Complex, jn: Complex) -> Complex {
         let half = z / 2.0;
         let h2 = half * half;
         let mut total = Complex::ZERO;
@@ -109,13 +123,18 @@ impl Bessel {
             }
         }
         total /= PI;
-        let jn = Bessel::j_series(n as f64, z);
         total += (2.0 / PI) * Complex::log(half) * jn;
         let mut p = Complex::pow(half, Complex::real(n as f64)) / Bessel::factorial(n);
         let mut k = 0i64;
         let mut s = Complex::ZERO;
+        let mut harmonic_k = 0.0;
+        let mut harmonic_nk = Bessel::harmonic(n);
         loop {
-            let psi = (Bessel::harmonic(k) - Gamma::EULER) + (Bessel::harmonic(n + k) - Gamma::EULER);
+            if k > 0 {
+                harmonic_k += 1.0 / k as f64;
+                harmonic_nk += 1.0 / (n + k) as f64;
+            }
+            let psi = (harmonic_k - Gamma::EULER) + (harmonic_nk - Gamma::EULER);
             let d = psi * p;
             s += d;
             if (d.magnitude() <= EPS * s.magnitude() && k > 2) || k > 500 {
@@ -200,7 +219,7 @@ impl Bessel {
         let n = nu.round();
         let y = if nu == n {
             let Some(n) = swift::int(n) else { return NAN_CYLINDER };
-            Bessel::y_series_integer(n, z)
+            Bessel::y_series_integer(n, z, j)
         } else {
             let jm = Bessel::j_series(-nu, z);
             (j * Trig::cos_pi(nu) - jm) / Trig::sin_pi(nu)
@@ -253,8 +272,40 @@ impl Bessel {
         Bessel::cylinder_first_quadrant(nu, z)
     }
 
+    /// J_ν alone: `cylinder(nu, z).j`, to the bit, without the Y that the
+    /// power series would compute beside it. Swift's `j` goes through
+    /// `cylinder` and computes Y every time; the only J that needs Y is a
+    /// negative order's, which goes through `cylinder` here too. Where Swift
+    /// traps on the way to Y (an integral order past 2^63), this answers NaN,
+    /// as `cylinder` does.
     pub fn j(nu: f64, z: Complex) -> Complex {
-        Bessel::cylinder(nu, z).j
+        if (z.re == 0.0 && z.im == 0.0) || nu < 0.0 {
+            return Bessel::cylinder(nu, z).j;
+        }
+        if z.re < 0.0 {
+            let s: f64 = if z.im.is_sign_negative() { -1.0 } else { 1.0 };
+            let j = Bessel::j(nu, -z);
+            let rot = Complex::exp(Complex::new(0.0, s * nu * PI));
+            return rot * j;
+        }
+        if z.im.is_sign_negative() {
+            return Bessel::j_first_quadrant(nu, z.conjugate()).conjugate();
+        }
+        Bessel::j_first_quadrant(nu, z)
+    }
+
+    /// `cylinder_first_quadrant(nu, z).j`: on the Hankel path the same
+    /// computation, and on the power series's the series alone.
+    fn j_first_quadrant(nu: f64, z: Complex) -> Complex {
+        let a = z.magnitude();
+        if a >= 12.0 && nu <= a {
+            return Bessel::cylinder_first_quadrant(nu, z).j;
+        }
+        let n = nu.round();
+        if nu == n && swift::int(n).is_none() {
+            return NAN;
+        }
+        Bessel::j_series(nu, z)
     }
 
     pub fn y(nu: f64, z: Complex) -> Complex {
