@@ -500,9 +500,20 @@ impl Airy {
     fn bessel(z: Complex) -> AiryPair {
         let zeta = (2.0 / 3.0) * Complex::pow(z, Complex::real(1.5));
         let root = Complex::sqrt(z / 3.0);
-        let k = Bessel::k(1.0 / 3.0, zeta);
-        let ip = Bessel::i(1.0 / 3.0, zeta);
-        let im = Bessel::i(-1.0 / 3.0, zeta);
+        // I and K of order 1/3 once. Swift asks for K_{1/3}, I_{1/3} and
+        // I_{-1/3} in three calls, and the third computes the first two again:
+        // `modified` forms a negative order's I from the positive order's I
+        // and K, I_{-ν} = I_ν + (2/π) sin(νπ) K_ν. Here that formula is applied
+        // to the one result, operation for operation, so the bits are Swift's.
+        // (`modified` answers z = 0 before that formula; this is only called
+        // with |z| > 2, where zeta is not zero.)
+        let m = Bessel::modified(1.0 / 3.0, zeta);
+        let (k, ip) = (m.k, m.i);
+        let im = if zeta.re == 0.0 && zeta.im == 0.0 {
+            Bessel::i(-1.0 / 3.0, zeta)
+        } else {
+            m.i + (2.0 / PI) * Trig::sin_pi(-(-1.0 / 3.0)) * m.k
+        };
         AiryPair { ai: root * k / PI, bi: root * (im + ip) }
     }
 
