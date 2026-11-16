@@ -18,6 +18,7 @@ use crate::format::description;
 use crate::jacobi::ulp;
 use crate::real;
 use crate::simd::Simd;
+use crate::swift;
 
 pub enum Ode {}
 
@@ -228,7 +229,7 @@ impl Ode {
         let norm = |v: Simd<N>, scale: Simd<N>| (v.absolute() / scale).max();
         let scale =
             |a: Simd<N>, b: Simd<N>| tol.absolute + tol.relative * Simd::pointwise_max(a.absolute(), b.absolute());
-        let hmax = tol.max_step.unwrap_or(f64::INFINITY).min(t1 - t0);
+        let hmax = swift::min(tol.max_step.unwrap_or(f64::INFINITY), t1 - t0);
 
         let mut t = t0;
         let mut y = y0;
@@ -242,16 +243,16 @@ impl Ode {
             let d0 = norm(y, sc);
             let d1 = norm(k1, sc);
             let mut h0 = if d0 < 1e-5 || d1 < 1e-5 { 1e-6 } else { 0.01 * d0 / d1 };
-            h0 = swift_min(h0, hmax);
+            h0 = swift::min(h0, hmax);
             let k = f(t + h0, y + h0 * k1);
             stats.evaluations += 1;
             let d2 = norm(k - k1, sc) / h0;
-            let h1 = if swift_max(d1, d2) <= 1e-15 {
-                swift_max(1e-6, h0 * 1e-3)
+            let h1 = if swift::max(d1, d2) <= 1e-15 {
+                swift::max(1e-6, h0 * 1e-3)
             } else {
-                real::pow(0.01 / swift_max(d1, d2), 1.0 / 5.0)
+                real::pow(0.01 / swift::max(d1, d2), 1.0 / 5.0)
             };
-            swift_min(swift_min(100.0 * h0, h1), hmax)
+            swift::min(swift::min(100.0 * h0, h1), hmax)
         };
 
         let mut rejected_last = false;
@@ -272,7 +273,7 @@ impl Ode {
             if !err.is_finite() {
                 // An overflow in a trial stage is a step too long, not a
                 // failure; a non-finite state after a tiny step is.
-                if h < 1e-12 * swift_max(1.0, t.abs()) {
+                if h < 1e-12 * swift::max(1.0, t.abs()) {
                     return Err(Failure::NonFinite { at: t });
                 }
                 h *= 0.1;
@@ -280,8 +281,8 @@ impl Ode {
                 stats.rejected += 1;
                 continue;
             }
-            let mut factor = 0.9 * real::pow(swift_max(err, 1e-10), -1.0 / 5.0);
-            factor = swift_min(10.0, swift_max(0.2, factor));
+            let mut factor = 0.9 * real::pow(swift::max(err, 1e-10), -1.0 / 5.0);
+            factor = swift::min(10.0, swift::max(0.2, factor));
             if err <= 1.0 {
                 body(&trial.step);
                 stats.accepted += 1;
@@ -289,15 +290,15 @@ impl Ode {
                 y = y_new;
                 k1 = k7;
                 if rejected_last {
-                    factor = swift_min(factor, 1.0);
+                    factor = swift::min(factor, 1.0);
                 }
                 rejected_last = false;
             } else {
                 stats.rejected += 1;
-                factor = swift_min(factor, 1.0);
+                factor = swift::min(factor, 1.0);
                 rejected_last = true;
             }
-            h = swift_min(h * factor, hmax);
+            h = swift::min(h * factor, hmax);
         }
         Ok(stats)
     }
@@ -338,17 +339,4 @@ impl Ode {
         }
         Ok((out, stats))
     }
-}
-
-/// Swift's `min(x, y)`: `y < x ? y : x`, which differs from `f64::min` only
-/// when one is NaN.
-#[inline]
-fn swift_min(x: f64, y: f64) -> f64 {
-    if y < x { y } else { x }
-}
-
-/// Swift's `max(x, y)`: `y >= x ? y : x`.
-#[inline]
-fn swift_max(x: f64, y: f64) -> f64 {
-    if y >= x { y } else { x }
 }

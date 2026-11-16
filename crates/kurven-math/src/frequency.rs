@@ -14,6 +14,7 @@ use core::f64::consts::PI;
 
 use crate::complex::Complex;
 use crate::real;
+use crate::swift;
 
 pub enum Frequency {}
 
@@ -165,7 +166,7 @@ impl Frequency {
             let mut d = a + g * (b - a);
             let mut fc = amp(c);
             let mut fd = amp(d);
-            while b - a > 1e-13 * guess.max(1.0) {
+            while b - a > 1e-13 * swift::max(1.0, guess) {
                 if fc > fd {
                     b = d;
                     d = c;
@@ -221,7 +222,7 @@ impl Frequency {
                 })
                 .count();
             if best.is_none_or(|b| explained > b.explained) {
-                best = Some(Generator { frequency: c.min(omega - c), explained });
+                best = Some(Generator { frequency: swift::min(c, omega - c), explained });
             }
         }
         best

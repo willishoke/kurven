@@ -25,6 +25,7 @@ pub mod ode;
 pub mod real;
 pub mod root;
 pub mod simd;
+pub mod swift;
 pub mod tape;
 pub mod zeta;
 

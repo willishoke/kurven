@@ -1,5 +1,7 @@
 //! Zeros of a real function of one variable. The port of `Root.swift`.
 
+use crate::swift;
+
 pub enum Root {}
 
 impl Root {
@@ -74,7 +76,7 @@ impl Root {
                     let dblk = (fblk - fcur) / (xblk - xcur);
                     -fcur * (fblk * dblk - fpre * dpre) / (dblk * dpre * (fblk - fpre))
                 };
-                if 2.0 * stry.abs() < spre.abs().min(3.0 * sbis.abs() - delta) {
+                if 2.0 * stry.abs() < swift::min(spre.abs(), 3.0 * sbis.abs() - delta) {
                     spre = scur;
                     scur = stry;
                 } else {

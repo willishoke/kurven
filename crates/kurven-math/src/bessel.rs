@@ -24,6 +24,7 @@ use std::sync::LazyLock;
 use crate::complex::Complex;
 use crate::gamma::{Gamma, Trig};
 use crate::real;
+use crate::swift;
 
 pub enum Bessel {}
 
@@ -45,14 +46,8 @@ pub struct Modified {
     pub k: Complex,
 }
 
-/// Swift's `Int(x)`, which traps on a double that is not finite or does not
-/// fit: `None` there. Where Swift would trap, the port answers NaN
-/// (`crates/FINDINGS.md`); Rust's `as` would saturate instead, and the loops
-/// counted by the result would run for ever.
-fn swift_int(x: f64) -> Option<i64> {
-    if (-9223372036854775808.0..9223372036854775808.0).contains(&x) { Some(x as i64) } else { None }
-}
-
+/// What the port answers where Swift's `Int(x)` traps (`swift::int`): Rust's
+/// `as` would saturate, and the loops counted by the result would run for ever.
 const NAN: Complex = Complex::new(f64::NAN, f64::NAN);
 const NAN_CYLINDER: Cylinder = Cylinder { j: NAN, y: NAN, h1: NAN, h2: NAN };
 
@@ -167,7 +162,7 @@ impl Bessel {
     fn cylinder_first_quadrant(nu: f64, z: Complex) -> Cylinder {
         let a = z.magnitude();
         if a >= 12.0 && nu <= a {
-            let Some(nl) = swift_int(nu) else { return NAN_CYLINDER };
+            let Some(nl) = swift::int(nu) else { return NAN_CYLINDER };
             let mu = nu - nl as f64;
             let (mut h1a, h2a) = Bessel::hankel_asymptotic(mu, z);
             if nl == 0 {
@@ -181,7 +176,7 @@ impl Bessel {
                 (h1a, h1b) = (h1b, (2.0 * (mu + k as f64) / z) * h1b - h1a);
             }
             // J by Miller's backward recurrence, scaled to the accurate J_mu.
-            let Some(n) = swift_int(a).and_then(|a| nl.max(a).checked_add(40)) else { return NAN_CYLINDER };
+            let Some(n) = swift::int(a).and_then(|a| nl.max(a).checked_add(40)) else { return NAN_CYLINDER };
             let mut jp = Complex::ZERO;
             let mut jc = Complex::real(TINY);
             let mut jnu = Complex::ZERO;
@@ -204,7 +199,7 @@ impl Bessel {
         let j = Bessel::j_series(nu, z);
         let n = nu.round();
         let y = if nu == n {
-            let Some(n) = swift_int(n) else { return NAN_CYLINDER };
+            let Some(n) = swift::int(n) else { return NAN_CYLINDER };
             Bessel::y_series_integer(n, z)
         } else {
             let jm = Bessel::j_series(-nu, z);
@@ -286,7 +281,7 @@ impl Bessel {
     /// I_ν, K_ν for ν >= 0 and Re z > 0.
     fn modified_right_half(nu: f64, z: Complex) -> Modified {
         let maxit = 20000;
-        let Some(nl) = swift_int(nu + 0.5) else { return Modified { i: NAN, k: NAN } };
+        let Some(nl) = swift::int(nu + 0.5) else { return Modified { i: NAN, k: NAN } };
         let mu = nu - nl as f64;
         let mu2 = mu * mu;
         let xi = 1.0 / z;

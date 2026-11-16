@@ -8,6 +8,8 @@
 //! (the three-gap theorem), and those fractions are the linear curves a
 //! quasi-periodic orbit would lock to. Both are what a slider should rest on.
 
+use crate::swift;
+
 pub enum ContinuedFraction {}
 
 /// A fraction `p/q` in lowest terms.
@@ -46,7 +48,7 @@ impl ContinuedFraction {
             }
             out.push(a as i64);
             let frac = r - a;
-            if frac <= tolerance * x.abs().max(1.0) {
+            if frac <= tolerance * swift::max(1.0, x.abs()) {
                 break;
             }
             r = 1.0 / frac;
