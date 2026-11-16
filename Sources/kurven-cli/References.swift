@@ -99,6 +99,11 @@ enum ReferenceDrawings {
         return bundle
     }
 
+    /// A bundle sampled by the first drawing that needs it, for the rest.
+    final class Sampled {
+        var bundle: URL?
+    }
+
     static func camera(shear: Double, xAngle: Double, zAngle: Double, flipX: Bool) -> [String: JSONValue] {
         ["shear": .double(shear), "xAngle": .double(xAngle), "zAngle": .double(zAngle), "flipX": .bool(flipX)]
     }
@@ -144,11 +149,15 @@ enum ReferenceDrawings {
                 return try baked(bundle, preset: "plate")
             },
         ]
+        // make.py samples the cubic once and bakes each corner's preset from
+        // that one bundle; so does this.
+        let cubic = Sampled()
         for (key, _) in corners {
             references.append(Reference(name: "gallery-cubic-\(key)",
                                         how: "docs/gallery/make.py: landscape \(cubicWords.joined(separator: " ")), "
                                              + "hatching x0.75, the four corner presets; bake --preset \(key)") { scratch in
-                let bundle = try galleryLandscape(scratch, "cubic-\(key)", cubicWords, cameras: corners)
+                let bundle = try cubic.bundle ?? galleryLandscape(scratch, "cubic", cubicWords, cameras: corners)
+                cubic.bundle = bundle
                 return try baked(bundle, preset: key)
             })
         }
