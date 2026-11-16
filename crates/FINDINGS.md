@@ -286,6 +286,17 @@ No tolerance was loosened.
   baking under it, a composite refuses it, and the preview projects on the
   GPU with `perspectiveClip`. Ported as it is.
 
+## 2026-11-15 · Swift lets a malformed optional number fall back
+
+`optionalDouble` answers nil for a key that holds anything but a number,
+so the decoders that read with it take a wrong type as absent and use the
+default: a polyhedron hatching's `step` ("fine" reads as the spacing), a
+wall selector's `base` and `topOffset`, a real-band truncation's `beyond`,
+an occluder's `base`, a projection's `yScale`. A refusal would name the
+key; Swift's decoder does not refuse, so neither does the port, and a test
+pins it (`a_misspelled_optional_number_falls_back_as_in_swift`). A
+landscape's or a surface's hatching refuses any `step` before reading it.
+
 ## 2026-11-15 · The wasm module grew to 503,030 bytes
 
 From 86,969 in Phase 0; its code section is 455 KB. The golden generator

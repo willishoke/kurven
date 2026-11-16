@@ -551,6 +551,8 @@ pub trait Members {
     fn string(&self, key: &str, what: &str) -> Result<String, JsonError>;
     fn int(&self, key: &str, what: &str) -> Result<i64, JsonError>;
     fn double(&self, key: &str, what: &str) -> Result<f64, JsonError>;
+    /// A number, or `None` where the key is absent or holds anything else:
+    /// Swift's `optionalDouble`, which a wrong type does not refuse.
     fn optional_double(&self, key: &str) -> Option<f64>;
     /// A boolean, or `fallback` where the key is absent; with no fallback an
     /// absent key is refused.

@@ -301,3 +301,27 @@ fn a_regions_footprint_is_its_corners_polygon() {
     }
     assert!(Region::Full.contains(P2::new(1e9, -1e9)));
 }
+
+/// Swift reads `step`, a wall's `base` and `topOffset`, a truncation's
+/// `beyond`, an occluder's `base` and a projection's `yScale` by
+/// `optionalDouble`, which takes a value of the wrong type as absent, and so
+/// does the port: a malformed one falls back to its default, it is not
+/// refused (FINDINGS).
+#[test]
+fn a_misspelled_optional_number_falls_back_as_in_swift() {
+    let hatching = json::parse(
+        r#"{"kind": "hatching", "faces": {"kind": "solid"}, "angle": 0.5, "spacing": 0.1, "step": "fine",
+            "widthSteps": 1, "tone": {"kind": "uniform"}}"#,
+    )
+    .unwrap();
+    let LayerSource::Hatching { hatching, .. } = LayerSource::from_json_on(&hatching, Geometry::Polyhedron).unwrap()
+    else {
+        panic!("a hatching");
+    };
+    assert_eq!(hatching.step, 0.1, "the step falls back to the spacing");
+    let walls = json::parse(r#"{"kind": "walls", "edges": [0], "base": "low", "topOffset": true}"#).unwrap();
+    assert_eq!(
+        FaceSelector::from_json(&walls).unwrap(),
+        FaceSelector::Walls { edges: vec![0], end_lines: false, base: 0.0, top_offset: 0.0 }
+    );
+}
