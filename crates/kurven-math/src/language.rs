@@ -5,7 +5,7 @@
 //! frozen in `tests/fixtures/expr/language.json` and held to it by the tests;
 //! a change here is a change there, made on purpose.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 
 use crate::bessel::{Airy, Bessel};
@@ -37,6 +37,13 @@ pub struct Function {
     /// a point of the plane, `order` or `modulus` for a parameter.
     pub parameters: &'static [&'static str],
     pub body: Body,
+}
+
+/// A function by its name, for a tape's instruction or an error message.
+impl core::fmt::Debug for Function {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Function({}, arity {})", self.name, self.arity)
+    }
 }
 
 impl Function {
@@ -156,6 +163,10 @@ static CONSTANTS: [Constant; 4] = [
     Constant { name: "tau", value: Complex::real(core::f64::consts::TAU), aliases: &["τ"], help: "2π" },
 ];
 
+/// The table by name, as Swift's `functionsByName` dictionary holds it.
+static FUNCTIONS_BY_NAME: LazyLock<HashMap<&'static str, &'static Function>> =
+    LazyLock::new(|| FUNCTIONS.iter().map(|f| (f.name, f)).collect());
+
 /// Every spelling, mapped to the one the tree stores; ordered, so its keys
 /// come sorted, as `unknown` reads them.
 static CANONICAL_NAMES: LazyLock<BTreeMap<&'static str, &'static str>> = LazyLock::new(|| {
@@ -193,8 +204,12 @@ impl Language {
         CANONICAL_NAMES.get(spelling).copied()
     }
 
+    /// The function of this canonical name, by hash, as Swift's dictionary
+    /// finds it. The tape and `Node::compiled` look it up once, when the
+    /// expression is compiled; `Node::evaluate` walks the tree and looks it
+    /// up at every call, as Swift's does.
     pub fn function(name: &str) -> Option<&'static Function> {
-        FUNCTIONS.iter().find(|f| f.name == name)
+        FUNCTIONS_BY_NAME.get(name).copied()
     }
 
     pub fn constant(name: &str) -> Option<&'static Constant> {

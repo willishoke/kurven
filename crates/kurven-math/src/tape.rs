@@ -3,7 +3,7 @@
 use crate::complex::Complex;
 use crate::expression::Node;
 use crate::gamma::Gamma;
-use crate::language::Language;
+use crate::language::{Function, Language};
 use crate::scratch;
 
 /// An expression as a list of instructions, each writing one register from
@@ -39,7 +39,7 @@ enum Op {
     Binary(fn(Complex, Complex) -> Complex, usize, usize),
     /// A call whose arity the table has no direct body for, which the parser
     /// never makes; a tree built by hand can.
-    Apply(&'static str, Vec<usize>),
+    Apply(&'static Function, Vec<usize>),
 }
 
 impl Tape {
@@ -70,9 +70,9 @@ impl Tape {
                 Op::Factorial(a) => Gamma::gamma(r[a] + 1.0),
                 Op::Unary(f, a) => f(r[a]),
                 Op::Binary(f, a, b) => f(r[a], r[b]),
-                Op::Apply(name, ref args) => {
+                Op::Apply(f, ref args) => {
                     let values: Vec<Complex> = args.iter().map(|&a| r[a]).collect();
-                    Language::function(name).expect("a tape's call names a function of the table").apply(&values)
+                    f.apply(&values)
                 }
             };
             r[k] = v;
@@ -92,7 +92,7 @@ fn emit(n: &Node, list: &mut Vec<Op>) -> usize {
             match (registers.len(), f.unary(), f.binary()) {
                 (1, Some(unary), _) => Op::Unary(unary, registers[0]),
                 (2, _, Some(binary)) => Op::Binary(binary, registers[0], registers[1]),
-                _ => Op::Apply(f.name, registers),
+                _ => Op::Apply(f, registers),
             }
         }
         Node::Binary(name, l, r) => {
