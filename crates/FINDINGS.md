@@ -1540,3 +1540,174 @@ From the review of PR #67.
   heights' rungs: all are the port's to the bit. A test pins eight of them.
   The goldens and references are unchanged; the ceiling decides only
   whether a vertex's |f| is over it.
+
+## 2026-11-16 · Phase 4: parametric surfaces, what came across
+
+Ported whole, a module per Swift file: Parametric.swift's behaviour into
+`parametric.rs` (the round torus in its angles and isothermal, the surface
+displaced along its normal with its lifted tubular neighbourhood, the linear
+curves off `VectorField::constant`'s flow, the fold curves and the grid's
+normals and folds), Visibility.swift into `visibility.rs` (footprint,
+front-most test, sheet, `onto_crease`, fold crossing, `HiddenLine::clip_on`),
+SurfaceImage.swift's rasterizer into `surface_image.rs`, Cover.swift into
+`cover.rs` (`PeriodLattice`), LinesOfCurvature.swift into
+`lines_of_curvature.rs`, and Scene.swift's parametric branch of `visible`
+(kurven-core); Torus.swift into kurven-landscape's `torus.rs`
+(`PeriodicTorus`, `Drawing`, `PeriodicOptions` for its defaulted
+arguments); and all of KurvenDynamics into kurven-surfaces (`forced.rs`,
+`drawing.rs` with `SurfaceRequestExt` for Swift's extension of
+`SurfaceRequest`, `bundle.rs`). The bake renders a parametric scene's
+coordinate image and traces its outline; `bake` reads a surface's bundle
+and `--dump` writes strokes and frame; the CLI has `surface`.
+
+## 2026-11-16 · The coordinate image is Swift's CPU rasterizer, not Metal's pass
+
+Swift's bake takes a parametric surface's coordinate image from Metal
+(`MetalRenderer.renderSurface`, `kv_param_vertex` in Shaders.swift). What
+Metal computes: the grid's points uploaded as float32 texels; view and clip
+matrices in float32; two triangles a cell, corners (00, 10, 01) and
+(10, 11, 01), cells in rows of u, a periodic axis's index wrapped;
+coverage by Metal's rasterization rules (a sample exactly on an edge
+belongs to one triangle, by the top-left convention); a depth pass that
+MAX-blends view z interpolated in float32; and a second pass for the
+coordinates, kept by a LESS depth test on view z normalized over the
+surface's padded range into a depth32Float attachment, so of two
+fragments equal in that depth the first drawn (primitive order) keeps the
+pixel, and the coordinate (lo + spacing · index, unwrapped) interpolated
+affinely, as under an orthographic camera perspective correction is.
+
+The port reproduces none of the float32 and takes Swift's own CPU
+rasterizer instead, `SurfaceImage.rasterize`, the reference Swift's suite
+holds the Metal pass to ("metal: the GPU coordinate pass is the CPU
+rasterizer's": coverage and depth differ only on edges, under half a
+percent of pixels). Its choices, all f64 and deterministic: the same
+triangles in the same order, sampled at the frame's grid points (where
+`metal_clip` puts pixel centres); covered where all three barycentric
+weights are at least -1e-12, so an edge sample is claimed by both
+triangles; depth and coordinate the weights' combination of the corners';
+the depth kept as a float32 and replaced only by a strictly greater one,
+so of equal depths the first triangle drawn keeps the pixel, which is
+Metal's primitive-order rule; one depth for both, where Metal decides the
+coordinate by its own normalized depth; a triangle of doubled pixel area
+within 1e-12 of zero, or with a corner that is not a number (where Swift's
+`Int` traps), draws nothing. Tiled bakes stitch the sub-frames as Swift
+does. How it is held: Surfaces.swift's "the rasterized coordinates land
+where their depth and pixel say" and "visibility by coordinate agrees
+with the exact ray-cast" pass at Swift's tolerances; the golden
+`surface/raster.txt` pins its depth and coordinate bits and
+`surface/torus-bare` a bake tested by it, both identical native and wasm.
+No reference drawing reads it: sn, sn in relief, the torus and periodic
+all have a tubular neighbourhood and are sphere traced (Swift too), so the
+float32 differences cannot move a reference stroke; only a surface with no
+closed-form neighbourhood, the forced torus, is tested by the image, and
+no reference drawing is one.
+
+## 2026-11-16 · The surface reference drawings: every layer at 0
+
+`references` bakes sn, sn in relief (0.4), the torus with a 2/5 linear
+curve, and `periodic` sn(z, 0.5) over its periods, each by `surface ...
+--save B; bake B`. Against Swift's: the same layers, the same stroke
+counts in every layer (sn 20/77/14/24/6; sn-relief 21/79/10/17/3/8;
+torus-linear 73/4/6; periodic 20/78/13/24/6), Hausdorff distance 0 and
+relative length 0 at the SVG's four decimals in every layer. They are held
+to the landscapes' floor, 1.5e-4 page units and 1e-5 of length. The
+frame's two gallery drawings (`gallery-frame-edges`, `gallery-frame-turing`)
+are `surface solid --kind frame`, a polyhedron: Phase 5's, left out of the
+list with a PORT comment, as are the solids and the composite.
+
+## 2026-11-16 · Phase 4: differences from Swift, by construction
+
+- **Preconditions are values.** `ParametricSurface::torus`, `torus_over`,
+  `displaced`, `grid_fold_curves`, `interpolate_normal` answer a
+  `ParametricError` (`NotATorus`, `NormalCount`, `NoVolume`) where Swift's
+  preconditions trap; `is_front_most` and `clip_on` answer `NoImage` and
+  `ClipOnError`; `linear_curves` asserts its preconditions as
+  `ParamAxis::new` does (and a step count past 2^63, where `Int` traps).
+  `SurfaceDrawing::periodic` on a torus or a forced request panics, as
+  Swift's `preconditionFailure`.
+- **Loops for `concurrentPerform`.** The fold curves' rows, cuts and
+  seeds, the displaced surface's normal offsets, the forced torus's values,
+  positions and slices, the traced lines of curvature, `clip_on`'s vertices
+  and cuts: loops in order, each iteration its own slot.
+- **NaN.** The fold tracer bins a point that is not a number in no cell
+  (Swift's `Int` traps). The forced fit's step counts are refused as
+  `DynamicsError` where `Int(x.rounded())` would trap; an ODE failure is
+  `DynamicsError::Ode` (Swift rethrows the integrator's error).
+- **The periodic drawing asks for the refiner's hook once.** Swift reads
+  `refiner.refine` per layer, finding the singular points each time; the
+  port finds them on the first layer that asks and shares the hook. The
+  points and so the curves are the same.
+- **The bake.** A landscape's or a solid's outline is refused as Phase 7's
+  (the depth pass); `--dump`'s frame for them is `DepthFrame::covering`
+  of the view bounds at the resolution, what Swift's depth frame is,
+  computed without a pass. A parametric bake renders the image with or
+  without an exact test, as Swift's Metal bake does, and passes it on.
+- **The CLI.** `surface solid` is refused (Phase 5), and so is a preview
+  (`--preview`, a .png output; Phase 7); `--isophotes` and `--hatching` on
+  a surface parse and are refused when drawn (Isophotes.swift, Phase 5).
+  Stdout prints the same facts in the port's spellings.
+
+## 2026-11-16 · Bake times and the wasm module (Phase 4)
+
+On this machine (Apple Silicon), single-threaded, from the request to the
+strokes: `surface sn` (grid 1024, sn sampled at 600, a 3000-pixel image)
+0.51 s native through `kurven-cli surface sn -o` and 0.63 s in the wasm
+module under Node 26 (`bake_surface_reference`, `bench.mjs`); `surface sn
+--relief 0.4` (grid 8192) 1.97 s and 2.69 s. Both include the CPU
+rasterizer's 3000² image, which sphere tracing then does not read. The
+wasm module is 1,729,812 bytes (from 1,594,979), with the surfaces and the
+golden generator's surface set linked in.
+
+## 2026-11-16 · Phase 4: the suites, at Swift's tolerances
+
+In `crates/kurven-surfaces/tests`, one Rust test per Swift suite, none
+loosened, none skipped to get green:
+
+- `surfaces.rs`, Surfaces.swift's surfaceTests, surfaceBakeTests and
+  foldTests: 11 pass. Visibility by coordinate and by sphere tracing: 0 of
+  20,000 disagree with the exact ray cast in all eight cases; the displaced
+  torus's sphere tracing agrees with the walk up the line of sight; the
+  clipped circles and the parametric bake are within 0.000% of the ray
+  cast's length; `surface sn` bakes the same SVG at 1000 and 3000; fold
+  curves within 1.5 px of the ray cast's outline.
+- `periodic.rs`, creaseTests, periodicTorusTests and linearCurveTests: 6
+  pass (the truncation edge drawn once, seen where either face is, hidden
+  past the reach only by a sheet in front; every line on the sn torus ends
+  on a zero, a pole or its continuation, none loose; a double zero and pole
+  hold two rays of every level). The quarter periods were already
+  kurven-math's.
+- `conformal.rs`: Conformal.swift's five pass (the right angle at 778
+  crossings to 4.9e-16 rad).
+- `lines_of_curvature.rs`: LinesOfCurvature.swift's eight pass (about 80 s,
+  nearly all the forced torus's fit and its 48 lines).
+- `forced.rs`: Forced.swift's six pass (the preview's grid folds within
+  0.13 px of the exact ones). Its orbit suite bounds Swift's 25 ms frame on
+  the grid folds alone, the CPU half; the frame's GPU half is ignored.
+- `paint.rs`: Paint.swift's two pass. `bundles.rs`: Bundles.swift's four
+  parametric-surface suites and the surface half of "contract: bundles
+  decode into consistent values" (all six surface bundles) pass.
+
+Ignored, each for the GPU (Phase 7): "metal: the GPU coordinate pass is the
+CPU rasterizer's", "preview: a parametric surface draws what its bake
+draws", "preview: a torus nearly edge-on keeps its outline whole at rest",
+and the GPU frame of the orbit suite; the drawing suite's last check
+(a warm renderer's preview against a fresh one's) is left out for the same
+reason. The four tests Phase 3 left for Phase 4 pass: "faces: a parametric
+surface is one face", "fields: the contours of u and v on the torus are its
+coordinate curves", the round torus's half of the occlusion suite, and the
+torus's half of "integral curves: a linear curve is the constant field's".
+No suite turned up a porting bug.
+
+## 2026-11-16 · Phase 4 status
+
+**Ported**: everything the handoff's Phase 4 names and every `// PORT:
+phase 4` hole; none is left in the code. The new refusals are other
+phases': a coordinate hatching or isophotes on a parametric surface
+(Isophotes.swift, `PORT: phase 5`), `surface solid` (Phase 5), the outline
+of a landscape or a solid and the CLI's preview (`PORT: phase 7`).
+
+**The gate**: check-web green at the branch's head, with the merge of main
+(PR #67) in. Four surface reference drawings at 0 (sn, sn-relief,
+torus-linear, periodic), 15 drawings held in all; the frame's two gallery
+drawings wait for Phase 5. Goldens: `surface/` (nine files), native and
+wasm byte-identical.
