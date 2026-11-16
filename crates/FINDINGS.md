@@ -1653,8 +1653,12 @@ for the parametric shapes (`kurven-cli/src/solid.rs`'s `surface_command`);
 the torus halves of the isophote, composite and contact suites, each an
 ignored test saying what it holds.
 
-**Not committed at the time of writing**: Contact.swift's seven suites
-(`kurven-landscape/tests/contact.rs`) and the grid-landscape half of the
-isophote visibility suite, being ported; until they land, the contact
-line is held only by the composite drawings above (contact layers at 0
-against Swift's).
+**Contact.swift** (`kurven-landscape/tests/contact.rs`): five suites pass
+(the contact line on the terrain and its part over the eight gate
+compositions, the box sunk into a plane, a part floating, the sweep of
+polyhedra, a face flush with the terrain) and five torus parts are ignored
+for Phase 4. Swift's "over 150 parts met" counts the tori with the
+polyhedra, so it is held in the ignored torus sweep; the polyhedra alone
+are held to their crossings (over 100,000, none missed). The grid half of
+"isophotes and tone: seen exactly where the torus's own cast and the grid
+landscape's cast say" passes; its torus half is ignored.
