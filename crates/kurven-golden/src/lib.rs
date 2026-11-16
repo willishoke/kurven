@@ -14,12 +14,21 @@
 //!                  arguments, as bits: the libm rule's first test. Native
 //!                  and wasm must agree to the bit, and so must every
 //!                  platform the check runs on.
+//! math/functions.txt  every function of the expression language over a
+//!                  fixed grid of the plane, through the parser and the tape.
+//! math/language.txt   the canonical spellings, refusals and literals of a
+//!                  fixed set of sources.
+//! math/dynamics.txt   the ODE integrator, the frequency analysis, the Fourier
+//!                  torus, Brent's method, continued fractions and the
+//!                  quarter periods on fixed problems.
 //! ```
 //!
 //! The set grows a module at a time: once a module passes against Swift, its
 //! goldens are written here.
 
 use kurven_math::real;
+
+mod math;
 
 /// One golden file: where it goes under the set's root, and its bytes.
 pub struct Golden {
@@ -29,7 +38,12 @@ pub struct Golden {
 
 /// Every golden file, in a fixed order.
 pub fn all() -> Vec<Golden> {
-    vec![Golden { path: "libm/table.txt", bytes: libm_table().into_bytes() }]
+    vec![
+        Golden { path: "libm/table.txt", bytes: libm_table().into_bytes() },
+        Golden { path: "math/functions.txt", bytes: math::functions_table().into_bytes() },
+        Golden { path: "math/language.txt", bytes: math::language_table().into_bytes() },
+        Golden { path: "math/dynamics.txt", bytes: math::dynamics_table().into_bytes() },
+    ]
 }
 
 /// An f64 as text that is the same on every platform: its bits, and its
