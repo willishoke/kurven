@@ -407,11 +407,14 @@ impl JsonValue {
         }
     }
 
-    /// The document `json.dumps(value, sort_keys=True, indent=indent,
-    /// ensure_ascii=ascii)` writes, byte for byte: the fixture indexes are
-    /// read by people as well as programs, and a golden file regenerated here
-    /// must diff cleanly against one Python wrote. (Swift's defaults are an
-    /// indent of 1 and `ascii`.)
+    /// The indented document Swift's `JSONValue.pretty(indent:ascii:)` writes,
+    /// byte for byte: the layout of `json.dumps(value, sort_keys=True,
+    /// indent=indent, ensure_ascii=ascii)`, so the fixture indexes read as
+    /// Python wrote them, with Swift's strings and numbers (`quote`,
+    /// `number`). Those are not Python's everywhere: `\b` and `\f` are
+    /// written `\u0008` and `\u000c`, DEL is not escaped under `ascii`, and
+    /// a double from 2^53 up to 1e16 takes an exponent. (Swift's defaults
+    /// are an indent of 1 and `ascii`.)
     pub fn pretty(&self, indent: usize, ascii: bool) -> String {
         fn render(v: &JsonValue, depth: usize, indent: usize, ascii: bool) -> String {
             let inner = " ".repeat(indent * (depth + 1));
@@ -475,10 +478,12 @@ pub fn number(d: f64) -> String {
     format!("{sign}{}{fraction}e{exponent_sign}{:02}", &digits[..1], exponent.unsigned_abs())
 }
 
-/// A string as JSON: quotes, backslash escapes for `"`, `\`, newline,
-/// return and tab, `\u00XX` for the other control characters, and with
-/// `ascii` (Python's `ensure_ascii`) every scalar past 0x7F as its UTF-16
-/// code units, `\uXXXX`.
+/// A string as JSON, as Swift's `JSONValue.quote` writes it: quotes,
+/// backslash escapes for `"`, `\`, newline, return and tab, `\u00XX` for
+/// the other control characters (`\b` and `\f` among them, which Python
+/// writes as `\b` and `\f`), and with `ascii` every scalar past 0x7F as
+/// its UTF-16 code units, `\uXXXX`. DEL, 0x7F, is written as it is, where
+/// Python's `ensure_ascii` escapes it.
 pub fn quote(s: &str, ascii: bool) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
@@ -782,6 +787,8 @@ mod tests {
     fn quoting_and_the_pretty_form() {
         assert_eq!(quote("a\"b\\c\n\u{1}é", false), "\"a\\\"b\\\\c\\n\\u0001é\"");
         assert_eq!(quote("Γ😀", true), "\"\\u0393\\ud83d\\ude00\"");
+        // Swift's, not Python's: \b and \f by number, DEL as it is.
+        assert_eq!(quote("\u{8}\u{c}\u{7f}", true), "\"\\u0008\\u000c\u{7f}\"");
         let v = object([("b", ints(&[1, 2])), ("a", object([])), ("c", string("x"))]);
         assert_eq!(v.pretty(1, true), "{\n \"a\": {},\n \"b\": [\n  1,\n  2\n ],\n \"c\": \"x\"\n}");
     }

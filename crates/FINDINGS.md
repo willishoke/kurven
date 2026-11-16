@@ -286,6 +286,16 @@ No tolerance was loosened.
   baking under it, a composite refuses it, and the preview projects on the
   GPU with `perspectiveClip`. Ported as it is.
 
+## 2026-11-15 · Swift's pretty JSON is json.dumps's layout, not its bytes
+
+`JSONValue.pretty(indent:ascii:)` says it writes what `json.dumps(...,
+sort_keys=True, indent=..., ensure_ascii=...)` writes, byte for byte. Its
+layout is that, but its strings and numbers are the canonical writer's:
+`\b` and `\f` come out as `\u0008` and `\u000c` (Python: `\b`, `\f`), DEL
+is left as it is under `ascii` (Python: `\u007f`), and a double from 2^53 up
+to 1e16 takes an exponent. The port writes what Swift writes, and its doc
+says so; no fixture index holds any of these.
+
 ## 2026-11-15 · Swift lets a malformed optional number fall back
 
 `optionalDouble` answers nil for a key that holds anything but a number,
