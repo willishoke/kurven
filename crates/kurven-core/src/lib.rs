@@ -20,3 +20,4 @@ pub mod json;
 pub mod npy;
 pub mod simd;
 pub mod spaces;
+pub mod text;
