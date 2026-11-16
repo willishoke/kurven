@@ -115,19 +115,24 @@ pub fn bake(scene: &Scene, options: &BakeOptions) -> Result<Bake, BakeError> {
     if scene.camera.is_perspective() {
         return Err(BakeError::Perspective);
     }
-    if scene.view_bounds()?.is_none() {
-        return Err(BakeError::EmptyScene);
-    }
-    let depth_tolerance = options.depth_tolerance.unwrap_or(scene.depth_tolerance);
     if let SceneGeometry::Parametric(_) = scene.geometry() {
         // PORT: phase 4 -- render the surface's depth and coordinates
         // (`SurfaceImage::rasterize`, stitched over the tiles as the depth
-        // is) and pass the image to `visible_layers`.
+        // is) and pass the image to `visible_layers`. Refused before the
+        // emptiness test, which Swift asks first: that one is cheap now, but
+        // a parametric surface's folds are derived for it.
         return Err(BakeError::Port(PortRefusal {
             phase: 4,
             what: "a parametric surface's bake, which reads the surface's coordinate image from the depth pass",
         }));
     }
+    // Swift computes the drawing's view bounds here, to frame the depth
+    // pass; the port renders none, so it asks only whether there is
+    // anything to frame, from the counts, without projecting every sample.
+    if scene.projects_to_nothing()? {
+        return Err(BakeError::EmptyScene);
+    }
+    let depth_tolerance = options.depth_tolerance.unwrap_or(scene.depth_tolerance);
     if options.outline.is_some() {
         // PORT: phase 4 -- render the depth buffer (the CPU rasterizer that
         // comes with `SurfaceImage`) and add `DepthImage::outline` of it as

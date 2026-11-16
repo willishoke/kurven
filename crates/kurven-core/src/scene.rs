@@ -1756,6 +1756,28 @@ impl Scene {
     ///
     /// A parametric surface with fold curves among its layers is refused
     /// until Phase 4, which places them.
+    /// Whether `view_bounds` is none: the scene projects to nothing, with no
+    /// point of its geometry and no vertex of a clipped layer. Read off the
+    /// counts, without projecting a point, which on a dense landscape is
+    /// every one of its samples; a parametric surface with no positions asks
+    /// `view_bounds`, since its folds are derived to be counted.
+    pub fn projects_to_nothing(&self) -> Result<bool, PortRefusal> {
+        let empty = match &self.geometry {
+            SceneGeometry::Heightfield(h) => {
+                let g = &*h.surface.height;
+                h.occluder.vertices.is_empty() && (h.tiles.is_empty() || g.width == 0 || g.height == 0)
+            }
+            SceneGeometry::Parametric(s) => {
+                if s.positions.is_empty() {
+                    return Ok(self.view_bounds()?.is_none());
+                }
+                false
+            }
+            SceneGeometry::Solid(s) => s.vertices.is_empty(),
+        };
+        Ok(empty && self.layers.iter().filter(|l| l.spec.clipped).all(|l| l.paths.vertices.is_empty()))
+    }
+
     pub fn view_bounds(&self) -> Result<Option<AABB<ViewSpace>>, PortRefusal> {
         let view = self.camera.view;
         let mut lo = Vec3::splat(f64::INFINITY);

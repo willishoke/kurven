@@ -71,3 +71,35 @@ fn the_strokes_are_the_scenes_layers() {
         assert_eq!((style.color.as_str(), style.width), (spec.color.as_str(), spec.width));
     }
 }
+
+/// The bake asks whether a scene projects to nothing from its counts, and
+/// the answer is `view_bounds`' being none: a landscape projects to
+/// something, and one with no tiles, no occluder and no clipped vertex to
+/// nothing, which the bake refuses as Swift's does.
+#[test]
+fn a_scene_that_projects_to_nothing_is_refused() {
+    use kurven_core::mesh::Mesh;
+    use kurven_core::scene::PreviewMode;
+
+    let (bundle, scene) = uniform_mesh();
+    assert!(!scene.projects_to_nothing().unwrap());
+    assert!(scene.view_bounds().unwrap().is_some());
+    let o = &bundle.manifest.occluder;
+    let empty = Scene::heightfield_scene(
+        bundle.surface.clone(),
+        Mesh::new(Vec::new(), Vec::new()),
+        Vec::new(),
+        o.region.clone(),
+        1,
+        Vec::new(),
+        scene.camera,
+        PreviewMode::Drawing,
+        scene.depth_tolerance,
+        None,
+        o.walls.clone(),
+    );
+    assert!(empty.projects_to_nothing().unwrap());
+    assert!(empty.view_bounds().unwrap().is_none());
+    let options = BakeOptions { resolution: 64, tiles: None, depth_tolerance: None, outline: None };
+    assert!(matches!(bake(&empty, &options), Err(BakeError::EmptyScene)));
+}
