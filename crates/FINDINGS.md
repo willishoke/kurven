@@ -1210,6 +1210,8 @@ measured.
 
 ## 2026-11-15 · The landscape references against Swift's: all but one layer at rounding
 
+*Superseded 2026-11-16: ang_major is at rounding too, in all eleven drawings; see "The six phase-line drawings were the port's Float.pi".*
+
 `kurven-cli references` bakes eleven of Swift's reference drawings (the six
 gallery landscapes, the four native landscapes, the slope lines), and
 check-web holds each to Swift's under its line of
@@ -1226,6 +1228,8 @@ in the plane, so its lengths are planar on both sides, as a drawing's are;
 it does not use `PolylineSet::total_length`.
 
 ## 2026-11-15 · The phase lines Swift and the port draw differently
+
+*Superseded 2026-11-16: the two causes below are wrong; the cause was the half turn `contour::cut` turned the grid by; see "The six phase-line drawings were the port's Float.pi".*
 
 The one layer that differs is ang_major (arg f at 0, ±π/2 and ±π) in six
 drawings, all at the ±π level, for two causes, each found by building
@@ -1297,6 +1301,8 @@ natively. With the bake and the gallery linked in, the wasm module is
 1,567,692 bytes (from 704,201 after Hatch.swift merged).
 
 ## 2026-11-16 · Phase 3 status: what is ported, what is left, every hole
+
+*Superseded 2026-11-16, its gate paragraph: ang_major is no longer skipped in any drawing; see "The six phase-line drawings were the port's Float.pi".*
 
 **Ported** (Swift file to Rust module). kurven-core: Grid, Mesh (`mesh.rs`),
 Surface with ContourRefine (`surface.rs`), ScalarField (`scalar_field.rs`),
