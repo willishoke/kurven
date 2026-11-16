@@ -4,11 +4,14 @@
 //! Laying a hatching on a solid (`Solid.hatchLines`, `visibleHatching`) is
 //! drawing, and comes with the polyhedra (Phase 5).
 
-use kurven_math::real;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::{Arc, Mutex};
+
+use kurven_math::{real, swift};
 
 use crate::json::{JsonError, JsonObject, JsonValue, Members, object, string};
 use crate::manifest::{ContourField, DomainAxis, ManifestError, SchemaError};
-use crate::parametric::PortRefusal;
+use crate::occlusion::sort_by_start;
 use crate::polyline::PolylineSet;
 use crate::simd::{Vec2, Vec3};
 use crate::solid::{FaceFrame, Solid};
@@ -558,44 +561,288 @@ pub struct HatchLine {
     pub path: Vec<P3<WorldSpace>>,
 }
 
+/// The hatch lines last laid on a solid, by hatching (`Solid::hatch_lines`):
+/// Swift lays a polyhedron's hatching when its bundle draws the layer, and
+/// again for every camera that tests it; the port lays it once and keeps
+/// it beside the solid, shared by the solid's copies. A copy moved or built
+/// anew starts empty. It is no part of the solid's value: two solids are
+/// equal whatever their memos hold. At most `HatchMemo::SIZE` hatchings.
+#[derive(Clone, Default)]
+pub struct HatchMemo(Arc<Mutex<Vec<Laid>>>);
+
+/// A hatching, and the lines it laid.
+type Laid = (Hatching, Arc<Vec<HatchLine>>);
+
+impl HatchMemo {
+    pub const SIZE: usize = 8;
+
+    fn get(&self, hatching: &Hatching) -> Option<Arc<Vec<HatchLine>>> {
+        let memo = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        memo.iter().find(|(h, _)| h == hatching).map(|(_, lines)| lines.clone())
+    }
+
+    fn put(&self, hatching: Hatching, lines: Arc<Vec<HatchLine>>) {
+        let mut memo = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if memo.len() >= HatchMemo::SIZE {
+            memo.remove(0);
+        }
+        memo.push((hatching, lines));
+    }
+}
+
+impl PartialEq for HatchMemo {
+    fn eq(&self, _: &HatchMemo) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for HatchMemo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HatchMemo")
+    }
+}
+
 /// The hatching of one width step before visibility and after
 /// (`Solid.visibleHatching(_:view:)`'s answer).
-pub type VisibleHatching = Vec<(i64, PolylineSet<WorldSpace>, PolylineSet<ViewSpace>)>;
+pub type VisibleHatching = Vec<(i64, PolylineSet<WorldSpace>, PolylineSet<WorldSpace>)>;
 
 impl Solid {
-    /// The hatching laid over every face, before visibility (`hatchLines(_:)`).
-    pub fn hatch_lines(&self, _hatching: &Hatching) -> Result<Vec<HatchLine>, PortRefusal> {
-        // PORT: phase 5 -- lines at the hatching's angle over each face's frame, clipped to its convex pieces, joined across diagonals, graded by the tone.
-        Err(PortRefusal { phase: 5, what: "Solid.hatchLines" })
+    /// The hatching laid over every face, before visibility.
+    pub fn hatch_lines(&self, hatching: &Hatching) -> Vec<HatchLine> {
+        self.laid(hatching).as_ref().clone()
     }
 
-    /// Every hatch line's path, before visibility (`hatchPaths(_:)`).
-    pub fn hatch_paths(&self, _hatching: &Hatching) -> Result<PolylineSet<WorldSpace>, PortRefusal> {
-        // PORT: phase 5 -- the paths of hatch_lines, as one polyline set.
-        Err(PortRefusal { phase: 5, what: "Solid.hatchPaths" })
+    /// The hatch lines of every face, laid once per hatching (`HatchMemo`).
+    fn laid(&self, hatching: &Hatching) -> Arc<Vec<HatchLine>> {
+        if let Some(lines) = self.hatch_memo.get(hatching) {
+            return lines;
+        }
+        let diagonals = self.diagonal_sides();
+        let lines: Arc<Vec<HatchLine>> =
+            Arc::new((0..self.faces.len()).flat_map(|i| self.hatch_lines_with(hatching, i, &diagonals)).collect());
+        self.hatch_memo.put(*hatching, lines.clone());
+        lines
     }
 
-    /// The hatching laid over face `i` (`hatchLines(_:onFace:)`).
-    pub fn hatch_lines_on_face(&self, _hatching: &Hatching, _face: usize) -> Result<Vec<HatchLine>, PortRefusal> {
-        // PORT: phase 5 -- one face's hatch lines: the plane covered at the spacing through the frame's origin, clipped to each piece, a line on a side left out.
-        Err(PortRefusal { phase: 5, what: "Solid.hatchLines(_:onFace:)" })
+    /// Every diagonal of the partition as its two vertices, the lesser
+    /// first: which sides of a piece are no edge of the solid.
+    fn diagonal_sides(&self) -> HashSet<(usize, usize)> {
+        (0..self.edges.len()).filter(|&k| self.is_diagonal[k]).map(|k| (self.edges[k].a, self.edges[k].b)).collect()
     }
 
-    /// The hatch lines by width step (`hatchLinesByWidth(_:)`).
-    pub fn hatch_lines_by_width(&self, _hatching: &Hatching) -> Result<Vec<(i64, Vec<HatchLine>)>, PortRefusal> {
-        // PORT: phase 5 -- hatch_lines grouped by width step, the steps in increasing order.
-        Err(PortRefusal { phase: 5, what: "Solid.hatchLinesByWidth" })
+    /// Every hatch line's path, before visibility: the curves a hatching
+    /// layer carries before the camera is known.
+    pub fn hatch_paths(&self, hatching: &Hatching) -> PolylineSet<WorldSpace> {
+        let lines = self.laid(hatching);
+        let paths: Vec<&[P3<WorldSpace>]> = lines.iter().map(|l| l.path.as_slice()).collect();
+        PolylineSet::from_paths(&paths)
     }
 
-    /// The hatching for a camera, per width step, before visibility and after
-    /// (`visibleHatching(_:view:)`).
-    pub fn visible_hatching(
-        &self,
-        _hatching: &Hatching,
-        _view: &Transform<WorldSpace, ViewSpace>,
-    ) -> Result<VisibleHatching, PortRefusal> {
-        // PORT: phase 5 -- each width step's hatch lines tested by the solid's occlusion (Solid.visible).
-        Err(PortRefusal { phase: 5, what: "Solid.visibleHatching" })
+    /// The hatching laid over face `i`.
+    ///
+    /// The face's plane is covered by lines at the hatching's angle, one
+    /// every spacing, through the frame's origin and its multiples, so a
+    /// face's hatching is fixed by its own frame and not by which of its
+    /// pieces is asked. Each line is clipped to every piece of the face -- a
+    /// convex polygon, so an interval -- and the intervals are joined where
+    /// they meet, which is across every diagonal. The two pieces compute the
+    /// crossing from the same two vertices but not always to the same bit;
+    /// intervals within `1e-12` of the face's extent of each other are joined.
+    /// A line lying on a side of the face is not drawn: that is an edge, and
+    /// the edge is drawn. One lying on a diagonal is. The tone is then read
+    /// along each run every `step`, and where the width step changes between
+    /// two readings the change is bisected on the tone.
+    pub fn hatch_lines_on_face(&self, hatching: &Hatching, i: usize) -> Vec<HatchLine> {
+        self.hatch_lines_with(hatching, i, &self.diagonal_sides())
+    }
+
+    /// `hatch_lines_on_face` given the partition's diagonals, found once
+    /// for every face (`diagonal_sides`).
+    fn hatch_lines_with(&self, hatching: &Hatching, i: usize, diagonals: &HashSet<(usize, usize)>) -> Vec<HatchLine> {
+        let face = &self.frames[i];
+        let polygons: Vec<Vec<Vec2>> = self.faces[i]
+            .iter()
+            .map(|&p| self.pieces[p].iter().map(|&k| face.coordinates(self.vertices[k].v)).collect())
+            .collect();
+        // Per side of each piece, whether it is a diagonal of the face
+        // rather than an edge of the solid.
+        let on_diagonal: Vec<Vec<bool>> = self.faces[i]
+            .iter()
+            .map(|&p| {
+                let piece = &self.pieces[p];
+                (0..piece.len())
+                    .map(|j| {
+                        let (a, b) = (piece[j], piece[(j + 1) % piece.len()]);
+                        diagonals.contains(&(a.min(b), a.max(b)))
+                    })
+                    .collect()
+            })
+            .collect();
+        let dir = Vec2::new(real::cos(hatching.angle), real::sin(hatching.angle));
+        let per = Vec2::new(-dir.y, dir.x);
+        let tone = hatching.tone.value(face);
+        let cross = |a: Vec2, b: Vec2| a.x * b.y - a.y * b.x;
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for poly in &polygons {
+            for &p in poly {
+                let c = p.dot(per);
+                lo = swift::min(lo, c);
+                hi = swift::max(hi, c);
+            }
+        }
+        if !(lo.is_finite() && hi.is_finite() && hi > lo) {
+            return Vec::new();
+        }
+        let extent = hi - lo;
+        let mut out = Vec::new();
+        // Where Swift's `Int` traps, on a count past Int, no line is laid.
+        let (Some(k_lo), Some(k_hi)) =
+            (swift::int((lo / hatching.spacing).ceil()), swift::int((hi / hatching.spacing).floor()))
+        else {
+            return Vec::new();
+        };
+        if k_lo > k_hi {
+            return Vec::new();
+        }
+        for k in k_lo..=k_hi {
+            let c = k as f64 * hatching.spacing;
+            let base = c * per;
+            // The line's overlap with each piece: half-plane by half-plane.
+            let mut intervals: Vec<(f64, f64)> = Vec::new();
+            for (poly, diagonal) in polygons.iter().zip(&on_diagonal) {
+                let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
+                let mut empty = false;
+                for j in 0..poly.len() {
+                    let (p, q) = (poly[j], poly[(j + 1) % poly.len()]);
+                    let e = q - p;
+                    let (f0, f1) = (cross(e, base - p), cross(e, dir));
+                    if f1.abs() <= 1e-15 * extent {
+                        // Parallel to the side. A line on it is outside the
+                        // piece when the side is an edge, so a line along
+                        // the face's boundary is left to the edge, and
+                        // inside when it is a diagonal, so a line along a
+                        // diagonal is drawn, once, across the join.
+                        let on = f0.abs() <= 1e-12 * extent * e.length();
+                        if if on { !diagonal[j] } else { f0 < 0.0 } {
+                            empty = true;
+                            break;
+                        }
+                    } else if f1 > 0.0 {
+                        t0 = swift::max(t0, -f0 / f1);
+                    } else {
+                        t1 = swift::min(t1, -f0 / f1);
+                    }
+                }
+                if !empty && t0 < t1 && t0.is_finite() && t1.is_finite() {
+                    intervals.push((t0, t1));
+                }
+            }
+            sort_by_start(&mut intervals);
+            let mut runs: Vec<(f64, f64)> = Vec::new();
+            for (a, b) in intervals {
+                match runs.last_mut() {
+                    Some(last) if a <= last.1 + 1e-12 * extent => last.1 = swift::max(last.1, b),
+                    _ => runs.push((a, b)),
+                }
+            }
+            for (a, b) in runs {
+                if !(b - a > 1e-12 * extent) {
+                    continue;
+                }
+                let width_step = |t: f64| hatching.width_step(tone(base + t * dir));
+                for (ta, tb, w) in Solid::graded(a, b, hatching.step, &width_step) {
+                    if w > 0 {
+                        out.push(HatchLine {
+                            face: i,
+                            width_step: w,
+                            path: vec![
+                                P3::from_vec(face.point(base + ta * dir)),
+                                P3::from_vec(face.point(base + tb * dir)),
+                            ],
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// `[a, b]` cut into intervals of one width step each: the step read
+    /// every `step`, and every change between two readings bisected on the
+    /// width step itself, to the last bit of the parameter. A change that
+    /// reverses between two readings is not seen; that is what the reading
+    /// step means. (Where Swift's `Int` traps on a count of readings past
+    /// Int, one reading.)
+    pub fn graded(a: f64, b: f64, step: f64, width_step: &dyn Fn(f64) -> i64) -> Vec<(f64, f64, i64)> {
+        let length = b - a;
+        let readings: i64 =
+            if step > 0.0 && step.is_finite() { swift::int((length / step).ceil()).map_or(1, |n| n.max(1)) } else { 1 };
+        let mut intervals: Vec<(f64, f64, i64)> = Vec::new();
+        let mut start = a;
+        let mut current = width_step(a);
+        // `known` is the last point whose width step is `current`.
+        let mut known = a;
+        for j in 1..=readings {
+            let t = if j == readings { b } else { a + length * j as f64 / readings as f64 };
+            // Between two readings of different steps: the first change,
+            // then whatever follows it, until the reading's step is reached.
+            // Each change is bisected until `lo` and `hi` are neighbouring
+            // numbers, where the midpoint no longer moves.
+            while width_step(t) != current {
+                let (mut lo, mut hi) = (known, t);
+                loop {
+                    let mid = 0.5 * (lo + hi);
+                    if !(mid > lo && mid < hi) {
+                        break;
+                    }
+                    if width_step(mid) == current {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                intervals.push((start, hi, current));
+                start = hi;
+                known = hi;
+                current = width_step(hi);
+            }
+            known = t;
+        }
+        intervals.push((start, b, current));
+        // Neighbours differ in width step by construction; only the last
+        // interval can be empty, when a change is bisected to `b` itself.
+        intervals.retain(|x| x.1 > x.0);
+        intervals
+    }
+
+    /// The hatch lines by width step, the steps that occur in increasing
+    /// order, each step's lines in the order they were laid.
+    pub fn hatch_lines_by_width(&self, hatching: &Hatching) -> Vec<(i64, Vec<HatchLine>)> {
+        let mut by_width: BTreeMap<i64, Vec<HatchLine>> = BTreeMap::new();
+        for line in self.laid(hatching).iter() {
+            by_width.entry(line.width_step).or_default().push(line.clone());
+        }
+        by_width.into_iter().collect()
+    }
+
+    /// The hatching for a camera: per width step, the hatch lines before
+    /// and after visibility, so a layer per width step can be drawn at its
+    /// width.
+    pub fn visible_hatching(&self, hatching: &Hatching, view: &Transform<WorldSpace, ViewSpace>) -> VisibleHatching {
+        let occlusion = self.occlusion(view);
+        self.hatch_lines_by_width(hatching)
+            .into_iter()
+            .map(|(w, lines)| {
+                let mut by_face: BTreeMap<usize, Vec<Vec<P3<WorldSpace>>>> = BTreeMap::new();
+                for line in &lines {
+                    by_face.entry(line.face).or_default().push(line.path.clone());
+                }
+                let visible: Vec<Vec<P3<WorldSpace>>> =
+                    by_face.iter().flat_map(|(&i, paths)| self.visible_curves(paths, i, &occlusion)).collect();
+                let all: Vec<Vec<P3<WorldSpace>>> = lines.into_iter().map(|l| l.path).collect();
+                (w, PolylineSet::from_paths(&all), PolylineSet::from_paths(&visible))
+            })
+            .collect()
     }
 }
 

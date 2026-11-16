@@ -1,0 +1,6 @@
+# surface solid --kind frame --size 2 --hole 2 --depth 0.8 --hatching turing --angle 30 --spacing 0.035 --width-steps 4 --scale 0.18 --seed 3: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
+edges paths 18 vertices 36 length 403e8298537b8604 30.510136811883072 hash 65f6a4866b534aed
+hatching 1/4 paths 796 vertices 1592 length 40502eaaa9f283df 64.72916649516218 hash 432c14640a55be2f
+hatching 2/4 paths 767 vertices 1534 length 4050350fa8bbfb6e 64.82908075673706 hash 41b78cf91068ac9e
+hatching 3/4 paths 635 vertices 1270 length 40494b5ddb72341e 50.588801794780224 hash c1e92e79e6160b55
+hatching 4/4 paths 314 vertices 628 length 4052f9c6b4f91225 75.90275310824707 hash 7ab63cd602d5a0f5

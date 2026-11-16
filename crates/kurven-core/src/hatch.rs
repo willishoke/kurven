@@ -28,7 +28,7 @@ use kurven_math::{real, swift};
 use crate::bisection::bisect;
 use crate::contour;
 use crate::grid::Grid2D;
-use crate::hatching::{FaceSelector, Hatching};
+use crate::hatching::FaceSelector;
 use crate::manifest::{
     Affine2, BoundaryPerimeter, ContourField, DomainAxis, LayerSource, LayerSpec, Occluder, PerimeterEdge, RealBand,
     Region, Restriction, Side, Truncation, Walls,
@@ -330,20 +330,6 @@ impl Surface {
             }
         };
         Some(PolylineSet::from_paths(&Surface::clip(paths, &context.region)))
-    }
-
-    /// Hatching along a coordinate of the graph, by width step in increasing
-    /// order, in world space (`Surface.graphHatching(_:tiled:in:refine:)`,
-    /// which Swift keeps in Isophotes.swift beside `Face.coordinateHatching`).
-    pub fn graph_hatching(
-        &self,
-        _hatching: &Hatching,
-        _tiled: bool,
-        _context: &HatchContext,
-        _refine: Option<&ContourRefine>,
-    ) -> Vec<(i64, Vec<Vec<P3<WorldSpace>>>)> {
-        // PORT: phase 5 -- each copy of the graph's `Face.coordinateHatching(_:on:)` (Isophotes.swift: the coordinate's contours at `Face.hatchLevels`, cut by width step with `Face.graded` and `Solid.graded`, a half-Lambert tone read off the copy's outward normal), lifted to |f| and carried to its tile; refused, nothing drawn, until Isophotes.swift is ported.
-        Vec::new()
     }
 }
 

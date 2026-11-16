@@ -9,11 +9,12 @@
 //! names of its non-empty stroke layers in the order the SVG's groups stand,
 //! and their stroke counts).
 //!
-//! The port draws the landscapes so far. Swift's list also holds sn flat and
-//! in relief, a torus with a linear curve, a periodic expression and the
-//! frame's two gallery drawings (parametric surfaces and solids built by
-//! `surface`, Phase 4 and 5), the seven solids (Phase 5) and the composite
-//! (Phase 5); they join this list with their phases.
+//! The port draws the landscapes, the seven solids and the frame's two
+//! gallery drawings so far. Swift's list also holds sn flat and in relief, a
+//! torus with a linear curve and a periodic expression (parametric surfaces,
+//! Phase 4), and the composite of the cubic, a cube and a torus, whose
+//! torus part waits for Phase 4 (`composite_three`); they join this list
+//! with it.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,7 @@ use kurven_golden::gallery::{self, camera};
 
 use crate::args::{Args, CliError};
 use crate::commands::{landscape_command, load_drawing, write_svg};
+use crate::solid::surface_command;
 
 /// A drawing: its strokes and the name of the layer each stroke layer draws.
 pub type Drawn = (Strokes, Vec<String>);
@@ -67,6 +69,16 @@ pub fn baked(bundle: &Path, preset: Option<&str>, refine: bool) -> Result<Drawn,
     let result = bake(&drawing.scene, &options)?;
     let names = result.specs.iter().map(|s| s.name.clone()).collect();
     Ok((result.strokes, names))
+}
+
+/// `surface ... --save B; bake B`.
+pub fn surface(words: &[String], scratch: &Path, stem: &str) -> Result<Drawn, CliError> {
+    let bundle = scratch.join(format!("{stem}.kurven"));
+    let mut argv = vec!["surface".to_string()];
+    argv.extend(words.iter().cloned());
+    argv.extend(["--save".to_string(), bundle.to_string_lossy().into_owned()]);
+    surface_command(&Args::new(&argv))?;
+    baked(&bundle, None, true)
 }
 
 // MARK: the gallery, as docs/gallery/make.py sets it up
@@ -188,6 +200,53 @@ pub fn gallery() -> Vec<Reference> {
             }),
         ));
     }
+    let frame = words(&[
+        "solid",
+        "--kind",
+        "frame",
+        "--size",
+        "2",
+        "--hole",
+        "2",
+        "--depth",
+        "0.8",
+        "--x-angle",
+        "-55",
+        "--z-angle",
+        "-60",
+        "--shear",
+        "0",
+        "--width",
+        "0.6",
+    ]);
+    let turing = words(&[
+        "--hatching",
+        "turing",
+        "--angle",
+        "30",
+        "--spacing",
+        "0.035",
+        "--width-steps",
+        "4",
+        "--scale",
+        "0.18",
+        "--seed",
+        "3",
+        "--hatch-width",
+        "0.5",
+    ]);
+    let w = frame.clone();
+    references.push(plate(
+        "gallery-frame-edges",
+        format!("docs/gallery/make.py: surface {} --save B; bake B", frame.join(" ")),
+        Box::new(move |scratch| surface(&w, scratch, "frame-edges")),
+    ));
+    let w: Vec<String> = frame.iter().chain(&turing).cloned().collect();
+    references.push(plate(
+        "gallery-frame-turing",
+        format!("docs/gallery/make.py: surface {} --save B; bake B", w.join(" ")),
+        Box::new(move |scratch| surface(&w, scratch, "frame-turing")),
+    ));
     references
 }
 
@@ -204,8 +263,8 @@ pub fn all(fixtures: &Path) -> Vec<Reference> {
             Box::new(move |_| baked(&bundle, None, true)),
         ));
     }
-    // PORT: phase 4 -- sn, sn-relief, torus-linear, periodic and the frame's
-    // two gallery drawings (`surface ... --save B; bake B`).
+    // PORT: phase 4 -- sn, sn-relief, torus-linear and periodic (`surface
+    // ... --save B; bake B`).
     // The slope lines of |f| golden (PR #60), drawn as `kurven-cli
     // fixtures` draws it: tests/fixtures/fields/landscape_slope_lines.svg.
     let slopes = fixtures.join("fields/landscape_slope_lines.kurven");
@@ -221,9 +280,43 @@ pub fn all(fixtures: &Path) -> Vec<Reference> {
             Ok((strokes, layers.iter().map(|(l, _)| l.spec.name.clone()).collect()))
         }),
     ));
-    // PORT: phase 5 -- solid-{tetrahedron, cube, octahedron, dodecahedron,
-    // icosahedron, csaszar, frame} and composite-three.
+    for kind in ["tetrahedron", "cube", "octahedron", "dodecahedron", "icosahedron", "csaszar", "frame"] {
+        references.push(plate(
+            &format!("solid-{kind}"),
+            format!("surface solid --kind {kind} --save B; bake B"),
+            Box::new(move |scratch| surface(&words(&["solid", "--kind", kind]), scratch, &format!("solid-{kind}"))),
+        ));
+    }
+    // PORT: phase 4 -- composite-three, the cubic landscape on its grid
+    // with the contract's cube and torus standing on it: `composite_three`
+    // below draws it, and joins this list once the torus's bundle
+    // (contract/surface_torus.kurven, a `SurfaceBundle`) can be read.
     references
+}
+
+/// composite-three: tests/fixtures/composite/three.svg, byte for byte in
+/// Swift, as `scene` draws it. Its torus part is a parametric surface's
+/// bundle, which the port reads from Phase 4 on; until then it is refused,
+/// and the drawing is not in `all`.
+pub fn composite_three(fixtures: &Path) -> Reference {
+    let parts: Vec<(String, kurven_core::composite::Placement)> = [
+        ("expr/landscape_cubic.kurven", "0,0,0,1"),
+        ("contract/polyhedron_cube.kurven", "-1.2,0.1,0.3,0.35"),
+        ("contract/surface_torus.kurven", "1,0,1.6,0.35"),
+    ]
+    .iter()
+    .map(|(p, at)| (fixtures.join(p).to_string_lossy().into_owned(), crate::scene::placement(at).expect("a placement")))
+    .collect();
+    plate(
+        "composite-three",
+        "scene expr/landscape_cubic.kurven contract/polyhedron_cube.kurven --at -1.2,0.1,0.3,0.35 \
+         contract/surface_torus.kurven --at 1,0,1.6,0.35 --no-refine"
+            .to_string(),
+        Box::new(move |_| {
+            let drawing = crate::scene::composite_drawing(&parts, None, false)?;
+            Ok((drawing.strokes, drawing.layers.iter().map(|(l, _)| l.spec.name.clone()).collect()))
+        }),
+    )
 }
 
 /// Bake every reference whose name `only` holds (all of them for an empty

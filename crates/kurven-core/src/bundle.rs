@@ -17,6 +17,21 @@ use crate::polyline::{Layer, PolylineSet};
 use crate::spaces::{P3, WorldSpace};
 use crate::surface::{ContourRefine, Surface};
 
+/// Whether the bundle at `url` has a manifest holding `key` at its top
+/// level: how a surface's bundle (`surface`) and a polyhedron's
+/// (`polyhedron`) are told from a landscape's (Swift's
+/// `SurfaceBundle.holdsSurface`, `PolyhedronBundle.holdsPolyhedron`). False
+/// where it has no manifest, for the landscape's reader to say so.
+pub fn holds_key(url: impl AsRef<Path>, key: &str) -> Result<bool, BundleError> {
+    let file = url.as_ref().join("manifest.json");
+    if !file.exists() {
+        return Ok(false);
+    }
+    let text = std::fs::read_to_string(&file).map_err(|e| BundleError::Io(format!("{}: {e}", file.display())))?;
+    let json = crate::json::parse(&text).map_err(|e| BundleError::Schema(e.into()))?;
+    Ok(json.object("Manifest").map_err(|e| BundleError::Schema(e.into()))?.contains_key(key))
+}
+
 /// Why a bundle cannot be read or written.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BundleError {

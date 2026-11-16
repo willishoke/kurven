@@ -1,7 +1,7 @@
 //! What the visibility suites share: a landscape built as
 //! `NativeLandscape.build` builds it (its bundle needs the refiner, so it
-//! lives here rather than in kurven-core), and the cameras the Swift suites
-//! look through.
+//! lives here rather than in kurven-core), the cameras the Swift suites
+//! look through, and the ray cast a polyhedron's visibility is held to.
 
 #![allow(dead_code, clippy::neg_cmp_op_on_partial_ord, clippy::manual_range_contains)]
 
@@ -12,6 +12,7 @@ use kurven_core::manifest::{Affine2, Domain, Interval, Region, Truncation, Walls
 use kurven_core::mesh::Mesh;
 use kurven_core::scene::Heightfield;
 use kurven_core::simd::{Mat3, Vec2, Vec3};
+use kurven_core::solid::Solid;
 use kurven_core::spaces::{Angle, DomainSpace, P2, P3, Transform, ViewSpace, WorldSpace};
 use kurven_core::splitmix::SplitMix;
 use kurven_core::surface::{Magnitude, Surface};
@@ -344,6 +345,133 @@ pub fn densely_hidden(
         t = tn;
     }
     None
+}
+
+/// A piece of a solid as triangles, fanned, for the brute-force ray cast
+/// (Solids.swift's `pieceMesh`).
+pub fn piece_mesh(s: &Solid, f: usize) -> Mesh<WorldSpace> {
+    let piece = &s.pieces[f];
+    Mesh::new(
+        piece.iter().map(|&k| s.vertices[k]).collect(),
+        (1..piece.len() - 1).map(|k| [0, k as i32, k as i32 + 1]).collect(),
+    )
+}
+
+/// Every piece of a solid as its `piece_mesh`, by index.
+pub fn piece_meshes(s: &Solid) -> Vec<Mesh<WorldSpace>> {
+    (0..s.pieces.len()).map(|f| piece_mesh(s, f)).collect()
+}
+
+/// Whether a point of the solid's surface, lying in the pieces `own`, is
+/// seen along `d`: one of its own pieces faces the eye and no other piece is
+/// hit by the ray from it (Solids.swift's `rayVisible`). The brute force
+/// every occlusion test is held to. `meshes` are the solid's `piece_meshes`,
+/// made once rather than per point, as Swift makes them.
+pub fn ray_visible(s: &Solid, meshes: &[Mesh<WorldSpace>], p: Vec3, own: &[usize], d: Vec3) -> bool {
+    if !own.iter().any(|&f| s.normals[f].dot(d) > 0.0) {
+        return false;
+    }
+    for (f, mesh) in meshes.iter().enumerate() {
+        if own.contains(&f) {
+            continue;
+        }
+        if first_hit(mesh, p, d, 1e-9).is_some() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether the line from `origin` along `direction`, up to distance
+/// `up_to`, passes under some triangle of `mesh` by more than
+/// `depth_tolerance`, perpendicular to that triangle (Stress.swift's
+/// `underSomeTriangle`; stress.rs keeps its own copy). Brute force over the
+/// triangles, sharing nothing with the traversal.
+pub fn under_some_triangle(
+    mesh: &Mesh<WorldSpace>,
+    origin: Vec3,
+    direction: Vec3,
+    depth_tolerance: f64,
+    start_inside: bool,
+    up_to: f64,
+) -> bool {
+    let (o, d) = (Vec2::new(origin.x, origin.y), Vec2::new(direction.x, direction.y));
+    for t in &mesh.triangles {
+        let (a, b, c) =
+            (mesh.vertices[t[0] as usize].v, mesh.vertices[t[1] as usize].v, mesh.vertices[t[2] as usize].v);
+        let n = (b - a).cross(c - a);
+        let len = n.length();
+        // A wall, seen from above, has no footprint and is no one's triangle.
+        if !(len > 0.0 && n.z.abs() > 1e-12 * len) {
+            continue;
+        }
+        let cosine = n.z.abs() / len;
+        let corners = [Vec2::new(a.x, a.y), Vec2::new(b.x, b.y), Vec2::new(c.x, c.y)];
+        let sign = if n.z > 0.0 { 1.0 } else { -1.0 };
+        let (mut lo, mut hi) = (0.0f64, f64::INFINITY);
+        let mut empty = false;
+        for k in 0..3 {
+            let (p, q) = (corners[k], corners[(k + 1) % 3]);
+            let e = q - p;
+            let f0 = sign * (e.x * (o.y - p.y) - e.y * (o.x - p.x));
+            let f1 = sign * (e.x * d.y - e.y * d.x);
+            if f1.abs() < 1e-15 {
+                if f0 < -1e-12 {
+                    empty = true;
+                    break;
+                }
+                continue;
+            }
+            let root = -f0 / f1;
+            if f1 > 0.0 {
+                lo = swift::max(lo, root);
+            } else {
+                hi = swift::min(hi, root);
+            }
+        }
+        hi = swift::min(hi, up_to);
+        if empty || !(lo <= hi) || !(hi.is_finite() || lo.is_finite()) {
+            continue;
+        }
+        let gap = |s: f64| -> f64 {
+            let p = origin + s * direction;
+            let z = a.z - (n.x * (p.x - a.x) + n.y * (p.y - a.y)) / n.z;
+            (p.z - z) * cosine
+        };
+        for s in [lo, hi] {
+            if s.is_finite() && (s > 1e-12 || start_inside) && gap(s) + depth_tolerance < 0.0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Stress.swift's `exactlyHidden`, the oracle for the traversal (stress.rs
+/// keeps its own copy): a point that starts inside the solid (strictly over
+/// the domain) is in its own surface's neighbourhood until the line first
+/// crosses out, hidden there only under some triangle by more than the
+/// depth tolerance; after that, any crossing of the boundary beyond the
+/// depth tolerance's reach along the line is occlusion.
+#[allow(clippy::too_many_arguments)]
+pub fn exactly_hidden(
+    mesh: &Mesh<WorldSpace>,
+    p: Vec3,
+    toward: Vec3,
+    depth_tolerance: f64,
+    per_unit: f64,
+    strictly_inside: bool,
+    cell: f64,
+) -> bool {
+    let reach = depth_tolerance / per_unit;
+    let mut exit = 0.0;
+    if under_some_triangle(mesh, p, Vec3::new(0.0, 0.0, 1.0), -1e-9 * cell, true, 0.0) {
+        exit = first_hit(mesh, p, toward, 1e-10).unwrap_or(f64::INFINITY);
+    }
+    if under_some_triangle(mesh, p, toward, depth_tolerance, strictly_inside, exit) {
+        return true;
+    }
+    first_hit(mesh, p, toward, swift::max(exit, reach) + 1e-10).is_some()
 }
 
 /// The view depth per unit of travel along the line of sight.

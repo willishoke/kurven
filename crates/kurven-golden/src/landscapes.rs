@@ -31,7 +31,7 @@ pub fn all() -> Vec<Golden> {
 }
 
 /// A golden's path is `'static`; these few are made once per run.
-fn leak(path: String) -> &'static str {
+pub(crate) fn leak(path: String) -> &'static str {
     Box::leak(path.into_boxed_str())
 }
 
@@ -64,7 +64,7 @@ fn baked(request: &LandscapeRequest) -> Bake {
 }
 
 /// FNV-1a over a stream of 64-bit words.
-fn fnv(words: impl Iterator<Item = u64>) -> u64 {
+pub(crate) fn fnv(words: impl Iterator<Item = u64>) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for w in words {
         for byte in w.to_le_bytes() {
@@ -82,6 +82,13 @@ fn summary(request: &LandscapeRequest, baked: &Bake) -> String {
         request.domain.json().canonical(),
         request.resolution
     );
+    out += &layers(baked);
+    out
+}
+
+/// Each stroke layer's name, counts, length bits and vertex hash, a line each.
+pub(crate) fn layers(baked: &Bake) -> String {
+    let mut out = String::new();
     for (spec, (_, paths)) in baked.specs.iter().zip(&baked.strokes.layers) {
         let offsets = paths.offsets.iter().map(|&o| o as u64);
         let vertices = paths.vertices.iter().flat_map(|v| [v.x().to_bits(), v.y().to_bits(), v.v.z.to_bits()]);

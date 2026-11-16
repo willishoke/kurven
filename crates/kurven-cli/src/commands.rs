@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use kurven_bake::{BakeOptions, bake};
-use kurven_core::bundle::KurvenBundle;
+use kurven_core::bundle::{KurvenBundle, holds_key};
 use kurven_core::hatching::{FaceSelector, Hatching, Tone};
-use kurven_core::json;
 use kurven_core::manifest::{
     CameraPreset, ContourField, DirectionField, Domain, DomainAxis, HeightPolicy, Interval, LayerRole, LayerSource,
     LayerSpec, Manifest, PolyhedronManifest, Provenance, RealBand, Restriction, Seeds, Spacing, Truncation,
 };
+use kurven_core::polyhedron_bundle::PolyhedronBundle;
 use kurven_core::scene::Scene;
 use kurven_core::simd::Vec3;
 use kurven_core::svg::{self, Strokes};
@@ -390,18 +390,6 @@ pub fn load_scene(args: &Args) -> Result<(KurvenBundle, CameraPreset, Scene), Cl
     Ok((bundle, preset, scene))
 }
 
-/// Whether a bundle's manifest holds `key` at its top level: how Swift tells
-/// a surface's bundle (`surface`) and a polyhedron's (`polyhedron`) from a
-/// landscape's (`SurfaceBundle.holdsSurface`, `PolyhedronBundle.holdsPolyhedron`).
-fn holds(url: &Path, key: &str) -> Result<bool, CliError> {
-    let file = url.join("manifest.json");
-    if !file.exists() {
-        return Ok(false);
-    }
-    let text = std::fs::read_to_string(&file).map_err(|e| CliError(format!("{}: {e}", file.display())))?;
-    Ok(json::parse(&text)?.object("Manifest")?.contains_key(key))
-}
-
 /// The drawing a bundle describes: where it was read from, its
 /// provenance, the preset and the scene (Swift's `loadDrawing`).
 pub struct Drawing {
@@ -412,19 +400,28 @@ pub struct Drawing {
 }
 
 /// The scene a bundle of any kind describes, under `--preset` or its first
-/// preset: a landscape's (`load_scene`). A parametric surface's and a
-/// polyhedron's are refused until their phases.
+/// preset: a landscape's (`load_scene`), or a polyhedron's, built from its
+/// vertices and loops. A parametric surface's is refused until Phase 4.
 pub fn load_drawing(args: &Args) -> Result<Drawing, CliError> {
     let Some(path) = args.positional.get(1) else { return Err(CliError("which bundle?".to_string())) };
     let url = Path::new(path);
-    if holds(url, "polyhedron")? {
-        // PORT: phase 5 -- `PolyhedronBundle.read`: the solid built from its
-        // vertices and loops, its layers drawn on it, and `scene(preset:)`.
-        return Err(CliError(format!(
-            "{path} holds a polyhedron, which the port does not draw yet (phase 5: PolyhedronBundle)"
-        )));
+    if PolyhedronBundle::holds_polyhedron(url)? {
+        let polyhedron = PolyhedronBundle::read(url)?;
+        // `PolyhedronBundle::read` refuses a bundle with no preset, so the
+        // first is there (Swift's `?? presets.first` and its refusal).
+        let preset = match args.flag("preset") {
+            Some(name) => polyhedron.manifest.preset(name)?.clone(),
+            None => polyhedron.manifest.presets[0].clone(),
+        };
+        let scene = polyhedron.scene(&preset);
+        return Ok(Drawing {
+            url: polyhedron.url.clone(),
+            provenance: polyhedron.manifest.provenance.clone(),
+            preset,
+            scene,
+        });
     }
-    if holds(url, "surface")? {
+    if holds_key(url, "surface")? {
         // PORT: phase 4 -- `SurfaceBundle.read`: the surface built from its
         // request, drawn with the manifest's layers, and `scene(preset:)`.
         return Err(CliError(format!(

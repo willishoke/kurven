@@ -1,0 +1,2 @@
+# surface solid --kind icosahedron: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
+edges paths 18 vertices 36 length 403e91ab3d6749c9 30.569019162861682 hash 3b942d8e9f16a151

@@ -67,6 +67,21 @@ pub extern "C" fn bake_gallery_plate(which: u32) -> u32 {
     kurven_golden::gallery::bake_plate(name).map_or(0, |b| b.strokes.path_count() as u32)
 }
 
+/// Bakes a polyhedron drawing in memory (`kurven_golden::polyhedra::bake_named`):
+/// 0 the dodecahedron, 1 the frame under Turing's pattern, 2 the composite
+/// of the cubic with a cube and a frame. Returns its stroke count, or 0 for
+/// another number. For timing under Node (`bench.mjs`).
+#[unsafe(no_mangle)]
+pub extern "C" fn bake_polyhedron(which: u32) -> u32 {
+    let name = match which {
+        0 => "dodecahedron",
+        1 => "frame-turing",
+        2 => "composite",
+        _ => return 0,
+    };
+    kurven_golden::polyhedra::bake_named(name).map_or(0, |b| b.strokes.path_count() as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

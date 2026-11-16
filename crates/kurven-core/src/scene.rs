@@ -6,10 +6,9 @@
 //! visibility of curves on each kind of face, the facing of its walls and
 //! risers, `visibleRuns` and `turning`), `FoldPlacer`, `SceneGeometry`,
 //! `Scene` (its initializers, `visibleLayers`, `visible`, `viewBounds`,
-//! `quickBounds`), `PreviewMode` and `Lighting`. A parametric surface's
-//! layers are Phase 4's and a solid's tested layers Phase 5's, each a typed
-//! refusal ([`PortRefusal`]); so is a hatching on the graph, which
-//! `Isophotes.swift` lays. `parallelMap` is a loop in order.
+//! `quickBounds`), `PreviewMode` and `Lighting`; whole for a solid too. A
+//! parametric surface's layers are Phase 4's, a typed refusal
+//! ([`PortRefusal`]). `parallelMap` is a loop in order.
 
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,7 +20,8 @@ use crate::bundle::KurvenBundle;
 use crate::camera::Camera;
 use crate::contour;
 use crate::grid::Grid2D;
-use crate::hatching::{FaceKind, FaceSelector};
+use crate::hatch::HatchContext;
+use crate::hatching::{FaceKind, FaceSelector, VisibleHatching};
 use crate::hidden_line::fold_crossing;
 use crate::manifest::{Affine2, CameraPreset, Domain, Interval, LayerRole, LayerSource, Region, Walls};
 use crate::mesh::Mesh;
@@ -1642,8 +1642,7 @@ impl FoldPlacer {
 impl Scene {
     /// Every layer's curves in view space, in declaration (draw) order, tested
     /// for this camera: `visible` of each. A parametric surface's layers
-    /// (Phase 4), a solid's tested ones and a graph's hatching (Phase 5) are
-    /// refused, with the phase that brings them.
+    /// (Phase 4) are refused, with the phase that brings them.
     pub fn visible_layers(
         &self,
         depth_tolerance: Option<f64>,
@@ -1704,9 +1703,29 @@ impl Scene {
                 Err(PortRefusal { phase: 4, what: "Scene.visible on a parametric surface" })
             }
             SceneGeometry::Heightfield(h) => {
-                if let LayerSource::Hatching { faces: FaceSelector::Graph { .. }, .. } = &layer.spec.source {
-                    // PORT: phase 5 -- a hatching on the graph: `Surface.graphHatching(_:tiled:in:refine:)` (Isophotes.swift), each width step a layer of its own at that fraction of the width, named "name w/steps" when there are several, tested on the graph (`visible_curves(_, Some(FaceKind::Graph), ...)`) when clipped.
-                    return Err(PortRefusal { phase: 5, what: "Surface.graphHatching" });
+                if let LayerSource::Hatching { hatching, faces: FaceSelector::Graph { tiled } } = &layer.spec.source {
+                    let context =
+                        HatchContext { perimeter: None, region: h.region.clone(), tiles: h.tiles.clone(), base: 0.0 };
+                    let steps = h.surface.graph_hatching(hatching, *tiled, &context, h.refine.as_ref());
+                    // A layer per width step, at that fraction of the width,
+                    // each tested on the graph when clipped.
+                    return Ok(steps
+                        .into_iter()
+                        .map(|(w, paths)| {
+                            let paths = PolylineSet::from_paths(&paths);
+                            let mut spec = layer.spec.clone();
+                            spec.width = layer.spec.width * w as f64 / hatching.width_steps as f64;
+                            if hatching.width_steps > 1 {
+                                spec.name = format!("{} {w}/{}", layer.spec.name, hatching.width_steps);
+                            }
+                            let seen = if layer.spec.clipped {
+                                h.visible_curves(&paths, Some(FaceKind::Graph), &view, depth_tolerance, 0.0)
+                            } else {
+                                paths.clone()
+                            };
+                            (Layer { spec, paths }, seen.mapped(&view))
+                        })
+                        .collect());
                 }
                 let visible = if folds {
                     h.visible_folds(&view, depth_tolerance, true, 0.0)
@@ -1717,17 +1736,42 @@ impl Scene {
                 };
                 Ok(vec![(layer.clone(), visible.mapped(&view))])
             }
-            SceneGeometry::Solid(_) => {
-                let source = &layer.spec.source;
-                let refused = match source {
-                    LayerSource::Edges => layer.spec.clipped,
-                    LayerSource::Hatching { faces: FaceSelector::Solid, .. } => true,
-                    LayerSource::File { .. } => layer.spec.clipped,
-                    _ => false,
-                };
-                if refused {
-                    // PORT: phase 5 -- a solid's clipped edges (`Solid.visibleEdges(view:)`), its hatching by width step (`visibleHatching` clipped, every line of `hatchLinesByWidth` unclipped, each a layer at that fraction of the width), and a clipped file's curves on it (`visibleCurves(onSurface:occlusion:)`).
-                    return Err(PortRefusal { phase: 5, what: "Scene.visible on a solid" });
+            SceneGeometry::Solid(s) => {
+                if matches!(layer.spec.source, LayerSource::Edges) && layer.spec.clipped {
+                    return Ok(vec![(layer.clone(), s.visible_edges(&view).mapped(&view))]);
+                }
+                if let LayerSource::Hatching { hatching, faces: FaceSelector::Solid } = &layer.spec.source {
+                    // One layer per width step, at that fraction of the
+                    // width: every hatch line when unclipped, the visible
+                    // spans otherwise.
+                    let steps: VisibleHatching = if layer.spec.clipped {
+                        s.visible_hatching(hatching, &view)
+                    } else {
+                        s.hatch_lines_by_width(hatching)
+                            .into_iter()
+                            .map(|(w, lines)| {
+                                let paths: Vec<Vec<P3<WorldSpace>>> = lines.into_iter().map(|l| l.path).collect();
+                                let all = PolylineSet::from_paths(&paths);
+                                (w, all.clone(), all)
+                            })
+                            .collect()
+                    };
+                    return Ok(steps
+                        .into_iter()
+                        .map(|(w, all, drawn)| {
+                            let mut spec = layer.spec.clone();
+                            spec.width = layer.spec.width * w as f64 / hatching.width_steps as f64;
+                            if hatching.width_steps > 1 {
+                                spec.name = format!("{} {w}/{}", layer.spec.name, hatching.width_steps);
+                            }
+                            (Layer { spec, paths: all }, drawn.mapped(&view))
+                        })
+                        .collect());
+                }
+                if matches!(layer.spec.source, LayerSource::File { .. }) && layer.spec.clipped {
+                    let paths: Vec<Vec<P3<WorldSpace>>> = layer.paths.paths().map(|p| p.to_vec()).collect();
+                    let seen = s.visible_curves_on_surface(&paths, &s.occlusion(&view));
+                    return Ok(vec![(layer.clone(), PolylineSet::from_paths(&seen).mapped(&view))]);
                 }
                 Ok(vec![(layer.clone(), layer.paths.mapped(&view))])
             }

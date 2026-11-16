@@ -1,0 +1,14 @@
+# the cubic at 48 on its grid, a cube at (-1.2, 0.1, 0.3) scaled 0.35 and a frame at (0.3, -1.3, 0.2) scaled 0.3, under the cubic's first preset: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
+mag_major paths 48 vertices 459 length 402fbfae7f6f1c5d 15.87437818747838 hash ef58d2c331c3b309
+ang_major paths 23 vertices 399 length 403eccba189b0873 30.799714601373534 hash 544dcfb20f816606
+mag_minor paths 208 vertices 1776 length 404d896587ef2656 59.073410980007495 hash ad6e24fe8d21a916
+ang_minor paths 60 vertices 1143 length 4058814c6cc25a0b 98.0202896020857 hash 4c64adcf5d489a4d
+truncation_edge paths 3 vertices 27 length 3ff1cacb66d4f296 1.1120103852146364 hash 6d26ad2514725186
+plateau_hatch paths 19 vertices 61 length 3ffec72992b75438 1.923623631582144 hash 59624c9742169120
+wall_edges paths 13 vertices 227 length 40278c8628a44948 11.77446105008552 hash c2168bcb0c1941dd
+wall_hatch paths 220 vertices 440 length 4047e597ee00c367 47.79369902646322 hash 5ff2fefc6f4062ab
+folds paths 11 vertices 92 length 40323796a61618e2 18.217142467875313 hash a2ab12c84af661bb
+edges paths 5 vertices 10 length 3ff1e72993f05fee 1.1189361361375592 hash b3822ae45a7a4a62
+contact paths 1 vertices 5 length 3fbcc4ed4cba8cda 0.1123798668218571 hash f2c54925d5bcdd1d
+edges paths 13 vertices 26 length 400acaee120047c0 3.349086895593217 hash c9e5ad3b8ddf6ee2
+contact paths 3 vertices 26 length 3fe27d623a9156c4 0.5778056281949024 hash 2751c8dd1483f694

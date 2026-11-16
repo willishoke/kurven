@@ -132,8 +132,7 @@ impl Surface {
     /// domain's edge or the footprint where the copy stands. Lifted to |f|,
     /// f's own with a refiner, restricted where they lie in the domain, and
     /// carried to the copy's tile. An isophote is each copy's own, n · l with
-    /// the copy's normal in place (`Face.isophotes(light:_:on:)`), which is
-    /// Phase 5's: it draws nothing until then.
+    /// the copy's normal in place (`Face::isophotes`).
     #[allow(clippy::too_many_arguments)] // Swift's signature, argument for argument
     pub fn graph_contours(
         &self,
@@ -158,9 +157,7 @@ impl Surface {
         let mut out = Vec::new();
         for copy in &face.copies {
             let contoured = if field == ContourField::Isophote {
-                // PORT: phase 5 -- an isophote is each copy's own n · l with the copy's normal in place (`Face.isophotes(light:_:on:)`, Isophotes.swift).
-                let _ = light;
-                Vec::new()
+                light.map_or_else(Vec::new, |l| face.isophotes(l, levels, copy))
             } else {
                 face.contours(&scalar, levels, copy)
             };

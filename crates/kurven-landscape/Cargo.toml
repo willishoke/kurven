@@ -11,5 +11,8 @@ publish.workspace = true
 kurven-math.workspace = true
 kurven-core.workspace = true
 
+[dev-dependencies]
+kurven-bake.workspace = true
+
 [lints]
 workspace = true
