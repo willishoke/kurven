@@ -261,9 +261,11 @@ pub fn is_cut(level: f64) -> bool {
 pub const SWIFT_FLOAT_PI: f32 = f32::from_bits(0x4049_0FDA);
 
 /// The branch cut of a phase grid, as iso-lines: where arg f passes from
-/// π to -π, which no level of the grid itself reaches, since a sample is
-/// never over π. It is the zero level of arg(-f) -- the same grid turned
-/// a half turn -- whose own cut lies where arg f is zero.
+/// π to -π, which no level of the grid itself reaches, since a landscape's
+/// sample is never over π (`NativeLandscape::quantize` clamps into the
+/// samples' range, so ±π is stored as ±`SWIFT_FLOAT_PI`). It is the zero
+/// level of arg(-f) -- the same grid turned a half turn -- whose own cut
+/// lies where arg f is zero.
 /// Marching squares emits a bundle of spurious crossings along that wrap,
 /// as along every wrap; a refiner drops them, which is why this is
 /// contoured only when one is in play.
@@ -272,14 +274,28 @@ pub const SWIFT_FLOAT_PI: f32 = f32::from_bits(0x4049_0FDA);
 /// (0x40490FDA, 3.1415925), not `f32::consts::PI`, which is π rounded to
 /// nearest (0x40490FDB, 3.1415927): the turned grid, and so every vertex of
 /// the cut the grid places, is Swift's to the bit (crates/FINDINGS.md).
+///
+/// A sample on the cut, f real and negative, is ±π, its sign the sign of
+/// Im f's zero; turned by the same float it is exactly zero, on the level
+/// whichever the sign. That holds for a grid clamped as a landscape's is.
+/// Swift assumes the clamp; here a sample over `SWIFT_FLOAT_PI` either way
+/// (π rounded up to 0x40490FDB, say, from a grid not quantized) is first
+/// clamped to it, so the cut never hangs on the sign of a rounding. On a
+/// quantized grid the clamp moves nothing, and the bits are Swift's. A NaN
+/// stays NaN.
 pub fn cut(phase: &Grid2D<f32>) -> Vec<Vec<P2<DomainSpace>>> {
     let pi = SWIFT_FLOAT_PI;
-    let turned = Grid2D::new(
-        phase.width,
-        phase.height,
-        phase.domain,
-        phase.values.iter().map(|&v| if v > 0.0 { v - pi } else { v + pi }).collect(),
-    );
+    let turn = |v: f32| {
+        let v = if v > pi {
+            pi
+        } else if v < -pi {
+            -pi
+        } else {
+            v
+        };
+        if v > 0.0 { v - pi } else { v + pi }
+    };
+    let turned = Grid2D::new(phase.width, phase.height, phase.domain, phase.values.iter().map(|&v| turn(v)).collect());
     lines(&turned, 0.0, Some(&Index::new(&turned)))
 }
 
@@ -531,5 +547,21 @@ mod tests {
         assert!((swift - nearest).abs() > 1e-8, "the two π place the crossing apart: {swift} {nearest}");
         assert!(cut.len() == 1 && cut[0].len() == 2, "one run across the two rows: {cut:?}");
         assert!(cut[0].iter().all(|p| p.x() == swift), "at Swift's crossing, {swift}: {cut:?}");
+
+        // A grid not clamped as a landscape's is: the cut runs down the
+        // middle column, its samples π rounded up, one sign or the other as
+        // rounding fell. Clamped to Float.pi they turn to zero, and the cut
+        // is the column, straight, whichever the signs.
+        let up = core::f32::consts::PI;
+        let domain = Domain::new(Interval::new(0.0, 2.0), Interval::new(0.0, 3.0));
+        for signs in [[1.0f32, 1.0, 1.0, 1.0], [1.0, -1.0, 1.0, -1.0], [-1.0, -1.0, 1.0, 1.0]] {
+            let mut values = Vec::new();
+            for s in signs {
+                values.extend([3.0, s * up, -3.0]);
+            }
+            let cut = super::cut(&Grid2D::new(3, 4, domain, values));
+            assert!(cut.len() == 1 && cut[0].len() == 4, "{signs:?}: one run up the column: {cut:?}");
+            assert!(cut[0].iter().all(|p| p.x() == 1.0), "{signs:?}: straight, at x = 1: {cut:?}");
+        }
     }
 }
