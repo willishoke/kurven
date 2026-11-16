@@ -1380,3 +1380,21 @@ restyle keeps it), a restyle keeps a described layer already drawn whose
 spec and inputs did not move, and every other is drawn as Swift draws it.
 The goldens and the eleven references are unchanged, and a test counts
 the refiner's calls: none until the layers are asked for, then once.
+
+## 2026-11-16 · `landscape` builds no refiner, and refuses its flags before it samples
+
+Swift's `landscape` builds the bundle with its refiner and writes it, and
+`KurvenBundle.write` writes the manifest and two grids, in which the
+refiner changes nothing. The port builds without one (and draws no layer,
+above), so the bundle written is byte for byte the same, which five
+command lines checked against the previous build (the gamma preset, cn at
+600, gamma banded, the cubic with slope lines, isophotes and hatching, and
+exp(1/z) with a seed spacing); gamma's preset took 0.13 s and now 0.01 s.
+`--repeat` builds the same way, so it no longer times a refiner. Swift also
+reads `--isophotes`, `--hatching` and the seed spacing after the build, so
+a mistyped flag cost a whole build to report; the port reads them first.
+Only the hatching's default spacing reads the bundle (the plateaus'), so
+the shading layers are made again with it once built; the seed spacing is
+held to the shape `grid_shape` gives the build. Where a flag and the
+expression are both wrong, the port names the flag and Swift the
+expression.

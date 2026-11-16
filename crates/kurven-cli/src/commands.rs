@@ -297,14 +297,37 @@ pub fn landscape_command(args: &Args) -> Result<(), CliError> {
         request.spacing = Some(v);
     }
     let slope = slope_layer(args)?;
+    // Every flag is read and refused before f is sampled: Swift reads
+    // `--isophotes`, `--hatching` and the seed spacing after the build, so a
+    // mistyped flag cost a whole build to report. Nothing they decide reads
+    // the samples. The hatching's default spacing is the plateaus', which
+    // the manifest's default layers carry, so the layers are made again with
+    // it once the bundle is built; the seed spacing is held to the grid the
+    // build samples, the shape `grid_shape` gives it.
+    let window_spacing =
+        kurven_math::swift::max(request.domain.real.length().abs(), request.domain.imag.length().abs()) / 70.0;
+    shading_layers(args, &FaceSelector::Graph { tiled: false }, (window_spacing, window_spacing), true)?;
+    if let Some(slope) = &slope
+        && let Some(shape) = NativeLandscape::grid_shape(request.domain, request.resolution)
+        && let Some(why) =
+            Manifest::unsupported(&slope.source, &request.domain, (shape.n_imag as i64, shape.n_real as i64))
+    {
+        return Err(CliError(format!("--seed-spacing: {why}")));
+    }
+    let repeat = args.int_or("repeat", 1)?;
 
+    // The bundle is written as its manifest and its two grids, which a
+    // refiner changes nothing in (`KurvenBundle::write`), so the build
+    // attaches none: Swift's builds one and places every layer through it,
+    // to be thrown away. The bytes written are the same.
+    //
     // --repeat N builds it N times over, which is how a profiler gets a long
     // enough look at one build.
-    for _ in 1..args.int_or("repeat", 1)? {
-        NativeLandscape::build(&request, GIT_SHA, true)?;
+    for _ in 1..repeat {
+        NativeLandscape::build(&request, GIT_SHA, false)?;
     }
     let started = Instant::now();
-    let mut bundle = NativeLandscape::build(&request, GIT_SHA, true)?;
+    let mut bundle = NativeLandscape::build(&request, GIT_SHA, false)?;
     let sampled = started.elapsed();
     // `--isophotes`, `--hatching`: the graph lit, the hatching at the
     // plateaus' spacing unless `--spacing` says.
@@ -312,16 +335,8 @@ pub fn landscape_command(args: &Args) -> Result<(), CliError> {
         LayerSource::Hatching { hatching, faces: FaceSelector::Plateaus { .. } } => Some(hatching.spacing),
         _ => None,
     });
-    let spacing = plateau_spacing.unwrap_or_else(|| {
-        kurven_math::swift::max(request.domain.real.length().abs(), request.domain.imag.length().abs()) / 70.0
-    });
+    let spacing = plateau_spacing.unwrap_or(window_spacing);
     let shading = shading_layers(args, &FaceSelector::Graph { tiled: false }, (spacing, spacing), true)?;
-    // `--slope-lines`: seeds no closer than the grid resolves.
-    if let Some(slope) = &slope
-        && let Some(why) = Manifest::unsupported(&slope.source, &bundle.manifest.domain, bundle.manifest.height.shape)
-    {
-        return Err(CliError(format!("--seed-spacing: {why}")));
-    }
     let mut added = shading;
     added.extend(slope);
     if !added.is_empty() {
