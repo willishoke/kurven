@@ -357,3 +357,42 @@ besselj goes through Y, so besselj(1e6, z) does not finish in Swift at all
 an answer where Swift gives none, a choice for the owner. Until there is
 one, a typed `besseli(1e12, z)` can hold the page's Worker, which Phase 6
 should be able to cancel.
+
+## 2026-11-15 · A NaN's sign bit differs by platform; the port reads it as plus
+
+CI on x86_64 Linux wrote two lines of `math/functions.txt` otherwise than
+the Mac: asin(inf + 0i) and acos(inf + 0i) had an imaginary part of -inf
+and +inf on the Mac and NaN on Linux. The cause: asin forms 1 − z² part by
+part, and its imaginary part −2 · inf · 0 is a NaN the hardware makes.
+IEEE 754 leaves that NaN's sign bit to the platform: ARM's default NaN is
+positive and x86's negative, and wasm passes the host's through, so the
+wasm module agreed with native on each platform and the platforms
+disagreed. `Complex::sqrt` then copied that sign onto an infinity
+(`copysign(t, z.im)`), and on x86 the -inf it made became inf − inf = NaN
+when the root was added to iz.
+
+The rule: a NaN's sign bit is platform noise and decides nothing. Swift
+runs only on ARM, where the NaNs an operation makes are positive, so the
+port reads every NaN's sign as plus. `kurven_math::real` holds the only
+reads of a sign bit: `copysign(x, y)` gives |x| when y is a NaN;
+`sign_minus(x)` is Swift's `x.sign == .minus`, false for every NaN (so
+-0.0 and -inf are minus); `total_order` sorts every NaN as the one
+positive NaN. `clippy.toml` and `scripts/check-web.sh` refuse
+`is_sign_negative`, `is_sign_positive`, `total_cmp` and `copysign` on f64
+and f32 everywhere else.
+
+Why that is enough: nothing else in the engine reads a NaN's sign bit.
+Comparisons are false for a NaN of either sign; `abs` clears the bit;
+`as` casts a NaN to 0; Rust prints a NaN without a sign, `description`
+writes `nan`, and the goldens write `nan`; `to_bits` is used only to print
+a number that is not NaN, and in tests guarded by `is_nan`. Of the libm
+crate's functions only `copysign` returns a number decided by a NaN
+argument's sign; the others return a NaN for a NaN argument, or a value
+(pow(1, NaN), hypot(inf, NaN)) that does not depend on its sign. x86 could
+not be run here; the unit tests pass NaNs of both signs through the three
+functions and through `Complex::sqrt`, and hold asin and acos at inf + 0i
+to the Mac's values.
+
+The one way this can differ from Swift: a NaN that Swift negates (`-x`
+flips the sign bit) or that descends from such a one keeps its minus sign
+on ARM, and Swift's `.sign` reads it as minus; the port reads it as plus.
