@@ -2,8 +2,8 @@
 //! exactly", from `Sources/kurven-test/Faces.swift`, with Swift's
 //! tolerances, over the landscapes of Swift's `faceLandscapes()` that are
 //! drawn on the grid: the contract's bundles and the hatch fixture's
-//! variants. Those on f (Γ and the towers) need the refiner, and are the
-//! suites agent's once `kurven-landscape` is ported.
+//! variants. Those on f (the towers) need the refiner, and are
+//! `kurven-landscape/tests/faces.rs`'s.
 
 // Swift's `!(d <= tolerance)` keeps an infinite or NaN distance outside.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]

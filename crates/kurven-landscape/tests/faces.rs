@@ -2,16 +2,23 @@
 //! draws: "faces: the graph's trim loops are its truncation edge, closed,
 //! and a contour on it is cut where it crosses them", over the face suites'
 //! landscapes (`support::face_landscapes`) and the landscapes on f the suite
-//! adds. Swift's tolerances.
+//! adds; and "restriction: a contour's copy is cut to the footprint where
+//! it lands, exactly" over the landscapes on f. Swift's tolerances.
 
 // Swift's `!(d <= tolerance)` keeps a distance that is not a number outside.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 mod support;
 
+use std::collections::HashSet;
+
 use kurven_core::face::FaceID;
 use kurven_core::hatch::HatchContext;
-use kurven_core::manifest::{Affine2, ContourField, LayerSource, Region, Truncation, Walls};
+use kurven_core::hatching::FaceSelector;
+use kurven_core::manifest::{
+    Affine2, ContourField, DomainAxis, HeightPolicy, LayerSource, Region, Restriction, Truncation, Walls,
+};
+use kurven_core::polyline::PolylineSet;
 use kurven_core::scalar_field::{self, ScalarField, Trim};
 use kurven_core::simd::Vec2;
 use kurven_core::spaces::{P2, P3, WorldSpace};
@@ -426,4 +433,189 @@ fn the_graphs_trim_loops_are_its_truncation_edge_closed_and_a_contour_on_it_is_c
         }
     }
     assert!(failures.is_empty(), "{} landscapes: {failures:#?}", landscapes.len());
+}
+
+fn key(p: P2<WorldSpace>) -> (u64, u64) {
+    let bits = |x: f64| if x == 0.0 { 0 } else { x.to_bits() };
+    (bits(p.x()), bits(p.y()))
+}
+
+/// "restriction: a contour's copy is cut to the footprint where it lands,
+/// exactly", over the landscapes of `faceLandscapes()` on f that stand on a
+/// footprint: the towers, in one tile and in two, and the reviewer's tower.
+/// (Γ and the pole stand on the whole region, which the suite passes over;
+/// the landscapes on the grid are `kurven-core/tests/restriction.rs`.)
+#[test]
+fn a_contours_copy_is_cut_to_the_footprint_where_it_lands_exactly_on_f() {
+    let landscapes: Vec<Landscape> = face_landscapes()
+        .into_iter()
+        .filter(|l| l.refine.is_some() && matches!(l.region, Region::Inside(_)) && l.has_graph())
+        .collect();
+    assert!(landscapes.len() >= 8, "the landscapes on f on a footprint: {}", landscapes.len());
+    let mut checked = 0;
+    for l in &landscapes {
+        for tiled in [true, false] {
+            let identity = vec![Affine2::IDENTITY];
+            let copies = if tiled { &l.tiles } else { &identity };
+            // Untiled, only where the footprint cuts the domain, holding a
+            // twentieth of it and leaving a twentieth.
+            if !tiled {
+                let d = l.surface.domain();
+                let held = (0..400)
+                    .filter(|k| {
+                        l.region.contains(P2::new(
+                            d.real.lo + d.real.length() * ((k % 20) as f64 + 0.5) / 20.0,
+                            d.imag.lo + d.imag.length() * ((k / 20) as f64 + 0.5) / 20.0,
+                        ))
+                    })
+                    .count();
+                if !(20..=380).contains(&held) {
+                    continue;
+                }
+            } else if l.tiles.len() == 1 {
+                continue;
+            }
+            let Region::Inside(perimeter) = &l.region else { continue };
+            let surface = &l.surface;
+            let (real, imag) = (surface.domain().real, surface.domain().imag);
+            let size = real.length().abs().max(imag.length().abs());
+            let cell = (real.length().abs() / (surface.height.width - 1) as f64)
+                .max(imag.length().abs() / (surface.height.height - 1) as f64);
+            let tolerance = 1e-9 * size;
+            let mut finite: Vec<f64> =
+                surface.height.values.iter().filter(|v| v.is_finite()).map(|&v| f64::from(v)).collect();
+            finite.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let (lo, hi) = (finite[finite.len() / 10], finite[9 * finite.len() / 10].min(6.0));
+            let levels: Vec<f64> = (1..=7).map(|k| lo + (hi - lo) * k as f64 / 8.0).collect();
+            let band = (imag.lo + 0.3 * imag.length(), imag.lo + 0.7 * imag.length());
+            let mut corners: Vec<Vec2> = perimeter.edges().iter().map(|e| e.start.v).collect();
+            corners.push(perimeter.edges()[0].start.v);
+            let outline = Segments::new(&[corners], cell);
+            let cover = |w: Vec2| -> usize {
+                l.tiles
+                    .iter()
+                    .filter(|tile| {
+                        let Some(back) = tile.inverse() else { return false };
+                        let q = back.apply(P3::new(w.x, w.y, 0.0));
+                        q.x() >= real.lo.min(real.hi)
+                            && q.x() <= real.lo.max(real.hi)
+                            && q.y() >= imag.lo.min(imag.hi)
+                            && q.y() <= imag.lo.max(imag.hi)
+                    })
+                    .count()
+            };
+            for (what, restriction, banded) in [
+                ("the footprint", Restriction::Footprint, false),
+                (
+                    "the footprint and a band of Im z",
+                    Restriction::Intersection(vec![
+                        Restriction::Footprint,
+                        Restriction::Band { axis: DomainAxis::Imag, lo: band.0, hi: band.1 },
+                    ]),
+                    true,
+                ),
+            ] {
+                let derived = |r: Restriction| -> PolylineSet<WorldSpace> {
+                    surface.derive(
+                        &LayerSource::Contour {
+                            field: ContourField::Magnitude,
+                            levels: levels.clone(),
+                            restriction: r,
+                            faces: FaceSelector::Graph { tiled },
+                            light: None,
+                        },
+                        HeightPolicy::Magnitude,
+                        &l.region,
+                        &l.tiles,
+                        l.refine.as_ref(),
+                    )
+                };
+                let whole = derived(Restriction::All);
+                let kept = derived(restriction);
+                assert!(
+                    whole.count() % copies.len() == 0,
+                    "{}, {what}: the whole contours come a copy per tile",
+                    l.name
+                );
+                let per_copy = whole.count() / copies.len();
+                let whole_vertices: HashSet<(u64, u64)> = whole.vertices.iter().map(|v| key(v.xy())).collect();
+                let runs: Vec<Vec<Vec2>> =
+                    (0..kept.count()).map(|k| kept.path(k).iter().map(|v| v.xy().v).collect()).collect();
+                let pieces = Segments::new(&runs, cell);
+                let (mut outside, mut ends_off, mut misclipped) = (Vec::new(), Vec::new(), Vec::new());
+                let (mut in_samples, mut out_samples) = (0, 0);
+                for run in &runs {
+                    for w in run.windows(2) {
+                        for k in 0..=16 {
+                            let q = w[0] + (w[1] - w[0]) * (k as f64 / 16.0);
+                            if !l.region.contains(P2::from_vec(q)) && !(outline.distance(q, cell) <= tolerance) {
+                                outside.push(q);
+                            }
+                        }
+                    }
+                    for e in [run[0], run[run.len() - 1]] {
+                        if !whole_vertices.contains(&key(P2::from_vec(e))) && !(outline.distance(e, cell) <= tolerance)
+                        {
+                            ends_off.push(e);
+                        }
+                    }
+                }
+                for c in 0..whole.count() {
+                    let tile = copies[c / per_copy];
+                    let Some(back) = tile.inverse() else { continue };
+                    let path: Vec<Vec2> = whole.path(c).iter().map(|v| v.xy().v).collect();
+                    for w in path.windows(2) {
+                        let (a, b) = (w[0], w[1]);
+                        let ya = back.apply(P3::new(a.x, a.y, 0.0)).y();
+                        let yb = back.apply(P3::new(b.x, b.y, 0.0)).y();
+                        let in_band = |y: f64| !banded || (y > band.0 && y < band.1);
+                        // Not where a vertex lies on the band's edge, which
+                        // carried back and forth is a rounding either side.
+                        let on_edge = |y: f64| banded && (y - band.0).abs().min((y - band.1).abs()) <= tolerance;
+                        if !(in_band(ya) == in_band(yb) && !on_edge(ya) && !on_edge(yb)) {
+                            continue;
+                        }
+                        for k in 0..16 {
+                            let q = a + (b - a) * ((k as f64 + 0.5) / 16.0);
+                            let d = outline.distance(q, cell);
+                            if !((d.is_infinite() || d > 1e-6 * size) && (!tiled || cover(q) == 1)) {
+                                continue;
+                            }
+                            let expected = l.region.contains(P2::from_vec(q)) && in_band(ya);
+                            if expected {
+                                in_samples += 1;
+                            } else {
+                                out_samples += 1;
+                            }
+                            let on_piece = pieces.distance(q, cell) <= tolerance;
+                            if on_piece != expected {
+                                misclipped.push((q, c / per_copy, on_piece));
+                            }
+                        }
+                    }
+                }
+                assert!(
+                    in_samples > 200
+                        && out_samples > 200
+                        && outside.is_empty()
+                        && ends_off.is_empty()
+                        && misclipped.is_empty(),
+                    "{}, {}, kept to {what}: each copy cut to the footprint where it lands, exactly: \
+                     {} points kept outside, {} of {} ends off the perimeter, {} of {in_samples} in and {out_samples} out \
+                     misclipped: {:?} {:?} {:?}",
+                    l.name,
+                    if tiled { "tiled" } else { "untiled" },
+                    outside.len(),
+                    ends_off.len(),
+                    2 * runs.len(),
+                    misclipped.len(),
+                    outside.first(),
+                    ends_off.first(),
+                    misclipped.first()
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 10, "{checked} cases checked");
 }

@@ -1,8 +1,9 @@
 //! The visibility suites of `Sources/kurven-test` that need the scene and
-//! the refiner but not Hatch.swift's strokes: the landscape part of
-//! Occlusion.swift's suite, Facing.swift's facing and fold suites and its
-//! navigation check, and Faces.swift's tile-boundary visibility and fold
-//! suites. Swift's tolerances throughout.
+//! the refiner: the landscape part of Occlusion.swift's suite, Facing.swift's
+//! facing and fold suites and its navigation check, and Faces.swift's
+//! tile-boundary visibility and fold suites, and its contours and folds
+//! carried across a band boundary. Swift's tolerances throughout. (Facing.swift's
+//! suites on the walls', risers' and plateaus' strokes are `walls.rs`.)
 
 // Swift's `guard x > 0 else` refuses a NaN, and so does `if !(x > 0.0)`.
 #![allow(clippy::neg_cmp_op_on_partial_ord, clippy::manual_range_contains)]
@@ -819,16 +820,14 @@ fn every_chord_of_a_fold_lies_within_the_refiners_tolerance_of_the_fold_on_every
     }
 }
 
-/// The folds' half of "faces: a contour or a fold carried to the truncation
-/// edge across a band boundary ends on the drawn top": every point of the
-/// folds under four cameras, vertices and seven points along each chord,
-/// lies on min(|f|, h(x)) -- on a band boundary the higher side's -- within
-/// the refiner's tolerance, in height or across the plane. The contour
-/// layers' half waits for Hatch.swift: a truncated graph's contours are cut
-/// at its trim loops (`graphTrimLoops`), which the stub has only to the
-/// domain's edge.
+/// "faces: a contour or a fold carried to the truncation edge across a band
+/// boundary ends on the drawn top": every point of the refined contour
+/// layers and of the folds under four cameras, vertices and seven points
+/// along each chord, lies on min(|f|, h(x)) -- on a band boundary the
+/// higher side's -- within the refiner's tolerance, in height or across the
+/// plane.
 #[test]
-fn a_fold_carried_to_the_truncation_edge_across_a_band_boundary_ends_on_the_drawn_top() {
+fn a_contour_or_a_fold_carried_to_the_truncation_edge_across_a_band_boundary_ends_on_the_drawn_top() {
     let domain = Domain::new(Interval::new(-0.5, 1.5), Interval::new(-1.0, 1.0));
     let cases = [
         ("a tower", "1/(z-0.45)", domain, 200, vec![RealBand { below: 0.5, height: 2.0 }], 4.0),
@@ -883,16 +882,8 @@ fn a_fold_carried_to_the_truncation_edge_across_a_band_boundary_ends_on_the_draw
             let gy = (magnitude(P2::new(v.x(), v.y() + e)) - magnitude(P2::new(v.x(), v.y() - e))) / (2.0 * e);
             (d, d.abs() / (gx * gx + gy * gy).sqrt() / cell)
         };
-        let h = Scene::from_bundle(&built, &built.manifest.presets[0]).heightfield().unwrap().clone();
-        for z_angle in [-90.0, 90.0, -20.0, -160.0] {
-            let camera = Camera::oblique(&ObliqueProjection {
-                shear: 0.5,
-                x_angle: -55.0,
-                z_angle,
-                flip_x: true,
-                y_scale: None,
-            });
-            let paths = h.fold_curves(&camera.view, true);
+        // Every point of `paths`, vertices and seven along each chord.
+        let measure = |what: &str, paths: &PolylineSet<WorldSpace>| {
             let (mut points, mut above, mut below, mut wrong) = (0, 0.0f64, 0.0f64, Vec::new());
             for run in paths.paths() {
                 for w in run.windows(2) {
@@ -919,12 +910,30 @@ fn a_fold_carried_to_the_truncation_edge_across_a_band_boundary_ends_on_the_draw
             }
             assert!(
                 points > 100 && wrong.is_empty(),
-                "{name}: every point of the folds seen from {}° on the drawn top, within {} cells: {} of {points} points \
-                 off, as far as {above:+.4} and {below:+.4}: {:?}",
-                z_angle as i64,
+                "{name}: {what} on the drawn top, within {} cells: {} of {points} points off, as far as {above:+.4} \
+                 and {below:+.4}: {:?}",
                 refine.tolerance,
                 wrong.len(),
                 wrong.iter().take(3).collect::<Vec<_>>()
+            );
+        };
+        for layer in &built.layers {
+            if matches!(layer.spec.source, LayerSource::Contour { .. }) {
+                measure(&format!("every point of {}", layer.spec.name), &layer.paths);
+            }
+        }
+        let h = Scene::from_bundle(&built, &built.manifest.presets[0]).heightfield().unwrap().clone();
+        for z_angle in [-90.0, 90.0, -20.0, -160.0] {
+            let camera = Camera::oblique(&ObliqueProjection {
+                shear: 0.5,
+                x_angle: -55.0,
+                z_angle,
+                flip_x: true,
+                y_scale: None,
+            });
+            measure(
+                &format!("every point of the folds seen from {}°", z_angle as i64),
+                &h.fold_curves(&camera.view, true),
             );
         }
     }
