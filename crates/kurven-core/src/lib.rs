@@ -28,6 +28,7 @@ pub mod grid;
 pub mod hatch_stub;
 pub mod hatching;
 pub mod hidden_line;
+pub mod integral_curves;
 pub mod json;
 pub mod manifest;
 pub mod mesh;
