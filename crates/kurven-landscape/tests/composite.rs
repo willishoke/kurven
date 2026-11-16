@@ -121,16 +121,16 @@ fn gate(name: &str, parts: &Parts, cameras: &[(String, Camera)]) -> Vec<String> 
 fn every_curve_is_seen_exactly_where_no_geometrys_brute_force_cast_meets_its_line_of_sight() {
     let (cameras, compositions) = gate_compositions();
     let start = Instant::now();
-    let mut failures = Vec::new();
-    let mut ran = 0;
-    for (name, parts) in &compositions {
-        if WITH_TORUS.contains(&name.as_str()) {
-            continue;
-        }
-        let parts = parts.as_ref().unwrap_or_else(|e| panic!("{name}: {e}"));
-        ran += 1;
-        failures.extend(gate(name, parts, &cameras));
-    }
+    let runs: Vec<(&String, &Parts)> = compositions
+        .iter()
+        .filter(|(name, _)| !WITH_TORUS.contains(&name.as_str()))
+        .map(|(name, parts)| (name, parts.as_ref().unwrap_or_else(|e| panic!("{name}: {e}"))))
+        .collect();
+    let ran = runs.len();
+    // The compositions are independent, and each composite's own drawing
+    // runs on one thread: spread over threads, the failures kept in order.
+    let failures: Vec<String> =
+        common::par_map(&runs, |&(name, parts)| gate(name, parts, &cameras)).into_iter().flatten().collect();
     eprintln!("{ran} compositions in {:?}", start.elapsed());
     assert!(ran == 8, "the eight compositions with no torus ran: {ran}");
     assert!(failures.is_empty(), "{failures:#?}");

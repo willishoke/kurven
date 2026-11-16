@@ -4,12 +4,14 @@
 //! visibility of both kinds of layer, held to the dense cast against f. The
 //! round torus's suites build it through `SurfaceDrawing.build` (Phase 4)
 //! and are stubbed below, ignored; "isophotes and tone: seen exactly where
-//! the torus's own cast and the grid landscape's cast say" is ported with
-//! the composite. Swift's tolerances.
+//! the torus's own cast and the grid landscape's cast say" holds its grid
+//! landscape here, by the composite gate (`gate::composite_verdict`), and
+//! its torus in an ignored stub. Swift's tolerances.
 
 #![allow(clippy::neg_cmp_op_on_partial_ord, clippy::type_complexity)]
 
 mod common;
+mod gate;
 
 use std::collections::HashSet;
 
@@ -844,5 +846,81 @@ fn on_the_round_torus_lit_along_z_the_isophote_is_v_asin_c() {
 #[test]
 #[ignore = "PORT: phase 4 -- the round torus (SurfaceDrawing.build)"]
 fn tone_on_the_torus_runs_along_a_coordinate() {
+    panic!("Phase 4: the round torus is built by SurfaceDrawing.build, not ported");
+}
+
+/// "isophotes and tone: seen exactly where the torus's own cast and the
+/// grid landscape's cast say", its grid landscape: the cubic
+/// (expr/landscape_cubic.kurven, on its grid, its own normals the grid's)
+/// restyled with isophotes at -0.6, -0.3, 0, 0.3, 0.6 and 0.9 and four
+/// widths of half-Lambert tone every 0.04 on its graph, lit from
+/// (-0.4, -0.6, 0.7), alone in a composite under its own camera
+/// (`gate::composite_verdict`, no other part's cast): at every vertex of
+/// those layers facing the eye, drawn exactly where its cast
+/// (Stress.swift's `exactlyHidden` against the drawn triangles) sees it,
+/// over 5 000 compared.
+#[test]
+fn isophotes_and_tone_on_the_grid_landscape_are_seen_exactly_where_its_cast_says() {
+    let light = Vec3::new(-0.4, -0.6, 0.7);
+    let read = gate::cubic_bundle();
+    let mut m = read.manifest.clone();
+    m.layers = vec![
+        LayerSpec::new(
+            "isophotes",
+            LayerRole::Scaffold,
+            LayerSource::Contour {
+                field: ContourField::Isophote,
+                levels: vec![-0.6, -0.3, 0.0, 0.3, 0.6, 0.9],
+                restriction: Restriction::All,
+                faces: FaceSelector::Graph { tiled: false },
+                light: Some(light),
+            },
+            0.3,
+            HeightPolicy::Surface,
+        ),
+        LayerSpec::new(
+            "tone",
+            LayerRole::Scaffold,
+            LayerSource::Hatching {
+                hatching: Hatching::new(0.0, 0.04, None, Tone::HalfLambert { light }, 4),
+                faces: FaceSelector::Graph { tiled: false },
+            },
+            1.0,
+            HeightPolicy::Surface,
+        ),
+    ];
+    let bundle = read.restyled(&m);
+    let landscape = Scene::from_bundle(&bundle, &bundle.manifest.presets[0]);
+    let camera = landscape.camera;
+    let start = std::time::Instant::now();
+    let composite = kurven_core::composite::Composite::new(
+        vec![("cubic".into(), landscape, kurven_core::composite::Placement::IDENTITY)],
+        camera,
+    )
+    .unwrap();
+    let clear: gate::Cast = std::sync::Arc::new(|_, _| Some(true));
+    let g = gate::composite_verdict(&composite, &[clear]).unwrap();
+    eprintln!("grid: {} compared, {} wrong, {:?}", g.own_compared, g.own_wrong, start.elapsed());
+    assert!(
+        g.own_wrong == 0 && g.own_compared > 5000,
+        "the grid landscape's isophotes and tone, at every vertex, are drawn exactly where its cast sees them: {} \
+         compared, {} wrong{}",
+        g.own_compared,
+        g.own_wrong,
+        g.own_example
+    );
+}
+
+/// "isophotes and tone: seen exactly where the torus's own cast and the
+/// grid landscape's cast say", its torus: the round torus (2, 1) at grid
+/// 512 (`SurfaceDrawing.build`, Phase 4) restyled with isophotes at -0.75
+/// to 0.75 by 0.25 and four widths of half-Lambert tone every 2π/48 along
+/// u, lit from (-0.4, -0.6, 0.7), alone in a composite under
+/// `SurfaceRequest.projection`'s oblique camera, every other cast clear: at
+/// every vertex, drawn exactly where its own cast (`gate::torus_own_cast`)
+/// sees it, over 20 000 compared and over 5 000 of them seen.
+#[test]
+#[ignore = "PORT: phase 4 -- the round torus (SurfaceDrawing.build)"]
+fn isophotes_and_tone_on_the_torus_are_seen_exactly_where_its_own_cast_says() {
     panic!("Phase 4: the round torus is built by SurfaceDrawing.build, not ported");
 }
