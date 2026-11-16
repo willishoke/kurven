@@ -869,3 +869,126 @@ the curves it has not placed before", "... a chord on the level set, split
 for its sag, is placed" (`kurven-landscape/tests/refined_bundles.rs`). All
 pass. With `build` in, the chord suite's and the restriction suite's
 stand-ins (the landscapes on f) can be built as Swift builds them.
+
+## 2026-11-15 · Phase 3: the landscape's visibility, what came across
+
+The rest of Scene.swift a landscape reaches is in `kurven-core/src/scene.rs`:
+`Heightfield.foldCurves`, `endedAtZeros`, `visibleFolds`, `stop`,
+`surfaceDepthTolerance`, `onSurface`, `visibleCurves` (every face kind),
+`visibleWallCurves`, `facing`, `wallFacing`, `riserFacing`, `Tests`,
+`visibleRuns`, `turning`, `parallelMap` (both forms), `FoldPlacer` whole,
+and `Scene.visibleLayers`, `visible`, `viewBounds`, `quickBounds`.
+`GridTraversal` is `traversal.rs`, public, since the bake asks it.
+Occlusion.swift is `occlusion.rs`: the `OcclusionTest` trait, the
+traversal's conformance, and `SphereTracing` whole, ported ahead of Phase 4
+because it reads only a `TubularNeighbourhood`, whose type is here; nothing
+builds a surface with one until the torus, so it is untested until then.
+`HeightfieldVisibility` joins the rest of HiddenLine.swift in
+`hidden_line.rs`. Visibility.swift is `visibility.rs` and SurfaceImage.swift
+`surface_image.rs`: their types whole, their behaviour Phase 4's.
+
+The signatures the bake reads: `Scene::visible_layers(&self, Option<f64>,
+Option<&SurfaceImage>) -> Result<Vec<(Layer, PolylineSet<ViewSpace>)>,
+PortRefusal>`, `Scene::view_bounds(&self) -> Result<Option<AABB<ViewSpace>>,
+PortRefusal>`, `Heightfield::fold_curves(&self, &Transform<WorldSpace,
+ViewSpace>, refined: bool) -> PolylineSet<WorldSpace>`, `GridTraversal::new(
+Heightfield, &Transform<WorldSpace, ViewSpace>, depth_tolerance: f64)`. A
+landscape's layers never refuse but for a hatching on the graph.
+
+## 2026-11-15 · The landscape's visibility: holes, each a typed refusal
+
+- `Scene::visible` on a parametric surface, phase 4: coordinate hatching,
+  its fold curves, sphere tracing or the coordinate image, the image's
+  depth for curves with no coordinates. `view_bounds` refuses a parametric
+  surface with fold curves among its layers (it places them).
+- A hatching on the graph, phase 5: `Surface.graphHatching` is in
+  Isophotes.swift, which the plan puts in Phase 5, though it lays a
+  landscape's hatching. No committed landscape or gallery bake has one.
+- A solid's clipped edges, its hatching and a clipped file's curves on it,
+  phase 5 (`Solid.visibleEdges`, `visibleHatching`, `visibleCurves(onSurface:
+  occlusion:)`); its unclipped layers are drawn whole, as in Swift.
+- `Solid::occlusion`, phase 5. `Solid.Occlusion`'s type was not in
+  `solid.rs`; `SolidOcclusion` declares its fields, and its `OcclusionTest`
+  conformance is left out (not an empty impl), so nothing can ask it.
+- `SurfaceVisibility`'s footprint, front-most test, sheet, `is_visible`,
+  crease and fold crossing, `HiddenLine::clip_on` and
+  `SurfaceImage::rasterize`, phase 4. Its facing and `is_clear` are whole.
+
+## 2026-11-15 · The landscape's visibility: differences from Swift, by construction
+
+- **Workers.** `parallelMap(_:chunk:worker:_:)` makes its worker once and
+  maps in order (`parallel_map_with`); Swift makes one a thread. A forked
+  refiner answers as the one it came from, so the drawing is the same.
+- **Tests.** Swift's `Tests` holds three closures, here boxed, each worker's
+  sharing its forked traversal behind an `Rc`.
+- **Refusals.** `visible_layers`, `visible` and `view_bounds` answer a
+  `Result`, since a scene can reach a deferred branch; Swift's preconditions
+  in `SurfaceImage.init` and `SurfaceVisibility.init(sphereTracing:)` are
+  error values (`CoordinateCount`, `NoNeighbourhood`).
+- **Where Swift's `Int` traps.** The traversal's crossings of a grid family
+  take `Int` of a bound that is NaN for a point that is not a number, and the
+  fold placer's grid edges `Int` of its index: the family, or the edge, is
+  passed over. No finite input reaches either.
+- **The trace.** `explain` writes Swift's lines with C's `%.4g` and `%.3e`
+  done by hand (Rust's formatting has neither); it is a diagnostic, and no
+  test compares its text.
+- **Defaults.** Swift's defaulted arguments are explicit: `fold_curves`
+  takes `refined` (true in Swift), `visible_folds` and `visible_curves`
+  take `resolution` (0), `quick_bounds` its budget (20,000), `unoccluded`
+  its flags (`unoccluded_default` is Swift's `unoccluded(_:)`).
+
+## 2026-11-15 · A lone tile is read untransformed (ported as is)
+
+`GridTraversal.drawnSurface(at:)` and `Surface.tile(under:tiles:)` treat a
+heightfield of one tile as the domain itself: the point is read where it
+stands, not carried back through the tile. A heightfield whose one tile is
+a translation or a reflection would be tested against the domain under the
+world point, not under its image. Every manifest's one tile is the identity
+(a native landscape's, and each fixture's), and the traversal's grids do
+carry the lone tile's inverse, so only the height read differs. Ported as
+is.
+
+## 2026-11-15 · The landscape's visibility: the suites, and what stands in
+
+Stress.swift, all six suites, at Swift's tolerances: the 4x4 ray cast
+(over 40,000 decidable points, none disagreeing), the facing converging
+(under 1% at 128 cells), the reflected and turned tiles on f against the
+walk, the real drawing against the brute-force cast (14,384 facing vertices
+on the grid, 14,213 on f, none disagreeing), scaling by 8 and by 1/8
+(worst 0 exactly) and the bake at every resolution. Two stand-ins. The bake
+suite compares bakes at four depth resolutions; nothing of the visibility
+reads a depth buffer, so it holds `Scene::visible_layers` the same every
+time it is asked, the drawing drawing (230 paths, 541 units on rgamma,
+without the hatching and edges the stub leaves out) and the steep case's
+kept length. The real-drawing suite also counts what a 1000-pixel depth
+buffer hid and asks that the pit at -4 hides more by the traversal than by
+it; there is no rasterizer in the core, so that half is left out and the
+traversal and the cast are held equal in the pit instead.
+
+Occlusion.swift: the landscape part (10,000 and more points, none
+disagreeing); the polyhedra (Phase 5) and the torus (Phase 4) ignored.
+Facing.swift: the ridge's facing and folds, the pits (its bake check reads
+the fold layer of `visible_layers`), and the navigation check. Faces.swift:
+the tile-boundary riser, the three fold suites, and the folds' half of "a
+contour or a fold carried to the truncation edge across a band boundary
+ends on the drawn top". 12 tests pass, 2 are ignored.
+
+The oracles spread over threads with `std::thread::scope` in the tests
+alone. Single-threaded, the port draws rgamma at 240 refined in about a
+third of a second.
+
+Waiting for Hatch.swift's strokes (each tests hatching, wall edges, the
+truncation edge or the top edge): "walls: the hatching and edges of a cut
+face are tested by the wall", "walls: a stroke on a wall is tested by the
+wall it stands on, on a notch and at a tile boundary", "walls: a stroke is
+hidden up to where the walk up the line of sight meets terrain, on abutting
+copies and across a notch", "risers: a riser's hatching and bottom edge lie
+on it, from its bottom to its top, where it stands", "risers: only a layer
+that selects the risers hatches them, in place or on every tile", "risers:
+a riser's hatching and bottom edge are hidden up to where the walk up the
+line of sight meets the solid", "risers: no stroke is drawn through a
+riser, and none is hidden that the walk up the line of sight sees",
+"plateaus: the hatching on a plateau is tested by the plateau", "walls: a
+vertical stroke is its two ends, however high |f| stands", and the contour
+layers' half of "faces: a contour or a fold carried to the truncation edge
+across a band boundary ends on the drawn top".

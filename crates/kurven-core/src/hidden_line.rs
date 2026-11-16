@@ -1,6 +1,6 @@
-//! Hidden-line removal against a depth image: the depth-buffer half of
-//! `Sources/KurvenCore/HiddenLine.swift`. `HeightfieldVisibility`, the
-//! other half, needs the grid traversal and comes with it.
+//! Hidden-line removal: the port of `Sources/KurvenCore/HiddenLine.swift`,
+//! the depth-buffer clip and `HeightfieldVisibility`, which asks the grid
+//! traversal.
 //!
 //! A line-for-line port of `outline.clip_hidden_lines`. A vertex is visible when
 //! `z + depthTolerance > buffer[pixel]`; hidden vertices split a path into runs; runs
@@ -19,8 +19,87 @@ use crate::contour;
 use crate::depth::{DepthImage, RasterOrder};
 use crate::grid::Grid2D;
 use crate::manifest::{Domain, Interval};
+use crate::occlusion::OcclusionTest;
 use crate::polyline::PolylineSet;
-use crate::spaces::{P3, PageSpace, ViewSpace};
+use crate::scene::Heightfield;
+use crate::simd::Vec3;
+use crate::spaces::{P2, P3, PageSpace, Transform, ViewSpace, WorldSpace};
+use crate::traversal::GridTraversal;
+
+/// The two questions asked of curves on a heightfield: does the surface face
+/// the eye where the curves lie, and is anything in front of it.
+///
+/// The first is what `SurfaceVisibility` asks of a parametric surface, and a
+/// heightfield can answer it too, since it bounds the solid under it: the
+/// normal is the gradient, read off the grid. Without it, where a steep
+/// graph turns away from the eye its back lies within any depth tolerance of its
+/// front for a stretch, and the curves there -- the other family of contours,
+/// wrapping round the back -- shows through as ticks along the outline.
+/// The second is the traversal up the line of sight (`GridTraversal`): the exact
+/// question the depth buffer approximates per pixel, asked per vertex with
+/// no pixel in it.
+#[derive(Debug, Clone)]
+pub struct HeightfieldVisibility {
+    pub heightfield: Heightfield,
+    pub depth_tolerance: f64,
+    /// The direction lines of sight travel, in world space.
+    pub sight: Vec3,
+    traversal: GridTraversal,
+}
+
+impl HeightfieldVisibility {
+    pub fn new(
+        heightfield: Heightfield,
+        view: &Transform<WorldSpace, ViewSpace>,
+        depth_tolerance: f64,
+    ) -> HeightfieldVisibility {
+        let traversal = GridTraversal::new(heightfield.clone(), view, depth_tolerance);
+        HeightfieldVisibility {
+            heightfield,
+            depth_tolerance: traversal.depth_tolerance,
+            sight: view.projection_direction(),
+            traversal,
+        }
+    }
+
+    /// How squarely the surface faces the viewer over `p`: positive facing,
+    /// negative facing away, zero on a fold.
+    pub fn facing(&self, p: P2<WorldSpace>) -> f64 {
+        self.heightfield.facing(p, self.sight)
+    }
+
+    /// Why `p` is hidden or clear: every sample the traversal took along the
+    /// line of sight from it and what it made of each, one line per sample.
+    /// (The numbers are written as Swift's `String(format:)` writes them.)
+    pub fn explain(&self, p: P3<WorldSpace>) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        let mut record = |line: String| lines.push(line);
+        let clear = self.traversal.unoccluded(p, true, false, Some(&mut record));
+        lines.push(if clear { "clear" } else { "hidden" }.to_string());
+        lines.join("\n")
+    }
+
+    /// The depth tolerance as a distance along the line of sight: an occluder must
+    /// stand in front of the curves by more than this.
+    pub fn tolerance_along_projection(&self) -> f64 {
+        self.traversal.reach
+    }
+}
+
+impl OcclusionTest for HeightfieldVisibility {
+    /// Whether nothing of the solid stands between `p` and the eye, to
+    /// within the depth tolerance.
+    fn is_clear(&self, p: P3<WorldSpace>) -> bool {
+        self.traversal.unoccluded(p, true, false, None)
+    }
+
+    /// Whether nothing of the solid stands between `p`, a point of another
+    /// solid, and the eye: no depth tolerance, and hidden where it stands
+    /// inside this one (`GridTraversal::unoccluded`).
+    fn is_clear_of_another_solid(&self, p: P3<WorldSpace>) -> bool {
+        self.traversal.unoccluded(p, false, true, None)
+    }
+}
 
 /// Where along a segment a face turns edge-on, as a fraction of the way,
 /// given that the facing at its ends, `fa` and `fb`, differs in sign:
