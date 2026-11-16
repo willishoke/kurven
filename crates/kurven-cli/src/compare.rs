@@ -329,6 +329,15 @@ fn width_rounding(d: &Drawing) -> f64 {
 }
 
 pub fn compare(a: &Drawing, b: &Drawing, tolerance: Tolerance) -> Report {
+    compare_skipping(a, b, tolerance, &[])
+}
+
+/// `compare`, with the layers `skip` lists (by their place in the SVG) left
+/// out of the verdict: still measured and reported, each difference a note
+/// rather than a failure. For a layer a stated cause keeps from being met
+/// (crates/fixtures/references.txt names each, and crates/FINDINGS.md the
+/// cause); the layer count, colour and width are held all the same.
+pub fn compare_skipping(a: &Drawing, b: &Drawing, tolerance: Tolerance, skip: &[usize]) -> Report {
     let eps = tolerance.distance / 64.0;
     let mut failures = Vec::new();
     let mut notes = Vec::new();
@@ -354,9 +363,12 @@ pub fn compare(a: &Drawing, b: &Drawing, tolerance: Tolerance) -> Report {
         if (wa - wb).abs() > 1e-3 * wa.max(wb) + width_rounding(a) + width_rounding(b) {
             failures.push(format!("layer {i}: width {wa:.6}pt against {wb:.6}pt"));
         }
+        // A skipped layer's distance and length are reported, not held.
+        let measured = if skip.contains(&i) { &mut notes } else { &mut failures };
+        let skipped = if skip.contains(&i) { " (skipped)" } else { "" };
         if report.hausdorff.hi > tolerance.distance {
-            failures.push(format!(
-                "layer {i}: Hausdorff distance {} is over {}",
+            measured.push(format!(
+                "layer {i}: Hausdorff distance {} is over {}{skipped}",
                 if report.hausdorff.lo > tolerance.distance {
                     format!("{:.3e}", report.hausdorff.lo)
                 } else {
@@ -366,8 +378,8 @@ pub fn compare(a: &Drawing, b: &Drawing, tolerance: Tolerance) -> Report {
             ));
         }
         if report.relative_length() > tolerance.length {
-            failures.push(format!(
-                "layer {i}: length {:.6} against {:.6}, {:.3e} apart, over {}",
+            measured.push(format!(
+                "layer {i}: length {:.6} against {:.6}, {:.3e} apart, over {}{skipped}",
                 report.length.0,
                 report.length.1,
                 report.relative_length(),

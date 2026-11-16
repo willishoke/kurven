@@ -3,7 +3,7 @@
 //! distance it was moved; moved by more, or with a stroke taken out, it
 //! fails.
 
-use kurven_cli::compare::{Tolerance, compare};
+use kurven_cli::compare::{Tolerance, compare, compare_skipping};
 use kurven_cli::svg::{self, Drawing};
 use kurven_core::fixtures;
 
@@ -103,4 +103,24 @@ fn layers_must_match() {
     let mut wider = d.clone();
     wider.layers[0].stroke_width *= 1.01;
     assert!(!compare(d, &wider, Tolerance::default()).same());
+}
+
+/// A skipped layer is measured and reported but left out of the verdict;
+/// every other layer is still held, and so are the skipped layer's colour
+/// and width.
+#[test]
+fn a_skipped_layer_is_reported_and_not_held() {
+    let all = references();
+    let (_, d) = all.iter().find(|(n, _)| n == "landscape-cubic").expect("landscape-cubic");
+    let mut cut = d.clone();
+    cut.layers[1].paths.remove(0);
+    let report = compare_skipping(d, &cut, Tolerance::default(), &[1]);
+    assert!(report.same(), "{report}");
+    assert!(report.notes.iter().any(|n| n.contains("(skipped)")), "{report}");
+    assert!(report.notes.iter().any(|n| n.contains("strokes against")), "{report}");
+    cut.layers[2].paths.remove(0);
+    assert!(!compare_skipping(d, &cut, Tolerance::default(), &[1]).same());
+    let mut recoloured = d.clone();
+    recoloured.layers[1].color = "#ff0000".to_string();
+    assert!(!compare_skipping(d, &recoloured, Tolerance::default(), &[1]).same());
 }

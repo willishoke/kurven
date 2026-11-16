@@ -27,6 +27,10 @@
 //!                  grid's cut, doubles through the canonical writer,
 //!                  manifests of all three kinds, an npy grid, and an SVG of
 //!                  lifted contours through the recip camera.
+//! landscape/       two small landscapes (Phase 3), built on their function
+//!                  and baked in memory: the cubic truncated at a height,
+//!                  and gamma truncated by bands of Re z. Each as its SVG
+//!                  and as each layer's counts, length and vertex hash.
 //! ```
 //!
 //! The set grows a module at a time: once a module passes against Swift, its
@@ -35,6 +39,8 @@
 use kurven_math::real;
 
 mod core_values;
+pub mod gallery;
+mod landscapes;
 mod math;
 
 /// One golden file: where it goes under the set's root, and its bytes.
@@ -52,6 +58,7 @@ pub fn all() -> Vec<Golden> {
         Golden { path: "math/dynamics.txt", bytes: math::dynamics_table().into_bytes() },
     ];
     all.extend(core_values::all());
+    all.extend(landscapes::all());
     all
 }
 

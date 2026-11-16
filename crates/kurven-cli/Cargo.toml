@@ -12,7 +12,10 @@ name = "kurven-cli"
 path = "src/main.rs"
 
 [dependencies]
+kurven-math.workspace = true
 kurven-core.workspace = true
+kurven-landscape.workspace = true
+kurven-bake.workspace = true
 kurven-golden.workspace = true
 
 [lints]
