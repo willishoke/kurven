@@ -1,0 +1,32 @@
+# The expression language's canonical spellings and refusals, as kurven_math writes them.
+# Written by kurven-cli fixtures; native and wasm must agree byte for byte.
+"-z^2+2z-1/(z^2+1)" -> "-z^2+2*z-1/(z^2+1)"
+"1/2z" -> "1/2*z"
+"2z^2" -> "2*z^2"
+"1e-3z" -> "0.001*z"
+"1e16z" -> "1e+16*z"
+"123456789012345.6 z" -> "123456789012345.6*z"
+"1 / Γ(z)" -> "1/gamma(z)"
+"ζ(z) + ψ(z)" -> "zeta(z)+digamma(z)"
+"2 pi i" -> "2*pi*i"
+"z!^2" -> "z!^2"
+"cn(z, 0.64)" -> "cn(z, 0.64)"
+"ln(z) + arcsin(z)" -> "log(z)+asin(z)"
+"" refused at Some(0)+1: there is no expression here, only empty space
+"sin(z" refused at Some(5)+1: expected ')' to close the call to sin
+"gama(z)" refused at Some(0)+4: there is no 'gama'; did you mean gamma or lgamma or rgamma?
+"gamma(z, 2)" refused at Some(0)+11: gamma takes 1 argument, not 2
+"z..2" refused at Some(1)+1: '.' is not something this language uses
+"2 PI" refused at Some(2)+2: there is no 'PI' in this language; the variable is z, and `describe` lists what else there is
+"z 2 @" refused at Some(4)+1: '@' is not something this language uses
+"__import__(\"os\")" refused at Some(11)+1: '"' is not something this language uses
+"Ωz" refused at Some(0)+2: there is no 'Ωz'; did you mean z?
+"z²" refused at Some(0)+2: there is no 'z²'; did you mean z?
+"-z^2 + 2^-0.5 z - 3" literal "2" at 3+1 = 4000000000000000 2.0 (Exponent)
+"-z^2 + 2^-0.5 z - 3" literal "2" at 7+1 = 4000000000000000 2.0 (Constant)
+"-z^2 + 2^-0.5 z - 3" literal "-0.5" at 9+4 = bfe0000000000000 -0.5 (Exponent)
+"-z^2 + 2^-0.5 z - 3" literal "3" at 18+1 = 4008000000000000 3.0 (Constant)
+"sin(z)cn(z, 0.64)" literal "0.64" at 12+4 = 3fe47ae147ae147b 0.64 (Modulus)
+"cn(2z, -0.5)^-2" literal "2" at 3+1 = 4000000000000000 2.0 (Coefficient)
+"cn(2z, -0.5)^-2" literal "-0.5" at 7+4 = bfe0000000000000 -0.5 (Modulus)
+"cn(2z, -0.5)^-2" literal "-2" at 13+2 = c000000000000000 -2.0 (Exponent)

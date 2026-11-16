@@ -78,7 +78,7 @@ fn bridged(loops: &[Vec<usize>], point: Point, tolerance: f64, face: usize) -> R
     let reach = |h: &[usize]| h.iter().map(|&k| point(k).x).fold(f64::NEG_INFINITY, f64::max);
     holes.sort_by(|a, b| {
         let (xa, xb) = (reach(a), reach(b));
-        if xa != xb { xb.total_cmp(&xa) } else { a.iter().min().cmp(&b.iter().min()) }
+        if xa != xb { kurven_math::real::total_order(xb, xa) } else { a.iter().min().cmp(&b.iter().min()) }
     });
     for h in 0..holes.len() {
         let hole = &holes[h];

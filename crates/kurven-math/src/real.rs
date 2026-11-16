@@ -161,10 +161,40 @@ pub fn remainder(x: f64, y: f64) -> f64 {
     libm::remainder(x, y)
 }
 
-/// The magnitude of x with the sign of y. Exact.
+/// The magnitude of x with the sign of y, reading a NaN's sign as plus
+/// ([`sign_minus`]): |x| when y is a NaN. Exact.
 #[inline]
 pub fn copysign(x: f64, y: f64) -> f64 {
-    libm::copysign(x, y)
+    if y.is_nan() { x.abs() } else { libm::copysign(x, y) }
+}
+
+// MARK: the sign of a NaN
+//
+// IEEE 754 leaves the sign bit of a NaN the hardware creates to the
+// platform: ARM's default NaN is positive and x86's negative, and wasm passes
+// the host's through. So a NaN's sign bit is platform noise, and nothing the
+// engine computes may read it. Swift runs on ARM, where the NaNs an
+// operation creates are positive, so the port reads every NaN's sign as
+// plus. These three are the only ways the engine reads a sign bit;
+// `clippy.toml` and `scripts/check-web.sh` refuse `is_sign_negative`,
+// `is_sign_positive`, `total_cmp` and `f64::copysign` everywhere else.
+
+/// Swift's `x.sign == .minus`, with a NaN's sign read as plus: true for a
+/// negative number, -0.0 and -inf, false for every NaN.
+#[inline]
+#[allow(clippy::disallowed_methods)]
+pub fn sign_minus(x: f64) -> bool {
+    !x.is_nan() && x.is_sign_negative()
+}
+
+/// A total order on doubles for sorting, IEEE's `totalOrder` with every NaN
+/// taken as the one positive quiet NaN: all NaNs equal one another and come
+/// after +inf, whatever their sign and payload; -0.0 before +0.0.
+#[inline]
+#[allow(clippy::disallowed_methods)]
+pub fn total_order(a: f64, b: f64) -> core::cmp::Ordering {
+    let canonical = |x: f64| if x.is_nan() { f64::NAN } else { x };
+    canonical(a).total_cmp(&canonical(b))
 }
 
 /// Correctly rounded on every target, as IEEE 754 requires.
@@ -182,7 +212,7 @@ mod tests {
     #[test]
     fn exact_values() {
         assert_eq!(sin(0.0), 0.0);
-        assert!(sin(-0.0).is_sign_negative());
+        assert!(sign_minus(sin(-0.0)));
         assert_eq!(cos(0.0), 1.0);
         assert_eq!(tan(0.0), 0.0);
         assert_eq!(exp(0.0), 1.0);
@@ -227,6 +257,29 @@ mod tests {
         assert!(ulps(asinh(0.75), LN_2) <= 1);
         assert!(ulps(acosh(1.25), LN_2) <= 1);
         assert!(ulps(atanh(0.6), LN_2) <= 1);
+    }
+
+    /// A NaN of either sign reads as plus, wherever its sign bit came from.
+    #[test]
+    fn a_nans_sign_is_read_as_plus() {
+        use core::cmp::Ordering::{Equal, Greater, Less};
+        for nan in [f64::NAN, -f64::NAN, f64::from_bits(0xfff8_0000_0000_0001)] {
+            assert_eq!(copysign(3.0, nan), 3.0);
+            assert_eq!(copysign(-3.0, nan), 3.0);
+            assert_eq!(copysign(f64::NEG_INFINITY, nan), f64::INFINITY);
+            assert!(!sign_minus(nan));
+            assert_eq!(total_order(nan, f64::NAN), Equal);
+            assert_eq!(total_order(nan, f64::INFINITY), Greater);
+            assert_eq!(total_order(f64::NEG_INFINITY, nan), Less);
+            let mut xs = [1.0, nan, -2.0, -f64::NAN, 0.5];
+            xs.sort_by(|a, b| total_order(*a, *b));
+            assert_eq!(&xs[..3], &[-2.0, 0.5, 1.0]);
+            assert!(xs[3].is_nan() && xs[4].is_nan());
+        }
+        assert!(sign_minus(-0.0) && sign_minus(f64::NEG_INFINITY) && sign_minus(-1e-300));
+        assert!(!sign_minus(0.0) && !sign_minus(f64::INFINITY));
+        assert_eq!(copysign(3.0, -0.0), -3.0);
+        assert_eq!(total_order(-0.0, 0.0), Less);
     }
 
     #[test]

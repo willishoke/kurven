@@ -80,7 +80,8 @@ fn a_drawing_with_a_stroke_taken_out_fails() {
         let longest = (0..layer.paths.len())
             .max_by(|&i, &j| {
                 kurven_cli::compare::length(&layer.paths[i..=i])
-                    .total_cmp(&kurven_cli::compare::length(&layer.paths[j..=j]))
+                    .partial_cmp(&kurven_cli::compare::length(&layer.paths[j..=j]))
+                    .expect("a stroke's length is a number")
             })
             .unwrap();
         layer.paths.remove(longest);

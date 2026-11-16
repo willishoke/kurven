@@ -454,7 +454,7 @@ impl JsonValue {
 pub fn number(d: f64) -> String {
     assert!(d.is_finite(), "JSON cannot represent {d}; clamp before encoding");
     if d == 0.0 {
-        return if d.is_sign_negative() { "-0.0" } else { "0.0" }.to_string();
+        return if kurven_math::real::sign_minus(d) { "-0.0" } else { "0.0" }.to_string();
     }
     let sign = if d < 0.0 { "-" } else { "" };
     let scientific = format!("{:e}", d.abs());

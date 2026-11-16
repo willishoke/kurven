@@ -62,4 +62,15 @@ disallowed-methods = [
     { path = "f32::hypot", reason = "f32 is for the GPU; use kurven_math::real on f64" },
     { path = "f32::cbrt", reason = "f32 is for the GPU; use kurven_math::real on f64" },
     { path = "f32::mul_add", reason = "no fused multiply-add: write a * b + c" },
+    # A NaN's sign bit is platform noise (ARM's default NaN is positive, x86's
+    # negative), so nothing reads a sign bit but kurven_math::real, which
+    # reads every NaN's as plus.
+    { path = "f64::is_sign_negative", reason = "a NaN's sign is platform noise; use kurven_math::real::sign_minus" },
+    { path = "f64::is_sign_positive", reason = "a NaN's sign is platform noise; use !kurven_math::real::sign_minus" },
+    { path = "f64::total_cmp", reason = "a NaN's sign is platform noise; use kurven_math::real::total_order" },
+    { path = "f64::copysign", reason = "a NaN's sign is platform noise; use kurven_math::real::copysign" },
+    { path = "f32::is_sign_negative", reason = "f32 is for the GPU; a NaN's sign is platform noise" },
+    { path = "f32::is_sign_positive", reason = "f32 is for the GPU; a NaN's sign is platform noise" },
+    { path = "f32::total_cmp", reason = "f32 is for the GPU; a NaN's sign is platform noise" },
+    { path = "f32::copysign", reason = "f32 is for the GPU; a NaN's sign is platform noise" },
 ]

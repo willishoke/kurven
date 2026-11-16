@@ -14,6 +14,13 @@
 //!                  arguments, as bits: the libm rule's first test. Native
 //!                  and wasm must agree to the bit, and so must every
 //!                  platform the check runs on.
+//! math/functions.txt  every function of the expression language over a
+//!                  fixed grid of the plane, through the parser and the tape.
+//! math/language.txt   the canonical spellings, refusals and literals of a
+//!                  fixed set of sources.
+//! math/dynamics.txt   the ODE integrator, the frequency analysis, the Fourier
+//!                  torus, Brent's method, continued fractions and the
+//!                  quarter periods on fixed problems.
 //! core/            the core values (Phase 2), on fixed inputs computed in
 //!                  the generator: the plates' cameras, a navigator through
 //!                  every gesture, marching squares on a ripple and a phase
@@ -28,6 +35,7 @@
 use kurven_math::real;
 
 mod core_values;
+mod math;
 
 /// One golden file: where it goes under the set's root, and its bytes.
 pub struct Golden {
@@ -37,7 +45,12 @@ pub struct Golden {
 
 /// Every golden file, in a fixed order.
 pub fn all() -> Vec<Golden> {
-    let mut all = vec![Golden { path: "libm/table.txt", bytes: libm_table().into_bytes() }];
+    let mut all = vec![
+        Golden { path: "libm/table.txt", bytes: libm_table().into_bytes() },
+        Golden { path: "math/functions.txt", bytes: math::functions_table().into_bytes() },
+        Golden { path: "math/language.txt", bytes: math::language_table().into_bytes() },
+        Golden { path: "math/dynamics.txt", bytes: math::dynamics_table().into_bytes() },
+    ];
     all.extend(core_values::all());
     all
 }

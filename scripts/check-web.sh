@@ -66,13 +66,15 @@ step "rustfmt" workspace fmt --all -- --check
 step "clippy, native" workspace clippy --release --workspace --all-targets -- -D warnings
 step "clippy, wasm" workspace clippy --release -p kurven-wasm --target wasm32-unknown-unknown -- -D warnings
 
-# The std spellings of the transcendental functions, and of fused
-# multiply-add, anywhere in the engine but kurven_math::real. Type-blind, so
+# The std spellings of the transcendental functions, of fused multiply-add,
+# and of the reads of a sign bit (a NaN's is platform noise; real::sign_minus,
+# real::copysign and real::total_order read every NaN as plus), anywhere in
+# the engine but kurven_math::real. Type-blind, so
 # it also catches what clippy cannot see; a method of the port's own of one
 # of these names would trip it too (crates/FINDINGS.md). Lines that are
 # comments are not code.
 libm() {
-    local names='sin|cos|tan|sin_cos|asin|acos|atan|atan2|sinh|cosh|tanh|asinh|acosh|atanh|exp|exp2|exp_m1|ln|log|log2|log10|ln_1p|powf|powi|hypot|cbrt|mul_add|gamma|ln_gamma'
+    local names='sin|cos|tan|sin_cos|asin|acos|atan|atan2|sinh|cosh|tanh|asinh|acosh|atanh|exp|exp2|exp_m1|ln|log|log2|log10|ln_1p|powf|powi|hypot|cbrt|mul_add|gamma|ln_gamma|is_sign_negative|is_sign_positive|total_cmp|copysign'
     local pattern="\\.($names)\\(|(^|[^A-Za-z0-9_])f(32|64)::($names)([^A-Za-z0-9_]|\$)"
     local hits
     hits=$(grep -rnE --include='*.rs' "$pattern" "$CRATES"/*/src "$CRATES"/*/tests 2>/dev/null |
@@ -80,10 +82,10 @@ libm() {
         grep -vE '^[^:]+:[0-9]+:[[:space:]]*//')
     [ -z "$hits" ] && return 0
     printf '%s\n' "$hits"
-    echo "call kurven_math::real instead: one libm on native and wasm"
+    echo "call kurven_math::real instead: one libm on native and wasm, and a NaN's sign read as plus"
     return 1
 }
-step "no std transcendental or fused multiply-add outside kurven_math::real" libm
+step "no std transcendental, fused multiply-add or sign-bit read outside kurven_math::real" libm
 
 step "native tests" workspace test --release --workspace
 
@@ -104,7 +106,14 @@ golden() {
         printf 'ignored by .gitignore, so never compared: %s\n' $ignored
         failed=1
     fi
-    git -C "$ROOT" diff --exit-code --stat HEAD -- crates/fixtures/rust || failed=1
+    if ! git -C "$ROOT" diff --quiet HEAD -- crates/fixtures/rust; then
+        # The lines themselves, not only the files: on CI the tree is gone
+        # once the job ends, and a golden that differs on another platform
+        # can only be read here.
+        git -C "$ROOT" diff --stat HEAD -- crates/fixtures/rust
+        git -C "$ROOT" diff --no-color -U0 HEAD -- crates/fixtures/rust | head -80
+        failed=1
+    fi
     new=$(git -C "$ROOT" ls-files --others --exclude-standard -- crates/fixtures/rust)
     if [ -n "$new" ]; then
         printf 'not in the commit: %s\n' $new

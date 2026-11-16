@@ -324,3 +324,226 @@ now links kurven-core: the manifest decoders with their refusal messages,
 float formatting, contouring. The `web` profile is opt-level 3 with LTO; an
 opt-level for size, and what the page's module exports, are Phase 6
 decisions, so this is recorded, not tuned.
+
+## 2026-11-15 · Phase 1: kurven-math against the oracles and against Swift
+
+All of `Sources/KurvenMath` is in `crates/kurven-math`, a module per Swift
+file. The gate is green at the fixtures' own tolerances, none changed:
+
+- `tests/fixtures/expr/index.json`: all 66 cases. The worst against each
+  case's tolerance: besselj(10, z) 3.7e-11 (tol 1e-9), bessely(2.7, z)
+  2.3e-11, airyai and airybi 1.4e-12, expi 2.8e-13 (tol 1e-10), zeta 2.2e-14
+  (tol 1e-10), tan_wide 2.2e-14 (tol 1e-12); everything else 1.1e-14 or
+  less. Darwin's libm against the libm crate (the entry above: 1 to 3 ulp on
+  one call in ten) makes no difference at these tolerances; there was no
+  lane to stop.
+- `language.json`: 41 canonical spellings (each a fixed point, with its
+  reading's values on the grid), 17 refusals at the frozen character and
+  length, the 43 functions with their arities, aliases and help, the 4
+  constants.
+
+As a second reference beyond the oracle grids, Swift's own KurvenMath was
+compiled from `Sources/KurvenMath/*.swift` with `swiftc` and a probe main in
+a scratch directory (nothing under `Sources/` changed), and evaluated at
+the 4,845 points of the new `math/functions.txt` golden. The NaNs and
+infinities are in the same places; the finite values agree to 5.1e-14
+relative for Airy and 2.4e-15 for everything else.
+
+## 2026-11-15 · Swift's near-miss message is not the one language.json froze
+
+For `gama(z)` the fixture froze "did you mean gamma or rgamma or lgamma?"
+(Python's `difflib.get_close_matches`, which breaks a tie in nearness by
+taking the later name first). `Language.unknown` in Swift breaks it by the
+name ascending and writes "gamma or lgamma or rgamma?", as `kurven-cli
+surface periodic --expression 'gama(z)'` shows. The Swift suite checks only
+the place of a refusal and that the message contains "gamma", so it never
+saw this. The port writes Swift's message. Its test holds every frozen
+message, which the Swift suite does not, and names this one as Swift's.
+
+## 2026-11-15 · Where Swift traps, the Bessel functions answer NaN
+
+`Bessel.swift` converts doubles to Int with `Int(x)`, which traps on a value
+that is not finite or does not fit. The probe build exits on SIGTRAP (status
+133) for `besselj`, `bessely`, `besseli` and `besselk` of order `1/0`, for
+`besselj(1e300, z)`, and for `besselj` and `bessely` of order 2.7 or -2.3 at
+z = inf (the Hankel path with an order of one or more). A landscape or the
+app evaluating such an expression would crash. Rust's `as` saturates
+instead, and the loops the result counts would then not end, so at exactly
+those conversions the port answers NaN (`swift_int` in `bessel.rs`). This is
+the one place the port's values differ from Swift's by construction; a unit
+test holds it.
+
+## 2026-11-15 · Phase 1's other differences from Swift
+
+- **Characters.** Positions and lengths count `char`s (Unicode scalar
+  values); Swift counts `Character`s (grapheme clusters). Name characters are
+  `char::is_alphabetic` and `is_numeric`, where Swift asks `isLetter` and
+  `isNumber`. On every source the fixtures hold, and every one the language
+  accepts, the two agree. They can differ on text with combining marks, such
+  as `e` followed by U+0301: Swift reads one name `é` and refuses it as an
+  unknown name; the port refuses U+0301 as a character the language does not
+  use, one character further on. Both refuse it.
+- **The Fourier torus's sums.** `FourierTorus.fit` in Swift splits the
+  samples over `activeProcessorCount` chunks, so the order of its sums, and
+  their last bits, depend on the machine. The port sums the samples in order
+  in one pass, as the handoff asks of every `concurrentPerform`, so its fit
+  is the same everywhere. The residual is a maximum and does not depend on
+  the order. The suite's bounds (1e-8 on the fit, 1e-7 on its derivatives,
+  a ratio over 8 between the two lengths) are met.
+- **SIMD.** Swift's `SIMD2/3/4<Double>` are `Simd<N>` (`simd.rs`), lane by
+  lane with the scalar's rounding. Their `max()` reduction is IEEE maxNum
+  (`Double.maximum`), which passes over a NaN lane; the ODE's error norm
+  reads it, and the port keeps it.
+- **ODE.** `ODE` is `Ode` (Rust's naming). Swift's `integrate` takes a
+  `body` that may throw; no caller's does, and here it cannot, so the result
+  is `Result<Statistics, Failure>`.
+- **Names.** snake_case throughout. Where Swift overloads on argument type,
+  the port has two names: `Trig::sin_pi` and `Trig::sin_pi_complex`. Default
+  arguments are explicit (`Root::brent` takes `ftol` and `max_iterations`;
+  `Root::brent_default` and `LambertW::w0` take Swift's defaults).
+  `callAsFunction` is `Compiled::call`. Tuples are small structs
+  (`Cylinder`, `Modified`, `AiryPair`, `Elliptic`, `Jet`).
+- **The function table** holds plain function pointers (`Body::Unary`,
+  `Body::Binary`); the tape calls them directly, and `Function::apply`
+  serves a hand-built call of another arity, as Swift's `apply` does.
+- **Constants computed at load** (log π, √π, e⁻¹, ζ's weights, Airy's ω) go
+  through `kurven_math::real` once, behind `LazyLock`, where Swift computes
+  them with Darwin's libm.
+- **Complex** is not `Hash` (Rust's f64 is not), and its `Display` writes
+  Swift's `description`, `(1.0-0.5j)`.
+
+## 2026-11-15 · kurven-math's golden sets
+
+Three files under `crates/fixtures/rust/math/`, written by `kurven-cli
+fixtures` and, byte for byte the same, by the wasm module under Node:
+
+- `functions.txt` (455,515 bytes): 57 expressions (every function; each of
+  two arguments at orders 0, 2.7, -2.3 or moduli 0.2, 0.9; three of the
+  operators and constants) at 85 points, as bits: a grid over the
+  landscapes' windows, both sides of the branch cuts, the poles and branch
+  points, far out on each axis, an infinity and a NaN.
+- `language.txt` (1,886 bytes): canonical spellings, refusals and literals.
+- `dynamics.txt` (4,329 bytes): the ODE integrator, lines and generator, a
+  Fourier torus fit with its second-order jet and residual, Brent,
+  continued fractions, quarter periods and `ellpj`.
+
+With them the wasm module is 272,871 bytes (profile `web`).
+
+## 2026-11-15 · Review of PR #64: corrections to the Phase 1 entries
+
+- **Bessel is not the one place Swift traps.** ζ traps too: on a NaN
+  imaginary part (the series order is `Int` of a NaN; Swift built from
+  `Sources/KurvenMath` exits on SIGTRAP at (nan, nan) and (0.3, nan)), and
+  in Euler-Maclaurin past |Im s| = 2^63. The port answers NaN there too. The
+  policy lives in `kurven_math::swift`: `swift::int` is `Int(x)` as an
+  Option. Every other cast from f64 to an integer in the crate is guarded as
+  Swift's is (`Complex::pow` below |100|, the continued fraction below
+  1e15, a literal's integer spelling below 1e15).
+- **min and max.** Swift's generic `min(x, y)` is `y < x ? y : x` and
+  `max(x, y)` is `y >= x ? y : x`, so a NaN in the first place survives
+  (measured: `max(nan, 16)` is nan, `max(16, nan)` is 16); Rust's `f64::min`
+  and `max` drop it. `swift::min` and `swift::max` are used wherever Swift
+  calls min or max on doubles: the ODE's step control (its `hmax` was
+  `f64::min`), Brent's step test, the frequency search and generator, the
+  continued fraction's stop and ζ's order. Values differ from before only
+  for NaN arguments.
+- **Characters.** A CR LF pair is one `Character` in Swift, and was two
+  positions here, so every place after a Windows line break was one late
+  (Swift refuses `z\r\n+ @` at character 4). The tokenizer and the literals
+  now count the pair once and keep it as written in a rewrite. What still
+  differs is any other cluster of several scalars, such as a letter with a
+  combining mark; the language refuses those either way.
+- **Infinities in the oracle gate** are now held part by part with their
+  sign, and NaN to NaN, where the Swift suite (and the port, ported from
+  it) took any two values that are not finite as agreeing. The fixtures
+  hold 9 such points (log and atanh at their branch points, ζ's pole, expi
+  at 0, bessely at 0); the port has every one.
+- **Sorting.** Swift's sort is stable (since Swift 5; a probe confirms it),
+  not the unstable introsort the frequency module's comment said. Rust's
+  is stable too, so ties order alike.
+
+## 2026-11-15 · Review of PR #64: faster, with the same bits
+
+Each change was checked to leave every bit as it was: the goldens
+byte-identical, every value of the 66 oracle grids identical (a hash of
+their bits, before and after), and J, Y, I, K and Airy identical at 19,602
+points for orders up to 200, integral and not.
+
+- Airy's Bessel form took I and K of order 1/3 three times over; it takes
+  them once and forms I_{-1/3} by `modified`'s own formula.
+- `Bessel::j` no longer computes Y beside J (Swift's does, every time); a
+  negative order, which needs Y, still goes through `cylinder`. Y of an
+  integral order takes J from its caller, its factorials from a table of
+  the first 171 (the product is infinite after), and carries the harmonic
+  numbers from term to term, the same sums in Swift's order. It was
+  quadratic in the order, in Swift as here.
+- The tape runs in a per-thread scratch buffer (`kurven_math::scratch`),
+  neither allocated nor cleared per point; so do the Fourier torus's jets.
+- Functions are found by hash, as Swift's dictionary finds them, and the
+  tape's rare `Apply` holds its function, resolved when compiled.
+
+The wasm module is 282,216 bytes after these.
+
+## 2026-11-15 · A huge Bessel order or argument still hangs, in Swift too
+
+Some Bessel loops run as many times as the order, or as |z|: Y of an
+integral order n (the series' first sum, n terms), I and K (the
+recurrence, about ν steps), and J and Y on the Hankel path with an order of
+one or more (Miller's recurrence, about |z| steps). Measured here at
+z = 1 + 0.5i: bessely(1e6) 3.7 ms, bessely(1e8) 0.21 s, besseli(1e8)
+0.46 s, besselj(1e7, 2e7 + i) 0.10 s; so an order or an argument near 1e12
+does not finish. Swift has every one of these loops, and Y's was quadratic
+there: bessely(3000) takes 6.5 ms in Swift and 17 µs here, and Swift's
+besselj goes through Y, so besselj(1e6, z) does not finish in Swift at all
+(here it is 27 µs, the series alone). So no guard was added: it would give
+an answer where Swift gives none, a choice for the owner. Until there is
+one, a typed `besseli(1e12, z)` can hold the page's Worker, which Phase 6
+should be able to cancel.
+
+## 2026-11-15 · A NaN's sign bit differs by platform; the port reads it as plus
+
+CI on x86_64 Linux wrote two lines of `math/functions.txt` otherwise than
+the Mac: asin(inf + 0i) and acos(inf + 0i) had an imaginary part of -inf
+and +inf on the Mac and NaN on Linux. The cause: asin forms 1 − z² part by
+part, and its imaginary part −2 · inf · 0 is a NaN the hardware makes.
+IEEE 754 leaves that NaN's sign bit to the platform: ARM's default NaN is
+positive and x86's negative, and wasm passes the host's through, so the
+wasm module agreed with native on each platform and the platforms
+disagreed. `Complex::sqrt` then copied that sign onto an infinity
+(`copysign(t, z.im)`), and on x86 the -inf it made became inf − inf = NaN
+when the root was added to iz.
+
+The rule: a NaN's sign bit is platform noise and decides nothing. Swift
+runs only on ARM, where the NaNs an operation makes are positive, so the
+port reads every NaN's sign as plus. `kurven_math::real` holds the only
+reads of a sign bit: `copysign(x, y)` gives |x| when y is a NaN;
+`sign_minus(x)` is Swift's `x.sign == .minus`, false for every NaN (so
+-0.0 and -inf are minus); `total_order` sorts every NaN as the one
+positive NaN. `clippy.toml` and `scripts/check-web.sh` refuse
+`is_sign_negative`, `is_sign_positive`, `total_cmp` and `copysign` on f64
+and f32 everywhere else.
+
+Why that is enough: nothing else in the engine reads a NaN's sign bit.
+Comparisons are false for a NaN of either sign; `abs` clears the bit;
+`as` casts a NaN to 0; Rust prints a NaN without a sign, `description`
+writes `nan`, and the goldens write `nan`; `to_bits` is used only to print
+a number that is not NaN, and in tests guarded by `is_nan`. Of the libm
+crate's functions only `copysign` returns a number decided by a NaN
+argument's sign; the others return a NaN for a NaN argument, or a value
+(pow(1, NaN), hypot(inf, NaN)) that does not depend on its sign. x86 could
+not be run here; the unit tests pass NaNs of both signs through the three
+functions and through `Complex::sqrt`, and hold asin and acos at inf + 0i
+to the Mac's values.
+
+The one way this can differ from Swift: a NaN that Swift negates (`-x`
+flips the sign bit) or that descends from such a one keeps its minus sign
+on ARM, and Swift's `.sign` reads it as minus; the port reads it as plus.
+
+## 2026-11-15 · The NaN-sign rule covers the merged kurven-core
+
+After merging Phase 2, kurven-core's six sign reads (-0.0 in the JSON
+writer and in Solid's text, three sorts by `total_cmp`, a test) go through
+`real::sign_minus` and `real::total_order` as well. None could see a NaN,
+so nothing changed; the goldens are byte-identical. kurven-core's other
+bit read, `ulp` in `surface_request.rs`, takes `abs` and refuses a value
+that is not finite first, so it reads no NaN's sign either.
