@@ -1,4 +1,4 @@
-//! A minimal `.npy` reader, the port of `Sources/KurvenCore/NPY.swift`.
+//! A minimal `.npy` reader and writer, the port of `Sources/KurvenCore/NPY.swift`.
 //!
 //! The bundle's arrays are `.npy` because that is what numpy writes without
 //! ceremony and what a reader can parse in eighty lines. This supports exactly
@@ -8,7 +8,8 @@
 //! array as C order returns a transposed landscape; that is precisely the class
 //! of failure a typed decode error exists to prevent.
 //!
-//! The writer comes with the bundle schema (Phase 2).
+//! The writer writes the bytes `np.save` writes, so a fixture written here is
+//! byte-identical to one numpy wrote.
 
 use std::fmt;
 use std::path::Path;
@@ -250,6 +251,74 @@ impl NpyArray {
         }
         Ok(self.doubles()?.as_chunks::<3>().0.to_vec())
     }
+
+    /// Rows of an `(n, 3)` integer array, as a mesh's triangles are stored.
+    pub fn rows3i(&self) -> Result<Vec<[i64; 3]>, NpyError> {
+        if self.shape.len() != 2 || self.shape[1] != 3 {
+            return Err(NpyError::ShapeMismatch { expected: vec![-1, 3], found: self.shape.clone() });
+        }
+        Ok(self.ints()?.as_chunks::<3>().0.to_vec())
+    }
+}
+
+// MARK: - writing
+
+/// The bytes `np.save` writes for a C-contiguous float32 array: a depth
+/// image, a bundle's grids.
+pub fn encode_f32(values: &[f32], shape: &[usize]) -> Vec<u8> {
+    encode(NpyDType::Float32, shape, values.len(), values.iter().flat_map(|v| v.to_le_bytes()))
+}
+
+/// The bytes of a C-order float64 array: vertices, the golden fixtures' answers.
+pub fn encode_f64(values: &[f64], shape: &[usize]) -> Vec<u8> {
+    encode(NpyDType::Float64, shape, values.len(), values.iter().flat_map(|v| v.to_le_bytes()))
+}
+
+/// The bytes of a C-order int64 array: a polyline set's offsets, a mesh's
+/// triangles.
+pub fn encode_i64(values: &[i64], shape: &[usize]) -> Vec<u8> {
+    encode(NpyDType::Int64, shape, values.len(), values.iter().flat_map(|v| v.to_le_bytes()))
+}
+
+pub fn write_f32(values: &[f32], shape: &[usize], path: impl AsRef<Path>) -> Result<(), NpyError> {
+    write_bytes(&encode_f32(values, shape), path.as_ref())
+}
+
+pub fn write_f64(values: &[f64], shape: &[usize], path: impl AsRef<Path>) -> Result<(), NpyError> {
+    write_bytes(&encode_f64(values, shape), path.as_ref())
+}
+
+pub fn write_i64(values: &[i64], shape: &[usize], path: impl AsRef<Path>) -> Result<(), NpyError> {
+    write_bytes(&encode_i64(values, shape), path.as_ref())
+}
+
+fn write_bytes(bytes: &[u8], path: &Path) -> Result<(), NpyError> {
+    std::fs::write(path, bytes).map_err(|e| NpyError::Io(format!("{}: {e}", path.display())))
+}
+
+/// The bytes `np.save` writes for a C-contiguous array of this dtype, so a
+/// fixture written here is byte-identical to one numpy wrote.
+fn encode(dtype: NpyDType, shape: &[usize], count: usize, data: impl Iterator<Item = u8>) -> Vec<u8> {
+    assert!(shape.iter().product::<usize>() == count, "shape does not match count");
+    let shape_text = if shape.len() == 1 {
+        format!("({},)", shape[0])
+    } else {
+        format!("({})", shape.iter().map(usize::to_string).collect::<Vec<_>>().join(", "))
+    };
+    let mut header = format!("{{'descr': '{}', 'fortran_order': False, 'shape': {shape_text}, }}", dtype.descr());
+    // numpy pads the header so the data starts on a 64-byte boundary.
+    let unpadded = 10 + header.len() + 1;
+    let padding = (64 - unpadded % 64) % 64;
+    header.push_str(&" ".repeat(padding));
+    header.push('\n');
+    let n = header.len();
+    let mut out = Vec::with_capacity(n + 10 + count * dtype.item_size());
+    out.extend_from_slice(&MAGIC);
+    out.extend_from_slice(&[1, 0]);
+    out.extend_from_slice(&[(n & 0xFF) as u8, ((n >> 8) & 0xFF) as u8]);
+    out.extend_from_slice(header.as_bytes());
+    out.extend(data);
+    out
 }
 
 #[cfg(test)]
@@ -312,5 +381,35 @@ mod tests {
         assert!(!points.is_empty());
         assert_eq!(points.len(), projected.len());
         assert!(points.iter().flatten().all(|v| v.is_finite()));
+    }
+
+    /// "npy: float32 round trips through the writer"
+    #[test]
+    fn float32_round_trips_through_the_writer() {
+        let values: Vec<f32> = (0..24).map(|i| i as f32 * 0.5 - 3.0).collect();
+        let back = parse(&encode_f32(&values, &[4, 6])).unwrap();
+        assert!(back.shape == [4, 6] && back.floats().unwrap() == values, "a written array reads back identically");
+        let dir = std::env::temp_dir().join(format!("kurven-npy-{}.npy", std::process::id()));
+        write_f32(&values, &[4, 6], &dir).unwrap();
+        let read_back = read(&dir).unwrap();
+        std::fs::remove_file(&dir).unwrap();
+        assert_eq!(read_back, back);
+    }
+
+    /// What the writer writes for numpy's own files is numpy's bytes.
+    #[test]
+    fn the_writer_writes_what_numpy_wrote() {
+        for name in ["f4", "f8", "i8", "f8_1d"] {
+            let path = fixtures::shared(&format!("npy/{name}.npy"));
+            let bytes = std::fs::read(&path).unwrap();
+            let a = parse(&bytes).unwrap();
+            let again = match a.dtype {
+                NpyDType::Float32 => encode_f32(&a.floats().unwrap(), &a.shape),
+                NpyDType::Float64 => encode_f64(&a.doubles().unwrap(), &a.shape),
+                NpyDType::Int64 => encode_i64(&a.ints().unwrap(), &a.shape),
+                NpyDType::Complex128 => unreachable!(),
+            };
+            assert!(again == bytes, "{name}: {} bytes written, numpy wrote {}", again.len(), bytes.len());
+        }
     }
 }
