@@ -182,3 +182,107 @@ Rust by the same name in the same place.
   installs the pin, and CI installs it the same way.
 - **References.** The four cubic corners now come from one sampled bundle, as
   make.py does. The 25 drawings are byte-identical to the ones committed.
+
+## 2026-11-15 · Phase 1: kurven-math against the oracles and against Swift
+
+All of `Sources/KurvenMath` is in `crates/kurven-math`, a module per Swift
+file. The gate is green at the fixtures' own tolerances, none changed:
+
+- `tests/fixtures/expr/index.json`: all 66 cases. The worst against each
+  case's tolerance: besselj(10, z) 3.7e-11 (tol 1e-9), bessely(2.7, z)
+  2.3e-11, airyai and airybi 1.4e-12, expi 2.8e-13 (tol 1e-10), zeta 2.2e-14
+  (tol 1e-10), tan_wide 2.2e-14 (tol 1e-12); everything else 1.1e-14 or
+  less. Darwin's libm against the libm crate (the entry above: 1 to 3 ulp on
+  one call in ten) makes no difference at these tolerances; there was no
+  lane to stop.
+- `language.json`: 41 canonical spellings (each a fixed point, with its
+  reading's values on the grid), 17 refusals at the frozen character and
+  length, the 43 functions with their arities, aliases and help, the 4
+  constants.
+
+As a second reference beyond the oracle grids, Swift's own KurvenMath was
+compiled from `Sources/KurvenMath/*.swift` with `swiftc` and a probe main in
+a scratch directory (nothing under `Sources/` changed), and evaluated at
+the 4,845 points of the new `math/functions.txt` golden. The NaNs and
+infinities are in the same places; the finite values agree to 5.1e-14
+relative for Airy and 2.4e-15 for everything else.
+
+## 2026-11-15 · Swift's near-miss message is not the one language.json froze
+
+For `gama(z)` the fixture froze "did you mean gamma or rgamma or lgamma?"
+(Python's `difflib.get_close_matches`, which breaks a tie in nearness by
+taking the later name first). `Language.unknown` in Swift breaks it by the
+name ascending and writes "gamma or lgamma or rgamma?", as `kurven-cli
+surface periodic --expression 'gama(z)'` shows. The Swift suite checks only
+the place of a refusal and that the message contains "gamma", so it never
+saw this. The port writes Swift's message. Its test holds every frozen
+message, which the Swift suite does not, and names this one as Swift's.
+
+## 2026-11-15 · Where Swift traps, the Bessel functions answer NaN
+
+`Bessel.swift` converts doubles to Int with `Int(x)`, which traps on a value
+that is not finite or does not fit. The probe build exits on SIGTRAP (status
+133) for `besselj`, `bessely`, `besseli` and `besselk` of order `1/0`, for
+`besselj(1e300, z)`, and for `besselj` and `bessely` of order 2.7 or -2.3 at
+z = inf (the Hankel path with an order of one or more). A landscape or the
+app evaluating such an expression would crash. Rust's `as` saturates
+instead, and the loops the result counts would then not end, so at exactly
+those conversions the port answers NaN (`swift_int` in `bessel.rs`). This is
+the one place the port's values differ from Swift's by construction; a unit
+test holds it.
+
+## 2026-11-15 · Phase 1's other differences from Swift
+
+- **Characters.** Positions and lengths count `char`s (Unicode scalar
+  values); Swift counts `Character`s (grapheme clusters). Name characters are
+  `char::is_alphabetic` and `is_numeric`, where Swift asks `isLetter` and
+  `isNumber`. On every source the fixtures hold, and every one the language
+  accepts, the two agree. They can differ on text with combining marks, such
+  as `e` followed by U+0301: Swift reads one name `é` and refuses it as an
+  unknown name; the port refuses U+0301 as a character the language does not
+  use, one character further on. Both refuse it.
+- **The Fourier torus's sums.** `FourierTorus.fit` in Swift splits the
+  samples over `activeProcessorCount` chunks, so the order of its sums, and
+  their last bits, depend on the machine. The port sums the samples in order
+  in one pass, as the handoff asks of every `concurrentPerform`, so its fit
+  is the same everywhere. The residual is a maximum and does not depend on
+  the order. The suite's bounds (1e-8 on the fit, 1e-7 on its derivatives,
+  a ratio over 8 between the two lengths) are met.
+- **SIMD.** Swift's `SIMD2/3/4<Double>` are `Simd<N>` (`simd.rs`), lane by
+  lane with the scalar's rounding. Their `max()` reduction is IEEE maxNum
+  (`Double.maximum`), which passes over a NaN lane; the ODE's error norm
+  reads it, and the port keeps it.
+- **ODE.** `ODE` is `Ode` (Rust's naming). Swift's `integrate` takes a
+  `body` that may throw; no caller's does, and here it cannot, so the result
+  is `Result<Statistics, Failure>`.
+- **Names.** snake_case throughout. Where Swift overloads on argument type,
+  the port has two names: `Trig::sin_pi` and `Trig::sin_pi_complex`. Default
+  arguments are explicit (`Root::brent` takes `ftol` and `max_iterations`;
+  `Root::brent_default` and `LambertW::w0` take Swift's defaults).
+  `callAsFunction` is `Compiled::call`. Tuples are small structs
+  (`Cylinder`, `Modified`, `AiryPair`, `Elliptic`, `Jet`).
+- **The function table** holds plain function pointers (`Body::Unary`,
+  `Body::Binary`); the tape calls them directly, and `Function::apply`
+  serves a hand-built call of another arity, as Swift's `apply` does.
+- **Constants computed at load** (log π, √π, e⁻¹, ζ's weights, Airy's ω) go
+  through `kurven_math::real` once, behind `LazyLock`, where Swift computes
+  them with Darwin's libm.
+- **Complex** is not `Hash` (Rust's f64 is not), and its `Display` writes
+  Swift's `description`, `(1.0-0.5j)`.
+
+## 2026-11-15 · kurven-math's golden sets
+
+Three files under `crates/fixtures/rust/math/`, written by `kurven-cli
+fixtures` and, byte for byte the same, by the wasm module under Node:
+
+- `functions.txt` (455,515 bytes): 57 expressions (every function; each of
+  two arguments at orders 0, 2.7, -2.3 or moduli 0.2, 0.9; three of the
+  operators and constants) at 85 points, as bits: a grid over the
+  landscapes' windows, both sides of the branch cuts, the poles and branch
+  points, far out on each axis, an infinity and a NaN.
+- `language.txt` (1,886 bytes): canonical spellings, refusals and literals.
+- `dynamics.txt` (4,329 bytes): the ODE integrator, lines and generator, a
+  Fourier torus fit with its second-order jet and residual, Brent,
+  continued fractions, quarter periods and `ellpj`.
+
+With them the wasm module is 272,871 bytes (profile `web`).
