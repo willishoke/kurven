@@ -171,33 +171,61 @@ impl Segments {
         self.segments.is_empty()
     }
 
-    /// The distance from p to the nearest segment, and that segment.
-    pub fn nearest(&self, p: Point) -> (f64, usize) {
+    /// The distance from p to the nearest segment, and that segment; none
+    /// when there are no segments.
+    ///
+    /// The rings of cells round p's are walked outward, each clamped to the
+    /// grid, from the first that meets the grid, so a point far off it costs
+    /// no more than one beside it. The walk starts from segment 0, so the
+    /// answer always names a segment, even for a point no distance can be
+    /// measured from.
+    pub fn nearest(&self, p: Point) -> Option<(f64, usize)> {
+        let (a, b) = *self.segments.first()?;
+        let mut best = (segment_distance(p, a, b), 0);
+        // Past this many cells a point is beyond any grid; clamping it nearer
+        // only lowers the bound below, which stays a bound.
+        const FAR: i64 = 1 << 40;
         let (cx, cy) = self.cell_of(p);
-        let mut best = (f64::INFINITY, usize::MAX);
-        let reach = [cx, self.nx - 1 - cx, cy, self.ny - 1 - cy].into_iter().map(i64::abs).max().unwrap_or(0);
+        let (cx, cy) = (cx.clamp(-FAR, FAR), cy.clamp(-FAR, FAR));
+        let gap = |c: i64, n: i64| {
+            if c < 0 {
+                -c
+            } else if c >= n {
+                c - (n - 1)
+            } else {
+                0
+            }
+        };
+        let first = gap(cx, self.nx).max(gap(cy, self.ny));
+        let last = [cx, self.nx - 1 - cx, cy, self.ny - 1 - cy].into_iter().map(i64::abs).max().unwrap_or(0);
         let visit = |x: i64, y: i64, best: &mut (f64, usize)| {
-            if (0..self.nx).contains(&x) && (0..self.ny).contains(&y) {
-                for &k in &self.cells[(y * self.nx + x) as usize] {
-                    let (a, b) = self.segments[k as usize];
-                    let d = segment_distance(p, a, b);
-                    if d < best.0 {
-                        *best = (d, k as usize);
-                    }
+            for &k in &self.cells[(y * self.nx + x) as usize] {
+                let (a, b) = self.segments[k as usize];
+                let d = segment_distance(p, a, b);
+                if d < best.0 {
+                    *best = (d, k as usize);
                 }
             }
         };
-        for r in 0..=reach.max(0) {
+        for r in first..=last {
             if r == 0 {
                 visit(cx, cy, &mut best);
             } else {
-                for x in cx - r..=cx + r {
-                    visit(x, cy - r, &mut best);
-                    visit(x, cy + r, &mut best);
+                let (x0, x1) = ((cx - r).max(0), (cx + r).min(self.nx - 1));
+                for y in [cy - r, cy + r] {
+                    if (0..self.ny).contains(&y) {
+                        for x in x0..=x1 {
+                            visit(x, y, &mut best);
+                        }
+                    }
                 }
-                for y in cy - r + 1..cy + r {
-                    visit(cx - r, y, &mut best);
-                    visit(cx + r, y, &mut best);
+                let (y0, y1) = ((cy - r + 1).max(0), (cy + r - 1).min(self.ny - 1));
+                for x in [cx - r, cx + r] {
+                    if (0..self.nx).contains(&x) {
+                        for y in y0..=y1 {
+                            visit(x, y, &mut best);
+                        }
+                    }
                 }
             }
             // Every cell not yet visited is at least r cells from p's.
@@ -205,7 +233,7 @@ impl Segments {
                 break;
             }
         }
-        best
+        Some(best)
     }
 
     fn distance_to(&self, k: usize, p: Point) -> f64 {
@@ -227,7 +255,7 @@ pub fn directed(a: &[Vec<Point>], b: &Segments, eps: f64) -> Bound {
     let mut hi = 0.0f64;
     let mut pending: Vec<(Point, f64, usize, Point, f64, usize)> = Vec::new();
     for path in a {
-        let near: Vec<(f64, usize)> = path.iter().map(|&p| b.nearest(p)).collect();
+        let near: Vec<(f64, usize)> = path.iter().map(|&p| b.nearest(p).expect("b holds a segment")).collect();
         for &(f, _) in &near {
             lo = lo.max(f);
         }
@@ -243,7 +271,7 @@ pub fn directed(a: &[Vec<Point>], b: &Segments, eps: f64) -> Bound {
             continue;
         }
         let m = [(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0];
-        let (fm, im) = b.nearest(m);
+        let (fm, im) = b.nearest(m).expect("b holds a segment");
         lo = lo.max(fm);
         pending.push((p, fp, ip, m, fm, im));
         pending.push((m, fm, im, q, fq, iq));
@@ -528,6 +556,35 @@ mod tests {
             assert!(bound.hi >= sampled - 1e-12, "{bound:?} below the sampled {sampled}");
             assert!(bound.lo <= sampled + step / 2.0 + 1e-12, "{bound:?} above the sampled {sampled} + step/2");
         }
+    }
+
+    /// A point far off a small, dense set costs no more than one beside it:
+    /// the rings start where the grid begins. Walking every ring out to it,
+    /// as the search once did, would visit some 10¹⁶ cells here.
+    #[test]
+    fn a_far_point_is_found_quickly() {
+        let dense: Vec<Vec<Point>> =
+            (0..100).map(|i| (0..101).map(|j| [f64::from(j) * 0.01, f64::from(i) * 0.01]).collect()).collect();
+        let index = Segments::new(&dense);
+        let started = std::time::Instant::now();
+        let (d, k) = index.nearest([1e6, 0.5]).unwrap();
+        assert_eq!(d, 1e6 - 1.0);
+        assert!(k < 100 * 100);
+        let (d, _) = index.nearest([-3e5, -4e5]).unwrap();
+        assert!((d - 5e5).abs() < 1e-6, "{d}");
+        within(directed(&[vec![[1e6, 0.5], [1e6, 0.6]]], &index, EPS), 1e6 - 1.0);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "took {:?}", started.elapsed());
+    }
+
+    /// No point, however unmeasurable, makes the search name no segment.
+    #[test]
+    fn nearest_always_names_a_segment() {
+        let index = Segments::new(&[vec![[0.0, 0.0], [1.0, 0.0]], vec![[0.0, 1.0], [1.0, 1.0]]]);
+        for p in [[f64::NAN, 0.0], [0.5, f64::INFINITY], [f64::NEG_INFINITY, f64::NAN]] {
+            let (_, k) = index.nearest(p).unwrap();
+            assert!(k < 2);
+        }
+        assert_eq!(Segments::new(&[]).nearest([0.0, 0.0]), None);
     }
 
     #[test]
