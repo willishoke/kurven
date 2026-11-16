@@ -10,6 +10,7 @@ use kurven_math::{real, swift};
 
 use crate::json::{JsonError, JsonObject, JsonValue, Members, object, string};
 use crate::manifest::{ContourField, DomainAxis, ManifestError, SchemaError};
+use crate::occlusion::sort_by_start;
 use crate::polyline::PolylineSet;
 use crate::simd::{Vec2, Vec3};
 use crate::solid::{FaceFrame, Solid};
@@ -563,21 +564,17 @@ pub struct HatchLine {
 /// (`Solid.visibleHatching(_:view:)`'s answer).
 pub type VisibleHatching = Vec<(i64, PolylineSet<WorldSpace>, PolylineSet<WorldSpace>)>;
 
-/// Swift's `sort { $0.0 < $1.0 }` on intervals: stable, ties in order.
-fn by_start(a: &(f64, f64), b: &(f64, f64)) -> std::cmp::Ordering {
-    if a.0 < b.0 {
-        std::cmp::Ordering::Less
-    } else if b.0 < a.0 {
-        std::cmp::Ordering::Greater
-    } else {
-        std::cmp::Ordering::Equal
-    }
-}
-
 impl Solid {
     /// The hatching laid over every face, before visibility.
     pub fn hatch_lines(&self, hatching: &Hatching) -> Vec<HatchLine> {
-        (0..self.faces.len()).flat_map(|i| self.hatch_lines_on_face(hatching, i)).collect()
+        let diagonals = self.diagonal_sides();
+        (0..self.faces.len()).flat_map(|i| self.hatch_lines_with(hatching, i, &diagonals)).collect()
+    }
+
+    /// Every diagonal of the partition as its two vertices, the lesser
+    /// first: which sides of a piece are no edge of the solid.
+    fn diagonal_sides(&self) -> HashSet<(usize, usize)> {
+        (0..self.edges.len()).filter(|&k| self.is_diagonal[k]).map(|k| (self.edges[k].a, self.edges[k].b)).collect()
     }
 
     /// Every hatch line's path, before visibility: the curves a hatching
@@ -602,6 +599,12 @@ impl Solid {
     /// along each run every `step`, and where the width step changes between
     /// two readings the change is bisected on the tone.
     pub fn hatch_lines_on_face(&self, hatching: &Hatching, i: usize) -> Vec<HatchLine> {
+        self.hatch_lines_with(hatching, i, &self.diagonal_sides())
+    }
+
+    /// `hatch_lines_on_face` given the partition's diagonals, found once
+    /// for every face (`diagonal_sides`).
+    fn hatch_lines_with(&self, hatching: &Hatching, i: usize, diagonals: &HashSet<(usize, usize)>) -> Vec<HatchLine> {
         let face = &self.frames[i];
         let polygons: Vec<Vec<Vec2>> = self.faces[i]
             .iter()
@@ -609,10 +612,6 @@ impl Solid {
             .collect();
         // Per side of each piece, whether it is a diagonal of the face
         // rather than an edge of the solid.
-        let diagonals: HashSet<(usize, usize)> = (0..self.edges.len())
-            .filter(|&k| self.is_diagonal[k])
-            .map(|k| (self.edges[k].a, self.edges[k].b))
-            .collect();
         let on_diagonal: Vec<Vec<bool>> = self.faces[i]
             .iter()
             .map(|&p| {
@@ -684,7 +683,7 @@ impl Solid {
                     intervals.push((t0, t1));
                 }
             }
-            intervals.sort_by(by_start);
+            sort_by_start(&mut intervals);
             let mut runs: Vec<(f64, f64)> = Vec::new();
             for (a, b) in intervals {
                 match runs.last_mut() {
