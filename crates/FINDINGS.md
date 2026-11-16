@@ -150,3 +150,35 @@ definition of a plate) and `docs/architecture.md` ("drawn in 1909") date the
 plates to 1909. The reliefs first appear in the 1933 second edition, as the
 handoff says. I have not edited either file, since that is outside the port's
 scope; the port's prose uses 1933.
+
+## 2026-11-15 · Decided: complex functions are associated functions
+
+The owner settled the question the grep raised. Complex functions are
+associated functions, `Complex::exp(z)`, mirroring Swift's `Complex.exp(z)`
+statics (`Sources/KurvenMath/Complex.swift`). Called that way they never
+spell `.exp(`, so the grep stays as it is, and the Swift is findable from the
+Rust by the same name in the same place.
+
+## 2026-11-15 · Review of PR #63: what was fixed
+
+- **compare, far points.** A point far off the other drawing's grid walked
+  every ring of cells out to it, (distance / cell)² visits. The rings now
+  start where the grid begins and are clamped to it. `nearest` always names a
+  segment, and answers none for an empty set.
+- **SVG reader.** `nan` and `inf` were read as coordinates. They are refused
+  now, so the drawing cannot be read (exit 2). An empty `<polyline
+  points=""/>`, which SVG.swift would write for a path of no vertices, is a
+  stroke counted with no geometry. A multi-byte character at a tag's start is
+  an error, not a panic.
+- **npy reader.** Shape × item size, and the header's end, are checked for
+  overflow; a shape like (2⁶², 4) used to wrap to zero bytes.
+- **Golden gate.** It diffs against HEAD, not the index, and writes nothing to
+  the index. `scripts/check.sh` has the same index-diff pattern for Swift's
+  goldens (`git add --intent-to-add` then `git diff`, so a staged change to a
+  golden passes). That script is out of the port's scope, so it is left as it
+  is and recorded here.
+- **Toolchain.** The toolchain is pinned in `crates/rust-toolchain.toml`
+  (1.99.1, rustfmt, clippy, wasm32). check-web.sh runs cargo in `crates/` and
+  installs the pin, and CI installs it the same way.
+- **References.** The four cubic corners now come from one sampled bundle, as
+  make.py does. The 25 drawings are byte-identical to the ones committed.
