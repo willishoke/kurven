@@ -1,0 +1,3 @@
+# torus-bare: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
+lines paths 22 vertices 3413 length 404d922046860f6c 59.14160996957693 hash 7b53f1efcd64c156
+folds paths 6 vertices 200 length 40341d1d286bc553 20.113726164160948 hash 2b38651b03177010

@@ -1,0 +1,4 @@
+# torus-linear: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
+lines paths 22 vertices 9043 length 404d8e3cfe2a02e7 59.1112363534101 hash 4f59486b2898547b
+linearCurves paths 4 vertices 628 length 40396e7a12bf2510 25.431550189653592 hash 66fad0266dda8ac1
+folds paths 6 vertices 511 length 403431c47dc38b98 20.194404468765782 hash 05b44d39cc6a3c1d

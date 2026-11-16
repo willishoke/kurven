@@ -1,0 +1,7 @@
+# sn-relief: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
+mag_major paths 22 vertices 490 length 40415a5e5aad27d0 34.70600446181163 hash 7d47be945b4bfc2f
+mag_minor paths 77 vertices 1798 length 405f64996a38a665 125.57186370403504 hash 08ee43c58760b1e0
+ang_major paths 9 vertices 186 length 4034c6b348a36aac 20.776173152825024 hash 362949b32c5bfaab
+ang_minor paths 17 vertices 308 length 40391af9bf171fb6 25.10537332834766 hash df958366d64c5724
+truncation edge paths 3 vertices 36 length 3ffa02a829fef5fb 1.6256486549822273 hash 23600f2aa3e31a59
+folds paths 9 vertices 512 length 40345cf614dafc11 20.363129905188604 hash 744437118f38f502
