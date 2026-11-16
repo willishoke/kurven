@@ -1364,3 +1364,19 @@ soft, visibility), and `only` refuses any other option given bare, "--preset
 wants a value", as `switched_on` refuses a switch given a value. `bake
 --outline` and `--dump` are refused as Phase 4 in either form, before
 `only`: bare, they used to parse as switches and bake on, exit 0.
+
+## 2026-11-16 · A bundle draws its described layers when first asked
+
+Swift's `KurvenBundle` derives every described layer when it is made:
+`read` derives them on the grids, then `loadScene` attaches the refiner and
+`refined` derives them all again, the first set thrown away; `landscape`
+built a bundle with its refiner, derived every layer through it, and wrote
+the manifest and two grids. The port's `KurvenBundle::layers()` derives on
+first call, once (a `OnceLock`), from the bundle's own surface, occluder
+and refiner; `layers` is no longer a public field. What each layer is does
+not change: a dumped layer is the one read, `refined` and `restyled` carry
+a dumped layer by name as Swift's `redrawn` finds it (by spec, when a
+restyle keeps it), a restyle keeps a described layer already drawn whose
+spec and inputs did not move, and every other is drawn as Swift draws it.
+The goldens and the eleven references are unchanged, and a test counts
+the refiner's calls: none until the layers are asked for, then once.

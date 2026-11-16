@@ -341,7 +341,7 @@ impl Scene {
             o.tiles.clone(),
             o.region.clone(),
             o.step.max(0) as usize,
-            bundle.layers.clone(),
+            bundle.layers().to_vec(),
             Camera::oblique(&preset.projection),
             PreviewMode::Drawing,
             preset.depth_tolerance,

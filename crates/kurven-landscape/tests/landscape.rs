@@ -237,8 +237,8 @@ fn built_here_it_is_the_committed_bundle() {
         compare(ours.surface.phase.as_deref(), theirs.surface.phase.as_deref(), "phase");
 
         let mut curves_differ = Vec::new();
-        assert_eq!(ours.layers.len(), theirs.layers.len(), "{label}: the same layers");
-        for (mine, committed) in ours.layers.iter().zip(&theirs.layers) {
+        assert_eq!(ours.layers().len(), theirs.layers().len(), "{label}: the same layers");
+        for (mine, committed) in ours.layers().iter().zip(theirs.layers()) {
             let (a, b) = (mine.paths.total_length(), committed.paths.total_length());
             if mine.paths.count() != committed.paths.count() || (a - b).abs() > 1e-6 * b.max(1.0) {
                 curves_differ.push(format!(

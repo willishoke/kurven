@@ -7,6 +7,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::grid::Grid2D;
 use crate::manifest::{GridRef, LayerSource, LayerSpec, Manifest, ManifestError, SchemaError, Walls};
@@ -96,12 +97,31 @@ impl From<NpyError> for BundleError {
 /// Arrays are eager. A bundle is a value the whole point of which is that it is
 /// already computed; lazily faulting parts of it in would trade the one property
 /// it has for nothing.
+///
+/// The port differs in one place: a described layer's curves are derived when
+/// they are first asked for (`layers`), not when the bundle is made. Swift
+/// derives them eagerly, so reading a bundle and then attaching its refiner
+/// derived every layer twice, the first time to be thrown away, and
+/// `landscape` derived every refined layer of a bundle it then wrote as a
+/// manifest and two grids. The curves are the same: each is the layer's spec
+/// drawn from this bundle's surface, occluder and refiner, which no method
+/// changes once the bundle is made (a changed bundle is a new one:
+/// `refined`, `restyled`). The fields are public to be read; reassigning
+/// `manifest`, `surface` or `refine` before the layers are asked for would
+/// draw them from the new values.
 #[derive(Debug, Clone)]
 pub struct KurvenBundle {
     pub url: PathBuf,
     pub manifest: Manifest,
     pub surface: Surface,
-    pub layers: Vec<Layer>,
+    /// Every layer, in the manifest's order, once asked for.
+    layers: OnceLock<Vec<Layer>>,
+    /// The layers known before any is derived: a dumped layer's curves as
+    /// read (the bundle has no question that could draw them again), and
+    /// layers a restyle keeps because nothing they depend on moved. Matched
+    /// by name for a dumped layer and by spec for a kept one, as Swift's
+    /// `redrawn` and `restyled` match them.
+    known: Vec<Layer>,
     /// Present when the manifest carries `Walls::Mesh`; `None` when the walls
     /// are derived from a perimeter instead.
     pub wall_mesh: Option<Mesh<WorldSpace>>,
@@ -122,7 +142,64 @@ impl KurvenBundle {
         wall_mesh: Option<Mesh<WorldSpace>>,
         refine: Option<ContourRefine>,
     ) -> KurvenBundle {
-        KurvenBundle { url, manifest, surface, layers, wall_mesh, refine }
+        KurvenBundle { url, manifest, surface, layers: OnceLock::from(layers), known: Vec::new(), wall_mesh, refine }
+    }
+
+    /// Every layer, in the manifest's order: a dumped one as it was read, a
+    /// kept one as it was, and every other described one derived from the
+    /// grids, through the refiner when there is one. Derived on the first
+    /// call, once.
+    pub fn layers(&self) -> &[Layer] {
+        self.layers.get_or_init(|| {
+            self.manifest
+                .layers
+                .iter()
+                .map(|spec| match self.known.iter().find(|l| l.spec == *spec) {
+                    Some(layer) => layer.clone(),
+                    None if spec.files().is_some() => Layer { spec: spec.clone(), paths: PolylineSet::empty() },
+                    None => self.redrawn(spec),
+                })
+                .collect()
+        })
+    }
+
+    /// The curves of the first of `layers` whose spec is `spec`, without
+    /// drawing the others: what Swift finds in its eager `layers`.
+    fn paths_of(&self, spec: &LayerSpec) -> Option<PolylineSet<WorldSpace>> {
+        if let Some(drawn) = self.layers.get() {
+            return drawn.iter().find(|l| l.spec == *spec).map(|l| l.paths.clone());
+        }
+        if !self.manifest.layers.contains(spec) {
+            return None;
+        }
+        Some(match self.known.iter().find(|l| l.spec == *spec) {
+            Some(layer) => layer.paths.clone(),
+            None if spec.files().is_some() => PolylineSet::empty(),
+            None => self.redrawn(spec).paths,
+        })
+    }
+
+    /// The curves of the first of `layers` named `name`, without drawing the
+    /// others.
+    fn paths_named(&self, name: &str) -> Option<PolylineSet<WorldSpace>> {
+        let spec = self.manifest.layers.iter().find(|s| s.name == name)?;
+        self.paths_of(spec)
+    }
+
+    /// For each dumped layer of `manifest`, the curves a bundle made from
+    /// this one carries: the first layer here by its name (`redrawn`), or by
+    /// its spec when `unmoved` (`restyled`'s keeping).
+    fn carried(&self, manifest: &Manifest, unmoved: bool) -> Vec<Layer> {
+        manifest
+            .layers
+            .iter()
+            .filter(|spec| spec.files().is_some())
+            .map(|spec| {
+                let kept = if unmoved { self.paths_of(spec) } else { None };
+                let paths = kept.or_else(|| self.paths_named(&spec.name)).unwrap_or_else(PolylineSet::empty);
+                Layer { spec: spec.clone(), paths }
+            })
+            .collect()
     }
 
     /// A bundle whose every layer is described: the curves are derived from the
@@ -133,38 +210,27 @@ impl KurvenBundle {
         surface: Surface,
         refine: Option<ContourRefine>,
     ) -> KurvenBundle {
-        let layers = manifest
-            .layers
-            .iter()
-            .map(|spec| Layer { spec: spec.clone(), paths: surface.curves(spec, &manifest.occluder, refine.as_ref()) })
-            .collect();
-        KurvenBundle { url, manifest, surface, layers, wall_mesh: None, refine }
+        KurvenBundle { url, manifest, surface, layers: OnceLock::new(), known: Vec::new(), wall_mesh: None, refine }
     }
 
     /// The same bundle deriving its contour layers through `refine` -- or,
     /// with `None`, through the grids alone. Dumped layers are untouched.
     pub fn refined(&self, refine: Option<ContourRefine>) -> KurvenBundle {
-        let base = KurvenBundle {
+        KurvenBundle {
             url: self.url.clone(),
             manifest: self.manifest.clone(),
             surface: self.surface.clone(),
-            layers: Vec::new(),
+            layers: OnceLock::new(),
+            known: self.carried(&self.manifest, false),
             wall_mesh: self.wall_mesh.clone(),
-            refine: refine.clone(),
-        };
-        let layers = self
-            .manifest
-            .layers
-            .iter()
-            .map(|spec| if spec.files().is_none() { base.redrawn(spec) } else { self.redrawn(spec) })
-            .collect();
-        KurvenBundle { layers, ..base }
+            refine,
+        }
     }
 
     pub fn layer(&self, name: &str) -> Result<&Layer, ManifestError> {
-        self.layers.iter().find(|l| l.spec.name == name).ok_or_else(|| ManifestError::NoSuchLayer {
+        self.layers().iter().find(|l| l.spec.name == name).ok_or_else(|| ManifestError::NoSuchLayer {
             name: name.to_string(),
-            have: self.layers.iter().map(|l| l.spec.name.clone()).collect(),
+            have: self.layers().iter().map(|l| l.spec.name.clone()).collect(),
         })
     }
 
@@ -231,14 +297,14 @@ impl KurvenBundle {
 
         let surface = Surface::new(height, phase, manifest.truncation.clone(), cached);
 
-        let mut layers: Vec<Layer> = Vec::new();
+        // Described, not dumped: the curves are derived from the grids the
+        // bundle already carries, when they are first asked for (`layers`).
+        // This is what a `--derived` bundle trades its layer files for, and
+        // what makes the levels, the hatch spacing and the truncation
+        // editable. A dumped layer is read here.
+        let mut known: Vec<Layer> = Vec::new();
         for spec in &manifest.layers {
             let Some((vertices, offsets)) = spec.files() else {
-                // Described, not dumped: derive the curves from the grids the
-                // bundle already carries. This is what a `--derived` bundle
-                // trades its layer files for, and what makes the levels, the
-                // hatch spacing and the truncation editable.
-                layers.push(Layer { spec: spec.clone(), paths: surface.curves(spec, &manifest.occluder, None) });
                 continue;
             };
             let v = npy::read(file(vertices)?)?;
@@ -257,7 +323,7 @@ impl KurvenBundle {
                 previous = offset;
             }
             let offsets: Vec<usize> = offsets.into_iter().map(|k| k as usize).collect();
-            layers.push(Layer { spec: spec.clone(), paths: PolylineSet::new(verts, offsets, None) });
+            known.push(Layer { spec: spec.clone(), paths: PolylineSet::new(verts, offsets, None) });
         }
 
         let mut wall_mesh: Option<Mesh<WorldSpace>> = None;
@@ -270,7 +336,15 @@ impl KurvenBundle {
             ));
         }
 
-        Ok(KurvenBundle { url: url.to_path_buf(), manifest, surface, layers, wall_mesh, refine: None })
+        Ok(KurvenBundle {
+            url: url.to_path_buf(),
+            manifest,
+            surface,
+            layers: OnceLock::new(),
+            known,
+            wall_mesh,
+            refine: None,
+        })
     }
 
     /// Re-derive one described layer at different levels.
@@ -302,8 +376,10 @@ impl KurvenBundle {
     /// a second time.
     pub fn redrawn(&self, spec: &LayerSpec) -> Layer {
         if spec.files().is_some() {
-            let existing = self.layers.iter().find(|l| l.spec.name == spec.name);
-            return Layer { spec: spec.clone(), paths: existing.map_or_else(PolylineSet::empty, |l| l.paths.clone()) };
+            return Layer {
+                spec: spec.clone(),
+                paths: self.paths_named(&spec.name).unwrap_or_else(PolylineSet::empty),
+            };
         }
         Layer { spec: spec.clone(), paths: self.surface.curves(spec, &self.manifest.occluder, self.refine.as_ref()) }
     }
@@ -332,29 +408,24 @@ impl KurvenBundle {
             truncation: honest.truncation.clone(),
             cached: self.surface.cached,
         };
-        let bundle = KurvenBundle {
-            url: self.url.clone(),
-            manifest: honest.clone(),
-            surface: restyled_surface.clone(),
-            layers: Vec::new(),
-            wall_mesh: self.wall_mesh.clone(),
-            refine: self.refine.clone(),
-        };
         // A layer's curves are its spec drawn on the truncated surface past the
         // occluder, so a layer none of those moved for is the curves already
         // here: a hatch step draws the hatching, not every phase line again.
+        // Only what is already drawn is kept; what is not is drawn when asked.
         let unmoved = honest.truncation == self.manifest.truncation && honest.occluder == self.manifest.occluder;
-        let layers = honest
-            .layers
-            .iter()
-            .map(|spec| {
-                if unmoved && let Some(kept) = self.layers.iter().find(|l| l.spec == *spec) {
-                    return kept.clone();
-                }
-                if spec.files().is_none() { bundle.redrawn(spec) } else { self.redrawn(spec) }
-            })
-            .collect();
-        KurvenBundle { layers, ..bundle }
+        let mut known = self.carried(&honest, unmoved);
+        if unmoved && let Some(drawn) = self.layers.get() {
+            known.extend(drawn.iter().filter(|l| l.spec.files().is_none() && honest.layers.contains(&l.spec)).cloned());
+        }
+        KurvenBundle {
+            url: self.url.clone(),
+            manifest: honest,
+            surface: restyled_surface,
+            layers: OnceLock::new(),
+            known,
+            wall_mesh: self.wall_mesh.clone(),
+            refine: self.refine.clone(),
+        }
     }
 
     /// The levels a described layer was exported with, or `None` when it is

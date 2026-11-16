@@ -917,7 +917,7 @@ fn a_contour_or_a_fold_carried_to_the_truncation_edge_across_a_band_boundary_end
                 wrong.iter().take(3).collect::<Vec<_>>()
             );
         };
-        for layer in &built.layers {
+        for layer in built.layers() {
             if matches!(layer.spec.source, LayerSource::Contour { .. }) {
                 measure(&format!("every point of {}", layer.spec.name), &layer.paths);
             }

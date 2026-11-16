@@ -31,8 +31,8 @@ fn consistent(bundle: &KurvenBundle) -> bool {
     let mut ok = bundle.surface.height.width as i64 == m.height.shape.1
         && bundle.surface.height.height as i64 == m.height.shape.0
         && bundle.surface.phase.is_none() == m.phase.is_none()
-        && bundle.layers.len() == m.layers.len();
-    for layer in &bundle.layers {
+        && bundle.layers().len() == m.layers.len();
+    for layer in bundle.layers() {
         ok = ok && layer.paths.offsets.last().copied().unwrap_or(0) == layer.paths.vertices.len();
         for i in 0..layer.paths.count() {
             ok = ok && layer.paths.path(i).len() >= 2;
@@ -73,7 +73,7 @@ fn the_native_landscapes_read_and_build_their_scenes() {
         assert!(faces.windows(2).all(|w| w[0].id <= w[1].id), "{}: the faces come in FaceID's order", url.display());
         // The described contours of |f| and arg f come from the grids here,
         // as Swift draws them without a refiner.
-        let drawn = bundle.layers.iter().filter(|l| l.paths.count() > 0).count();
+        let drawn = bundle.layers().iter().filter(|l| l.paths.count() > 0).count();
         assert!(drawn > 0, "{}: some layer is drawn from the grids", url.display());
     }
 }
@@ -94,7 +94,7 @@ fn a_written_bundle_reads_back_the_same() {
         bundle.surface.phase.as_ref().map(|p| p.values.clone()),
         "the phases to the bit"
     );
-    assert_eq!(back.layers, bundle.layers, "the layers drawn again alike");
+    assert_eq!(back.layers(), bundle.layers(), "the layers drawn again alike");
     std::fs::remove_dir_all(&dir).ok();
 
     // A bundle with dumped layers is refused, not written without them.
@@ -137,4 +137,38 @@ fn offsets_that_do_not_start_at_zero_or_that_decrease_are_refused() {
         }
     }
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A described layer is drawn when it is first asked for, once: reading a
+/// bundle and attaching a refiner draws nothing to throw away, and the
+/// layers then drawn are the ones an eager bundle draws.
+#[test]
+fn described_layers_are_drawn_when_first_asked_for() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use kurven_core::surface::ContourRefine;
+
+    let bundle = KurvenBundle::read(fixtures::shared("contract/landscape.kurven")).unwrap();
+    let placed = Arc::new(AtomicUsize::new(0));
+    let counter = placed.clone();
+    let refine = ContourRefine::new(
+        Arc::new(move |_, _, paths: &[Vec<_>], _, _| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            paths.to_vec()
+        }),
+        None,
+    );
+    let refined = bundle.refined(Some(refine.clone()));
+    let restyled = refined.restyled(&refined.manifest);
+    assert_eq!(placed.load(Ordering::SeqCst), 0, "nothing is placed before a layer is asked for");
+    let drawn = refined.layers().to_vec();
+    let once = placed.load(Ordering::SeqCst);
+    assert!(once > 0, "asked for, the contours are placed through the refiner");
+    assert_eq!(refined.layers(), drawn.as_slice());
+    assert_eq!(placed.load(Ordering::SeqCst), once, "and only once");
+    // An identity refiner places the grid's contours where they are, so the
+    // refined bundle draws what the bundle read draws, and so does its restyle.
+    assert_eq!(drawn, bundle.layers(), "the same layers as the bundle drawn without a refiner");
+    assert_eq!(restyled.layers(), drawn.as_slice(), "and as its restyle");
 }

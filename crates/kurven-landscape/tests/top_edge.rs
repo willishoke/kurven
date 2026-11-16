@@ -602,7 +602,7 @@ fn a_chord_the_refiner_cannot_place_is_not_drawn() {
     };
     let (mut chords, mut strayed, mut jumps, mut worst_stray) = (0, 0, 0, 0.0f64);
     let mut examples: Vec<String> = Vec::new();
-    let layers: Vec<&Layer> = bundle.manifest.layers.iter().zip(&bundle.layers).map(|(_, l)| l).collect();
+    let layers: Vec<&Layer> = bundle.manifest.layers.iter().zip(bundle.layers()).map(|(_, l)| l).collect();
     let named = |prefix: &str| -> Vec<&Layer> {
         bundle
             .manifest

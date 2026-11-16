@@ -1789,14 +1789,14 @@ fn depth_a_bundles_occluder_holds_the_risers_at_its_tile_boundaries() {
         region: Region::Full,
         base: 0.0,
     };
-    let tiled = KurvenBundle {
-        url: "/native/landscape.kurven".into(),
-        manifest: manifest.clone(),
-        surface: tower.surface.clone(),
-        layers: Vec::new(),
-        wall_mesh: None,
-        refine: Some(tower.refine.clone()),
-    };
+    let tiled = KurvenBundle::new(
+        "/native/landscape.kurven".into(),
+        manifest.clone(),
+        tower.surface.clone(),
+        Vec::new(),
+        None,
+        Some(tower.refine.clone()),
+    );
     let o = &manifest.occluder;
     let strip = Mesh::tile_boundary_risers(&tiled.surface, o.step as usize, &o.region, &o.tiles);
     let occluder = tiled.occluder();

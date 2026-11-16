@@ -882,7 +882,7 @@ fn only_a_layer_that_selects_the_risers_hatches_them() {
         let bundle =
             KurvenBundle::described(built.url.clone(), manifest.clone(), built.surface.clone(), built.refine.clone());
         let feet: Vec<P3<WorldSpace>> = bundle
-            .layers
+            .layers()
             .iter()
             .filter(|l| matches!(l.spec.source, LayerSource::Hatching { .. }))
             .flat_map(|l| l.paths.paths().map(|p| p[0]).collect::<Vec<_>>())
@@ -1643,7 +1643,7 @@ fn no_stroke_is_drawn_through_a_riser_and_none_is_hidden_that_the_walk_sees() {
         ];
         layers.extend(
             bundle
-                .layers
+                .layers()
                 .iter()
                 .filter(|l| l.spec.role == LayerRole::Magnitude || l.spec.role == LayerRole::Phase)
                 .map(|l| (l, FaceKind::Graph)),
@@ -1818,14 +1818,14 @@ fn a_vertical_stroke_is_its_two_ends_however_high_the_modulus_stands() {
         );
         // The budget reads the number of strokes and nothing of |f|: two
         // vertices a hatch line, and two a corner's vertical edge.
-        let hatch = &bundle.layers.iter().find(|l| l.spec.name == "wall_hatch").unwrap().paths;
+        let hatch = &bundle.layers().iter().find(|l| l.spec.name == "wall_hatch").unwrap().paths;
         assert!(
             hatch.count() > 0 && hatch.vertices.len() <= 2 * hatch.count(),
             "{expression}: the wall hatch has two vertices a line: {} vertices on {} lines",
             hatch.vertices.len(),
             hatch.count()
         );
-        let edges = &bundle.layers.iter().find(|l| l.spec.name == "wall_edges").unwrap().paths;
+        let edges = &bundle.layers().iter().find(|l| l.spec.name == "wall_edges").unwrap().paths;
         let verticals: Vec<&[P3<WorldSpace>]> =
             edges.paths().filter(|p| p.iter().all(|v| v.x() == p[0].x() && v.y() == p[0].y())).collect();
         let corners: usize = verticals.iter().map(|p| p.len()).sum();

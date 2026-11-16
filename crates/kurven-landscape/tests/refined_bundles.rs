@@ -102,7 +102,7 @@ fn phase_contours_end_on_the_zeros_of_f() {
     let mut on_zero = [0; 6];
     let mut short_of_zero = [0; 6];
     let mut worst = 0.0f64;
-    for layer in bundle.layers.iter().filter(|l| l.spec.role == LayerRole::Phase) {
+    for layer in bundle.layers().iter().filter(|l| l.spec.role == LayerRole::Phase) {
         for path in layer.paths.paths() {
             let (Some(first), Some(last)) = (path.first(), path.last()) else { continue };
             for (k, &z0) in zeros.iter().enumerate() {
@@ -151,7 +151,7 @@ fn the_branch_cut_is_drawn_once_as_one_line() {
     let cell = refiner.cell();
     let cut_paths = |b: &KurvenBundle| -> Vec<Vec<P3<WorldSpace>>> {
         let mut out = Vec::new();
-        for layer in b.layers.iter().filter(|l| l.spec.role == LayerRole::Phase) {
+        for layer in b.layers().iter().filter(|l| l.spec.role == LayerRole::Phase) {
             for path in layer.paths.paths() {
                 // Every vertex on Im f = 0 with Re f < 0, but for the two
                 // ends: a zero, where the phase is anyone's, or a truncation
@@ -239,7 +239,7 @@ fn a_restyle_places_only_the_curves_it_has_not_placed_before() {
         built.url.clone(),
         built.manifest.clone(),
         built.surface.clone(),
-        built.layers.clone(),
+        built.layers().to_vec(),
         built.wall_mesh.clone(),
         Some(counted),
     );
@@ -255,9 +255,13 @@ fn a_restyle_places_only_the_curves_it_has_not_placed_before() {
         .unwrap();
     first.truncation = Truncation::Uniform(truncation_height * 0.9);
     second.truncation = Truncation::Uniform(truncation_height * 0.9 * near);
+    // A bundle draws its layers when they are first asked for (crates/FINDINGS.md),
+    // so each restyle is asked for them, as a drawing asks.
     let once = bundle.restyled(&first);
+    once.layers();
     let asked = solved.lock().unwrap().clone();
     let twice = once.restyled(&second);
+    twice.layers();
     let again = solved.lock().unwrap().clone();
     let phase = |m: &HashMap<ContourField, usize>| m.get(&ContourField::Phase).copied().unwrap_or(0);
     assert!(phase(&asked) > 0, "the first restyle places the phase lines: {asked:?}");
@@ -268,16 +272,16 @@ fn a_restyle_places_only_the_curves_it_has_not_placed_before() {
         built.url.clone(),
         built.manifest.clone(),
         built.surface.clone(),
-        built.layers.clone(),
+        built.layers().to_vec(),
         built.wall_mesh.clone(),
         Some(fresh),
     )
     .restyled(&second);
     assert!(
-        twice.layers == cold.layers,
+        twice.layers() == cold.layers(),
         "and the curves are the curves a cold refiner draws under that truncation: {:?} vs {:?}",
-        twice.layers.iter().map(|l| l.paths.vertices.len()).collect::<Vec<_>>(),
-        cold.layers.iter().map(|l| l.paths.vertices.len()).collect::<Vec<_>>()
+        twice.layers().iter().map(|l| l.paths.vertices.len()).collect::<Vec<_>>(),
+        cold.layers().iter().map(|l| l.paths.vertices.len()).collect::<Vec<_>>()
     );
 }
 
