@@ -450,11 +450,6 @@ pub fn load_drawing(args: &Args) -> Result<Drawing, CliError> {
 pub fn bake_command(args: &Args) -> Result<(), CliError> {
     let mut accepted = Args::SCENE.to_vec();
     accepted.extend(["resolution", "tiles", "depth-tolerance", "outline", "dump", "output"]);
-    // Refused whether given a value or not, before `only` would call either
-    // a bare option wanting a value.
-    if args.switches.contains("dump") {
-        return Err(CliError("--dump wants a value".to_string()));
-    }
     args.only("bake", &accepted)?;
     let drawing = load_drawing(args)?;
     let output = PathBuf::from(args.string("output")?);
@@ -489,15 +484,18 @@ pub fn bake_command(args: &Args) -> Result<(), CliError> {
         file_name(&drawing.url),
         file_name(&output),
         drawing.preset.name,
-        match &result.surface {
-            Some(image) => format!(
+        match (&result.frame, &result.surface) {
+            (Some(frame), Some(_)) => format!(
                 "{}x{} in {} pass{}",
-                image.frame().rows,
-                image.frame().cols,
+                frame.rows,
+                frame.cols,
                 result.tiles * result.tiles,
                 if result.tiles == 1 { "" } else { "es" }
             ),
-            None => "none: the port bakes a landscape's strokes only".to_string(),
+            (Some(frame), None) => {
+                format!("{}x{}, not rendered: every curve is tested by sphere tracing", frame.rows, frame.cols)
+            }
+            _ => "none: the port bakes a landscape's strokes only".to_string(),
         },
         result.strokes.path_count(),
         result.strokes.total_length(),
@@ -538,8 +536,8 @@ fn dump(
         kurven_core::npy::write_f32(&offsets, &[offsets.len()], format!("{prefix}.{name}.idx.npy"))
             .map_err(|e| CliError(e.to_string()))?;
     }
-    let frame = match &result.surface {
-        Some(image) => image.frame(),
+    let frame = match result.frame {
+        Some(frame) => frame,
         None => {
             let bounds =
                 scene.view_bounds()?.ok_or_else(|| CliError(kurven_bake::BakeError::EmptyScene.to_string()))?;

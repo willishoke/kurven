@@ -16,7 +16,7 @@
 mod common;
 
 use common::{compare_with_ray_cast, test_camera, torus_sees, torus_sees_from_outside, view_bounds};
-use kurven_bake::{BakeOptions, bake};
+use kurven_bake::{BakeOptions, bake, bake_with_image};
 use kurven_core::camera::Camera;
 use kurven_core::depth::DepthFrame;
 use kurven_core::hidden_line::HiddenLine;
@@ -457,7 +457,10 @@ fn a_parametric_scene_bakes_its_curves_by_where_it_lies_on_the_surface() {
         0.03,
     );
     let single = BakeOptions { tiles: Some(1), ..BakeOptions::new(2400) };
-    let whole = bake(&scene, &single).expect("a bake");
+    // Rendered with its image, as Swift's bake always is: the torus is
+    // sphere traced, so `bake` alone renders none, and the stitching is
+    // what is asked of it below.
+    let whole = bake_with_image(&scene, &single).expect("a bake");
     let truth = ray_cast_length(&curves, &torus, 2.0, 1.0, &camera.view, 8);
     let length = whole.strokes.total_length();
     let error = (length - truth).abs() / truth;
@@ -470,7 +473,7 @@ fn a_parametric_scene_bakes_its_curves_by_where_it_lies_on_the_surface() {
 
     // Tiling splits the render and never the clip, and depth and
     // coordinates are stitched by the same code over the same sub-frames.
-    let split = bake(&scene, &BakeOptions { tiles: Some(3), ..BakeOptions::new(2400) }).expect("a bake");
+    let split = bake_with_image(&scene, &BakeOptions { tiles: Some(3), ..BakeOptions::new(2400) }).expect("a bake");
     let same = whole.strokes.layers.len() == split.strokes.layers.len()
         && whole.strokes.layers.iter().zip(&split.strokes.layers).all(|(a, b)| a.1 == b.1);
     let (whole_coords, split_coords) =
@@ -605,8 +608,8 @@ fn fold_curves_lie_on_the_folds_and_are_seen_where_the_ray_cast_sees_them() {
             // is the fold's own neighbourhood for the first couple of
             // pixels. So the bound is a few pixels per cusp, not zero.
             // (Swift reads the pixel off the bake's depth buffer; the port's
-            // bake renders the coordinate image over the same frame.)
-            let unit = baked.surface.as_ref().expect("an image").frame().units_per_pixel();
+            // bake frames the coordinate image the same way.)
+            let unit = baked.frame.expect("a frame").units_per_pixel();
             let px = swift::max(unit.x, unit.y);
             let length = baked.strokes.total_length();
             let excess = length - truth;

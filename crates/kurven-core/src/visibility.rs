@@ -4,6 +4,8 @@
 //! facing, which `ParametricSurface::facing` already answers, and sphere
 //! tracing (`SphereTracing`) are whole.
 
+use std::sync::Arc;
+
 use kurven_math::swift;
 
 use crate::hidden_line::{HiddenLine, fold_crossing};
@@ -42,7 +44,9 @@ pub struct SurfaceVisibility {
     pub surface: ParametricSurface,
     /// The coordinate image, which the front-most test reads; None when the
     /// sphere tracing tests alone, since it asks nothing of a raster.
-    pub image: Option<SurfaceImage>,
+    /// Shared, not copied: a 3000-pixel image is about a hundred megabytes,
+    /// and the scene makes a visibility for every layer it tests.
+    pub image: Option<Arc<SurfaceImage>>,
     pub view: Transform<WorldSpace, ViewSpace>,
     /// The direction lines of sight travel, in world space.
     pub sight: Vec3,
@@ -58,12 +62,12 @@ pub struct NoNeighbourhood;
 impl SurfaceVisibility {
     pub fn new(
         surface: ParametricSurface,
-        image: SurfaceImage,
+        image: impl Into<Arc<SurfaceImage>>,
         view: Transform<WorldSpace, ViewSpace>,
     ) -> SurfaceVisibility {
         let sight = view.projection_direction();
         let tracing = SphereTracing::new(&surface, sight);
-        SurfaceVisibility { surface, image: Some(image), view, sight, tracing }
+        SurfaceVisibility { surface, image: Some(image.into()), view, sight, tracing }
     }
 
     /// Visibility by sphere tracing alone, with no image: for a surface with an
@@ -122,11 +126,11 @@ impl SurfaceVisibility {
                     self.surface.u.difference(there.x(), here.x()).abs(),
                     self.surface.v.difference(there.y(), here.y()).abs(),
                 );
-                best = Some(best.map_or(d, |b| simd_min(b, d)));
+                best = Some(best.map_or(d, |b| b.swift_min(d)));
             }
             best.unwrap_or(Vec2::ZERO)
         };
-        simd_max(rate(1, 0), rate(0, 1))
+        rate(1, 0).swift_max(rate(0, 1))
     }
 
     /// Whether the front-most surface beside view point `p` is the surface at
@@ -256,7 +260,7 @@ impl SurfaceVisibility {
     /// either of its faces is.
     pub fn onto_crease(&self, c: P2<ParamSpace>, chord: Vec2) -> P2<ParamSpace> {
         let scale = Vec2::new(self.surface.u.spacing(), self.surface.v.spacing());
-        let along = Vec2::new(chord.x / scale.x, chord.y / scale.y);
+        let along = chord.div_elements(scale);
         let cells = along.length();
         if !(cells > 0.0) {
             return c;
@@ -316,16 +320,6 @@ impl std::fmt::Display for NoImage {
 }
 
 impl std::error::Error for NoImage {}
-
-/// `simd_min` of two vectors, Swift's `min` per lane (a NaN in the first
-/// lane survives as Swift's does).
-fn simd_min(a: Vec2, b: Vec2) -> Vec2 {
-    Vec2::new(swift::min(a.x, b.x), swift::min(a.y, b.y))
-}
-
-fn simd_max(a: Vec2, b: Vec2) -> Vec2 {
-    Vec2::new(swift::max(a.x, b.x), swift::max(a.y, b.y))
-}
 
 impl HiddenLine {
     /// Hidden-line removal for curves that lie on a parametric surface and

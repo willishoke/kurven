@@ -106,3 +106,69 @@ fn a_scene_that_projects_to_nothing_is_refused() {
     let options = BakeOptions { resolution: 64, tiles: None, depth_tolerance: None, outline: None };
     assert!(matches!(bake(&empty, &options), Err(BakeError::EmptyScene)));
 }
+
+/// A torus's coordinate curves and folds, sphere traced or, with its tubular
+/// neighbourhood taken away, tested by its coordinate image.
+fn torus_scene(traced: bool) -> kurven_core::scene::Scene {
+    use kurven_core::camera::Camera;
+    use kurven_core::manifest::{HeightPolicy, LayerRole, LayerSource, LayerSpec, ObliqueProjection};
+    use kurven_core::parametric::ParametricSurface;
+    use kurven_core::polyline::{Layer, PolylineSet};
+    use kurven_core::scene::{PreviewMode, Scene};
+    let torus = ParametricSurface::torus(2.0, 1.0, (64, 32)).expect("the torus");
+    let surface = if traced {
+        torus
+    } else {
+        ParametricSurface::new(torus.u, torus.v, true, None, None, torus.map.clone()).expect("the bare torus")
+    };
+    let lines = surface.coordinate_curves((8, 4), 256);
+    let layers = vec![
+        Layer {
+            spec: LayerSpec::new(
+                "lines",
+                LayerRole::Scaffold,
+                LayerSource::CoordinateCurves { u: 8, v: 4 },
+                0.3,
+                HeightPolicy::Surface,
+            ),
+            paths: lines,
+        },
+        Layer {
+            spec: LayerSpec::new("folds", LayerRole::Outline, LayerSource::FoldCurves, 0.6, HeightPolicy::Surface),
+            paths: PolylineSet::empty(),
+        },
+    ];
+    let camera =
+        Camera::oblique(&ObliqueProjection { shear: 0.0, x_angle: -55.0, z_angle: 30.0, flip_x: false, y_scale: None });
+    Scene::parametric_scene(surface, layers, camera, PreviewMode::Drawing, 0.0)
+}
+
+/// More passes than the frame has rows: Swift's sub-frames would be empty
+/// or a row deep, which its Metal pass cannot draw. The port asks for no
+/// more passes than the frame has pairs of rows, so every pass has two
+/// rows or more, and the tiled bake is the untiled one.
+#[test]
+fn a_parametric_bake_tiled_past_its_rows_takes_as_many_passes_as_fit() {
+    for traced in [true, false] {
+        let scene = torus_scene(traced);
+        for (resolution, tiles, fits) in [(2, 3, 1), (3, 5, 1), (5, 4, 2), (9, 9, 4)] {
+            let whole = bake(&scene, &BakeOptions { tiles: Some(1), ..BakeOptions::new(resolution) }).expect("a bake");
+            let split =
+                bake(&scene, &BakeOptions { tiles: Some(tiles), ..BakeOptions::new(resolution) }).expect("a bake");
+            assert_eq!(split.tiles, fits, "{resolution} pixels in {tiles} passes take {fits}");
+            if traced {
+                assert_eq!(split.strokes, whole.strokes, "sphere traced, the tiling changes no stroke");
+            } else {
+                let image = split.surface.as_ref().expect("an image");
+                assert_eq!(image.coords.len() as i64, resolution * resolution, "the image covers its frame");
+            }
+        }
+    }
+    // Sphere traced with no outline, nothing reads the image, and none is
+    // rendered; the frame is reported all the same.
+    let traced = bake(&torus_scene(true), &BakeOptions::new(300)).expect("a bake");
+    assert!(traced.surface.is_none() && traced.frame.is_some_and(|f| f.rows == 300));
+    let outlined =
+        bake(&torus_scene(true), &BakeOptions { outline: Some(0.5), ..BakeOptions::new(300) }).expect("a bake");
+    assert!(outlined.surface.is_some() && outlined.strokes.layers.len() == traced.strokes.layers.len() + 1);
+}

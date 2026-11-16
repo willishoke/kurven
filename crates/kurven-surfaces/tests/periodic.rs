@@ -402,8 +402,8 @@ fn a_truncation_edge_is_a_crease_drawn_once_and_seen_where_either_face_is() {
         Scene::parametric_scene(surface.clone(), vec![truncation_edge.clone()], camera, PreviewMode::Drawing, 0.0);
     let baked = bake(&scene, &BakeOptions::new(2000)).expect("a bake");
     // (Swift reads the pixel off the bake's depth buffer; the port's bake
-    // renders the coordinate image over the same frame.)
-    let unit = baked.surface.as_ref().expect("an image").frame().units_per_pixel();
+    // frames the coordinate image the same way.)
+    let unit = baked.frame.expect("a frame").units_per_pixel();
     let px = swift::max(unit.x, unit.y);
     let length = baked.strokes.total_length();
     let excess = length - truth;

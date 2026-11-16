@@ -13,14 +13,15 @@
 //! test reads, and its outline is traced from that depth.
 
 use std::fmt;
+use std::sync::Arc;
 
 use kurven_core::depth::{DepthFrame, DepthImage};
 use kurven_core::hidden_line::HiddenLine;
-use kurven_core::manifest::LayerSpec;
-use kurven_core::parametric::PortRefusal;
+use kurven_core::manifest::{LayerSource, LayerSpec};
+use kurven_core::parametric::{ParametricSurface, PortRefusal};
 use kurven_core::polyline::PolylineSet;
 use kurven_core::scene::{Scene, SceneGeometry};
-use kurven_core::spaces::PageSpace;
+use kurven_core::spaces::{PageSpace, Transform, ViewSpace, WorldSpace};
 use kurven_core::surface_image::SurfaceImage;
 use kurven_core::svg::{Strokes, Style};
 
@@ -106,10 +107,17 @@ pub struct Bake {
     /// asked for, is the stroke layer past the last of these, traced from
     /// the depth buffer.
     pub specs: Vec<LayerSpec>,
-    /// A parametric scene's front-most surface coordinates and depth, stitched
-    /// from however many passes it took; None for a landscape or a solid,
-    /// whose depth pass the port does not render.
-    pub surface: Option<SurfaceImage>,
+    /// The frame a parametric scene's depth and coordinates are rendered on,
+    /// `DepthFrame::covering` its view bounds at the resolution; None for a
+    /// landscape or a solid, whose depth pass the port does not render.
+    pub frame: Option<DepthFrame>,
+    /// A parametric scene's front-most surface coordinates and depth,
+    /// stitched from however many passes it took, where something reads
+    /// them: a surface with no tubular neighbourhood, a clipped layer with
+    /// no coordinates, the outline (`bake_with_image` renders it always, as
+    /// Swift's bake does). Shared, not copied, with the visibility that reads
+    /// it.
+    pub surface: Option<Arc<SurfaceImage>>,
     /// How many passes the depth took, per axis.
     pub tiles: i64,
 }
@@ -121,36 +129,47 @@ pub struct Bake {
 /// buffer only as a parametric surface's coordinate image. The port renders
 /// a parametric surface's image with the CPU rasterizer
 /// (`SurfaceImage::rasterize`, Swift's own reference for its Metal pass), in
-/// the same tiles stitched the same way, and passes it on; for a landscape or
-/// a solid it takes the layers alone, the same strokes at any resolution and
-/// split, and refuses an outline, which is traced from a depth pass it does
-/// not render.
+/// the same tiles stitched the same way, where it is read: a surface sphere
+/// traced, with every clipped layer on its coordinates and no outline asked
+/// for, reads none, and the port renders none, about a hundred megabytes at
+/// a 3000-pixel bake, for the same strokes. For a landscape or a solid it
+/// takes the layers alone, the same strokes at any resolution and split,
+/// and refuses an outline, which is traced from a depth pass it does not
+/// render.
 pub fn bake(scene: &Scene, options: &BakeOptions) -> Result<Bake, BakeError> {
+    bake_rendering(scene, options, false)
+}
+
+/// `bake`, rendering a parametric scene's coordinate image whether or not
+/// anything reads it, as Swift's bake always does: for what holds the image
+/// itself to the drawing (its tiling, its frame).
+pub fn bake_with_image(scene: &Scene, options: &BakeOptions) -> Result<Bake, BakeError> {
+    bake_rendering(scene, options, true)
+}
+
+fn bake_rendering(scene: &Scene, options: &BakeOptions, always: bool) -> Result<Bake, BakeError> {
     if scene.camera.is_perspective() {
         return Err(BakeError::Perspective);
     }
-    let n = options.tile_count(options.resolution);
+    let mut n = options.tile_count(options.resolution);
     let depth_tolerance = options.depth_tolerance.unwrap_or(scene.depth_tolerance);
-    let image = match scene.geometry() {
+    let (frame, image) = match scene.geometry() {
         SceneGeometry::Parametric(surface) => {
             let Some(bounds) = scene.view_bounds()? else { return Err(BakeError::EmptyScene) };
             let frame = DepthFrame::covering(&bounds, options.resolution);
-            // Depth and coordinates are stitched by the same code over the
-            // same sub-frames, so a coordinate sits on the pixel its depth does
-            // however the drawing was split.
-            let view = scene.camera.view;
-            Some(if n == 1 {
-                SurfaceImage::rasterize(surface, &view, frame)
-            } else {
-                let tiles: Vec<SurfaceImage> = (0..n)
-                    .flat_map(|ti| (0..n).map(move |tj| (ti, tj)))
-                    .map(|(ti, tj)| SurfaceImage::rasterize(surface, &view, frame.tile(ti, tj, n)))
-                    .collect();
-                let values = stitch(frame, n, |k| tiles[k].depth.values.clone());
-                let coords = stitch(frame, n, |k| tiles[k].coords.clone());
-                let empty = tiles.last().map_or(f32::NEG_INFINITY, |t| t.depth.empty);
-                SurfaceImage { depth: DepthImage::new(frame, values, empty), coords }
-            })
+            // Every tile at least two pixels each way. Swift's sub-frame of
+            // one row has an axis of no length, which its clip divides by,
+            // and one of no rows a texture Metal cannot make; the port asks
+            // for no more passes than the frame has pairs of rows and of
+            // columns, which changes no stroke (the passes are stitched).
+            n = n.min((frame.rows.min(frame.cols) / 2).max(1));
+            let read = surface.neighbourhood.is_none()
+                || options.outline.is_some()
+                || scene.layers().iter().any(|l| {
+                    l.spec.clipped && l.paths.coords.is_none() && !matches!(l.spec.source, LayerSource::FoldCurves)
+                });
+            let image = (always || read).then(|| Arc::new(render(surface, &scene.camera.view, frame, n)));
+            (Some(frame), image)
         }
         _ => {
             // Swift computes the drawing's view bounds here, to frame the depth
@@ -169,14 +188,13 @@ pub fn bake(scene: &Scene, options: &BakeOptions) -> Result<Bake, BakeError> {
                            not render",
                 }));
             }
-            None
+            (None, None)
         }
     };
     // Every layer comes tested by its face and the scene's occlusion
-    // test (`Scene::visible`). The buffer is rendered for the `depth`
-    // output and the outline; the drawing reads it, as the coordinate
-    // image, only for a parametric surface with no exact test, and only
-    // there depends on the resolution.
+    // test (`Scene::visible`). The buffer is rendered for the outline; the
+    // drawing reads it, as the coordinate image, only for a parametric
+    // surface with no exact test, and only there depends on the resolution.
     let visible = scene.visible_layers(Some(depth_tolerance), image.as_ref())?;
     let mut layers: Vec<(Style, PolylineSet<PageSpace>)> =
         visible.iter().map(|(layer, seen)| (Style::of(&layer.spec), HiddenLine::pass(seen))).collect();
@@ -186,34 +204,50 @@ pub fn bake(scene: &Scene, options: &BakeOptions) -> Result<Bake, BakeError> {
     Ok(Bake {
         strokes: Strokes { layers },
         specs: visible.into_iter().map(|(layer, _)| layer.spec).collect(),
+        frame,
         surface: image,
         tiles: n,
     })
 }
 
-/// Render the drawing as `n x n` sub-frames and copy each into its place in
-/// one row-major array (Swift's `stitch`): `tile(k)` is the sub-frame
-/// `k = ti * n + tj`'s pixels, in the order Swift visits them.
+/// A parametric surface's coordinate image over `frame`, in `n x n` passes
+/// stitched into one row-major image (Swift's `stitch`), each pass copied
+/// into place as it is rasterized, in the order Swift visits them.
 ///
 /// Tiles meet on pixel boundaries -- `DepthFrame::tile` splits the grid,
 /// not the coordinate range -- so a pixel lands in the same place however
-/// the drawing was divided.
-fn stitch<T: Copy>(frame: DepthFrame, n: i64, tile: impl Fn(usize) -> Vec<T>) -> Vec<T> {
-    let mut out: Option<Vec<T>> = None;
+/// the drawing was divided, and depth and coordinates are stitched by the
+/// same code over the same sub-frames, so a coordinate sits on the pixel its
+/// depth does.
+fn render(
+    surface: &ParametricSurface,
+    view: &Transform<WorldSpace, ViewSpace>,
+    frame: DepthFrame,
+    n: i64,
+) -> SurfaceImage {
+    if n == 1 {
+        return SurfaceImage::rasterize(surface, view, frame);
+    }
+    let count = (frame.rows * frame.cols) as usize;
+    let mut values = vec![f32::NEG_INFINITY; count];
+    let mut coords = vec![[f32::NAN, f32::NAN]; count];
+    let mut empty = f32::NEG_INFINITY;
     for ti in 0..n {
         for tj in 0..n {
             let sub = frame.tile(ti, tj, n);
-            let pixels = tile((ti * n + tj) as usize);
-            let out = out.get_or_insert_with(|| vec![pixels[0]; (frame.rows * frame.cols) as usize]);
+            let tile = SurfaceImage::rasterize(surface, view, sub);
+            empty = tile.depth.empty;
             let (row0, col0) = (frame.rows * ti / n, frame.cols * tj / n);
+            let width = sub.cols as usize;
             for r in 0..sub.rows {
                 let dst = ((row0 + r) * frame.cols + col0) as usize;
                 let src = (r * sub.cols) as usize;
-                out[dst..dst + sub.cols as usize].copy_from_slice(&pixels[src..src + sub.cols as usize]);
+                values[dst..dst + width].copy_from_slice(&tile.depth.values[src..src + width]);
+                coords[dst..dst + width].copy_from_slice(&tile.coords[src..src + width]);
             }
         }
     }
-    out.unwrap_or_default()
+    SurfaceImage { depth: DepthImage::new(frame, values, empty), coords }
 }
 
 #[cfg(test)]

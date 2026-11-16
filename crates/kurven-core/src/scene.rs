@@ -14,6 +14,7 @@
 
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use kurven_math::swift;
 
@@ -251,7 +252,16 @@ pub struct Scene {
     /// finely than a pixel looks the same and costs a traversal per halving.
     /// Zero, the default and a bake's, places them to the last bit.
     pub resolution: f64,
+    /// A parametric surface's fold curves for the last line of sight they
+    /// were asked for, which `view_bounds` and `visible` both read: placed
+    /// once per camera, not once per ask. Keyed by the line of sight, since
+    /// the camera is a public field; the surface and its creases cannot
+    /// change under a scene. Not in Swift, which places them twice.
+    fold_memo: FoldMemo,
 }
+
+/// A parametric surface's fold curves, and the line of sight they are for.
+type FoldMemo = Arc<Mutex<Option<(Vec3, Arc<PolylineSet<WorldSpace>>)>>>;
 
 impl Scene {
     fn assemble(
@@ -263,7 +273,17 @@ impl Scene {
         mode: PreviewMode,
         depth_tolerance: f64,
     ) -> Scene {
-        Scene { content, curves, geometry, layers, camera, mode, depth_tolerance, resolution: 0.0 }
+        Scene {
+            content,
+            curves,
+            geometry,
+            layers,
+            camera,
+            mode,
+            depth_tolerance,
+            resolution: 0.0,
+            fold_memo: Arc::new(Mutex::new(None)),
+        }
     }
 
     /// A heightfield scene. `walls` has no default: the scene's wall strokes
@@ -1649,7 +1669,7 @@ impl Scene {
     pub fn visible_layers(
         &self,
         depth_tolerance: Option<f64>,
-        image: Option<&SurfaceImage>,
+        image: Option<&Arc<SurfaceImage>>,
     ) -> Result<Vec<(Layer, PolylineSet<ViewSpace>)>, PortRefusal> {
         let mut out = Vec::new();
         for layer in &self.layers {
@@ -1694,7 +1714,7 @@ impl Scene {
         &self,
         layer: &Layer,
         depth_tolerance: Option<f64>,
-        image: Option<&SurfaceImage>,
+        image: Option<&Arc<SurfaceImage>>,
     ) -> Result<Vec<(Layer, PolylineSet<ViewSpace>)>, PortRefusal> {
         let view = self.camera.view;
         let depth_tolerance = depth_tolerance.unwrap_or(self.depth_tolerance);
@@ -1705,12 +1725,12 @@ impl Scene {
                     // PORT: phase 5 -- along a coordinate, a layer per width step (`Face.coordinateHatching`, Isophotes.swift), each tested as any curve on the surface.
                     return Err(PortRefusal { phase: 5, what: "ParametricSurface.coordinateHatching" });
                 }
-                let paths = if folds {
-                    s.fold_curves(view.projection_direction(), None, &self.creases())
+                let visible = if folds {
+                    self.visible_on_surface(s, layer, &self.parametric_folds(s), folds, image, depth_tolerance)
                 } else {
-                    layer.paths.clone()
+                    self.visible_on_surface(s, layer, &layer.paths, folds, image, depth_tolerance)
                 };
-                Ok(vec![(layer.clone(), self.visible_on_surface(s, layer, &paths, folds, image, depth_tolerance))])
+                Ok(vec![(layer.clone(), visible)])
             }
             SceneGeometry::Heightfield(h) => {
                 if let LayerSource::Hatching { faces: FaceSelector::Graph { .. }, .. } = &layer.spec.source {
@@ -1743,6 +1763,22 @@ impl Scene {
         }
     }
 
+    /// A parametric surface's fold curves for this camera
+    /// (`foldCurves(sight:creases:)`), placed once and remembered for the
+    /// line of sight (`fold_memo`).
+    fn parametric_folds(&self, s: &ParametricSurface) -> Arc<PolylineSet<WorldSpace>> {
+        let sight = self.camera.view.projection_direction();
+        let mut memo = self.fold_memo.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((key, folds)) = memo.as_ref()
+            && *key == sight
+        {
+            return folds.clone();
+        }
+        let folds = Arc::new(s.fold_curves(sight, None, &self.creases()));
+        *memo = Some((sight, folds.clone()));
+        folds
+    }
+
     /// Curves on a parametric surface, or its folds, tested by the
     /// surface's own coordinates where it has a tubular neighbourhood or
     /// an image, by the image's depth where they carry none, and drawn
@@ -1754,7 +1790,7 @@ impl Scene {
         layer: &Layer,
         paths: &PolylineSet<WorldSpace>,
         folds: bool,
-        image: Option<&SurfaceImage>,
+        image: Option<&Arc<SurfaceImage>>,
         depth_tolerance: f64,
     ) -> PolylineSet<ViewSpace> {
         let view = self.camera.view;
@@ -1866,7 +1902,7 @@ impl Scene {
         if let Some(s) = self.parametric()
             && self.layers.iter().any(|l| matches!(l.spec.source, LayerSource::FoldCurves))
         {
-            for v in s.fold_curves(view.projection_direction(), None, &self.creases()).vertices {
+            for &v in &self.parametric_folds(s).vertices {
                 add(view.apply(v));
             }
         }
