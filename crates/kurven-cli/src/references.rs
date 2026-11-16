@@ -9,11 +9,11 @@
 //! names of its non-empty stroke layers in the order the SVG's groups stand,
 //! and their stroke counts).
 //!
-//! The port draws the landscapes so far. Swift's list also holds sn flat and
-//! in relief, a torus with a linear curve, a periodic expression and the
-//! frame's two gallery drawings (parametric surfaces and solids built by
-//! `surface`, Phase 4 and 5), the seven solids (Phase 5) and the composite
-//! (Phase 5); they join this list with their phases.
+//! The port draws the landscapes, and sn flat and in relief, a torus with a
+//! linear curve and a periodic expression (`surface ... --save B; bake B`).
+//! Swift's list also holds the frame's two gallery drawings and the seven
+//! solids (polyhedra built by `surface solid`, Phase 5) and the composite
+//! (Phase 5); they join this list with their phase.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -28,6 +28,7 @@ use kurven_golden::gallery::{self, camera};
 
 use crate::args::{Args, CliError};
 use crate::commands::{landscape_command, load_drawing, write_svg};
+use crate::surface::surface_command;
 
 /// A drawing: its strokes and the name of the layer each stroke layer draws.
 pub type Drawn = (Strokes, Vec<String>);
@@ -67,6 +68,16 @@ pub fn baked(bundle: &Path, preset: Option<&str>, refine: bool) -> Result<Drawn,
     let result = bake(&drawing.scene, &options)?;
     let names = result.specs.iter().map(|s| s.name.clone()).collect();
     Ok((result.strokes, names))
+}
+
+/// `surface ... --save B; bake B`.
+pub fn surface(list: &[String], scratch: &Path, stem: &str) -> Result<Drawn, CliError> {
+    let bundle = scratch.join(format!("{stem}.kurven"));
+    let mut argv = vec!["surface".to_string()];
+    argv.extend(list.iter().cloned());
+    argv.extend(["--save".to_string(), bundle.to_string_lossy().into_owned()]);
+    surface_command(&Args::new(&argv))?;
+    baked(&bundle, None, true)
 }
 
 // MARK: the gallery, as docs/gallery/make.py sets it up
@@ -188,6 +199,9 @@ pub fn gallery() -> Vec<Reference> {
             }),
         ));
     }
+    // PORT: phase 5 -- gallery-frame-edges and gallery-frame-turing, the
+    // picture frame built by `surface solid --kind frame ...` (a polyhedron,
+    // its edges and Turing hatching), `--save B; bake B`.
     references
 }
 
@@ -204,8 +218,20 @@ pub fn all(fixtures: &Path) -> Vec<Reference> {
             Box::new(move |_| baked(&bundle, None, true)),
         ));
     }
-    // PORT: phase 4 -- sn, sn-relief, torus-linear, periodic and the frame's
-    // two gallery drawings (`surface ... --save B; bake B`).
+    let surfaces: [(&str, &[&str]); 4] = [
+        ("sn", &["sn"]),
+        ("sn-relief", &["sn", "--relief", "0.4"]),
+        ("torus-linear", &["torus", "--linear-curves", "2/5"]),
+        ("periodic", &["periodic", "--expression", "sn(z, 0.5)", "--periods", "7.416298709205487,3.7081493546027433"]),
+    ];
+    for (name, list) in surfaces {
+        let list = words(list);
+        references.push(plate(
+            name,
+            format!("surface {} --save B; bake B", list.join(" ")),
+            Box::new(move |scratch| surface(&list, scratch, name)),
+        ));
+    }
     // The slope lines of |f| golden (PR #60), drawn as `kurven-cli
     // fixtures` draws it: tests/fixtures/fields/landscape_slope_lines.svg.
     let slopes = fixtures.join("fields/landscape_slope_lines.kurven");

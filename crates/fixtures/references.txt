@@ -37,4 +37,11 @@ landscape-gamma         1.5e-4  1e-5  1
 landscape-cubic         1.5e-4  1e-5  -
 landscape-typed         1.5e-4  1e-5  -
 landscape-tower         1.5e-4  1e-5  -
+# The parametric surfaces (measured 2026-11-16, the port's Phase 4 against
+# the same Swift bakes): every layer of all four at 0, the same strokes in
+# the same counts, so they are held to the same floor as the landscapes.
+sn                      1.5e-4  1e-5  -
+sn-relief               1.5e-4  1e-5  -
+torus-linear            1.5e-4  1e-5  -
+periodic                1.5e-4  1e-5  -
 slope-lines             1.5e-4  1e-5  -
