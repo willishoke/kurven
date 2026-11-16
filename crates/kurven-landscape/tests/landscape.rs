@@ -1,7 +1,9 @@
 //! The landscape's derived numbers, the catalog and the sampling, held to
 //! the Swift suites and to the committed bundles of `tests/fixtures/expr`.
 
+use kurven_core::bundle::KurvenBundle;
 use kurven_core::fixtures;
+use kurven_core::grid::Grid2D;
 use kurven_core::json::{JsonValue, Members};
 use kurven_core::manifest::{Domain, Interval, Manifest, Truncation, Walls};
 use kurven_landscape::{Catalog, LandscapeRequest, LandscapeStyle, LanguageFunction, NativeLandscape};
@@ -124,13 +126,12 @@ fn the_catalog_is_kurven_landscapes() {
     assert_eq!(LandscapeRequest::from_json(&request.json()).unwrap(), request, "a request round trips");
 }
 
-/// The half of `Expressions.swift`'s "landscape: built here, it is the
-/// committed bundle" that needs no `KurvenBundle`: each committed bundle's
-/// request parsed as Swift parses it, sampled and quantized, against the
-/// committed grids at Swift's 1e-6 relative; and the manifest's derived
-/// numbers (the grid's shape, the truncation, the walls' perimeter, the
-/// occluder's step, the layers) against the committed manifest. The curves
-/// each layer derives need `NativeLandscape.build` (a later wave).
+/// The parts of `NativeLandscape::build`, one by one, against the
+/// committed bundles: each request parsed as Swift parses it, sampled and
+/// quantized, against the committed grids at Swift's 1e-6 relative; and the
+/// manifest's derived numbers (the grid's shape, the truncation, the walls'
+/// perimeter, the occluder's step, the layers) against the committed
+/// manifest. `built_here_it_is_the_committed_bundle` holds the whole.
 #[test]
 fn the_committed_landscapes_sample_and_derive_alike() {
     let index = fixtures::shared_json("expr/landscapes.json");
@@ -188,6 +189,67 @@ fn the_committed_landscapes_sample_and_derive_alike() {
         assert_eq!(p.get("nReal"), Some(&JsonValue::Int(shape.n_real as i64)), "{name}: nReal");
         assert_eq!(p.get("nImag"), Some(&JsonValue::Int(shape.n_imag as i64)), "{name}: nImag");
         assert_eq!(theirs.provenance.function, compiled.expression(), "{name}: the canonical expression");
+    }
+}
+
+/// `Expressions.swift`'s "landscape: built here, it is the committed
+/// bundle": each committed bundle's request built here without a refiner,
+/// under the committed git sha, against the bundle read from disk: the same
+/// manifest, byte for byte; the same samples, to Swift's 1e-6 relative; and
+/// every layer deriving the same curves, path for path and in length to 1e-6
+/// relative. Both sides derive their layers here, so until Hatch.swift and
+/// the fold curves land, the hatchings, the truncation edge and the wall
+/// edges are the stub's on both.
+#[test]
+fn built_here_it_is_the_committed_bundle() {
+    let index = fixtures::shared_json("expr/landscapes.json");
+    let entries = index.object("landscapes").unwrap().array("landscapes", "landscapes").unwrap();
+    assert_eq!(entries.len(), 4);
+    for entry in entries {
+        let e = entry.object("landscape").unwrap();
+        let name = e.string("bundle", "landscape").unwrap();
+        let spec = LandscapeRequest::from_json(e.value("spec", "landscape").unwrap()).unwrap();
+        let theirs = KurvenBundle::read(fixtures::shared(&format!("expr/{name}"))).unwrap();
+        let ours = NativeLandscape::build(&spec, &theirs.manifest.provenance.git_sha, false).unwrap();
+        let label = format!("{name} ({})", spec.expression);
+
+        let (a, b) = (ours.manifest.canonical_json(), theirs.manifest.canonical_json());
+        let at = a.bytes().zip(b.bytes()).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
+        assert!(a == b, "{label}: the same manifest; first difference at byte {at}: {:?} vs {:?}", &a[at..], &b[at..]);
+
+        let compare = |a: Option<&Grid2D<f32>>, b: Option<&Grid2D<f32>>, what: &str| {
+            let (Some(a), Some(b)) = (a, b) else {
+                assert!(a.is_none() && b.is_none(), "{label}: {what}: both present or both absent");
+                return;
+            };
+            assert_eq!(a.values.len(), b.values.len(), "{label}: {what}: the same shape");
+            let (mut worst, mut off) = (0.0f64, 0);
+            for (&x, &y) in a.values.iter().zip(&b.values) {
+                let err = f64::from((x - y).abs()) / f64::from(y.abs()).max(1.0);
+                worst = worst.max(err);
+                if err > 1e-6 {
+                    off += 1;
+                }
+            }
+            assert_eq!(off, 0, "{label}: {what}: the same samples (worst {worst:.1e})");
+        };
+        compare(Some(&ours.surface.height), Some(&theirs.surface.height), "height");
+        compare(ours.surface.phase.as_deref(), theirs.surface.phase.as_deref(), "phase");
+
+        let mut curves_differ = Vec::new();
+        assert_eq!(ours.layers.len(), theirs.layers.len(), "{label}: the same layers");
+        for (mine, committed) in ours.layers.iter().zip(&theirs.layers) {
+            let (a, b) = (mine.paths.total_length(), committed.paths.total_length());
+            if mine.paths.count() != committed.paths.count() || (a - b).abs() > 1e-6 * b.max(1.0) {
+                curves_differ.push(format!(
+                    "{} {}/{} paths, length {a:.6}/{b:.6}",
+                    mine.spec.name,
+                    mine.paths.count(),
+                    committed.paths.count()
+                ));
+            }
+        }
+        assert!(curves_differ.is_empty(), "{label}: and every layer derives to the same curves: {curves_differ:?}");
     }
 }
 
