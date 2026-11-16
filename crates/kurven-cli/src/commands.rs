@@ -6,9 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use kurven_bake::{BakeOptions, bake};
-use kurven_core::bundle::KurvenBundle;
+use kurven_core::bundle::{KurvenBundle, holds_key};
 use kurven_core::hatching::{FaceSelector, Hatching, Tone};
-use kurven_core::json;
 use kurven_core::manifest::{
     CameraPreset, ContourField, DirectionField, Domain, DomainAxis, HeightPolicy, Interval, LayerRole, LayerSource,
     LayerSpec, Manifest, PolyhedronManifest, Provenance, RealBand, Restriction, Seeds, Spacing, Truncation,
@@ -391,18 +390,6 @@ pub fn load_scene(args: &Args) -> Result<(KurvenBundle, CameraPreset, Scene), Cl
     Ok((bundle, preset, scene))
 }
 
-/// Whether a bundle's manifest holds `key` at its top level: how Swift tells
-/// a surface's bundle (`surface`) and a polyhedron's (`polyhedron`) from a
-/// landscape's (`SurfaceBundle.holdsSurface`, `PolyhedronBundle.holdsPolyhedron`).
-fn holds(url: &Path, key: &str) -> Result<bool, CliError> {
-    let file = url.join("manifest.json");
-    if !file.exists() {
-        return Ok(false);
-    }
-    let text = std::fs::read_to_string(&file).map_err(|e| CliError(format!("{}: {e}", file.display())))?;
-    Ok(json::parse(&text)?.object("Manifest")?.contains_key(key))
-}
-
 /// The drawing a bundle describes: where it was read from, its
 /// provenance, the preset and the scene (Swift's `loadDrawing`).
 pub struct Drawing {
@@ -420,13 +407,11 @@ pub fn load_drawing(args: &Args) -> Result<Drawing, CliError> {
     let url = Path::new(path);
     if PolyhedronBundle::holds_polyhedron(url)? {
         let polyhedron = PolyhedronBundle::read(url)?;
-        let presets = &polyhedron.manifest.presets;
+        // `PolyhedronBundle::read` refuses a bundle with no preset, so the
+        // first is there (Swift's `?? presets.first` and its refusal).
         let preset = match args.flag("preset") {
             Some(name) => polyhedron.manifest.preset(name)?.clone(),
-            None => match presets.first() {
-                Some(first) => first.clone(),
-                None => return Err(CliError("bundle has no presets; pass --preset once one exists".to_string())),
-            },
+            None => polyhedron.manifest.presets[0].clone(),
         };
         let scene = polyhedron.scene(&preset);
         return Ok(Drawing {
@@ -436,7 +421,7 @@ pub fn load_drawing(args: &Args) -> Result<Drawing, CliError> {
             scene,
         });
     }
-    if holds(url, "surface")? {
+    if holds_key(url, "surface")? {
         // PORT: phase 4 -- `SurfaceBundle.read`: the surface built from its
         // request, drawn with the manifest's layers, and `scene(preset:)`.
         return Err(CliError(format!(

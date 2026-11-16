@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::bundle::BundleError;
+use crate::bundle::{BundleError, holds_key};
 use crate::camera::Camera;
 use crate::hatching::FaceSelector;
 use crate::json::{self, JsonObject};
@@ -92,16 +92,7 @@ impl PolyhedronBundle {
     /// `polyhedron` (`BundleManifest`). False where it has no manifest, for
     /// the landscape's reader to say so.
     pub fn holds_polyhedron(url: impl AsRef<Path>) -> Result<bool, BundleError> {
-        let file = url.as_ref().join("manifest.json");
-        if !file.exists() {
-            return Ok(false);
-        }
-        let text = std::fs::read_to_string(&file).map_err(|e| BundleError::Io(format!("{}: {e}", file.display())))?;
-        Ok(json::parse(&text)
-            .map_err(|e| BundleError::Schema(e.into()))?
-            .object("Manifest")
-            .map_err(|e| BundleError::Schema(e.into()))?
-            .contains_key("polyhedron"))
+        holds_key(url, "polyhedron")
     }
 
     /// Read a bundle: the solid built from its vertices and loops, checked,
