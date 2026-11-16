@@ -660,8 +660,8 @@ impl Region {
         match self {
             Region::Full => true,
             Region::Inside(perimeter) => {
-                let corners: Vec<P2<WorldSpace>> = perimeter.edges().iter().map(|e| e.start).collect();
-                point_in_polygon(p, &corners)
+                let edges = perimeter.edges();
+                point_in_polygon_by(p, edges.len(), |i| edges[i].start)
             }
         }
     }
@@ -691,10 +691,15 @@ impl Region {
 /// `point_in_polygon` is this function, and both `Perimeter` types on the Python
 /// side delegate to it for the same reason.
 pub fn point_in_polygon(p: P2<WorldSpace>, corners: &[P2<WorldSpace>]) -> bool {
+    point_in_polygon_by(p, corners.len(), |i| corners[i])
+}
+
+/// `point_in_polygon` over `n` corners read by index, so a perimeter's
+/// edges are scanned in place, with nothing allocated per point.
+fn point_in_polygon_by(p: P2<WorldSpace>, n: usize, corner: impl Fn(usize) -> P2<WorldSpace>) -> bool {
     let mut inside = false;
-    let n = corners.len();
     for i in 0..n {
-        let (a, b) = (corners[i], corners[(i + 1) % n]);
+        let (a, b) = (corner(i), corner((i + 1) % n));
         if a.x() == b.x() {
             continue;
         }

@@ -279,3 +279,25 @@ fn a_built_manifest_round_trips() {
     assert!(m.preset("recip").is_err());
     assert_eq!(m.layer("mag").unwrap().name, "mag");
 }
+
+/// A region's footprint test is the corners' point-in-polygon, point for
+/// point, scanned in place.
+#[test]
+fn a_regions_footprint_is_its_corners_polygon() {
+    let corners: [(f64, f64); 6] = [(-6.0, 28.0), (-6.0, 0.0), (-2.0, 0.0), (-2.0, -5.0), (8.0, -28.0), (8.0, 28.0)];
+    let edges = (0..corners.len())
+        .map(|k| {
+            let (a, b) = (corners[k], corners[(k + 1) % corners.len()]);
+            PerimeterEdge { start: P2::new(a.0, a.1), end: P2::new(b.0, b.1), density: 1 }
+        })
+        .collect();
+    let region = Region::Inside(BoundaryPerimeter::new(edges));
+    let polygon: Vec<P2<WorldSpace>> = corners.iter().map(|&(x, y)| P2::new(x, y)).collect();
+    for i in -20..=20 {
+        for j in -40..=40 {
+            let p = P2::new(f64::from(i) * 0.5, f64::from(j) * 0.75);
+            assert_eq!(region.contains(p), point_in_polygon(p, &polygon), "{p:?}");
+        }
+    }
+    assert!(Region::Full.contains(P2::new(1e9, -1e9)));
+}
