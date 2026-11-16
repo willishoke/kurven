@@ -49,6 +49,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
+use std::sync::Arc;
 
 use kurven_math::{real, swift};
 
@@ -93,7 +94,9 @@ pub struct Solid {
     /// counter-clockwise from outside, then each hole clockwise.
     pub loops: Vec<Vec<Vec<usize>>>,
     /// The convex pieces of every face, each counter-clockwise from outside.
-    pub pieces: Vec<Vec<usize>>,
+    /// Shared, so a camera's occlusion (`SolidOcclusion`) holds them without
+    /// a copy.
+    pub pieces: Arc<Vec<Vec<usize>>>,
     /// The faces, each as the indices of its pieces.
     pub faces: Vec<Vec<usize>>,
     /// Per face, the frame its hatching is laid out in.
@@ -288,7 +291,7 @@ impl Solid {
                 ));
             }
         }
-        Ok(Solid { vertices, loops, pieces, faces, frames, edges, normals, is_diagonal, face_of_piece })
+        Ok(Solid { vertices, loops, pieces: Arc::new(pieces), faces, frames, edges, normals, is_diagonal, face_of_piece })
     }
 
     /// Why the loops of a face cross, or `None`: two of its sides cross, or a
@@ -561,7 +564,7 @@ impl Solid {
     /// the depth pass rasterizes. Exact for convex pieces.
     pub fn mesh(&self) -> Mesh<WorldSpace> {
         let mut tris: Vec<[i32; 3]> = Vec::new();
-        for piece in &self.pieces {
+        for piece in self.pieces.iter() {
             for k in 1..piece.len() - 1 {
                 tris.push([piece[0] as i32, piece[k] as i32, piece[k + 1] as i32]);
             }
@@ -626,7 +629,7 @@ fn quaternion_matrix(angle: f64, axis: Vec3) -> Mat3 {
 impl Solid {
     /// The solid's closed-form occlusion along `view` (`occlusion(view:)`).
     pub fn occlusion(&self, view: &Transform<WorldSpace, ViewSpace>) -> SolidOcclusion {
-        SolidOcclusion::new(self.clone(), *view)
+        SolidOcclusion::new(self, *view)
     }
 
     /// The edges as seen along `view`'s projection direction, each cut to

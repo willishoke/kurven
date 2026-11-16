@@ -6,6 +6,8 @@
 //! here); and a polyhedron's closed-form occlusion (`Solid.Occlusion`, here
 //! `SolidOcclusion`, which Swift nests in Solid.swift).
 
+use std::sync::Arc;
+
 use kurven_math::swift;
 
 use crate::parametric::{ParametricSurface, TubularNeighbourhood};
@@ -197,7 +199,8 @@ impl OcclusionTest for SphereTracing {
 /// intervals are subtracted from the segment, exactly.
 #[derive(Debug, Clone)]
 pub struct SolidOcclusion {
-    solid: Solid,
+    /// The solid's convex pieces, shared with it.
+    pieces: Arc<Vec<Vec<usize>>>,
     pub view: Transform<WorldSpace, ViewSpace>,
     pub projected: Vec<P3<ViewSpace>>,
     /// Twice each piece's signed area in projection; zero when seen
@@ -213,7 +216,7 @@ pub struct SolidOcclusion {
 }
 
 impl SolidOcclusion {
-    pub fn new(solid: Solid, view: Transform<WorldSpace, ViewSpace>) -> SolidOcclusion {
+    pub fn new(solid: &Solid, view: Transform<WorldSpace, ViewSpace>) -> SolidOcclusion {
         let to_eye = -view.projection_direction();
         let projected: Vec<P3<ViewSpace>> = solid.vertices.iter().map(|&p| view.apply(p)).collect();
         let points: Vec<Vec3> = projected.iter().map(|p| p.v).collect();
@@ -237,7 +240,7 @@ impl SolidOcclusion {
                 a
             })
             .collect();
-        SolidOcclusion { solid, view, projected, area2, scale, eps, to_eye }
+        SolidOcclusion { pieces: solid.pieces.clone(), view, projected, area2, scale, eps, to_eye }
     }
 
     /// Whether piece `f` is seen edge-on: it projects to a line, of no
@@ -253,7 +256,7 @@ impl SolidOcclusion {
         let projected = &self.projected;
         let eps = self.eps;
         let mut hidden: Vec<(f64, f64)> = Vec::new();
-        for (f, piece) in self.solid.pieces.iter().enumerate() {
+        for (f, piece) in self.pieces.iter().enumerate() {
             if excluding(f) || self.is_edge_on(f) {
                 continue;
             }
