@@ -538,3 +538,12 @@ to the Mac's values.
 The one way this can differ from Swift: a NaN that Swift negates (`-x`
 flips the sign bit) or that descends from such a one keeps its minus sign
 on ARM, and Swift's `.sign` reads it as minus; the port reads it as plus.
+
+## 2026-11-15 · The NaN-sign rule covers the merged kurven-core
+
+After merging Phase 2, kurven-core's six sign reads (-0.0 in the JSON
+writer and in Solid's text, three sorts by `total_cmp`, a test) go through
+`real::sign_minus` and `real::total_order` as well. None could see a NaN,
+so nothing changed; the goldens are byte-identical. kurven-core's other
+bit read, `ulp` in `surface_request.rs`, takes `abs` and refuses a value
+that is not finite first, so it reads no NaN's sign either.
