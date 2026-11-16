@@ -1221,6 +1221,9 @@ lines (1.117e-4, length 1.05e-7 relative). So every drawing is held to
 1.5e-4 page units, the floor two drawings equal to rounding can meet
 (1e-4 on each axis, 1.414e-4 on the diagonal), and to 1e-5 of each layer's
 length: a fifteenth of the provisional 1e-3 that compare defaults to.
+compare reads both drawings from their SVGs, which hold page coordinates
+in the plane, so its lengths are planar on both sides, as a drawing's are;
+it does not use `PolylineSet::total_length`.
 
 ## 2026-11-15 · The phase lines Swift and the port draw differently
 
