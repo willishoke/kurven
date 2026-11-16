@@ -148,7 +148,6 @@ fn every_curve_is_seen_exactly_where_no_geometrys_brute_force_cast_meets_its_lin
 /// own cast's points (`torus_own_cast`), and the torus's contact line drawn
 /// by `Composite::visible_contact` (`clipOnChords`, also Phase 4).
 #[test]
-#[ignore = "PORT: phase 4 -- the round torus (SurfaceBundle, Scene.visible and the contact line on a parametric surface)"]
 fn every_curve_with_the_round_torus() {
     let (cameras, compositions) = gate_compositions();
     let mut failures = Vec::new();
@@ -299,7 +298,6 @@ fn a_surface_with_no_exact_occlusion_test_is_refused() {
 /// "displaced"; and the round torus at scale 1e-3 and at 1e3, offset
 /// (0, 0, 1), on the landscape is drawn in under 20 s each.
 #[test]
-#[ignore = "PORT: phase 4 -- the forced, displaced and round tori (SurfaceBundle)"]
 fn a_surface_with_no_exact_occlusion_test_is_refused_the_tori() {
     let landscape = cubic_landscape();
     let mut failures = Vec::new();

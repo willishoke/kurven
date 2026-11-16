@@ -46,6 +46,7 @@ dependencies = [
  "kurven-bake",
  "kurven-core",
  "kurven-math",
+ "kurven-surfaces",
 ]
 
 [[package]]

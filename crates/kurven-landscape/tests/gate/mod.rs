@@ -1063,10 +1063,12 @@ pub fn polyhedron(name: &str) -> Scene {
 }
 
 /// A contract surface's scene under its first preset
-/// (`SurfaceBundle.read(...).scene(preset:)`): Phase 4's, refused.
+/// (`SurfaceBundle.read(...).scene(preset:)`). Never refused now; the
+/// `Result` is kept for the callers written while it was.
 pub fn surface(name: &str) -> Result<Scene, PortRefusal> {
-    let _ = name;
-    Err(PortRefusal { phase: 4, what: "SurfaceBundle.read (contract/surface_*.kurven)" })
+    let b = kurven_surfaces::SurfaceBundle::read(&fixtures::shared(&format!("contract/surface_{name}.kurven")))
+        .unwrap_or_else(|e| panic!("surface_{name}: {e}"));
+    Ok(b.scene(&b.manifest.presets[0]))
 }
 
 /// The cubic landscape on its grid, `expr/landscape_cubic.kurven`, read as
