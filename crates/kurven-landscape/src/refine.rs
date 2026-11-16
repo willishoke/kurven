@@ -56,7 +56,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use kurven_core::bisection::{bisect, bisect_points};
+use kurven_core::bundle::KurvenBundle;
 use kurven_core::contour;
+use kurven_core::json::JsonValue;
 use kurven_core::manifest::{ContourField, Domain};
 use kurven_core::scalar_field::short_way;
 use kurven_core::spaces::{DomainSpace, P2};
@@ -2375,11 +2377,115 @@ impl NativeLandscape {
         Ok(ContourRefiner::new(kurven_math::Expression::compile(expression)?, domain, shape.n_real, shape.n_imag))
     }
 
-    // PORT: phase 3 (Bundle.swift) — `refiner(for bundle: KurvenBundle)` and
-    // `benchmarkRefinement` need `KurvenBundle` and `Surface`, ported in
-    // another wave; they are built on `NativeLandscape::refiner` above,
-    // `ContourRefiner::refine`, `position_errors`, `chord_errors` and
-    // `summarize` below.
+    /// A refiner for a bundle that records its expression -- one written by
+    /// `build` (Swift's `refiner(for bundle:)`). None for any other bundle,
+    /// and for an expression that no longer compiles.
+    pub fn refiner_for_bundle(bundle: &KurvenBundle) -> Option<ContourRefiner> {
+        let provenance = &bundle.manifest.provenance;
+        if provenance.example != "function" {
+            return None;
+        }
+        let expression = match provenance.params.get("expression") {
+            Some(JsonValue::String(s)) => s.clone(),
+            _ => provenance.function.clone(),
+        };
+        let h = &bundle.surface.height;
+        NativeLandscape::refiner(&expression, bundle.manifest.domain, GridShape { n_real: h.width, n_imag: h.height })
+            .ok()
+    }
+
+    /// Sample the request, then for every described contour layer: contour the
+    /// grid, refine, and measure both against f. Swift's defaults are a
+    /// tolerance of 0.02 cells and a depth of 5.
+    ///
+    /// Timed with `std::time::Instant`, which wasm32-unknown-unknown does not
+    /// have (it panics there), so the benchmark is native alone.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn benchmark_refinement(
+        request: &crate::catalog::LandscapeRequest,
+        tolerance: f64,
+        max_depth: i64,
+    ) -> Result<(KurvenBundle, Vec<RefinementReport>), crate::landscape::BuildError> {
+        use kurven_core::manifest::LayerSource;
+        use kurven_core::scalar_field;
+        let bundle = NativeLandscape::build(request, "native", false)?;
+        let h = &bundle.surface.height;
+        let mut refiner = NativeLandscape::refiner(
+            &request.expression,
+            bundle.manifest.domain,
+            GridShape { n_real: h.width, n_imag: h.height },
+        )?;
+        refiner.tolerance = tolerance;
+        refiner.max_depth = max_depth;
+        let mut reports = Vec::new();
+        type Set = Vec<(f64, Vec<Vec<P>>)>;
+        for spec in &bundle.manifest.layers {
+            let LayerSource::Contour { field, levels, .. } = &spec.source else { continue };
+            let field = *field;
+            // The grid's paths as `Surface::derive` hands them to a refiner,
+            // the branch cut once as the zero level of the turned phase: the
+            // field under a refiner that moves nothing.
+            let unmoved = ContourRefine::new(Arc::new(|_, _, paths: &[Vec<P>], _, _| paths.to_vec()), None);
+            let (Some(rectangle), Some(grid)) =
+                (bundle.surface.parameter_rectangle(), bundle.surface.field(field, Some(&unmoved), f64::INFINITY))
+            else {
+                continue;
+            };
+            let clock = std::time::Instant::now();
+            let contoured: Set =
+                scalar_field::levels(&grid, &field.levels(levels), rectangle, &scalar_field::Trim::default())
+                    .into_iter()
+                    .map(|(level, paths)| {
+                        (level, paths.iter().map(|p| p.iter().map(|q| P::from_vec(q.v)).collect()).collect())
+                    })
+                    .collect();
+            let grid_seconds = clock.elapsed();
+            let clock = std::time::Instant::now();
+            let refined: Set = contoured
+                .iter()
+                .map(|(level, paths)| {
+                    (*level, refiner.refine(field, *level, paths, &[], f64::INFINITY, ContourRefine::EVERYWHERE))
+                })
+                .collect();
+            let refine_seconds = clock.elapsed();
+            let errors = |set: &Set| -> (Vec<f64>, Vec<f64>, usize) {
+                let (mut v, mut c, mut n) = (Vec::new(), Vec::new(), 0);
+                for (level, paths) in set {
+                    for path in paths {
+                        v.extend(refiner.position_errors(path, field, *level));
+                        c.extend(refiner.chord_errors(path, field, *level));
+                        n += path.len();
+                    }
+                }
+                (v, c, n)
+            };
+            let (before, after) = (errors(&contoured), errors(&refined));
+            let mut wraps = 0;
+            if field == ContourField::Phase {
+                for (level, paths) in &contoured {
+                    let Some((g, level)) = ContourRefiner::field_level(field, *level) else { continue };
+                    for path in paths.iter().filter(|p| p.len() >= 2) {
+                        wraps += path.iter().filter(|&&p| refiner.snap(p, level, g, true).is_none()).count();
+                    }
+                }
+            }
+            reports.push(RefinementReport {
+                layer: spec.name.clone(),
+                field,
+                levels: levels.len(),
+                grid_vertices: before.2,
+                refined_vertices: after.2,
+                wrap_vertices: wraps,
+                grid_seconds,
+                refine_seconds,
+                grid_vertex: NativeLandscape::summarize(&before.0),
+                refined_vertex: NativeLandscape::summarize(&after.0),
+                grid_chord: NativeLandscape::summarize(&before.1),
+                refined_chord: NativeLandscape::summarize(&after.1),
+            });
+        }
+        Ok((bundle, reports))
+    }
 
     /// The mean, the 95th percentile and the largest of the finite values.
     pub fn summarize(values: &[f64]) -> Summary {

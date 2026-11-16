@@ -13,5 +13,5 @@ pub mod landscape;
 pub mod refine;
 
 pub use catalog::{Catalog, FunctionPreset, LandscapeRequest, LanguageFunction, NativeCatalog};
-pub use landscape::{GridShape, LandscapeStyle, NativeLandscape, Samples};
-pub use refine::{ContourRefiner, Piece, Scalar, SingularPoint};
+pub use landscape::{BuildError, GridShape, LandscapeStyle, NativeLandscape, Samples};
+pub use refine::{ContourRefiner, Piece, RefinementReport, Scalar, SingularPoint, Summary};
