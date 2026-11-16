@@ -1,0 +1,16 @@
+[package]
+name = "kurven-bake"
+description = "Scene to strokes, and tiling (KurvenBake, strokes only)"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+kurven-core.workspace = true
+kurven-landscape.workspace = true
+kurven-surfaces.workspace = true
+
+[lints]
+workspace = true

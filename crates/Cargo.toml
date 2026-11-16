@@ -1,0 +1,49 @@
+# The web port's engine: one source, built natively for kurven-cli and the
+# check, and to wasm32-unknown-unknown for the page. The Swift package at
+# the repository root is the reference it is held to (HANDOFF-web-port.md).
+#
+# Dependencies stay few: libm, so native and wasm call the same libm
+# (`kurven_math::real`); serde/serde_json, wasm-bindgen and rayon (native
+# only) are allowed when a phase needs them. Ask before adding anything else
+# to an engine crate.
+
+[workspace]
+resolver = "3"
+members = [
+    "kurven-math",
+    "kurven-core",
+    "kurven-landscape",
+    "kurven-surfaces",
+    "kurven-bake",
+    "kurven-session",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+kurven-math = { path = "kurven-math" }
+kurven-core = { path = "kurven-core" }
+kurven-landscape = { path = "kurven-landscape" }
+kurven-surfaces = { path = "kurven-surfaces" }
+kurven-bake = { path = "kurven-bake" }
+kurven-session = { path = "kurven-session" }
+libm = "0.2.16"
+
+# The std spellings of the transcendental functions are refused everywhere
+# (clippy.toml lists them): the engine calls kurven_math::real, which calls
+# libm, so native and wasm compute the same bits.
+[workspace.lints.clippy]
+disallowed_methods = "deny"
+
+# The page's module: small, and nothing in it but what the engine computes.
+[profile.web]
+inherits = "release"
+debug = 0
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
