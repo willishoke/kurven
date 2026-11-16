@@ -24,6 +24,8 @@ use kurven_core::hidden_line::HiddenLine;
 use kurven_core::json::{self, JsonObject, JsonValue};
 use kurven_core::svg::{Strokes, Style};
 
+use kurven_golden::gallery::{self, camera};
+
 use crate::args::{Args, CliError};
 use crate::commands::{landscape_command, load_drawing, write_svg};
 
@@ -69,14 +71,10 @@ pub fn baked(bundle: &Path, preset: Option<&str>, refine: bool) -> Result<Drawn,
 
 // MARK: the gallery, as docs/gallery/make.py sets it up
 
-/// The plates hatch the plateaus, walls and risers this much closer than a
-/// landscape does by default (make.py's `HATCH`).
-pub const GALLERY_HATCH: f64 = 0.75;
-
 /// `landscape` as make.py calls it, then the manifest edited as make.py
 /// edits it: one preset per camera, each the first preset with its name and
 /// its projection's fields replaced, and the plateaus', walls' and risers'
-/// hatching `GALLERY_HATCH` closer.
+/// hatching `gallery::HATCH` closer (`gallery::edit`).
 pub fn gallery_landscape(
     scratch: &Path,
     stem: &str,
@@ -91,75 +89,10 @@ pub fn gallery_landscape(
     let path = bundle.join("manifest.json");
     let text = std::fs::read_to_string(&path).map_err(|e| CliError(format!("{}: {e}", path.display())))?;
     let mut m = json::parse(&text)?.object("manifest")?.clone();
-    let (base, projection) = match m.get("presets").and_then(JsonValue::as_array).and_then(|p| p.first()) {
-        Some(JsonValue::Object(base)) => match base.get("projection") {
-            Some(JsonValue::Object(projection)) => (base.clone(), projection.clone()),
-            _ => return Err(CliError(format!("{stem}: the landscape wrote no preset to start from"))),
-        },
-        _ => return Err(CliError(format!("{stem}: the landscape wrote no preset to start from"))),
-    };
-    let presets = cameras
-        .iter()
-        .map(|(name, fields)| {
-            let mut preset = base.clone();
-            preset.insert("name".to_string(), JsonValue::String(name.clone()));
-            let mut merged = projection.clone();
-            merged.extend(fields.iter().map(|(k, v)| (k.clone(), v.clone())));
-            preset.insert("projection".to_string(), JsonValue::Object(merged));
-            JsonValue::Object(preset)
-        })
-        .collect();
-    m.insert("presets".to_string(), JsonValue::Array(presets));
-    let Some(JsonValue::Array(layers)) = m.get("layers") else { return Err(CliError(format!("{stem}: no layers"))) };
-    let layers = layers.iter().map(|layer| closer(layer).unwrap_or_else(|| layer.clone())).collect();
-    m.insert("layers".to_string(), JsonValue::Array(layers));
+    gallery::edit(&mut m, stem, cameras).map_err(CliError)?;
     std::fs::write(&path, JsonValue::Object(m).canonical())
         .map_err(|e| CliError(format!("{}: {e}", path.display())))?;
     Ok(bundle)
-}
-
-/// A hatching layer on the plateaus, walls or risers, `GALLERY_HATCH`
-/// closer; None for any other layer, which stays as it is.
-fn closer(layer: &JsonValue) -> Option<JsonValue> {
-    let mut l = layer.as_object()?.clone();
-    let mut source = l.get("source")?.as_object()?.clone();
-    if source.get("kind")?.as_str()? != "hatching" {
-        return None;
-    }
-    let kind = source.get("faces")?.as_object()?.get("kind")?.as_str()?;
-    if !["plateaus", "walls", "risers"].contains(&kind) {
-        return None;
-    }
-    let spacing = match source.get("spacing")? {
-        JsonValue::Double(s) => s * GALLERY_HATCH,
-        JsonValue::Int(s) => *s as f64 * GALLERY_HATCH,
-        _ => return None,
-    };
-    source.insert("spacing".to_string(), JsonValue::Double(spacing));
-    l.insert("source".to_string(), JsonValue::Object(source));
-    Some(JsonValue::Object(l))
-}
-
-pub fn camera(shear: f64, x_angle: f64, z_angle: f64, flip_x: bool) -> JsonObject {
-    [
-        ("shear", JsonValue::Double(shear)),
-        ("xAngle", JsonValue::Double(x_angle)),
-        ("zAngle", JsonValue::Double(z_angle)),
-        ("flipX", JsonValue::Bool(flip_x)),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v))
-    .collect()
-}
-
-/// The arithmetic-geometric mean, as make.py computes it for cn's quarter
-/// periods.
-pub fn agm(a0: f64, b0: f64) -> f64 {
-    let (mut a, mut b) = (a0, b0);
-    while (a - b).abs() > 1e-15 * a {
-        (a, b) = ((a + b) / 2.0, (a * b).sqrt());
-    }
-    a
 }
 
 /// A double as Swift's string interpolation writes it (`description`).
@@ -185,9 +118,9 @@ pub fn gallery() -> Vec<Reference> {
         "--beyond",
         "4.0",
     ]);
-    let m: f64 = 0.64;
-    let k = core::f64::consts::PI / (2.0 * agm(1.0, (1.0 - m).sqrt()));
-    let kp = core::f64::consts::PI / (2.0 * agm(1.0, m.sqrt()));
+    // cn's quarter periods by the AGM, as make.py computes them.
+    let m = gallery::CN_MODULUS;
+    let (k, kp) = gallery::cn_quarter_periods();
     let cn_words = vec![
         format!("cn(z, {})", swift(m)),
         "--re".to_string(),

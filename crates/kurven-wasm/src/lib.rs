@@ -10,7 +10,8 @@
 //! A host calls `goldens()` once, which generates the sets and returns how
 //! many files there are, then reads file `i`'s path and bytes from the
 //! module's memory at `golden_path_ptr(i)` (`golden_path_len(i)` bytes) and
-//! `golden_bytes_ptr(i)` (`golden_bytes_len(i)` bytes).
+//! `golden_bytes_ptr(i)` (`golden_bytes_len(i)` bytes). `bake_gallery_plate`
+//! bakes a gallery plate, for timing.
 
 use std::sync::OnceLock;
 
@@ -50,6 +51,20 @@ pub extern "C" fn golden_bytes_ptr(index: u32) -> *const u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn golden_bytes_len(index: u32) -> usize {
     golden(index).bytes.len()
+}
+
+/// Builds and bakes a gallery plate in memory (`kurven_golden::gallery::bake_plate`):
+/// 0 is gallery-gamma, 1 gallery-cn. Returns its stroke count, or 0 for
+/// another number or a plate that does not bake. For timing the engine under
+/// Node (`crates/kurven-wasm/bench.mjs`), against native.
+#[unsafe(no_mangle)]
+pub extern "C" fn bake_gallery_plate(which: u32) -> u32 {
+    let name = match which {
+        0 => "gallery-gamma",
+        1 => "gallery-cn",
+        _ => return 0,
+    };
+    kurven_golden::gallery::bake_plate(name).map_or(0, |b| b.strokes.path_count() as u32)
 }
 
 #[cfg(test)]

@@ -7,12 +7,13 @@
 //!     scripts/check-web.sh runs this and fails on any difference from the
 //!     commit, and requires the wasm module to write the same bytes.
 //!
-//! kurven-cli compare A.svg B.svg [--tolerance D] [--length-tolerance R]
+//! kurven-cli compare A.svg B.svg [--tolerance D] [--length-tolerance R] [--skip I,J,...]
 //!     Compare two drawings of one scene per layer: the same layers in the
 //!     same order, the symmetric Hausdorff distance between each layer's
 //!     strokes under D page units (1e-3 by default), and each layer's total
 //!     length equal to R relative (1e-3). Stroke counts are reported, and a
-//!     difference noted. Exit 0 when the two are the same within the
+//!     difference noted. The layers --skip lists, by their place in the
+//!     SVG, are measured and reported but left out of the verdict. Exit 0 when the two are the same within the
 //!     tolerances, 1 when they differ, 2 when one cannot be read.
 //!
 //! kurven-cli landscape [EXPRESSION | --function NAME] [--re LO,HI] [--im LO,HI]
@@ -38,12 +39,12 @@ use std::process::ExitCode;
 
 use kurven_cli::args::{Args, CliError};
 use kurven_cli::commands::{bake_command, landscape_command};
-use kurven_cli::compare::{Tolerance, compare};
+use kurven_cli::compare::{Tolerance, compare_skipping};
 use kurven_cli::references::references_command;
 use kurven_cli::svg;
 
 const USAGE: &str = "usage: kurven-cli fixtures <dir>
-       kurven-cli compare A.svg B.svg [--tolerance D] [--length-tolerance R]
+       kurven-cli compare A.svg B.svg [--tolerance D] [--length-tolerance R] [--skip I,J,...]
        kurven-cli landscape [EXPRESSION | --function NAME] [options] -o out.kurven
        kurven-cli bake <bundle> [--preset NAME] [--no-refine] -o out.svg
        kurven-cli references <fixtures> <dir> [--only NAME,...]";
@@ -86,18 +87,27 @@ fn positive(flag: &str, value: Option<&String>) -> Result<f64, String> {
 fn compare_command(args: &[String]) -> Result<ExitCode, String> {
     let mut tolerance = Tolerance::default();
     let mut files = Vec::new();
+    let mut skip = Vec::new();
     let mut words = args.iter();
     while let Some(word) = words.next() {
         match word.as_str() {
             "--tolerance" => tolerance.distance = positive(word, words.next())?,
             "--length-tolerance" => tolerance.length = positive(word, words.next())?,
+            "--skip" => {
+                let list = words.next().ok_or("--skip wants layer indices, as in 1,3")?;
+                for i in list.split(',') {
+                    skip.push(
+                        i.parse::<usize>().map_err(|_| format!("--skip wants layer indices, as in 1,3, not {list}"))?,
+                    );
+                }
+            }
             flag if flag.starts_with("--") => return Err(format!("compare takes no {flag}\n{USAGE}")),
             file => files.push(file),
         }
     }
     let [a, b] = files[..] else { return Err(USAGE.into()) };
     let (da, db) = (svg::read(a)?, svg::read(b)?);
-    let report = compare(&da, &db, tolerance);
+    let report = compare_skipping(&da, &db, tolerance, &skip);
     println!("a: {a}\nb: {b}\n{report}");
     Ok(if report.same() { ExitCode::SUCCESS } else { ExitCode::from(1) })
 }

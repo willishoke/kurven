@@ -8,7 +8,10 @@
 # "The gate"): the oracle fixtures of tests/fixtures, read as the Swift suites
 # read them; Swift's golden sets; and the reference drawings `kurven-cli
 # references` baked into crates/fixtures/swift, compared per layer by
-# `kurven-cli compare` to a tolerance. All three run as the native tests.
+# `kurven-cli compare` to a tolerance. The first two run as the native
+# tests; the drawings the port bakes so far are baked by the Rust
+# `kurven-cli references` and compared in a step of their own, each under its
+# line of crates/fixtures/references.txt.
 #
 # One libm, everywhere: the engine reaches the transcendental functions only
 # through kurven_math::real, which calls the libm crate on every target, so
@@ -140,6 +143,47 @@ compare() {
     echo "$(ls "$CRATES"/fixtures/swift/*.svg | wc -l | tr -d ' ') references the same as themselves; one cut is different"
 }
 step "kurven-cli compare: a reference is itself, and not itself with a stroke taken out" compare
+
+# The drawings against Swift's: every reference drawing the port bakes,
+# baked by `kurven-cli references` and held to Swift's by `kurven-cli
+# compare` under its line of crates/fixtures/references.txt, which says
+# where each tolerance came from and why a layer is skipped. The layers'
+# names must be Swift's, in Swift's order (each index.json lists them), and a
+# drawing with no line there fails.
+references() {
+    local dir="$WORK/references" table="$CRATES/fixtures/references.txt"
+    local name distance length skip out failed=0 held=0 baked listed args
+    rm -rf "$dir"
+    "$CLI" references "$ROOT/tests/fixtures" "$dir" >/dev/null || return 1
+    baked=$(node -e 'for (const d of JSON.parse(require("fs").readFileSync(process.argv[1])).drawings) console.log(d.name)' "$dir/index.json") || return 1
+    listed=$(awk '!/^#/ && NF { print $1 }' "$table")
+    for name in $baked; do
+        printf '%s\n' "$listed" | grep -qx "$name" || { echo "$name is baked and has no line in crates/fixtures/references.txt"; failed=1; }
+    done
+    # The same layer names, in the same order, as Swift's index lists.
+    node -e '
+        const fs = require("fs");
+        const read = (p) => Object.fromEntries(JSON.parse(fs.readFileSync(p)).drawings.map((d) => [d.name, d.layers.join(" ")]));
+        const [rust, swift] = [read(process.argv[1]), read(process.argv[2])];
+        let bad = 0;
+        for (const name of Object.keys(rust)) {
+            if (rust[name] !== swift[name]) { console.log(`${name}: layers [${rust[name]}] against Swift [${swift[name]}]`); bad = 1; }
+        }
+        process.exit(bad);' "$dir/index.json" "$CRATES/fixtures/swift/index.json" || failed=1
+    while read -r name distance length skip; do
+        case "$name" in '' | '#'*) continue ;; esac
+        args=(--tolerance "$distance" --length-tolerance "$length")
+        [ "$skip" != - ] && args+=(--skip "$skip")
+        if ! out=$("$CLI" compare "$CRATES/fixtures/swift/$name.svg" "$dir/$name.svg" "${args[@]}"); then
+            printf '%s\n%s\n' "$name" "$out"
+            failed=1
+        fi
+        held=$((held + 1))
+    done < "$table"
+    [ "$failed" = 0 ] && echo "$held drawing(s) the same as Swift's within their tolerances"
+    return $failed
+}
+step "the port's reference drawings are Swift's, within crates/fixtures/references.txt" references
 
 wasm() {
     workspace build --profile web --target wasm32-unknown-unknown -p kurven-wasm || return 1

@@ -31,7 +31,9 @@ dependencies = [
 name = "kurven-golden"
 version = "0.1.0"
 dependencies = [
+ "kurven-bake",
  "kurven-core",
+ "kurven-landscape",
  "kurven-math",
 ]
 

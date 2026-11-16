@@ -1129,3 +1129,88 @@ the frame's two gallery drawings (Phase 4), the seven solids and the
 composite (Phase 5) are left out of the list with a PORT comment. It takes
 `--only NAME,...`, which Swift's does not, so a single drawing can be
 measured.
+
+## 2026-11-15 · The landscape references against Swift's: all but one layer at rounding
+
+`kurven-cli references` bakes eleven of Swift's reference drawings (the six
+gallery landscapes, the four native landscapes, the slope lines), and
+check-web holds each to Swift's under its line of
+`crates/fixtures/references.txt`. Every drawing has Swift's layers in Swift's
+order. In every layer but one, the stroke counts are Swift's and the Hausdorff
+distance is 0 at the SVG's four decimals, but for one coordinate printed a
+digit apart in the four cubic corners' wall_hatch (1.000e-4) and the slope
+lines (1.117e-4, length 1.05e-7 relative). So every drawing is held to
+1.5e-4 page units, the floor two drawings equal to rounding can meet
+(1e-4 on each axis, 1.414e-4 on the diagonal), and to 1e-5 of each layer's
+length: a fifteenth of the provisional 1e-3 that compare defaults to.
+
+## 2026-11-15 · The phase lines Swift and the port draw differently
+
+The one layer that differs is ang_major (arg f at 0, ±π/2 and ±π) in six
+drawings, all at the ±π level, for two causes, each found by building
+Swift's KurvenLandscape in a scratch package with the refiner's stages
+printed and comparing them with the port's stage by stage (the grid's
+contours and the singular points agree; the difference starts inside the
+refiner).
+
+- **A saddle of f.** Where f' = 0 the level lines of arg f cross: 1/(z³ − 1)
+  at z = 0, where the real axis and the rays at ±60° meet, and cn(z, 0.64)
+  at 2K and 2iK'. The chord across the crossing is placed or not by
+  rounding (the residual over a vanishing gradient), and a piece that ends
+  there is followed on f along whichever branch it meets. In the cubic Swift
+  splits the grid's path at z = 0 (pieces ending at (−0.00055, 0.00095) and
+  starting at (0.00037, 0.00064)) and follows each half on over ground
+  another curve covers, so it draws the −60° ray and the ray to the pole at
+  e^{−2πi/3} twice, 6.1 world units of ink twice over; the port places the
+  chord and draws each stretch once. In cn the pieces through 2iK' pair up
+  the other way.
+- **The ±π cut along the window's edge.** Γ and cn are real on the real axis,
+  which is the window's lower edge in landscape-gamma and gallery-cn, so the
+  cut lies on the edge, where Im f is rounding noise, and the poles (Γ) and
+  zeros (cn) on it are found a hair to either side: Newton puts Γ's pole at
+  −2 at Im z = +1.3e-38 in Swift and −1.7e-40 here, inside the window in one
+  and outside in the other, so its rays along the edge are drawn in one and
+  not the other. In cn Swift keeps the stretch of the edge from K to 2K in
+  the up-going phase line and the port cuts it there, so Swift draws it
+  twice.
+
+Both are a decision rounding makes at a degenerate point, as a bisection
+falls one way or the other at a tangency, not a run the port fails to
+place: every stretch Swift draws once, the port draws once (the cubic's six
+rays, cn's edge from K to 3K), and the difference is a stretch drawn twice,
+a pairing at a crossing, or rays of a point on the edge. Measured (Swift
+against the port): gallery-cn 19 strokes each, Hausdorff 2.18e-4, length
+3.19e-2; the corners tm90s0.5 13 against 12, 1.55e-3, 6.87e-2; tm90sm0.5 12
+against 11, 1.11e-4, 4.98e-2; t90s0.5 11 against 10, 1.17e-4, 1.03e-1;
+t90sm0.5 11 against 10, 1.37e-3, 1.44e-1; landscape-gamma 8 against 7,
+1.13, 2.68e-1. The corners' 1.4e-3 is Swift's doubled stroke crossing the
+saddle by a chord, which the port's strokes turn at. So that layer is
+skipped in those six drawings (`compare --skip 1`, measured and reported but
+left out of the verdict); every other layer of each, and every layer of the
+other five, is held. It would take an analytic reference to say which side
+of the edge a pole exactly on it belongs to; Swift's drawing does not
+decide that, so nothing in the port was changed.
+
+## 2026-11-15 · Bake times, and the landscapes' goldens
+
+Measured on this machine (Apple Silicon, 18 cores), from the request to
+the strokes, each plate built, edited as make.py edits it and baked in
+memory (`kurven_golden::gallery::bake_plate`, the same strokes as the
+references): native release, single-threaded, gallery-gamma 12.4 s and
+gallery-cn 46.3 s; the wasm module (profile `web`) under Node 26, 36.2 s and
+65.0 s (`crates/kurven-wasm/bench.mjs`, through the export
+`bake_gallery_plate`). Swift's `landscape` then `bake` of the same two
+(without the hatching edit) takes 0.9 s and 3.5 s of wall clock on all
+cores, 11.2 s and 54.4 s of CPU: the port does the same work in one thread,
+as the rules ask, and a Worker per core is Phase 6's question. Through
+`references --only`: a cubic corner 0.6 to 0.8 s, the four native
+landscapes 0.02 to 0.15 s, the slope lines 0.06 s. The references step adds
+about a minute to check-web, nearly all of it cn and gamma.
+
+`kurven-golden` gains `landscape/`: the cubic at 64 and Γ by bands at 90,
+built on their function and baked in memory (so the wasm module bakes them
+too), each as its SVG and as each layer's stroke and vertex counts, length
+bits and an FNV-1a hash of its vertex bits, which hold native and wasm to
+the bit where the SVG holds them to four decimals. The two take 0.5 s
+natively. With the bake and the gallery linked in, the wasm module is
+1,567,692 bytes (from 704,201 after Hatch.swift merged).
