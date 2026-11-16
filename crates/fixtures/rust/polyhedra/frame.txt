@@ -1,0 +1,2 @@
+# surface solid --kind frame: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
+edges paths 18 vertices 36 length 403edc5f6adc13e0 30.8608309542941 hash 868c50de00bc7954

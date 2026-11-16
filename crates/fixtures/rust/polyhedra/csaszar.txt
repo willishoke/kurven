@@ -1,0 +1,2 @@
+# surface solid --kind csaszar: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
+edges paths 15 vertices 30 length 403ac08c0fa5305a 26.752137162999453 hash 34eaedf35cb19f1e

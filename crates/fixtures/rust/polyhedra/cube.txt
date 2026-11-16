@@ -1,0 +1,2 @@
+# surface solid --kind cube: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
+edges paths 9 vertices 18 length 4030e0f12c79ed3c 16.878680019156704 hash 37fbd4b5e8069d5d
