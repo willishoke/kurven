@@ -1,0 +1,7 @@
+# The toolchain the port's goldens and lints are held to. rustup reads this
+# for any cargo run in crates/, which scripts/check-web.sh and CI both do.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

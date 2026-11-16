@@ -19,8 +19,10 @@
 # place and compared with the commit, as scripts/check.sh does for Swift's:
 # a change to one is a regeneration committed on its own.
 #
-# Needs cargo with the wasm32-unknown-unknown target, and Node with npm (the
-# page's type check and build install web/app's pinned packages on first use).
+# Needs rustup, which installs the toolchain crates/rust-toolchain.toml pins
+# (with rustfmt, clippy and the wasm32 target) on first use, and Node with npm
+# (the page's type check and build install web/app's pinned packages on
+# first use).
 
 set -uo pipefail
 
@@ -30,10 +32,10 @@ APP="$ROOT/web/app"
 WORK="$CRATES/target/check-web"
 CLI="$CRATES/target/release/kurven-cli"
 WASM="$CRATES/target/wasm32-unknown-unknown/web/kurven_wasm.wasm"
-# A cargo command on the workspace, wherever this is run from.
+# A cargo command on the workspace, wherever this is run from: run in
+# crates/, so rustup takes the toolchain crates/rust-toolchain.toml pins.
 workspace() {
-    local command="$1"; shift
-    cargo "$command" --manifest-path "$CRATES/Cargo.toml" "$@"
+    (cd "$CRATES" && cargo "$@")
 }
 
 started=$SECONDS
@@ -48,14 +50,16 @@ step() {
     failures=$((failures + 1))
 }
 
+# The pinned toolchain, installed if it is not: a no-op, offline, when it is.
 need() {
-    command -v cargo >/dev/null || { echo "no cargo"; return 1; }
-    rustup target list --installed 2>/dev/null | grep -qx wasm32-unknown-unknown ||
-        { echo "no wasm32-unknown-unknown target: rustup target add wasm32-unknown-unknown"; return 1; }
+    command -v rustup >/dev/null || { echo "no rustup"; return 1; }
+    (cd "$CRATES" && rustup toolchain install --no-self-update) || return 1
+    (cd "$CRATES" && rustup target list --installed) | grep -qx wasm32-unknown-unknown ||
+        { echo "the pinned toolchain has no wasm32-unknown-unknown target"; return 1; }
     command -v node >/dev/null && command -v npm >/dev/null || { echo "no node and npm"; return 1; }
-    cargo --version && node --version
+    workspace --version && node --version
 }
-step "toolchain: cargo with the wasm target, node and npm" need
+step "toolchain: the pinned Rust with the wasm target, node and npm" need
 
 step "rustfmt" workspace fmt --all -- --check
 

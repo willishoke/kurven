@@ -7,8 +7,9 @@
 # files are the same bytes on another platform. A golden that comes out
 # different here is a finding, not a file to regenerate.
 #
-# The toolchain is pinned to the one the goldens were written with, so a
-# clippy or rustfmt release cannot turn the check red on its own.
+# The toolchain is crates/rust-toolchain.toml's, the one the goldens were
+# written with, so a clippy or rustfmt release cannot turn the check red on
+# its own; check-web.sh installs it, as it does on a laptop.
 
 name: check-web
 
@@ -28,11 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Rust 1.99.1, with rustfmt, clippy and the wasm target
-        run: |
-          rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy \
-            --target wasm32-unknown-unknown
-          rustup default 1.99.1
+      - name: The pinned Rust, with rustfmt, clippy and the wasm target
+        working-directory: crates
+        run: rustup toolchain install --no-self-update
 
       - uses: actions/setup-node@v5
         with:
