@@ -654,3 +654,15 @@ magnitude and contours that move nothing. Swift names its polyhedra
 same seven solids from the contract's polyhedron fixtures, and the face-kind
 suite carries sn's layer specs on a plane patch, since the rule reads only a
 layer's role and source.
+
+## 2026-11-15 · The restriction suite, over the grid's landscapes
+
+Faces.swift's "restriction: a contour's copy is cut to the footprint where
+it lands, exactly" is ported over the landscapes of Swift's
+`faceLandscapes()` drawn on the grid (`kurven-core/tests/restriction.rs`):
+the contract's bundles and the hatch fixture's twenty variants on
+footprints, reflected, turned and in four tiles. It passes at Swift's
+tolerances (1e-9 of the domain for a kept point or an end off the
+perimeter). The landscapes on f (Γ, the towers, the reviewer's tower) are
+built with `NativeLandscape.build(..., refine: true)` and wait for the
+refiner.
