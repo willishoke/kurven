@@ -1,0 +1,19 @@
+[package]
+name = "kurven-cli"
+description = "The headless engine: goldens, the comparison against Swift, and (later) everything kurven-cli does in Swift"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "kurven-cli"
+path = "src/main.rs"
+
+[dependencies]
+kurven-core.workspace = true
+kurven-golden.workspace = true
+
+[lints]
+workspace = true

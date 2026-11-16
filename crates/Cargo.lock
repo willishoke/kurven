@@ -12,6 +12,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kurven-cli"
+version = "0.1.0"
+dependencies = [
+ "kurven-core",
+ "kurven-golden",
+]
+
+[[package]]
 name = "kurven-core"
 version = "0.1.0"
 dependencies = [
