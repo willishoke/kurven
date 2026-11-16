@@ -57,6 +57,7 @@ use crate::convex_partition;
 use crate::mesh::Mesh;
 use crate::occlusion::SolidOcclusion;
 use crate::polyline::PolylineSet;
+use crate::runs::Runs;
 use crate::simd::{Mat3, Vec2, Vec3, Vec4};
 use crate::spaces::{P3, Transform, ViewSpace, WorldSpace};
 use crate::text;
@@ -291,7 +292,17 @@ impl Solid {
                 ));
             }
         }
-        Ok(Solid { vertices, loops, pieces: Arc::new(pieces), faces, frames, edges, normals, is_diagonal, face_of_piece })
+        Ok(Solid {
+            vertices,
+            loops,
+            pieces: Arc::new(pieces),
+            faces,
+            frames,
+            edges,
+            normals,
+            is_diagonal,
+            face_of_piece,
+        })
     }
 
     /// Why the loops of a face cross, or `None`: two of its sides cross, or a
@@ -691,44 +702,17 @@ impl Solid {
         {
             return Vec::new();
         }
-        let mut out = Vec::new();
+        let mut runs = Runs::new();
         for path in paths {
-            let mut run: Vec<P3<WorldSpace>> = Vec::new();
-            let mut open_at_end = false;
             for w in path.windows(2) {
                 let (wa, wb) = (w[0], w[1]);
                 let (pa, pb) = (occlusion.view.apply(wa), occlusion.view.apply(wb));
-                // Whether the run so far reaches this segment's start. A
-                // segment of which nothing is seen ends the run.
-                let continuing = open_at_end;
-                open_at_end = false;
-                for (a, b) in occlusion.visible(pa, pb, &|f| members.contains(&f)) {
-                    if !(b - a > 1e-12) {
-                        continue;
-                    }
-                    let (start, end) = (Solid::along(wa.v, wb.v, a), Solid::along(wa.v, wb.v, b));
-                    if continuing && a == 0.0 && !run.is_empty() {
-                        run.push(end);
-                    } else {
-                        if run.len() >= 2 {
-                            out.push(std::mem::take(&mut run));
-                        }
-                        run = vec![start, end];
-                    }
-                    open_at_end = b == 1.0;
-                }
-                if !open_at_end {
-                    if run.len() >= 2 {
-                        out.push(std::mem::take(&mut run));
-                    }
-                    run.clear();
-                }
+                let seen = occlusion.visible(pa, pb, &|f| members.contains(&f));
+                runs.segment(&seen, |t| Solid::along(wa.v, wb.v, t));
             }
-            if run.len() >= 2 {
-                out.push(run);
-            }
+            runs.end_path();
         }
-        out
+        runs.finish()
     }
 
     /// Curves stored on the solid's surface, along its edges or across its
@@ -742,10 +726,8 @@ impl Solid {
         paths: &[Vec<P3<WorldSpace>>],
         occlusion: &SolidOcclusion,
     ) -> Vec<Vec<P3<WorldSpace>>> {
-        let mut out = Vec::new();
+        let mut runs = Runs::new();
         for path in paths {
-            let mut run: Vec<P3<WorldSpace>> = Vec::new();
-            let mut open_at_end = false;
             for w in path.windows(2) {
                 let (wa, wb) = (w[0], w[1]);
                 let holding: Vec<usize> = (0..self.frames.len())
@@ -762,38 +744,17 @@ impl Solid {
                             && !self.faces[f].iter().all(|&p| occlusion.is_edge_on(p))
                     });
                 let members: BTreeSet<usize> = holding.iter().flat_map(|&f| self.faces[f].iter().copied()).collect();
-                let continuing = open_at_end;
-                open_at_end = false;
-                if facing {
+                let seen = if facing {
                     let (pa, pb) = (occlusion.view.apply(wa), occlusion.view.apply(wb));
-                    for (a, b) in occlusion.visible(pa, pb, &|f| members.contains(&f)) {
-                        if !(b - a > 1e-12) {
-                            continue;
-                        }
-                        let (start, end) = (Solid::along(wa.v, wb.v, a), Solid::along(wa.v, wb.v, b));
-                        if continuing && a == 0.0 && !run.is_empty() {
-                            run.push(end);
-                        } else {
-                            if run.len() >= 2 {
-                                out.push(std::mem::take(&mut run));
-                            }
-                            run = vec![start, end];
-                        }
-                        open_at_end = b == 1.0;
-                    }
-                }
-                if !open_at_end {
-                    if run.len() >= 2 {
-                        out.push(std::mem::take(&mut run));
-                    }
-                    run.clear();
-                }
+                    occlusion.visible(pa, pb, &|f| members.contains(&f))
+                } else {
+                    Vec::new()
+                };
+                runs.segment(&seen, |t| Solid::along(wa.v, wb.v, t));
             }
-            if run.len() >= 2 {
-                out.push(run);
-            }
+            runs.end_path();
         }
-        out
+        runs.finish()
     }
 
     /// The point `t` of the way from `a` to `b`: the ends themselves at 0
@@ -890,16 +851,7 @@ impl Solid {
                     };
                     let mut sorted = on.clone();
                     // Stable, as Swift's sort is.
-                    sorted.sort_by(|&a, &b| {
-                        let (x, y) = (angle(a), angle(b));
-                        if x < y {
-                            std::cmp::Ordering::Less
-                        } else if y < x {
-                            std::cmp::Ordering::Greater
-                        } else {
-                            std::cmp::Ordering::Equal
-                        }
-                    });
+                    sorted.sort_by(|&a, &b| swift::ascending(angle(a), angle(b)));
                     faces.push(vec![sorted.iter().map(|&m| m as i64).collect()]);
                 }
             }

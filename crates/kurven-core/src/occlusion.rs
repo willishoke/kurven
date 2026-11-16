@@ -359,15 +359,7 @@ impl SolidOcclusion {
 /// Intervals sorted by their start, stably, as Swift's `sort { $0.0 < $1.0 }`
 /// sorts them (ties keep their order).
 pub fn sort_by_start(spans: &mut [(f64, f64)]) {
-    spans.sort_by(|x, y| {
-        if x.0 < y.0 {
-            std::cmp::Ordering::Less
-        } else if y.0 < x.0 {
-            std::cmp::Ordering::Greater
-        } else {
-            std::cmp::Ordering::Equal
-        }
-    });
+    spans.sort_by(|x, y| swift::ascending(x.0, y.0));
 }
 
 impl OcclusionTest for SolidOcclusion {

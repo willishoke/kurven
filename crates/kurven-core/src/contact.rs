@@ -846,15 +846,7 @@ impl Slab {
                     }
                 }
             }
-            crossings.sort_by(|x, y| {
-                if x.0 < y.0 {
-                    std::cmp::Ordering::Less
-                } else if y.0 < x.0 {
-                    std::cmp::Ordering::Greater
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            });
+            crossings.sort_by(|x, y| swift::ascending(x.0, y.0));
             if crossings.is_empty() {
                 crossings = vec![(0.0, at(0.0))];
             }

@@ -177,15 +177,7 @@ impl Slab {
                     height: span.height,
                 })
                 .collect();
-            b.sort_by(|x, y| {
-                if x.lo < y.lo {
-                    std::cmp::Ordering::Less
-                } else if y.lo < x.lo {
-                    std::cmp::Ordering::Greater
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            });
+            b.sort_by(|x, y| swift::ascending(x.lo, y.lo));
             b[0].lo = f64::NEG_INFINITY;
             let last = b.len() - 1;
             b[last].hi = f64::INFINITY;

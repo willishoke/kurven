@@ -32,6 +32,7 @@ use crate::json;
 use crate::occlusion::{SolidOcclusion, SphereTracing, sort_by_start};
 use crate::parametric::PortRefusal;
 use crate::polyline::{Layer, PolylineSet};
+use crate::runs::Runs;
 use crate::scene::{Scene, SceneGeometry};
 use crate::simd::Vec3;
 use crate::slab::Slab;
@@ -393,42 +394,17 @@ impl Composite {
             }
             spans.push(Composite::seen(hidden));
         }
-        let mut out: Vec<Vec<P3<ViewSpace>>> = Vec::new();
+        let mut runs = Runs::new();
         let mut s = 0;
         for path in 0..paths.count() {
-            let mut run: Vec<P3<ViewSpace>> = Vec::new();
-            let mut open_at_end = false;
             for k in paths.offsets[path] + 1..paths.offsets[path + 1] {
                 let (a, b) = (vertices[k - 1], vertices[k]);
-                let continuing = open_at_end;
-                open_at_end = false;
-                for &(lo, hi) in &spans[s] {
-                    if !(hi - lo > 1e-12) {
-                        continue;
-                    }
-                    let (start, end) = (Composite::along(a, b, lo), Composite::along(a, b, hi));
-                    if continuing && lo == 0.0 && !run.is_empty() {
-                        run.push(end);
-                    } else {
-                        if run.len() >= 2 {
-                            out.push(std::mem::take(&mut run));
-                        }
-                        run = vec![start, end];
-                    }
-                    open_at_end = hi == 1.0;
-                }
-                if !open_at_end {
-                    if run.len() >= 2 {
-                        out.push(std::mem::take(&mut run));
-                    }
-                    run.clear();
-                }
+                runs.segment(&spans[s], |t| Composite::along(a, b, t));
                 s += 1;
             }
-            if run.len() >= 2 {
-                out.push(run);
-            }
+            runs.end_path();
         }
+        let out = runs.finish();
         Ok(PolylineSet::from_paths(&out))
     }
 
