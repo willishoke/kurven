@@ -1295,3 +1295,57 @@ bits and an FNV-1a hash of its vertex bits, which hold native and wasm to
 the bit where the SVG holds them to four decimals. The two take 0.5 s
 natively. With the bake and the gallery linked in, the wasm module is
 1,567,692 bytes (from 704,201 after Hatch.swift merged).
+
+## 2026-11-16 · Phase 3 status: what is ported, what is left, every hole
+
+**Ported** (Swift file to Rust module). kurven-core: Grid, Mesh (`mesh.rs`),
+Surface with ContourRefine (`surface.rs`), ScalarField (`scalar_field.rs`),
+Face (`face.rs`), FaceContour (`face_contour.rs`), Hatching's drawing half
+for landscapes (`hatching.rs`), Hatch (`hatch.rs`), Parametric's types
+(`parametric.rs`), Scene whole for a landscape (`scene.rs`, with
+`GridTraversal` in `traversal.rs`), Occlusion (`occlusion.rs`, with
+SphereTracing whole but untested), Visibility's types (`visibility.rs`),
+HiddenLine whole (`hidden_line.rs`), SurfaceImage's type
+(`surface_image.rs`), ContourMemo (`contour_memo.rs`), Bundle
+(`bundle.rs`), IntegralCurves (`integral_curves.rs`), Pick (`pick.rs`).
+kurven-landscape: Refine (`refine.rs`), Catalog (`catalog.rs`), Landscape
+with `build` (`landscape.rs`). kurven-bake: Bake, strokes only. kurven-cli:
+`landscape`, `bake` (landscape bundles), `references` (the eleven landscape
+drawings), beside `fixtures` and `compare`.
+
+**The gate.** 271 tests pass and 9 are ignored, each for Phase 4, 5 or 7 (the
+suites agent's table, "The last Phase 3 suites, and what stays unported",
+names the Rust test of every Swift suite). The eleven landscape reference
+drawings are compared with Swift's by `crates/fixtures/references.txt`:
+every layer at 1.5e-4 page units and 1e-5 of length, but ang_major in six
+drawings, skipped with the reason in "The phase lines Swift and the port
+draw differently". In five of them Swift draws more ink over the same
+ground (a stretch twice); in landscape-gamma it is the port that draws
+more, 4.13 page units of rays along the window's lower edge (Im z = 0,
+where Γ's pole at −2 lands either side by 1e-38), 8 strokes in Swift
+against 7 here.
+
+**Left for Phase 4** (each a typed refusal marked `// PORT: phase 4`): the
+parametric bake and the depth buffer's outline (`kurven-bake/src/lib.rs`),
+`SurfaceBundle.read` and `bake --dump` (`kurven-cli/src/commands.rs`), the
+surface references (`kurven-cli/src/references.rs`), a parametric surface's
+layers in `Scene::visible` (`scene.rs`), the rasterizer
+(`surface_image.rs`), the parametric fold curves, grid normals,
+interpolated normals, linear curves, the two tori and the displacement
+(`parametric.rs`), and SurfaceVisibility's footprint, front-most test,
+sheet, `is_visible`, `onto_crease`, `fold_crossing` and `clip_on`
+(`visibility.rs`). Torus.swift, Cover.swift, LinesOfCurvature.swift and
+KurvenDynamics are not started.
+
+**Left for Phase 5** (`// PORT: phase 5`): hatching a solid's faces
+(`hatching.rs`, five places), Solid.Occlusion (`occlusion.rs`), a solid's
+layers in `Scene::visible` (`scene.rs`), `PolyhedronBundle.read`
+(`kurven-cli/src/commands.rs`), the solid and composite references
+(`kurven-cli/src/references.rs`), isophotes (`face_contour.rs`), and
+hatching on the graph (`hatch.rs` and `scene.rs`). The last is a landscape
+feature: Swift keeps `Surface.graphHatching` in Isophotes.swift with
+`Face.coordinateHatching`, so it waits for that file. No landscape
+reference drawing uses it, and a bundle that asks for it is refused when
+it is drawn.
+
+No `PORT: phase 3` stub is left in the code; `hatch_stub.rs` is gone.
