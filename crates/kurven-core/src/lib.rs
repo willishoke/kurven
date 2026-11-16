@@ -25,7 +25,7 @@ pub mod face;
 pub mod face_contour;
 pub mod fixtures;
 pub mod grid;
-pub mod hatch_stub;
+pub mod hatch;
 pub mod hatching;
 pub mod hidden_line;
 pub mod integral_curves;

@@ -11,7 +11,7 @@ fn height(b: &KurvenBundle, name: &str) -> f64 {
 }
 
 /// "restyle: a new truncation re-derives the curves and keeps the landscape",
-/// less its wall hatch, which is Hatch.swift's (see the ignored test below).
+/// less its wall hatch, which is the test below.
 #[test]
 fn a_new_truncation_re_derives_the_curves_and_keeps_the_landscape() {
     let bundle = KurvenBundle::read(fixtures::shared("contract/landscape.kurven")).expect("the landscape fixture");
@@ -41,7 +41,6 @@ fn a_new_truncation_re_derives_the_curves_and_keeps_the_landscape() {
 /// "restyle: a new truncation re-derives the curves and keeps the landscape",
 /// its wall hatch.
 #[test]
-#[ignore = "PORT: phase 3 stub (Hatch.swift): the wall hatch derives nothing until Hatch.swift is ported"]
 fn a_new_truncation_lowers_the_wall_hatch() {
     let bundle = KurvenBundle::read(fixtures::shared("contract/landscape.kurven")).expect("the landscape fixture");
     let mut manifest = bundle.manifest.clone();

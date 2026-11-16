@@ -9,7 +9,7 @@
 
 use kurven_math::swift;
 
-use crate::hatch_stub::HatchContext;
+use crate::hatch::HatchContext;
 use crate::hatching::{FaceKind, FaceSelector};
 use crate::manifest::{Affine2, BoundaryPerimeter, ContourField, DomainAxis, Interval, Region, Restriction};
 use crate::parametric::{ParamAxis, ParamRectangle};
