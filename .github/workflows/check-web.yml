@@ -1,0 +1,41 @@
+# The web port, on every change.
+#
+# `scripts/check-web.sh` is the one definition of "the port's tests pass",
+# here as on a laptop: this file only decides when to run it. It needs no
+# Swift and no browser, so it runs on Linux: x86_64, where the Swift lane
+# (check.yml) runs on Apple Silicon, which also tests that the port's golden
+# files are the same bytes on another platform. A golden that comes out
+# different here is a finding, not a file to regenerate.
+#
+# The toolchain is crates/rust-toolchain.toml's, the one the goldens were
+# written with, so a clippy or rustfmt release cannot turn the check red on
+# its own; check-web.sh installs it, as it does on a laptop.
+
+name: check-web
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: check-web-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The pinned Rust, with rustfmt, clippy and the wasm target
+        working-directory: crates
+        run: rustup toolchain install --no-self-update
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+
+      - name: Check
+        run: scripts/check-web.sh

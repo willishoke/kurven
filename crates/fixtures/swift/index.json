@@ -1,0 +1,486 @@
+{
+ "drawings": [
+  {
+   "how": "docs/gallery/make.py: landscape gamma(z) --re -4.5,4.5 --im -2.5,2.5 --res 1000 --bands -3.5:2.5,-2.5:3.0,-1.5:4.0,0.5:5.5 --beyond 4.0, hatching x0.75, preset plate (shear -0.5, x -55, z -90); bake --preset plate",
+   "layers": [
+    "mag_major",
+    "ang_major",
+    "mag_minor",
+    "ang_minor",
+    "truncation_edge",
+    "plateau_hatch",
+    "wall_edges",
+    "wall_hatch",
+    "folds"
+   ],
+   "name": "gallery-gamma",
+   "paths": [
+    18,
+    32,
+    74,
+    55,
+    6,
+    80,
+    12,
+    185,
+    7
+   ]
+  },
+  {
+   "how": "docs/gallery/make.py: landscape cn(z, 0.64) --re -1.9953027776647292,9.976513888323646 --im 0,5.252261408747257 --res 1200 --truncation 4, hatching x0.75, preset plate (shear 0.51, x -63, z -90, flipX); bake --preset plate",
+   "layers": [
+    "mag_major",
+    "ang_major",
+    "mag_minor",
+    "ang_minor",
+    "truncation_edge",
+    "plateau_hatch",
+    "wall_edges",
+    "wall_hatch",
+    "folds"
+   ],
+   "name": "gallery-cn",
+   "paths": [
+    67,
+    19,
+    277,
+    31,
+    6,
+    36,
+    14,
+    228,
+    13
+   ]
+  },
+  {
+   "how": "docs/gallery/make.py: landscape 1/(z^3 - 1) --re -1.3,1.6 --im -1.2,1.5 --res 300 --truncation 5, hatching x0.75, the four corner presets; bake --preset tm90s0.5",
+   "layers": [
+    "mag_major",
+    "ang_major",
+    "mag_minor",
+    "ang_minor",
+    "truncation_edge",
+    "plateau_hatch",
+    "wall_edges",
+    "wall_hatch",
+    "folds"
+   ],
+   "name": "gallery-cubic-tm90s0.5",
+   "paths": [
+    52,
+    13,
+    214,
+    21,
+    3,
+    21,
+    11,
+    297,
+    8
+   ]
+  },
+  {
+   "how": "docs/gallery/make.py: landscape 1/(z^3 - 1) --re -1.3,1.6 --im -1.2,1.5 --res 300 --truncation 5, hatching x0.75, the four corner presets; bake --preset tm90sm0.5",
+   "layers": [
+    "mag_major",
+    "ang_major",
+    "mag_minor",
+    "ang_minor",
+    "truncation_edge",
+    "plateau_hatch",
+    "wall_edges",
+    "wall_hatch",
+    "folds"
+   ],
+   "name": "gallery-cubic-tm90sm0.5",
+   "paths": [
+    51,
+    12,
+    209,
+    18,
+    3,
+    21,
+    10,
+    297,
+    7
+   ]
+  },
+  {
+   "how": "docs/gallery/make.py: landscape 1/(z^3 - 1) --re -1.3,1.6 --im -1.2,1.5 --res 300 --truncation 5, hatching x0.75, the four corner presets; bake --preset t90s0.5",
+   "layers": [
+    "mag_major",
+    "ang_major",
+    "mag_minor",
+    "ang_minor",
+    "truncation_edge",
+    "plateau_hatch",
+    "wall_edges",
+    "wall_hatch",
+    "folds"
+   ],
+   "name": "gallery-cubic-t90s0.5",
+   "paths": [
+    28,
+    11,
+    116,
+    18,
+    3,
+    21,
+    9,
+    297,
+    6
+   ]
+  },
+  {
+   "how": "docs/gallery/make.py: landscape 1/(z^3 - 1) --re -1.3,1.6 --im -1.2,1.5 --res 300 --truncation 5, hatching x0.75, the four corner presets; bake --preset t90sm0.5",
+   "layers": [
+    "mag_major",
+    "ang_major",
+    "mag_minor",
+    "ang_minor",
+    "truncation_edge",
+    "plateau_hatch",
+    "wall_edges",
+    "wall_hatch",
+    "folds"
+   ],
+   "name": "gallery-cubic-t90sm0.5",
+   "paths": [
+    28,
+    11,
+    115,
+    21,
+    3,
+    21,
+    10,
+    297,
+    6
+   ]
+  },
+  {
+   "how": "docs/gallery/make.py: surface solid --kind frame --size 2 --hole 2 --depth 0.8 --x-angle -55 --z-angle -60 --shear 0 --width 0.6 --save B; bake B",
+   "layers": [
+    "edges"
+   ],
+   "name": "gallery-frame-edges",
+   "paths": [
+    18
+   ]
+  },
+  {
+   "how": "docs/gallery/make.py: surface solid --kind frame --size 2 --hole 2 --depth 0.8 --x-angle -55 --z-angle -60 --shear 0 --width 0.6 --hatching turing --angle 30 --spacing 0.035 --width-steps 4 --scale 0.18 --seed 3 --hatch-width 0.5 --save B; bake B",
+   "layers": [
+    "edges",
+    "hatching 1/4",
+    "hatching 2/4",
+    "hatching 3/4",
+    "hatching 4/4"
+   ],
+   "name": "gallery-frame-turing",
+   "paths": [
+    18,
+    796,
+    767,
+    635,
+    314
+   ]
+  },
+  {
+   "how": "bake tests/fixtures/expr/landscape_gamma.kurven",
+   "layers": [
+    "mag_major",
+    "ang_major",
+    "mag_minor",
+    "ang_minor",
+    "truncation_edge",
+    "plateau_hatch",
+    "wall_edges",
+    "wall_hatch",
+    "folds"
+   ],
+   "name": "landscape-gamma",
+   "paths": [
+    35,
+    8,
+    158,
+    14,
+    6,
+    26,
+    13,
+    113,
+    8
+   ]
+  },
+  {
+   "how": "bake tests/fixtures/expr/landscape_cubic.kurven",
+   "layers": [
+    "mag_major",
+    "ang_major",
+    "mag_minor",
+    "ang_minor",
+    "truncation_edge",
+    "plateau_hatch",
+    "wall_edges",
+    "wall_hatch",
+    "folds"
+   ],
+   "name": "landscape-cubic",
+   "paths": [
+    48,
+    13,
+    210,
+    28,
+    3,
+    3,
+    11,
+    18,
+    9
+   ]
+  },
+  {
+   "how": "bake tests/fixtures/expr/landscape_typed.kurven",
+   "layers": [
+    "mag_major",
+    "ang_major",
+    "mag_minor",
+    "ang_minor",
+    "wall_edges",
+    "wall_hatch",
+    "folds"
+   ],
+   "name": "landscape-typed",
+   "paths": [
+    17,
+    10,
+    58,
+    20,
+    9,
+    128,
+    2
+   ]
+  },
+  {
+   "how": "bake tests/fixtures/expr/landscape_tower.kurven",
+   "layers": [
+    "mag_major",
+    "ang_major",
+    "mag_minor",
+    "ang_minor",
+    "truncation_edge",
+    "plateau_hatch",
+    "wall_edges",
+    "wall_hatch",
+    "folds"
+   ],
+   "name": "landscape-tower",
+   "paths": [
+    8,
+    3,
+    40,
+    6,
+    3,
+    53,
+    9,
+    158,
+    2
+   ]
+  },
+  {
+   "how": "surface sn --save B; bake B",
+   "layers": [
+    "mag_major",
+    "mag_minor",
+    "ang_major",
+    "ang_minor",
+    "folds"
+   ],
+   "name": "sn",
+   "paths": [
+    20,
+    77,
+    14,
+    24,
+    6
+   ]
+  },
+  {
+   "how": "surface sn --relief 0.4 --save B; bake B",
+   "layers": [
+    "mag_major",
+    "mag_minor",
+    "ang_major",
+    "ang_minor",
+    "truncation edge",
+    "folds"
+   ],
+   "name": "sn-relief",
+   "paths": [
+    21,
+    79,
+    10,
+    17,
+    3,
+    8
+   ]
+  },
+  {
+   "how": "surface torus --linear-curves 2/5 --save B; bake B",
+   "layers": [
+    "lines",
+    "linearCurves",
+    "folds"
+   ],
+   "name": "torus-linear",
+   "paths": [
+    73,
+    4,
+    6
+   ]
+  },
+  {
+   "how": "surface periodic --expression sn(z, 0.5) --periods 7.416298709205487,3.7081493546027433 --save B; bake B",
+   "layers": [
+    "mag_major",
+    "mag_minor",
+    "ang_major",
+    "ang_minor",
+    "folds"
+   ],
+   "name": "periodic",
+   "paths": [
+    20,
+    78,
+    13,
+    24,
+    6
+   ]
+  },
+  {
+   "how": "kurven-cli fixtures: tests/fixtures/fields/landscape_slope_lines.svg",
+   "layers": [
+    "mag_major",
+    "truncation_edge",
+    "wall_edges",
+    "slope_lines",
+    "folds"
+   ],
+   "name": "slope-lines",
+   "paths": [
+    26,
+    2,
+    11,
+    19,
+    5
+   ]
+  },
+  {
+   "how": "surface solid --kind tetrahedron --save B; bake B",
+   "layers": [
+    "edges"
+   ],
+   "name": "solid-tetrahedron",
+   "paths": [
+    5
+   ]
+  },
+  {
+   "how": "surface solid --kind cube --save B; bake B",
+   "layers": [
+    "edges"
+   ],
+   "name": "solid-cube",
+   "paths": [
+    9
+   ]
+  },
+  {
+   "how": "surface solid --kind octahedron --save B; bake B",
+   "layers": [
+    "edges"
+   ],
+   "name": "solid-octahedron",
+   "paths": [
+    8
+   ]
+  },
+  {
+   "how": "surface solid --kind dodecahedron --save B; bake B",
+   "layers": [
+    "edges"
+   ],
+   "name": "solid-dodecahedron",
+   "paths": [
+    20
+   ]
+  },
+  {
+   "how": "surface solid --kind icosahedron --save B; bake B",
+   "layers": [
+    "edges"
+   ],
+   "name": "solid-icosahedron",
+   "paths": [
+    18
+   ]
+  },
+  {
+   "how": "surface solid --kind csaszar --save B; bake B",
+   "layers": [
+    "edges"
+   ],
+   "name": "solid-csaszar",
+   "paths": [
+    15
+   ]
+  },
+  {
+   "how": "surface solid --kind frame --save B; bake B",
+   "layers": [
+    "edges"
+   ],
+   "name": "solid-frame",
+   "paths": [
+    18
+   ]
+  },
+  {
+   "how": "scene expr/landscape_cubic.kurven contract/polyhedron_cube.kurven --at -1.2,0.1,0.3,0.35 contract/surface_torus.kurven --at 1,0,1.6,0.35 --no-refine",
+   "layers": [
+    "mag_major",
+    "ang_major",
+    "mag_minor",
+    "ang_minor",
+    "truncation_edge",
+    "plateau_hatch",
+    "wall_edges",
+    "wall_hatch",
+    "folds",
+    "edges",
+    "hatching",
+    "contact",
+    "lines",
+    "linearCurves",
+    "v",
+    "folds"
+   ],
+   "name": "composite-three",
+   "paths": [
+    50,
+    25,
+    199,
+    72,
+    3,
+    3,
+    11,
+    18,
+    9,
+    8,
+    89,
+    2,
+    25,
+    20,
+    4,
+    8
+   ]
+  }
+ ]
+}

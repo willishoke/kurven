@@ -1,0 +1,15 @@
+[package]
+name = "kurven-surfaces"
+description = "Parametric surfaces: tori, doubly periodic functions, forced systems, surface drawings (KurvenDynamics)"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+kurven-math.workspace = true
+kurven-core.workspace = true
+
+[lints]
+workspace = true

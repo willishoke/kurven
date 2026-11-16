@@ -1,0 +1,16 @@
+{
+  "name": "kurven-web",
+  "private": true,
+  "version": "0.0.0",
+  "description": "kurven in a browser tab: the page, a thin view of the engine in crates/",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "check": "tsc --noEmit",
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  }
+}

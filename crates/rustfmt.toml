@@ -1,0 +1,3 @@
+# Long lines, as the Swift reference writes them, so a port reads beside it.
+max_width = 120
+use_small_heuristics = "Max"

@@ -361,6 +361,14 @@ usage: kurven-cli <command> [options]
         camera's points, the clip fixture's buffer and polylines) are read
         from <dir>, not written. scripts/check.sh runs this and fails on any
         difference from the commit.
+
+  references <fixtures> <dir>
+        Bake the drawings the web port (crates/) is held to into <dir>, one
+        SVG each and index.json naming each drawing's stroke layers: the
+        gallery as docs/gallery/make.py sets it up, the native landscapes of
+        <fixtures>/expr, sn flat and in relief, a torus with a linear curve,
+        a periodic expression, the slope lines golden, each solid `surface
+        solid` builds, and one composite. <fixtures> is tests/fixtures.
 """
 
 func loadScene(_ args: Args) throws -> (KurvenBundle, CameraPreset, Scene) {
@@ -2080,6 +2088,7 @@ do {
     case "inspect": try inspect(args)
     case "contract": try contract(args)
     case "fixtures": try fixturesCommand(args)
+    case "references": try referencesCommand(args)
     default:
         print(usage)
         exit(args.positional.isEmpty ? 0 : 1)
