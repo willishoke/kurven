@@ -151,7 +151,9 @@ impl Hash for Key {
 }
 
 struct Entry {
-    placed: Paths,
+    /// Shared, so a hit takes a reference under the lock and copies the
+    /// curves after it is released.
+    placed: Arc<Paths>,
     points: usize,
     used: u64,
 }
@@ -224,7 +226,7 @@ impl ContourMemo {
             match t.entries.get_mut(&key) {
                 Some(entry) => {
                     entry.used = clock;
-                    let placed = entry.placed.clone();
+                    let placed = Arc::clone(&entry.placed);
                     t.hits += 1;
                     Some(placed)
                 }
@@ -235,32 +237,41 @@ impl ContourMemo {
             }
         };
         if let Some(found) = found {
-            return found;
+            return Paths::clone(&found);
         }
         let placed = solve();
         let points = paths.iter().map(Vec::len).sum::<usize>() + placed.iter().map(Vec::len).sum::<usize>();
         if points > self.budget {
             return placed;
         }
+        let stored = Arc::new(placed.clone());
         let mut t = self.table();
         t.clock += 1;
         let used = t.clock;
-        if let Some(old) = t.entries.insert(key, Entry { placed: placed.clone(), points, used }) {
+        if let Some(old) = t.entries.insert(key, Entry { placed: stored, points, used }) {
             t.points -= old.points;
         }
         t.points += points;
         if t.points > self.budget {
             // Forget the least recently asked until the table fits. A restyle
             // asks for every curve on screen, so those are the last forgotten.
-            let mut order: Vec<(u64, Key)> = t.entries.iter().map(|(k, e)| (e.used, k.clone())).collect();
-            order.sort_by_key(|(used, _)| *used);
-            for (_, k) in order {
-                if t.points <= self.budget {
+            // Every entry's `used` is a different tick of the clock, so the
+            // ones to forget are those at or before one tick: found from the
+            // ticks and sizes alone, then removed in one pass, no key copied.
+            let mut order: Vec<(u64, usize)> = t.entries.values().map(|e| (e.used, e.points)).collect();
+            order.sort_unstable_by_key(|&(used, _)| used);
+            let mut left = t.points;
+            let mut cutoff = None;
+            for (used, points) in order {
+                if left <= self.budget {
                     break;
                 }
-                if let Some(e) = t.entries.remove(&k) {
-                    t.points -= e.points;
-                }
+                left -= points;
+                cutoff = Some(used);
+            }
+            if let Some(cutoff) = cutoff {
+                t.entries.retain(|_, e| e.used > cutoff);
+                t.points = left;
             }
         }
         placed
