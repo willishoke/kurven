@@ -143,11 +143,12 @@ impl Segments {
     }
 
     /// Into every cell the segment passes through: cut into pieces no longer
-    /// than a cell, each piece's box meets at most four.
+    /// than a cell, each piece's box meets at most four. A segment is
+    /// inserted whole before the next, so a cell already holding it has it
+    /// last.
     fn insert(&mut self, k: usize) {
         let (a, b) = self.segments[k];
         let pieces = (distance(a, b) / self.cell).ceil().max(1.0) as usize;
-        let mut last = None;
         for i in 0..pieces {
             let (s, t) = (i as f64 / pieces as f64, (i + 1) as f64 / pieces as f64);
             let p = [a[0] + s * (b[0] - a[0]), a[1] + s * (b[1] - a[1])];
@@ -155,7 +156,7 @@ impl Segments {
             let (c0, c1) = (self.cell_of(p), self.cell_of(q));
             for x in c0.0.min(c1.0)..=c0.0.max(c1.0) {
                 for y in c0.1.min(c1.1)..=c0.1.max(c1.1) {
-                    if (0..self.nx).contains(&x) && (0..self.ny).contains(&y) && last != Some((x, y)) {
+                    if (0..self.nx).contains(&x) && (0..self.ny).contains(&y) {
                         let cell = &mut self.cells[(y * self.nx + x) as usize];
                         if cell.last() != Some(&(k as u32)) {
                             cell.push(k as u32);
@@ -163,7 +164,6 @@ impl Segments {
                     }
                 }
             }
-            last = Some(c1);
         }
     }
 
