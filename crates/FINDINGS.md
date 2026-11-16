@@ -547,3 +547,119 @@ writer and in Solid's text, three sorts by `total_cmp`, a test) go through
 so nothing changed; the goldens are byte-identical. kurven-core's other
 bit read, `ulp` in `surface_request.rs`, takes `abs` and refuses a value
 that is not finite first, so it reads no NaN's sign either.
+
+## 2026-11-15 · Phase 3: the refiner, the catalog, the sampling, the memo, the depth clip
+
+Ported whole: `Refine.swift` to `kurven-landscape/src/refine.rs`, but for
+`NativeLandscape.refiner(for: bundle)` and `benchmarkRefinement`, which
+read a `KurvenBundle` and its `Surface` (the core wave); `Catalog.swift` to
+`catalog.rs`; `Landscape.swift` to `landscape.rs`, but for
+`NativeLandscape.build`, which builds the bundle; `ContourMemo.swift` to
+`kurven-core/src/contour_memo.rs`; and the depth-buffer half of
+`HiddenLine.swift` (`foldCrossing`, `HiddenLine.clip` and `pass`,
+`DepthImage.outline`) to `kurven-core/src/hidden_line.rs`.
+`HeightfieldVisibility` waits for the grid traversal. `RefinementReport`
+and `summarize` are ported, so the benchmark is a loop over them.
+
+One stub: `short_way` in `refine.rs`, Swift's free `shortWay` from
+`ScalarField.swift`, which the core wave ports; it goes at the merge.
+
+Spelled otherwise: Swift's refiner keeps f as four closures (`value`,
+`magnitude`, `phase`, `turnedPhase`) and passes one as `g`; here they are
+methods over one tape, and `g` is a `Scalar` (magnitude, phase, turned
+phase). The `refine` property is `refine_hook()` (the method `refine(field:
+...)` keeps the name); `zero(near:)` and `pole(near:)` are `zero_near` and
+`pole_near`; `turn(_:around:)` and `turn(between:_:)` are `turn_around` and
+`turn_between`; `ended(atSingularPoints:)` is `ended`. Default arguments are
+explicit. `concurrentPerform` over paths, rows and edges is a loop: each
+iteration writes its own slot.
+
+## 2026-11-15 · The handoff discs in a fixed order, where Swift walks a Set
+
+`ContourRefiner.refine` collects the singular points whose rays reach the
+handoff radius in a `Set` and maps it to the discs, and a point inside two
+discs (two singular points closer than six cells) is cut back to the first
+disc that holds it: in Swift that is the `Set`'s per-process order, so the
+drawing can differ from run to run there. The port walks the points in
+ascending order. Nothing else in the refiner depends on a hash order:
+`unaccounted` sorts its cells, `drawnOnce` only asks whether any segment is
+near, and the memo forgets by a clock.
+
+## 2026-11-15 · Where the refiner traps or never returns in Swift
+
+- **A field that is not f's.** `field(_:)` is `preconditionFailure` for u,
+  v, the height and an isophote. Here `ContourRefiner::field` answers None;
+  `refine` hands the paths back as the grid placed them, and
+  `position_errors` answers NaN for every vertex. No caller asks.
+- **A NaN ceiling.** `refine` copies itself with the call's ceiling and span
+  and recurses whenever they differ from its own, and NaN never equals NaN,
+  so a phase line asked under a NaN ceiling recursed until the stack ran
+  out. The port always places on a copy, which gives the same curves
+  wherever Swift returns, and returns for NaN too.
+- **`Int` of a coordinate.** `drawnOnce` bins vertices by `Int` of x / cell,
+  `snap` takes `Int` of the grid position, `seededRings` of the zero's.
+  Each traps on a value that is not finite. A vertex that is not finite is
+  binned in a cell of its own, `snap` leaves such a vertex where it is (as
+  it does one off the grid), and `seeded_rings` passes such a zero over.
+- **The landscape's rounding.** `pyRound`, and so `gridShape` and
+  `wallDensity`, trap on a domain whose side is not a number. The port's
+  `py_round`, `grid_shape`, `wall_density` and `sample` answer None.
+
+## 2026-11-15 · A zero exactly on a node is not a singular point (ported as is)
+
+`root(near:of:)` refuses a start where g is zero (`guard g0.magnitude > 0`),
+and a zero that falls on a grid node is found only from that node, the
+least of |f| beside it. So z³ on [-1, 1]² at 41 samples has no singular
+point: its phase lines are carried onto the zero by `ended` rather than
+seeded from the normal form. Ported as is. The port's analytic tests of
+rays and the branch cut shift the window by a quarter cell so the zero
+lies inside a cell.
+
+## 2026-11-15 · The memo's keys, and a NaN in them
+
+Swift's `ContourMemo.Key` compares the paths as `Hashable` points do, by
+`==` (so -0 is 0), and the level, ceiling and span by their bits. The port
+does the same, hashing each coordinate plus 0.0 so -0 and 0 hash alike. A
+path with a NaN coordinate makes a key unequal to itself, which Swift's
+dictionary stores and never finds again; Rust's `HashMap` needs a key equal
+to itself, so the port does not store such a key and solves it each time,
+which is the answer Swift gives. `Synchronization.Mutex` is
+`std::sync::Mutex`, a poisoned lock read through (an entry is inserted
+whole). Forgetting by least recent use sorts by a clock no two entries
+share, so which entry goes is fixed in both.
+
+## 2026-11-15 · Phase 3 refiner tests and their tolerances
+
+Swift's, with Swift's tolerances: "refine: a zero or pole of order more
+than one is found" and "... the grid's nodes do not see is found, by the
+winding number of its cell" (1e-9 cells), "... by an accumulation of zeros
+or poles" (sin(1/z) and 1/sin(1/z) at 400), "refine: a phase line is placed
+only where it can be drawn" (0.05 cells; tan at 240). Each built the
+bundle and asked `refiner(for: bundle)`, which reads the canonical
+expression, the domain and the height grid's shape; the port asks
+`refiner(expression, domain, grid_shape(...))`, the same refiner, and takes
+the phase grid from `sample` and `quantize` as `build` does. Also "landscape:
+the derived numbers", "... are the committed ones" (hatch/index.json),
+"expression: the language table is the frozen one" through the catalog, the
+three "clip:" suites (bit for bit), and the half of "landscape: built here,
+it is the committed bundle" that needs no bundle: the four committed
+landscapes' grids at Swift's 1e-6 relative, their manifests' shape,
+truncation, walls, occluder step, projection and layers exactly. All pass,
+none ignored.
+
+The port's own, against closed forms: |z| = r circles, every vertex on the
+circle and every chord's sagitta within the stated 0.02 cells; |z³ − 1| = c,
+three ovals and one curve, chords within 0.02 cells by the refiner's own
+estimate; a ring round a zero the grid cannot see, on its circle; the phase
+lines of z³ as three rays from the zero a third of a turn apart, on their
+rays to 1e-9; the branch cut of z and of z³ drawn once, as one and three
+lines; Newton, Schröder and the winding number on z²(z − 0.5)/(z + 0.3i)³;
+the hook's contours the refiner's, remembered and forked to the bit.
+
+One thing the closed forms showed: a vertex is not always on the level to
+the root finder's tolerance. Where the float32 grid puts a vertex within
+rounding of a node, `snap` leaves it there if its residual over the gradient
+is under a hundredth of the tolerance (`1e-2 * tolerance * cell`): on |z| =
+0.8 at 41 samples one vertex is 1.2e-8 off, 2.4e-7 cells. That is Swift's
+rule, so the circle test holds vertices to that bound, and nine in ten to
+1e-9.
