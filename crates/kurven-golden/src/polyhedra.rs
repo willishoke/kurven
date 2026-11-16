@@ -14,13 +14,12 @@ use kurven_core::hidden_line::HiddenLine;
 use kurven_core::manifest::{Domain, HeightPolicy, Interval, LayerRole, LayerSource, LayerSpec, Truncation};
 use kurven_core::polyhedron_bundle::PolyhedronBundle;
 use kurven_core::scene::{PreviewMode, Scene};
-use kurven_core::simd::{Mat3, Vec2, Vec3};
+use kurven_core::simd::Vec3;
 use kurven_core::solid::{Platonic, Solid};
 use kurven_core::surface_request::SurfaceRequest;
 use kurven_core::svg::{self, Strokes, Style};
 use kurven_landscape::catalog::LandscapeRequest;
 use kurven_landscape::landscape::NativeLandscape;
-use kurven_math::swift;
 
 use crate::Golden;
 use crate::landscapes::{layers, leak};
@@ -41,26 +40,24 @@ pub fn all() -> Vec<Golden> {
             .into_bytes(),
         });
     };
-    for kind in Platonic::ALL {
-        let solid = Solid::platonic(kind, 2.0).resting(0);
-        add(kind.name(), format!("surface solid --kind {}", kind.name()), drawn(solid, None));
+    // As `surface solid` builds them (`Solid::named`), at its default size.
+    for kind in Platonic::ALL.iter().map(|p| p.name()).chain(["csaszar", "frame"]) {
+        add(kind, format!("surface solid --kind {kind}"), drawn(named(kind, None), None));
     }
-    add("csaszar", "surface solid --kind csaszar".to_string(), drawn(csaszar(2.0), None));
-    add("frame", "surface solid --kind frame".to_string(), drawn(Solid::frame(4.0, 2.0, 1.0), None));
     let turing = Hatching::new(30f64.to_radians_exact(), 0.035, None, Tone::Turing { scale: 0.18, seed: 3 }, 4);
     add(
         "frame-turing",
         "surface solid --kind frame --size 2 --hole 2 --depth 0.8 --hatching turing --angle 30 --spacing 0.035 \
          --width-steps 4 --scale 0.18 --seed 3"
             .to_string(),
-        drawn(Solid::frame(4.0, 2.0, 0.8), Some(turing)),
+        drawn(named("frame", Some(0.8)), Some(turing)),
     );
     let lambert =
         Hatching::new(45f64.to_radians_exact(), 0.08, None, Tone::HalfLambert { light: Vec3::new(-0.4, -0.6, 0.7) }, 3);
     add(
         "dodecahedron-half-lambert",
         "surface solid --kind dodecahedron --hatching half-lambert --width-steps 3".to_string(),
-        drawn(Solid::platonic(Platonic::Dodecahedron, 2.0).resting(0), Some(lambert)),
+        drawn(named("dodecahedron", None), Some(lambert)),
     );
     add(
         "composite",
@@ -79,9 +76,9 @@ pub fn all() -> Vec<Golden> {
 /// cubic with a cube and a frame on it.
 pub fn bake_named(name: &str) -> Option<Bake> {
     Some(match name {
-        "dodecahedron" => drawn(Solid::platonic(Platonic::Dodecahedron, 2.0).resting(0), None),
+        "dodecahedron" => drawn(named("dodecahedron", None), None),
         "frame-turing" => drawn(
-            Solid::frame(4.0, 2.0, 0.8),
+            named("frame", Some(0.8)),
             Some(Hatching::new(30f64.to_radians_exact(), 0.035, None, Tone::Turing { scale: 0.18, seed: 3 }, 4)),
         ),
         "composite" => composite(),
@@ -100,15 +97,10 @@ impl Radians for f64 {
     }
 }
 
-/// Császár's torus as `surface solid` sizes it (`named_solid`).
-fn csaszar(size: f64) -> Solid {
-    let c = Solid::csaszar();
-    let r = c.vertices.iter().map(|p| Vec2::new(p.x(), p.y()).length()).reduce(swift::max).unwrap_or(1.0);
-    let s = size / r;
-    c.transformed(
-        Mat3::from_columns(Vec3::new(s, 0.0, 0.0), Vec3::new(0.0, s, 0.0), Vec3::new(0.0, 0.0, s)),
-        Vec3::ZERO,
-    )
+/// A solid `surface solid` builds at its default size 2 (`Solid::named`),
+/// a frame `depth` thick where given.
+fn named(kind: &str, depth: Option<f64>) -> Solid {
+    Solid::named(kind, 2.0, None, depth).expect("a named solid")
 }
 
 /// Edges, and `hatching` on the faces where given, as `surface solid` draws

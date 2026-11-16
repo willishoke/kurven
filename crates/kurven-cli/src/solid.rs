@@ -11,10 +11,9 @@ use kurven_core::hatching::{FaceSelector, Hatching, Tone};
 use kurven_core::manifest::{CameraPreset, HeightPolicy, LayerRole, LayerSource, LayerSpec, PolyhedronManifest};
 use kurven_core::polyhedron_bundle::PolyhedronBundle;
 use kurven_core::scene::{PreviewMode, Scene};
-use kurven_core::simd::{Mat3, Vec2, Vec3};
-use kurven_core::solid::{Platonic, Solid};
+use kurven_core::simd::Vec3;
+use kurven_core::solid::Solid;
 use kurven_core::surface_request::SurfaceRequest;
-use kurven_math::swift;
 
 use crate::args::{Args, CliError};
 use crate::commands::write_svg;
@@ -28,40 +27,9 @@ pub fn topology(solid: &Solid) -> String {
     }
 }
 
-/// One of the solids `surface solid` builds, by name: a Platonic solid of
-/// circumradius `size` set down on a face, Császár's torus scaled to about
-/// that size, or a picture frame `2 size` across with a hole `hole` wide,
-/// `depth` thick.
+/// One of the solids `surface solid` builds, by name (`Solid::named`).
 pub fn named_solid(kind: &str, size: f64, hole: Option<f64>, depth: Option<f64>) -> Result<Solid, CliError> {
-    if kind == "csaszar" {
-        // Császár's own coordinates stand on the table already; scaled so
-        // its base is about the size of the others.
-        let c = Solid::csaszar();
-        let r = c.vertices.iter().map(|p| Vec2::new(p.x(), p.y()).length()).reduce(swift::max).unwrap_or(1.0);
-        let s = size / r;
-        // `matrix_identity_double3x3 * (size / r)`.
-        let scale = Mat3::from_columns(Vec3::new(s, 0.0, 0.0), Vec3::new(0.0, s, 0.0), Vec3::new(0.0, 0.0, s));
-        return Ok(c.transformed(scale, Vec3::ZERO));
-    }
-    if kind == "frame" {
-        let hole = hole.unwrap_or(size);
-        // Swift's `guard hole < 2 * size`, which refuses a NaN as well.
-        #[allow(clippy::neg_cmp_op_on_partial_ord)]
-        let too_wide = !(hole < 2.0 * size);
-        if too_wide {
-            return Err(CliError(format!(
-                "--hole wants less than the frame's width, 2 × --size = {}, got {}",
-                kurven_core::json::number(2.0 * size),
-                kurven_core::json::number(hole)
-            )));
-        }
-        return Ok(Solid::frame(2.0 * size, hole, depth.unwrap_or(size / 2.0)));
-    }
-    if let Some(platonic) = Platonic::from_name(kind) {
-        return Ok(Solid::platonic(platonic, size).resting(0));
-    }
-    let names: Vec<&str> = Platonic::ALL.iter().map(|p| p.name()).collect();
-    Err(CliError(format!("unknown solid '{kind}'; the table has: {}, csaszar, frame", names.join(", "))))
+    Solid::named(kind, size, hole, depth).map_err(CliError)
 }
 
 /// The options `Args.projection` names.
