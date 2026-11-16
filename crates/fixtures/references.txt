@@ -38,3 +38,17 @@ landscape-cubic         1.5e-4  1e-5  -
 landscape-typed         1.5e-4  1e-5  -
 landscape-tower         1.5e-4  1e-5  -
 slope-lines             1.5e-4  1e-5  -
+#
+# The polyhedra (measured 2026-11-16, Phase 5): the seven solids and the
+# frame's two gallery drawings, every layer at Hausdorff 0 and length 0 at
+# the SVG's four decimals, with Swift's stroke counts (the Turing frame's
+# 796, 767, 635 and 314 hatch strokes by width). Held to the same floor.
+gallery-frame-edges     1.5e-4  1e-5  -
+gallery-frame-turing    1.5e-4  1e-5  -
+solid-tetrahedron       1.5e-4  1e-5  -
+solid-cube              1.5e-4  1e-5  -
+solid-octahedron        1.5e-4  1e-5  -
+solid-dodecahedron      1.5e-4  1e-5  -
+solid-icosahedron       1.5e-4  1e-5  -
+solid-csaszar           1.5e-4  1e-5  -
+solid-frame             1.5e-4  1e-5  -

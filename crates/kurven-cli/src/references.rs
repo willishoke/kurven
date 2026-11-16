@@ -28,6 +28,7 @@ use kurven_golden::gallery::{self, camera};
 
 use crate::args::{Args, CliError};
 use crate::commands::{landscape_command, load_drawing, write_svg};
+use crate::solid::surface_command;
 
 /// A drawing: its strokes and the name of the layer each stroke layer draws.
 pub type Drawn = (Strokes, Vec<String>);
@@ -67,6 +68,16 @@ pub fn baked(bundle: &Path, preset: Option<&str>, refine: bool) -> Result<Drawn,
     let result = bake(&drawing.scene, &options)?;
     let names = result.specs.iter().map(|s| s.name.clone()).collect();
     Ok((result.strokes, names))
+}
+
+/// `surface ... --save B; bake B`.
+pub fn surface(words: &[String], scratch: &Path, stem: &str) -> Result<Drawn, CliError> {
+    let bundle = scratch.join(format!("{stem}.kurven"));
+    let mut argv = vec!["surface".to_string()];
+    argv.extend(words.iter().cloned());
+    argv.extend(["--save".to_string(), bundle.to_string_lossy().into_owned()]);
+    surface_command(&Args::new(&argv))?;
+    baked(&bundle, None, true)
 }
 
 // MARK: the gallery, as docs/gallery/make.py sets it up
@@ -188,6 +199,53 @@ pub fn gallery() -> Vec<Reference> {
             }),
         ));
     }
+    let frame = words(&[
+        "solid",
+        "--kind",
+        "frame",
+        "--size",
+        "2",
+        "--hole",
+        "2",
+        "--depth",
+        "0.8",
+        "--x-angle",
+        "-55",
+        "--z-angle",
+        "-60",
+        "--shear",
+        "0",
+        "--width",
+        "0.6",
+    ]);
+    let turing = words(&[
+        "--hatching",
+        "turing",
+        "--angle",
+        "30",
+        "--spacing",
+        "0.035",
+        "--width-steps",
+        "4",
+        "--scale",
+        "0.18",
+        "--seed",
+        "3",
+        "--hatch-width",
+        "0.5",
+    ]);
+    let w = frame.clone();
+    references.push(plate(
+        "gallery-frame-edges",
+        format!("docs/gallery/make.py: surface {} --save B; bake B", frame.join(" ")),
+        Box::new(move |scratch| surface(&w, scratch, "frame-edges")),
+    ));
+    let w: Vec<String> = frame.iter().chain(&turing).cloned().collect();
+    references.push(plate(
+        "gallery-frame-turing",
+        format!("docs/gallery/make.py: surface {} --save B; bake B", w.join(" ")),
+        Box::new(move |scratch| surface(&w, scratch, "frame-turing")),
+    ));
     references
 }
 
@@ -204,8 +262,8 @@ pub fn all(fixtures: &Path) -> Vec<Reference> {
             Box::new(move |_| baked(&bundle, None, true)),
         ));
     }
-    // PORT: phase 4 -- sn, sn-relief, torus-linear, periodic and the frame's
-    // two gallery drawings (`surface ... --save B; bake B`).
+    // PORT: phase 4 -- sn, sn-relief, torus-linear and periodic (`surface
+    // ... --save B; bake B`).
     // The slope lines of |f| golden (PR #60), drawn as `kurven-cli
     // fixtures` draws it: tests/fixtures/fields/landscape_slope_lines.svg.
     let slopes = fixtures.join("fields/landscape_slope_lines.kurven");
@@ -221,8 +279,14 @@ pub fn all(fixtures: &Path) -> Vec<Reference> {
             Ok((strokes, layers.iter().map(|(l, _)| l.spec.name.clone()).collect()))
         }),
     ));
-    // PORT: phase 5 -- solid-{tetrahedron, cube, octahedron, dodecahedron,
-    // icosahedron, csaszar, frame} and composite-three.
+    for kind in ["tetrahedron", "cube", "octahedron", "dodecahedron", "icosahedron", "csaszar", "frame"] {
+        references.push(plate(
+            &format!("solid-{kind}"),
+            format!("surface solid --kind {kind} --save B; bake B"),
+            Box::new(move |scratch| surface(&words(&["solid", "--kind", kind]), scratch, &format!("solid-{kind}"))),
+        ));
+    }
+    // PORT: phase 5 -- composite-three.
     references
 }
 

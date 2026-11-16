@@ -4,10 +4,12 @@
 //! - [`compare`] holds two drawings of one scene to each other per layer;
 //! - [`args`] reads the command line as Swift's `Args` does;
 //! - [`commands`] are `landscape` and `bake`, and the scene they read;
-//! - [`references`] bakes the reference drawings as `References.swift` does.
+//! - [`references`] bakes the reference drawings as `References.swift` does;
+//! - [`solid`] is `surface solid`, a polyhedron by name.
 
 pub mod args;
 pub mod commands;
 pub mod compare;
 pub mod references;
+pub mod solid;
 pub mod svg;

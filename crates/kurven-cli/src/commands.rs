@@ -13,6 +13,7 @@ use kurven_core::manifest::{
     CameraPreset, ContourField, DirectionField, Domain, DomainAxis, HeightPolicy, Interval, LayerRole, LayerSource,
     LayerSpec, Manifest, PolyhedronManifest, Provenance, RealBand, Restriction, Seeds, Spacing, Truncation,
 };
+use kurven_core::polyhedron_bundle::PolyhedronBundle;
 use kurven_core::scene::Scene;
 use kurven_core::simd::Vec3;
 use kurven_core::svg::{self, Strokes};
@@ -412,17 +413,28 @@ pub struct Drawing {
 }
 
 /// The scene a bundle of any kind describes, under `--preset` or its first
-/// preset: a landscape's (`load_scene`). A parametric surface's and a
-/// polyhedron's are refused until their phases.
+/// preset: a landscape's (`load_scene`), or a polyhedron's, built from its
+/// vertices and loops. A parametric surface's is refused until Phase 4.
 pub fn load_drawing(args: &Args) -> Result<Drawing, CliError> {
     let Some(path) = args.positional.get(1) else { return Err(CliError("which bundle?".to_string())) };
     let url = Path::new(path);
-    if holds(url, "polyhedron")? {
-        // PORT: phase 5 -- `PolyhedronBundle.read`: the solid built from its
-        // vertices and loops, its layers drawn on it, and `scene(preset:)`.
-        return Err(CliError(format!(
-            "{path} holds a polyhedron, which the port does not draw yet (phase 5: PolyhedronBundle)"
-        )));
+    if PolyhedronBundle::holds_polyhedron(url)? {
+        let polyhedron = PolyhedronBundle::read(url)?;
+        let presets = &polyhedron.manifest.presets;
+        let preset = match args.flag("preset") {
+            Some(name) => polyhedron.manifest.preset(name)?.clone(),
+            None => match presets.first() {
+                Some(first) => first.clone(),
+                None => return Err(CliError("bundle has no presets; pass --preset once one exists".to_string())),
+            },
+        };
+        let scene = polyhedron.scene(&preset);
+        return Ok(Drawing {
+            url: polyhedron.url.clone(),
+            provenance: polyhedron.manifest.provenance.clone(),
+            preset,
+            scene,
+        });
     }
     if holds(url, "surface")? {
         // PORT: phase 4 -- `SurfaceBundle.read`: the surface built from its
