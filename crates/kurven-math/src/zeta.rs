@@ -13,6 +13,7 @@ use std::sync::LazyLock;
 use crate::complex::Complex;
 use crate::gamma::Gamma;
 use crate::real;
+use crate::swift;
 
 pub enum Zeta {}
 
@@ -34,6 +35,9 @@ const BERNOULLI_EVEN: [f64; 13] = [
     854513.0 / 138.0,
     -236364091.0 / 2730.0,
 ];
+
+/// What the port answers where Swift's `Int(...)` traps (`swift::int`).
+const NAN: Complex = Complex::new(f64::NAN, f64::NAN);
 
 /// The orders `order_for_height` can ask for.
 const ORDERS_LO: usize = 16;
@@ -88,15 +92,19 @@ impl Zeta {
     }
 
     /// How many terms the error bound needs at this height:
-    /// `|γ_n(s)| ≲ 3(1 + 2|t|)e^{π|t|/2}(3+√8)^{-n}`.
-    fn order_for_height(t: f64) -> usize {
+    /// `|γ_n(s)| ≲ 3(1 + 2|t|)e^{π|t|/2}(3+√8)^{-n}`. None at a NaN height,
+    /// where Swift's `Int(...)` traps.
+    fn order_for_height(t: f64) -> Option<usize> {
         let need = (PI * t / 2.0 + real::log(3.0 * (1.0 + 2.0 * t)) + 15.0 * real::log(10.0)) / *LOG_GROWTH;
-        need.ceil().max(ORDERS_LO as f64).min(ORDERS_HI as f64) as usize
+        let clamped = swift::min(swift::max(need.ceil(), ORDERS_LO as f64), ORDERS_HI as f64);
+        swift::int(clamped).map(|n| n as usize)
     }
 
     #[allow(clippy::needless_range_loop)]
     fn euler_maclaurin(s: Complex, terms: usize) -> Complex {
-        let cut = 10usize.max(s.im.abs() as usize + 10);
+        // Swift's `max(10, Int(abs(s.im)) + 10)`, which traps past 2^63.
+        let Some(cut) = swift::int(s.im.abs()).and_then(|t| t.checked_add(10)) else { return NAN };
+        let cut = cut.max(10) as usize;
         let mut total = Complex::ZERO;
         for k in 1..cut {
             total += Complex::exp(-s * real::log(k as f64));
@@ -116,7 +124,7 @@ impl Zeta {
 
     /// ζ on Re s >= 1/2.
     fn half_plane(s: Complex) -> Complex {
-        let n = Zeta::order_for_height(s.im.abs());
+        let Some(n) = Zeta::order_for_height(s.im.abs()) else { return NAN };
         let w = &WEIGHTS[offset(n)..offset(n) + n];
         let logs = &LOGS[..n];
         let mut total = Complex::ZERO;
@@ -146,5 +154,21 @@ impl Zeta {
             * Complex::sin(PI * s / 2.0)
             * Gamma::gamma(1.0 - s)
             * Zeta::half_plane(1.0 - s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Swift built from `Sources/KurvenMath` exits on SIGTRAP for ζ at
+    /// (nan, nan) and (0.3, nan): `Int(...)` of a NaN order. The port answers
+    /// NaN there, and is Swift's elsewhere.
+    #[test]
+    fn where_swift_traps_the_port_answers_nan() {
+        assert!(Zeta::zeta(Complex::new(f64::NAN, f64::NAN)).is_nan());
+        assert!(Zeta::zeta(Complex::new(0.3, f64::NAN)).is_nan());
+        assert!(Zeta::zeta(Complex::new(f64::NAN, 0.0)).is_nan());
+        assert!(Zeta::euler_maclaurin(Complex::new(1.0, 1e19), 12).is_nan());
     }
 }
