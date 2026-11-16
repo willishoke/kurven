@@ -15,11 +15,14 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 pub mod bisection;
+pub mod camera;
 pub mod convex_partition;
+pub mod depth;
 pub mod fixtures;
 pub mod hatching;
 pub mod json;
 pub mod manifest;
+pub mod navigation;
 pub mod npy;
 pub mod polyline;
 pub mod simd;
