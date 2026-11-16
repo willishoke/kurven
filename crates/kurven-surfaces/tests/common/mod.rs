@@ -177,7 +177,9 @@ pub fn compare_with_ray_cast(
         let hu = swift::min(2.0 * px / swift::max(speed(jet.du), 1e-12), 0.3);
         let hv = swift::min(2.0 * px / swift::max(speed(jet.dv), 1e-12), 0.3);
         let mut near = false;
-        for (su, sv) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+        for (su, sv) in
+            [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)]
+        {
             let p = (surface.map)(P2::new(c.x() + su * hu, c.y() + sv * hv)).position;
             if torus_sees(p, big_r, r, eye) != truth {
                 near = true;
@@ -187,12 +189,7 @@ pub fn compare_with_ray_cast(
         if !near {
             unexplained += 1;
             if example.is_empty() {
-                example = format!(
-                    "e.g. ({:.4}, {:.4}) truth {}",
-                    c.x(),
-                    c.y(),
-                    if truth { "seen" } else { "hidden" }
-                );
+                example = format!("e.g. ({:.4}, {:.4}) truth {}", c.x(), c.y(), if truth { "seen" } else { "hidden" });
             }
         }
     }

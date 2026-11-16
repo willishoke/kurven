@@ -11,7 +11,8 @@
 //! many files there are, then reads file `i`'s path and bytes from the
 //! module's memory at `golden_path_ptr(i)` (`golden_path_len(i)` bytes) and
 //! `golden_bytes_ptr(i)` (`golden_bytes_len(i)` bytes). `bake_gallery_plate`
-//! bakes a gallery plate, for timing.
+//! bakes a gallery plate, and `bake_surface_reference` a surface drawing, for
+//! timing.
 
 use std::sync::OnceLock;
 
@@ -65,6 +66,16 @@ pub extern "C" fn bake_gallery_plate(which: u32) -> u32 {
         _ => return 0,
     };
     kurven_golden::gallery::bake_plate(name).map_or(0, |b| b.strokes.path_count() as u32)
+}
+
+/// Builds and bakes a reference surface drawing in memory
+/// (`kurven_golden::surfaces::bake_reference`): 0 is `surface sn`, 1 `surface
+/// sn --relief 0.4`, each at the CLI's defaults and a 3000-pixel buffer.
+/// Returns its stroke count, or 0 for another number or a drawing that does
+/// not bake. For timing under Node (`bench.mjs`), against native.
+#[unsafe(no_mangle)]
+pub extern "C" fn bake_surface_reference(which: u32) -> u32 {
+    kurven_golden::surfaces::bake_reference(which).map_or(0, |b| b.strokes.path_count() as u32)
 }
 
 #[cfg(test)]
