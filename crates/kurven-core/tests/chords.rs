@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use kurven_core::grid::Grid2D;
-use kurven_core::hatch_stub::HatchContext;
+use kurven_core::hatch::HatchContext;
 use kurven_core::hatching::FaceSelector;
 use kurven_core::manifest::{Affine2, ContourField, Domain, Interval, Region, Restriction, Truncation};
 use kurven_core::parametric::{ParamAxis, ParamRectangle};

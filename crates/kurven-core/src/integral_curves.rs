@@ -72,7 +72,7 @@ use kurven_math::{real, swift};
 
 use crate::bisection::bisect;
 use crate::face::{Face, FaceCopy};
-use crate::hatch_stub::HatchContext;
+use crate::hatch::HatchContext;
 use crate::hatching::FaceSelector;
 use crate::manifest::{Affine2, ContourField, DirectionField, LayerSource, Region, Seeds, Spacing};
 use crate::parametric::{ParamScalar, SurfaceJet};

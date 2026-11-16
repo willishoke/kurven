@@ -18,7 +18,7 @@ use std::f64::consts::PI;
 use kurven_core::bundle::KurvenBundle;
 use kurven_core::face::Face;
 use kurven_core::fixtures;
-use kurven_core::hatch_stub::HatchContext;
+use kurven_core::hatch::HatchContext;
 use kurven_core::hatching::FaceSelector;
 use kurven_core::integral_curves::{End, Limits, Traced};
 use kurven_core::manifest::{
