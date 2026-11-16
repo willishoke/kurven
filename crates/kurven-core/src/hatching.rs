@@ -512,11 +512,9 @@ impl Turing {
     /// The sign at lattice point `(r, s)` under `seed`: a mix of the three,
     /// its lowest bit.
     pub fn sign(r: i64, s: i64, seed: u64) -> f64 {
-        let mut z =
-            seed ^ (r as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (s as u64).wrapping_mul(0xD1B5_4A32_D192_ED03);
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^= z >> 31;
+        let z = crate::splitmix::mix(
+            seed ^ (r as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (s as u64).wrapping_mul(0xD1B5_4A32_D192_ED03),
+        );
         if z & 1 == 0 { -1.0 } else { 1.0 }
     }
 

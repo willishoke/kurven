@@ -1867,6 +1867,14 @@ pub struct ObliqueProjection {
 }
 
 impl ObliqueProjection {
+    /// The plates' three projections, as Swift's camera golden set
+    /// (`Fixtures.swift`) and the navigation suites name them.
+    pub const PLATES: [(&'static str, ObliqueProjection); 3] = [
+        ("recip", ObliqueProjection { shear: 0.5, x_angle: -55.0, z_angle: -90.0, flip_x: true, y_scale: None }),
+        ("elliptic", ObliqueProjection { shear: 0.51, x_angle: -63.0, z_angle: -90.0, flip_x: true, y_scale: None }),
+        ("zeta", ObliqueProjection { shear: -0.18, x_angle: -79.5, z_angle: -90.0, flip_x: true, y_scale: Some(0.75) }),
+    ];
+
     pub fn from_json(json: &JsonValue) -> Result<ObliqueProjection, SchemaError> {
         let o = json.object("ObliqueProjection")?;
         Ok(ObliqueProjection {

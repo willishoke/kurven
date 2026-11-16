@@ -20,6 +20,7 @@ use kurven_core::polyline::PolylineSet;
 use kurven_core::simd::{Vec2, Vec3};
 use kurven_core::solid::Solid;
 use kurven_core::spaces::{AABB, Angle, DomainSpace, P2, P3, PageSpace, ViewSpace, WorldSpace};
+use kurven_core::splitmix::SplitMix;
 use kurven_core::surface_request::{Shape, SurfaceRequest};
 use kurven_core::svg::{self, Strokes, Style};
 use kurven_math::real;
@@ -38,27 +39,14 @@ pub fn all() -> Vec<Golden> {
     ]
 }
 
-/// The plates' three projections, as the navigation suites name them.
 fn projections() -> [(&'static str, ObliqueProjection); 3] {
-    [
-        ("recip", ObliqueProjection { shear: 0.5, x_angle: -55.0, z_angle: -90.0, flip_x: true, y_scale: None }),
-        ("elliptic", ObliqueProjection { shear: 0.51, x_angle: -63.0, z_angle: -90.0, flip_x: true, y_scale: None }),
-        ("zeta", ObliqueProjection { shear: -0.18, x_angle: -79.5, z_angle: -90.0, flip_x: true, y_scale: Some(0.75) }),
-    ]
+    ObliqueProjection::PLATES
 }
 
 /// Points spread over a box, by Swift's SplitMix (the suite's generator).
 fn points(seed: u64, n: usize) -> Vec<P3<WorldSpace>> {
-    let mut state = seed;
-    let mut next = |lo: f64, hi: f64| {
-        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^= z >> 31;
-        lo + (hi - lo) * (z >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0)
-    };
-    (0..n).map(|_| P3::new(next(-8.0, 8.0), next(-30.0, 30.0), next(0.0, 6.0))).collect()
+    let mut g = SplitMix::new(seed);
+    (0..n).map(|_| P3::new(g.next(-8.0, 8.0), g.next(-30.0, 30.0), g.next(0.0, 6.0))).collect()
 }
 
 fn vec3(v: Vec3) -> String {

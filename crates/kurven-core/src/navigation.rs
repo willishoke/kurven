@@ -395,42 +395,10 @@ mod tests {
     //! Swift's tolerances.
 
     use super::*;
-
-    /// A deterministic generator. The property tests want the same hundred cases
-    /// every run, so a failure is reproducible rather than a story about last
-    /// Tuesday. Swift's `SplitMix`, to the bit.
-    pub(crate) struct SplitMix {
-        state: u64,
-    }
-
-    impl SplitMix {
-        pub(crate) fn new(seed: u64) -> SplitMix {
-            SplitMix { state: seed }
-        }
-        pub(crate) fn next_bits(&mut self) -> u64 {
-            self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut z = self.state;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            z ^ (z >> 31)
-        }
-        pub(crate) fn next(&mut self, lo: f64, hi: f64) -> f64 {
-            lo + (hi - lo) * (self.next_bits() >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0)
-        }
-    }
+    use crate::splitmix::SplitMix;
 
     fn projections() -> [(&'static str, ObliqueProjection); 3] {
-        [
-            ("recip", ObliqueProjection { shear: 0.5, x_angle: -55.0, z_angle: -90.0, flip_x: true, y_scale: None }),
-            (
-                "elliptic",
-                ObliqueProjection { shear: 0.51, x_angle: -63.0, z_angle: -90.0, flip_x: true, y_scale: None },
-            ),
-            (
-                "zeta",
-                ObliqueProjection { shear: -0.18, x_angle: -79.5, z_angle: -90.0, flip_x: true, y_scale: Some(0.75) },
-            ),
-        ]
+        ObliqueProjection::PLATES
     }
 
     fn origin() -> P3<WorldSpace> {

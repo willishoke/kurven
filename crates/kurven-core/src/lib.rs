@@ -30,6 +30,7 @@ pub mod polyline;
 pub mod simd;
 pub mod solid;
 pub mod spaces;
+pub mod splitmix;
 pub mod surface_request;
 pub mod svg;
 pub mod text;

@@ -171,9 +171,7 @@ mod tests {
     /// as it is (FINDINGS, "Where the Swift looks wrong"); nothing reaches it.
     #[test]
     fn perspective_page_coordinates_divide_by_the_least_normal_as_swift_does() {
-        let projection =
-            ObliqueProjection { shear: 0.5, x_angle: -55.0, z_angle: -90.0, flip_x: true, y_scale: None };
-        let mut orbit = Orbit::matching(&projection, P3::new(0.0, 0.0, 0.0));
+        let mut orbit = Orbit::matching(&ObliqueProjection::PLATES[0].1, P3::new(0.0, 0.0, 0.0));
         orbit.distance = Some(10.0);
         orbit.field_of_view = Angle::from_degrees(50.0);
         let camera = orbit.camera();
