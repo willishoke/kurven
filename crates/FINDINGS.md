@@ -1398,3 +1398,105 @@ the shading layers are made again with it once built; the seed spacing is
 held to the shape `grid_shape` gives the build. Where a flag and the
 expression are both wrong, the port names the flag and Swift the
 expression.
+
+## 2026-11-16 · The six phase-line drawings were the port's Float.pi
+
+The ang_major difference in gallery-cn, the four cubic corners and
+landscape-gamma ("The phase lines Swift and the port draw differently")
+was a constant, not rounding. Swift's `Contour.cut(of:)` turns the float
+phase grid by `$0 > 0 ? $0 - .pi : $0 + .pi`, where `.pi` is `Float.pi`,
+which Swift rounds toward zero: 0x40490FDA, 3.1415925. The port's
+`contour::cut` used `f32::consts::PI`, rounded to nearest: 0x40490FDB,
+3.1415927. With Swift's (`contour::SWIFT_FLOAT_PI`), ang_major of all six
+is at 0 page units and 0 of length with Swift's stroke counts, the skip is
+gone from `references.txt`, and every layer of the eleven drawings is held.
+The port's goldens moved with it: core/contour.txt's cut, and ang_major's
+last length bits and vertex hash in landscape/cubic.txt and gamma-bands.txt.
+The port has no other `f32` π; the Swift outside KurvenMetal that a grep
+shows using `.pi` among floats is this one, though a grep cannot see every
+place Swift infers `Float` for `.pi`.
+
+**How it was found.** Swift's KurvenLandscape copied into a scratch package,
+and the port's refine.rs into a scratch crate, both printing every input
+path, snapped vertex, chord estimate, split and trace step as bit patterns,
+run on the same bundle files. The first difference was the refiner's input:
+the grid's paths of the cut, a vertex's coordinate apart by about 1e-7 of a
+cell. Phase 3's entry looked inside the refiner and described where the two
+routes parted, not why. With the constant fixed the two logs agree stage by
+stage to the last bits of f.
+
+**Why Swift's constant is the right one, analytically.** `quantize` clamps
+a phase grid into the samples' own range, so a sample of exactly ±π (f real
+and negative) is stored as ±0x40490FDA, the largest float under π. Turned
+by that same float, it is exactly 0: on the level of the cut, whichever the
+sign of Im f's zero decided ±π. Turned by π rounded to nearest, it was
+±2.4e-7 by that sign. That is what happens on a window's edge on the real
+axis, where Γ and cn are real: the grid drew the cut along the edge, or
+not, as the zero's sign fell, and the port's 4.13 page units of rays along
+landscape-gamma's edge were that. Test: `kurven-landscape/tests/refine.rs`,
+`the_cut_along_the_windows_edge_does_not_hang_on_the_sign_of_a_zero`
+(z − 1 and −(1 − z), whose arg on the real axis is π and −π, draw the same
+cut; it fails with the nearest π). `kurven-core`'s
+`the_cut_turns_the_grid_by_swifts_float_pi` pins the constant.
+
+**Corrections to the Phase 3 entry.**
+
+- *The cubic's saddle.* Swift does not split the path at z = 0 by rounding.
+  The grid's path from the 60° branch to the 0° one is subdivided across
+  the saddle, and its last chord, between a vertex on the 120° branch and
+  one on the 60°, is 2.5e-4 off the level at the depth limit, 0.026 of a
+  cell against the 0.02 tolerance: no last bit decides that. The old port
+  placed the chord because its cut's vertices started elsewhere.
+- *Γ's pole on the edge.* Newton still puts the pole at −2 at Im +1.33e-38
+  in Swift and −1.72e-40 in the port, and it changes nothing: `in_window`
+  allows 1e-9 of a cell, so it is in the window in both, and under the
+  truncation a pole seeds no rays.
+- *cn.* The same constant; the pairing at 2iK' and the stretch K to 2K are
+  now Swift's.
+
+**What both now draw at the degenerate points, and Swift's defect.** The
+port and Swift draw the same, and in two places it is not what f says:
+
+- *A stretch drawn twice.* The cut of 1/(z³ − 1) through its saddle at 0
+  has six branches; every one is drawn, but the two pieces of the path
+  split at the saddle are each followed on f across it, onto the 300° and
+  240° branches another run already draws. `drawnOnce` drops only a run
+  lying wholly along another, so both stay: in the plane, 2.34 of the
+  2.35 units of the run along those branches are drawn again (1.39 by one
+  piece, 0.94 by the other). In gallery-cn the zero at 3K's ray runs along
+  the lower edge through the saddle at 2K to the zero at K, and the grid's
+  run from K along the edge to 2K and up to the pole at 2K + iK' covers K to
+  2K again: 1.99 units twice. Both are in Swift's reference SVGs.
+  Reproduction in Swift: build the corners' bundle (`kurven-cli landscape
+  "1/(z^3 - 1)" --re -1.3,1.6 --im -1.2,1.5 --res 300 --truncation 5 -o
+  c.kurven`), then `NativeLandscape.refiner(for:)`'s `refine(field: .phase,
+  level: .pi, Contour.cut(of: phase), points: singularPoints(), ceiling:
+  pow(2, 2.5))`, the rung the hook asks for 1.1 × 5: four runs of 2.345, 2.251, 3.123 and 1.882 units, the third and
+  fourth lying along the first for 1.392 and 0.938. In the port the test
+  `the_cut_through_a_saddle_draws_every_branch_and_two_of_them_twice_as_swift`
+  counts the branches at 0°, 60°, ..., 300° drawn 1, 1, 1, 1, 2, 2 times.
+  The change Swift would need, and the port with it in the same commit so
+  the gate still holds them to each other: `drawnOnce` by the stretch, not
+  the run (cut out of a run each stretch of two or more vertices lying
+  within a tenth of a cell of a longer or earlier run, splitting it there),
+  or a `traced` that stops where a followed end comes within a tenth of a
+  cell of a run already kept. Either draws every branch once; the six
+  references would be rebaked on both sides.
+- *The cut along the window's edge.* Analytically the cut of the closed
+  window includes the whole edge where f is real and negative. The grid
+  draws it only on the side of each saddle of f where the window beside the
+  edge is over the level (its tie: a node on the level is not over it), and
+  a line followed on f along the edge (cn's from 3K) draws it whole. Swift's
+  suite leaves rays along the edge optional ("refine: phase contours end on
+  the zero" asks five of seven rays of each zero of 1/Γ, "the two along the
+  real axis lie on the window's edge"), and the wall's top edge (wall_edges)
+  draws that edge at |f| in every landscape, so the ink is there either
+  way. It no longer hangs on a sign; a rule (say, a phase run along the
+  window's edge is left to the wall's top edge) is the owner's to make, in
+  both.
+
+**The last bits left on this path.** The ceiling the hook is asked under
+is the memo's rung, 2^2.5 for 1.1 × 5: Darwin's pow gives the correctly
+rounded 0x4016A09E667F3BCD, the libm crate one ulp under. It only decides
+whether a vertex's |f| is over the ceiling, and none of the six drawings has
+one within an ulp of it.
