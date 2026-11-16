@@ -298,6 +298,12 @@ fn write_bytes(bytes: &[u8], path: &Path) -> Result<(), NpyError> {
 
 /// The bytes `np.save` writes for a C-contiguous array of this dtype, so a
 /// fixture written here is byte-identical to one numpy wrote.
+///
+/// Version 1.0, whose header length is two bytes, as Swift writes every
+/// file. A header past 65,535 bytes (a shape of thousands of axes) does not
+/// fit there: Swift writes its length masked to two bytes, a file no reader
+/// can parse; the port writes version 2.0, a four-byte length, as numpy does
+/// (`_wrap_header_guess_version`), padded by numpy's rule.
 fn encode(dtype: NpyDType, shape: &[usize], count: usize, data: impl Iterator<Item = u8>) -> Vec<u8> {
     assert!(shape.iter().product::<usize>() == count, "shape does not match count");
     let shape_text = if shape.len() == 1 {
@@ -305,18 +311,29 @@ fn encode(dtype: NpyDType, shape: &[usize], count: usize, data: impl Iterator<It
     } else {
         format!("({})", shape.iter().map(usize::to_string).collect::<Vec<_>>().join(", "))
     };
-    let mut header = format!("{{'descr': '{}', 'fortran_order': False, 'shape': {shape_text}, }}", dtype.descr());
+    let dict = format!("{{'descr': '{}', 'fortran_order': False, 'shape': {shape_text}, }}", dtype.descr());
     // numpy pads the header so the data starts on a 64-byte boundary.
-    let unpadded = 10 + header.len() + 1;
+    let unpadded = 10 + dict.len() + 1;
     let padding = (64 - unpadded % 64) % 64;
-    header.push_str(&" ".repeat(padding));
-    header.push('\n');
-    let n = header.len();
-    let mut out = Vec::with_capacity(n + 10 + count * dtype.item_size());
+    let mut out = Vec::with_capacity(unpadded + padding + 2 + count * dtype.item_size());
     out.extend_from_slice(&MAGIC);
-    out.extend_from_slice(&[1, 0]);
-    out.extend_from_slice(&[(n & 0xFF) as u8, ((n >> 8) & 0xFF) as u8]);
-    out.extend_from_slice(header.as_bytes());
+    if dict.len() + 1 + padding <= 0xFFFF {
+        let n = dict.len() + 1 + padding;
+        out.extend_from_slice(&[1, 0]);
+        out.extend_from_slice(&(n as u16).to_le_bytes());
+        out.extend_from_slice(dict.as_bytes());
+        out.extend(std::iter::repeat_n(b' ', padding));
+    } else {
+        // numpy's `_wrap_header`: 64 less the preamble and header modulo
+        // 64, so a header already aligned takes 64 spaces more.
+        let padding = 64 - (12 + dict.len() + 1) % 64;
+        let n = u32::try_from(dict.len() + 1 + padding).expect("an npy header under 4 GB");
+        out.extend_from_slice(&[2, 0]);
+        out.extend_from_slice(&n.to_le_bytes());
+        out.extend_from_slice(dict.as_bytes());
+        out.extend(std::iter::repeat_n(b' ', padding));
+    }
+    out.push(b'\n');
     out.extend(data);
     out
 }
@@ -394,6 +411,21 @@ mod tests {
         let read_back = read(&dir).unwrap();
         std::fs::remove_file(&dir).unwrap();
         assert_eq!(read_back, back);
+    }
+
+    /// A header too long for version 1.0's two-byte length is written as
+    /// version 2.0, a four-byte one, and reads back; never a masked length.
+    #[test]
+    fn a_header_past_65535_bytes_is_written_as_version_2() {
+        let shape = vec![1usize; 25_000];
+        let bytes = encode_f64(&[2.5], &shape);
+        assert_eq!(&bytes[6..8], &[2, 0]);
+        let n = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+        assert_eq!((12 + n) % 64, 0, "the data starts on a 64-byte boundary");
+        assert_eq!(bytes.len(), 12 + n + 8);
+        let back = parse(&bytes).unwrap();
+        assert!(back.shape == shape && back.doubles().unwrap() == [2.5]);
+        assert_eq!(&encode_f64(&[2.5], &[1])[6..8], &[1, 0], "a short header stays version 1.0");
     }
 
     /// What the writer writes for numpy's own files is numpy's bytes.

@@ -307,6 +307,16 @@ key; Swift's decoder does not refuse, so neither does the port, and a test
 pins it (`a_misspelled_optional_number_falls_back_as_in_swift`). A
 landscape's or a surface's hatching refuses any `step` before reading it.
 
+## 2026-11-15 · The npy writer differs from Swift's past a 65,535-byte header
+
+`NPY.write` always writes version 1.0 and puts the header's length down
+as `n & 0xFF, (n >> 8) & 0xFF`, unchecked: a header past 65,535 bytes gets
+a wrong length, and the file cannot be read. It takes a shape of some
+twenty thousand axes, so nothing reaches it. The port does not write a
+wrong length: past 65,535 it writes version 2.0, a four-byte length, as
+numpy's `np.save` does, padded by numpy's rule (64 less the preamble and
+header modulo 64). Below that the bytes are Swift's, and numpy's.
+
 ## 2026-11-15 · The wasm module grew to 503,030 bytes
 
 From 86,969 in Phase 0; its code section is 455 KB. The golden generator
