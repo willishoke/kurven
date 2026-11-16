@@ -10,15 +10,17 @@
 use kurven_core::fixtures;
 use kurven_core::grid::Grid2D;
 use kurven_core::hatch::HatchContext;
-use kurven_core::hatching::FaceSelector;
-use kurven_core::json::{JsonObject, Members};
+use kurven_core::hatching::{FaceSelector, Hatching, Tone, Turing};
+use kurven_core::json::{self, JsonObject, JsonValue, Members};
 use kurven_core::manifest::{
     Affine2, BoundaryPerimeter, Domain, DomainAxis, HeightPolicy, LayerRole, LayerSource, LayerSpec, Occluder, Region,
     Restriction, Truncation, Walls,
 };
 use kurven_core::polyline::PolylineSet;
+use kurven_core::simd::{Vec2, Vec3};
 use kurven_core::spaces::{P3, WorldSpace};
 use kurven_core::surface::Surface;
+use kurven_math::swift;
 
 struct Fixture {
     index: JsonObject,
@@ -317,4 +319,91 @@ fn one_rule_for_a_manifests_step_and_angles_on_walls_as_on_plateaus() {
     );
     assert!(source(walls, "1.58").is_err(), "an angle a hundredth off vertical is refused on a wall");
     assert!(source(plateaus, "0.01").is_err(), "and a hundredth off an axis on a plateau");
+}
+
+/// Hatchings.swift's "hatching: Turing's pattern is a function of the seed,
+/// mean zero, half positive".
+#[test]
+fn turings_pattern_is_a_function_of_the_seed_mean_zero_half_positive() {
+    let p = Vec2::new(3.1, -2.7);
+    assert!(
+        Turing::value(p, 7) == Turing::value(p, 7) && Turing::value(p, 7) != Turing::value(p, 8),
+        "the same point under the same seed is the same value, under another seed another"
+    );
+    let (mut total, mut positive, mut n) = (0.0, 0, 0);
+    let (mut lo, mut hi) = (1.0f64, -1.0f64);
+    for i in 0..120 {
+        for j in 0..120 {
+            let v = Turing::value(Vec2::new(i as f64 * 0.5, j as f64 * 0.5), 3);
+            total += v;
+            n += 1;
+            if v > 0.0 {
+                positive += 1;
+            }
+            lo = swift::min(lo, v);
+            hi = swift::max(hi, v);
+        }
+    }
+    let (mean, share) = (total / n as f64, positive as f64 / n as f64);
+    assert!(
+        mean.abs() < 0.05 && (share - 0.5).abs() < 0.05 && lo < -0.5 && hi > 0.5,
+        "over a 60 by 60 window the mean is near zero and half the pattern is positive: mean {mean:.3}, {:.0}% \
+         positive, range [{lo:.2}, {hi:.2}]",
+        share * 100.0
+    );
+}
+
+/// Hatchings.swift's "hatching: a tone or a step that cannot be read is
+/// refused at decode".
+#[test]
+fn a_tone_or_a_step_that_cannot_be_read_is_refused_at_decode() {
+    let hatching = |tone: &str, step: &str| -> Result<Hatching, String> {
+        let text = format!(r#"{{"angle": 0, "spacing": 0.1, "widthSteps": 1{step}, "tone": {tone}}}"#);
+        let json = json::parse(&text).map_err(|e| format!("{e:?}"))?;
+        let o = json.object("hatching").map_err(|e| format!("{e:?}"))?;
+        Hatching::from_fields(o).map_err(|e| format!("{e:?}"))
+    };
+    assert!(hatching(r#"{"kind": "turing", "scale": 0.5, "seed": 1}"#, "").is_ok(), "a well-formed hatching decodes");
+    for scale in ["0", "-0.5"] {
+        assert!(
+            hatching(&format!(r#"{{"kind": "turing", "scale": {scale}, "seed": 1}}"#), "").is_err(),
+            "Turing's tone at scale {scale} is refused"
+        );
+    }
+    assert!(
+        hatching(r#"{"kind": "halfLambert", "light": [0, 0, 0]}"#, "").is_err(),
+        "a light of no direction is refused"
+    );
+    for step in ["0", "-0.1", "1e-300"] {
+        assert!(
+            hatching(r#"{"kind": "uniform"}"#, &format!(r#", "step": {step}"#)).is_err(),
+            "a step of {step} is refused"
+        );
+    }
+}
+
+/// Hatchings.swift's "hatching: a hatching and a hatching layer round-trip
+/// through their fields".
+#[test]
+fn a_hatching_and_a_hatching_layer_round_trip_through_their_fields() {
+    let hatchings = [
+        Hatching::plain(0.4, 0.1),
+        Hatching::new(-1.2, 0.05, Some(0.01), Tone::Turing { scale: 0.7, seed: 0xDEAD_BEEF_0000_0001 }, 5),
+        Hatching::new(0.0, 0.2, None, Tone::HalfLambert { light: Vec3::new(0.1, -0.3, 0.9) }, 2),
+    ];
+    for hatching in hatchings {
+        let back = Hatching::from_fields(&hatching.fields()).unwrap();
+        assert!(back == hatching, "{} decodes to itself", JsonValue::Object(hatching.fields()).canonical());
+    }
+    let sources = [
+        LayerSource::wall_hatching(vec![0, 2], 0.3, true, -0.5, 0.02),
+        LayerSource::plateau_hatching(DomainAxis::Imag, 0.4, true),
+    ];
+    for source in sources {
+        assert!(
+            LayerSource::from_json(&source.json()).unwrap() == source,
+            "{} decodes to itself",
+            source.json().canonical()
+        );
+    }
 }
