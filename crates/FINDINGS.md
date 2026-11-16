@@ -782,3 +782,90 @@ is under a hundredth of the tolerance (`1e-2 * tolerance * cell`): on |z| =
 0.8 at 41 samples one vertex is 1.2e-8 off, 2.4e-7 cells. That is Swift's
 rule, so the circle test holds vertices to that bound, and nine in ten to
 1e-9.
+
+## 2026-11-15 · Phase 3: slope lines and the landscape builder
+
+Ported whole: IntegralCurves.swift to `kurven-core/src/integral_curves.rs`
+(`VectorField` with its constant field's closed form, the integrator and
+its stopping rules, `Face::slope`, `height_slope`, the slope raised by the
+graph's metric, `Seeds::points` and `closes`, `Surface::integral_curves`
+and `graph_integral_curves`); `NativeLandscape.build` to
+`kurven-landscape/src/landscape.rs`; Refine.swift's `refiner(for: bundle)`
+and `benchmarkRefinement` to `refine.rs`. That empties Landscape.swift and
+Refine.swift of PORT holes. Lines of curvature and every integral curve on
+a parametric surface are LinesOfCurvature.swift's, Phase 4's; on the graph
+the principal directions answer no field, as in Swift.
+
+Spelled otherwise: Swift's `IntegralCurve` namespace is the module, so
+`IntegralCurve.End` is `integral_curves::End`, with `Section`, `Limits`
+and `Traced` beside it; `Face.raised(_:overGraphOf:)` and `raised(_:_:)`
+are `raised_over_graph` and `raised`; `refiner(for: bundle)` is
+`refiner_for_bundle`, beside the expression's `refiner`. Default arguments
+are explicit (`Limits::default()` is Swift's defaults). `build` answers a
+`BuildError`: Swift's thrown compile error, or a domain whose side is not
+a number, on which Swift's rounding traps.
+
+Merge note: `Surface::curves`' stub for `LayerSource::IntegralCurves`
+(`hatch_stub.rs`) becomes `PolylineSet::from_paths(&self.integral_curves(field,
+seeds, faces, &context, refine, &Limits::default()))`, as Hatch.swift's
+`curves` calls it. `integral_curves.rs` takes `HatchContext` from
+`crate::hatch_stub`; the import moves to `crate::hatch` when Hatch.swift
+lands.
+
+## 2026-11-15 · Slope lines: differences from Swift, by construction
+
+- **Parallel seeds.** Swift traces a copy's seeds with
+  `Heightfield.parallelMap`, each thread making a worker of its own: a
+  forked refiner (`ContourRefine.fork`) and the graph and field on it. The
+  port makes one worker per traced copy and traces its seeds in turn. A
+  fork is f compiled again and its hook is pure, so the curves are the
+  same.
+- **Where Swift traps.** `Seeds.points` by arc length counts its seeds with
+  `Int(ratio.rounded())` and then `0..<n`, which traps for a negative n: a
+  spacing below zero, which `Seeds.unsupported` refuses when a manifest is
+  decoded but a hand-built `Seeds` can hold. The port places no seed there.
+  The `cut!` of the first return cannot be nil (it is set at the first
+  return, before any later one), and the port reads it without a panic.
+- **The benchmark is native alone.** `benchmark_refinement` times with
+  `std::time::Instant`, which panics on wasm32-unknown-unknown, so it is
+  compiled out there. Nothing on the page asks for it.
+
+## 2026-11-15 · Slope lines: the suites, and what the golden draws
+
+IntegralCurves.swift's suites, at Swift's tolerances, none loosened (in
+`kurven-landscape/tests/integral_curves.rs` where they build a landscape
+with the refiner, `kurven-core/tests/integral_curves.rs` where they do
+not): slope lines of |f| on their phase contours on sn, the rational
+function and exp(z) (0.02 cells); each stopping rule (a zero 1e-12, the
+truncation edge 1e-12, a pole within 1e-3 cells, the domain's edge and a
+footprint 1e-12, closed loops of arg f's slope 0.02 cells, the step limit
+at eleven vertices, a seed off the domain); the slope of a coordinate
+raised by the metric (1e-8, the adjugate 1e-12) and exp(20z) followed to
+the edge; seeds once each and no closer than a cell; seeds by arc length
+(1e-9) and on tiled graphs (1e-9, 1e-12, sn 1e-5); the manifest; the
+constant field's flow to the bit. All pass. Two are ignored: "on f, seen
+exactly where the dense cast against f says" needs Scene's visibility (a
+parallel wave), and the torus half of the linear-curve suite needs
+`SurfaceDrawing.build` (Phase 4).
+
+The slope-lines golden (`tests/fixtures/fields/landscape_slope_lines`),
+read and given `refiner_for_bundle`'s hook as the bake gives it, traces 24
+curves, each from a zero of (z² − 1)/(z² + 1) to the truncation edge or the
+domain's edge, on its phase contour to 0.02 cells, but two: arg f = −π runs
+along the real axis from each zero into f's saddle at 0 and ends there,
+singular, 6.5e-6 from it (8e-5 cells), where the field vanishes. That is
+the integrator's rule, not a defect; the test holds those two to the true
+contour alone, as Swift's sn suite holds the lines through sn's critical
+points, since the drawn contour at ±π leaves the crossing open. The drawn
+comparison waits for the bake.
+
+Expressions.swift's bundle suites now run: "landscape: built here, it is
+the committed bundle" whole (the manifest byte for byte, the samples to
+1e-6, every layer's path count and length to 1e-6; both sides derive their
+hatchings and edges through `hatch_stub` until Hatch.swift lands), and
+"refine: contours placed by the function", "... phase contours end on the
+zeros of f", "... the branch cut is drawn once", "... a restyle places only
+the curves it has not placed before", "... a chord on the level set, split
+for its sag, is placed" (`kurven-landscape/tests/refined_bundles.rs`). All
+pass. With `build` in, the chord suite's and the restriction suite's
+stand-ins (the landscapes on f) can be built as Swift builds them.

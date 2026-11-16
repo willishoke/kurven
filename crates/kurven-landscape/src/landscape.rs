@@ -1,9 +1,5 @@
 //! A landscape sampled here: `kurven.landscape`, natively. The port of
-//! `Sources/KurvenLandscape/Landscape.swift`, all of it but
-//! `NativeLandscape.build`, which builds a `KurvenBundle` around a `Surface`
-//! (ported in another wave; it is built on [`NativeLandscape::sample`],
-//! [`NativeLandscape::quantize`], [`NativeLandscape::default_layers`] and the
-//! refiner's [`ContourRefiner::refine_hook`](crate::refine::ContourRefiner::refine_hook)).
+//! `Sources/KurvenLandscape/Landscape.swift`.
 //!
 //! The Python module's contract is that a landscape is *derived* -- an
 //! expression, a rectangle, a resolution and a truncation are the whole of
@@ -21,14 +17,25 @@
 //! computes `start + i * step`, so does this.
 
 use std::cmp::Ordering;
+use std::fmt;
+use std::path::PathBuf;
 
+use kurven_core::bundle::KurvenBundle;
+use kurven_core::grid::Grid2D;
 use kurven_core::hatching::{FaceSelector, Hatching};
+use kurven_core::json::{JsonObject, JsonValue};
 use kurven_core::manifest::{
-    BoundaryPerimeter, ContourField, Domain, DomainAxis, HeightPolicy, LayerRole, LayerSource, LayerSpec,
-    ObliqueProjection, PerimeterEdge, Restriction, Truncation,
+    Affine2, BoundaryPerimeter, CameraPreset, ContourField, Domain, DomainAxis, GridRef, HeightPolicy, LayerRole,
+    LayerSource, LayerSpec, Manifest, ObliqueProjection, Occluder, PerimeterEdge, Provenance, Region, Restriction,
+    Truncation, Walls,
 };
+use kurven_core::npy::NpyDType;
 use kurven_core::spaces::{P2, WorldSpace};
-use kurven_math::{Compiled, Complex, real, swift};
+use kurven_core::surface::Surface;
+use kurven_math::{Compiled, Complex, Expression, ExpressionError, real, swift};
+
+use crate::catalog::LandscapeRequest;
+use crate::refine::ContourRefiner;
 
 /// `(nReal, nImag)`: samples along Re z and along Im z.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +46,33 @@ pub struct GridShape {
 
 /// The landscape's numbers and rules (`NativeLandscape`, a namespace).
 pub enum NativeLandscape {}
+
+/// Why a landscape cannot be built (`NativeLandscape::build`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum BuildError {
+    /// The expression does not parse or compile (Swift's thrown error).
+    Expression(ExpressionError),
+    /// A domain whose side is not a number. Swift's rounding (`pyRound`)
+    /// traps on it; the port refuses it.
+    Domain(Domain),
+}
+
+impl fmt::Display for BuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BuildError::Expression(e) => write!(f, "{e}"),
+            BuildError::Domain(d) => write!(f, "a domain whose side is not a number: {d:?}"),
+        }
+    }
+}
+
+impl std::error::Error for BuildError {}
+
+impl From<ExpressionError> for BuildError {
+    fn from(e: ExpressionError) -> BuildError {
+        BuildError::Expression(e)
+    }
+}
 
 /// The samples: |f| and arg f on the grid, with every non-finite value
 /// pushed to `huge` and every value past it scaled back to it, as
@@ -394,6 +428,96 @@ impl NativeLandscape {
         let max32 = |x: f32, y: f32| if y >= x { y } else { x };
         let min32 = |x: f32, y: f32| if y < x { y } else { x };
         values.iter().map(|&v| min32(max32(v as f32, lo32), hi32)).collect()
+    }
+}
+
+impl NativeLandscape {
+    // MARK: the landscape
+
+    /// The bundle for a request: `build_scene` with the geometry left described
+    /// and `export --derived`, in memory.
+    ///
+    /// With `refine`, the contour layers are placed by the function rather
+    /// than by the grid (`ContourRefiner`), and the bundle carries the refiner
+    /// so every restyle keeps doing so. Off, the curves are exactly what the
+    /// Python side derives from the same grids, which is what the fixtures
+    /// compare.
+    ///
+    /// Swift's defaults are `git_sha` "native" and `refine` true.
+    pub fn build(request: &LandscapeRequest, git_sha: &str, refine: bool) -> Result<KurvenBundle, BuildError> {
+        let compiled = Expression::compile(&request.expression)?;
+        let canonical = compiled.expression();
+        let domain = request.domain;
+        let samples =
+            NativeLandscape::sample(&compiled, domain, request.resolution).ok_or(BuildError::Domain(domain))?;
+        let shape = samples.shape;
+        let truncation =
+            request.truncation.clone().unwrap_or_else(|| NativeLandscape::default_truncation(&samples.magnitude));
+        let density = NativeLandscape::wall_density(domain, shape).ok_or(BuildError::Domain(domain))?;
+        let perimeter = NativeLandscape::rectangle(domain, &density);
+        let layers = request.layers.clone().unwrap_or_else(|| {
+            NativeLandscape::default_layers(
+                domain,
+                &truncation,
+                NativeLandscape::ceiling(&truncation, &samples.magnitude),
+                request.spacing,
+                true,
+            )
+        });
+        let step = 1.max(shape.n_real.max(shape.n_imag) as i64 / NativeLandscape::OCCLUDER_RESOLUTION);
+        let grid_shape = (shape.n_imag as i64, shape.n_real as i64);
+        let params: JsonObject = [
+            ("expression", JsonValue::String(canonical.clone())),
+            ("name", JsonValue::String(request.name.clone())),
+            ("resolution", JsonValue::Int(request.resolution)),
+            ("rMin", JsonValue::Double(domain.real.lo)),
+            ("rMax", JsonValue::Double(domain.real.hi)),
+            ("iMin", JsonValue::Double(domain.imag.lo)),
+            ("iMax", JsonValue::Double(domain.imag.hi)),
+            ("nReal", JsonValue::Int(shape.n_real as i64)),
+            ("nImag", JsonValue::Int(shape.n_imag as i64)),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let manifest = Manifest::new(
+            domain,
+            GridRef { file: "height.npy".to_string(), shape: grid_shape, dtype: NpyDType::Float32 },
+            Some(GridRef { file: "phase.npy".to_string(), shape: grid_shape, dtype: NpyDType::Float32 }),
+            truncation.clone(),
+            Occluder {
+                step,
+                tiles: vec![Affine2::IDENTITY],
+                walls: Walls::Perimeter { perimeter, base: 0.0 },
+                region: Region::Full,
+                base: 0.0,
+            },
+            layers,
+            vec![CameraPreset {
+                name: "oblique".to_string(),
+                projection: NativeLandscape::PROJECTION,
+                depth_tolerance: NativeLandscape::DEFAULT_DEPTH_TOLERANCE,
+                buffer: NativeLandscape::DEFAULT_BUFFER,
+            }],
+            Provenance {
+                function: canonical,
+                example: "function".to_string(),
+                params,
+                cpu_count: 1,
+                git_sha: git_sha.to_string(),
+            },
+        );
+        let height = Grid2D::new(shape.n_real, shape.n_imag, domain, NativeLandscape::quantize(&samples.magnitude));
+        let phase = Grid2D::new(shape.n_real, shape.n_imag, domain, NativeLandscape::quantize(&samples.phase));
+        let surface = Surface::new(height, Some(phase), truncation, false);
+        let name = if request.name.is_empty() { "landscape" } else { request.name.as_str() };
+        let refiner = refine.then(|| ContourRefiner::new(compiled, domain, shape.n_real, shape.n_imag));
+        Ok(KurvenBundle::described(
+            PathBuf::from(format!("/native/{name}.kurven")),
+            manifest,
+            surface,
+            refiner.map(|r| r.refine_hook()),
+        ))
     }
 }
 
