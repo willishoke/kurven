@@ -782,3 +782,94 @@ is under a hundredth of the tolerance (`1e-2 * tolerance * cell`): on |z| =
 0.8 at 41 samples one vertex is 1.2e-8 off, 2.4e-7 cells. That is Swift's
 rule, so the circle test holds vertices to that bound, and nine in ten to
 1e-9.
+
+## 2026-11-15 · Hatch.swift is hatch.rs; the stub is gone
+
+`Sources/KurvenCore/Hatch.swift` is ported whole into
+`kurven-core/src/hatch.rs`, and `hatch_stub.rs` is deleted. The stub's
+items keep their signatures (`HatchContext::new`, `GraphTrimLoops`,
+`RiserStretch`, `TileBoundaryStop`, `Surface::cell`, `edge_tolerance`,
+`point_on`, `point_from_to`, `clip`, `replicate`, `tile_boundary_crossings`,
+`graph_trim_loops`, `top_edge`, `tile_boundary_stretches`,
+`plateau_contours`, `riser_stretches`, `curves`); what was empty now draws.
+Added beside them, Swift's other items under their snake_case names:
+`hatch`, `stroke_count`, `vertical`, `subdivided_profile`, `with_minima`,
+`top_edge_height`, `wall_hatch_lines`, `wall_edges`, `plateau_hatching`,
+`runs_at_or_above`, `bisected`, `truncation_excess`, `truncation_edge`,
+`drawn_truncation_edge`, `band_riser_stretches`,
+`tile_boundary_riser_stretches`, `riser_hatch_lines`,
+`banded_truncation_edge`, `on_boundary_truncation_crossing`, `Rectangle`
+and `PlateauLoops`, and `HatchContext::with_perimeter` for Swift's
+defaulted initializer. Hatch.swift's `truncationCrossing(from:_:to:_:excess:)`
+is `truncation_crossing_between`, since `truncation_crossing` is
+Surface.swift's overload on a lifted segment.
+
+Two holes. `curves` keeps integral curves as the stub the IntegralCurves
+wave replaces at the merge. `graph_hatching` (a `.hatching` on the graph)
+is Swift's `Surface.graphHatching`, which lives in Isophotes.swift beside
+`Face.coordinateHatching`, `Face.graded` and `Solid.graded`, and reads a
+half-Lambert tone off each copy's outward normal: Phase 5's, refused with
+`PORT: phase 5`, drawing nothing. No landscape fixture or reference
+drawing has a graph hatching.
+
+## 2026-11-15 · Hatch.rs: differences from Swift, by construction
+
+- **Closures that recurse or share state.** Swift's nested functions
+  become small structs: `Station` (the top edge's tuple), `Emitter`
+  (`bandedTruncationEdge`'s `emit` with the curves, the pieces by band and
+  the ends on each boundary), `PartSubdivider` (its `subdivided`), and free
+  functions for the two `subdivide`s. `PlateauLoops` borrows its plateau
+  test for a lifetime instead of holding a `@Sendable` closure.
+- **Dictionaries keyed by points or doubles** (the plateau loops' ends, the
+  stretches' meeting points, the ends on a boundary) key by the bits with
+  -0 read as 0, as Swift's `==` and `Hashable` have them; a point with a
+  NaN is not a key, as Swift's dictionary never finds one. The stretches by
+  band are a `BTreeMap`, Swift's `keys.sorted()`.
+- **Sorting doubles** goes through `real::total_order` of `x + 0`, so -0 and
+  0 tie and keep their order as Swift's stable sort by `<` does; a NaN sorts
+  last where Swift's order is unspecified.
+- **Where Swift's `Int` traps.** `strokeCount` on a count that is not a
+  number or does not fit answers 2 (its answer for a spacing that is not
+  one); `onBoundaryTruncationCrossing` answers None for a vertex whose grid
+  index is not a number. No finite input reaches either.
+- **`Set([0, count - 1])`** in the uniform truncation edge is iterated as
+  `[0, last]`; each end is solved alone, so the order does not matter.
+
+Ported as Swift has them: `bandedTruncationEdge` takes `beyond` and never
+reads it (`_beyond`); the rings' `drawn` segments are gathered once per
+band before that band's rings are cut, while `endsDrawn` reads the pieces
+as they grow; a tile boundary's riser edges seek no minimum of |f| between
+stops, as their doc says.
+
+## 2026-11-15 · Hatch.rs tests, and how the landscapes on f are built
+
+Ported with Swift's tolerances, all passing. In `kurven-core/tests`:
+`hatch.rs`, main.swift's four `hatch:` suites (every committed stroke of
+`tests/fixtures/hatch` to 1e-9, the truncation edge segment for segment to
+1e-9, the plateaus' contours bit for bit, the whole gaps the walls meet)
+and Hatchings.swift's "one rule for a manifest's step and angles";
+`truncation.rs`, Truncation.swift's three suites ("the grid is the
+rasterizer's" needs no GPU: it is `Mesh::truncation_edge_mesh`);
+`restyle.rs`'s wall hatch, no longer ignored. In `kurven-landscape/tests`:
+`trim_loops.rs`, Faces.swift's eleven suites from "close a plateau that
+turns back a column short of a band boundary" to "a pole beside a band
+boundary, at every resolution" (492 poles), and "the trim loops and the
+truncation edge the same in whatever order the tiles are listed";
+`faces.rs`, "the graph's trim loops are its truncation edge, closed, and a
+contour on it is cut where it crosses them" over 63 landscapes;
+`tiling.rs`, "a landscape's faces tile its boundary", "walls: a wall on a
+band boundary reads its footprint's band" whole, and the two `depth:`
+suites; `chords.rs`, Chords.swift's truncated-graph suite for u, v and the
+height, its isophote and graph hatching families ignored as Phase 5's.
+
+Stand-ins. Swift builds every landscape on f with
+`NativeLandscape.build(_:refine: true)`, which is the IntegralCurves wave's;
+`common::build` makes what the suites read from it the way it does (the
+float32 grids from `sample` and `quantize`, `ContourRefiner::new(...)
+.refine_hook()`, and for Γ its walls on `rectangle(domain, wall_density)`).
+The contract bundles' faces are built from their occluder directly,
+which is what `Scene(bundle:preset:)`'s geometry does. "a bundle's occluder
+holds the risers" needs a bundle with the build's occluder: its manifest is
+a contract landscape's with the build's domain, truncation and occluder,
+all that `KurvenBundle::occluder` reads. No suite was skipped for needing
+Scene's fold curves or visibility.
