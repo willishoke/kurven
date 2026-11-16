@@ -42,6 +42,21 @@ fn string<'a>(v: &'a JsonValue, key: &str) -> &'a str {
     v.get(key).and_then(JsonValue::as_str).unwrap_or_else(|| panic!("no {key}"))
 }
 
+/// Whether two values, one at least not finite, agree: both NaN or neither,
+/// and each part that is infinite in either is the same infinity, sign
+/// included, in both. A finite part beside an infinite one is not compared:
+/// the relative error has nothing to be relative to. (Stricter than the
+/// Swift suite, which takes any two values that are not finite as agreeing.)
+fn non_finite_agree(a: Complex, b: Complex) -> bool {
+    if a.is_nan() != b.is_nan() {
+        return false;
+    }
+    if a.is_nan() {
+        return true;
+    }
+    [(a.re, b.re), (a.im, b.im)].iter().all(|&(x, y)| !(x.is_infinite() || y.is_infinite()) || x == y)
+}
+
 #[test]
 fn the_functions_agree_with_numpy_scipy_and_mpmath_on_the_fixture_grids() {
     let index = shared_json("expr/index.json");
@@ -75,6 +90,7 @@ fn the_functions_agree_with_numpy_scipy_and_mpmath_on_the_fixture_grids() {
         let mut worst = 0.0f64;
         let mut worst_at = Complex::ZERO;
         let mut disagreements = 0;
+        let mut non_finite = 0;
         for (i, &r) in rs.iter().enumerate() {
             for (j, &im) in is.iter().enumerate() {
                 let z = Complex::new(r, im);
@@ -83,12 +99,14 @@ fn the_functions_agree_with_numpy_scipy_and_mpmath_on_the_fixture_grids() {
                 let b = Complex::new(want[k], want[k + 1]);
                 // A NaN from the oracle is the library declining to answer
                 // (Γ at a pole it hit exactly), not a value to be held to;
-                // an infinity is a value, and both sides must agree on it.
+                // an infinity is a value, and both sides must agree on it,
+                // part by part and sign by sign.
                 if b.is_nan() {
                     continue;
                 }
                 if !a.is_finite() || !b.is_finite() {
-                    if a.is_finite() != b.is_finite() {
+                    non_finite += 1;
+                    if !non_finite_agree(a, b) {
                         disagreements += 1;
                         if disagreements == 1 {
                             worst_at = z;
@@ -108,7 +126,9 @@ fn the_functions_agree_with_numpy_scipy_and_mpmath_on_the_fixture_grids() {
             }
         }
         let oracle = e.get("oracle").and_then(JsonValue::as_str).unwrap_or("?");
-        let line = format!("{name}: {text} against {oracle}: worst {worst:.1e} at {worst_at} (tol {tol:e})");
+        let line = format!(
+            "{name}: {text} against {oracle}: worst {worst:.1e} at {worst_at} (tol {tol:e}), {non_finite} not finite"
+        );
         if disagreements > 0 {
             failed.push(format!("{line}, {disagreements} points over"));
         }
@@ -154,7 +174,7 @@ fn the_parser_reads_the_frozen_readings() {
                 return false;
             }
             if !a.is_finite() || !b.is_finite() {
-                return a.is_finite() != b.is_finite();
+                return !non_finite_agree(a, b);
             }
             (a - b).magnitude() > 1e-12 * b.magnitude().max(1.0)
         });
