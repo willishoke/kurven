@@ -467,3 +467,102 @@ fn window_interior(p: P) -> bool {
     let (lo, hi, slack) = (-1.0125, 0.9875, 1e-9);
     p.x() > lo + slack && p.x() < hi - slack && p.y() > lo + slack && p.y() < hi - slack
 }
+
+// MARK: the phase lines the gate once found Swift and the port drawing otherwise
+
+/// Where f is real and negative along the window's edge, the branch cut lies
+/// on the edge and arg f there is π or −π by the sign of Im f's zero: z − 1
+/// is x − 1 + 0i on the real axis and −(1 − z) is x − 1 − 0i. Quantized,
+/// both are Swift's `Float.pi` (`quantize` clamps into the samples' range),
+/// which `contour::cut` turns to exactly zero, so the edge's nodes lie on the
+/// level whichever the sign, and the grid's tie decides: a node on the level
+/// is not over it, and the edge is drawn where the window beside it is over
+/// it, arg(−f) = arg(1 − z) > 0, and not where it is under. So the cut along
+/// the upper edge of the lower half-plane is drawn, along the lower edge of
+/// the upper half-plane it is not, and neither depends on the zero's sign.
+/// Γ's and cn's cuts lie so on the lower edge of landscape-gamma and
+/// gallery-cn, and the grid draws them along it on one side of each saddle
+/// of f there. Turned by π rounded to nearest, the nodes were ±2.4e-7 by the
+/// sign, and the edge was drawn or not as it fell (crates/FINDINGS.md,
+/// 2026-11-16).
+#[test]
+fn the_cut_along_the_windows_edge_does_not_hang_on_the_sign_of_a_zero() {
+    for (window, edge, drawn) in
+        [(domain(-0.5125, 0.4875, 0.0, 1.0), 0.0, false), (domain(-0.5125, 0.4875, -1.0, 0.0), 0.0, true)]
+    {
+        let mut answers = Vec::new();
+        for (expression, sign) in [("z - 1", 1.0f32), ("-(1 - z)", -1.0f32)] {
+            let l = landscape(expression, window, 41);
+            let row = if window.imag.lo == edge { 0 } else { l.phase.height - 1 };
+            let on_edge: Vec<f32> = (0..l.phase.width).map(|i| l.phase.at(i, row)).collect();
+            assert!(
+                on_edge.iter().all(|&v| v == sign * kurven_core::contour::SWIFT_FLOAT_PI),
+                "{expression}: arg f on the edge is {sign}π, quantized to Float.pi: {on_edge:?}"
+            );
+            let points = l.refiner.singular_points();
+            assert!(points.is_empty(), "{expression}: its zero at 1 is outside: {points:?}");
+            answers.push(l.refiner.refine(
+                ContourField::Phase,
+                PI,
+                &contour::cut(&l.phase),
+                &points,
+                f64::INFINITY,
+                EVERYWHERE,
+            ));
+        }
+        assert_eq!(answers[0], answers[1], "the same cut whichever the sign of Im f's zero");
+        let runs = &answers[0];
+        if drawn {
+            assert_eq!(runs.len(), 1, "the edge as one line: {runs:?}");
+            let run = &runs[0];
+            assert!(run.iter().all(|p| p.y() == edge), "along the edge");
+            let (lo, hi) = (run[0].x().min(run[run.len() - 1].x()), run[0].x().max(run[run.len() - 1].x()));
+            let side = |x: f64, to: f64| (x - to).abs() <= 1e-12;
+            assert!(side(lo, window.real.lo) && side(hi, window.real.hi), "from side to side: {lo} {hi}");
+        } else {
+            assert!(runs.is_empty(), "the window lies under the level beside the edge: {runs:?}");
+        }
+    }
+}
+
+/// The cut of 1/(z³ − 1) is the zero level of arg(−f), and −f = 1 + z³ +
+/// O(z⁶) at the saddle z = 0, where f' and f'' vanish: three lines cross
+/// there, six branches leaving at multiples of 60°: at 60°, 180° and 300° to
+/// the window's edge, at 0°, 120° and 240° to the poles at the cube roots of
+/// unity. On the gallery corners' window and grid every branch is drawn,
+/// and two are drawn twice, as Swift draws them: the
+/// grid's path from the 60° branch to the 0° one cannot be placed across the
+/// saddle (its last chord, between the 120° and 60° branches, is 0.026 of a
+/// cell off at the depth limit, over the 0.02 tolerance, so no rounding
+/// decides it), and the two pieces, followed on f, cross the saddle onto the
+/// 300° and 240° branches another path already draws. `drawn_once` drops
+/// only a run wholly along another, so both stay: Swift's defect, held here
+/// so that a change to it is seen (crates/FINDINGS.md, 2026-11-16).
+#[test]
+fn the_cut_through_a_saddle_draws_every_branch_and_two_of_them_twice_as_swift() {
+    let l = landscape("1/(z^3 - 1)", domain(-1.3, 1.6, -1.2, 1.5), 300);
+    assert_eq!((l.phase.width, l.phase.height), (300, 279), "the gallery corners' grid");
+    let cell = l.refiner.cell();
+    let hook = l.refiner.refine_hook();
+    // As the corners' ang_major is asked: under the truncation at 5.
+    let runs = (hook.contours)(ContourField::Phase, PI, &contour::cut(&l.phase), 1.1 * 5.0, EVERYWHERE);
+    for run in &runs {
+        for &p in run {
+            let f = l.refiner.value(Complex::new(p.x(), p.y()));
+            assert!(
+                !f.is_finite() || (f.re < 0.0 && f.im.abs() <= 1e-6 * f.magnitude()),
+                "every vertex on the cut: f({p:?}) = {f}"
+            );
+        }
+    }
+    // How many runs pass within a twentieth of a cell of the branch at angle
+    // k · 60°, half a unit out from the saddle.
+    let times: Vec<usize> = (0..6)
+        .map(|k| {
+            let a = PI / 3.0 * k as f64;
+            let p = P::new(0.5 * kurven_math::real::cos(a), 0.5 * kurven_math::real::sin(a));
+            runs.iter().filter(|r| distance_to(p, std::slice::from_ref(*r)) <= 0.05 * cell).count()
+        })
+        .collect();
+    assert_eq!(times, vec![1, 1, 1, 1, 2, 2], "branches at 0°, 60°, ..., 300°, each drawn so many times");
+}
