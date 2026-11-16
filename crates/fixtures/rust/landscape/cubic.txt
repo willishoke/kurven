@@ -1,6 +1,6 @@
 # 1/(z^3 - 1) over {"imag":{"hi":1.5,"lo":-1.2},"real":{"hi":1.6,"lo":-1.3}} at 64: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
 mag_major paths 51 vertices 793 length 402fbec87d9a49bf 15.872623372158044 hash dc42474261acb441
-ang_major paths 14 vertices 674 length 403d736555320d68 29.450764965743844 hash ace288795f925c39
+ang_major paths 14 vertices 674 length 403d736555320ced 29.450764965743407 hash e3657deb04b48ff5
 mag_minor paths 217 vertices 3133 length 404d61ddde4105a5 58.764583379506156 hash 6f24c60bebbc18bc
 ang_minor paths 21 vertices 1178 length 404d9ec1c0d59668 59.24028788022116 hash 36144832f90d87b4
 truncation_edge paths 3 vertices 96 length 3ff14e6610485244 1.0816403041873324 hash 553ac406cce27c7f

@@ -23,6 +23,7 @@ use kurven_core::spaces::{AABB, Angle, DomainSpace, P2, P3, PageSpace, ViewSpace
 use kurven_core::splitmix::SplitMix;
 use kurven_core::surface_request::{Shape, SurfaceRequest};
 use kurven_core::svg::{self, Strokes, Style};
+use kurven_landscape::NativeLandscape;
 use kurven_math::real;
 
 use crate::{Golden, bits};
@@ -160,7 +161,11 @@ fn contour_table() -> String {
     for (level, paths) in contour::levels(&grid, &[-0.8, -0.25, 0.0, 0.3, 0.9]) {
         out += &format!("level {}: {} paths\n{}", bits(level), paths.len(), paths_text(&paths));
     }
-    // arg of (x + iy)(x - 1 + iy), whose cut runs from each zero.
+    // arg of (x + iy)(x - 1 + iy), whose cut runs from each zero. Stored as
+    // a landscape stores its phase, by `NativeLandscape::quantize`, which
+    // clamps into the samples' range: on the column x = 0.5 the sum is π to
+    // rounding, either sign, and is kept at Swift's `Float.pi`, under π, as
+    // the engine's grids are, not at π rounded up.
     let domain = Domain::new(Interval::new(-1.0, 2.0), Interval::new(-1.0, 1.0));
     let (nx, ny) = (25, 17);
     let mut phase = Vec::with_capacity(nx * ny);
@@ -175,10 +180,10 @@ fn contour_table() -> String {
             } else if a <= -core::f64::consts::PI {
                 a += 2.0 * core::f64::consts::PI;
             }
-            phase.push(a as f32);
+            phase.push(a);
         }
     }
-    let cut = contour::cut(&Grid2D::new(nx, ny, domain, phase));
+    let cut = contour::cut(&Grid2D::new(nx, ny, domain, NativeLandscape::quantize(&phase)));
     out += &format!("cut: {} paths\n{}", cut.len(), paths_text(&cut));
     out
 }

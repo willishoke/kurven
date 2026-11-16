@@ -15,16 +15,65 @@ use crate::surface::{ContourRefine, Contours, Fork, Rings};
 
 type Paths = Vec<Vec<P2<DomainSpace>>>;
 
+/// 2^(j/4) for j = 0, 1, 2, 3, correctly rounded.
+const QUARTER_POWERS: [f64; 4] = [
+    1.0,
+    f64::from_bits(0x3FF3_06FE_0A31_B715),
+    f64::from_bits(0x3FF6_A09E_667F_3BCD),
+    f64::from_bits(0x3FFA_E89F_995A_D3AD),
+];
+
+/// 2^(j/4) · 2^62, rounded to an integer: the same powers to ten more bits,
+/// for a power under the normal range, which is rounded once from these.
+const QUARTER_POWERS_FIXED: [u64; 4] =
+    [0x4000_0000_0000_0000, 0x4C1B_F828_C6DC_54B8, 0x5A82_7999_FCEF_3242, 0x6BA2_7E65_6B4E_B57A];
+
+/// 2^(k/4), correctly rounded, as Darwin's `pow(2, k / 4)` gives it.
+///
+/// With k = 4q + j, it is 2^(j/4), correctly rounded, times 2^q, which is
+/// exact while the answer is a normal number. Under that, the answer has
+/// fewer bits than 2^(j/4), and scaling the rounded double would round
+/// twice (at k = -4091 and -4089 an ulp under Darwin's); there the
+/// subnormal's integer of 2^-1074 steps is rounded once from 2^(j/4) to 62
+/// bits. Checked against Swift for every k from -4296 to 4096.
+pub fn quarter_power(k: i64) -> f64 {
+    let (q, j) = (k.div_euclid(4), k.rem_euclid(4) as usize);
+    if q > 1023 {
+        return f64::INFINITY;
+    }
+    if q >= -1022 {
+        // 2^q as a double: its biased exponent, nothing in the fraction.
+        return QUARTER_POWERS[j] * f64::from_bits(((q + 1023) as u64) << 52);
+    }
+    // n · 2^-1074 with n = 2^(j/4) · 2^(q + 1074), rounded to nearest: a
+    // right shift of the fixed-point power by 62 - (q + 1074) bits.
+    let shift = 62 - (q + 1074);
+    if shift > 64 {
+        return 0.0;
+    }
+    let m = u128::from(QUARTER_POWERS_FIXED[j]);
+    let n = (m + (1u128 << (shift - 1))) >> shift;
+    f64::from_bits(n as u64)
+}
+
 impl ContourRefine {
     /// The ceiling a remembering refiner is asked about for `height`: the
     /// next power of 2^(1/4) at or above it, so a truncation dragged through a fifth
     /// of its height asks one question. A rung is its own rung, so one
     /// remembering refiner wrapped in another asks what it was asked.
+    ///
+    /// Swift's `pow(2, k / 4)` on Darwin is the correctly rounded 2^(k/4) for
+    /// every k a finite height reaches; the libm crate's `pow` is an ulp
+    /// under for some (2^2.5, the rung of 1.1 × 5, among them). So the rung is
+    /// read off [`quarter_power`], correctly rounded by construction, and
+    /// is Swift's to the bit (crates/FINDINGS.md).
     pub fn rung(height: f64) -> f64 {
         if !(height.is_finite() && height > 0.0) {
             return if height > 0.0 { f64::INFINITY } else { height };
         }
-        real::pow(2.0, (4.0 * real::log2(height) - 1e-9).ceil() / 4.0)
+        // An integer from -4296 to 4096 for a finite positive height.
+        let k = (4.0 * real::log2(height) - 1e-9).ceil();
+        quarter_power(k as i64)
     }
 
     /// The same refiner, remembering what it placed, up to Swift's default
@@ -308,6 +357,32 @@ mod tests {
         assert_eq!(ContourRefine::rung(0.0), 0.0);
         assert!(ContourRefine::rung(f64::NAN).is_nan());
         assert_eq!(ContourRefine::rung(4.9), ContourRefine::rung(4.95), "a fifth of a step is one question");
+    }
+
+    /// The rungs are Darwin's `pow(2, k / 4)`, the correctly rounded powers:
+    /// bits Swift printed, for the rung of 1.1 × 5 and at both ends of the
+    /// range, the two subnormals included where scaling a rounded double
+    /// would round twice. Every k from -4296 to 4096 was checked against
+    /// Swift's this way (crates/FINDINGS.md).
+    #[test]
+    fn the_rungs_are_swifts_correctly_rounded_powers() {
+        let swift: [(i64, u64); 8] = [
+            (10, 0x4016_A09E_667F_3BCD),
+            (1, 0x3FF3_06FE_0A31_B715),
+            (3, 0x3FFA_E89F_995A_D3AD),
+            (-3986, 0x01A6_A09E_667F_3BCD),
+            (-4091, 0x0009_837F_0518_DB8B),
+            (-4089, 0x000D_744F_CCAD_69D7),
+            (-4296, 0x0000_0000_0000_0001),
+            (4096, 0x7FF0_0000_0000_0000),
+        ];
+        for (k, bits) in swift {
+            assert_eq!(quarter_power(k).to_bits(), bits, "2^({k}/4)");
+        }
+        assert_eq!(ContourRefine::rung(5.5).to_bits(), 0x4016_A09E_667F_3BCD, "the corners' ceiling, Swift's");
+        for k in -4088..4092 {
+            assert_eq!(quarter_power(k + 4), 2.0 * quarter_power(k), "2^((k + 4)/4) is twice 2^(k/4), exactly");
+        }
     }
 
     #[test]
