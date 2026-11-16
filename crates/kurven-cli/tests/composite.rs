@@ -3,9 +3,7 @@
 //! port's `scene` path (`composite_drawing`) and held to Swift's SVGs by
 //! `compare` at the floor the reference drawings are held to: 1.5e-4 page
 //! units of Hausdorff distance (the SVG's four decimals, on the diagonal)
-//! and 1e-5 of each layer's length. The two with the round torus (`torus`,
-//! `three`) need a parametric surface's bundle, Phase 4's, and are left for
-//! it.
+//! and 1e-5 of each layer's length.
 
 use kurven_cli::compare::{Tolerance, compare};
 use kurven_cli::scene::{composite_drawing, placement};
@@ -46,6 +44,29 @@ fn a_frame_sunk_into_a_slope_is_swifts() {
         &[
             ("expr/landscape_cubic.kurven", Placement::IDENTITY),
             ("contract/polyhedron_frame.kurven", placement("0.3,-1.3,0.2,0.3").unwrap()),
+        ],
+    );
+}
+
+#[test]
+fn a_torus_ringing_a_tower_is_swifts() {
+    held(
+        "torus",
+        &[
+            ("expr/landscape_cubic.kurven", Placement::IDENTITY),
+            ("contract/surface_torus.kurven", placement("1,0,1.6,0.35").unwrap()),
+        ],
+    );
+}
+
+#[test]
+fn the_cubic_with_a_cube_and_a_torus_is_swifts() {
+    held(
+        "three",
+        &[
+            ("expr/landscape_cubic.kurven", Placement::IDENTITY),
+            ("contract/polyhedron_cube.kurven", placement("-1.2,0.1,0.3,0.35").unwrap()),
+            ("contract/surface_torus.kurven", placement("1,0,1.6,0.35").unwrap()),
         ],
     );
 }

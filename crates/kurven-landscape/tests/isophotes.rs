@@ -16,6 +16,7 @@ mod gate;
 use std::collections::HashSet;
 
 use common::{build, densely_hidden, per_unit};
+use kurven_core::camera::Camera;
 use kurven_core::face::{Face, FaceID};
 use kurven_core::fixtures;
 use kurven_core::hatch::HatchContext;
@@ -26,15 +27,17 @@ use kurven_core::manifest::{
     Affine2, ContourField, Domain, HeightPolicy, Interval, LayerRole, LayerSource, LayerSpec, Provenance, RealBand,
     Region, Restriction, SurfaceManifest, Truncation,
 };
+use kurven_core::parametric::ParametricSurface;
 use kurven_core::polyhedron_bundle::PolyhedronBundle;
 use kurven_core::polyline::PolylineSet;
-use kurven_core::scene::Scene;
+use kurven_core::scene::{PreviewMode, Scene};
 use kurven_core::simd::{Vec2, Vec3};
 use kurven_core::spaces::{AABB, P2, P3, ViewSpace, WorldSpace};
 use kurven_core::surface_request::{Shape, SurfaceRequest};
 use kurven_landscape::{Catalog, LandscapeRequest};
 use kurven_math::real;
 use kurven_math::swift;
+use kurven_surfaces::{SurfaceDrawing, SurfaceRequestExt};
 
 /// exp(z) over [−1, 1]² at 48 samples, untruncated and with no layers, as
 /// the graph suites build it with the refiner.
@@ -818,9 +821,69 @@ fn the_manifest() {
 /// built in code into a torus drawing's `restyled`, is refused saying "no
 /// light", not drawn as the height.
 #[test]
-#[ignore = "PORT: phase 4 -- SurfaceDrawing.build"]
 fn the_manifest_against_the_surface_built() {
-    panic!("Phase 4: SurfaceDrawing.build and SurfaceRequest.unsupported are not ported");
+    let mut failures: Vec<String> = Vec::new();
+    let relief = |amplitude: f64, floor: Option<f64>| {
+        SurfaceRequest::new(Shape::Relief {
+            modulus: 0.64,
+            major: 2.0,
+            minor: 1.0,
+            amplitude,
+            repeats: (1, 1),
+            grid: 120,
+            turn: 0.0,
+            floor,
+            soft: false,
+        })
+    };
+    let (mut agree, mut disagree) = (0, Vec::new());
+    for amplitude in [0.3, 1.0 / 3.0, 0.4] {
+        for floor in [None, Some(2.5)] {
+            let mut request = relief(amplitude, floor);
+            request.grid = 64;
+            let built =
+                SurfaceDrawing::build(&request, None, false).expect("the relief builds").surface.outward.is_some();
+            if Some(built) == request.bounds_solid() {
+                agree += 1;
+            } else {
+                disagree.push(format!("{amplitude}, {}", floor.unwrap_or(0.0)));
+            }
+        }
+    }
+    if !(disagree.is_empty() && agree == 6) {
+        failures
+            .push(format!("the relief built bounds a solid exactly where its request says: disagree at {disagree:?}"));
+    }
+    let too_fine = LayerSource::Hatching {
+        hatching: Hatching::new(core::f64::consts::FRAC_PI_2, 1e-6, None, Tone::Uniform, 1),
+        faces: FaceSelector::Surface,
+    };
+    let unlit = LayerSource::Contour {
+        field: ContourField::Isophote,
+        levels: vec![0.5],
+        restriction: Restriction::All,
+        faces: FaceSelector::Surface,
+        light: None,
+    };
+    let torus = SurfaceRequest::new(Shape::Torus { major: 2.0, minor: 1.0 });
+    if !(SurfaceRequestExt::unsupported(&torus, &too_fine).is_some_and(|w| w.contains("more than the"))
+        && SurfaceRequestExt::unsupported(&torus, &unlit).is_some_and(|w| w.contains("no light")))
+    {
+        failures.push(
+            "hatching past a layer's vertices, and an isophote with no light, are refused before anything is built"
+                .to_string(),
+        );
+    }
+    let small = SurfaceRequest { grid: 64, ..torus };
+    let refused = SurfaceDrawing::build(&small, None, false)
+        .expect("the torus builds")
+        .restyled(&[LayerSpec::new("x", LayerRole::Scaffold, unlit, 0.3, HeightPolicy::Surface)])
+        .err()
+        .is_some_and(|e| e.to_string().contains("no light"));
+    if !refused {
+        failures.push("an isophote with no light, built in code, is refused, not drawn as the height".to_string());
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
 }
 
 /// "isophotes: on the round torus lit along z, n · l = sin v, and the
@@ -831,9 +894,99 @@ fn the_manifest_against_the_surface_built() {
 /// 1e-12, each level two closed circles a whole turn round; and nothing at
 /// c = ±1 or past it.
 #[test]
-#[ignore = "PORT: phase 4 -- the round torus (SurfaceDrawing.build)"]
 fn on_the_round_torus_lit_along_z_the_isophote_is_v_asin_c() {
-    panic!("Phase 4: the round torus is built by SurfaceDrawing.build, not ported");
+    let torus = round_torus();
+    let face = torus.face();
+    let copy = &face.copies[0];
+    let two_pi = 2.0 * core::f64::consts::PI;
+    let mut failures: Vec<String> = Vec::new();
+    // The convention first: u round the axis from 0, v round the tube
+    // from the outer equator, both over [0, 2π), the outward normal the
+    // closed form's, so n · z = sin v.
+    if !(torus.u.range.lo == 0.0
+        && torus.v.range.lo == 0.0
+        && (torus.u.range.length() - two_pi).abs() < 1e-15
+        && (torus.v.range.length() - two_pi).abs() < 1e-15
+        && torus.outward == Some(1.0))
+    {
+        failures.push("u and v run over [0, 2π), du × dv outward".to_string());
+    }
+    let mut off: f64 = 0.0;
+    for i in 0..64 {
+        for j in 0..64 {
+            let p = P2::new(two_pi * (i as f64 + 0.37) / 64.0, two_pi * (j as f64 + 0.61) / 64.0);
+            let n = face.outward_normal(p, copy).expect("a normal");
+            off = swift::max(
+                swift::max(off, (n - torus_normal(p.x(), p.y())).length()),
+                (n.dot(Vec3::new(0.0, 0.0, 1.0)) - real::sin(p.y())).abs(),
+            );
+        }
+    }
+    if !(off <= 1e-15) {
+        failures.push(format!("the outward normal is (cos v cos u, cos v sin u, sin v): off by {off:.1e}"));
+    }
+    // Lit along z, and along z at another length: the field normalizes
+    // the light.
+    let levels = [-0.999999, -0.9999, -0.99, -0.9, -0.5, -0.1, 0.0, 0.3, 0.7, 0.99, 0.9999, 0.999999];
+    for light in [Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 2.5)] {
+        let (mut worst, mut closed, mut counts, mut example) = (0.0f64, true, Vec::new(), String::new());
+        for (&c, (level, paths)) in levels.iter().zip(face.isophotes(light, &levels, copy)) {
+            assert_eq!(level, c);
+            counts.push(paths.len());
+            let a = real::asin(c);
+            let targets = [a, core::f64::consts::PI - a];
+            for path in &paths {
+                for p in path {
+                    let d = swift::min(apart(p.y(), targets[0]), apart(p.y(), targets[1]));
+                    if d > worst {
+                        worst = d;
+                        example = format!("c = {c} at v = {}", p.y());
+                    }
+                }
+                // A whole turn round the axis, ending where it began.
+                let (first, last) = (path[0], path[path.len() - 1]);
+                if ((last.x() - first.x()).abs() - two_pi).abs() > 1e-12 || (last.y() - first.y()).abs() > 1e-12 {
+                    closed = false;
+                }
+            }
+        }
+        if !(worst <= 1e-12) {
+            failures.push(format!(
+                "light {light:?}: every vertex of the isophote at c lies on v = asin c or π − asin c: worst {worst:.1e} rad, {example}"
+            ));
+        }
+        if !(counts.iter().all(|&n| n == 2) && closed) {
+            failures.push(format!(
+                "light {light:?}: each isophote is the two circles, each a whole turn round the axis: paths per level {counts:?}"
+            ));
+        }
+    }
+    // At ±1 n · l touches its extreme on a circle, v = ±π/2; past it,
+    // nothing. A level there draws nothing, by rule.
+    let extremes = face.isophotes(Vec3::new(0.0, 0.0, 1.0), &[-1.5, -1.0, 1.0, 1.5], copy);
+    if !extremes.is_empty() {
+        failures.push(format!("at c = ±1 and past it, the isophote draws nothing: {} levels drawn", extremes.len()));
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The round torus (2, 1) as `SurfaceDrawing::build` builds a torus
+/// request at grid 512, as Isophotes.swift's suites have it.
+fn round_torus() -> ParametricSurface {
+    let request = SurfaceRequest { grid: 512, ..SurfaceRequest::new(Shape::Torus { major: 2.0, minor: 1.0 }) };
+    SurfaceDrawing::build(&request, None, false).expect("the torus builds").surface
+}
+
+/// How far apart two angles are, round the circle.
+fn apart(a: f64, b: f64) -> f64 {
+    let two_pi = 2.0 * core::f64::consts::PI;
+    let d = real::fmod(a - b, two_pi);
+    swift::min(d.abs(), two_pi - d.abs())
+}
+
+/// The round torus's outward unit normal at (u, v), in closed form.
+fn torus_normal(u: f64, v: f64) -> Vec3 {
+    Vec3::new(real::cos(v) * real::cos(u), real::cos(v) * real::sin(u), real::sin(v))
 }
 
 /// "tone: on the torus, half-Lambert hatching runs along a coordinate, its
@@ -844,9 +997,155 @@ fn on_the_round_torus_lit_along_z_the_isophote_is_v_asin_c() {
 /// on an isophote within 1e-12 (over 100 ends); and the bake, a layer per
 /// width step at k/8 of the layer's width with that step's pieces.
 #[test]
-#[ignore = "PORT: phase 4 -- the round torus (SurfaceDrawing.build)"]
 fn tone_on_the_torus_runs_along_a_coordinate() {
-    panic!("Phase 4: the round torus is built by SurfaceDrawing.build, not ported");
+    let torus = round_torus();
+    let two_pi = 2.0 * core::f64::consts::PI;
+    let mut failures: Vec<String> = Vec::new();
+    for (hatching, along_u) in [
+        (Hatching::new(0.0, two_pi / 24.0, None, Tone::HalfLambert { light: Vec3::new(1.0, -1.0, 1.5) }, 8), true),
+        (
+            Hatching::new(
+                core::f64::consts::FRAC_PI_2,
+                two_pi / 36.0,
+                None,
+                Tone::HalfLambert { light: Vec3::new(-0.4, -0.6, 0.7) },
+                5,
+            ),
+            false,
+        ),
+    ] {
+        let v = tone_verdict(&torus, &hatching, along_u);
+        let what = if along_u { "along u" } else { "along v" };
+        if !(v.off_line <= 1e-12 && v.gaps <= 1e-9) {
+            failures.push(format!(
+                "{what}: every piece lies on its line of the other coordinate, and the pieces cover each line, a whole \
+                 turn: {} pieces, off by {:.1e}, cover a turn to {:.1e}",
+                v.pieces, v.off_line, v.gaps
+            ));
+        }
+        if !(v.wrong_step == 0 && v.samples > 10_000) {
+            failures.push(format!(
+                "{what}: at every sample a piece's width step is ⌈{} (1 − n · l)/2⌉: {} of {} samples wrong",
+                hatching.width_steps, v.wrong_step, v.samples
+            ));
+        }
+        if !(v.off_isophote == 0.0 && v.changes > 100) {
+            failures.push(format!(
+                "{what}: the width changes only on an isophote n · l = 1 − 2k/{}, within 1e-12: {} piece ends on one",
+                hatching.width_steps, v.changes
+            ));
+        }
+    }
+    // The bake: a layer per width step at k/N of the layer's width,
+    // each holding that step's pieces.
+    let hatching = Hatching::new(0.0, two_pi / 24.0, None, Tone::HalfLambert { light: Vec3::new(1.0, -1.0, 1.5) }, 8);
+    let spec = LayerSpec::new(
+        "tone",
+        LayerRole::Scaffold,
+        LayerSource::Hatching { hatching, faces: FaceSelector::Surface },
+        1.5,
+        HeightPolicy::Surface,
+    );
+    let scene = Scene::parametric_scene(
+        torus.clone(),
+        vec![kurven_core::polyline::Layer { spec, paths: PolylineSet::empty() }],
+        Camera::oblique(&SurfaceRequest::PROJECTION),
+        PreviewMode::Drawing,
+        0.0,
+    );
+    let steps = torus.coordinate_hatching(&hatching);
+    let layers = scene.visible_layers(None, None).expect("the torus's tone draws");
+    let widths = layers.iter().zip(&steps).all(|((drawn, _), (w, paths))| {
+        drawn.spec.width == 1.5 * *w as f64 / 8.0 && drawn.spec.name == format!("tone {w}/8") && drawn.paths == *paths
+    });
+    if !(layers.len() == steps.len() && steps.len() >= 6 && widths) {
+        failures.push(format!(
+            "baked as a layer per width step, at k/8 of the layer's width, each with that step's pieces: {:?}",
+            layers.iter().map(|(l, _)| format!("{} {}", l.spec.name, l.spec.width)).collect::<Vec<_>>()
+        ));
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// What `tone_verdict` measures of a torus's half-Lambert hatching.
+struct ToneVerdict {
+    pieces: usize,
+    off_line: f64,
+    wrong_step: usize,
+    samples: usize,
+    off_isophote: f64,
+    changes: usize,
+    gaps: f64,
+}
+
+/// Isophotes.swift's `toneVerdict`: every piece of the hatching on its line
+/// of the other coordinate, its width step the darkness's at every sample
+/// of it, and where the width changes, on an isophote.
+fn tone_verdict(torus: &ParametricSurface, hatching: &Hatching, along_u: bool) -> ToneVerdict {
+    let Tone::HalfLambert { light } = hatching.tone else { panic!("a half-Lambert tone") };
+    let two_pi = 2.0 * core::f64::consts::PI;
+    let l = light.normalized();
+    let n = hatching.width_steps as f64;
+    let darkness = |p: Vec2| (1.0 - torus_normal(p.x, p.y).dot(l)) / 2.0;
+    let levels = Face::hatch_levels(if along_u { &torus.v } else { &torus.u }, hatching.spacing);
+    let mut v =
+        ToneVerdict { pieces: 0, off_line: 0.0, wrong_step: 0, samples: 0, off_isophote: 0.0, changes: 0, gaps: 0.0 };
+    let mut extent: std::collections::BTreeMap<usize, f64> = std::collections::BTreeMap::new();
+    let mut ends: std::collections::BTreeMap<usize, Vec<f64>> = std::collections::BTreeMap::new();
+    let across = |p: Vec2| if along_u { p.y } else { p.x };
+    let along = |p: Vec2| if along_u { p.x } else { p.y };
+    for (step, set) in torus.coordinate_hatching(hatching) {
+        for k in 0..set.count() {
+            let coords: Vec<Vec2> = set.coords_of_path(k).expect("coordinates").iter().map(|c| c.v).collect();
+            v.pieces += 1;
+            // Swift's `min` over the indices: the first of the nearest.
+            let mut line = 0;
+            for i in 1..levels.len() {
+                if apart(across(coords[0]), levels[i]) < apart(across(coords[0]), levels[line]) {
+                    line = i;
+                }
+            }
+            for c in &coords {
+                v.off_line = swift::max(v.off_line, apart(across(*c), levels[line]));
+            }
+            *extent.entry(line).or_insert(0.0) += (along(coords[coords.len() - 1]) - along(coords[0])).abs();
+            for w in coords.windows(2) {
+                for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                    let d = darkness(w[0] + (w[1] - w[0]) * t);
+                    // A sample on a step's boundary is the boundary's.
+                    if !((n * d - (n * d).round()).abs() > 1e-9) {
+                        continue;
+                    }
+                    v.samples += 1;
+                    if (n * d).ceil() as i64 != step {
+                        v.wrong_step += 1;
+                    }
+                }
+            }
+            for end in [coords[0], coords[coords.len() - 1]] {
+                let nd = n * darkness(end);
+                if (nd - nd.round()).abs() <= 1e-12 * n {
+                    v.changes += 1;
+                } else {
+                    ends.entry(line).or_default().push(along(end));
+                }
+            }
+        }
+    }
+    // Off an isophote, a piece ends only where its line does: a closed
+    // line's two ends, a turn apart.
+    for e in ends.values() {
+        if e.len() > 2 || (e.len() == 2 && apart(e[0], e[1]) > 1e-12) {
+            v.off_isophote = f64::INFINITY;
+        }
+    }
+    v.gaps = (0..levels.len())
+        .map(|i| (extent.get(&i).copied().unwrap_or(0.0) - two_pi).abs())
+        .fold(f64::NEG_INFINITY, swift::max);
+    if levels.is_empty() {
+        v.gaps = f64::INFINITY;
+    }
+    v
 }
 
 /// "isophotes and tone: seen exactly where the torus's own cast and the
@@ -920,7 +1219,51 @@ fn isophotes_and_tone_on_the_grid_landscape_are_seen_exactly_where_its_cast_says
 /// every vertex, drawn exactly where its own cast (`gate::torus_own_cast`)
 /// sees it, over 20 000 compared and over 5 000 of them seen.
 #[test]
-#[ignore = "PORT: phase 4 -- the round torus (SurfaceDrawing.build)"]
 fn isophotes_and_tone_on_the_torus_are_seen_exactly_where_its_own_cast_says() {
-    panic!("Phase 4: the round torus is built by SurfaceDrawing.build, not ported");
+    let light = Vec3::new(-0.4, -0.6, 0.7);
+    let isophotes = LayerSpec::new(
+        "isophotes",
+        LayerRole::Scaffold,
+        LayerSource::Contour {
+            field: ContourField::Isophote,
+            levels: vec![-0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75],
+            restriction: Restriction::All,
+            faces: FaceSelector::Surface,
+            light: Some(light),
+        },
+        0.3,
+        HeightPolicy::Surface,
+    );
+    let tone = LayerSpec::new(
+        "tone",
+        LayerRole::Scaffold,
+        LayerSource::Hatching {
+            hatching: Hatching::new(0.0, 2.0 * core::f64::consts::PI / 48.0, None, Tone::HalfLambert { light }, 4),
+            faces: FaceSelector::Surface,
+        },
+        1.0,
+        HeightPolicy::Surface,
+    );
+    let request = SurfaceRequest { grid: 512, ..SurfaceRequest::new(Shape::Torus { major: 2.0, minor: 1.0 }) };
+    let drawing = SurfaceDrawing::build(&request, None, false)
+        .expect("the torus builds")
+        .restyled(&[isophotes, tone])
+        .expect("its isophotes and tone draw");
+    let camera = Camera::oblique(&SurfaceRequest::PROJECTION);
+    let composite = kurven_core::composite::Composite::new(
+        vec![("torus".into(), drawing.scene(camera), kurven_core::composite::Placement::IDENTITY)],
+        camera,
+    )
+    .unwrap();
+    let clear: gate::Cast = std::sync::Arc::new(|_, _| Some(true));
+    let t = gate::composite_verdict(&composite, &[clear]).unwrap();
+    assert!(
+        t.own_wrong == 0 && t.own_compared > 20_000 && t.torus_seen > 5000,
+        "the torus's isophotes and tone, at every vertex, are drawn exactly where its own cast sees them: {} \
+         compared, {} seen, {} wrong{}",
+        t.own_compared,
+        t.torus_seen,
+        t.own_wrong,
+        t.own_example
+    );
 }

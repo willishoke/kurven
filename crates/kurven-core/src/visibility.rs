@@ -1,8 +1,5 @@
-//! Hidden lines for curves drawn on a parametric surface: the port of the
-//! types of `Sources/KurvenCore/Visibility.swift`. What it does is Phase 4's
-//! (a parametric surface's visibility), each method a typed refusal; the
-//! facing, which `ParametricSurface::facing` already answers, and sphere
-//! tracing (`SphereTracing`) are whole.
+//! Hidden lines for curves drawn on a parametric surface: the port of
+//! `Sources/KurvenCore/Visibility.swift`, whole.
 
 use std::sync::Arc;
 

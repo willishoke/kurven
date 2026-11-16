@@ -151,8 +151,8 @@ impl LinearCurves {
 
 /// The turns after which a linear curve of `slope` closes, when it does
 /// within `turns`: `ParametricSurface.linearCurveCloses(slope:within:)`,
-/// here because the request's bounds read it and the parametric surfaces
-/// come later (Phase 4).
+/// here because the request's bounds read it, and KurvenCore's request
+/// cannot reach the surface.
 pub fn linear_curve_closes(slope: f64, turns: i64) -> Option<i64> {
     if turns < 1 {
         return None;

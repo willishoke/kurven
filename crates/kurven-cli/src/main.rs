@@ -37,8 +37,8 @@
 //!     A landscape's or a parametric surface's bundle drawn to SVG, as Swift's
 //!     `bake` writes it, a landscape's contours placed by its function unless
 //!     --no-refine. A surface's coordinate image is rasterized on the CPU;
-//!     a landscape's depth pass is not rendered, so its --outline is refused.
-//!     A polyhedron's bundle waits for Phase 5.
+//!     a landscape's or a polyhedron's depth pass is not rendered, so its
+//!     --outline is refused.
 //!
 //! kurven-cli surface [torus | sn | periodic | forced] [options] [--save B] [-o out.svg]
 //!     A parametric surface's drawing, as Swift's `surface` builds it: saved

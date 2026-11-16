@@ -491,8 +491,8 @@ fn sweep_landscapes() -> Vec<(String, Scene, Height)> {
     ]
 }
 
-/// One placement of the sweep: its name, its landscape, the part (the
-/// torus refused until Phase 4), whether it is the torus, and where.
+/// One placement of the sweep: its name, its landscape, the part, whether
+/// it is the torus, and where.
 type SweepPlacement = (String, usize, Result<Scene, PortRefusal>, bool, Placement);
 
 /// The placements the reviews found wanting, then a seeded sweep.
