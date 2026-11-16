@@ -1711,3 +1711,28 @@ of a landscape or a solid and the CLI's preview (`PORT: phase 7`).
 torus-linear, periodic), 15 drawings held in all; the frame's two gallery
 drawings wait for Phase 5. Goldens: `surface/` (nine files), native and
 wasm byte-identical.
+
+## 2026-11-16 · Review of PR #69: degenerate frames, tiling, and what the bake renders
+
+- **Tiles past the rows.** A parametric bake with more passes than pixel
+  rows split into empty or one-row sub-frames: Swift's clip divides by a
+  sub-frame axis of no length, and Metal cannot make a texture of no rows.
+  The port takes no more passes than the frame has pairs of rows and of
+  columns (`--resolution 2 --tiles 3` bakes in one), which changes no
+  stroke, since the passes are stitched; `Bake::tiles` reports the passes
+  taken.
+- **Flat and one-sample axes.** `SurfaceImage::rasterize` divided by the
+  axis's length and its samples less one, so a frame with a view-bound axis
+  of no length, or a single row, came out blank. Such an axis's samples all
+  lie at its lo; the port rasterizes there once, in view units, and copies
+  the line to every sample, drawing a triangle seen edge-on along the other
+  axis from the front-most point of its edges. Swift has no such case; a
+  regular frame is rasterized as before, to the bit.
+- **The image only where it is read.** Swift's bake renders a parametric
+  scene's coordinate image always. A sphere-traced surface whose clipped
+  layers all carry coordinates, with no outline asked for, reads none of
+  it, so the port renders none (`bake_with_image` does, for what tests the
+  image itself) and reports the frame from the view bounds; the image is
+  shared by the layers' visibilities rather than copied, and a parametric
+  surface's fold curves are placed once per line of sight. The strokes, the
+  references and the goldens are unchanged.
