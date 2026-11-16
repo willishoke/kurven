@@ -5,6 +5,7 @@
 //! drawing, and comes with the polyhedra (Phase 5).
 
 use std::collections::{BTreeMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use kurven_math::{real, swift};
 
@@ -560,6 +561,44 @@ pub struct HatchLine {
     pub path: Vec<P3<WorldSpace>>,
 }
 
+/// The hatch lines last laid on a solid, by hatching (`Solid::hatch_lines`):
+/// Swift lays a polyhedron's hatching when its bundle draws the layer, and
+/// again for every camera that tests it; the port lays it once and keeps
+/// it beside the solid, shared by the solid's copies. A copy moved or built
+/// anew starts empty. It is no part of the solid's value: two solids are
+/// equal whatever their memos hold. At most `HatchMemo::SIZE` hatchings.
+#[derive(Clone, Default)]
+pub struct HatchMemo(Arc<Mutex<Vec<(Hatching, Arc<Vec<HatchLine>>)>>>);
+
+impl HatchMemo {
+    pub const SIZE: usize = 8;
+
+    fn get(&self, hatching: &Hatching) -> Option<Arc<Vec<HatchLine>>> {
+        let memo = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        memo.iter().find(|(h, _)| h == hatching).map(|(_, lines)| lines.clone())
+    }
+
+    fn put(&self, hatching: Hatching, lines: Arc<Vec<HatchLine>>) {
+        let mut memo = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if memo.len() >= HatchMemo::SIZE {
+            memo.remove(0);
+        }
+        memo.push((hatching, lines));
+    }
+}
+
+impl PartialEq for HatchMemo {
+    fn eq(&self, _: &HatchMemo) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for HatchMemo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HatchMemo")
+    }
+}
+
 /// The hatching of one width step before visibility and after
 /// (`Solid.visibleHatching(_:view:)`'s answer).
 pub type VisibleHatching = Vec<(i64, PolylineSet<WorldSpace>, PolylineSet<WorldSpace>)>;
@@ -567,8 +606,19 @@ pub type VisibleHatching = Vec<(i64, PolylineSet<WorldSpace>, PolylineSet<WorldS
 impl Solid {
     /// The hatching laid over every face, before visibility.
     pub fn hatch_lines(&self, hatching: &Hatching) -> Vec<HatchLine> {
+        self.laid(hatching).as_ref().clone()
+    }
+
+    /// The hatch lines of every face, laid once per hatching (`HatchMemo`).
+    fn laid(&self, hatching: &Hatching) -> Arc<Vec<HatchLine>> {
+        if let Some(lines) = self.hatch_memo.get(hatching) {
+            return lines;
+        }
         let diagonals = self.diagonal_sides();
-        (0..self.faces.len()).flat_map(|i| self.hatch_lines_with(hatching, i, &diagonals)).collect()
+        let lines: Arc<Vec<HatchLine>> =
+            Arc::new((0..self.faces.len()).flat_map(|i| self.hatch_lines_with(hatching, i, &diagonals)).collect());
+        self.hatch_memo.put(*hatching, lines.clone());
+        lines
     }
 
     /// Every diagonal of the partition as its two vertices, the lesser
@@ -580,7 +630,8 @@ impl Solid {
     /// Every hatch line's path, before visibility: the curves a hatching
     /// layer carries before the camera is known.
     pub fn hatch_paths(&self, hatching: &Hatching) -> PolylineSet<WorldSpace> {
-        let paths: Vec<Vec<P3<WorldSpace>>> = self.hatch_lines(hatching).into_iter().map(|l| l.path).collect();
+        let lines = self.laid(hatching);
+        let paths: Vec<&[P3<WorldSpace>]> = lines.iter().map(|l| l.path.as_slice()).collect();
         PolylineSet::from_paths(&paths)
     }
 
@@ -765,8 +816,8 @@ impl Solid {
     /// order, each step's lines in the order they were laid.
     pub fn hatch_lines_by_width(&self, hatching: &Hatching) -> Vec<(i64, Vec<HatchLine>)> {
         let mut by_width: BTreeMap<i64, Vec<HatchLine>> = BTreeMap::new();
-        for line in self.hatch_lines(hatching) {
-            by_width.entry(line.width_step).or_default().push(line);
+        for line in self.laid(hatching).iter() {
+            by_width.entry(line.width_step).or_default().push(line.clone());
         }
         by_width.into_iter().collect()
     }

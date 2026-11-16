@@ -54,6 +54,7 @@ use std::sync::Arc;
 use kurven_math::{real, swift};
 
 use crate::convex_partition;
+use crate::hatching::HatchMemo;
 use crate::mesh::Mesh;
 use crate::occlusion::SolidOcclusion;
 use crate::polyline::PolylineSet;
@@ -112,6 +113,10 @@ pub struct Solid {
     pub is_diagonal: Vec<bool>,
     /// Per piece, the face it is a piece of.
     face_of_piece: Vec<usize>,
+    /// The hatch lines last laid on the solid, shared by its copies, so a
+    /// hatching drawn on a bundle and tested for a camera is laid once
+    /// (`HatchMemo`). No part of the solid's value.
+    pub(crate) hatch_memo: HatchMemo,
 }
 
 impl Solid {
@@ -302,6 +307,7 @@ impl Solid {
             normals,
             is_diagonal,
             face_of_piece,
+            hatch_memo: HatchMemo::default(),
         })
     }
 
