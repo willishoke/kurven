@@ -1,0 +1,11 @@
+# gamma(z) over {"imag":{"hi":2.5,"lo":-2.5},"real":{"hi":4.5,"lo":-4.5}} at 90: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
+mag_major paths 28 vertices 450 length 40327202446cc96f 18.445347096022882 hash 766af7dc420bb03f
+ang_major paths 20 vertices 902 length 4050bffbe91a0ae8 66.99975040000174 hash a74c8988c527550d
+mag_minor paths 101 vertices 1880 length 4054e28b6505a5c6 83.53975797225493 hash e848adcfb0780a55
+ang_minor paths 38 vertices 1643 length 40607c452ba15e95 131.88344365613435 hash f97e75ac1cc68702
+truncation_edge paths 5 vertices 182 length 401bc58381da9ec6 6.942884472816962 hash 0c23c02d65115bb7
+plateau_hatch paths 60 vertices 421 length 40406990614f659c 32.824718631523154 hash bd05946db4ee789c
+wall_edges paths 13 vertices 402 length 40447a4a5802ea20 40.955393792555924 hash 07c8af1fbeebb18f
+wall_hatch paths 138 vertices 276 length 4067c448e3103ec0 190.1338973347938 hash 9d53a78b5ee9a422
+riser_hatch paths 0 vertices 0 length 0000000000000000 0.0 hash a8c7f832281a39c5
+folds paths 11 vertices 403 length 4036847a589078eb 22.517491851111952 hash e12d57225d23c15b
