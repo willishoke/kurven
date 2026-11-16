@@ -382,6 +382,98 @@ pub fn ray_visible(s: &Solid, meshes: &[Mesh<WorldSpace>], p: Vec3, own: &[usize
     true
 }
 
+/// Whether the line from `origin` along `direction`, up to distance
+/// `up_to`, passes under some triangle of `mesh` by more than
+/// `depth_tolerance`, perpendicular to that triangle (Stress.swift's
+/// `underSomeTriangle`; stress.rs keeps its own copy). Brute force over the
+/// triangles, sharing nothing with the traversal.
+pub fn under_some_triangle(
+    mesh: &Mesh<WorldSpace>,
+    origin: Vec3,
+    direction: Vec3,
+    depth_tolerance: f64,
+    start_inside: bool,
+    up_to: f64,
+) -> bool {
+    let (o, d) = (Vec2::new(origin.x, origin.y), Vec2::new(direction.x, direction.y));
+    for t in &mesh.triangles {
+        let (a, b, c) =
+            (mesh.vertices[t[0] as usize].v, mesh.vertices[t[1] as usize].v, mesh.vertices[t[2] as usize].v);
+        let n = (b - a).cross(c - a);
+        let len = n.length();
+        // A wall, seen from above, has no footprint and is no one's triangle.
+        if !(len > 0.0 && n.z.abs() > 1e-12 * len) {
+            continue;
+        }
+        let cosine = n.z.abs() / len;
+        let corners = [Vec2::new(a.x, a.y), Vec2::new(b.x, b.y), Vec2::new(c.x, c.y)];
+        let sign = if n.z > 0.0 { 1.0 } else { -1.0 };
+        let (mut lo, mut hi) = (0.0f64, f64::INFINITY);
+        let mut empty = false;
+        for k in 0..3 {
+            let (p, q) = (corners[k], corners[(k + 1) % 3]);
+            let e = q - p;
+            let f0 = sign * (e.x * (o.y - p.y) - e.y * (o.x - p.x));
+            let f1 = sign * (e.x * d.y - e.y * d.x);
+            if f1.abs() < 1e-15 {
+                if f0 < -1e-12 {
+                    empty = true;
+                    break;
+                }
+                continue;
+            }
+            let root = -f0 / f1;
+            if f1 > 0.0 {
+                lo = swift::max(lo, root);
+            } else {
+                hi = swift::min(hi, root);
+            }
+        }
+        hi = swift::min(hi, up_to);
+        if empty || !(lo <= hi) || !(hi.is_finite() || lo.is_finite()) {
+            continue;
+        }
+        let gap = |s: f64| -> f64 {
+            let p = origin + s * direction;
+            let z = a.z - (n.x * (p.x - a.x) + n.y * (p.y - a.y)) / n.z;
+            (p.z - z) * cosine
+        };
+        for s in [lo, hi] {
+            if s.is_finite() && (s > 1e-12 || start_inside) && gap(s) + depth_tolerance < 0.0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Stress.swift's `exactlyHidden`, the oracle for the traversal (stress.rs
+/// keeps its own copy): a point that starts inside the solid (strictly over
+/// the domain) is in its own surface's neighbourhood until the line first
+/// crosses out, hidden there only under some triangle by more than the
+/// depth tolerance; after that, any crossing of the boundary beyond the
+/// depth tolerance's reach along the line is occlusion.
+#[allow(clippy::too_many_arguments)]
+pub fn exactly_hidden(
+    mesh: &Mesh<WorldSpace>,
+    p: Vec3,
+    toward: Vec3,
+    depth_tolerance: f64,
+    per_unit: f64,
+    strictly_inside: bool,
+    cell: f64,
+) -> bool {
+    let reach = depth_tolerance / per_unit;
+    let mut exit = 0.0;
+    if under_some_triangle(mesh, p, Vec3::new(0.0, 0.0, 1.0), -1e-9 * cell, true, 0.0) {
+        exit = first_hit(mesh, p, toward, 1e-10).unwrap_or(f64::INFINITY);
+    }
+    if under_some_triangle(mesh, p, toward, depth_tolerance, strictly_inside, exit) {
+        return true;
+    }
+    first_hit(mesh, p, toward, swift::max(exit, reach) + 1e-10).is_some()
+}
+
 /// The view depth per unit of travel along the line of sight.
 pub fn per_unit(view: &Transform<WorldSpace, ViewSpace>, toward: Vec3) -> f64 {
     let c = view.m.columns;
