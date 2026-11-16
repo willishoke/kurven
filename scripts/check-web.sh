@@ -96,7 +96,14 @@ golden() {
     workspace build --release -p kurven-cli || return 1
     rm -rf "$CRATES/fixtures/rust"
     "$CLI" fixtures "$CRATES/fixtures/rust" >/dev/null || return 1
-    git -C "$ROOT" diff --exit-code --stat HEAD -- crates/fixtures/rust || failed=1
+    if ! git -C "$ROOT" diff --quiet HEAD -- crates/fixtures/rust; then
+        # The lines themselves, not only the files: on CI the tree is gone
+        # once the job ends, and a golden that differs on another platform
+        # can only be read here.
+        git -C "$ROOT" diff --stat HEAD -- crates/fixtures/rust
+        git -C "$ROOT" diff --no-color -U0 HEAD -- crates/fixtures/rust | head -80
+        failed=1
+    fi
     new=$(git -C "$ROOT" ls-files --others --exclude-standard -- crates/fixtures/rust)
     if [ -n "$new" ]; then
         printf 'not in the commit: %s\n' $new
