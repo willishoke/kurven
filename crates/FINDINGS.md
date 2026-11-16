@@ -1506,3 +1506,37 @@ is the memo's rung, 2^2.5 for 1.1 × 5: Darwin's pow gives the correctly
 rounded 0x4016A09E667F3BCD, the libm crate one ulp under. It only decides
 whether a vertex's |f| is over the ceiling, and none of the six drawings has
 one within an ulp of it.
+
+## 2026-11-16 · The cut clamps its grid, the cut golden is quantized, the rungs are Darwin's
+
+From the review of PR #67.
+
+- **`contour::cut` clamps to Float.pi (a port-side addition).** A sample on
+  the cut turns to exactly zero only when the grid was clamped as
+  `quantize` clamps a landscape's, to ±`SWIFT_FLOAT_PI`; Swift's
+  `Contour.cut(of:)` assumes that and says nothing. The port's `cut` now
+  clamps every sample into [−Float.pi, Float.pi] before turning it (a NaN
+  stays NaN), so π rounded up, from a grid not quantized, also lands on
+  the level whichever its sign. On a quantized grid it moves nothing: the
+  goldens are byte for byte and the eleven references at 0, as before. Swift
+  would need the same clamp only for a grid that did not come through
+  `quantize`; none does today.
+- **The cut golden.** `core/contour.txt` stored its phase grid as `a as
+  f32`, unclamped, so on the column x = 0.5, where the two angles sum to π
+  either side by rounding, samples were ±0x40490FDB, and under Float.pi
+  the cut zigzagged ±2.4e-7 along it (path 0 grew from 21 vertices to 28):
+  the golden pinned the very sign-of-rounding behaviour Float.pi removes.
+  It is now stored by `NativeLandscape::quantize`, as the engine stores a
+  landscape's, and the cut runs straight up the column again (21 and 20
+  vertices). The clamp above alone gives the same file.
+- **The memo's rungs are Darwin's.** The ceiling the hook is asked under,
+  2^(k/4), was `real::pow`, an ulp under Darwin's correctly rounded pow at
+  2^2.5 (the "last bits left" of the entry above, now gone). It is read off
+  2^(j/4), j = 0..3, correctly rounded, times 2^q, which is exact for a
+  normal answer; under the normal range that would round twice (k = −4091
+  and −4089 came out an ulp under), so there the subnormal is rounded once
+  from 2^(j/4) to 62 bits. A scratch probe printed Swift's `pow(2, k / 4)`
+  for every k a finite positive height reaches, −4296 to 4096, and twelve
+  heights' rungs: all are the port's to the bit. A test pins eight of them.
+  The goldens and references are unchanged; the ceiling decides only
+  whether a vertex's |f| is over it.
