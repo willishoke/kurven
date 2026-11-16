@@ -2,9 +2,8 @@
 //! the port of `Sources/KurvenCore/Bundle.swift`.
 //!
 //! A described layer's curves come from `Surface::curves`, which dispatches
-//! to `derive` (here), the face contours (here) and the hatchings (Hatch.swift,
-//! a later wave; until then the hatchings, the wall edges and the truncation
-//! edge derive nothing, `hatch_stub`).
+//! to `derive` (`surface.rs`), the face contours (`face_contour.rs`) and the
+//! hatchings, the wall edges and the truncation edge (`hatch.rs`).
 
 use std::fmt;
 use std::path::{Path, PathBuf};
