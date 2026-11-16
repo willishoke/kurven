@@ -286,3 +286,74 @@ fixtures` and, byte for byte the same, by the wasm module under Node:
   continued fractions, quarter periods and `ellpj`.
 
 With them the wasm module is 272,871 bytes (profile `web`).
+
+## 2026-11-15 · Review of PR #64: corrections to the Phase 1 entries
+
+- **Bessel is not the one place Swift traps.** ζ traps too: on a NaN
+  imaginary part (the series order is `Int` of a NaN; Swift built from
+  `Sources/KurvenMath` exits on SIGTRAP at (nan, nan) and (0.3, nan)), and
+  in Euler-Maclaurin past |Im s| = 2^63. The port answers NaN there too. The
+  policy lives in `kurven_math::swift`: `swift::int` is `Int(x)` as an
+  Option. Every other cast from f64 to an integer in the crate is guarded as
+  Swift's is (`Complex::pow` below |100|, the continued fraction below
+  1e15, a literal's integer spelling below 1e15).
+- **min and max.** Swift's generic `min(x, y)` is `y < x ? y : x` and
+  `max(x, y)` is `y >= x ? y : x`, so a NaN in the first place survives
+  (measured: `max(nan, 16)` is nan, `max(16, nan)` is 16); Rust's `f64::min`
+  and `max` drop it. `swift::min` and `swift::max` are used wherever Swift
+  calls min or max on doubles: the ODE's step control (its `hmax` was
+  `f64::min`), Brent's step test, the frequency search and generator, the
+  continued fraction's stop and ζ's order. Values differ from before only
+  for NaN arguments.
+- **Characters.** A CR LF pair is one `Character` in Swift, and was two
+  positions here, so every place after a Windows line break was one late
+  (Swift refuses `z\r\n+ @` at character 4). The tokenizer and the literals
+  now count the pair once and keep it as written in a rewrite. What still
+  differs is any other cluster of several scalars, such as a letter with a
+  combining mark; the language refuses those either way.
+- **Infinities in the oracle gate** are now held part by part with their
+  sign, and NaN to NaN, where the Swift suite (and the port, ported from
+  it) took any two values that are not finite as agreeing. The fixtures
+  hold 9 such points (log and atanh at their branch points, ζ's pole, expi
+  at 0, bessely at 0); the port has every one.
+- **Sorting.** Swift's sort is stable (since Swift 5; a probe confirms it),
+  not the unstable introsort the frequency module's comment said. Rust's
+  is stable too, so ties order alike.
+
+## 2026-11-15 · Review of PR #64: faster, with the same bits
+
+Each change was checked to leave every bit as it was: the goldens
+byte-identical, every value of the 66 oracle grids identical (a hash of
+their bits, before and after), and J, Y, I, K and Airy identical at 19,602
+points for orders up to 200, integral and not.
+
+- Airy's Bessel form took I and K of order 1/3 three times over; it takes
+  them once and forms I_{-1/3} by `modified`'s own formula.
+- `Bessel::j` no longer computes Y beside J (Swift's does, every time); a
+  negative order, which needs Y, still goes through `cylinder`. Y of an
+  integral order takes J from its caller, its factorials from a table of
+  the first 171 (the product is infinite after), and carries the harmonic
+  numbers from term to term, the same sums in Swift's order. It was
+  quadratic in the order, in Swift as here.
+- The tape runs in a per-thread scratch buffer (`kurven_math::scratch`),
+  neither allocated nor cleared per point; so do the Fourier torus's jets.
+- Functions are found by hash, as Swift's dictionary finds them, and the
+  tape's rare `Apply` holds its function, resolved when compiled.
+
+The wasm module is 282,216 bytes after these.
+
+## 2026-11-15 · A huge Bessel order or argument still hangs, in Swift too
+
+Some Bessel loops run as many times as the order, or as |z|: Y of an
+integral order n (the series' first sum, n terms), I and K (the
+recurrence, about ν steps), and J and Y on the Hankel path with an order of
+one or more (Miller's recurrence, about |z| steps). Measured here at
+z = 1 + 0.5i: bessely(1e6) 3.7 ms, bessely(1e8) 0.21 s, besseli(1e8)
+0.46 s, besselj(1e7, 2e7 + i) 0.10 s; so an order or an argument near 1e12
+does not finish. Swift has every one of these loops, and Y's was quadratic
+there: bessely(3000) takes 6.5 ms in Swift and 17 µs here, and Swift's
+besselj goes through Y, so besselj(1e6, z) does not finish in Swift at all
+(here it is 27 µs, the series alone). So no guard was added: it would give
+an answer where Swift gives none, a choice for the owner. Until there is
+one, a typed `besseli(1e12, z)` can hold the page's Worker, which Phase 6
+should be able to cancel.
