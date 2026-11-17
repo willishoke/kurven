@@ -35,7 +35,7 @@ fn moved(d: &Drawing, dx: f64, dy: f64) -> Drawing {
 #[test]
 fn every_reference_against_itself_is_at_zero() {
     let all = references();
-    assert_eq!(all.len(), 25);
+    assert_eq!(all.len(), 26);
     for (name, d) in &all {
         let report = compare(d, d, Tolerance::default());
         assert!(report.same(), "{name}: {report}");
