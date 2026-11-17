@@ -3110,3 +3110,41 @@ sliders (a row for each number in the expression), its Perspective switch
 and depth tolerance field, which the page has no control for (the depth
 tolerance travels in the URL); the presentation and CI runs on Linux of
 the new tests (not run here).
+
+## 2026-11-17 · Review of PR #75: links held to the controls, gestures in order
+
+- **A link is held to what the controls reach.** `restore` sampled
+  whatever a link said: a resolution of a million or a billion levels would
+  hang the Worker on open. It now refuses, touching nothing, a resolution
+  outside the Samples slider's 120 to 2000, a window with no area, a level
+  count outside a level slider's 2 to 80, a hatching of more than a strokes
+  slider's 400 lines across the window, and a contour layer listing more
+  than 1,000 levels (a bound on work; the catalog's own families list 40 at
+  most). `bakeResolution` is refused as the bake refuses it (1 to 20,000),
+  and `camera` refuses non-finite values and units per pixel or a distance
+  that are not positive. Every catalog landscape still restores from what
+  is edited. The page says a refused link in its notice line with the
+  engine's reason, puts back the refinement and mode it sent first, and
+  opens its own landscape, whose link then replaces the refused one.
+- **Gestures are batched, not summed.** The entry above ("What a slow
+  frame at rest forces") said gestures are summed while one is with the
+  engine; summing put the camera elsewhere than the gestures one by one
+  (the orbit's arithmetic does not associate, its elevation is clamped,
+  zooms were taken about the latest anchor and reordered against pans).
+  They now wait in order and go as one `gestures` request, which applies
+  each as `gesture` does: one request behind, and the same camera to the
+  bit, natively (a mixed sequence) and in the page (the gestures given
+  during cn's frame at rest replayed one by one).
+- **The page.** A link pasted into the tab is opened (`hashchange`) and not
+  written over; the page's keys work wherever focus is but in a field
+  that takes text (a select counts: it answers letters); a reply to the
+  formula no longer overwrites or marks text typed after return, and text
+  the engine replaces takes its marks with it; a second pointer on a held
+  slider starts no second drag; a window's thumbs show the clamped value.
+  The page tells edits from looks by the client's `VIEWS`.
+
+Each has a test in `page.spec.ts` (the formula's checked to fail without
+its fix). The lane: 55 passed, 11 skipped by design, 9.5 minutes; a draft
+asked during cn's frame at rest drawn 2.8 s later on Metal, 5.6 s on
+SwiftShader, as before. Export and the link's round trip are the same
+bytes as natively, in all three projects. check-web green.
