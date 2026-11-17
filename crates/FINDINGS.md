@@ -1718,6 +1718,8 @@ and `--dump` writes strokes and frame; the CLI has `surface`.
 
 ## 2026-11-16 · The coordinate image is Swift's CPU rasterizer, not Metal's pass
 
+*Superseded 2026-11-16, its last paragraph: sn in relief at 0.4 is past its reach and tested by the image, not sphere traced; see "sn in relief past its reach: the coordinate image, not the port".*
+
 Swift's bake takes a parametric surface's coordinate image from Metal
 (`MetalRenderer.renderSurface`, `kv_param_vertex` in Shaders.swift). What
 Metal computes: the grid's points uploaded as float32 texels; view and clip
@@ -2312,3 +2314,115 @@ The session gate is unchanged: 32 manifests byte for byte, 27 drawings at
 - **BundleFiles** is a type of its own, its paths normal when put in, so a
   lookup is a plain get. `kurven-cli app` reads a bundle's regular files
   alone, follows no symbolic link and reads no dotfile.
+
+## 2026-11-16 · sn in relief past its reach: the coordinate image, not the port
+
+Phase 6 found `surface sn --relief A` drawn differently by the two CLIs from
+A = 0.5. Reproduced here, the CLIs against each other at the reference
+floor (1.5e-4 page units, 1e-5 of length):
+
+| A | layers off | Hausdorff | length | strokes |
+|---|---|---|---|---|
+| 0.4 | none | 0 | 0 | the same |
+| 0.5 | 3 (ang_minor) | 1.995e-2 | 7.7e-4 | the same |
+| 0.6 | 1 (mag_minor) | 9.44e-3 | 3.9e-4 | the same |
+| 0.8 | 0 (mag_major) | 1.53e-2 | 5.0e-4 | the same |
+| 1.0 | 1 (mag_minor), 5 (folds) | 9.67e-3, 9.64e-2 | 6.0e-4, 3.8e-4 | 81 against 78, 12 against 13 |
+
+Each difference is a stroke's end moved by a vertex, or a two- or
+three-vertex stub drawn by one side only, nearly all on the vertical
+through the torus's axis.
+
+**The first divergence is the coordinate image.** With R = 2 and r = 1 the
+relief's reach is 1 and |sn| is truncated at 3, so the relief bounds a
+solid, and is sphere traced, only while 3A < 1. From A = 1/3 it has no
+tubular neighbourhood and every vertex is decided by the front-most test
+on the coordinate image (Visibility.swift's `isFrontMost`), which Swift's
+bake renders by Metal and the port by the CPU rasterizer. Two probes, one
+each way:
+
+- Swift's KurvenCore, KurvenDynamics and KurvenBake in a scratch package,
+  baking each amplitude once as `bake` does (Metal; byte for byte the CLI)
+  and once with `SurfaceImage.rasterize`'s image in Metal's place: the
+  rasterized bake is the port's SVG byte for byte at 0.4, 0.5, 0.6, 0.8
+  and 1.0.
+- The port in a scratch crate, given the Metal image the Swift probe
+  dumped (its float32 depth and coordinates): it bakes Swift's CLI SVG
+  byte for byte at all five.
+
+So no stage of the port's surface, contours, folds, visibility or clip
+differs from Swift's. The earlier entry "The coordinate image is Swift's
+CPU rasterizer, not Metal's pass" says no reference drawing reads the
+image, sn in relief being sphere traced: wrong for sn-relief, whose 0.4 is
+past the reach (the suite's own `in_relief_past_its_reach_...` says so).
+It matched Metal at 0.4 by luck: two vertices change verdict there, each
+alone between hidden neighbours, so no stroke moves.
+
+**Why the images differ there.** sn's poles lie on the inner equator, at
+u = 0 and u = 2K with v = K', and the plateau round each, |sn| = 3, stands
+at x = ±(1 − 3A): from A = 1/3 each crosses the axis into the relief rising
+from the other side of the ring, and the two sheets pass through each
+other. Of the 7.0 million pixels both images cover, 15 to 28 hold
+different sheets at the five amplitudes, all within 0.03 page units of the
+axis's vertical up to 0.8 (within 0.38 at 1), and 2 to 13 are covered by
+one only. At those pixels the two sheets' exact
+depths are 1.7e-5 to 2.3e-4 apart, the order of the grid's chord error,
+and the images' depths differ by 1e-6 to 5e-6: Metal interpolates in
+float32 under its own rasterization rules, the rasterizer in doubles with
+inclusive edges, and each keeps the sheet its chords put in front. Of the
+24 vertices whose verdict changes over the five amplitudes, 15 have a pixel
+holding the other sheet among the nine the test reads, one a pixel covered
+by one image only, and 8 a difference in the footprints those pixels read.
+
+**Which is right: neither, decidably.** An exact cast (Newton on the map
+from every grid cell whose projected box holds the vertex; hidden when
+another sheet, more than two cells off in coordinates, meets the line of
+sight nearer by over 1e-9 of scale; checked against sphere tracing at 0.3,
+where it hides no vertex sphere tracing sees) hides all 24. The rasterizer
+agrees with it at 15, Metal at 9: which sheet a raster keeps where two
+sheets tie in depth is the image's resolution, as Visibility.swift's doc
+says of relief ("a raster is right only to its resolution, and relief puts
+the curves where that runs out"). Reproducing Metal's pass to the bit
+(fixed-point snapping, float32 interpolation, its depth normalization) is
+not something the port can do from Apple's documentation, and the Phase 4
+decision stands: the port's image is Swift's rasterizer.
+
+**The gate.** `references` gains sn-relief-1, `surface sn --relief 1 --save
+B; bake B` with the coordinate image by `SurfaceImage.rasterize` in place
+of Metal's (`surfaceRasterized`, an additive change to References.swift;
+scripts/check.sh green with it; every other reference baked byte for byte
+as committed). The port's drawing is Swift's byte for byte: every layer at
+0, strokes 23/78/11/20/5/13, held at the floor. Swift's Metal bake of the
+same is not a reference, for the reason above, and references.txt says so.
+The test `sn_in_relief_past_a_third_is_tested_by_the_image_and_passes_through_its_axis`
+(kurven-surfaces, periodic.rs) pins where the relief stops bounding a solid
+(0.33 is sphere traced, 0.34 is not) and the plateaus at x = ±(1 − 3A).
+
+**For the owner.** Swift's Metal-baked sn in relief past a third of its
+range draws a few strokes' ends by which sheet a float32 pass keeps where
+the relief passes through itself; the session gate's relief edits (PR #70)
+at and above 0.34 are tested by the image too, and its 0.4 matches by luck
+as `sn-relief` does. Both images also keep the same vertices an exact cast
+hides, about 250 of 34,000 at 0.6, many of them back sheets just behind a
+fold whose front part the front-most test's tolerance (two footprints and
+a cell) takes for the vertex's own neighbourhood: the blind spot
+Visibility.swift's doc names, which facing covers only on a surface that
+bounds a solid. The port and Swift agree on every one of them.
+
+## 2026-11-16 · Review of PR #71: one rasterized path, the how, the test
+
+- **Every image-tested surface reference is rasterized, by one path.**
+  References.swift's `baked` draws a parametric surface with no tubular
+  neighbourhood by `rasterizedBake` (Bake.swift's frame, tolerance and
+  layers, with the coordinate image by `SurfaceImage.rasterize` in place of
+  Metal's; written once, a named mirror of Bake.swift, since sharing the
+  code would mean editing KurvenBake). So sn-relief at 0.4 is now baked
+  so too, and comes out byte for byte as its Metal bake did; no SVG of the
+  32 changed. The surfaces table in both CLIs carries the flag, which adds
+  ", its coordinate image by SurfaceImage.rasterize in place of Metal's"
+  to the `how`; Swift refuses a scene whose flag is wrong. The header says
+  so. `references` takes 10.1 s, as before.
+- **The test** reads sn's poles at iK' and 2K + iK' from the quarter
+  periods, each plateau against its own foot on the bare torus, and checks
+  the reach at 0.3 and 0.4 rather than at 0.33 and 0.34 (the entry above
+  names the old pair).

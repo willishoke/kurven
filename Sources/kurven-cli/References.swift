@@ -13,8 +13,15 @@ import KurvenMetal
 /// `kurven-cli compare` in Rust. Each is drawn by the path the command named
 /// in its `how` draws it: a bundle written by `landscape` or `surface ...
 /// --save` and drawn by `bake`, the golden slope lines as `kurven-cli
-/// fixtures` draws them, and the composite as `scene` draws it. Nothing here
-/// changes how anything is drawn.
+/// fixtures` draws them, and the composite as `scene` draws it, with one
+/// exception, which its `how` names: a surface whose strokes `bake` tests
+/// by the coordinate image alone (a parametric surface with no tubular
+/// neighbourhood, such as sn in relief past its reach) is baked with that
+/// image rendered by the CPU rasterizer, `SurfaceImage.rasterize`, in place
+/// of `bake`'s Metal pass (`rasterizedBake`). The port renders the image so;
+/// where two sheets tie in depth at a pixel, Metal's float32 pass can keep
+/// the other one, and the drawing would then hang on the GPU. Nothing else
+/// here changes how anything is drawn.
 ///
 /// Written into `<dir>`: one `<name>.svg` per drawing and `index.json`, which
 /// lists each drawing with how it was made and the names of its stroke
@@ -30,28 +37,83 @@ enum ReferenceDrawings {
         var draw: (_ scratch: URL) throws -> (strokes: Strokes, names: [String])
     }
 
+    /// What a reference's `how` adds for a surface baked by `rasterizedBake`.
+    static let rasterizedHow = ", its coordinate image by SurfaceImage.rasterize in place of Metal's"
+
+    /// Whether `bake` tests a scene's strokes by its coordinate image: a
+    /// parametric surface with no tubular neighbourhood, so no sphere
+    /// tracing (`Scene.visible(_:depthTolerance:image:)`).
+    static func imageTested(_ scene: Scene) -> Bool {
+        guard case .parametric(let surface) = scene.geometry else { return false }
+        return surface.neighbourhood == nil
+    }
+
     /// A bundle's drawing as `bake` draws it: under `preset` or its first,
     /// at that preset's depth resolution and tolerance, its contours placed
-    /// by its function unless not `refine`.
-    static func baked(_ bundle: URL, preset name: String? = nil, refine: Bool = true) throws
-        -> (strokes: Strokes, names: [String])
+    /// by its function unless not `refine`; an image-tested surface by
+    /// `rasterizedBake`. `rasterized` is what the reference's `how` says,
+    /// and a scene that says otherwise is refused, so a `how` cannot go
+    /// stale.
+    static func baked(_ bundle: URL, preset name: String? = nil, refine: Bool = true,
+                      rasterized: Bool = false) throws -> (strokes: Strokes, names: [String])
     {
         var words = ["bake", bundle.path]
         if let name { words += ["--preset", name] }
         if !refine { words.append("--no-refine") }
         let (_, _, preset, scene) = try loadDrawing(Args(words))
+        guard imageTested(scene) == rasterized else {
+            throw CLIError(rasterized
+                ? "\(bundle.lastPathComponent): its how says the coordinate image tests it, and nothing reads the image"
+                : "\(bundle.lastPathComponent): the coordinate image tests it, and its how does not say it is rasterized")
+        }
         let options = BakeOptions(resolution: preset.buffer, tiles: nil,
                                   depthTolerance: preset.depthTolerance, outline: nil)
+        if rasterized { return try rasterizedBake(scene, options: options) }
         let result = try MetalRenderer().bake(scene, options: options)
-        let names = result.strokes.layers.indices.map { $0 < result.specs.count ? result.specs[$0].name : "outline" }
-        return (result.strokes, names)
+        return drawn(result.strokes, result.specs)
     }
 
-    /// `surface ... --save B; bake B`.
-    static func surface(_ words: [String], _ scratch: URL, _ stem: String) throws -> (strokes: Strokes, names: [String]) {
+    /// A drawing's strokes with each stroke layer's name: its layer's, or
+    /// "outline" past the last.
+    static func drawn(_ strokes: Strokes, _ specs: [LayerSpec]) -> (strokes: Strokes, names: [String]) {
+        (strokes, strokes.layers.indices.map { $0 < specs.count ? specs[$0].name : "outline" })
+    }
+
+    /// Tested curves as stroke layers, as `bake` passes them.
+    static func passed(_ visible: [(Layer, PolylineSet<ViewSpace>)]) -> [(style: Style, paths: PolylineSet<PageSpace>)] {
+        visible.map { layer, seen in (Style(layer.spec), HiddenLine.pass(seen)) }
+    }
+
+    /// `MetalRenderer.bake(_:options:)` (KurvenBake/Bake.swift) for a
+    /// parametric scene, with the coordinate image rendered by the CPU
+    /// rasterizer, the reference the suite holds the Metal pass to, where
+    /// `bake` renders it by Metal. The rest mirrors Bake.swift and must be
+    /// kept to it: the frame `DepthFrame(covering:resolution:)` of the view
+    /// bounds, the depth tolerance the options' or the scene's, every layer
+    /// from `Scene.visibleLayers(depthTolerance:image:)` passed by
+    /// `HiddenLine.pass`. Bake.swift's tiling is not mirrored: the
+    /// rasterizer renders the whole frame in one pass, which the stitched
+    /// tiles stand for. An outline, traced from the depth, is refused; no
+    /// reference asks for one.
+    static func rasterizedBake(_ scene: Scene, options: BakeOptions) throws -> (strokes: Strokes, names: [String]) {
+        guard case .parametric(let surface) = scene.geometry, !scene.camera.isPerspective,
+              let bounds = scene.viewBounds(), options.outline == nil else {
+            throw CLIError("the rasterized bake draws an orthographic parametric surface with no outline")
+        }
+        let frame = DepthFrame(covering: bounds, resolution: options.resolution)
+        let image = SurfaceImage.rasterize(surface, view: scene.camera.view, frame: frame)
+        let visible = scene.visibleLayers(depthTolerance: options.depthTolerance ?? scene.depthTolerance,
+                                          image: image)
+        return drawn(Strokes(layers: passed(visible)), visible.map(\.0.spec))
+    }
+
+    /// `surface ... --save B; bake B`, the coordinate image rasterized when
+    /// `rasterized` (`baked`).
+    static func surface(_ words: [String], _ scratch: URL, _ stem: String,
+                        rasterized: Bool = false) throws -> (strokes: Strokes, names: [String]) {
         let bundle = scratch.appendingPathComponent("\(stem).kurven")
         try surfaceCommand(Args(["surface"] + words + ["--save", bundle.path]))
-        return try baked(bundle)
+        return try baked(bundle, rasterized: rasterized)
     }
 
     // MARK: the gallery, as docs/gallery/make.py sets it up
@@ -182,15 +244,21 @@ enum ReferenceDrawings {
             references.append(Reference(name: "landscape-\(stem)",
                                         how: "bake tests/fixtures/expr/landscape_\(stem).kurven") { _ in try baked(bundle) })
         }
-        let surfaces: [(String, [String])] = [
-            ("sn", ["sn"]),
-            ("sn-relief", ["sn", "--relief", "0.4"]),
-            ("torus-linear", ["torus", "--linear-curves", "2/5"]),
-            ("periodic", ["periodic", "--expression", "sn(z, 0.5)", "--periods", "7.416298709205487,3.7081493546027433"]),
+        // Each with whether the coordinate image tests it: sn in relief past
+        // its reach, 1/3 (0.4, and 1, the most the range allows), bounds no
+        // solid; the rest are sphere traced.
+        let surfaces: [(String, [String], rasterized: Bool)] = [
+            ("sn", ["sn"], false),
+            ("sn-relief", ["sn", "--relief", "0.4"], true),
+            ("sn-relief-1", ["sn", "--relief", "1"], true),
+            ("torus-linear", ["torus", "--linear-curves", "2/5"], false),
+            ("periodic", ["periodic", "--expression", "sn(z, 0.5)", "--periods", "7.416298709205487,3.7081493546027433"],
+             false),
         ]
-        for (name, words) in surfaces {
-            references.append(Reference(name: name, how: "surface \(words.joined(separator: " ")) --save B; bake B") {
-                try surface(words, $0, name)
+        for (name, words, rasterized) in surfaces {
+            references.append(Reference(name: name, how: "surface \(words.joined(separator: " ")) --save B; bake B"
+                                                         + (rasterized ? rasterizedHow : "")) {
+                try surface(words, $0, name, rasterized: rasterized)
             })
         }
         // The slope lines of |f| golden (PR #60), drawn as `kurven-cli
@@ -201,8 +269,7 @@ enum ReferenceDrawings {
                                     how: "kurven-cli fixtures: tests/fixtures/fields/landscape_slope_lines.svg") { _ in
             let (_, _, _, scene) = try loadDrawing(Args(["bake", slopes.path]))
             let layers = scene.visibleLayers()
-            return (Strokes(layers: layers.map { layer, seen in (Style(layer.spec), HiddenLine.pass(seen)) }),
-                    layers.map { $0.0.spec.name })
+            return (Strokes(layers: passed(layers)), layers.map { $0.0.spec.name })
         })
         for kind in ["tetrahedron", "cube", "octahedron", "dodecahedron", "icosahedron", "csaszar", "frame"] {
             references.append(Reference(name: "solid-\(kind)", how: "surface solid --kind \(kind) --save B; bake B") {

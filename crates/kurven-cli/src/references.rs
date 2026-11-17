@@ -10,9 +10,11 @@
 //! and their stroke counts).
 //!
 //! The port draws every drawing of Swift's list: the landscapes, the
-//! surfaces (sn flat and in relief, a torus with a linear curve, a periodic
-//! expression), the seven solids, the frame's two gallery drawings and the
-//! composite of the cubic, a cube and a torus.
+//! surfaces (sn flat and in relief at 0.4 and at 1, a torus with a linear
+//! curve, a periodic expression), the seven solids, the frame's two gallery
+//! drawings and the composite of the cubic, a cube and a torus. Swift bakes
+//! the two reliefs, which the coordinate image alone tests, with that image
+//! rendered by the CPU rasterizer as the port renders every one.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -68,6 +70,11 @@ pub fn baked(bundle: &Path, preset: Option<&str>, refine: bool) -> Result<Drawn,
     let names = result.specs.iter().map(|s| s.name.clone()).collect();
     Ok((result.strokes, names))
 }
+
+/// What a reference's `how` adds for a surface Swift bakes with its
+/// coordinate image rasterized on the CPU (References.swift's
+/// `rasterizedHow`).
+const RASTERIZED_HOW: &str = ", its coordinate image by SurfaceImage.rasterize in place of Metal's";
 
 /// `surface ... --save B; bake B`.
 pub fn surface(words: &[String], scratch: &Path, stem: &str) -> Result<Drawn, CliError> {
@@ -261,17 +268,29 @@ pub fn all(fixtures: &Path) -> Vec<Reference> {
             Box::new(move |_| baked(&bundle, None, true)),
         ));
     }
-    let surfaces: [(&str, &[&str]); 4] = [
-        ("sn", &["sn"]),
-        ("sn-relief", &["sn", "--relief", "0.4"]),
-        ("torus-linear", &["torus", "--linear-curves", "2/5"]),
-        ("periodic", &["periodic", "--expression", "sn(z, 0.5)", "--periods", "7.416298709205487,3.7081493546027433"]),
+    // Each with whether the coordinate image tests it: sn in relief past
+    // its reach, 1/3 (0.4, and 1, the most the range allows), bounds no
+    // solid; the rest are sphere traced. The port renders every coordinate
+    // image by the CPU rasterizer, and Swift bakes these with the same in
+    // place of its Metal pass (References.swift's `rasterizedBake`), whose
+    // float32 pass keeps another sheet at a few pixels where two sheets of
+    // the relief tie in depth; their `how` says so.
+    let surfaces: [(&str, &[&str], bool); 5] = [
+        ("sn", &["sn"], false),
+        ("sn-relief", &["sn", "--relief", "0.4"], true),
+        ("sn-relief-1", &["sn", "--relief", "1"], true),
+        ("torus-linear", &["torus", "--linear-curves", "2/5"], false),
+        (
+            "periodic",
+            &["periodic", "--expression", "sn(z, 0.5)", "--periods", "7.416298709205487,3.7081493546027433"],
+            false,
+        ),
     ];
-    for (name, list) in surfaces {
+    for (name, list, rasterized) in surfaces {
         let list = words(list);
         references.push(plate(
             name,
-            format!("surface {} --save B; bake B", list.join(" ")),
+            format!("surface {} --save B; bake B{}", list.join(" "), if rasterized { RASTERIZED_HOW } else { "" }),
             Box::new(move |scratch| surface(&list, scratch, name)),
         ));
     }
