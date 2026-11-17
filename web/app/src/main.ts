@@ -123,9 +123,13 @@ canvas.addEventListener("pointermove", (e) => {
   if (e.shiftKey || e.altKey) gesture({ kind: "pan", delta: [-d[0], d[1]] });
   else gesture({ kind: "orbit", delta: d });
 });
-canvas.addEventListener("pointerup", () => {
-  drag = null;
-});
+// A drag ends however the pointer is let go of: up, cancelled by the
+// browser, or its capture lost.
+for (const ended of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
+  canvas.addEventListener(ended, () => {
+    drag = null;
+  });
+}
 canvas.addEventListener(
   "wheel",
   (e) => {

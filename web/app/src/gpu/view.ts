@@ -51,8 +51,13 @@ export class PreviewView {
   /** The last preview frame drawn. */
   frame: PreviewFrame | null = null;
   readonly timings: Timing[] = [];
+  /** The frame being asked for and drawn: one at a time, wished or asked
+   * for now, so no two asks of the engine carry the same holdings. */
   private inFlight: Promise<void> | null = null;
-  private waiting: Wish | null = null;
+  /** Wished and not yet asked for: a draft first, then the frame at rest. */
+  private waiting = { draft: false, rest: false };
+  /** The client's restarts the renderer's holdings are of. */
+  private restartsSeen = 0;
   private idle: ReturnType<typeof setTimeout> | null = null;
   private readonly listeners: ((t: Timing) => void)[] = [];
 
@@ -106,45 +111,65 @@ export class PreviewView {
 
   private want(wish: Wish): void {
     // A rest wished while a draft waits keeps the draft first: the draft is
-    // what the camera shows now, and the rest follows it.
-    this.waiting = wish;
-    if (!this.inFlight) this.pump();
+    // what the camera shows now, and the rest follows it. A draft wished
+    // while a rest waits supersedes it: the camera moved again, and its rest
+    // comes when it stops (`moved`).
+    if (wish === "draft") this.waiting = { draft: true, rest: false };
+    else this.waiting.rest = true;
+    this.pump();
   }
 
   private pump(): void {
-    const wish = this.waiting;
+    if (this.inFlight) return;
+    const wish: Wish | null = this.waiting.draft ? "draft" : this.waiting.rest ? "rest" : null;
     if (!wish) return;
-    this.waiting = null;
-    this.inFlight = this.draw(wish)
-      .then(() => undefined)
-      .catch((error: unknown) => console.error("kurven preview:", error))
-      .finally(() => {
-        this.inFlight = null;
-        this.pump();
-      });
+    this.waiting[wish] = false;
+    void this.exclusive(() => this.draw(wish)).catch((error: unknown) => console.error("kurven preview:", error));
+  }
+
+  /** Run `job` when no other frame is in flight, as the one in flight. */
+  private async exclusive<T>(job: () => Promise<T>): Promise<T> {
+    while (this.inFlight) await this.inFlight;
+    const running = job();
+    this.inFlight = running.then(
+      () => undefined,
+      () => undefined,
+    );
+    try {
+      return await running;
+    } finally {
+      this.inFlight = null;
+      this.pump();
+    }
   }
 
   /** Wait for every frame wished so far to be drawn. */
   async settled(): Promise<void> {
-    while (this.inFlight || this.waiting || this.idle) {
+    while (this.inFlight || this.waiting.draft || this.waiting.rest || this.idle) {
       if (this.idle) {
         clearTimeout(this.idle);
         this.idle = null;
         this.want("rest");
       }
       if (this.inFlight) await this.inFlight;
-      else if (this.waiting) this.pump();
+      else this.pump();
     }
   }
 
-  /** Draw a frame now, outside the wishes: what the browser lane asks for.
-   * `read` reads the pixels it left. */
+  /** Draw a frame now, after what is wished, through the same one-at-a-time
+   * queue: what the browser lane asks for. `read` reads the pixels it left. */
   async drawNow(wish: Wish, read = false): Promise<{ timing: Timing; pixels: Pixels | null }> {
     await this.settled();
     let pixels: Pixels | null = null;
-    const timing = await this.draw(wish, (p) => {
-      pixels = p;
-    }, read);
+    const timing = await this.exclusive(() =>
+      this.draw(
+        wish,
+        (p) => {
+          pixels = p;
+        },
+        read,
+      ),
+    );
     return { timing, pixels };
   }
 
@@ -153,6 +178,13 @@ export class PreviewView {
     let timing: Timing;
     if (this.renderer && this.gpu) {
       const renderer = this.renderer;
+      // A restarted engine names its scenes afresh (its keys start with its
+      // own nonce, so none it sends can be mistaken for a held one); what the
+      // renderer holds from the engine before is let go.
+      if (this.client.restarts !== this.restartsSeen) {
+        this.restartsSeen = this.client.restarts;
+        renderer.forget();
+      }
       const have = renderer.holds();
       const answer = await this.client.request({ kind: "preview", draft: wish === "draft", have });
       if (answer.stale) throw new Error("a preview frame went stale");
