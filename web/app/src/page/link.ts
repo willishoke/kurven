@@ -47,9 +47,10 @@ export function linkOf(state: DocumentState, edited: Edited | null): Link | null
  * where each is (`hides`). `viewport` is the new page's. */
 export function restoring(link: Link, viewport: [number, number]): { before: Request[]; after: Request[] } {
   const before: Request[] = [{ kind: "viewport", width: viewport[0], height: viewport[1] }];
-  // What an open keeps, set before it.
-  if (!link.refine) before.push({ kind: "refine", on: false });
-  if (link.mode !== "drawing") before.push({ kind: "mode", mode: link.mode });
+  // What an open keeps, set before it, outright: a page that had others
+  // (a link pasted into a tab) takes the link's.
+  before.push({ kind: "refine", on: link.refine });
+  before.push({ kind: "mode", mode: link.mode });
   before.push({ kind: "restore", ...link.edited });
   // What an open sets from the bundle's preset, set after it.
   const after: Request[] = [

@@ -26,7 +26,7 @@
 
 import "./page/style.css";
 
-import { browserWorker, Cancelled, EngineClient } from "./engine/client.ts";
+import { browserWorker, Cancelled, EngineClient, VIEWS } from "./engine/client.ts";
 import type { Bundle, DocumentState, Edited, Preset, Request } from "./engine/protocol.ts";
 import { DEFAULT_OPTIONS, PreviewRenderer, Unsupported } from "./gpu/renderer.ts";
 import { probeLayout } from "./gpu/layout.ts";
@@ -178,11 +178,12 @@ setInterval(() => {
 
 // MARK: - the state, shown, and written to the URL
 
-/** Requests that are views of the document, not changes to it. */
-const LOOKS = new Set(["state", "catalog", "edited", "bake", "preview", "frame", "grids", "surfaceImage", "save"]);
 let linkTimer: ReturnType<typeof setTimeout> | null = null;
 let linking: Promise<void> = Promise.resolve();
 let restoringLink = false;
+/** The fragment the page last wrote or opened: one that differs is a link
+ * pasted in, which `hashchange` opens and nothing overwrites first. */
+let lastLinked = "";
 
 function scheduleLink(): void {
   if (linkTimer) clearTimeout(linkTimer);
@@ -199,13 +200,15 @@ async function writeLink(): Promise<void> {
   const edited = (reply?.edited as Edited | null | undefined) ?? null;
   const link = linkOf(engine.state ?? state, edited);
   if (!link) return;
+  if (location.hash !== lastLinked && location.hash.startsWith("#k1")) return; // a new link, not yet opened
   const hash = await encode(link);
   if (hash !== location.hash) history.replaceState(null, "", `${location.pathname}${location.search}${hash}`);
+  lastLinked = hash;
 }
 
 engine.onState((state: DocumentState, request: Request) => {
   panel.render(state);
-  if (!LOOKS.has(request.kind)) scheduleLink();
+  if (!VIEWS.has(request.kind)) scheduleLink();
 });
 
 // MARK: - Export SVG: the judged strokes, never the GPU's draft
@@ -256,12 +259,20 @@ async function exportSVG(): Promise<void> {
 
 const input = new CanvasInput(engine, canvas, scale, () => view.moved());
 
+/** Inputs that take typed text, whose keys are theirs: a slider, a check
+ * box or a radio button takes no letters, digits or ⌘Z of its own. */
+const TYPED = new Set(["text", "number", "search", "email", "url", "tel", "password"]);
+
+function takesText(el: Element | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.isContentEditable || el instanceof HTMLTextAreaElement) return true;
+  // A select answers letters by choosing the option they start.
+  if (el instanceof HTMLSelectElement) return true;
+  return el instanceof HTMLInputElement && TYPED.has(el.type);
+}
+
 window.addEventListener("keydown", (e) => {
-  const target = e.target as HTMLElement | null;
-  if (target && target !== canvas && target.closest("input, select, textarea, button")) {
-    // A field takes its own keys; the page's are for the canvas and the page.
-    if (!(target instanceof HTMLButtonElement)) return;
-  }
+  if (takesText(e.target as Element | null)) return;
   const mod = e.metaKey || e.ctrlKey;
   if (mod && (e.key === "z" || e.key === "Z")) {
     e.preventDefault();
@@ -292,35 +303,76 @@ window.addEventListener("keydown", (e) => {
 const catalog = await engine.send({ kind: "catalog" });
 panel.setCatalog((catalog?.presets as Preset[] | undefined) ?? []);
 
-async function openLink(): Promise<boolean> {
+/** Open the link a fragment holds: "none" when it holds none, "refused"
+ * when it cannot be read or the engine refuses what it asks for (the page
+ * then says why, and the document is the one before), "opened". */
+async function openLink(hash: string): Promise<"none" | "refused" | "opened"> {
   let link;
   try {
-    link = await decode(location.hash);
+    link = await decode(hash);
   } catch (error) {
-    panel.exportStatus.textContent = `the link could not be read: ${error instanceof Error ? error.message : String(error)}`;
-    return false;
+    panel.notice(`This link could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    return "refused";
   }
-  if (!link) return false;
+  if (!link) return "none";
+  if (linkTimer) {
+    clearTimeout(linkTimer);
+    linkTimer = null;
+  }
   restoringLink = true;
   try {
+    // The settings an open keeps go first, and are put back if the
+    // landscape is refused: a refused link changes nothing.
+    const wasRefine = engine.state?.refine ?? true;
+    const wasMode = engine.state?.mode ?? "drawing";
     const { before, after } = restoring(link, [canvas.width, canvas.height]);
+    // A setting the page already has is not sent again (a refinement
+    // switched on redraws every layer).
+    const sending = before.filter(
+      (r) => !(r.kind === "refine" && r.on === wasRefine) && !(r.kind === "mode" && r.mode === wasMode),
+    );
     let reply = null;
-    for (const r of before) reply = await engine.send(r);
+    for (const r of sending) reply = await engine.send(r);
     if (!reply?.ok) {
-      panel.exportStatus.textContent = `the link's landscape could not be made: ${reply?.error ?? "refused"}`;
-      return false;
+      if (link.refine !== wasRefine) await engine.send({ kind: "refine", on: wasRefine });
+      if (link.mode !== wasMode) await engine.send({ kind: "mode", mode: wasMode });
+      panel.notice(`This link was refused: ${reply?.error ?? "the engine did not answer"}`);
+      return "refused";
     }
     const restored = engine.state;
     if (restored) for (const r of hides(link, restored)) await engine.send(r);
-    for (const r of after) await engine.send(r);
-    return true;
+    const refused: string[] = [];
+    for (const r of after) {
+      const answer = await engine.send(r);
+      if (answer && !answer.ok) refused.push(answer.error ?? r.kind);
+    }
+    panel.notice(refused.length ? `This link was opened, but not all of it: ${refused.join("; ")}` : null);
+    lastLinked = hash;
+    return "opened";
   } finally {
     restoringLink = false;
   }
 }
 
+// A link pasted into this tab: opened, not overwritten. One refused leaves
+// the document as it was, and the URL is put back to it.
+window.addEventListener("hashchange", () => {
+  const hash = location.hash;
+  if (hash === lastLinked) return;
+  void openLink(hash).then((opened) => {
+    if (opened === "opened") view.changed();
+    else if (opened === "refused") {
+      lastLinked = hash;
+      scheduleLink();
+    }
+  });
+});
+
 await engine.send({ kind: "viewport", width: canvas.width, height: canvas.height });
-if (!(await openLink())) {
+const first = await openLink(location.hash);
+// A link refused is overwritten by the document opened in its place.
+if (first === "refused") lastLinked = location.hash;
+if (first !== "opened") {
   const landscape = query.get("landscape");
   const surface = query.get("surface");
   if (surface) await engine.send({ kind: "createSurface", preset: surface });
@@ -342,6 +394,7 @@ window.kurven = {
   view,
   engine,
   client,
+  input,
   usesGPU: view.usesGPU,
   fallbackReason,
   state: () => engine.state,
