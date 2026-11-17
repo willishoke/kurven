@@ -5,6 +5,7 @@
 //! to `derive` (`surface.rs`), the face contours (`face_contour.rs`) and the
 //! hatchings, the wall edges and the truncation edge (`hatch.rs`).
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,13 @@ use crate::surface::{ContourRefine, Surface};
 /// written to in memory, where the page has no file system. On disk a
 /// bundle is a directory of the same files (`Source::Directory`).
 pub type BundleFiles = BTreeMap<String, Vec<u8>>;
+
+/// A path inside a bundle as both sources read it: its components but the
+/// empty and `.` ones, joined by `/`. `./height.npy` and `height.npy`, or
+/// `layers//a.npy` and `layers/a.npy`, name one file.
+pub fn normal_path(rel: &str) -> String {
+    rel.split('/').filter(|c| !c.is_empty() && *c != ".").collect::<Vec<_>>().join("/")
+}
 
 /// Where a reader takes a bundle's files from: a directory, as Swift reads
 /// one, or files in memory under a name, as the page holds one. Not in
@@ -56,28 +64,40 @@ impl Source<'_> {
     /// Whether the bundle holds a file at `rel`.
     pub fn has(&self, rel: &str) -> bool {
         match self {
-            Source::Directory(url) => url.join(rel).exists(),
-            Source::Memory { files, .. } => files.contains_key(rel),
+            Source::Directory(url) => url.join(normal_path(rel)).exists(),
+            Source::Memory { files, .. } => Source::find(files, rel).is_some(),
         }
     }
 
-    /// The bytes of the file at `rel`, or `MissingFile` naming it.
-    pub fn read(&self, rel: &str) -> Result<Vec<u8>, BundleError> {
-        if !self.has(rel) {
-            return Err(BundleError::MissingFile { file: rel.to_string(), bundle: self.name() });
-        }
+    /// The file at `rel` among files in memory, its key and `rel` read alike
+    /// (`normal_path`), so `./height.npy` and `a//b.npy` find what a
+    /// directory finds at them. An exact key is found without a scan.
+    fn find<'f>(files: &'f BundleFiles, rel: &str) -> Option<&'f Vec<u8>> {
+        let rel = normal_path(rel);
+        files.get(&rel).or_else(|| files.iter().find(|(key, _)| normal_path(key) == rel).map(|(_, bytes)| bytes))
+    }
+
+    /// The bytes of the file at `rel`, or `MissingFile` naming it: read from
+    /// a directory, or borrowed from memory without a copy.
+    pub fn read(&self, rel: &str) -> Result<Cow<'_, [u8]>, BundleError> {
+        let missing = || BundleError::MissingFile { file: rel.to_string(), bundle: self.name() };
         match self {
             Source::Directory(url) => {
-                let u = url.join(rel);
-                std::fs::read(&u).map_err(|e| BundleError::Io(format!("{}: {e}", u.display())))
+                let u = url.join(normal_path(rel));
+                if !u.exists() {
+                    return Err(missing());
+                }
+                std::fs::read(&u).map(Cow::Owned).map_err(|e| BundleError::Io(format!("{}: {e}", u.display())))
             }
-            Source::Memory { files, .. } => Ok(files[rel].clone()),
+            Source::Memory { files, .. } => {
+                Source::find(files, rel).map(|b| Cow::Borrowed(b.as_slice())).ok_or_else(missing)
+            }
         }
     }
 
     /// The text of the file at `rel`.
     pub fn text(&self, rel: &str) -> Result<String, BundleError> {
-        String::from_utf8(self.read(rel)?).map_err(|e| BundleError::Io(format!("{}: {e}", rel)))
+        std::str::from_utf8(&self.read(rel)?).map(str::to_string).map_err(|e| BundleError::Io(format!("{}: {e}", rel)))
     }
 
     /// The manifest, parsed as JSON.
@@ -607,5 +627,26 @@ impl KurvenBundle {
         }
         files.insert("manifest.json".to_string(), written.canonical_json().into_bytes());
         Ok(files)
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+
+    #[test]
+    fn a_path_in_memory_is_read_as_a_directory_reads_it() {
+        assert_eq!(normal_path("./height.npy"), "height.npy");
+        assert_eq!(normal_path("layers//a.npy"), "layers/a.npy");
+        assert_eq!(normal_path("/layers/./a.npy/"), "layers/a.npy");
+        let files =
+            BundleFiles::from([("./height.npy".to_string(), vec![1u8]), ("layers/a.npy".to_string(), vec![2u8])]);
+        let source = Source::Memory { name: "x.kurven", files: &files };
+        assert_eq!(&*source.read("height.npy").unwrap(), &[1u8]);
+        assert_eq!(&*source.read("layers//a.npy").unwrap(), &[2u8]);
+        assert!(source.has("./layers/a.npy"));
+        assert!(matches!(source.read("phase.npy"), Err(BundleError::MissingFile { .. })));
+        // Borrowed, not copied.
+        assert!(matches!(source.read("height.npy").unwrap(), Cow::Borrowed(_)));
     }
 }
