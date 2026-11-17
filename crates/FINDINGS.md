@@ -3148,3 +3148,51 @@ its fix). The lane: 55 passed, 11 skipped by design, 9.5 minutes; a draft
 asked during cn's frame at rest drawn 2.8 s later on Metal, 5.6 s on
 SwiftShader, as before. Export and the link's round trip are the same
 bytes as natively, in all three projects. check-web green.
+
+## 2026-11-17 · Second review of PR #75: a link is untrusted input
+
+- **Every layer a link carries is bounded, or refused.** `linkable` is an
+  allow-list: contours (at most 1,000 levels, finite), hatchings (at most a
+  strokes slider's 400 lines across the window), wall edges (distinct
+  sides of the window's four), the truncation edge, fold curves, slope
+  lines (at most 400 seeds, listed or by arc length across the window);
+  any other kind, a layer stored as arrays among them, is refused, as are
+  more than 64 layers and a truncation that is not finite or has more than
+  64 bands.
+- **A refused link changes nothing.** `restore` makes the landscape in a
+  document of its own, which takes what an open keeps (viewport, mode,
+  draft resolution, refinement), and replaces the open one only once it
+  holds the landscape. A link whose sampling fails (a window whose width
+  overflows a double) leaves the open document and its undo history as
+  they were, natively and in the page. `restore_landscape` settles; the
+  protocol's arm no longer does as well.
+- **A link is read within bounds.** The fragment is refused past 16 KB (a
+  link is 1.3 KB deflated, 7.5 KB plain); the deflate is streamed and
+  stopped past 64 KB out (a link's JSON is 5 to 6 KB); every field the page
+  reads is checked for its type before anything is sent. Each refusal is
+  said in the notice line, and the page starts at its own landscape; every
+  reply of an opening is read, and a refused setting after the landscape
+  is said as "opened, but not all of it".
+- **Cancels.** Every edit goes through `Engine.edit`, and failures through
+  `quietly`, which lets a request the export's Cancel dropped go; a drag
+  the engine took hold of is always let go, its end sent again after a
+  restart.
+- **The formula keeps a draft** typed and not sampled, said as unsampled,
+  until return samples it or escape puts the engine's back.
+- **The controls' reach is the engine's** (`sliders::reach`): `linkable`
+  holds a link to it, and the `catalog` reply sends it to the page, which
+  builds its Samples, level and truncation sliders from it. Swift's views
+  keep their own copies, which the port does not touch.
+- **`camera`** assigns the values it validated.
+
+Tests: four native (an allow-list of kinds; a failed link leaving gamma
+and its undo; the catalog's reach; every catalog landscape restoring) and
+five in the browser lane (eight malformed links, each refused in 1 to 3 s;
+a failed link pasted into a tab; a cancel during a held drag with no error
+left unhandled; the formula's draft; the sliders' reach). The lane: 70
+passed, 11 skipped by design, 11.8 minutes, run under `caffeinate`: this
+laptop sleeps during long runs, and tests that took 7 to 15 minutes in one
+run (a long fragment "refused in 408 s") were the machine asleep
+(`pmset -g log`: DarkWake), the same test refusing in 0.4 s awake. Export
+and the link's round trip are the same bytes as natively in all three
+projects. check-web green.
