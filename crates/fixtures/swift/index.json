@@ -303,7 +303,7 @@
    ]
   },
   {
-   "how": "surface sn --relief 0.4 --save B; bake B",
+   "how": "surface sn --relief 0.4 --save B; bake B, its coordinate image by SurfaceImage.rasterize in place of Metal's",
    "layers": [
     "mag_major",
     "mag_minor",
@@ -320,6 +320,26 @@
     17,
     3,
     8
+   ]
+  },
+  {
+   "how": "surface sn --relief 1 --save B; bake B, its coordinate image by SurfaceImage.rasterize in place of Metal's",
+   "layers": [
+    "mag_major",
+    "mag_minor",
+    "ang_major",
+    "ang_minor",
+    "truncation edge",
+    "folds"
+   ],
+   "name": "sn-relief-1",
+   "paths": [
+    23,
+    78,
+    11,
+    20,
+    5,
+    13
    ]
   },
   {
@@ -352,26 +372,6 @@
     13,
     24,
     6
-   ]
-  },
-  {
-   "how": "surface sn --relief 1 --save B; bake B, the coordinate image by SurfaceImage.rasterize for Metal's",
-   "layers": [
-    "mag_major",
-    "mag_minor",
-    "ang_major",
-    "ang_minor",
-    "truncation edge",
-    "folds"
-   ],
-   "name": "sn-relief-1",
-   "paths": [
-    23,
-    78,
-    11,
-    20,
-    5,
-    13
    ]
   },
   {
