@@ -60,6 +60,9 @@ export type Request =
   | { kind: "draftResolution"; value: number }
   | { kind: "bakeResolution"; value: number }
   | { kind: "frame"; draft: boolean }
+  /** A frame of the preview for the page's GPU (kurven_session::preview,
+   * src/gpu/frame.ts): what it holds under `have` is not sent again. */
+  | { kind: "preview"; draft: boolean; have?: { content?: string; layers?: string[] } }
   | { kind: "bake"; svg?: boolean }
   | { kind: "grids" }
   | { kind: "save"; name: string }

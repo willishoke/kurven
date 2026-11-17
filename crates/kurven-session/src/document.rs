@@ -174,6 +174,9 @@ pub struct Document {
 
     /// The slow work started and not yet landed, in the order it was started.
     pub(crate) jobs: VecDeque<Job>,
+
+    /// What the preview's layouts read again every frame (`preview.rs`).
+    pub(crate) preview_memo: crate::preview::Memo,
 }
 
 impl Default for Document {
@@ -231,6 +234,7 @@ impl Document {
             bake_resolution: 4000,
             bake_status: None,
             jobs: VecDeque::new(),
+            preview_memo: crate::preview::Memo::default(),
         }
     }
 

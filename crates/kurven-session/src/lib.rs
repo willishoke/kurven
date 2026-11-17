@@ -10,7 +10,8 @@
 //! `Polyhedra.swift` ([`polyhedra`]), `Paint.swift` ([`paint`]),
 //! `Picking.swift` ([`picking`]), the sliders' callbacks ([`sliders`]), and
 //! the app's headless command line ([`headless`]), which the gate replays
-//! against Swift's. [`protocol`] is the session as messages: an edit in as
+//! against Swift's. [`preview`] is `KurvenMetal`'s CPU half: what a preview
+//! frame draws, which the page's WebGPU renderer draws. [`protocol`] is the session as messages: an edit in as
 //! JSON, the state out as JSON, which `kurven-wasm` and the Worker speak.
 
 // `!(x > 0.0)` stands for Swift's `guard x > 0 else`, so a NaN is refused as
@@ -27,6 +28,7 @@ pub mod landscape;
 pub mod paint;
 pub mod picking;
 pub mod polyhedra;
+pub mod preview;
 pub mod protocol;
 pub mod sliders;
 pub mod surfaces;
