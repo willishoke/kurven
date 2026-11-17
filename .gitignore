@@ -45,3 +45,7 @@ web/app/dist/
 
 # local handoffs and notes, never committed
 *.local.md
+
+# The browser lane's results (scripts/check-browser.sh).
+web/app/test-results/
+web/app/playwright-report/

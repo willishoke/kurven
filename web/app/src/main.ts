@@ -183,6 +183,8 @@ window.kurven = {
   fallbackReason,
   state: () => state,
   send,
+  /** A request, its reply and arrays as they come. */
+  request: (r: Request) => client.request(r),
   /** Open a bundle given as its files. */
   open: async (bundle: Bundle) => {
     await client.stage(bundle);
