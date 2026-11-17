@@ -285,6 +285,15 @@ identity() {
 }
 step "wasm under Node writes the golden sets and the session's files native writes, byte for byte" identity
 
+# The Worker protocol end to end under Node (worker_threads, no browser): the
+# page's client (web/app/src/engine/client.ts) driving the wasm module in a
+# Worker, its saved manifest Swift's and its drawing native's, a superseded
+# view dropped, and a hung edit cancelled and the document replayed.
+worker() {
+    node "$APP/test/worker.test.mjs" "$WASM" "$CRATES/fixtures/swift/session" "$WORK/session"
+}
+step "the Worker protocol under Node" worker
+
 # The page: its pinned packages installed when the lock is newer than the
 # install, then a type check and a build.
 page() {
