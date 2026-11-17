@@ -4,27 +4,30 @@
 // shift and the arrows pan, + and - zoom about the centre. Each is a
 // `Gesture` value the engine folds into its navigator (navigation.rs).
 //
-// Gestures are coalesced: while one is with the engine, what the hand does
-// next is summed into one gesture of each kind, so a camera that moves
-// faster than the engine answers -- as it does while a frame at rest holds
-// the Worker -- costs one request behind, never a queue.
+// Gestures are batched, never merged: while one request is with the
+// engine, what the hand does next waits in order, and goes as one
+// `gestures` request that applies each as a `gesture` request would. So a
+// camera that moves faster than the engine answers -- as it does while a
+// frame at rest holds the Worker -- costs one request behind, never a
+// queue, and ends where the gestures one by one would put it, to the bit.
+// (Summing them would not: the orbit's arithmetic does not associate in
+// floating point and its elevation is clamped, and a zoom's anchor moves
+// with every pan.)
 
 import type { Gesture } from "../engine/protocol.ts";
 import type { Engine } from "./engine.ts";
-
-interface Pending {
-  orbit: [number, number];
-  pan: [number, number];
-  zoom: { factor: number; at: [number, number] } | null;
-}
 
 export class CanvasInput {
   private readonly engine: Engine;
   private readonly canvas: HTMLCanvasElement;
   private readonly scale: number;
   private readonly moved: () => void;
-  private pending: Pending = { orbit: [0, 0], pan: [0, 0], zoom: null };
+  /** Given and not yet sent, in order. */
+  private waiting: Gesture[] = [];
   private sending: Promise<void> | null = null;
+  /** Every gesture given, in order (the last 10,000): the browser lane
+   * replays them one by one to check the batches. */
+  readonly given: Gesture[] = [];
   private readonly pointers = new Map<number, { x: number; y: number }>();
 
   constructor(engine: Engine, canvas: HTMLCanvasElement, scale: number, moved: () => void) {
@@ -45,47 +48,28 @@ export class CanvasInput {
 
   /** Wait for every gesture given so far to reach the engine. */
   async settled(): Promise<void> {
-    while (this.sending || this.hasPending()) {
+    while (this.sending || this.waiting.length) {
       if (!this.sending) this.pump();
       await this.sending;
     }
   }
 
-  private hasPending(): boolean {
-    const p = this.pending;
-    return p.orbit[0] !== 0 || p.orbit[1] !== 0 || p.pan[0] !== 0 || p.pan[1] !== 0 || p.zoom !== null;
-  }
-
   private give(g: Gesture): void {
-    const p = this.pending;
-    switch (g.kind) {
-      case "orbit":
-        p.orbit = [p.orbit[0] + g.delta[0], p.orbit[1] + g.delta[1]];
-        break;
-      case "pan":
-        p.pan = [p.pan[0] + g.delta[0], p.pan[1] + g.delta[1]];
-        break;
-      case "zoom":
-        p.zoom = { factor: (p.zoom?.factor ?? 1) * g.factor, at: g.at };
-        break;
-      default:
-        break;
-    }
+    this.waiting.push(g);
+    this.given.push(g);
+    if (this.given.length > 10_000) this.given.splice(0, this.given.length - 10_000);
     this.pump();
   }
 
   private pump(): void {
-    if (this.sending || !this.hasPending()) return;
-    const p = this.pending;
-    this.pending = { orbit: [0, 0], pan: [0, 0], zoom: null };
-    const gestures: Gesture[] = [];
-    if (p.orbit[0] !== 0 || p.orbit[1] !== 0) gestures.push({ kind: "orbit", delta: p.orbit });
-    if (p.pan[0] !== 0 || p.pan[1] !== 0) gestures.push({ kind: "pan", delta: p.pan });
-    if (p.zoom) gestures.push({ kind: "zoom", factor: p.zoom.factor, at: p.zoom.at });
-    this.sending = (async () => {
-      for (const gesture of gestures) await this.engine.send({ kind: "gesture", gesture });
-      this.moved();
-    })()
+    if (this.sending || !this.waiting.length) return;
+    const gestures = this.waiting;
+    this.waiting = [];
+    const [only] = gestures;
+    const request = gestures.length === 1 && only ? { kind: "gesture" as const, gesture: only } : { kind: "gestures" as const, gestures };
+    this.sending = this.engine
+      .send(request)
+      .then(() => this.moved())
       .catch((error: unknown) => console.error("kurven gesture:", error))
       .finally(() => {
         this.sending = null;
