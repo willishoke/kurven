@@ -99,6 +99,339 @@ pub fn first_hit(mesh: &Mesh<WorldSpace>, origin: Vec3, direction: Vec3, after: 
     best
 }
 
+/// One triangle as `first_hit` tests it, with what does not depend on the
+/// ray's origin worked out once, by the same operations in the same order:
+/// its hit is `first_hit`'s, to the bit.
+#[derive(Clone, Copy)]
+struct Prepared {
+    a: Vec3,
+    e1: Vec3,
+    e2: Vec3,
+    p: Vec3,
+    inv: f64,
+}
+
+impl Prepared {
+    /// `first_hit`'s test of this triangle past its determinant's.
+    #[inline]
+    fn hit(&self, origin: Vec3, direction: Vec3, after: f64) -> Option<f64> {
+        let s = origin - self.a;
+        let u = s.dot(self.p) * self.inv;
+        if !(u >= -1e-12 && u <= 1.0 + 1e-12) {
+            return None;
+        }
+        let q = s.cross(self.e1);
+        let v = direction.dot(q) * self.inv;
+        if !(v >= -1e-12 && u + v <= 1.0 + 1e-12) {
+            return None;
+        }
+        let hit = self.e2.dot(q) * self.inv;
+        if !(hit > after) {
+            return None;
+        }
+        Some(hit)
+    }
+}
+
+/// `first_hit` against one mesh along one direction, asked of many origins:
+/// the same brute force, over only the triangles that can answer. Each
+/// triangle is projected along the direction onto a plane, and bucketed by
+/// a grid there over its box, widened by a bound on how far outside it
+/// Möller–Trumbore's rounding and tolerances can still take a hit; an
+/// origin is tested against its cell's triangles alone. A triangle whose
+/// bound is wide (nearly edge-on) is tested from every origin, and an
+/// origin far outside the mesh against every triangle, so no triangle that
+/// `first_hit` would hit is left out, and the least hit of the same set of
+/// hits, computed the same way, is the same double. With
+/// `KURVEN_RAY_INDEX_CHECK` set, every answer is checked against
+/// `first_hit` itself.
+pub struct RayIndex {
+    direction: Vec3,
+    prepared: Vec<Prepared>,
+    /// Triangles tested from every origin.
+    always: Vec<u32>,
+    /// The plane's axes, and the grid on it: its low corner, its cell, its
+    /// size, and each cell's triangles (`starts` into `items`).
+    axes: (Vec3, Vec3),
+    lo: Vec2,
+    hi: Vec2,
+    cell: Vec2,
+    n: (usize, usize),
+    starts: Vec<u32>,
+    items: Vec<u32>,
+    /// Origins farther than `reach` from `centre` are tested against every
+    /// triangle: the widening assumes them within it.
+    centre: Vec3,
+    reach: f64,
+    check: Option<Mesh<WorldSpace>>,
+}
+
+impl RayIndex {
+    pub fn new(mesh: &Mesh<WorldSpace>, direction: Vec3) -> RayIndex {
+        let eps = f64::EPSILON;
+        let mut prepared = Vec::new();
+        for t in &mesh.triangles {
+            let (a, b, c) =
+                (mesh.vertices[t[0] as usize].v, mesh.vertices[t[1] as usize].v, mesh.vertices[t[2] as usize].v);
+            let (e1, e2) = (b - a, c - a);
+            let p = direction.cross(e2);
+            let det = e1.dot(p);
+            // `first_hit` skips it, whatever the origin.
+            if !(det.abs() > 1e-14) {
+                continue;
+            }
+            prepared.push(Prepared { a, e1, e2, p, inv: 1.0 / det });
+        }
+        let (mut blo, mut bhi) = (Vec3::splat(f64::INFINITY), Vec3::splat(f64::NEG_INFINITY));
+        for v in &mesh.vertices {
+            blo = blo.min(v.v);
+            bhi = bhi.max(v.v);
+        }
+        let centre = if blo.x.is_finite() { 0.5 * (blo + bhi) } else { Vec3::ZERO };
+        let radius = if blo.x.is_finite() { 0.5 * (bhi - blo).length() } else { 0.0 };
+        let reach = 4.0 * (radius + centre.length()) + 1e-300;
+        let along = direction.length();
+        let unit = direction / along;
+        let ax = unit.cross(if unit.z.abs() < 0.9 { Vec3::new(0.0, 0.0, 1.0) } else { Vec3::new(1.0, 0.0, 0.0) });
+        let ax = ax.normalized();
+        let ay = unit.cross(ax);
+        // The farthest an origin within reach and a vertex lie from 0, and
+        // so the most an origin lies from a vertex.
+        let far = centre.length() + reach;
+        let span = reach + radius;
+        let project = |x: Vec3| Vec2::new(x.dot(ax), x.dot(ay));
+        let mut always = Vec::new();
+        let mut boxes: Vec<Option<(Vec2, Vec2)>> = Vec::with_capacity(prepared.len());
+        for (k, t) in prepared.iter().enumerate() {
+            let (a, b, c) = (t.a, t.a + t.e1, t.a + t.e2);
+            let (l1, l2, l3) = (t.e1.length(), t.e2.length(), (c - b).length());
+            let det = 1.0 / t.inv;
+            // How far below 0 or above 1 a barycentric the rounding of
+            // `s · p`, `d · (s × e1)` and the determinant lets through, on
+            // top of the 1e-12 allowed: each within a few ulps of the
+            // magnitudes summed, here 64.
+            let slack = 1e-12 * (1.0 + 1e-6)
+                + 64.0 * eps * along * (span * swift::max(l1, l2) + l1 * l2 + span * (l1 + l2)) / det.abs();
+            // A barycentric off by `slack` is a point off the triangle by at
+            // most three times it along its longest side; and the
+            // projections of the origin and of the corners round by a few
+            // ulps of their size.
+            let widen = 4.0 * slack * swift::max(swift::max(l1, l2), l3) + 64.0 * eps * (far + l1 + l2) * (1.0 + along);
+            let (pa, pb, pc) = (project(a), project(b), project(c));
+            let lo = pa.min(pb).min(pc) - Vec2::splat(widen);
+            let hi = pa.max(pb).max(pc) + Vec2::splat(widen);
+            if !(widen.is_finite() && widen < 1e-3 * span && lo.x.is_finite() && hi.x.is_finite()) {
+                always.push(k as u32);
+                boxes.push(None);
+            } else {
+                boxes.push(Some((lo, hi)));
+            }
+        }
+        let (mut lo, mut hi) = (Vec2::splat(f64::INFINITY), Vec2::splat(f64::NEG_INFINITY));
+        let mut count = 0usize;
+        for b in boxes.iter().flatten() {
+            lo = lo.min(b.0);
+            hi = hi.max(b.1);
+            count += 1;
+        }
+        let side = ((2.0 * (count as f64).sqrt()).ceil() as usize).clamp(1, 1024);
+        let n = if count == 0 { (1, 1) } else { (side, side) };
+        let cell = if count == 0 {
+            Vec2::splat(1.0)
+        } else {
+            Vec2::new(swift::max((hi.x - lo.x) / n.0 as f64, 1e-300), swift::max((hi.y - lo.y) / n.1 as f64, 1e-300))
+        };
+        let mut index = RayIndex {
+            direction,
+            prepared,
+            always,
+            axes: (ax, ay),
+            lo,
+            hi,
+            cell,
+            n,
+            starts: Vec::new(),
+            items: Vec::new(),
+            centre,
+            reach,
+            check: std::env::var_os("KURVEN_RAY_INDEX_CHECK").map(|_| mesh.clone()),
+        };
+        let mut counts = vec![0u32; n.0 * n.1 + 1];
+        for b in boxes.iter().flatten() {
+            let ((i0, j0), (i1, j1)) = (index.key(b.0), index.key(b.1));
+            for j in j0..=j1 {
+                for i in i0..=i1 {
+                    counts[j * n.0 + i + 1] += 1;
+                }
+            }
+        }
+        for k in 1..counts.len() {
+            counts[k] += counts[k - 1];
+        }
+        let mut fill = counts.clone();
+        let mut items = vec![0u32; counts[n.0 * n.1] as usize];
+        for (k, b) in boxes.iter().enumerate() {
+            let Some(b) = b else { continue };
+            let ((i0, j0), (i1, j1)) = (index.key(b.0), index.key(b.1));
+            for j in j0..=j1 {
+                for i in i0..=i1 {
+                    let c = j * n.0 + i;
+                    items[fill[c] as usize] = k as u32;
+                    fill[c] += 1;
+                }
+            }
+        }
+        index.starts = counts;
+        index.items = items;
+        index
+    }
+
+    /// The grid's cell of a point on the plane, clamped to the grid:
+    /// monotone in each coordinate, so a point in a box is keyed between its
+    /// corners' keys.
+    fn key(&self, x: Vec2) -> (usize, usize) {
+        let i = ((x.x - self.lo.x) / self.cell.x).floor();
+        let j = ((x.y - self.lo.y) / self.cell.y).floor();
+        let clamp = |k: f64, n: usize| -> usize {
+            if !(k > 0.0) {
+                0
+            } else if k >= (n - 1) as f64 {
+                n - 1
+            } else {
+                k as usize
+            }
+        };
+        (clamp(i, self.n.0), clamp(j, self.n.1))
+    }
+
+    /// Each candidate triangle's hit from `origin`, until `stop` says so.
+    fn visit(&self, origin: Vec3, after: f64, mut stop: impl FnMut(f64) -> bool) {
+        let d = self.direction;
+        if !((origin - self.centre).length() <= self.reach) {
+            for t in &self.prepared {
+                if let Some(h) = t.hit(origin, d, after)
+                    && stop(h)
+                {
+                    return;
+                }
+            }
+            return;
+        }
+        for &k in &self.always {
+            if let Some(h) = self.prepared[k as usize].hit(origin, d, after)
+                && stop(h)
+            {
+                return;
+            }
+        }
+        let x = Vec2::new(origin.dot(self.axes.0), origin.dot(self.axes.1));
+        if !(x.x >= self.lo.x && x.x <= self.hi.x && x.y >= self.lo.y && x.y <= self.hi.y) {
+            return;
+        }
+        let (i, j) = self.key(x);
+        let c = j * self.n.0 + i;
+        for &k in &self.items[self.starts[c] as usize..self.starts[c + 1] as usize] {
+            if let Some(h) = self.prepared[k as usize].hit(origin, d, after)
+                && stop(h)
+            {
+                return;
+            }
+        }
+    }
+
+    fn checked<R: PartialEq + std::fmt::Debug>(
+        &self,
+        origin: Vec3,
+        after: f64,
+        got: R,
+        want: impl Fn(Option<f64>) -> R,
+    ) -> R {
+        if let Some(mesh) = &self.check {
+            let brute = want(first_hit(mesh, origin, self.direction, after));
+            assert_eq!(got, brute, "the ray index and first_hit from {origin:?} along {:?}", self.direction);
+        }
+        got
+    }
+
+    /// `first_hit(mesh, origin, direction, after)`, the same double.
+    pub fn first_hit(&self, origin: Vec3, direction: Vec3, after: f64) -> Option<f64> {
+        if direction.to_array().map(f64::to_bits) != self.direction.to_array().map(f64::to_bits) {
+            panic!("a ray index asked along {direction:?}, built along {:?}", self.direction);
+        }
+        let mut best: Option<f64> = None;
+        self.visit(origin, after, |hit| {
+            if best.is_none_or(|b| hit < b) {
+                best = Some(hit);
+            }
+            false
+        });
+        self.checked(origin, after, best.map(f64::to_bits), |b| b.map(f64::to_bits));
+        best
+    }
+
+    /// `first_hit(mesh, origin, direction, after).is_some()`, stopping at
+    /// the first hit.
+    pub fn hits(&self, origin: Vec3, direction: Vec3, after: f64) -> bool {
+        if direction.to_array().map(f64::to_bits) != self.direction.to_array().map(f64::to_bits) {
+            panic!("a ray index asked along {direction:?}, built along {:?}", self.direction);
+        }
+        let mut any = false;
+        self.visit(origin, after, |_| {
+            any = true;
+            true
+        });
+        self.checked(origin, after, any, |b| b.is_some())
+    }
+
+    pub fn direction(&self) -> Vec3 {
+        self.direction
+    }
+}
+
+fn same_direction(a: Vec3, b: Vec3) -> bool {
+    a.to_array().map(f64::to_bits) == b.to_array().map(f64::to_bits)
+}
+
+/// Meshes cast against from many origins, along one direction as a rule:
+/// a `RayIndex` of each, built along the first direction asked, and
+/// `first_hit` itself along any other.
+pub struct RayCache {
+    meshes: Vec<Mesh<WorldSpace>>,
+    built: std::sync::OnceLock<Vec<RayIndex>>,
+}
+
+impl RayCache {
+    pub fn new(meshes: Vec<Mesh<WorldSpace>>) -> RayCache {
+        RayCache { meshes, built: std::sync::OnceLock::new() }
+    }
+
+    pub fn meshes(&self) -> &[Mesh<WorldSpace>] {
+        &self.meshes
+    }
+
+    /// The indexes, when they were built along `direction`.
+    fn along(&self, direction: Vec3) -> Option<&[RayIndex]> {
+        let built = self.built.get_or_init(|| self.meshes.iter().map(|m| RayIndex::new(m, direction)).collect());
+        (built.is_empty() || same_direction(built[0].direction, direction)).then_some(built.as_slice())
+    }
+
+    /// `first_hit(mesh, origin, direction, after).is_none()` for every mesh.
+    pub fn clear(&self, origin: Vec3, direction: Vec3, after: f64) -> bool {
+        match self.along(direction) {
+            Some(indexes) => indexes.iter().all(|r| !r.hits(origin, direction, after)),
+            None => self.meshes.iter().all(|m| first_hit(m, origin, direction, after).is_none()),
+        }
+    }
+
+    /// `first_hit` against the one mesh `k`.
+    pub fn first_hit(&self, k: usize, origin: Vec3, direction: Vec3, after: f64) -> Option<f64> {
+        match self.along(direction) {
+            Some(indexes) => indexes[k].first_hit(origin, direction, after),
+            None => first_hit(&self.meshes[k], origin, direction, after),
+        }
+    }
+}
+
 /// The drawn solid of a one-tile, uncut heightfield as explicit triangles:
 /// the grid's cells as the rasterizer splits them, clamped at the
 /// vertices, except that a triangle the truncation cuts is replaced by its truncation edge
