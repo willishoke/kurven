@@ -2527,3 +2527,38 @@ print what they tally, at main too for the comparison: for example, "Γ at
 12 s of CPU per core at 4 threads. They cannot get much faster without
 fewer samples, or a bound on |f|'s slope that the walk does not have. If
 CI needs more, the riser suites are the candidates for a slower lane.
+
+## 2026-11-17 · Review of PR #74: timed stretches, meaning, cleanup
+
+- **Timed stretches run alone.** forced.rs (the orbit's grid folds under
+  25 ms, the re-place under a quarter of the fit), stress.rs (rgamma's two
+  drawings under 60 s) and lines_of_curvature.rs (the arc-length refusal
+  under 2 s) assert wall-clock times. Each timed stretch holds `alone()`,
+  and every stretch of the same file that spreads over the cores with
+  `par_map` holds `sharing()` (`crates/test-support/threads.rs`, a lock per
+  test binary), so no saturating work runs while one is timed.
+  Single-threaded tests still run beside it, as on main. The cost at 4
+  threads, by libtest's clock: forced.rs 8.4 s to 12.9 s, stress.rs 5.0 s
+  to 9.9 s.
+- **The steep case's two drawings are made one after the other** again,
+  so it checks, as on main, that a drawing made after the first is the
+  same.
+- **The tracing times mean something.** Each of lines_of_curvature.rs's
+  tracings (both families, with returns, then once round) is one
+  `par_map`. Each is timed as the wall time around it, and the message says
+  so. A call takes seeds / threads seeds, not four, so the face and its
+  principal directions are built 8 times at 4 threads, not 48.
+- **Cleanup.** threads() and par_map live once, in `crates/test-support`,
+  which each crate's tests/common includes by `#[path]`. RayCache keeps an
+  index per direction asked, so no direction falls back to the brute force
+  unseen. TerrainTops' mesh lives in its RayCache alone. RayIndex and
+  FootprintIndex share `Reach`, the ball an origin must lie in for their
+  widening to hold. The bundle suite bakes from the scene and moves the
+  drawing, rather than cloning it.
+- **Checked as before.** The printed output of every test binary is main's
+  with durations masked; only the tracing message's added words differ.
+  `KURVEN_RAY_INDEX_CHECK=1` passes on composite, stress, contact and
+  isophotes.
+- **Timing note.** /usr/bin/time's `real` counts the time this laptop
+  sleeps, and two runs here read 953 s and 1070 s for suites libtest timed
+  at 10 s. libtest's own "finished in" is the figure to read.
