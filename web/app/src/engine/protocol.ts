@@ -61,6 +61,9 @@ export type Request =
   | { kind: "light"; layer: string; direction: [number, number, number] }
   | { kind: "hide"; layer: number }
   | { kind: "gesture"; gesture: Gesture }
+  /** Gestures in order, each applied as `gesture` applies it: the camera
+   * they make one by one, in one request. */
+  | { kind: "gestures"; gestures: Gesture[] }
   | ({ kind: "camera" } & ExactCamera)
   | { kind: "fit" }
   | { kind: "preset"; index: number }

@@ -16,7 +16,8 @@
 //   Swift's Document, keeps the landscape or surface request, the levels and
 //   the styling it had, which a later edit acts on. Staged bundles stay: any
 //   later open may read them, as the engine keeps them.
-// - A run of gestures is replaced by one `camera` request, the camera the
+// - A run of gestures (one at a time or several in a `gestures` request) is
+//   replaced by one `camera` request, the camera the
 //   run left, to the bit (`camera.exact` in the state): gestures move the
 //   navigator alone. They are not summed: the orbit's folds do not
 //   associate in floating point, and its elevation is clamped.
@@ -89,8 +90,9 @@ export interface Options {
   timeoutMs?: number;
 }
 
-/** Requests that change nothing the journal must replay. */
-const VIEWS = new Set([
+/** Requests that change nothing the journal must replay: views of the
+ * document. The page reads it too, to tell an edit from a look. */
+export const VIEWS: ReadonlySet<string> = new Set([
   "state",
   "catalog",
   "edited",
@@ -440,9 +442,10 @@ export class EngineClient {
       return;
     }
     const lastRequest = last?.kind === "request" ? last : undefined;
-    if ((request.kind === "gesture" || request.kind === "camera") && entry.camera) {
+    const moving = (r: Request) => r.kind === "gesture" || r.kind === "gestures" || r.kind === "camera";
+    if (moving(request) && entry.camera) {
       const camera: Request = { kind: "camera", ...entry.camera };
-      const run = lastRequest && (lastRequest.request.kind === "gesture" || lastRequest.request.kind === "camera");
+      const run = lastRequest && moving(lastRequest.request);
       if (run && lastRequest.camera) j.pop();
       j.push({ kind: "request", request: camera, ok: true, camera: entry.camera });
       return;
