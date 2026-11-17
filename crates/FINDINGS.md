@@ -1892,3 +1892,47 @@ wasm byte-identical.
   shared by the layers' visibilities rather than copied, and a parametric
   surface's fold curves are placed once per line of sight. The strokes, the
   references and the goldens are unchanged.
+
+## 2026-11-16 · Where the Swift looks wrong (Phase 4, ported as it is)
+
+- **A run of two is carried by its end.** `PeriodLattice.canonical` brings
+  a run into the rectangle by the translation of its middle vertex,
+  `run[run.count / 2]`, which for a run of two vertices is its last. A run
+  `clipped` to end on the far edge has that end in the next cell, so the run
+  is carried a whole period too far, off the rectangle. Reproduction: the
+  cell [0, 4) × [0, 2) and the run (3.5, 1), (4, 1) come out as (−0.5, 1),
+  (0, 1); three vertices ending there, (3.25, 1), (3.5, 1), (4, 1), stay as
+  they are. On the torus the two copies are one curve, so nothing draws in
+  the wrong place, but its coordinates are a period off what the doc
+  promises. Ported as it is; `cover.rs` pins it.
+- **A steep linear curve's v runs on.** `linearCurves` cuts a path every
+  eight turns of u and brings both coordinates back then, but never cuts
+  for v, so its doc's "never more than eight turns from zero" holds for u
+  alone: at a slope of 50 and a bit, over 24 turns, v runs about 400
+  periods (2500 radians) between seams. The preview reads the coordinates
+  as float32, whose step there is about 2.4e-4 rad, far coarser than a
+  pixel of a fine grid's coordinate. Ported as it is; `parametric.rs`
+  pins it.
+
+## 2026-11-16 · Second review of PR #69: the fold memo, the pass, the dump
+
+- **The fold memo is each scene's own.** It was an `Arc` shared by every
+  clone of a scene and keyed by the line of sight alone, so a clone
+  drawing other creases from the same camera could read another scene's
+  folds. A clone now starts with an empty memo; a test draws sn in relief
+  with and without its truncation edge from one camera.
+- **A parametric bake renders the frame whole.** Swift tiles its Metal
+  pass past the texture limit and stitches the tiles; the CPU rasterizer
+  has no limit, and renders the frame once, which is what the stitched
+  tiles stand for. A tiled request bakes the untiled image to the bit
+  (`Bake::tiles` reports one pass). A surface's coordinate hatching, which
+  carries its coordinates when it is tested, no longer counts as a layer
+  that needs the image.
+- **`--dump` names a layer's files by its place.** Swift writes
+  `PREFIX.NAME.npy` and `.idx.npy`, so two layers of one name, or a layer
+  named "outline" beside the traced outline, write over each other. The
+  port writes `PREFIX.INDEX.NAME.npy`, INDEX the layer's place in the
+  frame's `layers`: a deliberate difference.
+- `Composite::clip_on_chords` shares `HiddenLine::clip_on`'s bisection and
+  runs (`clip_on_runs`), placing the cut on the chord; the `surface`
+  command reads `--lines-of-curvature` once.
