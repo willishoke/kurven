@@ -12,6 +12,9 @@
 // Swift's `guard x > 0 else` refuses a NaN, and so does `if !(x > 0.0)`.
 #![allow(clippy::neg_cmp_op_on_partial_ord, clippy::manual_range_contains)]
 
+mod common;
+
+use common::{alone, par_map, sharing};
 use kurven_core::camera::Camera;
 use kurven_core::hatching::FaceSelector;
 use kurven_core::integral_curves::{End, Limits, Section, Traced, VectorField};
@@ -94,18 +97,6 @@ fn expect(failures: &mut Vec<String>, ok: bool, what: &str, detail: String) {
     if !ok {
         failures.push(format!("{what}: {detail}"));
     }
-}
-
-/// `Heightfield.parallelMap`, its iterations spread over threads and
-/// computed as they would be in turn.
-fn par_map<T: Sync, R: Send>(items: &[T], body: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let chunk = items.len().div_ceil(threads).max(1);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> =
-            items.chunks(chunk).map(|c| scope.spawn(|| c.iter().map(&body).collect::<Vec<R>>())).collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
-    })
 }
 
 /// "lines of curvature: on the round torus, the principal curvatures and directions are the closed form's"
@@ -565,6 +556,7 @@ fn tangent(path: &[Vec2], i: usize, s: f64) -> Vec2 {
 /// "lines of curvature: on the forced torus the two families cross at right angles in space, each once round"
 #[test]
 fn on_the_forced_torus_the_two_families_cross_at_right_angles_in_space_each_once_round() {
+    let _beside = sharing();
     let surface = forced();
     let face = surface.face();
     let copy = &face.copies[0];
@@ -581,27 +573,53 @@ fn on_the_forced_torus_the_two_families_cross_at_right_angles_in_space_each_once
     }
     let mut families: Vec<Vec<Vec<Vec2>>> = Vec::new();
     let (mut returned, mut curves, mut off_section) = (0, 0, 0.0);
-    let mut took = [Duration::ZERO, Duration::ZERO];
-    for curvature in [PrincipalCurvature::Greater, PrincipalCurvature::Lesser] {
-        let layer = LayerSpec::lines_of_curvature(curvature, (surface.u, surface.v), 24, 0.3);
-        let LayerSource::IntegralCurves { field, seeds, .. } = &layer.source else {
-            panic!("lines of curvature are integral curves")
-        };
-        let points = surface.seed_points(seeds);
-        let section = surface.section(seeds);
-        // Timed with the returns a curve is followed for past its first,
-        // and without.
+    // Each family traced twice, with the returns a curve is followed for
+    // past its first, and without. A seed's curve is traced on its own
+    // (`traced_integral_curves` maps each seed in turn), so both families'
+    // seeds are spread over the threads, as many to a call as share them
+    // out evenly, the curves joined in the seeds' order; each of the two
+    // tracings is timed as the wall time of the whole spread.
+    let curvatures = [PrincipalCurvature::Greater, PrincipalCurvature::Lesser];
+    let seeded: Vec<(DirectionField, Vec<P2<ParamSpace>>, Option<Section>)> = curvatures
+        .iter()
+        .map(|&curvature| {
+            let layer = LayerSpec::lines_of_curvature(curvature, (surface.u, surface.v), 24, 0.3);
+            let LayerSource::IntegralCurves { field, seeds, .. } = layer.source else {
+                panic!("lines of curvature are integral curves")
+            };
+            let points = surface.seed_points(&seeds);
+            let section = surface.section(&seeds);
+            (field, points, section)
+        })
+        .collect();
+    let threads = common::threads();
+    let trace = |once_round: bool| -> (Vec<Vec<Traced>>, Duration) {
+        let limits = if once_round { Limits { closing_returns: 0, ..Limits::default() } } else { Limits::default() };
+        let mut calls: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
+        for (family, (_, points, _)) in seeded.iter().enumerate() {
+            let per_call = points.len().div_ceil(threads).max(1);
+            for start in (0..points.len()).step_by(per_call) {
+                calls.push((family, start..(start + per_call).min(points.len())));
+            }
+        }
         let clock = Instant::now();
-        let _ = surface.traced_integral_curves(
-            field,
-            &points,
-            section.as_ref(),
-            &Limits { closing_returns: 0, ..Limits::default() },
-        );
-        took[1] += clock.elapsed();
-        let clock = Instant::now();
-        let traced = surface.traced_integral_curves(field, &points, section.as_ref(), &Limits::default());
-        took[0] += clock.elapsed();
+        let parts = par_map(&calls, |(family, seeds)| {
+            let (field, points, section) = &seeded[*family];
+            surface.traced_integral_curves(field, &points[seeds.clone()], section.as_ref(), &limits)
+        });
+        let took = clock.elapsed();
+        let mut families: Vec<Vec<Traced>> = vec![Vec::new(); seeded.len()];
+        for ((family, _), traced) in calls.iter().zip(parts) {
+            families[*family].extend(traced);
+        }
+        (families, took)
+    };
+    let (full, full_took) = trace(false);
+    let (_, once_round_took) = trace(true);
+    let took = [full_took, once_round_took];
+    let mut traced_all = full.into_iter();
+    for curvature in curvatures {
+        let traced = traced_all.next().expect("a tracing");
         let fixed = if curvature == PrincipalCurvature::Greater { 1 } else { 0 };
         for curve in &traced {
             curves += 1;
@@ -705,7 +723,7 @@ fn on_the_forced_torus_the_two_families_cross_at_right_angles_in_space_each_once
          curve it was seeded on back to it",
         format!(
             "k₁ − k₂ ≥ {least:.3}; {curves} curves, {returned} returned, ends off the section by {off_section:.1e}; \
-             traced in {:?}, {:?} once round alone",
+             both families traced in {:?}, {:?} once round alone (wall time, spread over {threads} threads)",
             took[0], took[1]
         ),
     );
@@ -902,7 +920,9 @@ fn the_manifest() {
     );
     // By arc length they are counted off the level set's length before
     // any is placed: a hundred-thousandth apart round the outer equator
-    // would be some two million.
+    // would be some two million. Timed alone: the forced torus's tracings,
+    // spread over every core, do not run meanwhile.
+    let timed = alone();
     let clock = Instant::now();
     let tiny = match torus.integral_curves(
         &DirectionField::PrincipalDirection(PrincipalCurvature::Greater),
@@ -913,6 +933,7 @@ fn the_manifest() {
         Err(e) => e.to_string().contains(&words),
     };
     let took = clock.elapsed();
+    drop(timed);
     expect(
         &mut failures,
         tiny && took < Duration::from_secs(2),

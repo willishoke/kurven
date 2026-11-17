@@ -2426,3 +2426,139 @@ bounds a solid. The port and Swift agree on every one of them.
   periods, each plateau against its own foot on the bare torus, and checks
   the reach at 0.3 and 0.4 rather than at 0.33 and 0.34 (the entry above
   names the old pair).
+
+## 2026-11-17 · The slow suites on four cores, checking as much
+
+CI's native-test step took 17.5 minutes on ubuntu-latest's 4 cores, 724 s
+of it composite.rs. Each slow suite was profiled (macOS `sample`) and sped
+up on its reference side or by running independent work side by side. No
+sample point, case, tolerance, assertion or count changed, and no engine
+code: every change is under `crates/*/tests`.
+
+**Measuring at 4 threads.** The suites spread their oracles over
+`available_parallelism()`. `KURVEN_TEST_THREADS` now sets that number
+(`common::threads`, in both crates' test commons), and `RUST_TEST_THREADS`
+sets libtest's. Timings below run each test binary as cargo does, in its
+package directory, on this 18-core Mac: "4 threads" is both set to 4,
+"full" neither. 4 threads on 18 cores is not 4 cores, so CPU time is given
+too. From the CI run, CI's wall time was 0.5x this machine's CPU seconds
+for composite.rs and 2-3x this machine's 4-thread wall time for the rest.
+
+| suite | before, 4 threads (wall / CPU) | after, 4 threads | before, full | after, full |
+| --- | --- | --- | --- | --- |
+| landscape composite | 109.2 s / 1413 s | 5.5 s / 37 s | 88.6 s / 1541 s | 5.1 s / 40 s |
+| landscape walls | 16.7 s / 51 s | 10.3 s / 58 s | 7.2 s / 61 s | 5.7 s / 67 s |
+| surfaces forced | 18.6 s / 47 s | 8.4 s / 51 s | 18.7 s / 48 s | 8.1 s / 54 s |
+| surfaces lines_of_curvature | 19.9 s / 22 s | 7.4 s / 22 s | 19.1 s / 21 s | 4.6 s / 25 s |
+| surfaces bundles | 18.2 s / 20 s | 7.6 s / 21 s | 18.1 s / 20 s | 7.4 s / 22 s |
+| landscape stress | 10.0 s / 32 s | 5.0 s / 26 s | 10.4 s / 37 s | 5.3 s / 29 s |
+| every native test binary | 218.7 s / 1625 s | 64.9 s / 257 s | 182.0 s / 1772 s | 56.0 s / 281 s |
+
+By the calibration above that is about 3 minutes on CI. Walls' CPU is the
+same single-threaded (47 s before and after); the extra CPU seconds at 4
+and 18 threads are this machine's efficiency cores taking more of the work.
+
+**Where the time went, and what changed.**
+
+- **composite.rs**: over 95% in `first_hit`, the brute force over every
+  triangle of the landscape's drawn mesh, five times a sample (the cast and
+  its four nudges), over about 11 million samples in the two gate tests. `RayIndex` asks the same
+  Möller–Trumbore test, the same operations on the same values, of only the
+  triangles an origin can meet. Each triangle is projected along the line
+  of sight and bucketed on a grid over its box, widened by a bound on how
+  far its 1e-12 barycentric allowance and the rounding of the test can
+  carry a hit outside it. Nearly edge-on triangles are asked from every
+  origin, and far origins against every triangle. So the set of hits is
+  `first_hit`'s, and the least hit is the same double. The gate's casts and
+  `TerrainTops` reach it through `RayCache`, built along the first
+  direction asked.
+- **stress.rs**: the real drawing's grid cast. `exactly_hidden` is
+  common's alone now, generic over `Triangles` (a mesh, or its
+  `MeshIndex`). It asks `under_some_triangle` through a `FootprintIndex`.
+  Straight up, that tests the triangles whose footprint box holds the
+  point, widened by the 1e-12 an edge's half-plane is let through by. Along
+  the line of sight, it tests those whose footprint spans the line's offset
+  across it and reaches as far along it as the point. That cast went from
+  1.74 s to 13 ms. The bake suite's steep erf case is built and drawn on a
+  thread of its own beside rgamma's, its two drawings side by side and its
+  layers measured each on its own, summed in order. The walk over a
+  reflected or turned tile stops once its least gap is under f by more
+  than the ten-thousandth the comparison asks, because the least gap only
+  falls.
+- **par_map** handed each thread one contiguous chunk, so the cameras near
+  edge-on, which come last and walk farthest, all fell to one thread. Each
+  thread now takes the next items as it comes free, and the results come
+  back in order.
+- **walls.rs**: half `Heightfield::visible_curves` on f (the engine under
+  test), half `SolidWalk::depth` evaluating |f|. Both are fixed costs. Only
+  the sharing-out above changed. Its remaining 47 CPU seconds are the floor
+  short of fewer samples.
+- **forced.rs, lines_of_curvature.rs, bundles.rs**: engine work run in
+  sequence, independent item by item: Fourier-torus jets, exact folds,
+  tracings, builds and bakes. These now run side by side, and every check
+  is made in its order with its message. This covers forced.rs's nineteen
+  request edits (after the timed fit and re-place), the preview's four
+  exact-fold cases, and the orbit's seven exact folds (after its grid folds
+  are timed in turn as before). It also covers each line-of-curvature
+  tracing, four seeds at a time (`traced_integral_curves` maps each seed on
+  its own, and the curves are joined in the seeds' order), and each bundle
+  request, whose direct bake now runs beside its round trip. The 1024 x 512
+  forced torus is built once for forced.rs, as the fitted torus already was.
+
+**The proof that nothing checks less.** `KURVEN_RAY_INDEX_CHECK=1` makes
+every `RayIndex` and `FootprintIndex` answer be checked against
+`first_hit` and `under_some_triangle` themselves. composite.rs, stress.rs,
+contact.rs and isophotes.rs pass with it set (composite.rs in 93 s on 18
+cores). Every test binary of the workspace was run one test at a time with
+`--nocapture`, at main (bb2af7a) and here. With durations masked, the
+printed output is the same in all 51 binaries. composite.rs's eight
+compositions show 0 wrong in the same counts, for example "a frame sunk
+into the slope of a tower: 0 of 1390687 disagree, 647314 hidden by another
+... own: 0 of 657338 disagree", and only the order in which they finish
+differs. stress.rs's real drawing shows "grid: 14384 vertices, traversal
+285, cast 285, pit 1032/48/48". lines_of_curvature.rs shows "59965 chords
+... 48 curves, 48 returned ... 609 crossings". walls.rs and stress.rs now
+print what they tally, at main too for the comparison: for example, "Γ at
+0.5 | 1 | 1.5 | 2.5: 0 of 61110 kept under the solid", "reflected: 0 of
+4560 disagree, 3820 clear", and "steep: 82.08779809582452 of
+82.08779809582452 units kept; 507 behind, 2078 buried".
+
+**Left as it is.** walls.rs's riser walks are the slowest left, at about
+12 s of CPU per core at 4 threads. They cannot get much faster without
+fewer samples, or a bound on |f|'s slope that the walk does not have. If
+CI needs more, the riser suites are the candidates for a slower lane.
+
+## 2026-11-17 · Review of PR #74: timed stretches, meaning, cleanup
+
+- **Timed stretches run alone.** forced.rs (the orbit's grid folds under
+  25 ms, the re-place under a quarter of the fit), stress.rs (rgamma's two
+  drawings under 60 s) and lines_of_curvature.rs (the arc-length refusal
+  under 2 s) assert wall-clock times. Each timed stretch holds `alone()`,
+  and every stretch of the same file that spreads over the cores with
+  `par_map` holds `sharing()` (`crates/test-support/threads.rs`, a lock per
+  test binary), so no saturating work runs while one is timed.
+  Single-threaded tests still run beside it, as on main. The cost at 4
+  threads, by libtest's clock: forced.rs 8.4 s to 12.9 s, stress.rs 5.0 s
+  to 9.9 s.
+- **The steep case's two drawings are made one after the other** again,
+  so it checks, as on main, that a drawing made after the first is the
+  same.
+- **The tracing times mean something.** Each of lines_of_curvature.rs's
+  tracings (both families, with returns, then once round) is one
+  `par_map`. Each is timed as the wall time around it, and the message says
+  so. A call takes seeds / threads seeds, not four, so the face and its
+  principal directions are built 8 times at 4 threads, not 48.
+- **Cleanup.** threads() and par_map live once, in `crates/test-support`,
+  which each crate's tests/common includes by `#[path]`. RayCache keeps an
+  index per direction asked, so no direction falls back to the brute force
+  unseen. TerrainTops' mesh lives in its RayCache alone. RayIndex and
+  FootprintIndex share `Reach`, the ball an origin must lie in for their
+  widening to hold. The bundle suite bakes from the scene and moves the
+  drawing, rather than cloning it.
+- **Checked as before.** The printed output of every test binary is main's
+  with durations masked; only the tracing message's added words differ.
+  `KURVEN_RAY_INDEX_CHECK=1` passes on composite, stress, contact and
+  isophotes.
+- **Timing note.** /usr/bin/time's `real` counts the time this laptop
+  sleeps, and two runs here read 953 s and 1070 s for suites libtest timed
+  at 10 s. libtest's own "finished in" is the figure to read.
