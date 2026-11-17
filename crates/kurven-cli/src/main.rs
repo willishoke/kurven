@@ -54,6 +54,11 @@
 //!     The app's command line with no window (`KurvenApp BUNDLE ...`), its
 //!     edits run in order through the session (kurven-session), what it
 //!     saves and bakes written where it says.
+//!
+//! kurven-cli session REQUESTS [-o out.svg] [--state S.json] [--edited E.json]
+//!     The page's requests (one JSON object a line, as the page sends them to
+//!     its Worker) run in order through the session, then the judged strokes
+//!     of the document they left written as the page's Export writes them.
 //! ```
 
 use std::path::Path;
@@ -75,7 +80,8 @@ const USAGE: &str = "usage: kurven-cli fixtures <dir>
        kurven-cli surface [torus | sn | periodic | forced] [options] [--save B] [-o out.svg]
        kurven-cli surface solid [--kind NAME] [options] [--save B] [-o out.svg]
        kurven-cli scene A.kurven B.kurven [--at X,Y,Z[,S]] ... [--preset NAME] [--no-refine] -o out.svg
-       kurven-cli app BUNDLE [edits as the app takes them] [--save B] [--bake S]";
+       kurven-cli app BUNDLE [edits as the app takes them] [--save B] [--bake S]
+       kurven-cli session REQUESTS [-o out.svg] [--state S.json] [--edited E.json]";
 
 /// A command ported from Swift's kurven-cli: Swift's argument reading, and
 /// its exit status 1 with `kurven-cli: <error>` on a refusal.
@@ -149,6 +155,7 @@ fn main() -> ExitCode {
         Some("bake") => return swift_command(bake_command),
         Some("references") => return swift_command(references_command),
         Some("surface") => return swift_command(surface_command),
+        Some("session") => kurven_cli::session::session_command(&args[1..]).map(|()| ExitCode::SUCCESS),
         Some("app") => return ExitCode::from(kurven_cli::app::app_command(&args[1..]).clamp(0, 255) as u8),
         Some("scene") => {
             return match scene_command(&args[1..]) {
