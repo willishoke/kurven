@@ -50,6 +50,7 @@ export type Request =
   | { kind: "light"; layer: string; direction: [number, number, number] }
   | { kind: "hide"; layer: number }
   | { kind: "gesture"; gesture: Gesture }
+  | ({ kind: "camera" } & ExactCamera)
   | { kind: "fit" }
   | { kind: "preset"; index: number }
   | { kind: "perspective"; on: boolean }
@@ -87,6 +88,17 @@ export type Gesture =
   | { kind: "roll"; radians: number }
   | { kind: "retarget"; point: [number, number, number] };
 
+/** The camera to the bit, as the state reports it and a `camera` request
+ * sets it: the angles in radians as the orbit holds them. */
+export interface ExactCamera {
+  azimuth: number;
+  elevation: number;
+  target: [number, number, number];
+  distance: number | null;
+  center: [number, number];
+  unitsPerPixel: number;
+}
+
 /** One layer as the controls show it. */
 export interface LayerState {
   name: string;
@@ -119,6 +131,7 @@ export interface DocumentState {
     center: [number, number];
     unitsPerPixel: number;
     perspective: boolean;
+    exact: ExactCamera;
   };
   viewport: [number, number];
   presets: string[];
@@ -136,6 +149,8 @@ export interface DocumentState {
   bakeResolution: number;
   draftResolution: number;
   canBake: boolean;
+  refine: boolean;
+  mode: "drawing" | "shaded" | "depth";
 }
 
 /** A typed array a reply carries. */
@@ -144,6 +159,8 @@ export type TypedArray = Float64Array | Float32Array | Uint32Array | Uint8Array;
 /** A reply: its JSON, and its arrays by name. */
 export interface Reply {
   ok: boolean;
+  /** False only for a request refused before it reached the document. */
+  touched: boolean;
   error?: string;
   state?: DocumentState;
   arrays: { name: string; type: "f64" | "f32" | "u32" | "u8" }[];
@@ -159,16 +176,19 @@ export interface Bundle {
 /** Page to Worker. */
 export type ToWorker =
   | { type: "init"; wasm: ArrayBuffer | string }
-  | { type: "stage"; bundle: Bundle }
+  | { type: "stage"; id: number; bundle: Bundle }
   | { type: "unstage" }
   | { type: "request"; id: number; request: Request };
 
 /** Worker to page. */
 export type FromWorker =
   | { type: "ready" }
-  | { type: "staged"; name: string }
+  | { type: "staged"; id: number }
   | { type: "reply"; id: number; reply: Reply; arrays: Record<string, TypedArray> }
-  | { type: "failed"; id: number | null; message: string };
+  /** A stage or a request that threw (`id`), or the engine that would not
+   * load (`id` null). `trap`: the module trapped (it aborts on a panic) and
+   * is gone with what it held; otherwise only that message failed. */
+  | { type: "failed"; id: number | null; trap: boolean; message: string };
 
 /** The end of a channel either side holds: a Worker, the Worker's own
  * global, or Node's worker_threads, adapted. */

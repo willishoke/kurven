@@ -120,5 +120,135 @@ fresh(await client.request({ kind: "set", key: "minor", value: 0.7 }));
 assert.equal(client.state.surface.shape.minor, 0.7);
 checks += 5;
 
+// A cancel during a replay: the second terminates the Worker the first is
+// replaying into and replays the whole journal again, nothing lost, and
+// neither cancel's promise rejects (an unhandled rejection ends this run).
+const journaled = client.journalLength;
+const settled = client.state;
+await Promise.all([client.cancel("first"), client.cancel("second during the first's replay")]);
+const second = client.cancel("third");
+await new Promise((resolve) => setTimeout(resolve, 40));
+await Promise.all([second, client.cancel("fourth, later in a replay")]);
+assert.equal(client.restarts, 5);
+assert.equal(client.journalLength, journaled, "the journal is whole after the replays");
+assert.deepEqual(unsaid(fresh(await client.request({ kind: "state" })).reply.state), unsaid(settled));
+checks += 3;
+
+// A failed open changes the document (it forgets its edits and is a
+// failure), so it is journaled and replayed; an open of a name never staged
+// touches nothing and is not.
+await client.stage({ name: "broken.kurven", files: [{ path: "manifest.json", bytes: new TextEncoder().encode("nope").buffer }] });
+let answer = await client.request({ kind: "open", name: "broken.kurven" });
+assert.equal(answer.reply.ok, false);
+assert.equal(answer.reply.touched, true);
+assert.equal(client.state.kind, "failed");
+const afterFailure = client.journalLength;
+answer = await client.request({ kind: "open", name: "never-staged.kurven" });
+assert.equal(answer.reply.touched, false);
+assert.equal(client.journalLength, afterFailure);
+await client.cancel("replay a failure");
+assert.equal(fresh(await client.request({ kind: "state" })).reply.state.kind, "failed");
+checks += 5;
+
+// A long session replays bounded: from its last open, a run of gestures as
+// one camera, a drag's moves as its last, a run of viewports as its last.
+fresh(await client.request({ kind: "open", name: gamma }));
+const opened = client.journalLength;
+for (let k = 0; k < 300; k++) {
+  fresh(await client.request({ kind: "gesture", gesture: { kind: k % 3 ? "orbit" : "zoom", delta: [3.1, -1.3], factor: 1.01, at: [600, 400] } }));
+}
+fresh(await client.request({ kind: "drag", control: { slider: "truncation" }, phase: "begin" }));
+for (const h of [4.8, 4.5, 4.2, 3.9, 3.6]) {
+  fresh(await client.request({ kind: "drag", control: { slider: "truncation" }, phase: "move", value: h }));
+}
+fresh(await client.request({ kind: "drag", control: { slider: "truncation" }, phase: "end" }));
+for (let w = 0; w < 20; w++) fresh(await client.request({ kind: "viewport", width: 1000 + w, height: 700 }));
+assert.equal(client.journalLength, opened + 5, "camera, drag begin, its last move, drag end, viewport");
+const long = client.state;
+await client.cancel("replay a long session");
+const replayed = fresh(await client.request({ kind: "state" })).reply.state;
+assert.deepEqual(unsaid(replayed), unsaid(long), "the bounded replay gives the same document");
+assert.deepEqual(replayed.camera.exact, long.camera.exact);
+checks += 3;
+
+// Closed: what is pending is rejected, its timeout disarmed, and nothing
+// after is taken. The pending edit here would hang, and its timeout would
+// restart the Worker if it were still armed.
+const restarts = client.restarts;
+const hanging = client.request({ kind: "expression", expression: "besseli(1e12, z)" }, { timeoutMs: 300 });
+await new Promise((resolve) => setTimeout(resolve, 20));
 client.close();
+await assert.rejects(hanging, (error) => error instanceof Cancelled);
+await new Promise((resolve) => setTimeout(resolve, 500));
+assert.equal(client.restarts, restarts, "no timeout fired after close");
+await assert.rejects(client.request({ kind: "state" }), (error) => error instanceof Cancelled);
+await assert.rejects(client.stage(bundle(gamma)), (error) => error instanceof Cancelled);
+checks += 4;
+
+// The client's failures, against a Worker that fails on purpose: an engine
+// that will not load is said to the request waiting for it, and the next
+// request loads it again; a bundle the engine refuses rejects its stage and
+// is not journaled.
+function fakeWorker(script) {
+  const handle = {
+    onmessage: null,
+    terminated: false,
+    postMessage(message) {
+      queueMicrotask(() => {
+        if (handle.terminated) return;
+        const send = (data) => handle.onmessage?.({ data });
+        if (message.type === "init") {
+          send(script.boots++ < script.failBoots ? { type: "failed", id: null, trap: false, message: "no engine" } : { type: "ready" });
+        } else if (message.type === "stage") {
+          send(message.bundle.name === script.refuse ? { type: "failed", id: message.id, trap: false, message: "refused" } : { type: "staged", id: message.id });
+        } else if (message.type === "request") {
+          handle.requests = (handle.requests ?? 0) + 1;
+          script.onRequest?.(handle);
+          if (handle.terminated) return;
+          send({ type: "reply", id: message.id, reply: { ok: true, touched: true, arrays: [] }, arrays: {} });
+        }
+      });
+    },
+    terminate() {
+      handle.terminated = true;
+    },
+  };
+  return handle;
+}
+const script = { boots: 0, failBoots: 1, refuse: "bad.kurven" };
+const fake = new EngineClient(() => fakeWorker(script), new ArrayBuffer(8));
+await assert.rejects(fake.request({ kind: "state" }), /would not load/);
+assert.equal(fresh(await fake.request({ kind: "set", key: "major", value: 2 })).stale, false);
+assert.equal(script.boots, 2, "loaded again for the next request");
+await assert.rejects(fake.stage({ name: "bad.kurven", files: [] }), /refused/);
+await fake.stage({ name: "good.kurven", files: [] });
+assert.equal(fake.journalLength, 2, "the edit and the good stage, not the refused one");
+checks += 5;
+
+// A cancel exactly in the middle of a replay, on the replay's second
+// request: the next Worker gets the whole journal, not what was left of it.
+let workers = [];
+const midway = { boots: 0, failBoots: 0 };
+const counted = new EngineClient(() => {
+  const w = fakeWorker(midway);
+  workers.push(w);
+  return w;
+}, new ArrayBuffer(8));
+for (const value of [1, 2, 3]) await counted.request({ kind: "set", key: "major", value });
+await counted.request({ kind: "relief", value: 0.3 });
+assert.equal(counted.journalLength, 4);
+let interrupted = null;
+midway.onRequest = (w) => {
+  if (w === workers[1] && w.requests === 2 && !interrupted) interrupted = counted.cancel("in the middle of a replay");
+};
+await counted.cancel("start a replay");
+await interrupted;
+assert.ok(interrupted, "the second cancel came during the first replay");
+assert.equal(workers[1].requests, 2, "the first replay stopped at its second request");
+assert.equal(workers[2].requests, 4, "the next replay sent the whole journal");
+assert.equal(counted.journalLength, 4);
+counted.close();
+fake.close();
+checks += 4;
+
 console.log(`the Worker protocol under Node: ${checks} checks, one hang cancelled in ${Date.now() - started} ms`);

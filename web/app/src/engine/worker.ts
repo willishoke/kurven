@@ -29,7 +29,7 @@ export function serve(port: Port): void {
           for (const file of message.bundle.files) {
             engine.stage(message.bundle.name, file.path, new Uint8Array(file.bytes));
           }
-          send({ type: "staged", name: message.bundle.name });
+          send({ type: "staged", id: message.id });
           return;
         }
         case "unstage":
@@ -44,9 +44,12 @@ export function serve(port: Port): void {
         }
       }
     } catch (error) {
-      // A trap (the module aborts on a panic) leaves the engine unusable:
-      // the client restarts the Worker on this.
-      send({ type: "failed", id: message.type === "request" ? message.id : null, message: String(error) });
+      const id = message.type === "request" || message.type === "stage" ? message.id : null;
+      // A trap leaves the module unusable: the client restarts the Worker
+      // on it. Anything else failed that message alone.
+      const trap = error instanceof WebAssembly.RuntimeError;
+      if (trap) engine = null;
+      send({ type: "failed", id, trap, message: String(error) });
     }
   }
 }
