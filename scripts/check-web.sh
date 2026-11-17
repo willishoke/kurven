@@ -35,6 +35,8 @@ APP="$ROOT/web/app"
 WORK="$CRATES/target/check-web"
 CLI="$CRATES/target/release/kurven-cli"
 WASM="$CRATES/target/wasm32-unknown-unknown/web/kurven_wasm.wasm"
+# The page's module: the session alone, without the golden sets.
+PAGE_WASM="$CRATES/target/page/wasm32-unknown-unknown/web/kurven_wasm.wasm"
 # A cargo command on the workspace, wherever this is run from: run in
 # crates/, so rustup takes the toolchain crates/rust-toolchain.toml pins.
 workspace() {
@@ -268,7 +270,7 @@ wasm() {
     echo "kurven_wasm.wasm: $(wc -c < "$WASM" | tr -d ' ') bytes, with the golden sets"
     (cd "$CRATES" && CARGO_TARGET_DIR="$CRATES/target/page" cargo build --profile web \
         --target wasm32-unknown-unknown -p kurven-wasm --no-default-features) || return 1
-    echo "kurven_wasm.wasm: $(wc -c < "$CRATES/target/page/wasm32-unknown-unknown/web/kurven_wasm.wasm" | tr -d ' ') bytes, the page's"
+    echo "kurven_wasm.wasm: $(wc -c < "$PAGE_WASM" | tr -d ' ') bytes, the page's"
 }
 step "wasm build" wasm
 
@@ -285,19 +287,29 @@ identity() {
     # and drawing, the grids of a resampled landscape among them.
     local here="$CRATES/fixtures/swift/session" ran="$WORK/session" through="$WORK/session-wasm"
     [ -d "$ran" ] || { echo "no native session run to compare: the session step did not run"; return 1; }
-    rm -rf "$through"
-    node "$CRATES/kurven-wasm/session.mjs" "$WASM" "$here/scripts.txt" "$here/inputs" "$through" &&
-        diff -r -x .stdout "$ran" "$through" &&
-        echo "$(find "$through" -type f | wc -l | tr -d ' ') session file(s) byte-identical, native and wasm"
+    # Through both modules: the check's, and the page's, which is what a
+    # browser loads.
+    local module label
+    for module in "$WASM" "$PAGE_WASM"; do
+        label="the check's"
+        [ "$module" = "$PAGE_WASM" ] && label="the page's"
+        rm -rf "$through"
+        node "$CRATES/kurven-wasm/session.mjs" "$module" "$here/scripts.txt" "$here/inputs" "$through" &&
+            diff -r -x .stdout "$ran" "$through" &&
+            echo "$(find "$through" -type f | wc -l | tr -d ' ') session file(s) byte-identical, native and $label wasm" ||
+            return 1
+    done
 }
 step "wasm under Node writes the golden sets and the session's files native writes, byte for byte" identity
 
 # The Worker protocol end to end under Node (worker_threads, no browser): the
 # page's client (web/app/src/engine/client.ts) driving the wasm module in a
 # Worker, its saved manifest Swift's and its drawing native's, a superseded
-# view dropped, and a hung edit cancelled and the document replayed.
+# view dropped, and a hung edit cancelled and the document replayed; against
+# the check's module and the page's.
 worker() {
-    node "$APP/test/worker.test.mjs" "$WASM" "$CRATES/fixtures/swift/session" "$WORK/session"
+    node "$APP/test/worker.test.mjs" "$WASM" "$CRATES/fixtures/swift/session" "$WORK/session" &&
+        node "$APP/test/worker.test.mjs" "$PAGE_WASM" "$CRATES/fixtures/swift/session" "$WORK/session"
 }
 step "the Worker protocol under Node" worker
 
