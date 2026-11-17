@@ -1393,6 +1393,24 @@ mod tests {
         assert_eq!(ParametricSurface::linear_curve_closes(core::f64::consts::SQRT_2, 24), None);
     }
 
+    /// Swift's rule, kept (crates/FINDINGS.md, "Where the Swift looks wrong
+    /// (Phase 4)"): a linear curve's path is cut every eight turns of u, and v
+    /// is never brought back on its own, so a steep curve's v runs on for
+    /// many periods: at a slope of 50 and a bit (one that does not close
+    /// within its 24 turns), about 400 periods of v between seams, against
+    /// the doc's "never more than eight turns".
+    #[test]
+    fn a_steep_linear_curves_v_runs_on_past_eight_turns_as_in_swift() {
+        let torus = ParametricSurface::torus(2.0, 1.0, (64, 32)).expect("the torus");
+        let curves = torus.linear_curves(50.0 + core::f64::consts::FRAC_1_SQRT_2, 24, 1, None);
+        let coords = curves.coords.expect("coordinates");
+        let period = 2.0 * core::f64::consts::PI;
+        let u = coords.iter().map(|c| c.x().abs()).fold(0.0, f64::max) / period;
+        let v = coords.iter().map(|c| c.y().abs()).fold(0.0, f64::max) / period;
+        assert!(u <= 8.0 + 1e-9, "u stays within eight turns: {u}");
+        assert!(v > 300.0, "v runs on: {v} periods");
+    }
+
     #[test]
     fn a_plane_has_no_outside_and_a_patch_reads_its_grid() {
         let u = ParamAxis::new(Interval::new(0.0, 2.0), false, 3);

@@ -179,6 +179,20 @@ mod tests {
         assert_eq!(c, vec![P2::new(0.5, 0.5), P2::new(1.0, 1.0), P2::new(1.5, 1.5)]);
     }
 
+    /// Swift's choice, kept (crates/FINDINGS.md, "Where the Swift looks
+    /// wrong (Phase 4)"): a run is carried by its middle vertex, `run[n / 2]`,
+    /// which for a run of two is its end; a run clipped to end on the far
+    /// edge has that end in the next cell, so it is carried a period too far,
+    /// off the rectangle.
+    #[test]
+    fn a_run_of_two_ending_on_the_far_edge_is_carried_a_period_too_far_as_in_swift() {
+        let run = [P2::new(3.5, 1.0), P2::new(4.0, 1.0)];
+        assert_eq!(lattice().canonical(&run), vec![P2::new(-0.5, 1.0), P2::new(0.0, 1.0)]);
+        // Three vertices are carried by the middle one, inside.
+        let three = [P2::new(3.25, 1.0), P2::new(3.5, 1.0), P2::new(4.0, 1.0)];
+        assert_eq!(lattice().canonical(&three), vec![P2::new(3.25, 1.0), P2::new(3.5, 1.0), P2::new(4.0, 1.0)]);
+    }
+
     #[test]
     fn a_path_across_an_edge_ends_on_the_edge_and_a_closed_one_is_joined() {
         let l = lattice();
