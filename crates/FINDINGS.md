@@ -2214,3 +2214,63 @@ and a draft until let go, a refusal no step, the git sha an undo puts back).
 **Not done**: the relief lane above (Phase 4's); the GPU's half of the
 frames, the depth pass a pick reads and the picker's pictures (Phase 7); the
 page (Phase 8). Nothing of the session waits on a `PORT:` hole.
+
+## 2026-11-16 · Review of PR #70: the client, the frames, the protocol
+
+- **Restarts.** A second cancel during a replay took the half-rebuilt
+  journal and lost what was not yet replayed, and the first cancel's
+  promise rejected unhandled. Now a replay leaves the journal whole until
+  it has run, a restart terminates the Worker being replayed into and
+  replays the same journal into the next, an overtaken boot is rejected
+  (a terminated Worker never says it will not load) so its replay gives
+  way, and every caller of an earlier restart waits for the last replay.
+  Tested with cancels back to back, one 40 ms into a replay, and one exactly
+  at a replay's second request (against a Worker that fails on purpose,
+  which then receives all four journaled requests).
+- **close()** rejects what is pending, clears its timeouts and refuses
+  every later call; a hung edit pending at close no longer restarts a
+  Worker when its timeout comes.
+- **Failures.** A stage has an id and its own reply, so a bundle the
+  engine refuses rejects that stage, which is not journaled; a failure
+  says whether the module trapped, and only a trap restarts. An engine
+  that will not load is said to the request waiting, and the next request
+  loads it again.
+- **Journal by effect.** Every reply says whether the request touched the
+  document (`touched`: false only for a refusal of its arguments, or an
+  open of a name never staged). A failed open, which forgets the
+  document's edits and leaves it a failure, is journaled and replays to the
+  same failure.
+- **Compaction.** From the last open, create or createSurface (each a
+  clean slate), keeping the last viewport, mode, draft resolution and
+  refine before it, which an open keeps, and every staged bundle, which a
+  later open may read; a run of gestures as one `camera` request, set to
+  the bit from the state's `camera.exact` (gestures move the navigator
+  alone, and summing them would not be exact: the orbit's folds do not
+  associate in floating point, and its elevation is clamped); a run of
+  moves of the landscape, truncation, light or levels slider as its last
+  (each sets a value outright and is never refused; a surface field's or a
+  hatching's step can be refused and keep the one before, so theirs are
+  kept); a run of one outright setting as its last; a bundle staged again
+  over an earlier one that no open between reads. A 300-gesture session
+  with a five-move drag and twenty viewports replays as its three staged
+  bundles and its open plus five entries, to the same document and camera to
+  the bit. What is not compacted: a toggle (`hide`) and a refusable move.
+  The replayed document equals the last one reported but for status lines,
+  which are messages (a save's, a bake's, a pick's are not replayed).
+  One exception to "to the bit": JSON cannot write -0.0, so a camera angle
+  that is exactly -0 would replay as +0.
+- **Frames** drew `framed_scene`; they draw `shown_scene` now, the picked
+  face's boundary last, each layer saying whether it is drawn
+  (`shown_visible_layers`, Swift's `shownOptions`).
+- **Paths in memory** were found by exact key where a directory joins the
+  path; both read `normal_path` now (`./a.npy`, `a//b.npy`), and a file in
+  memory is borrowed, not copied, as are the staged files an `open` or a
+  headless run reads. `call` parses a request once.
+- **Indices and sizes** (hide, preset, viewport, the resolutions) are
+  whole numbers or refused, where `as usize` made -1 and 1.5 into 0 and 1.
+- **The page's module** (`--no-default-features`) now runs the session's
+  scripts byte-identically to native and the whole Worker test, in
+  check-web, as the check's module does.
+
+The session gate is unchanged: 32 manifests byte for byte, 27 drawings at
+0, against the committed Swift outputs.
