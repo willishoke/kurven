@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use kurven_core::bundle::BundleFiles;
 use kurven_core::depth::DepthFrame;
 use kurven_core::json::{self, JsonObject, JsonValue};
-use kurven_core::manifest::{DomainAxis, LayerSource, LayerSpec, Truncation};
+use kurven_core::manifest::{CameraPreset, DomainAxis, LayerSource, LayerSpec, Truncation};
 use kurven_core::navigation::Framing;
 use kurven_core::navigation::{Gesture, Viewport};
 use kurven_core::polyline::Layer;
@@ -325,6 +325,7 @@ impl Session {
                         counts.insert(name.clone(), n);
                     }
                 }
+                linkable(&request, &layers, &counts)?;
                 d.restore_landscape(request, Styling { truncation, layers }, counts);
                 d.settle();
                 if let State::Failed(_, why) = d.state() {
@@ -572,18 +573,24 @@ impl Session {
             }
             "gesture" => {
                 let g = o.get("gesture").and_then(JsonValue::as_object).ok_or("wants a 'gesture'")?;
-                let gesture = match text(g, "kind")? {
-                    "orbit" => Gesture::Orbit(vec2(g, "delta")?),
-                    "pan" => Gesture::Pan(vec2(g, "delta")?),
-                    "zoom" => Gesture::Zoom { factor: number(g, "factor")?, at: vec2(g, "at")? },
-                    "roll" => Gesture::Roll(number(g, "radians")?),
-                    "retarget" => {
-                        let p = numbers(g, "point", 3)?;
-                        Gesture::Retarget(P3::new(p[0], p[1], p[2]))
-                    }
-                    other => return Err(refuse(format!("no gesture '{other}'"))),
-                };
-                d.apply(&gesture);
+                d.apply(&gesture(g)?);
+                none()
+            }
+            "gestures" => {
+                // Gestures in order, each applied as its own `gesture`
+                // request applies it: what the page sends for the gestures
+                // a hand gave while the engine was busy, so the camera is
+                // the one they make one by one, to the bit, with one
+                // request where there would be a queue. All read before
+                // any is applied, so a malformed one applies none.
+                let list = o.get("gestures").and_then(JsonValue::as_array).ok_or("wants 'gestures'")?;
+                let gestures = list
+                    .iter()
+                    .map(|g| g.as_object().ok_or_else(|| refuse("a gesture is an object")).and_then(gesture))
+                    .collect::<Result<Vec<_>, _>>()?;
+                for g in &gestures {
+                    d.apply(g);
+                }
                 none()
             }
             "camera" => {
@@ -594,6 +601,19 @@ impl Session {
                 let Some(mut n) = d.navigator else { return none() };
                 let target = numbers(o, "target", 3)?;
                 let center = numbers(o, "center", 2)?;
+                let angles = [number(o, "azimuth")?, number(o, "elevation")?];
+                if !target.iter().chain(&center).chain(&angles).all(|x| x.is_finite()) {
+                    return Err(refuse("a camera's angles, target and centre are finite numbers"));
+                }
+                let upp = number(o, "unitsPerPixel")?;
+                if !(upp.is_finite() && upp > 0.0) {
+                    return Err(refuse(format!("a camera's units per pixel are a positive number, not {upp}")));
+                }
+                if let Some(x) = o.get("distance").and_then(JsonValue::as_f64)
+                    && !(x.is_finite() && x > 0.0)
+                {
+                    return Err(refuse(format!("a camera's distance is a positive number, not {x}")));
+                }
                 n.orbit.azimuth = Angle::from_radians(number(o, "azimuth")?);
                 n.orbit.elevation = Angle::from_radians(number(o, "elevation")?);
                 n.orbit.target = P3::new(target[0], target[1], target[2]);
@@ -650,7 +670,12 @@ impl Session {
                 none()
             }
             "bakeResolution" => {
-                d.bake_resolution = integer(o, "value")?;
+                // Refused as the bake would refuse it, before it is set.
+                let value = integer(o, "value")?;
+                if let Some(why) = CameraPreset::unsupported_buffer(value) {
+                    return Err(refuse(format!("the bake's resolution {why}")));
+                }
+                d.bake_resolution = value;
                 none()
             }
             "frame" => {
@@ -1054,6 +1079,82 @@ fn with_light(d: &Document, name: &str) -> Result<(), Refusal> {
     } else {
         Err(refuse(format!("no layer '{name}' read under a light: an isophote or a half-Lambert tone")))
     }
+}
+
+/// A gesture as a request names it.
+fn gesture(g: &JsonObject) -> Result<Gesture, Refusal> {
+    Ok(match text(g, "kind")? {
+        "orbit" => Gesture::Orbit(vec2(g, "delta")?),
+        "pan" => Gesture::Pan(vec2(g, "delta")?),
+        "zoom" => Gesture::Zoom { factor: number(g, "factor")?, at: vec2(g, "at")? },
+        "roll" => Gesture::Roll(number(g, "radians")?),
+        "retarget" => {
+            let p = numbers(g, "point", 3)?;
+            Gesture::Retarget(P3::new(p[0], p[1], p[2]))
+        }
+        other => return Err(refuse(format!("no gesture '{other}'"))),
+    })
+}
+
+/// The Samples slider's reach (LandscapeSection.swift).
+const LINK_SAMPLES: std::ops::RangeInclusive<i64> = 120..=2000;
+/// A level slider's reach (PaintSection.swift).
+const LINK_LEVEL_COUNTS: std::ops::RangeInclusive<i64> = 2..=80;
+/// A strokes slider's top, across the window's longer side (PaintSection.swift).
+const LINK_STROKES: f64 = 400.0;
+/// The most levels a contour layer of a link may list. Not a slider's
+/// reach: a layer lists the levels its landscape chose (forty for a minor
+/// family of the catalog's), which a level slider's count resamples; this
+/// bounds the work a link can ask for.
+const LINK_LEVELS: usize = 1000;
+
+/// Whether a link asks for no more than the window's controls can: a
+/// link is someone else's text, and the page samples what it says on
+/// open. The Samples, level and strokes sliders' reaches, a window with
+/// area, and a bound on each contour layer's levels. Refused, touching
+/// nothing, saying which.
+fn linkable(request: &LandscapeRequest, layers: &[LayerSpec], counts: &BTreeMap<String, i64>) -> Result<(), Refusal> {
+    if !LINK_SAMPLES.contains(&request.resolution) {
+        return Err(refuse(format!(
+            "a link's landscape is sampled 120 to 2000 across, as the Samples slider reaches, not {}",
+            request.resolution
+        )));
+    }
+    let d = request.domain;
+    for (axis, i) in [("Re", d.real), ("Im", d.imag)] {
+        if !(i.lo.is_finite() && i.hi.is_finite() && i.lo < i.hi) {
+            return Err(refuse(format!("a link's window has {axis} from {} to {}, which is no interval", i.lo, i.hi)));
+        }
+    }
+    for (name, &n) in counts {
+        if !LINK_LEVEL_COUNTS.contains(&n) {
+            return Err(refuse(format!("a link's {name} has {n} levels; a level slider reaches 2 to 80")));
+        }
+    }
+    let reach = d.real.length().max(d.imag.length());
+    for layer in layers {
+        match &layer.source {
+            LayerSource::Contour { levels, .. } if levels.len() > LINK_LEVELS => {
+                return Err(refuse(format!(
+                    "a link's {} lists {} levels, more than {LINK_LEVELS}",
+                    layer.name,
+                    levels.len()
+                )));
+            }
+            LayerSource::Hatching { hatching, .. } => {
+                let s = hatching.spacing;
+                if !(s.is_finite() && s > 0.0 && (reach / s).round() <= LINK_STROKES) {
+                    return Err(refuse(format!(
+                        "a link's {} is hatched at a spacing of {s}: more than 400 strokes across the window, as a \
+                         strokes slider reaches",
+                        layer.name
+                    )));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// The open bundle's camera presets.
