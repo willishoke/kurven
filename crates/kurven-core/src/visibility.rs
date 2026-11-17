@@ -351,6 +351,25 @@ impl HiddenLine {
         on_folds: bool,
         on_crease: bool,
     ) -> Result<PolylineSet<PageSpace>, ClipOnError> {
+        let runs = HiddenLine::clip_on_runs(paths, visibility, on_folds, on_crease, false)?;
+        let runs: Vec<Vec<P3<PageSpace>>> =
+            runs.into_iter().map(|r| r.into_iter().map(|v| P3::from_vec(v.v)).collect()).collect();
+        Ok(PolylineSet::from_paths(&runs))
+    }
+
+    /// `clip_on`'s runs, in view space. `on_chords` places a cut found by
+    /// sphere tracing on the chord between the segment's two vertices, at
+    /// the fraction of the way the bisection found (the last fraction on the
+    /// visible side), rather than at the surface's point there: what
+    /// `Composite::clip_on_chords` draws, curves whose chords lie on a
+    /// landscape's terrain.
+    pub(crate) fn clip_on_runs(
+        paths: &PolylineSet<ViewSpace>,
+        visibility: &SurfaceVisibility,
+        on_folds: bool,
+        on_crease: bool,
+        on_chords: bool,
+    ) -> Result<Vec<Vec<P3<ViewSpace>>>, ClipOnError> {
         let Some(coords) = &paths.coords else { return Err(ClipOnError::NoCoordinates) };
         let n = coords.len();
         let facing: Vec<Option<f64>> =
@@ -399,6 +418,11 @@ impl HiddenLine {
                             at = p;
                         }
                     }
+                    if on_chords {
+                        let t = if kept[k - 1] { lo } else { hi };
+                        at =
+                            P3::from_vec(paths.vertices[k - 1].v + (paths.vertices[k].v - paths.vertices[k - 1].v) * t);
+                    }
                     Some((at, true))
                 }
             } else {
@@ -417,12 +441,12 @@ impl HiddenLine {
             };
         }
 
-        let mut out: Vec<Vec<P3<PageSpace>>> = Vec::new();
-        let mut run: Vec<P3<PageSpace>> = Vec::new();
+        let mut out: Vec<Vec<P3<ViewSpace>>> = Vec::new();
+        let mut run: Vec<P3<ViewSpace>> = Vec::new();
         let take =
-            |v: P3<ViewSpace>, visible: bool, run: &mut Vec<P3<PageSpace>>, out: &mut Vec<Vec<P3<PageSpace>>>| {
+            |v: P3<ViewSpace>, visible: bool, run: &mut Vec<P3<ViewSpace>>, out: &mut Vec<Vec<P3<ViewSpace>>>| {
                 if visible {
-                    run.push(P3::from_vec(v.v));
+                    run.push(v);
                 } else {
                     if run.len() >= 2 {
                         out.push(std::mem::take(run));
@@ -443,7 +467,7 @@ impl HiddenLine {
             }
             run.clear();
         }
-        Ok(PolylineSet::from_paths(&out))
+        Ok(out)
     }
 }
 

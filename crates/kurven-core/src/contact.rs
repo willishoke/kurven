@@ -45,6 +45,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use kurven_math::{real, swift};
 
 use crate::composite::{Composite, Occluder, Placement};
+use crate::hidden_line::HiddenLine;
 use crate::manifest::{HeightPolicy, LayerRole, LayerSource, LayerSpec};
 use crate::parametric::{ParametricSurface, PortRefusal};
 use crate::polyline::{Layer, PolylineSet};
@@ -186,55 +187,18 @@ impl Composite {
     /// along it -- but each cut placed on the chord, at the fraction of the
     /// way the bisection found, so that what is drawn stays on the terrain:
     /// the point of the surface there is off it by the chord's sagitta.
-    /// Swift tests the vertices in parallel; here in turn.
+    /// One implementation with `HiddenLine::clip_on`'s, the cut placed on
+    /// the chord (`clip_on_runs`); Swift tests the vertices in parallel, here
+    /// in turn.
     pub fn clip_on_chords(paths: &PolylineSet<ViewSpace>, visibility: &SurfaceVisibility) -> PolylineSet<ViewSpace> {
-        let Some(coords) = &paths.coords else { return PolylineSet::empty() };
-        let vertices = &paths.vertices;
-        // Sphere tracing asks for no image: neither test can be refused.
-        let kept: Vec<bool> = (0..vertices.len())
-            .map(|k| visibility.is_visible(vertices[k], coords[k]).expect("sphere tracing reads no image"))
-            .collect();
-        let mut out: Vec<Vec<P3<ViewSpace>>> = Vec::new();
-        for path in 0..paths.count() {
-            let mut run: Vec<P3<ViewSpace>> = Vec::new();
-            let (lo, hi) = (paths.offsets[path], paths.offsets[path + 1]);
-            for k in lo..hi {
-                if k > lo && kept[k - 1] != kept[k] {
-                    let (a, b) = (coords[k - 1].v, coords[k].v);
-                    let (mut t0, mut t1) = (0.0f64, 1.0f64);
-                    while t1 - t0 > 1e-13 {
-                        let mid = 0.5 * (t0 + t1);
-                        let seen = visibility
-                            .test(P2::from_vec(a + (b - a) * mid), false)
-                            .expect("sphere tracing reads no image")
-                            .0;
-                        if seen == kept[k - 1] {
-                            t0 = mid;
-                        } else {
-                            t1 = mid;
-                        }
-                    }
-                    let t = if kept[k - 1] { t0 } else { t1 };
-                    let cut = P3::from_vec(vertices[k - 1].v + (vertices[k].v - vertices[k - 1].v) * t);
-                    if kept[k - 1] {
-                        run.push(cut);
-                        if run.len() >= 2 {
-                            out.push(std::mem::take(&mut run));
-                        }
-                        run.clear();
-                    } else {
-                        run = vec![cut];
-                    }
-                }
-                if kept[k] {
-                    run.push(vertices[k]);
-                }
-            }
-            if run.len() >= 2 {
-                out.push(run);
-            }
+        if paths.coords.is_none() {
+            return PolylineSet::empty();
         }
-        PolylineSet::from_paths(&out)
+        // Sphere tracing asks for no image, and the curves carry coordinates:
+        // neither of `clip_on`'s refusals can be met.
+        let runs = HiddenLine::clip_on_runs(paths, visibility, false, false, true)
+            .expect("curves with coordinates, tested by sphere tracing");
+        PolylineSet::from_paths(&runs)
     }
 }
 
