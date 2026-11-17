@@ -574,24 +574,52 @@ fn on_the_forced_torus_the_two_families_cross_at_right_angles_in_space_each_once
     let (mut returned, mut curves, mut off_section) = (0, 0, 0.0);
     let mut took = [Duration::ZERO, Duration::ZERO];
     // Each family traced twice, timed with the returns a curve is followed
-    // for past its first, and without: four tracings of one surface, each
-    // independent of the others, so run side by side, each timed on its own
-    // thread.
+    // for past its first, and without. A seed's curve is traced on its own
+    // (`traced_integral_curves` maps each seed in turn), so each tracing is
+    // spread over threads a few seeds at a time, its curves joined in the
+    // seeds' order and its time the sum of its parts'.
     let curvatures = [PrincipalCurvature::Greater, PrincipalCurvature::Lesser];
-    let tracings: Vec<(PrincipalCurvature, bool)> = curvatures.iter().flat_map(|&c| [(c, false), (c, true)]).collect();
-    let mut traced_all = par_map(&tracings, |&(curvature, once_round)| {
-        let layer = LayerSpec::lines_of_curvature(curvature, (surface.u, surface.v), 24, 0.3);
-        let LayerSource::IntegralCurves { field, seeds, .. } = &layer.source else {
-            panic!("lines of curvature are integral curves")
-        };
-        let points = surface.seed_points(seeds);
-        let section = surface.section(seeds);
+    let seeded: Vec<(DirectionField, Vec<P2<ParamSpace>>, Option<Section>)> = curvatures
+        .iter()
+        .map(|&curvature| {
+            let layer = LayerSpec::lines_of_curvature(curvature, (surface.u, surface.v), 24, 0.3);
+            let LayerSource::IntegralCurves { field, seeds, .. } = layer.source else {
+                panic!("lines of curvature are integral curves")
+            };
+            let points = surface.seed_points(&seeds);
+            let section = surface.section(&seeds);
+            (field, points, section)
+        })
+        .collect();
+    let mut tracings: Vec<(usize, bool, usize)> = Vec::new();
+    for (family, (_, points, _)) in seeded.iter().enumerate() {
+        for once_round in [false, true] {
+            for start in (0..points.len()).step_by(4) {
+                tracings.push((family, once_round, start));
+            }
+        }
+    }
+    let parts = par_map(&tracings, |&(family, once_round, start)| {
+        let (field, points, section) = &seeded[family];
         let limits = if once_round { Limits { closing_returns: 0, ..Limits::default() } } else { Limits::default() };
+        let seeds = &points[start..(start + 4).min(points.len())];
         let clock = Instant::now();
-        let traced = surface.traced_integral_curves(field, &points, section.as_ref(), &limits);
+        let traced = surface.traced_integral_curves(field, seeds, section.as_ref(), &limits);
         (traced, clock.elapsed())
-    })
-    .into_iter();
+    });
+    let mut traced_all = curvatures.iter().enumerate().flat_map(|(family, _)| {
+        [false, true].map(|once_round| {
+            let mut curves: Vec<Traced> = Vec::new();
+            let mut time = Duration::ZERO;
+            for (&(f, o, _), (traced, elapsed)) in tracings.iter().zip(&parts) {
+                if f == family && o == once_round {
+                    curves.extend(traced.iter().cloned());
+                    time += *elapsed;
+                }
+            }
+            (curves, time)
+        })
+    });
     for curvature in curvatures {
         let (traced, full) = traced_all.next().expect("a tracing");
         let (_, once_round) = traced_all.next().expect("a tracing");
