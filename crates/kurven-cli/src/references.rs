@@ -10,8 +10,8 @@
 //! and their stroke counts).
 //!
 //! The port draws every drawing of Swift's list: the landscapes, the
-//! surfaces (sn flat and in relief, a torus with a linear curve, a periodic
-//! expression), the seven solids, the frame's two gallery drawings and the
+//! surfaces (sn flat and in relief at 0.4 and at 1, a torus with a linear
+//! curve, a periodic expression), the seven solids, the frame's two gallery drawings and the
 //! composite of the cubic, a cube and a torus.
 
 use std::cell::RefCell;
@@ -275,6 +275,21 @@ pub fn all(fixtures: &Path) -> Vec<Reference> {
             Box::new(move |scratch| surface(&list, scratch, name)),
         ));
     }
+    // sn in relief at the most the range allows, three times its reach, so
+    // it bounds no solid and the coordinate image alone tests it. The port
+    // renders every coordinate image by the CPU rasterizer; Swift's reference
+    // is drawn with the same rasterizer in place of its Metal pass
+    // (`surfaceRasterized`), whose float32 pass keeps another sheet at a few
+    // pixels where two sheets of the relief tie in depth.
+    let deep = words(&["sn", "--relief", "1"]);
+    references.push(plate(
+        "sn-relief-1",
+        format!(
+            "surface {} --save B; bake B, the coordinate image by SurfaceImage.rasterize for Metal's",
+            deep.join(" ")
+        ),
+        Box::new(move |scratch| surface(&deep, scratch, "sn-relief-1")),
+    ));
     // The slope lines of |f| golden (PR #60), drawn as `kurven-cli
     // fixtures` draws it: tests/fixtures/fields/landscape_slope_lines.svg.
     let slopes = fixtures.join("fields/landscape_slope_lines.kurven");

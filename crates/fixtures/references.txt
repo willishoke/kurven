@@ -42,6 +42,17 @@ sn                      1.5e-4  1e-5  -
 sn-relief               1.5e-4  1e-5  -
 torus-linear            1.5e-4  1e-5  -
 periodic                1.5e-4  1e-5  -
+# sn in relief at 1 (measured 2026-11-16): three times its reach, so it
+# bounds no solid and the coordinate image alone tests it, as it does
+# sn-relief at 0.4. Swift's reference renders that image by its CPU
+# rasterizer (SurfaceImage.rasterize), the port's rasterizer, where `bake`
+# renders it by Metal: every layer at 0 with Swift's stroke counts. Swift's
+# Metal bake is not the reference here: where two sheets of the relief pass
+# through each other its float32 pass keeps the other sheet at a few
+# pixels, and seven vertices change verdict, layers 1 and 5 up to 9.6e-2
+# apart (crates/FINDINGS.md, "sn in relief past its reach: the coordinate
+# image, not the port").
+sn-relief-1             1.5e-4  1e-5  -
 slope-lines             1.5e-4  1e-5  -
 #
 # The polyhedra (measured 2026-11-16, Phase 5): the seven solids and the
