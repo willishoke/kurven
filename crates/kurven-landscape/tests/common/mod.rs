@@ -17,7 +17,7 @@ use kurven_core::spaces::{Angle, DomainSpace, P2, P3, Transform, ViewSpace, Worl
 use kurven_core::splitmix::SplitMix;
 use kurven_core::surface::{Magnitude, Surface};
 use kurven_landscape::{LandscapeRequest, NativeLandscape};
-use kurven_math::swift;
+use kurven_math::{real, swift};
 
 /// `NativeLandscape.build(request, refine:)`, as Swift's suites call it:
 /// the git sha "native", the error unwrapped.
@@ -165,6 +165,98 @@ impl Prepared {
     }
 }
 
+/// Boxes on a plane, each widened as its owner needs, bucketed by a grid
+/// over them: the boxes a point may lie in are those of its cell.
+struct BoxGrid {
+    lo: Vec2,
+    hi: Vec2,
+    cell: Vec2,
+    n: (usize, usize),
+    /// Each cell's boxes, by index (`starts` into `items`).
+    starts: Vec<u32>,
+    items: Vec<u32>,
+}
+
+impl BoxGrid {
+    /// The boxes (None: left out) on a grid of `n` cells, over their extent.
+    fn new(boxes: &[Option<(Vec2, Vec2)>], n: (usize, usize)) -> BoxGrid {
+        let (mut lo, mut hi) = (Vec2::splat(f64::INFINITY), Vec2::splat(f64::NEG_INFINITY));
+        for b in boxes.iter().flatten() {
+            lo = lo.min(b.0);
+            hi = hi.max(b.1);
+        }
+        let cell = if lo.x.is_finite() {
+            Vec2::new(swift::max((hi.x - lo.x) / n.0 as f64, 1e-300), swift::max((hi.y - lo.y) / n.1 as f64, 1e-300))
+        } else {
+            Vec2::splat(1.0)
+        };
+        let mut grid = BoxGrid { lo, hi, cell, n, starts: Vec::new(), items: Vec::new() };
+        let mut counts = vec![0u32; n.0 * n.1 + 1];
+        for b in boxes.iter().flatten() {
+            let ((i0, j0), (i1, j1)) = (grid.key(b.0), grid.key(b.1));
+            for j in j0..=j1 {
+                for i in i0..=i1 {
+                    counts[j * n.0 + i + 1] += 1;
+                }
+            }
+        }
+        for k in 1..counts.len() {
+            counts[k] += counts[k - 1];
+        }
+        let mut fill = counts.clone();
+        let mut items = vec![0u32; counts[n.0 * n.1] as usize];
+        for (k, b) in boxes.iter().enumerate() {
+            let Some(b) = b else { continue };
+            let ((i0, j0), (i1, j1)) = (grid.key(b.0), grid.key(b.1));
+            for j in j0..=j1 {
+                for i in i0..=i1 {
+                    let c = j * n.0 + i;
+                    items[fill[c] as usize] = k as u32;
+                    fill[c] += 1;
+                }
+            }
+        }
+        grid.starts = counts;
+        grid.items = items;
+        grid
+    }
+
+    /// The grid's cell of a point, clamped to the grid: monotone in each
+    /// coordinate, so a point in a box is keyed between its corners' keys.
+    fn key(&self, x: Vec2) -> (usize, usize) {
+        let i = ((x.x - self.lo.x) / self.cell.x).floor();
+        let j = ((x.y - self.lo.y) / self.cell.y).floor();
+        let clamp = |k: f64, n: usize| -> usize {
+            if !(k > 0.0) {
+                0
+            } else if k >= (n - 1) as f64 {
+                n - 1
+            } else {
+                k as usize
+            }
+        };
+        (clamp(i, self.n.0), clamp(j, self.n.1))
+    }
+
+    /// The boxes `x` may lie in: its cell's; none outside every box.
+    fn at(&self, x: Vec2) -> &[u32] {
+        if !(x.x >= self.lo.x && x.x <= self.hi.x && x.y >= self.lo.y && x.y <= self.hi.y) {
+            return &[];
+        }
+        let (i, j) = self.key(x);
+        let c = j * self.n.0 + i;
+        &self.items[self.starts[c] as usize..self.starts[c + 1] as usize]
+    }
+
+    /// Each cell's boxes ordered by `key`, greatest first.
+    fn sort_cells_by(&mut self, key: impl Fn(u32) -> f64) {
+        for c in 0..self.n.0 * self.n.1 {
+            self.items[self.starts[c] as usize..self.starts[c + 1] as usize]
+                .sort_by(|&a, &b| real::total_order(key(b), key(a)));
+        }
+    }
+}
+
 /// `first_hit` against one mesh along one direction, asked of many origins:
 /// the same brute force, over only the triangles that can answer. Each
 /// triangle is projected along the direction onto a plane, and bucketed by
@@ -182,15 +274,9 @@ pub struct RayIndex {
     prepared: Vec<Prepared>,
     /// Triangles tested from every origin.
     always: Vec<u32>,
-    /// The plane's axes, and the grid on it: its low corner, its cell, its
-    /// size, and each cell's triangles (`starts` into `items`).
+    /// The plane's axes, and the triangles' widened boxes on it.
     axes: (Vec3, Vec3),
-    lo: Vec2,
-    hi: Vec2,
-    cell: Vec2,
-    n: (usize, usize),
-    starts: Vec<u32>,
-    items: Vec<u32>,
+    grid: BoxGrid,
     /// Origins farther than `reach` from `centre` are tested against every
     /// triangle: the widening assumes them within it.
     centre: Vec3,
@@ -259,81 +345,18 @@ impl RayIndex {
                 boxes.push(Some((lo, hi)));
             }
         }
-        let (mut lo, mut hi) = (Vec2::splat(f64::INFINITY), Vec2::splat(f64::NEG_INFINITY));
-        let mut count = 0usize;
-        for b in boxes.iter().flatten() {
-            lo = lo.min(b.0);
-            hi = hi.max(b.1);
-            count += 1;
-        }
+        let count = boxes.iter().flatten().count();
         let side = ((2.0 * (count as f64).sqrt()).ceil() as usize).clamp(1, 1024);
-        let n = if count == 0 { (1, 1) } else { (side, side) };
-        let cell = if count == 0 {
-            Vec2::splat(1.0)
-        } else {
-            Vec2::new(swift::max((hi.x - lo.x) / n.0 as f64, 1e-300), swift::max((hi.y - lo.y) / n.1 as f64, 1e-300))
-        };
-        let mut index = RayIndex {
+        RayIndex {
             direction,
             prepared,
             always,
             axes: (ax, ay),
-            lo,
-            hi,
-            cell,
-            n,
-            starts: Vec::new(),
-            items: Vec::new(),
+            grid: BoxGrid::new(&boxes, (side, side)),
             centre,
             reach,
             check: std::env::var_os("KURVEN_RAY_INDEX_CHECK").map(|_| mesh.clone()),
-        };
-        let mut counts = vec![0u32; n.0 * n.1 + 1];
-        for b in boxes.iter().flatten() {
-            let ((i0, j0), (i1, j1)) = (index.key(b.0), index.key(b.1));
-            for j in j0..=j1 {
-                for i in i0..=i1 {
-                    counts[j * n.0 + i + 1] += 1;
-                }
-            }
         }
-        for k in 1..counts.len() {
-            counts[k] += counts[k - 1];
-        }
-        let mut fill = counts.clone();
-        let mut items = vec![0u32; counts[n.0 * n.1] as usize];
-        for (k, b) in boxes.iter().enumerate() {
-            let Some(b) = b else { continue };
-            let ((i0, j0), (i1, j1)) = (index.key(b.0), index.key(b.1));
-            for j in j0..=j1 {
-                for i in i0..=i1 {
-                    let c = j * n.0 + i;
-                    items[fill[c] as usize] = k as u32;
-                    fill[c] += 1;
-                }
-            }
-        }
-        index.starts = counts;
-        index.items = items;
-        index
-    }
-
-    /// The grid's cell of a point on the plane, clamped to the grid:
-    /// monotone in each coordinate, so a point in a box is keyed between its
-    /// corners' keys.
-    fn key(&self, x: Vec2) -> (usize, usize) {
-        let i = ((x.x - self.lo.x) / self.cell.x).floor();
-        let j = ((x.y - self.lo.y) / self.cell.y).floor();
-        let clamp = |k: f64, n: usize| -> usize {
-            if !(k > 0.0) {
-                0
-            } else if k >= (n - 1) as f64 {
-                n - 1
-            } else {
-                k as usize
-            }
-        };
-        (clamp(i, self.n.0), clamp(j, self.n.1))
     }
 
     /// Each candidate triangle's hit from `origin`, until `stop` says so.
@@ -357,12 +380,7 @@ impl RayIndex {
             }
         }
         let x = Vec2::new(origin.dot(self.axes.0), origin.dot(self.axes.1));
-        if !(x.x >= self.lo.x && x.x <= self.hi.x && x.y >= self.lo.y && x.y <= self.hi.y) {
-            return;
-        }
-        let (i, j) = self.key(x);
-        let c = j * self.n.0 + i;
-        for &k in &self.items[self.starts[c] as usize..self.starts[c + 1] as usize] {
+        for &k in self.grid.at(x) {
             if let Some(h) = self.prepared[k as usize].hit(origin, d, after)
                 && stop(h)
             {
@@ -750,8 +768,11 @@ pub fn ray_visible(s: &Solid, meshes: &[Mesh<WorldSpace>], p: Vec3, own: &[usize
 /// Whether the line from `origin` along `direction`, up to distance
 /// `up_to`, passes under some triangle of `mesh` by more than
 /// `depth_tolerance`, perpendicular to that triangle (Stress.swift's
-/// `underSomeTriangle`; stress.rs keeps its own copy). Brute force over the
-/// triangles, sharing nothing with the traversal.
+/// `underSomeTriangle`): for every triangle with a footprint, the stretch of
+/// the line over the footprint, and the triangle's gap at its ends, which is
+/// where a linear gap is least. The start of the line counts only when
+/// `start_inside`. Brute force over the triangles, sharing nothing with the
+/// traversal; `FootprintIndex` asks the same of fewer.
 pub fn under_some_triangle(
     mesh: &Mesh<WorldSpace>,
     origin: Vec3,
@@ -812,15 +833,281 @@ pub fn under_some_triangle(
     false
 }
 
-/// Stress.swift's `exactlyHidden`, the oracle for the traversal (stress.rs
-/// keeps its own copy): a point that starts inside the solid (strictly over
-/// the domain) is in its own surface's neighbourhood until the line first
-/// crosses out, hidden there only under some triangle by more than the
-/// depth tolerance; after that, any crossing of the boundary beyond the
-/// depth tolerance's reach along the line is occlusion.
+/// One triangle as `under_some_triangle` tests it, with what does not depend
+/// on the line worked out once, by the same operations: its answer is
+/// `under_some_triangle`'s for that triangle.
+#[derive(Clone, Copy)]
+struct Footprint {
+    a: Vec3,
+    n: Vec3,
+    cosine: f64,
+    corners: [Vec2; 3],
+    sign: f64,
+}
+
+impl Footprint {
+    /// The triangle, or None where `under_some_triangle` skips it whatever
+    /// the line: a wall, which has no footprint.
+    fn new(a: Vec3, b: Vec3, c: Vec3) -> Option<Footprint> {
+        let n = (b - a).cross(c - a);
+        let len = n.length();
+        if !(len > 0.0 && n.z.abs() > 1e-12 * len) {
+            return None;
+        }
+        let cosine = n.z.abs() / len;
+        let corners = [Vec2::new(a.x, a.y), Vec2::new(b.x, b.y), Vec2::new(c.x, c.y)];
+        let sign = if n.z > 0.0 { 1.0 } else { -1.0 };
+        Some(Footprint { a, n, cosine, corners, sign })
+    }
+
+    /// Whether `under_some_triangle` finds the line under this triangle.
+    fn under(&self, origin: Vec3, direction: Vec3, depth_tolerance: f64, start_inside: bool, up_to: f64) -> bool {
+        let (o, d) = (Vec2::new(origin.x, origin.y), Vec2::new(direction.x, direction.y));
+        let (a, n, cosine, corners, sign) = (self.a, self.n, self.cosine, self.corners, self.sign);
+        let (mut lo, mut hi) = (0.0f64, f64::INFINITY);
+        for k in 0..3 {
+            let (p, q) = (corners[k], corners[(k + 1) % 3]);
+            let e = q - p;
+            let f0 = sign * (e.x * (o.y - p.y) - e.y * (o.x - p.x));
+            let f1 = sign * (e.x * d.y - e.y * d.x);
+            if f1.abs() < 1e-15 {
+                if f0 < -1e-12 {
+                    return false;
+                }
+                continue;
+            }
+            let root = -f0 / f1;
+            if f1 > 0.0 {
+                lo = swift::max(lo, root);
+            } else {
+                hi = swift::min(hi, root);
+            }
+        }
+        hi = swift::min(hi, up_to);
+        if !(lo <= hi) || !(hi.is_finite() || lo.is_finite()) {
+            return false;
+        }
+        let gap = |s: f64| -> f64 {
+            let p = origin + s * direction;
+            let z = a.z - (n.x * (p.x - a.x) + n.y * (p.y - a.y)) / n.z;
+            (p.z - z) * cosine
+        };
+        [lo, hi].into_iter().any(|s| s.is_finite() && (s > 1e-12 || start_inside) && gap(s) + depth_tolerance < 0.0)
+    }
+}
+
+/// `under_some_triangle` against one mesh, asked of many points, straight
+/// up and along one line of sight: the same test, of only the triangles
+/// whose footprint the line can cross. Straight up (a line with no
+/// footprint of its own, every edge's half-plane read with its 1e-12),
+/// only the triangles whose footprint's box, widened by that allowance
+/// and by rounding, holds the point; along the line of sight, only those
+/// whose footprint spans the line's offset across it, so widened, and
+/// reaches as far along it as the point. A triangle with a footprint
+/// edge so short that the allowance is wide is tested from every point,
+/// and a point far outside the mesh against every triangle. With
+/// `KURVEN_RAY_INDEX_CHECK` set, every answer is checked against
+/// `under_some_triangle` itself.
+pub struct FootprintIndex {
+    toward: Vec3,
+    feet: Vec<Footprint>,
+    always: Vec<u32>,
+    /// Straight up: the footprints' boxes in the plane.
+    up: BoxGrid,
+    /// Along `toward`: across and along its footprint in the plane, and
+    /// the footprints' spans across it, each cell's farthest along first.
+    axes: (Vec2, Vec2),
+    strip: BoxGrid,
+    farthest: Vec<f64>,
+    centre: Vec3,
+    reach: f64,
+    check: Option<Mesh<WorldSpace>>,
+}
+
+impl FootprintIndex {
+    pub fn new(mesh: &Mesh<WorldSpace>, toward: Vec3) -> FootprintIndex {
+        let eps = f64::EPSILON;
+        let feet: Vec<Footprint> = mesh
+            .triangles
+            .iter()
+            .filter_map(|t| {
+                Footprint::new(
+                    mesh.vertices[t[0] as usize].v,
+                    mesh.vertices[t[1] as usize].v,
+                    mesh.vertices[t[2] as usize].v,
+                )
+            })
+            .collect();
+        let (mut blo, mut bhi) = (Vec3::splat(f64::INFINITY), Vec3::splat(f64::NEG_INFINITY));
+        for v in &mesh.vertices {
+            blo = blo.min(v.v);
+            bhi = bhi.max(v.v);
+        }
+        let centre = if blo.x.is_finite() { 0.5 * (blo + bhi) } else { Vec3::ZERO };
+        let radius = if blo.x.is_finite() { 0.5 * (bhi - blo).length() } else { 0.0 };
+        let reach = 4.0 * (radius + centre.length()) + 1e-300;
+        let span = reach + radius + centre.length();
+        let dxy = Vec2::new(toward.x, toward.y);
+        let along = if dxy.length() > 1e-9 { dxy / dxy.length() } else { Vec2::new(1.0, 0.0) };
+        let across = Vec2::new(-along.y, along.x);
+        let mut always = Vec::new();
+        let mut up_boxes = Vec::with_capacity(feet.len());
+        let mut strip_boxes = Vec::with_capacity(feet.len());
+        let mut farthest = Vec::with_capacity(feet.len());
+        for (k, f) in feet.iter().enumerate() {
+            let c = f.corners;
+            let shortest =
+                swift::min(swift::min((c[1] - c[0]).length(), (c[2] - c[1]).length()), (c[0] - c[2]).length());
+            // An edge's half-plane is let through by 1e-12 of its cross
+            // product, 1e-12 over the edge's length in distance; the rest is
+            // rounding, here a thousand ulps of the sizes in play and more.
+            let widen = 4e-12 / shortest + 1e6 * eps * span;
+            let lo = c[0].min(c[1]).min(c[2]) - Vec2::splat(widen);
+            let hi = c[0].max(c[1]).max(c[2]) + Vec2::splat(widen);
+            let w = c.map(|x| x.dot(across));
+            let a = c.map(|x| x.dot(along));
+            let (wlo, whi) = (w[0].min(w[1]).min(w[2]) - widen, w[0].max(w[1]).max(w[2]) + widen);
+            let amax = a[0].max(a[1]).max(a[2]) + widen;
+            if !(widen.is_finite() && widen < 1e-3 * span && lo.x.is_finite() && hi.x.is_finite()) {
+                always.push(k as u32);
+                up_boxes.push(None);
+                strip_boxes.push(None);
+            } else {
+                up_boxes.push(Some((lo, hi)));
+                strip_boxes.push(Some((Vec2::new(wlo, 0.0), Vec2::new(whi, 0.0))));
+            }
+            farthest.push(amax);
+        }
+        let count = feet.len() - always.len();
+        let side = ((2.0 * (count as f64).sqrt()).ceil() as usize).clamp(1, 1024);
+        let strip_cells = ((4.0 * (count as f64).sqrt()).ceil() as usize).clamp(1, 4096);
+        let mut strip = BoxGrid::new(&strip_boxes, (strip_cells, 1));
+        strip.sort_cells_by(|k| farthest[k as usize]);
+        FootprintIndex {
+            toward,
+            feet,
+            always,
+            up: BoxGrid::new(&up_boxes, (side, side)),
+            axes: (across, along),
+            strip,
+            farthest,
+            centre,
+            reach,
+            check: std::env::var_os("KURVEN_RAY_INDEX_CHECK").map(|_| mesh.clone()),
+        }
+    }
+
+    /// `under_some_triangle(mesh, origin, direction, ...)`.
+    pub fn under_some_triangle(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        depth_tolerance: f64,
+        start_inside: bool,
+        up_to: f64,
+    ) -> bool {
+        let got = self.indexed(origin, direction, depth_tolerance, start_inside, up_to);
+        if let Some(mesh) = &self.check {
+            let brute = under_some_triangle(mesh, origin, direction, depth_tolerance, start_inside, up_to);
+            assert_eq!(got, brute, "the footprint index and under_some_triangle from {origin:?} along {direction:?}");
+        }
+        got
+    }
+
+    fn indexed(&self, origin: Vec3, direction: Vec3, depth_tolerance: f64, start_inside: bool, up_to: f64) -> bool {
+        let test = |k: &u32| self.feet[*k as usize].under(origin, direction, depth_tolerance, start_inside, up_to);
+        let o = Vec2::new(origin.x, origin.y);
+        let straight_up = direction.x == 0.0 && direction.y == 0.0;
+        let along_sight = same_direction(direction, self.toward) && Vec2::new(direction.x, direction.y).length() > 1e-9;
+        if !((straight_up || along_sight) && (origin - self.centre).length() <= self.reach) {
+            return self.feet.iter().any(|f| f.under(origin, direction, depth_tolerance, start_inside, up_to));
+        }
+        if self.always.iter().any(test) {
+            return true;
+        }
+        if straight_up {
+            return self.up.at(o).iter().any(test);
+        }
+        // Along the line of sight: the cell of the line's offset across it,
+        // farthest along first, as far back as the point.
+        let a = o.dot(self.axes.1);
+        self.strip
+            .at(Vec2::new(o.dot(self.axes.0), 0.0))
+            .iter()
+            .take_while(|&&k| self.farthest[k as usize] >= a)
+            .any(test)
+    }
+}
+
+/// A mesh as the brute-force oracles ask it: `first_hit` and
+/// `under_some_triangle`, of the mesh itself or through its indexes.
+pub trait Triangles {
+    fn first_hit(&self, origin: Vec3, direction: Vec3, after: f64) -> Option<f64>;
+    fn under_some_triangle(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        depth_tolerance: f64,
+        start_inside: bool,
+        up_to: f64,
+    ) -> bool;
+}
+
+impl Triangles for Mesh<WorldSpace> {
+    fn first_hit(&self, origin: Vec3, direction: Vec3, after: f64) -> Option<f64> {
+        first_hit(self, origin, direction, after)
+    }
+
+    fn under_some_triangle(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        depth_tolerance: f64,
+        start_inside: bool,
+        up_to: f64,
+    ) -> bool {
+        under_some_triangle(self, origin, direction, depth_tolerance, start_inside, up_to)
+    }
+}
+
+/// A mesh's `RayIndex` and `FootprintIndex` along one line of sight.
+pub struct MeshIndex {
+    pub rays: RayIndex,
+    pub feet: FootprintIndex,
+}
+
+impl MeshIndex {
+    pub fn new(mesh: &Mesh<WorldSpace>, toward: Vec3) -> MeshIndex {
+        MeshIndex { rays: RayIndex::new(mesh, toward), feet: FootprintIndex::new(mesh, toward) }
+    }
+}
+
+impl Triangles for MeshIndex {
+    fn first_hit(&self, origin: Vec3, direction: Vec3, after: f64) -> Option<f64> {
+        self.rays.first_hit(origin, direction, after)
+    }
+
+    fn under_some_triangle(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        depth_tolerance: f64,
+        start_inside: bool,
+        up_to: f64,
+    ) -> bool {
+        self.feet.under_some_triangle(origin, direction, depth_tolerance, start_inside, up_to)
+    }
+}
+
+/// Stress.swift's `exactlyHidden`, the oracle for the traversal: a point
+/// that starts inside the solid (strictly over the domain) is in its own
+/// surface's neighbourhood until the line first crosses out, hidden there
+/// only under some triangle by more than the depth tolerance; after that,
+/// any crossing of the boundary beyond the depth tolerance's reach along the
+/// line is occlusion. Of a mesh, or of its `MeshIndex`: the same answers.
 #[allow(clippy::too_many_arguments)]
 pub fn exactly_hidden(
-    mesh: &Mesh<WorldSpace>,
+    mesh: &impl Triangles,
     p: Vec3,
     toward: Vec3,
     depth_tolerance: f64,
@@ -830,13 +1117,13 @@ pub fn exactly_hidden(
 ) -> bool {
     let reach = depth_tolerance / per_unit;
     let mut exit = 0.0;
-    if under_some_triangle(mesh, p, Vec3::new(0.0, 0.0, 1.0), -1e-9 * cell, true, 0.0) {
-        exit = first_hit(mesh, p, toward, 1e-10).unwrap_or(f64::INFINITY);
+    if mesh.under_some_triangle(p, Vec3::new(0.0, 0.0, 1.0), -1e-9 * cell, true, 0.0) {
+        exit = mesh.first_hit(p, toward, 1e-10).unwrap_or(f64::INFINITY);
     }
-    if under_some_triangle(mesh, p, toward, depth_tolerance, strictly_inside, exit) {
+    if mesh.under_some_triangle(p, toward, depth_tolerance, strictly_inside, exit) {
         return true;
     }
-    first_hit(mesh, p, toward, swift::max(exit, reach) + 1e-10).is_some()
+    mesh.first_hit(p, toward, swift::max(exit, reach) + 1e-10).is_some()
 }
 
 /// The view depth per unit of travel along the line of sight.
