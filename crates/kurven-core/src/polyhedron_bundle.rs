@@ -124,7 +124,7 @@ impl PolyhedronBundle {
 
     /// The files `write` writes: the manifest alone.
     pub fn files(&self) -> BundleFiles {
-        BundleFiles::from([("manifest.json".to_string(), self.manifest.canonical_json().into_bytes())])
+        BundleFiles::from([("manifest.json", self.manifest.canonical_json().into_bytes())])
     }
 
     /// The scene the bundle describes under one of its presets.

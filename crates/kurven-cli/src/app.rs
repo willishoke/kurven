@@ -10,18 +10,33 @@ use std::path::Path;
 use kurven_core::bundle::{BundleFiles, write_files};
 use kurven_session::headless::{self, Output};
 
-/// Every file under a bundle's directory, by its path in it.
+/// How deep a bundle's directories go: `layers/` is the deepest a bundle
+/// writes, so this is ample, and it ends any walk that would not end.
+const DEPTH: usize = 8;
+
+/// Every file under a bundle's directory, by its path in it: its regular
+/// files alone. A symbolic link is not followed (one pointing up the tree
+/// would walk forever), and a dotfile is not a bundle's (`.DS_Store`, a
+/// temporary manifest).
 pub fn read_bundle(path: &str) -> Result<BundleFiles, String> {
-    fn walk(root: &Path, dir: &Path, files: &mut BundleFiles) -> Result<(), String> {
+    fn walk(root: &Path, dir: &Path, depth: usize, files: &mut BundleFiles) -> Result<(), String> {
+        if depth > DEPTH {
+            return Err(format!("{}: deeper than a bundle goes", dir.display()));
+        }
         let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
             let p = entry.path();
-            if p.is_dir() {
-                walk(root, &p, files)?;
-            } else {
+            // The entry's own type, not its target's: a link is neither.
+            let kind = entry.file_type().map_err(|e| format!("{}: {e}", p.display()))?;
+            if kind.is_dir() {
+                walk(root, &p, depth + 1, files)?;
+            } else if kind.is_file() {
                 let rel = p.strip_prefix(root).map_err(|e| e.to_string())?.to_string_lossy().replace('\\', "/");
-                files.insert(rel, std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?);
+                files.insert(&rel, std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?);
             }
         }
         Ok(())
@@ -31,7 +46,7 @@ pub fn read_bundle(path: &str) -> Result<BundleFiles, String> {
     if !root.is_dir() {
         return Err(format!("{path} is not a bundle directory"));
     }
-    walk(root, root, &mut files)?;
+    walk(root, root, 0, &mut files)?;
     Ok(files)
 }
 
@@ -66,4 +81,24 @@ pub fn app_command(args: &[String]) -> i32 {
         return 1;
     }
     run.exit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bundle_is_its_regular_files_no_link_followed_no_dotfile() {
+        let dir = std::env::temp_dir().join(format!("kurven-read-bundle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("layers")).unwrap();
+        std::fs::write(dir.join("manifest.json"), b"{}").unwrap();
+        std::fs::write(dir.join("layers/a.npy"), b"a").unwrap();
+        std::fs::write(dir.join(".DS_Store"), b"x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&dir, dir.join("layers/loop")).unwrap();
+        let files = read_bundle(dir.to_str().unwrap()).unwrap();
+        assert_eq!(files.iter().map(|(k, _)| k).collect::<Vec<_>>(), ["layers/a.npy", "manifest.json"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

@@ -173,7 +173,7 @@ impl SurfaceBundle {
         if let Some(layers) = layers {
             manifest.layers = layers.to_vec();
         }
-        BundleFiles::from([("manifest.json".to_string(), manifest.canonical_json().into_bytes())])
+        BundleFiles::from([("manifest.json", manifest.canonical_json().into_bytes())])
     }
 
     /// The scene the bundle describes under one of its presets.

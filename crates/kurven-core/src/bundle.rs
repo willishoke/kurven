@@ -22,7 +22,59 @@ use crate::surface::{ContourRefine, Surface};
 /// A bundle's files by their path inside it: what a bundle is read from and
 /// written to in memory, where the page has no file system. On disk a
 /// bundle is a directory of the same files (`Source::Directory`).
-pub type BundleFiles = BTreeMap<String, Vec<u8>>;
+///
+/// Each path is kept as `normal_path` reads it, made so once when it is put
+/// in (`insert`), so a lookup normalises the path it is given and gets it
+/// from the map, never scanning it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BundleFiles(BTreeMap<String, Vec<u8>>);
+
+impl BundleFiles {
+    pub fn new() -> BundleFiles {
+        BundleFiles::default()
+    }
+
+    /// Put a file in at `path`, as `normal_path` reads it, over any there.
+    pub fn insert(&mut self, path: &str, bytes: Vec<u8>) {
+        self.0.insert(normal_path(path), bytes);
+    }
+
+    /// The file at `path`, read as `normal_path` reads it.
+    pub fn get(&self, path: &str) -> Option<&[u8]> {
+        self.0.get(&normal_path(path)).map(Vec::as_slice)
+    }
+
+    /// The files by their (normal) paths, in order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &[u8])> {
+        self.0.iter().map(|(k, v)| (k.as_str(), v.as_slice()))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<const N: usize> From<[(&str, Vec<u8>); N]> for BundleFiles {
+    fn from(files: [(&str, Vec<u8>); N]) -> BundleFiles {
+        let mut out = BundleFiles::new();
+        for (path, bytes) in files {
+            out.insert(path, bytes);
+        }
+        out
+    }
+}
+
+impl IntoIterator for BundleFiles {
+    type Item = (String, Vec<u8>);
+    type IntoIter = std::collections::btree_map::IntoIter<String, Vec<u8>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
 
 /// A path inside a bundle as both sources read it: its components but the
 /// empty and `.` ones, joined by `/`. `./height.npy` and `height.npy`, or
@@ -65,16 +117,8 @@ impl Source<'_> {
     pub fn has(&self, rel: &str) -> bool {
         match self {
             Source::Directory(url) => url.join(normal_path(rel)).exists(),
-            Source::Memory { files, .. } => Source::find(files, rel).is_some(),
+            Source::Memory { files, .. } => files.get(rel).is_some(),
         }
-    }
-
-    /// The file at `rel` among files in memory, its key and `rel` read alike
-    /// (`normal_path`), so `./height.npy` and `a//b.npy` find what a
-    /// directory finds at them. An exact key is found without a scan.
-    fn find<'f>(files: &'f BundleFiles, rel: &str) -> Option<&'f Vec<u8>> {
-        let rel = normal_path(rel);
-        files.get(&rel).or_else(|| files.iter().find(|(key, _)| normal_path(key) == rel).map(|(_, bytes)| bytes))
     }
 
     /// The bytes of the file at `rel`, or `MissingFile` naming it: read from
@@ -89,9 +133,7 @@ impl Source<'_> {
                 }
                 std::fs::read(&u).map(Cow::Owned).map_err(|e| BundleError::Io(format!("{}: {e}", u.display())))
             }
-            Source::Memory { files, .. } => {
-                Source::find(files, rel).map(|b| Cow::Borrowed(b.as_slice())).ok_or_else(missing)
-            }
+            Source::Memory { files, .. } => files.get(rel).map(Cow::Borrowed).ok_or_else(missing),
         }
     }
 
@@ -130,7 +172,7 @@ pub fn write_files(files: &BundleFiles, url: impl AsRef<Path>) -> Result<(), Bun
     let url = url.as_ref();
     let io = |e: std::io::Error, p: &Path| BundleError::Io(format!("{}: {e}", p.display()));
     std::fs::create_dir_all(url).map_err(|e| io(e, url))?;
-    for (rel, bytes) in files.iter().filter(|(rel, _)| rel.as_str() != "manifest.json") {
+    for (rel, bytes) in files.iter().filter(|(rel, _)| *rel != "manifest.json") {
         let path = url.join(rel);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| io(e, parent))?;
@@ -608,9 +650,9 @@ impl KurvenBundle {
         }
         let mut files = BundleFiles::new();
         let height = &*self.surface.height;
-        files.insert("height.npy".to_string(), npy::encode_f32(&height.values, &[height.height, height.width]));
+        files.insert("height.npy", npy::encode_f32(&height.values, &[height.height, height.width]));
         if let Some(phase) = &self.surface.phase {
-            files.insert("phase.npy".to_string(), npy::encode_f32(&phase.values, &[phase.height, phase.width]));
+            files.insert("phase.npy", npy::encode_f32(&phase.values, &[phase.height, phase.width]));
         }
         let mut written = self.manifest.clone();
         written.height = GridRef {
@@ -625,7 +667,7 @@ impl KurvenBundle {
                 dtype: NpyDType::Float32,
             });
         }
-        files.insert("manifest.json".to_string(), written.canonical_json().into_bytes());
+        files.insert("manifest.json", written.canonical_json().into_bytes());
         Ok(files)
     }
 }
@@ -639,11 +681,12 @@ mod source_tests {
         assert_eq!(normal_path("./height.npy"), "height.npy");
         assert_eq!(normal_path("layers//a.npy"), "layers/a.npy");
         assert_eq!(normal_path("/layers/./a.npy/"), "layers/a.npy");
-        let files =
-            BundleFiles::from([("./height.npy".to_string(), vec![1u8]), ("layers/a.npy".to_string(), vec![2u8])]);
+        let files = BundleFiles::from([("./height.npy", vec![1u8]), ("layers//a.npy", vec![2u8])]);
         let source = Source::Memory { name: "x.kurven", files: &files };
         assert_eq!(&*source.read("height.npy").unwrap(), &[1u8]);
         assert_eq!(&*source.read("layers//a.npy").unwrap(), &[2u8]);
+        // Kept under the normal path, once.
+        assert_eq!(files.iter().map(|(k, _)| k).collect::<Vec<_>>(), ["height.npy", "layers/a.npy"]);
         assert!(source.has("./layers/a.npy"));
         assert!(matches!(source.read("phase.npy"), Err(BundleError::MissingFile { .. })));
         // Borrowed, not copied.
