@@ -458,7 +458,7 @@ fn a_parametric_scene_bakes_its_curves_by_where_it_lies_on_the_surface() {
     );
     let single = BakeOptions { tiles: Some(1), ..BakeOptions::new(2400) };
     // Rendered with its image, as Swift's bake always is: the torus is
-    // sphere traced, so `bake` alone renders none, and the stitching is
+    // sphere traced, so `bake` alone renders none, and the split image is
     // what is asked of it below.
     let whole = bake_with_image(&scene, &single).expect("a bake");
     let truth = ray_cast_length(&curves, &torus, 2.0, 1.0, &camera.view, 8);
@@ -471,8 +471,9 @@ fn a_parametric_scene_bakes_its_curves_by_where_it_lies_on_the_surface() {
         100.0 * error
     );
 
-    // Tiling splits the render and never the clip, and depth and
-    // coordinates are stitched by the same code over the same sub-frames.
+    // Tiling splits the render and never the clip; Swift stitches its
+    // tiles' depth and coordinates by the same code over the same
+    // sub-frames, and the port renders the frame whole, once.
     let split = bake_with_image(&scene, &BakeOptions { tiles: Some(3), ..BakeOptions::new(2400) }).expect("a bake");
     let same = whole.strokes.layers.len() == split.strokes.layers.len()
         && whole.strokes.layers.iter().zip(&split.strokes.layers).all(|(a, b)| a.1 == b.1);

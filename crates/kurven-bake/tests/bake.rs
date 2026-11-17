@@ -1,7 +1,7 @@
 //! kurven-test's bake suites (`Sources/kurven-test/main.swift`, "6. the
 //! bake"), as far as they reach the strokes.
 
-use kurven_bake::{BakeError, BakeOptions, bake};
+use kurven_bake::{BakeError, BakeOptions, bake, bake_with_image};
 use kurven_core::bundle::KurvenBundle;
 use kurven_core::fixtures;
 use kurven_core::navigation::Orbit;
@@ -143,25 +143,26 @@ fn torus_scene(traced: bool) -> kurven_core::scene::Scene {
     Scene::parametric_scene(surface, layers, camera, PreviewMode::Drawing, 0.0)
 }
 
-/// More passes than the frame has rows: Swift's sub-frames would be empty
-/// or a row deep, which its Metal pass cannot draw. The port asks for no
-/// more passes than the frame has pairs of rows, so every pass has two
-/// rows or more, and the tiled bake is the untiled one.
+/// However many passes a parametric bake asks for, even more than the frame
+/// has rows, the CPU rasterizer renders the frame whole, once: the image and
+/// every stroke are the untiled bake's, with no empty or one-row pass.
 #[test]
-fn a_parametric_bake_tiled_past_its_rows_takes_as_many_passes_as_fit() {
+fn a_parametric_bake_is_rendered_whole_however_it_is_tiled() {
     for traced in [true, false] {
         let scene = torus_scene(traced);
-        for (resolution, tiles, fits) in [(2, 3, 1), (3, 5, 1), (5, 4, 2), (9, 9, 4)] {
-            let whole = bake(&scene, &BakeOptions { tiles: Some(1), ..BakeOptions::new(resolution) }).expect("a bake");
-            let split =
-                bake(&scene, &BakeOptions { tiles: Some(tiles), ..BakeOptions::new(resolution) }).expect("a bake");
-            assert_eq!(split.tiles, fits, "{resolution} pixels in {tiles} passes take {fits}");
-            if traced {
-                assert_eq!(split.strokes, whole.strokes, "sphere traced, the tiling changes no stroke");
-            } else {
-                let image = split.surface.as_ref().expect("an image");
-                assert_eq!(image.coords.len() as i64, resolution * resolution, "the image covers its frame");
-            }
+        for (resolution, tiles) in [(2, 3), (3, 5), (5, 4), (9, 9), (240, 3)] {
+            let whole = bake_with_image(&scene, &BakeOptions { tiles: Some(1), ..BakeOptions::new(resolution) })
+                .expect("a bake");
+            let split = bake_with_image(&scene, &BakeOptions { tiles: Some(tiles), ..BakeOptions::new(resolution) })
+                .expect("a bake");
+            assert_eq!(split.tiles, 1, "{resolution} pixels asked in {tiles} passes take one");
+            assert_eq!(split.strokes, whole.strokes, "traced {traced}: the tiling changes no stroke");
+            let (a, b) = (split.surface.expect("an image"), whole.surface.expect("an image"));
+            let bits = |c: &[[f32; 2]]| c.iter().map(|p| [p[0].to_bits(), p[1].to_bits()]).collect::<Vec<_>>();
+            assert!(
+                a.depth == b.depth && bits(&a.coords) == bits(&b.coords),
+                "traced {traced}: nor the image, to the bit"
+            );
         }
     }
     // Sphere traced with no outline, nothing reads the image, and none is
