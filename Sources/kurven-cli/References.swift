@@ -54,6 +54,32 @@ enum ReferenceDrawings {
         return try baked(bundle)
     }
 
+    /// `surface ... --save B; bake B`, with the coordinate image rendered by
+    /// the CPU rasterizer (`SurfaceImage.rasterize`, the reference the suite
+    /// holds the Metal pass to) where `bake` renders it by Metal; every
+    /// stroke is then tested as `bake` tests it (`Scene.visibleLayers`).
+    ///
+    /// For a surface that bounds no solid, which the image alone tests: sn in
+    /// relief past its reach. There two sheets of the relief pass through
+    /// each other, and where their depths tie at a pixel the float32 GPU pass
+    /// and the rasterizer can keep different ones, so a drawing the port (which
+    /// rasterizes on the CPU) is held to must come from the rasterizer.
+    static func surfaceRasterized(_ words: [String], _ scratch: URL, _ stem: String) throws
+        -> (strokes: Strokes, names: [String])
+    {
+        let bundle = scratch.appendingPathComponent("\(stem).kurven")
+        try surfaceCommand(Args(["surface"] + words + ["--save", bundle.path]))
+        let (_, _, preset, scene) = try loadDrawing(Args(["bake", bundle.path]))
+        guard case .parametric(let surface) = scene.geometry, let bounds = scene.viewBounds() else {
+            throw CLIError("\(stem): not a parametric surface")
+        }
+        let frame = DepthFrame(covering: bounds, resolution: preset.buffer)
+        let image = SurfaceImage.rasterize(surface, view: scene.camera.view, frame: frame)
+        let layers = scene.visibleLayers(depthTolerance: preset.depthTolerance, image: image)
+        return (Strokes(layers: layers.map { layer, seen in (Style(layer.spec), HiddenLine.pass(seen)) }),
+                layers.map { $0.0.spec.name })
+    }
+
     // MARK: the gallery, as docs/gallery/make.py sets it up
 
     /// The plates hatch the plateaus, walls and risers this much closer than
@@ -193,6 +219,15 @@ enum ReferenceDrawings {
                 try surface(words, $0, name)
             })
         }
+        // sn in relief at the most the range allows, three times its reach:
+        // its coordinate image rendered by the CPU rasterizer
+        // (`surfaceRasterized`).
+        let deep = ["sn", "--relief", "1"]
+        references.append(Reference(name: "sn-relief-1",
+                                    how: "surface \(deep.joined(separator: " ")) --save B; bake B, "
+                                         + "the coordinate image by SurfaceImage.rasterize for Metal's") {
+            try surfaceRasterized(deep, $0, "sn-relief-1")
+        })
         // The slope lines of |f| golden (PR #60), drawn as `kurven-cli
         // fixtures` draws it: tests/fixtures/fields/landscape_slope_lines.svg,
         // byte for byte.
