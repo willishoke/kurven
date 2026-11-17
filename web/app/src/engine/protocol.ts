@@ -76,6 +76,7 @@ export type Slider =
   | { slider: "levels"; name: string }
   | { slider: "strokes"; name: string }
   | { slider: "light"; name: string }
+  | { slider: "truncation" }
   | { slider: "surfaceField"; field: string; label?: string };
 
 /** What the input handling produces (kurven_core::navigation::Gesture). */

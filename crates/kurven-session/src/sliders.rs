@@ -5,6 +5,7 @@
 //! of, moved and let go -- one undo step -- or a value typed, an edit of its
 //! own.
 
+use kurven_core::manifest::Truncation;
 use kurven_core::simd::Vec3;
 use kurven_core::surface_request::{Field, SurfaceRequest, surface_key};
 use kurven_landscape::catalog::LandscapeRequest;
@@ -28,6 +29,9 @@ pub enum Slider {
     Light { name: String },
     /// One number of a surface's request.
     SurfaceField { field: Field, label: String },
+    /// A uniform truncation's height (`LandscapeSection`'s
+    /// `truncationSlider`): a drag is one undo step, each move a truncation.
+    Truncation,
 }
 
 impl Slider {
@@ -67,6 +71,13 @@ impl Slider {
                     document.end_drag(&format!("Light of {name}"));
                 }
             }
+            Slider::Truncation => {
+                if editing {
+                    document.begin_drag();
+                } else {
+                    document.end_drag("Truncation");
+                }
+            }
             Slider::SurfaceField { label, .. } => {
                 if editing {
                     document.begin_drag();
@@ -95,6 +106,7 @@ impl Slider {
                 }
             }
             Slider::SurfaceField { field, label } => set_surface_field(document, *field, label, value),
+            Slider::Truncation => document.edit_truncation(Truncation::Uniform(value), "Truncation"),
             Slider::Landscape { .. } | Slider::Light { .. } => {}
         }
     }

@@ -719,7 +719,7 @@ impl Session {
 }
 
 /// A slider named in a request: `{"slider": "landscape", "label": "rMax"}`,
-/// `{"slider": "levels", "name": ...}`, `strokes`, `light`, or
+/// `{"slider": "levels", "name": ...}`, `strokes`, `light`, `truncation`, or
 /// `{"slider": "surfaceField", "field": "major"}`.
 fn slider(o: &JsonObject) -> Result<Slider, Refusal> {
     let s = o.get("control").and_then(JsonValue::as_object).ok_or("wants a 'control'")?;
@@ -728,6 +728,7 @@ fn slider(o: &JsonObject) -> Result<Slider, Refusal> {
         "levels" => Slider::Levels { name: text(s, "name")?.to_string() },
         "strokes" => Slider::Strokes { name: text(s, "name")?.to_string() },
         "light" => Slider::Light { name: text(s, "name")?.to_string() },
+        "truncation" => Slider::Truncation,
         "surfaceField" => {
             let raw = text(s, "field")?;
             let field = Field::parse(raw).ok_or_else(|| Refusal(format!("no field '{raw}'")))?;
