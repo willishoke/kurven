@@ -2,7 +2,7 @@
 //! round torus (`torusSees`, `realRoots`, `torusSeesFromOutside`), its test
 //! cameras and view bounds, and `compareWithRayCast`.
 
-#![allow(dead_code)]
+#![allow(dead_code, clippy::neg_cmp_op_on_partial_ord, clippy::manual_range_contains)]
 
 use kurven_core::camera::{rotation_x, rotation_z};
 use kurven_core::depth::DepthImage;
@@ -12,6 +12,49 @@ use kurven_core::spaces::{AABB, Angle, P2, P3, ParamSpace, Transform, ViewSpace,
 use kurven_core::splitmix::SplitMix;
 use kurven_core::visibility::SurfaceVisibility;
 use kurven_math::{real, swift};
+
+/// The threads the suites spread their oracles over: the machine's, or
+/// `KURVEN_TEST_THREADS` where it is set, to time the suites as a smaller
+/// runner would run them (with `RUST_TEST_THREADS` for libtest's own).
+pub fn threads() -> usize {
+    std::env::var("KURVEN_TEST_THREADS")
+        .ok()
+        .and_then(|n| n.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()))
+}
+
+/// `items.map(body)` over the machine's threads, in order. Each thread
+/// takes the next few items as it comes free, so a run of costly items
+/// (the cameras near edge-on, a dense stretch of samples) is shared out
+/// rather than left to one thread; each item is computed as it would be in
+/// a plain loop, and the results come back in the items' order.
+pub fn par_map<T: Sync, R: Send>(items: &[T], body: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let threads = threads().min(items.len()).max(1);
+    let grain = (items.len() / (threads * 64)).max(1);
+    let next = AtomicUsize::new(0);
+    let mut pieces: Vec<(usize, Vec<R>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let start = next.fetch_add(grain, Ordering::Relaxed);
+                        if start >= items.len() {
+                            break out;
+                        }
+                        let end = (start + grain).min(items.len());
+                        out.push((start, items[start..end].iter().map(&body).collect::<Vec<R>>()));
+                    }
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    pieces.sort_by_key(|p| p.0);
+    pieces.into_iter().flat_map(|p| p.1).collect()
+}
 
 /// Whether a point of the torus of revolution `(R, r)` about z is seen from
 /// direction `eye` (unit, pointing from the point toward the viewer).

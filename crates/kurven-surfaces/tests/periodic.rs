@@ -14,7 +14,7 @@
 
 mod common;
 
-use common::torus_sees;
+use common::{par_map, torus_sees};
 use kurven_bake::{BakeOptions, bake};
 use kurven_core::camera::Camera;
 use kurven_core::hidden_line::HiddenLine;
@@ -31,18 +31,6 @@ use kurven_math::{Complex, Jacobi, real, swift};
 use kurven_surfaces::SurfaceDrawing;
 use std::f64::consts::PI;
 use std::sync::Arc;
-
-/// Swift's `Heightfield.parallelMap`: the same map, spread over threads,
-/// each item computed exactly as it would be in a plain loop.
-fn par_map<T: Sync, R: Send>(items: &[T], body: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let chunk = items.len().div_ceil(threads).max(1);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> =
-            items.chunks(chunk).map(|c| scope.spawn(|| c.iter().map(&body).collect::<Vec<R>>())).collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
-    })
-}
 
 /// Record a failed expectation, and print its detail either way, as
 /// `Check.expect` reports every measure and goes on with the suite.

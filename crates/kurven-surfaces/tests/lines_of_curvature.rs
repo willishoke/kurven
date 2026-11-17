@@ -12,6 +12,9 @@
 // Swift's `guard x > 0 else` refuses a NaN, and so does `if !(x > 0.0)`.
 #![allow(clippy::neg_cmp_op_on_partial_ord, clippy::manual_range_contains)]
 
+mod common;
+
+use common::par_map;
 use kurven_core::camera::Camera;
 use kurven_core::hatching::FaceSelector;
 use kurven_core::integral_curves::{End, Limits, Section, Traced, VectorField};
@@ -94,18 +97,6 @@ fn expect(failures: &mut Vec<String>, ok: bool, what: &str, detail: String) {
     if !ok {
         failures.push(format!("{what}: {detail}"));
     }
-}
-
-/// `Heightfield.parallelMap`, its iterations spread over threads and
-/// computed as they would be in turn.
-fn par_map<T: Sync, R: Send>(items: &[T], body: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let chunk = items.len().div_ceil(threads).max(1);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> =
-            items.chunks(chunk).map(|c| scope.spawn(|| c.iter().map(&body).collect::<Vec<R>>())).collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
-    })
 }
 
 /// "lines of curvature: on the round torus, the principal curvatures and directions are the closed form's"
@@ -582,26 +573,30 @@ fn on_the_forced_torus_the_two_families_cross_at_right_angles_in_space_each_once
     let mut families: Vec<Vec<Vec<Vec2>>> = Vec::new();
     let (mut returned, mut curves, mut off_section) = (0, 0, 0.0);
     let mut took = [Duration::ZERO, Duration::ZERO];
-    for curvature in [PrincipalCurvature::Greater, PrincipalCurvature::Lesser] {
+    // Each family traced twice, timed with the returns a curve is followed
+    // for past its first, and without: four tracings of one surface, each
+    // independent of the others, so run side by side, each timed on its own
+    // thread.
+    let curvatures = [PrincipalCurvature::Greater, PrincipalCurvature::Lesser];
+    let tracings: Vec<(PrincipalCurvature, bool)> = curvatures.iter().flat_map(|&c| [(c, false), (c, true)]).collect();
+    let mut traced_all = par_map(&tracings, |&(curvature, once_round)| {
         let layer = LayerSpec::lines_of_curvature(curvature, (surface.u, surface.v), 24, 0.3);
         let LayerSource::IntegralCurves { field, seeds, .. } = &layer.source else {
             panic!("lines of curvature are integral curves")
         };
         let points = surface.seed_points(seeds);
         let section = surface.section(seeds);
-        // Timed with the returns a curve is followed for past its first,
-        // and without.
+        let limits = if once_round { Limits { closing_returns: 0, ..Limits::default() } } else { Limits::default() };
         let clock = Instant::now();
-        let _ = surface.traced_integral_curves(
-            field,
-            &points,
-            section.as_ref(),
-            &Limits { closing_returns: 0, ..Limits::default() },
-        );
-        took[1] += clock.elapsed();
-        let clock = Instant::now();
-        let traced = surface.traced_integral_curves(field, &points, section.as_ref(), &Limits::default());
-        took[0] += clock.elapsed();
+        let traced = surface.traced_integral_curves(field, &points, section.as_ref(), &limits);
+        (traced, clock.elapsed())
+    })
+    .into_iter();
+    for curvature in curvatures {
+        let (traced, full) = traced_all.next().expect("a tracing");
+        let (_, once_round) = traced_all.next().expect("a tracing");
+        took[0] += full;
+        took[1] += once_round;
         let fixed = if curvature == PrincipalCurvature::Greater { 1 } else { 0 };
         for curve in &traced {
             curves += 1;

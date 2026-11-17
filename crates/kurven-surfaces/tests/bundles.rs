@@ -9,6 +9,9 @@
 //! from the request, as `kurven-cli surface` builds it -- and its layers to
 //! the drawing as it was kept, restyled or not.
 
+mod common;
+
+use common::par_map;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -167,7 +170,9 @@ fn a_parametric_surfaces_bundle_bakes_what_its_request_bakes_for_every_surface()
     ];
     let options = BakeOptions::new(1000);
     let directory = Scratch::new("bundles");
-    for (label, request) in &requests {
+    // Each request built, baked, saved, reopened and baked again on its
+    // own, independent of the others: side by side, the checks in order.
+    let outcomes = par_map(&requests, |(label, request)| {
         let drawing = build(request, None);
         let direct = svg_of(&drawing.scene(Camera::oblique(&SurfaceRequest::PROJECTION)), &options);
         let url = directory.join(&format!("{label}.kurven"));
@@ -175,6 +180,9 @@ fn a_parametric_surfaces_bundle_bakes_what_its_request_bakes_for_every_surface()
         let text = std::fs::read_to_string(url.join("manifest.json")).expect("the manifest written");
         let read = read(&url);
         let from_bundle = svg_of(&read.scene(&read.manifest.presets[0]), &options);
+        (direct, text, read, from_bundle)
+    });
+    for ((label, request), (direct, text, read, from_bundle)) in requests.iter().zip(outcomes) {
         let strokes = direct.matches("<polyline").count();
         println!("{label}: {strokes} strokes");
         checks.expect(
