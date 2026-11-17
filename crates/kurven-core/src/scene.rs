@@ -252,14 +252,24 @@ pub struct Scene {
     pub resolution: f64,
     /// A parametric surface's fold curves for the last line of sight they
     /// were asked for, which `view_bounds` and `visible` both read: placed
-    /// once per camera, not once per ask. Keyed by the line of sight, since
-    /// the camera is a public field; the surface and its creases cannot
-    /// change under a scene. Not in Swift, which places them twice.
+    /// once per camera, not once per ask. Each scene's own -- a clone starts
+    /// empty -- so it holds only this scene's surface and creases, which
+    /// cannot change under it; keyed by the line of sight, since the camera
+    /// is a public field. Not in Swift, which places them twice.
     fold_memo: FoldMemo,
 }
 
 /// A parametric surface's fold curves, and the line of sight they are for.
-type FoldMemo = Arc<Mutex<Option<(Vec3, Arc<PolylineSet<WorldSpace>>)>>>;
+/// Cloned empty: a clone of a scene may draw other layers, and so other
+/// creases, and must not read this scene's folds.
+#[derive(Debug, Default)]
+struct FoldMemo(Mutex<Option<(Vec3, Arc<PolylineSet<WorldSpace>>)>>);
+
+impl Clone for FoldMemo {
+    fn clone(&self) -> FoldMemo {
+        FoldMemo::default()
+    }
+}
 
 impl Scene {
     fn assemble(
@@ -280,7 +290,7 @@ impl Scene {
             mode,
             depth_tolerance,
             resolution: 0.0,
-            fold_memo: Arc::new(Mutex::new(None)),
+            fold_memo: FoldMemo::default(),
         }
     }
 
@@ -1824,7 +1834,7 @@ impl Scene {
     /// line of sight (`fold_memo`).
     fn parametric_folds(&self, s: &ParametricSurface) -> Arc<PolylineSet<WorldSpace>> {
         let sight = self.camera.view.projection_direction();
-        let mut memo = self.fold_memo.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut memo = self.fold_memo.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some((key, folds)) = memo.as_ref()
             && *key == sight
         {
