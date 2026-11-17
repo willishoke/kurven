@@ -2274,3 +2274,41 @@ page (Phase 8). Nothing of the session waits on a `PORT:` hole.
 
 The session gate is unchanged: 32 manifests byte for byte, 27 drawings at
 0, against the committed Swift outputs.
+
+## 2026-11-16 · Second review of PR #70
+
+- **A failed open is no clean slate.** Swift's `Document.load` sets
+  `.loading`, clears the scene, the navigator, what was queued and the
+  edits, and on a read that fails sets `.failed`; the landscape's or the
+  surface's request, the level counts, the hidden layers and the styling
+  stay. The engine does the same (it is Swift's), and the request it kept
+  shows in the state. The client's compaction cut the journal at the
+  failed open and replayed a document without that request; it now cuts
+  only at an open that succeeded. Tested: open gamma, open a broken
+  bundle, set rMax, drag rMax, cancel; the replayed document is the live
+  one (the test fails with the old rule). The edits after a failed open do
+  nothing in either: `edited` is nil, and a landscape drag's draft finds
+  the samples asked for already "shown" (`pump`'s `shown.samples(as:)`),
+  so nothing is sampled. That is Swift's, kept.
+- **A request racing a restart** waited for the `ready` it read, and could
+  be posted to the new Worker before it had loaded and been replayed. It
+  waits again while a restart has replaced the Worker, checked by its
+  epoch as it is sent.
+- **A journaled entry that traps on every replay** restarted the Worker
+  forever. Two traps in a row on one entry cut the journal there, with
+  what follows (which may depend on it), and the next call is told
+  (`JournalTruncated`).
+- **Unknown layers.** Swift's `paintLevels`, `paintStrokes`, `paintLight`
+  and `paintResetLevels` pass over a layer they do not find; its headless
+  run refuses one before ("no layer ... with levels to drag"). The protocol
+  refuses one as the headless run does, touching nothing, so it is not
+  journaled.
+- **save** says why it cannot save (`save_bundle` returns the reason).
+- **Copies.** A reply's array is encoded once from where its values lie
+  and moved into the module's reply; `kv_stage` takes the staged file's
+  allocation (`kv_alloc` lends a boxed slice) rather than copying it, so a
+  staged bundle is held once; the copy the host makes out of linear memory
+  is the one the Worker transfers.
+- **BundleFiles** is a type of its own, its paths normal when put in, so a
+  lookup is a plain get. `kurven-cli app` reads a bundle's regular files
+  alone, follows no symbolic link and reads no dotfile.
