@@ -1,0 +1,45 @@
+# The browser lane (scripts/check-browser.sh): the page's preview in
+# Chromium, held to the judged strokes, on WebGPU over SwiftShader, and the
+# page without WebGPU. Separate from check-web.yml, which needs no browser;
+# this one installs Playwright's pinned Chromium and its system libraries.
+#
+# Not yet observed on a runner: nothing has been pushed since it was
+# written. Its first run is the test that Chromium's WebGPU reaches
+# SwiftShader on ubuntu with the flags web/app/playwright.config.ts gives it
+# on Linux; if it does not, that is a finding for crates/FINDINGS.md, and the
+# `fallback` project still runs.
+
+name: check-browser
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: check-browser-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The pinned Rust, with the wasm target
+        working-directory: crates
+        run: rustup toolchain install --no-self-update
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+
+      - name: The page's packages, and Playwright's Chromium with its libraries
+        working-directory: web/app
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Check
+        run: scripts/check-browser.sh --project swiftshader --project fallback

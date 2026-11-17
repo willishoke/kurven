@@ -15,6 +15,11 @@
 import { defineConfig } from "@playwright/test";
 
 const port = Number(process.env.KURVEN_PORT ?? 4175);
+// On Linux, Dawn reaches SwiftShader through Vulkan, which Chromium leaves
+// off there unless asked, and a headless run has no surface to present a
+// Vulkan swapchain to. Not yet observed on a CI runner
+// (crates/FINDINGS.md, "The browser lane in CI").
+const linux = process.platform === "linux" ? ["--enable-features=Vulkan", "--disable-vulkan-surface"] : [];
 
 export default defineConfig({
   testDir: "test/browser",
@@ -34,7 +39,7 @@ export default defineConfig({
       name: "swiftshader",
       use: {
         channel: "chromium",
-        launchOptions: { args: ["--enable-unsafe-webgpu", "--use-webgpu-adapter=swiftshader"] },
+        launchOptions: { args: ["--enable-unsafe-webgpu", "--use-webgpu-adapter=swiftshader", ...linux] },
       },
     },
     { name: "gpu", use: { channel: "chromium", launchOptions: { args: ["--enable-unsafe-webgpu"] } } },
