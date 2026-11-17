@@ -68,6 +68,7 @@ step "rustfmt" workspace fmt --all -- --check
 
 step "clippy, native" workspace clippy --release --workspace --all-targets -- -D warnings
 step "clippy, wasm" workspace clippy --release -p kurven-wasm --target wasm32-unknown-unknown -- -D warnings
+step "clippy, the page's wasm" workspace clippy --release -p kurven-wasm --target wasm32-unknown-unknown --no-default-features -- -D warnings
 
 # The std spellings of the transcendental functions, of fused multiply-add,
 # and of the reads of a sign bit (a NaN's is platform noise; real::sign_minus,
@@ -259,9 +260,15 @@ session() {
 }
 step "the session's edit scripts give Swift's bundles and drawings" session
 
+# Two builds: the check's module, with the golden sets and the timing
+# exports, and the page's, without them (`--no-default-features`), in a
+# build tree of its own so neither overwrites the other.
 wasm() {
     workspace build --profile web --target wasm32-unknown-unknown -p kurven-wasm || return 1
-    echo "kurven_wasm.wasm: $(wc -c < "$WASM" | tr -d ' ') bytes"
+    echo "kurven_wasm.wasm: $(wc -c < "$WASM" | tr -d ' ') bytes, with the golden sets"
+    (cd "$CRATES" && CARGO_TARGET_DIR="$CRATES/target/page" cargo build --profile web \
+        --target wasm32-unknown-unknown -p kurven-wasm --no-default-features) || return 1
+    echo "kurven_wasm.wasm: $(wc -c < "$CRATES/target/page/wasm32-unknown-unknown/web/kurven_wasm.wasm" | tr -d ' ') bytes, the page's"
 }
 step "wasm build" wasm
 

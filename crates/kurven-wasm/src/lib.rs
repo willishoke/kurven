@@ -25,6 +25,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(feature = "goldens")]
 use kurven_golden::Golden;
 use kurven_session::protocol::{Reply, Session};
 
@@ -135,37 +136,45 @@ pub extern "C" fn kv_array_len(index: usize) -> usize {
 
 // MARK: - the golden sets
 
+#[cfg(feature = "goldens")]
 static GOLDENS: OnceLock<Vec<Golden>> = OnceLock::new();
 
+#[cfg(feature = "goldens")]
 fn goldens_generated() -> &'static [Golden] {
     GOLDENS.get_or_init(kurven_golden::all)
 }
 
+#[cfg(feature = "goldens")]
 fn golden(index: u32) -> &'static Golden {
     &goldens_generated()[index as usize]
 }
 
 /// Generates the golden sets, once, and returns how many files they hold.
+#[cfg(feature = "goldens")]
 #[unsafe(no_mangle)]
 pub extern "C" fn goldens() -> u32 {
     goldens_generated().len() as u32
 }
 
+#[cfg(feature = "goldens")]
 #[unsafe(no_mangle)]
 pub extern "C" fn golden_path_ptr(index: u32) -> *const u8 {
     golden(index).path.as_ptr()
 }
 
+#[cfg(feature = "goldens")]
 #[unsafe(no_mangle)]
 pub extern "C" fn golden_path_len(index: u32) -> usize {
     golden(index).path.len()
 }
 
+#[cfg(feature = "goldens")]
 #[unsafe(no_mangle)]
 pub extern "C" fn golden_bytes_ptr(index: u32) -> *const u8 {
     golden(index).bytes.as_ptr()
 }
 
+#[cfg(feature = "goldens")]
 #[unsafe(no_mangle)]
 pub extern "C" fn golden_bytes_len(index: u32) -> usize {
     golden(index).bytes.len()
@@ -175,6 +184,7 @@ pub extern "C" fn golden_bytes_len(index: u32) -> usize {
 /// 0 is gallery-gamma, 1 gallery-cn. Returns its stroke count, or 0 for
 /// another number or a plate that does not bake. For timing the engine under
 /// Node (`crates/kurven-wasm/bench.mjs`), against native.
+#[cfg(feature = "goldens")]
 #[unsafe(no_mangle)]
 pub extern "C" fn bake_gallery_plate(which: u32) -> u32 {
     let name = match which {
@@ -190,6 +200,7 @@ pub extern "C" fn bake_gallery_plate(which: u32) -> u32 {
 /// sn --relief 0.4`, each at the CLI's defaults and a 3000-pixel buffer.
 /// Returns its stroke count, or 0 for another number or a drawing that does
 /// not bake. For timing under Node (`bench.mjs`), against native.
+#[cfg(feature = "goldens")]
 #[unsafe(no_mangle)]
 pub extern "C" fn bake_surface_reference(which: u32) -> u32 {
     kurven_golden::surfaces::bake_reference(which).map_or(0, |b| b.strokes.path_count() as u32)
@@ -199,6 +210,7 @@ pub extern "C" fn bake_surface_reference(which: u32) -> u32 {
 /// 0 the dodecahedron, 1 the frame under Turing's pattern, 2 the composite
 /// of the cubic with a cube and a frame. Returns its stroke count, or 0 for
 /// another number. For timing under Node (`bench.mjs`).
+#[cfg(feature = "goldens")]
 #[unsafe(no_mangle)]
 pub extern "C" fn bake_polyhedron(which: u32) -> u32 {
     let name = match which {
@@ -210,7 +222,7 @@ pub extern "C" fn bake_polyhedron(which: u32) -> u32 {
     kurven_golden::polyhedra::bake_named(name).map_or(0, |b| b.strokes.path_count() as u32)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "goldens"))]
 mod tests {
     use super::*;
 
