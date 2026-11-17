@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { Worker } from "node:worker_threads";
-import { Cancelled, EngineClient } from "../src/engine/client.ts";
+import { Cancelled, EngineClient, JournalTruncated } from "../src/engine/client.ts";
 
 const [wasmPath, session, native] = process.argv.slice(2);
 if (!wasmPath || !session || !native) {
@@ -150,6 +150,30 @@ await client.cancel("replay a failure");
 assert.equal(fresh(await client.request({ kind: "state" })).reply.state.kind, "failed");
 checks += 5;
 
+// A failed open keeps what the document held: Swift's Document keeps the
+// landscape's request (its controls still show it; the edits after find no
+// bundle to act on). So it is no clean slate: the replay keeps the open
+// before it, or the request it kept would be gone.
+fresh(await client.request({ kind: "open", name: gamma }));
+assert.equal((await client.request({ kind: "open", name: "broken.kurven" })).reply.touched, true);
+fresh(await client.request({ kind: "set", key: "rMax", value: 5 }));
+fresh(await client.request({ kind: "drag", control: { slider: "landscape", label: "rMax" }, phase: "begin" }));
+fresh(await client.request({ kind: "drag", control: { slider: "landscape", label: "rMax" }, phase: "end" }));
+const kept = client.state;
+assert.equal(kept.kind, "failed");
+assert.equal(kept.landscape.expression, "gamma(z)", "the request the failed open kept");
+await client.cancel("replay past a failed open");
+assert.deepEqual(unsaid(fresh(await client.request({ kind: "state" })).reply.state), unsaid(kept));
+checks += 2;
+
+// A request and a cancel in the same tick: the request waits for the new
+// Worker's replay rather than going to it before it has loaded.
+const sameTick = client.request({ kind: "state" });
+const cancelled = client.cancel("in the same tick as a request");
+await cancelled;
+assert.deepEqual(unsaid(fresh(await sameTick).reply.state), unsaid(kept));
+checks += 1;
+
 // A long session replays bounded: from its last open, a run of gestures as
 // one camera, a drag's moves as its last, a run of viewports as its last.
 fresh(await client.request({ kind: "open", name: gamma }));
@@ -205,6 +229,10 @@ function fakeWorker(script) {
           handle.requests = (handle.requests ?? 0) + 1;
           script.onRequest?.(handle);
           if (handle.terminated) return;
+          if (script.trap?.(message)) {
+            send({ type: "failed", id: message.id, trap: true, message: "unreachable" });
+            return;
+          }
           send({ type: "reply", id: message.id, reply: { ok: true, touched: true, arrays: [] }, arrays: {} });
         }
       });
@@ -249,6 +277,29 @@ assert.equal(workers[2].requests, 4, "the next replay sent the whole journal");
 assert.equal(counted.journalLength, 4);
 counted.close();
 fake.close();
+checks += 4;
+
+// An entry that traps the engine on every replay: after two traps on it,
+// it and what follows are cut, the next call is told, and the document is
+// the one up to it.
+workers = [];
+const poisoned = { boots: 0, failBoots: 0 };
+const trapping = new EngineClient(() => {
+  const w = fakeWorker(poisoned);
+  workers.push(w);
+  return w;
+}, new ArrayBuffer(8));
+for (const value of [1, 2]) await trapping.request({ kind: "set", key: "major", value });
+await trapping.request({ kind: "relief", value: 0.3 });
+await trapping.request({ kind: "set", key: "major", value: 3 });
+assert.equal(trapping.journalLength, 4);
+poisoned.trap = (message) => message.request.kind === "relief";
+await trapping.cancel("replay into a trap");
+assert.equal(workers.length, 4, "the first Worker, the cancel's, and one restart for each trap");
+assert.equal(trapping.journalLength, 2, "cut at the entry that trapped twice");
+await assert.rejects(trapping.request({ kind: "state" }), (error) => error instanceof JournalTruncated && error.request.kind === "relief");
+assert.equal(fresh(await trapping.request({ kind: "state" })).stale, false, "told once, then answered");
+trapping.close();
 checks += 4;
 
 console.log(`the Worker protocol under Node: ${checks} checks, one hang cancelled in ${Date.now() - started} ms`);

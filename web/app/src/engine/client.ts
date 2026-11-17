@@ -8,11 +8,14 @@
 // compact so a replay is bounded by what the document is, not by how long
 // it was edited:
 //
-// - An `open`, `create` or `createSurface` is a clean slate (the engine
-//   forgets the document's edits and its camera), so the requests before it
-//   are dropped, but for the last of each that sets what an open keeps
-//   (`viewport`, `mode`, `draftResolution`, `refine`). Staged bundles stay:
-//   any later open may read them, as the engine keeps them.
+// - An `open`, `create` or `createSurface` that succeeds is a clean slate
+//   (the engine forgets the document's edits and its camera, and adopts the
+//   new one whole), so the requests before it are dropped, but for the last
+//   of each that sets what an open keeps (`viewport`, `mode`,
+//   `draftResolution`, `refine`). An open that fails is not: the engine, as
+//   Swift's Document, keeps the landscape or surface request, the levels and
+//   the styling it had, which a later edit acts on. Staged bundles stay: any
+//   later open may read them, as the engine keeps them.
 // - A run of gestures is replaced by one `camera` request, the camera the
 //   run left, to the bit (`camera.exact` in the state): gestures move the
 //   navigator alone. They are not summed: the orbit's folds do not
@@ -29,7 +32,9 @@
 //
 // A replay keeps the whole journal until it has run: a second cancel during
 // a replay terminates that Worker too and replays the same journal into the
-// next. The replayed document equals the last one reported but for its
+// next. An entry that traps the engine on two replays in a row is dropped
+// with everything after it, which may depend on it, and the next call is
+// told (`JournalTruncated`); the document is then the one up to that entry. The replayed document equals the last one reported but for its
 // status lines, which are messages: a save's or a bake's is not replayed.
 
 import type {
@@ -62,6 +67,20 @@ export class Cancelled extends Error {
   }
 }
 
+/** A replay trapped the engine twice on one entry: the journal was cut
+ * there, and the document is what the entries before it make. */
+export class JournalTruncated extends Error {
+  readonly request: Request | null;
+  constructor(request: Request | null, why: string) {
+    super(
+      `the engine trapped twice replaying ${request ? request.kind : "a staged bundle"}, ` +
+        `so it and what followed are dropped: ${why}`,
+    );
+    this.name = "JournalTruncated";
+    this.request = request;
+  }
+}
+
 export interface Options {
   /** A view's key: a newer ask under it supersedes this one (protocol.ts,
    * rule 2). Views are not journaled. */
@@ -83,15 +102,17 @@ const OUTRIGHT_SLIDERS = new Set(["landscape", "truncation", "light", "levels"])
 
 type Entry =
   | { kind: "stage"; bundle: Bundle }
-  | { kind: "request"; request: Request; camera?: ExactCamera };
+  | { kind: "request"; request: Request; ok: boolean; camera?: ExactCamera };
 
 interface Pending {
   id: number;
   /** What it sends: a request, or a bundle to stage. */
   work: { kind: "request"; request: Request } | { kind: "stage"; bundle: Bundle };
   options: Options;
-  /** Sent by a replay: answered, it is not journaled again. */
+  /** Sent by a replay, of the journal's entry at this place: answered, it
+   * is not journaled again. */
   replay: boolean;
+  entry?: number;
   resolve: (answer: Answer) => void;
   reject: (error: Error) => void;
   timer?: ReturnType<typeof setTimeout>;
@@ -129,6 +150,11 @@ export class EngineClient {
   /** Per view key: the ask in flight, and the newest one waiting. */
   private views = new Map<string, { inFlight: number | null; waiting: Pending | null }>();
   private journal: Entry[] = [];
+  /** The journal entry the last replay trapped on, if the replay after it
+   * has not run past it. */
+  private trappedAt: number | null = null;
+  /** Said to the next call: the journal was cut. */
+  private truncated: JournalTruncated | null = null;
   /** The document as the latest reply left it. */
   state: DocumentState | null = null;
   /** How many times the Worker was restarted. */
@@ -186,7 +212,7 @@ export class EngineClient {
             rejectBoot(new Error(`the engine would not load: ${message.message}`));
           } else if (message.trap) {
             // A trap: the module is gone with whatever it held.
-            this.restart(new Cancelled(`the engine failed: ${message.message}`)).catch(() => {});
+            this.trapped(message.id, message.message);
           } else {
             this.failed(message.id, new Error(message.message));
           }
@@ -213,17 +239,18 @@ export class EngineClient {
         if (epoch === this.epoch) throw error;
         return this.ready;
       }
-      for (const entry of journal) {
+      for (const [i, entry] of journal.entries()) {
         if (epoch !== this.epoch) break;
         try {
-          if (entry.kind === "stage") await this.send({ kind: "stage", bundle: entry.bundle }, {}, true);
-          else await this.send({ kind: "request", request: entry.request }, {}, true);
+          if (entry.kind === "stage") await this.send({ kind: "stage", bundle: entry.bundle }, {}, true, i);
+          else await this.send({ kind: "request", request: entry.request }, {}, true, i);
         } catch {
           // Overtaken by a newer start (checked above), or an entry the
           // engine took before and refuses now, which the rest goes on past.
         }
       }
       if (epoch !== this.epoch) return this.ready;
+      this.trappedAt = null;
     };
     this.ready = replay();
     this.ready.catch(() => {});
@@ -235,15 +262,28 @@ export class EngineClient {
   }
 
   /** Before a call: refused once closed; the engine loaded again if it
-   * would not load before; then the replay waited for. */
-  private async ensure(): Promise<void> {
-    if (this.closed) throw new Cancelled("the client is closed");
-    if (this.bootFailed) {
-      this.bootFailed = false;
-      this.relaunch();
+   * would not load before; then the replay waited for, again if a restart
+   * replaced it meanwhile. Returns the epoch of the Worker it waited for,
+   * which the caller checks is still the current one as it sends: a restart
+   * between the two would post the call to a Worker not yet loaded and
+   * replayed. */
+  private async ensure(): Promise<number> {
+    for (;;) {
+      if (this.closed) throw new Cancelled("the client is closed");
+      if (this.bootFailed) {
+        this.bootFailed = false;
+        this.relaunch();
+      }
+      const epoch = this.epoch;
+      await this.ready;
+      if (this.closed) throw new Cancelled("the client is closed");
+      if (this.truncated) {
+        const error = this.truncated;
+        this.truncated = null;
+        throw error;
+      }
+      if (epoch === this.epoch) return epoch;
     }
-    await this.ready;
-    if (this.closed) throw new Cancelled("the client is closed");
   }
 
   // MARK: - calls
@@ -252,19 +292,19 @@ export class EngineClient {
    * once the engine holds them; rejects, staging nothing to replay, if it
    * refuses them. */
   async stage(bundle: Bundle): Promise<void> {
-    await this.ensure();
+    while ((await this.ensure()) !== this.epoch);
     await this.send({ kind: "stage", bundle }, {}, false);
   }
 
   /** Send a request; the answer comes in the order requests were sent. */
   async request(request: Request, options: Options = {}): Promise<Answer> {
-    await this.ensure();
+    while ((await this.ensure()) !== this.epoch);
     return this.send({ kind: "request", request }, options, false);
   }
 
-  private send(work: Pending["work"], options: Options, replay: boolean): Promise<Answer> {
+  private send(work: Pending["work"], options: Options, replay: boolean, entry?: number): Promise<Answer> {
     return new Promise<Answer>((resolve, reject) => {
-      const p: Pending = { id: this.next++, work, options, replay, resolve, reject };
+      const p: Pending = { id: this.next++, work, options, replay, entry, resolve, reject };
       if (options.view !== undefined) {
         const lane = this.views.get(options.view) ?? { inFlight: null, waiting: null };
         this.views.set(options.view, lane);
@@ -326,7 +366,7 @@ export class EngineClient {
     if (reply.state) this.state = reply.state;
     const request = p.work.request;
     if (!p.replay && !VIEWS.has(request.kind) && p.options.view === undefined && reply.touched !== false) {
-      this.record({ kind: "request", request, camera: reply.state?.camera?.exact });
+      this.record({ kind: "request", request, ok: reply.ok, camera: reply.state?.camera?.exact });
     }
     if (this.release(p)) {
       // A newer ask came while this one was computed: this one is stale.
@@ -372,7 +412,7 @@ export class EngineClient {
       return;
     }
     const request = entry.request;
-    if (OPENING.has(request.kind)) {
+    if (OPENING.has(request.kind) && entry.ok) {
       const lastOf = new Map<string, number>();
       j.forEach((e, i) => {
         if (e.kind === "request" && KEPT_BY_OPEN.has(e.request.kind)) lastOf.set(e.request.kind, i);
@@ -386,7 +426,7 @@ export class EngineClient {
       const camera: Request = { kind: "camera", ...entry.camera };
       const run = lastRequest && (lastRequest.request.kind === "gesture" || lastRequest.request.kind === "camera");
       if (run && lastRequest.camera) j.pop();
-      j.push({ kind: "request", request: camera, camera: entry.camera });
+      j.push({ kind: "request", request: camera, ok: true, camera: entry.camera });
       return;
     }
     if (
@@ -405,6 +445,25 @@ export class EngineClient {
   }
 
   // MARK: - cancelling
+
+  /** The engine trapped on a message: restart. A replayed entry it traps on
+   * twice in a row is cut from the journal, with what follows it. */
+  private trapped(id: number, why: string): void {
+    const p = this.pending.get(id);
+    if (p?.replay && p.entry !== undefined) {
+      if (this.trappedAt === p.entry) {
+        const entry = this.journal[p.entry];
+        this.truncated = new JournalTruncated(entry?.kind === "request" ? entry.request : null, why);
+        this.journal = this.journal.slice(0, p.entry);
+        this.trappedAt = null;
+      } else {
+        this.trappedAt = p.entry;
+      }
+    } else {
+      this.trappedAt = null;
+    }
+    this.restart(new Cancelled(`the engine failed: ${why}`)).catch(() => {});
+  }
 
   /** Cancel whatever is pending: terminate the Worker, reject the pending
    * requests, start a new Worker and replay the journal into it. Resolves
