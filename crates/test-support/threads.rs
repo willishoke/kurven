@@ -50,9 +50,11 @@ pub fn par_map<T: Sync, R: Send>(items: &[T], body: impl Fn(&T) -> R + Sync) -> 
 
 /// One test binary's tests, as libtest runs them side by side: a test that
 /// asserts a wall-clock time runs its timed stretch `alone`, and the file's
-/// other tests, which saturate the cores with `par_map`, hold `sharing`
-/// while they run. A test takes one guard at a time, and never `sharing`
-/// twice: a reader waiting behind a writer would wait for itself.
+/// stretches that saturate the cores with `par_map` hold `sharing` while
+/// they run, so none runs beside a timed one. (A single-threaded test runs
+/// beside it as on one core of its own, as before `par_map` spread work.)
+/// A thread takes one guard at a time, and never `sharing` twice: a reader
+/// waiting behind a writer would wait for itself.
 static QUIET: RwLock<()> = RwLock::new(());
 
 /// The guard a test holds while it runs beside the others.

@@ -70,7 +70,6 @@ fn milliseconds(d: Duration) -> f64 {
 /// "dynamics: the notebook's forced oscillator winds round a torus"
 #[test]
 fn the_notebooks_forced_oscillator_winds_round_a_torus() {
-    let _beside = sharing();
     let found = found();
     let mut checks = Checks::default();
     checks.expect(
@@ -91,7 +90,6 @@ fn the_notebooks_forced_oscillator_winds_round_a_torus() {
 /// "dynamics: drawn by revolution, it is embedded and the trajectory is on it"
 #[test]
 fn drawn_by_revolution_it_is_embedded_and_the_trajectory_is_on_it() {
-    let _beside = sharing();
     let found = found();
     let mut checks = Checks::default();
     let square = [Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0), Vec2::new(0.0, 1.0)];
@@ -177,7 +175,6 @@ fn drawn_by_revolution_it_is_embedded_and_the_trajectory_is_on_it() {
 /// "dynamics: the drawing bakes, and its front is the torus's outside"
 #[test]
 fn the_drawing_bakes_and_its_front_is_the_torus_outside() {
-    let _beside = sharing();
     let found = found();
     let mut checks = Checks::default();
     let e = revolution(found);
@@ -278,7 +275,6 @@ fn forced_preview_surface() -> &'static ParametricSurface {
 /// "surfaces: the preview's grid folds are the exact folds, to a pixel"
 #[test]
 fn the_previews_grid_folds_are_the_exact_folds_to_a_pixel() {
-    let _beside = sharing();
     let forced = forced_preview_surface();
     let sn = PeriodicTorus::jacobi_sn(0.64, 0.0, &PeriodicOptions::default()).expect("the sn torus builds").surface;
     let mut checks = Checks::default();
@@ -294,6 +290,7 @@ fn the_previews_grid_folds_are_the_exact_folds_to_a_pixel() {
         .enumerate()
         .flat_map(|(k, (name, surface))| projections.iter().map(move |&projection| (k, name, surface, projection)))
         .collect();
+    let _beside = sharing();
     let outcomes = par_map(&cases, |&(k, name, surface, projection)| {
         let camera = Camera::oblique(&projection);
         let sight = camera.view.projection_direction();
@@ -337,7 +334,6 @@ fn the_previews_grid_folds_are_the_exact_folds_to_a_pixel() {
 /// grid, and the trajectory Swift's scene carries is drawn by the GPU.
 #[test]
 fn an_orbit_frame_of_the_forced_torus_folds_and_all_keeps_up() {
-    let beside = sharing();
     let forced = forced_preview_surface();
     let mut checks = Checks::default();
     let orbit = Orbit::matching(
@@ -355,7 +351,6 @@ fn an_orbit_frame_of_the_forced_torus_folds_and_all_keeps_up() {
     // frame's exact folds, which nothing times and which are independent
     // of one another, side by side, and checked in turn.
     // The timed stretch runs alone: no other test of the file meanwhile.
-    drop(beside);
     let timed = alone();
     let mut shown = Vec::new();
     for _ in 0..7 {
@@ -471,7 +466,6 @@ fn a_surface_request_builds_its_drawing_and_an_edit_keeps_what_it_can() {
     let second = build(&forced_request(3.0, 30, None), Some(&first));
     let kept = t.elapsed();
     drop(timed);
-    let _beside = sharing();
     checks.expect(
         first.torus().is_some() && first.embedded && names(&first) == ["trajectory", "folds"],
         format!("a forced drawing is its trajectory and its folds, on an embedded torus: {:?}", names(&first)),
@@ -590,12 +584,14 @@ fn a_surface_request_builds_its_drawing_and_an_edit_keeps_what_it_can() {
     }
     edit("forced, linear curve on", &forced, &forced_wound, true);
     edit("forced, linear curve slope", &forced_wound, &forced_steeper, true);
+    let beside = sharing();
     let outcomes = par_map(&edits, |(_, from, to, keeps_surface)| {
         let before = build(from, None);
         let edited = build(to, Some(&before));
         let fresh = build(to, None);
         same(&edited, &fresh) && (edited.content == before.content) == *keeps_surface
     });
+    drop(beside);
     for ((label, _, _, keeps_surface), ok) in edits.iter().zip(outcomes) {
         checks.expect(
             ok,

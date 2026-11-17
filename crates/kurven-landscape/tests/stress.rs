@@ -294,7 +294,6 @@ fn on_a_real_drawing_the_traversal_is_the_brute_force_ray_cast() {
 /// "stress: scaling the drawing scales the drawing".
 #[test]
 fn scaling_the_drawing_scales_the_drawing() {
-    let _beside = sharing();
     // The whole drawing -- heights, domain, truncations, walls, curves and depth tolerance --
     // scaled by a power of two, so every float scales exactly; the tested
     // curves must be the tested curves scaled, vertex for vertex. A rule with a
@@ -630,7 +629,6 @@ fn on_a_4x4_grid_the_traversal_is_the_brute_force_ray_cast_exactly() {
 /// "stress: the facing read off the grid converges on the drawn triangles".
 #[test]
 fn the_facing_read_off_the_grid_converges_on_the_drawn_triangles() {
-    let _beside = sharing();
     // The one approximation left in the predicate, measured rather than
     // hidden. Curves on the surface are cut by the central-difference normal
     // -- the normal the fold curves are traced from, so a contour ends on
