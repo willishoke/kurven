@@ -18,6 +18,7 @@ dependencies = [
  "kurven-golden",
  "kurven-landscape",
  "kurven-math",
+ "kurven-surfaces",
 ]
 
 [[package]]
@@ -35,6 +36,7 @@ dependencies = [
  "kurven-core",
  "kurven-landscape",
  "kurven-math",
+ "kurven-surfaces",
 ]
 
 [[package]]
@@ -44,6 +46,7 @@ dependencies = [
  "kurven-bake",
  "kurven-core",
  "kurven-math",
+ "kurven-surfaces",
 ]
 
 [[package]]
@@ -66,7 +69,9 @@ dependencies = [
 name = "kurven-surfaces"
 version = "0.1.0"
 dependencies = [
+ "kurven-bake",
  "kurven-core",
+ "kurven-landscape",
  "kurven-math",
 ]
 

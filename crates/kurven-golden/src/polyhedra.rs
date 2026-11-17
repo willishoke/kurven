@@ -22,7 +22,8 @@ use kurven_landscape::catalog::LandscapeRequest;
 use kurven_landscape::landscape::NativeLandscape;
 
 use crate::Golden;
-use crate::landscapes::{layers, leak};
+use crate::landscapes::layers;
+use crate::leak;
 
 pub fn all() -> Vec<Golden> {
     let mut out = Vec::new();
@@ -158,7 +159,13 @@ fn composite() -> Bake {
     let strokes = Strokes {
         layers: visible.iter().map(|(layer, seen)| (Style::of(&layer.spec), HiddenLine::pass(seen))).collect(),
     };
-    Bake { strokes, specs: visible.into_iter().map(|(layer, _)| layer.spec).collect() }
+    Bake {
+        strokes,
+        specs: visible.into_iter().map(|(layer, _)| layer.spec).collect(),
+        frame: None,
+        surface: None,
+        tiles: 1,
+    }
 }
 
 #[cfg(test)]

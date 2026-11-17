@@ -204,16 +204,3 @@ pub fn solid_command(args: &Args) -> Result<(), CliError> {
 fn file_name(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
-
-/// `surface`: the shape named first after the command. `surface solid` is
-/// the polyhedron's (`solidCommand`); the parametric shapes wait for their
-/// phase.
-pub fn surface_command(args: &Args) -> Result<(), CliError> {
-    let shape = args.positional.get(1).map_or("torus", String::as_str);
-    if shape == "solid" {
-        return solid_command(args);
-    }
-    // PORT: phase 4 -- `surface torus | sn | periodic | forced`, the
-    // parametric surfaces (`surfaceCommand`).
-    Err(CliError(format!("surface {shape} is a parametric surface, which the port does not draw yet (phase 4)")))
-}

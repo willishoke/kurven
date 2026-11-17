@@ -4,10 +4,8 @@
 //! A composite's every curve, held point by point to the brute-force casts
 //! the stress, solids and occlusion suites run, each against its own
 //! geometry where it stands (`gate`, which holds lines 1-760 of the Swift
-//! file). The round torus is Phase 4's: the compositions and placements
-//! that stand it in a composite, and the surfaces refused at the door (the
-//! forced torus, the displaced one), are held in ignored tests below, each
-//! saying what it would hold.
+//! file), the round torus among them; and the surfaces refused at the door
+//! (the forced torus, the displaced one).
 
 #![allow(clippy::neg_cmp_op_on_partial_ord, clippy::type_complexity)]
 
@@ -139,16 +137,15 @@ fn every_curve_is_seen_exactly_where_no_geometrys_brute_force_cast_meets_its_lin
 /// "composite: every curve is seen exactly where no geometry's brute-force
 /// cast meets its line of sight", the three compositions that stand the
 /// round torus in a composite (contract/surface_torus.kurven,
-/// `SurfaceBundle`, Phase 4): the torus ringing a tower at scale 0.35 at
+/// `SurfaceBundle`): the torus ringing a tower at scale 0.35 at
 /// (1, 0, 1.6), which meets nothing and draws no contact line; the torus
 /// sunk into the foot of a tower at scale 0.3 at (0.4, 1.3, 0.3); and all
 /// three moved -- the landscape by (0.4, 0.2, -0.1), the cube at scale 0.35
 /// at (-0.8, 0.3, 0.2), the torus at 0.35 at (1.4, 0.2, 1.5). Each held to
 /// the same three checks, the torus's own curves seen at over 1 000 of its
 /// own cast's points (`torus_own_cast`), and the torus's contact line drawn
-/// by `Composite::visible_contact` (`clipOnChords`, also Phase 4).
+/// by `Composite::visible_contact` (`clipOnChords`).
 #[test]
-#[ignore = "PORT: phase 4 -- the round torus (SurfaceBundle, Scene.visible and the contact line on a parametric surface)"]
 fn every_curve_with_the_round_torus() {
     let (cameras, compositions) = gate_compositions();
     let mut failures = Vec::new();
@@ -299,7 +296,6 @@ fn a_surface_with_no_exact_occlusion_test_is_refused() {
 /// "displaced"; and the round torus at scale 1e-3 and at 1e3, offset
 /// (0, 0, 1), on the landscape is drawn in under 20 s each.
 #[test]
-#[ignore = "PORT: phase 4 -- the forced, displaced and round tori (SurfaceBundle)"]
 fn a_surface_with_no_exact_occlusion_test_is_refused_the_tori() {
     let landscape = cubic_landscape();
     let mut failures = Vec::new();

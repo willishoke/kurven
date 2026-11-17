@@ -13,6 +13,9 @@ kurven-core.workspace = true
 
 [dev-dependencies]
 kurven-bake.workspace = true
+# The suites that stand a parametric surface in a composite read its bundle
+# (`SurfaceBundle`); a dev-dependency cycle, which Cargo allows.
+kurven-surfaces.workspace = true
 
 [lints]
 workspace = true

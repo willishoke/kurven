@@ -9,12 +9,10 @@
 //! names of its non-empty stroke layers in the order the SVG's groups stand,
 //! and their stroke counts).
 //!
-//! The port draws the landscapes, the seven solids and the frame's two
-//! gallery drawings so far. Swift's list also holds sn flat and in relief, a
-//! torus with a linear curve and a periodic expression (parametric surfaces,
-//! Phase 4), and the composite of the cubic, a cube and a torus, whose
-//! torus part waits for Phase 4 (`composite_three`); they join this list
-//! with it.
+//! The port draws every drawing of Swift's list: the landscapes, the
+//! surfaces (sn flat and in relief, a torus with a linear curve, a periodic
+//! expression), the seven solids, the frame's two gallery drawings and the
+//! composite of the cubic, a cube and a torus.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -29,7 +27,7 @@ use kurven_golden::gallery::{self, camera};
 
 use crate::args::{Args, CliError};
 use crate::commands::{landscape_command, load_drawing, write_svg};
-use crate::solid::surface_command;
+use crate::surface::surface_command;
 
 /// A drawing: its strokes and the name of the layer each stroke layer draws.
 pub type Drawn = (Strokes, Vec<String>);
@@ -263,8 +261,20 @@ pub fn all(fixtures: &Path) -> Vec<Reference> {
             Box::new(move |_| baked(&bundle, None, true)),
         ));
     }
-    // PORT: phase 4 -- sn, sn-relief, torus-linear and periodic (`surface
-    // ... --save B; bake B`).
+    let surfaces: [(&str, &[&str]); 4] = [
+        ("sn", &["sn"]),
+        ("sn-relief", &["sn", "--relief", "0.4"]),
+        ("torus-linear", &["torus", "--linear-curves", "2/5"]),
+        ("periodic", &["periodic", "--expression", "sn(z, 0.5)", "--periods", "7.416298709205487,3.7081493546027433"]),
+    ];
+    for (name, list) in surfaces {
+        let list = words(list);
+        references.push(plate(
+            name,
+            format!("surface {} --save B; bake B", list.join(" ")),
+            Box::new(move |scratch| surface(&list, scratch, name)),
+        ));
+    }
     // The slope lines of |f| golden (PR #60), drawn as `kurven-cli
     // fixtures` draws it: tests/fixtures/fields/landscape_slope_lines.svg.
     let slopes = fixtures.join("fields/landscape_slope_lines.kurven");
@@ -287,17 +297,15 @@ pub fn all(fixtures: &Path) -> Vec<Reference> {
             Box::new(move |scratch| surface(&words(&["solid", "--kind", kind]), scratch, &format!("solid-{kind}"))),
         ));
     }
-    // PORT: phase 4 -- composite-three, the cubic landscape on its grid
-    // with the contract's cube and torus standing on it: `composite_three`
-    // below draws it, and joins this list once the torus's bundle
-    // (contract/surface_torus.kurven, a `SurfaceBundle`) can be read.
+    // The cubic landscape on its grid with the contract's cube and torus
+    // standing on it: tests/fixtures/composite/three.svg.
+    references.push(composite_three(fixtures));
     references
 }
 
 /// composite-three: tests/fixtures/composite/three.svg, byte for byte in
-/// Swift, as `scene` draws it. Its torus part is a parametric surface's
-/// bundle, which the port reads from Phase 4 on; until then it is refused,
-/// and the drawing is not in `all`.
+/// Swift, as `scene` draws it: the cubic landscape on its grid, a
+/// polyhedron's bundle and a parametric surface's.
 pub fn composite_three(fixtures: &Path) -> Reference {
     let parts: Vec<(String, kurven_core::composite::Placement)> = [
         ("expr/landscape_cubic.kurven", "0,0,0,1"),

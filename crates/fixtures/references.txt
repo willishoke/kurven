@@ -35,6 +35,13 @@ landscape-gamma         1.5e-4  1e-5  -
 landscape-cubic         1.5e-4  1e-5  -
 landscape-typed         1.5e-4  1e-5  -
 landscape-tower         1.5e-4  1e-5  -
+# The parametric surfaces (measured 2026-11-16, the port's Phase 4 against
+# the same Swift bakes): every layer of all four at 0, the same strokes in
+# the same counts, so they are held to the same floor as the landscapes.
+sn                      1.5e-4  1e-5  -
+sn-relief               1.5e-4  1e-5  -
+torus-linear            1.5e-4  1e-5  -
+periodic                1.5e-4  1e-5  -
 slope-lines             1.5e-4  1e-5  -
 #
 # The polyhedra (measured 2026-11-16, Phase 5): the seven solids and the
@@ -50,3 +57,10 @@ solid-dodecahedron      1.5e-4  1e-5  -
 solid-icosahedron       1.5e-4  1e-5  -
 solid-csaszar           1.5e-4  1e-5  -
 solid-frame             1.5e-4  1e-5  -
+#
+# The composite (measured 2026-11-16, Phase 4 on Phase 5): the cubic on its
+# grid with the contract's cube and torus, sixteen layers with Swift's
+# stroke counts, fifteen at 0; layer 12 (the torus's coordinate curves,
+# 0.25 pt) at Hausdorff 7.6e-5 and length 3.9e-6 relative, one point a digit
+# apart at the SVG's four decimals. Held to the same floor.
+composite-three         1.5e-4  1e-5  -

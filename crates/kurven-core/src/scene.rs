@@ -2,16 +2,16 @@
 //! `Sources/KurvenCore/Scene.swift`, but for `GridTraversal`, which is in
 //! [`crate::traversal`].
 //!
-//! Whole for a landscape: `ContentID`, `Heightfield` (its fold curves, the
-//! visibility of curves on each kind of face, the facing of its walls and
-//! risers, `visibleRuns` and `turning`), `FoldPlacer`, `SceneGeometry`,
-//! `Scene` (its initializers, `visibleLayers`, `visible`, `viewBounds`,
-//! `quickBounds`), `PreviewMode` and `Lighting`; whole for a solid too. A
-//! parametric surface's layers are Phase 4's, a typed refusal
-//! ([`PortRefusal`]). `parallelMap` is a loop in order.
+//! Whole for a landscape, a parametric surface and a solid: `ContentID`,
+//! `Heightfield` (its fold curves, the visibility of curves on each kind of
+//! face, the facing of its walls and risers, `visibleRuns` and `turning`),
+//! `FoldPlacer`, `SceneGeometry`, `Scene` (its initializers,
+//! `visibleLayers`, `visible`, `viewBounds`, `quickBounds`), `PreviewMode`
+//! and `Lighting`. `parallelMap` is a loop in order.
 
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use kurven_math::swift;
 
@@ -22,7 +22,7 @@ use crate::contour;
 use crate::grid::Grid2D;
 use crate::hatch::HatchContext;
 use crate::hatching::{FaceKind, FaceSelector, VisibleHatching};
-use crate::hidden_line::fold_crossing;
+use crate::hidden_line::{HiddenLine, fold_crossing};
 use crate::manifest::{Affine2, CameraPreset, Domain, Interval, LayerRole, LayerSource, Region, Walls};
 use crate::mesh::Mesh;
 use crate::parametric::{ParametricSurface, PortRefusal};
@@ -33,6 +33,7 @@ use crate::spaces::{AABB, DomainSpace, P2, P3, ParamSpace, Transform, ViewSpace,
 use crate::surface::{ContourRefine, Surface, TileBoundary};
 use crate::surface_image::SurfaceImage;
 use crate::traversal::GridTraversal;
+use crate::visibility::SurfaceVisibility;
 
 /// The identity of a piece of content.
 ///
@@ -249,6 +250,25 @@ pub struct Scene {
     /// finely than a pixel looks the same and costs a traversal per halving.
     /// Zero, the default and a bake's, places them to the last bit.
     pub resolution: f64,
+    /// A parametric surface's fold curves for the last line of sight they
+    /// were asked for, which `view_bounds` and `visible` both read: placed
+    /// once per camera, not once per ask. Each scene's own -- a clone starts
+    /// empty -- so it holds only this scene's surface and creases, which
+    /// cannot change under it; keyed by the line of sight, since the camera
+    /// is a public field. Not in Swift, which places them twice.
+    fold_memo: FoldMemo,
+}
+
+/// A parametric surface's fold curves, and the line of sight they are for.
+/// Cloned empty: a clone of a scene may draw other layers, and so other
+/// creases, and must not read this scene's folds.
+#[derive(Debug, Default)]
+struct FoldMemo(Mutex<Option<(Vec3, Arc<PolylineSet<WorldSpace>>)>>);
+
+impl Clone for FoldMemo {
+    fn clone(&self) -> FoldMemo {
+        FoldMemo::default()
+    }
 }
 
 impl Scene {
@@ -261,7 +281,17 @@ impl Scene {
         mode: PreviewMode,
         depth_tolerance: f64,
     ) -> Scene {
-        Scene { content, curves, geometry, layers, camera, mode, depth_tolerance, resolution: 0.0 }
+        Scene {
+            content,
+            curves,
+            geometry,
+            layers,
+            camera,
+            mode,
+            depth_tolerance,
+            resolution: 0.0,
+            fold_memo: FoldMemo::default(),
+        }
     }
 
     /// A heightfield scene. `walls` has no default: the scene's wall strokes
@@ -1641,12 +1671,11 @@ impl FoldPlacer {
 
 impl Scene {
     /// Every layer's curves in view space, in declaration (draw) order, tested
-    /// for this camera: `visible` of each. A parametric surface's layers
-    /// (Phase 4) are refused, with the phase that brings them.
+    /// for this camera: `visible` of each.
     pub fn visible_layers(
         &self,
         depth_tolerance: Option<f64>,
-        image: Option<&SurfaceImage>,
+        image: Option<&Arc<SurfaceImage>>,
     ) -> Result<Vec<(Layer, PolylineSet<ViewSpace>)>, PortRefusal> {
         let mut out = Vec::new();
         for layer in &self.layers {
@@ -1691,16 +1720,38 @@ impl Scene {
         &self,
         layer: &Layer,
         depth_tolerance: Option<f64>,
-        image: Option<&SurfaceImage>,
+        image: Option<&Arc<SurfaceImage>>,
     ) -> Result<Vec<(Layer, PolylineSet<ViewSpace>)>, PortRefusal> {
         let view = self.camera.view;
         let depth_tolerance = depth_tolerance.unwrap_or(self.depth_tolerance);
         let folds = matches!(layer.spec.source, LayerSource::FoldCurves);
-        let _ = image;
         match &self.geometry {
-            SceneGeometry::Parametric(_) => {
-                // PORT: phase 4 -- a parametric surface's layers: its coordinate hatching by width step (`coordinateHatching`), its fold curves for this camera (`foldCurves(sight:creases:)`), each tested by sphere tracing where it has a tubular neighbourhood (`SurfaceVisibility(sphereTracing:view:)`), by the coordinate image `image` otherwise (`HiddenLine.clip(_:on:onFolds:onCrease:)`), by the image's depth where the curves carry no coordinates, and drawn whole when unclipped or with neither.
-                Err(PortRefusal { phase: 4, what: "Scene.visible on a parametric surface" })
+            SceneGeometry::Parametric(s) => {
+                if let LayerSource::Hatching { hatching, faces: FaceSelector::Surface } = &layer.spec.source {
+                    // Along a coordinate, a layer per width step, at that
+                    // fraction of the width, each tested as any curve on the
+                    // surface.
+                    return Ok(s
+                        .coordinate_hatching(hatching)
+                        .into_iter()
+                        .map(|(w, paths)| {
+                            let mut spec = layer.spec.clone();
+                            spec.width = layer.spec.width * w as f64 / hatching.width_steps as f64;
+                            if hatching.width_steps > 1 {
+                                spec.name = format!("{} {w}/{}", layer.spec.name, hatching.width_steps);
+                            }
+                            let step = Layer { spec, paths };
+                            let seen = self.visible_on_surface(s, &step, &step.paths, false, image, depth_tolerance);
+                            (step, seen)
+                        })
+                        .collect());
+                }
+                let visible = if folds {
+                    self.visible_on_surface(s, layer, &self.parametric_folds(s), folds, image, depth_tolerance)
+                } else {
+                    self.visible_on_surface(s, layer, &layer.paths, folds, image, depth_tolerance)
+                };
+                Ok(vec![(layer.clone(), visible)])
             }
             SceneGeometry::Heightfield(h) => {
                 if let LayerSource::Hatching { hatching, faces: FaceSelector::Graph { tiled } } = &layer.spec.source {
@@ -1778,6 +1829,62 @@ impl Scene {
         }
     }
 
+    /// A parametric surface's fold curves for this camera
+    /// (`foldCurves(sight:creases:)`), placed once and remembered for the
+    /// line of sight (`fold_memo`).
+    fn parametric_folds(&self, s: &ParametricSurface) -> Arc<PolylineSet<WorldSpace>> {
+        let sight = self.camera.view.projection_direction();
+        let mut memo = self.fold_memo.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((key, folds)) = memo.as_ref()
+            && *key == sight
+        {
+            return folds.clone();
+        }
+        let folds = Arc::new(s.fold_curves(sight, None, &self.creases()));
+        *memo = Some((sight, folds.clone()));
+        folds
+    }
+
+    /// Curves on a parametric surface, or its folds, tested by the
+    /// surface's own coordinates where it has a tubular neighbourhood or
+    /// an image, by the image's depth where they carry none, and drawn
+    /// whole where it has neither or the layer is unclipped (Swift's
+    /// `visibleOnSurface`, nested in `visible`).
+    fn visible_on_surface(
+        &self,
+        s: &ParametricSurface,
+        layer: &Layer,
+        paths: &PolylineSet<WorldSpace>,
+        folds: bool,
+        image: Option<&Arc<SurfaceImage>>,
+        depth_tolerance: f64,
+    ) -> PolylineSet<ViewSpace> {
+        let view = self.camera.view;
+        let projected = paths.mapped(&view);
+        if !layer.spec.clipped {
+            return projected;
+        }
+        let visibility = match image {
+            Some(image) => Some(SurfaceVisibility::new(s.clone(), image.clone(), view)),
+            None => SurfaceVisibility::sphere_tracing(s.clone(), view).ok(),
+        };
+        let clipped = if let Some(visibility) = visibility.filter(|_| projected.coords.is_some()) {
+            // On no face is on a fold or a crease, where the normal
+            // says nothing.
+            let on_folds = self.geometry.face_of(&layer.spec).is_none();
+            // Neither of clip_on's preconditions can fail here: the curves
+            // carry coordinates, and a visibility without an image traces
+            // spheres.
+            HiddenLine::clip_on(&projected, &visibility, on_folds, on_folds && !folds)
+                .expect("curves with coordinates, tested by an image or by sphere tracing")
+        } else if let Some(image) = image {
+            HiddenLine::clip(&projected, &image.depth, depth_tolerance)
+        } else {
+            return projected;
+        };
+        PolylineSet::new(clipped.vertices.iter().map(|v| P3::from_vec(v.v)).collect(), clipped.offsets, None)
+    }
+
     /// The view-space extent the depth buffer covers: every heightfield sample,
     /// the walls, and every *clipped* layer.
     ///
@@ -1797,9 +1904,6 @@ impl Scene {
     /// Unclipped curves are excluded, as they are in Python: they are drawn but never
     /// looked up, so letting it stretch the frame would spend depth resolution
     /// on nothing and would make the buffer depend on decoration.
-    ///
-    /// A parametric surface with fold curves among its layers is refused
-    /// until Phase 4, which places them.
     /// Whether `view_bounds` is none: the scene projects to nothing, with no
     /// point of its geometry and no vertex of a clipped layer. Read off the
     /// counts, without projecting a point, which on a dense landscape is
@@ -1864,7 +1968,7 @@ impl Scene {
         if let Some(s) = self.parametric()
             && self.layers.iter().any(|l| matches!(l.spec.source, LayerSource::FoldCurves))
         {
-            for v in s.fold_curves(view.projection_direction(), None, &self.creases())?.vertices {
+            for &v in &self.parametric_folds(s).vertices {
                 add(view.apply(v));
             }
         }

@@ -34,10 +34,15 @@
 //!
 //! kurven-cli bake <bundle> [--preset NAME] [--no-refine] [--resolution N]
 //!           [--tiles N] [--depth-tolerance T] -o out.svg
-//!     A landscape bundle's drawing to SVG, as Swift's `bake` writes it, its
-//!     contours placed by its function unless --no-refine. Strokes only: no
-//!     depth buffer is rendered, so --outline and --dump are refused, and a
-//!     surface's or a polyhedron's bundle waits for Phase 4 or 5.
+//!     A landscape's or a parametric surface's bundle drawn to SVG, as Swift's
+//!     `bake` writes it, a landscape's contours placed by its function unless
+//!     --no-refine. A surface's coordinate image is rasterized on the CPU;
+//!     a landscape's or a polyhedron's depth pass is not rendered, so its
+//!     --outline is refused.
+//!
+//! kurven-cli surface [torus | sn | periodic | forced] [options] [--save B] [-o out.svg]
+//!     A parametric surface's drawing, as Swift's `surface` builds it: saved
+//!     as a bundle with --save, baked to -o.
 //!
 //! kurven-cli references <fixtures> <dir> [--only NAME,...]
 //!     Bake the landscape reference drawings into <dir> as Swift's
@@ -52,14 +57,15 @@ use kurven_cli::commands::{bake_command, landscape_command};
 use kurven_cli::compare::{Tolerance, compare_skipping};
 use kurven_cli::references::references_command;
 use kurven_cli::scene::scene_command;
-use kurven_cli::solid::surface_command;
+use kurven_cli::surface::surface_command;
 use kurven_cli::svg;
 
 const USAGE: &str = "usage: kurven-cli fixtures <dir>
        kurven-cli compare A.svg B.svg [--tolerance D] [--length-tolerance R] [--skip I,J,...]
        kurven-cli landscape [EXPRESSION | --function NAME] [options] -o out.kurven
-       kurven-cli bake <bundle> [--preset NAME] [--no-refine] -o out.svg
+       kurven-cli bake <bundle> [--preset NAME] [--no-refine] [--outline W] [--dump PREFIX] -o out.svg
        kurven-cli references <fixtures> <dir> [--only NAME,...]
+       kurven-cli surface [torus | sn | periodic | forced] [options] [--save B] [-o out.svg]
        kurven-cli surface solid [--kind NAME] [options] [--save B] [-o out.svg]
        kurven-cli scene A.kurven B.kurven [--at X,Y,Z[,S]] ... [--preset NAME] [--no-refine] -o out.svg";
 

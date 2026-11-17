@@ -1,5 +1,5 @@
-// Times the gallery plates, and three polyhedron drawings, baked by the
-// WebAssembly module under Node.
+// Times the gallery plates, three polyhedron drawings and two surface
+// drawings, baked by the WebAssembly module under Node.
 //
 //   node crates/kurven-wasm/bench.mjs <kurven_wasm.wasm>
 //
@@ -19,6 +19,12 @@ const { instance } = await WebAssembly.instantiate(readFileSync(wasmPath), {});
 for (const [which, name] of [[0, "gallery-gamma"], [1, "gallery-cn"]]) {
   const started = performance.now();
   const strokes = instance.exports.bake_gallery_plate(which);
+  const seconds = (performance.now() - started) / 1000;
+  console.log(`${name}: ${strokes} strokes in ${seconds.toFixed(2)} s`);
+}
+for (const [which, name] of [[0, "surface sn"], [1, "surface sn --relief 0.4"]]) {
+  const started = performance.now();
+  const strokes = instance.exports.bake_surface_reference(which);
   const seconds = (performance.now() - started) / 1000;
   console.log(`${name}: ${strokes} strokes in ${seconds.toFixed(2)} s`);
 }

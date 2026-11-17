@@ -45,6 +45,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use kurven_math::{real, swift};
 
 use crate::composite::{Composite, Occluder, Placement};
+use crate::hidden_line::HiddenLine;
 use crate::manifest::{HeightPolicy, LayerRole, LayerSource, LayerSpec};
 use crate::parametric::{ParametricSurface, PortRefusal};
 use crate::polyline::{Layer, PolylineSet};
@@ -54,6 +55,7 @@ use crate::simd::{Vec2, Vec3};
 use crate::slab::{HalfSpace, Slab, SlabCopy};
 use crate::solid::Solid;
 use crate::spaces::{P2, P3, ParamSpace, ViewSpace, WorldSpace};
+use crate::visibility::SurfaceVisibility;
 
 /// Where a part meets the landscapes: paths in the part's own coordinates,
 /// on a polyhedron with the face each lies on, on a surface with each
@@ -162,19 +164,41 @@ impl Composite {
                     PolylineSet::from_paths(&seen).mapped(&view),
                 )))
             }
-            SceneGeometry::Parametric(_) => {
-                // PORT: phase 4 -- `Composite.clipOnChords(paths.mapped(view),
-                // SurfaceVisibility(sphereTracing: s, view: view))`: every
-                // vertex tested by `isVisible` at its coordinate, a segment
-                // whose verdict changes bisected to 1e-13 on `test(_:onFolds:
-                // false).seen` at the coordinates along it, and each cut placed
-                // on the chord at that fraction, so what is drawn stays on the
-                // terrain. SurfaceVisibility's `isVisible` and `test` are
-                // Phase 4's.
-                Err(PortRefusal { phase: 4, what: "the contact line on a parametric surface (Composite.clipOnChords)" })
+            SceneGeometry::Parametric(surface) => {
+                let paths = PolylineSet::from_paths_with_coords(&contact.paths, &contact.coords);
+                // A composite refuses a surface tested by its coordinate
+                // image (`Composite::new`), so a part's surface here has a
+                // tubular neighbourhood, as Swift's precondition asks.
+                let visibility = SurfaceVisibility::sphere_tracing(surface.clone(), view)
+                    .expect("a composite's parametric part has a tubular neighbourhood");
+                let seen = Composite::clip_on_chords(&paths.mapped(&view), &visibility);
+                Ok(Some((Layer { spec, paths }, seen)))
             }
             SceneGeometry::Heightfield(_) => Ok(None),
         }
+    }
+}
+
+impl Composite {
+    /// Curves on a surface whose chords lie on a landscape's terrain, cut
+    /// where the surface hides them, as `HiddenLine::clip_on` cuts them --
+    /// each vertex tested where it lies on the surface, and a segment along
+    /// which the verdict changes bisected on the test at the coordinates
+    /// along it -- but each cut placed on the chord, at the fraction of the
+    /// way the bisection found, so that what is drawn stays on the terrain:
+    /// the point of the surface there is off it by the chord's sagitta.
+    /// One implementation with `HiddenLine::clip_on`'s, the cut placed on
+    /// the chord (`clip_on_runs`); Swift tests the vertices in parallel, here
+    /// in turn.
+    pub fn clip_on_chords(paths: &PolylineSet<ViewSpace>, visibility: &SurfaceVisibility) -> PolylineSet<ViewSpace> {
+        if paths.coords.is_none() {
+            return PolylineSet::empty();
+        }
+        // Sphere tracing asks for no image, and the curves carry coordinates:
+        // neither of `clip_on`'s refusals can be met.
+        let runs = HiddenLine::clip_on_runs(paths, visibility, false, false, true)
+            .expect("curves with coordinates, tested by sphere tracing");
+        PolylineSet::from_paths(&runs)
     }
 }
 

@@ -491,8 +491,8 @@ fn sweep_landscapes() -> Vec<(String, Scene, Height)> {
     ]
 }
 
-/// One placement of the sweep: its name, its landscape, the part (the
-/// torus refused until Phase 4), whether it is the torus, and where.
+/// One placement of the sweep: its name, its landscape, the part, whether
+/// it is the torus, and where.
 type SweepPlacement = (String, usize, Result<Scene, PortRefusal>, bool, Placement);
 
 /// The placements the reviews found wanting, then a seeded sweep.
@@ -754,7 +754,6 @@ fn a_contact_line_lies_on_the_terrain_and_on_its_part() {
 /// crossing, the line drawn (`visible_contact` on a parametric surface,
 /// also Phase 4).
 #[test]
-#[ignore = "PORT: phase 4 -- the round torus (SurfaceBundle, the contact line on a parametric surface)"]
 fn a_contact_line_lies_on_the_terrain_and_on_its_part_with_the_round_torus() {
     let failures = contact_lines(true);
     assert!(failures.is_empty(), "{failures:#?}");
@@ -888,7 +887,6 @@ fn a_part_that_floats_over_the_terrain_has_no_contact_line() {
 /// at scale 0.35 at (1, 0, 1.6), clear of it: no contact and no contact
 /// layer, and the landscape meeting nothing.
 #[test]
-#[ignore = "PORT: phase 4 -- the round torus (SurfaceBundle)"]
 fn the_round_torus_ringing_a_tower_has_no_contact_line() {
     let torus = surface("torus").unwrap_or_else(|e| panic!("torus: {e}"));
     let failure =
@@ -953,7 +951,6 @@ fn a_sweep_of_parts_over_landscapes_meets_the_terrain_on_both_surfaces_and_misse
 /// of its parameter rectangle; and no end of it but on a step of the
 /// terrain.
 #[test]
-#[ignore = "PORT: phase 4 -- the round torus (SurfaceBundle) and its contact line"]
 fn a_sweep_of_tori_over_landscapes_meets_the_terrain_and_misses_nothing() {
     let (polyhedra, _) = sweep(false);
     let (tori, elapsed) = sweep(true);
@@ -988,7 +985,6 @@ fn a_sweep_of_tori_over_landscapes_meets_the_terrain_and_misses_nothing() {
 /// of its circle ring ± √(tube² − (tube − eps)²) about the axis at height
 /// 0.5, and as long as the circle to 1e-3.
 #[test]
-#[ignore = "PORT: phase 4 -- ParametricSurface.torus(major:minor:samples:)"]
 fn a_torus_just_touching_a_level_terrain_draws_nothing_or_the_whole_of_its_circles() {
     let camera = sweep_camera();
     let landscapes = sweep_landscapes();
@@ -1057,7 +1053,6 @@ fn a_torus_just_touching_a_level_terrain_draws_nothing_or_the_whole_of_its_circl
 /// a grid of 1025 by 1e-6. Each meets the terrain in under 10 s, off it by
 /// at most a billionth of the cell.
 #[test]
-#[ignore = "PORT: phase 4 -- ParametricSurface.torus and the torus fixture (SurfaceBundle)"]
 fn a_torus_contact_costs_with_the_curves_length_not_the_area_under_it() {
     let camera = sweep_camera();
     let landscapes = sweep_landscapes();

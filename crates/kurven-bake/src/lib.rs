@@ -5,20 +5,25 @@
 //! resolutions. In Swift the bake renders a depth buffer with Metal, for its
 //! `depth` output and the outline; no stroke of a landscape or a polyhedron
 //! reads it, since every layer arrives tested by its face and the scene's
-//! occlusion test (`Scene::visible_layers`). So the port bakes the strokes
-//! and renders no buffer: there is no PNG (the page rasterizes), no `depth`,
-//! no `surface` and no `tiles` in a [`Bake`], and an outline, which is traced
-//! from the buffer, is a typed refusal. The depth raster comes with Phase 4's
-//! CPU rasterizer (`SurfaceImage::rasterize`), which a parametric surface
-//! with no exact test reads as its coordinate image; until then a parametric
-//! scene is refused too.
+//! occlusion test (`Scene::visible_layers`). So for those the port bakes the
+//! strokes and renders no buffer -- there is no PNG (the page rasterizes) --
+//! and an outline, which is traced from the buffer, is a typed refusal. A
+//! parametric surface's coordinate image and its depth are rendered by the
+//! CPU rasterizer (`SurfaceImage::rasterize`), which a surface with no exact
+//! test reads, and its outline is traced from that depth.
 
 use std::fmt;
+use std::sync::Arc;
 
+use kurven_core::depth::DepthFrame;
+use kurven_core::hatching::FaceSelector;
 use kurven_core::hidden_line::HiddenLine;
-use kurven_core::manifest::LayerSpec;
+use kurven_core::manifest::{LayerSource, LayerSpec};
 use kurven_core::parametric::PortRefusal;
+use kurven_core::polyline::PolylineSet;
 use kurven_core::scene::{Scene, SceneGeometry};
+use kurven_core::spaces::PageSpace;
+use kurven_core::surface_image::SurfaceImage;
 use kurven_core::svg::{Strokes, Style};
 
 /// Metal's largest texture side, which `BakeOptions.tileCount` splits the
@@ -99,52 +104,121 @@ impl From<PortRefusal> for BakeError {
 pub struct Bake {
     pub strokes: Strokes,
     /// The layer each stroke layer draws, in order: a layer of the scene, or
-    /// one width of a solid's hatching (`Scene::visible`). Swift's outline,
-    /// the stroke layer past the last of these, is refused here.
+    /// one width of a solid's hatching (`Scene::visible`). The outline, when
+    /// asked for, is the stroke layer past the last of these, traced from
+    /// the depth buffer.
     pub specs: Vec<LayerSpec>,
+    /// The frame a parametric scene's depth and coordinates are rendered on,
+    /// `DepthFrame::covering` its view bounds at the resolution; None for a
+    /// landscape or a solid, whose depth pass the port does not render.
+    pub frame: Option<DepthFrame>,
+    /// A parametric scene's front-most surface coordinates and depth, in one
+    /// pass over the whole frame, where something reads
+    /// them: a surface with no tubular neighbourhood, a clipped layer with
+    /// no coordinates, the outline (`bake_with_image` renders it always, as
+    /// Swift's bake does). Shared, not copied, with the visibility that reads
+    /// it.
+    pub surface: Option<Arc<SurfaceImage>>,
+    /// How many passes the depth took, per axis: Swift's tile count for a
+    /// landscape or a solid (whose depth the port does not render), one for
+    /// a parametric scene, which the CPU rasterizer renders whole.
+    pub tiles: i64,
 }
 
 /// Bake a scene to strokes (Swift's `MetalRenderer.bake(_:options:)`).
 ///
 /// Swift renders the depth buffer, stitched from `options.tile_count` passes,
 /// and then takes every layer from `Scene.visibleLayers`, which reads the
-/// buffer only as a parametric surface's coordinate image. The port takes the
-/// layers alone: the same strokes for a landscape, at any resolution and
-/// split.
+/// buffer only as a parametric surface's coordinate image. The port renders
+/// a parametric surface's image with the CPU rasterizer
+/// (`SurfaceImage::rasterize`, Swift's own reference for its Metal pass), in
+/// one pass, which Swift's stitched tiles stand for, where it is read: a surface sphere
+/// traced, with every clipped layer on its coordinates and no outline asked
+/// for, reads none, and the port renders none, about a hundred megabytes at
+/// a 3000-pixel bake, for the same strokes. For a landscape or a solid it
+/// takes the layers alone, the same strokes at any resolution and split,
+/// and refuses an outline, which is traced from a depth pass it does not
+/// render.
 pub fn bake(scene: &Scene, options: &BakeOptions) -> Result<Bake, BakeError> {
+    bake_rendering(scene, options, false)
+}
+
+/// `bake`, rendering a parametric scene's coordinate image whether or not
+/// anything reads it, as Swift's bake always does: for what holds the image
+/// itself to the drawing (its tiling, its frame).
+pub fn bake_with_image(scene: &Scene, options: &BakeOptions) -> Result<Bake, BakeError> {
+    bake_rendering(scene, options, true)
+}
+
+fn bake_rendering(scene: &Scene, options: &BakeOptions, always: bool) -> Result<Bake, BakeError> {
     if scene.camera.is_perspective() {
         return Err(BakeError::Perspective);
     }
-    if let SceneGeometry::Parametric(_) = scene.geometry() {
-        // PORT: phase 4 -- render the surface's depth and coordinates
-        // (`SurfaceImage::rasterize`, stitched over the tiles as the depth
-        // is) and pass the image to `visible_layers`. Refused before the
-        // emptiness test, which Swift asks first: that one is cheap now, but
-        // a parametric surface's folds are derived for it.
-        return Err(BakeError::Port(PortRefusal {
-            phase: 4,
-            what: "a parametric surface's bake, which reads the surface's coordinate image from the depth pass",
-        }));
-    }
-    // Swift computes the drawing's view bounds here, to frame the depth
-    // pass; the port renders none, so it asks only whether there is
-    // anything to frame, from the counts, without projecting every sample.
-    if scene.projects_to_nothing()? {
-        return Err(BakeError::EmptyScene);
-    }
+    let mut n = options.tile_count(options.resolution);
     let depth_tolerance = options.depth_tolerance.unwrap_or(scene.depth_tolerance);
-    if options.outline.is_some() {
-        // PORT: phase 4 -- render the depth buffer (the CPU rasterizer that
-        // comes with `SurfaceImage`) and add `DepthImage::outline` of it as
-        // a last layer, `Style { color: "#000000", width }`.
-        return Err(BakeError::Port(PortRefusal {
-            phase: 4,
-            what: "the outline, which is traced from the depth buffer the port does not render yet",
-        }));
+    let (frame, image) = match scene.geometry() {
+        SceneGeometry::Parametric(surface) => {
+            let Some(bounds) = scene.view_bounds()? else { return Err(BakeError::EmptyScene) };
+            let frame = DepthFrame::covering(&bounds, options.resolution);
+            // Swift splits the pass into tiles where the frame passes
+            // Metal's texture limit, and stitches them. The CPU rasterizer
+            // has no limit, and renders the whole frame in one pass, which
+            // is what the stitched tiles stand for: the image, and so every
+            // stroke, is the same however the bake asks for it to be split.
+            n = 1;
+            // A layer that carries no coordinates is tested by the image's
+            // depth; the folds and a surface's hatching are made with theirs
+            // when they are tested.
+            let read = surface.neighbourhood.is_none()
+                || options.outline.is_some()
+                || scene.layers().iter().any(|l| {
+                    l.spec.clipped
+                        && l.paths.coords.is_none()
+                        && !matches!(
+                            l.spec.source,
+                            LayerSource::FoldCurves | LayerSource::Hatching { faces: FaceSelector::Surface, .. }
+                        )
+                });
+            let image = (always || read).then(|| Arc::new(SurfaceImage::rasterize(surface, &scene.camera.view, frame)));
+            (Some(frame), image)
+        }
+        _ => {
+            // Swift computes the drawing's view bounds here, to frame the depth
+            // pass; the port renders none, so it asks only whether there is
+            // anything to frame, from the counts, without projecting every sample.
+            if scene.projects_to_nothing()? {
+                return Err(BakeError::EmptyScene);
+            }
+            if options.outline.is_some() {
+                // PORT: phase 7 -- render the depth pass of a landscape or a solid
+                // (`MetalRenderer.renderDepth`; the WebGPU depth pass) and add
+                // `DepthImage::outline` of it as a last layer.
+                return Err(BakeError::Port(PortRefusal {
+                    phase: 7,
+                    what: "the outline of a landscape or a solid, which is traced from the depth pass the port does \
+                           not render",
+                }));
+            }
+            (None, None)
+        }
+    };
+    // Every layer comes tested by its face and the scene's occlusion
+    // test (`Scene::visible`). The buffer is rendered for the outline; the
+    // drawing reads it, as the coordinate image, only for a parametric
+    // surface with no exact test, and only there depends on the resolution.
+    let visible = scene.visible_layers(Some(depth_tolerance), image.as_ref())?;
+    let mut layers: Vec<(Style, PolylineSet<PageSpace>)> =
+        visible.iter().map(|(layer, seen)| (Style::of(&layer.spec), HiddenLine::pass(seen))).collect();
+    if let (Some(width), Some(image)) = (options.outline, &image) {
+        layers.push((Style { color: "#000000".to_string(), width }, image.depth.outline()));
     }
-    let visible = scene.visible_layers(Some(depth_tolerance), None)?;
-    let layers = visible.iter().map(|(layer, seen)| (Style::of(&layer.spec), HiddenLine::pass(seen))).collect();
-    Ok(Bake { strokes: Strokes { layers }, specs: visible.into_iter().map(|(layer, _)| layer.spec).collect() })
+    Ok(Bake {
+        strokes: Strokes { layers },
+        specs: visible.into_iter().map(|(layer, _)| layer.spec).collect(),
+        frame,
+        surface: image,
+        tiles: n,
+    })
 }
 
 #[cfg(test)]

@@ -5,7 +5,8 @@
 //! - [`args`] reads the command line as Swift's `Args` does;
 //! - [`commands`] are `landscape` and `bake`, and the scene they read;
 //! - [`references`] bakes the reference drawings as `References.swift` does;
-//! - [`solid`] is `surface solid`, a polyhedron by name;
+//! - [`surface`] is `surface`, a parametric surface's drawing, and its
+//!   `surface solid` dispatches to [`solid`], a polyhedron by name;
 //! - [`scene`] draws several bundles as one composite.
 
 pub mod args;
@@ -14,4 +15,5 @@ pub mod compare;
 pub mod references;
 pub mod scene;
 pub mod solid;
+pub mod surface;
 pub mod svg;

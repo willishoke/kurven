@@ -31,6 +31,10 @@
 //!                  and baked in memory: the cubic truncated at a height,
 //!                  and gamma truncated by bands of Re z. Each as its SVG
 //!                  and as each layer's counts, length and vertex hash.
+//! surface/         small parametric drawings (Phase 4), built and baked in
+//!                  memory: sn, sn in relief, the torus with a linear curve,
+//!                  a torus tested by its coordinate image, and that image
+//!                  as bits (`surfaces`).
 //! polyhedra/       the seven named solids, the frame under Turing's pattern,
 //!                  the dodecahedron under half-Lambert, and a composite of
 //!                  the cubic on its grid with a cube and a frame on it
@@ -47,6 +51,7 @@ pub mod gallery;
 mod landscapes;
 mod math;
 pub mod polyhedra;
+pub mod surfaces;
 
 /// One golden file: where it goes under the set's root, and its bytes.
 pub struct Golden {
@@ -65,7 +70,25 @@ pub fn all() -> Vec<Golden> {
     all.extend(core_values::all());
     all.extend(landscapes::all());
     all.extend(polyhedra::all());
+    all.extend(surfaces::all());
     all
+}
+
+/// A golden's path is `'static`; these few are made once per run.
+pub(crate) fn leak(path: String) -> &'static str {
+    Box::leak(path.into_boxed_str())
+}
+
+/// FNV-1a over a stream of 64-bit words.
+pub(crate) fn fnv(words: impl Iterator<Item = u64>) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for w in words {
+        for byte in w.to_le_bytes() {
+            h ^= u64::from(byte);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    h
 }
 
 /// An f64 as text that is the same on every platform: its bits, and its

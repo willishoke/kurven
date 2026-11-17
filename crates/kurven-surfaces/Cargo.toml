@@ -10,6 +10,10 @@ publish.workspace = true
 [dependencies]
 kurven-math.workspace = true
 kurven-core.workspace = true
+kurven-landscape.workspace = true
+
+[dev-dependencies]
+kurven-bake.workspace = true
 
 [lints]
 workspace = true

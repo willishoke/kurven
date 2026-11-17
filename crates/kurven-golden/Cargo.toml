@@ -12,6 +12,7 @@ kurven-math.workspace = true
 kurven-core.workspace = true
 kurven-landscape.workspace = true
 kurven-bake.workspace = true
+kurven-surfaces.workspace = true
 
 [lints]
 workspace = true

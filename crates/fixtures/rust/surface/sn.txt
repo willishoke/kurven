@@ -1,0 +1,6 @@
+# sn: each layer's strokes, vertices, total length, and an FNV-1a hash of its offsets and vertex bits.
+mag_major paths 20 vertices 598 length 40420396458e26da 36.0280234283543 hash 8ae51b7c31db3042
+mag_minor paths 77 vertices 2154 length 40600a56e1181f65 128.3231053801675 hash 2535d41148588c72
+ang_major paths 14 vertices 335 length 403625a0d63f4eba 22.146985426383914 hash 4c562cd5a5b2aa99
+ang_minor paths 24 vertices 439 length 4037081fbe3b10df 23.031734361095797 hash 2eaa806f81597f59
+folds paths 6 vertices 455 length 403431c065599d6e 20.19434197843423 hash c5fab4937fb56283

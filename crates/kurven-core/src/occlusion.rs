@@ -1,9 +1,8 @@
 //! What hides a point of a curve beyond its own face's facing: the port of
 //! `Sources/KurvenCore/Occlusion.swift`.
 //!
-//! Whole: the landscape's test, the grid traversal; sphere tracing, ported
-//! ahead of Phase 4 (it reads only a `TubularNeighbourhood`, whose type is
-//! here); and a polyhedron's closed-form occlusion (`Solid.Occlusion`, here
+//! Whole: the landscape's test, the grid traversal; sphere tracing (it reads
+//! only a `TubularNeighbourhood`); and a polyhedron's closed-form occlusion (`Solid.Occlusion`, here
 //! `SolidOcclusion`, which Swift nests in Solid.swift).
 
 use std::sync::Arc;

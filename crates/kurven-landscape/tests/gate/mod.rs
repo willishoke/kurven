@@ -1063,10 +1063,12 @@ pub fn polyhedron(name: &str) -> Scene {
 }
 
 /// A contract surface's scene under its first preset
-/// (`SurfaceBundle.read(...).scene(preset:)`): Phase 4's, refused.
+/// (`SurfaceBundle.read(...).scene(preset:)`). Never refused now; the
+/// `Result` is kept for the callers written while it was.
 pub fn surface(name: &str) -> Result<Scene, PortRefusal> {
-    let _ = name;
-    Err(PortRefusal { phase: 4, what: "SurfaceBundle.read (contract/surface_*.kurven)" })
+    let b = kurven_surfaces::SurfaceBundle::read(&fixtures::shared(&format!("contract/surface_{name}.kurven")))
+        .unwrap_or_else(|e| panic!("surface_{name}: {e}"));
+    Ok(b.scene(&b.manifest.presets[0]))
 }
 
 /// The cubic landscape on its grid, `expr/landscape_cubic.kurven`, read as
@@ -1097,14 +1099,14 @@ pub fn orthographic(elevation: f64, azimuth: f64, shear: f64) -> Camera {
 
 pub type Parts = Vec<(String, Scene, Placement)>;
 
-/// The gate's compositions that stand the round torus in a composite
-/// (Phase 4), by name.
+/// The gate's compositions that stand the round torus in a composite, by
+/// name.
 pub const WITH_TORUS: [&str; 3] =
     ["the round torus ringing a tower", "the round torus sunk into the foot of a tower", "all three, moved"];
 
 /// The composite gate's compositions on the cubic landscape's grid and the
-/// spike's, and its three cameras. A composition that stands the round
-/// torus in it comes back as the torus's refusal (Phase 4).
+/// spike's, and its three cameras. (A composition's `Result` is kept from
+/// when the round torus was refused; it no longer is.)
 pub fn gate_compositions() -> (Vec<(String, Camera)>, Vec<(String, Result<Parts, PortRefusal>)>) {
     // The cubic landscape's grid: its solid is the drawn triangles, which
     // the cast is against. Three towers at the cube roots of unity.

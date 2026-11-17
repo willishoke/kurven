@@ -15,7 +15,7 @@ use kurven_core::svg;
 use kurven_landscape::catalog::LandscapeRequest;
 use kurven_landscape::landscape::NativeLandscape;
 
-use crate::{Golden, bits};
+use crate::{Golden, bits, fnv, leak};
 
 pub fn all() -> Vec<Golden> {
     let mut out = Vec::new();
@@ -28,11 +28,6 @@ pub fn all() -> Vec<Golden> {
         out.push(Golden { path: leak(format!("landscape/{name}.txt")), bytes: summary(&request, &baked).into_bytes() });
     }
     out
-}
-
-/// A golden's path is `'static`; these few are made once per run.
-pub(crate) fn leak(path: String) -> &'static str {
-    Box::leak(path.into_boxed_str())
 }
 
 /// The cubic of the gallery at a coarse grid, truncated at a uniform
@@ -61,18 +56,6 @@ fn baked(request: &LandscapeRequest) -> Bake {
     let scene = Scene::from_bundle(&bundle, &preset);
     let options = BakeOptions { depth_tolerance: Some(preset.depth_tolerance), ..BakeOptions::new(preset.buffer) };
     bake(&scene, &options).expect("the golden landscape bakes")
-}
-
-/// FNV-1a over a stream of 64-bit words.
-pub(crate) fn fnv(words: impl Iterator<Item = u64>) -> u64 {
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for w in words {
-        for byte in w.to_le_bytes() {
-            h ^= u64::from(byte);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    h
 }
 
 fn summary(request: &LandscapeRequest, baked: &Bake) -> String {

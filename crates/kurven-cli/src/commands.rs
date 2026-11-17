@@ -8,6 +8,7 @@ use std::time::Instant;
 use kurven_bake::{BakeOptions, bake};
 use kurven_core::bundle::{KurvenBundle, holds_key};
 use kurven_core::hatching::{FaceSelector, Hatching, Tone};
+use kurven_core::json;
 use kurven_core::manifest::{
     CameraPreset, ContourField, DirectionField, Domain, DomainAxis, HeightPolicy, Interval, LayerRole, LayerSource,
     LayerSpec, Manifest, PolyhedronManifest, Provenance, RealBand, Restriction, Seeds, Spacing, Truncation,
@@ -400,8 +401,8 @@ pub struct Drawing {
 }
 
 /// The scene a bundle of any kind describes, under `--preset` or its first
-/// preset: a landscape's (`load_scene`), or a polyhedron's, built from its
-/// vertices and loops. A parametric surface's is refused until Phase 4.
+/// preset: a landscape's (`load_scene`), a parametric surface's, built
+/// from its request, or a polyhedron's, built from its vertices and loops.
 pub fn load_drawing(args: &Args) -> Result<Drawing, CliError> {
     let Some(path) = args.positional.get(1) else { return Err(CliError("which bundle?".to_string())) };
     let url = Path::new(path);
@@ -422,11 +423,22 @@ pub fn load_drawing(args: &Args) -> Result<Drawing, CliError> {
         });
     }
     if holds_key(url, "surface")? {
-        // PORT: phase 4 -- `SurfaceBundle.read`: the surface built from its
-        // request, drawn with the manifest's layers, and `scene(preset:)`.
-        return Err(CliError(format!(
-            "{path} holds a parametric surface, which the port does not draw yet (phase 4: SurfaceBundle)"
-        )));
+        // A parametric surface's bundle, built from its request.
+        let surface = kurven_surfaces::SurfaceBundle::read(url)?;
+        let presets = &surface.manifest.presets;
+        let preset = match args.flag("preset") {
+            Some(name) => surface.manifest.preset(name)?.clone(),
+            None => presets
+                .first()
+                .cloned()
+                .ok_or_else(|| CliError("bundle has no presets; pass --preset once one exists".to_string()))?,
+        };
+        return Ok(Drawing {
+            url: surface.url.clone(),
+            provenance: surface.manifest.provenance.clone(),
+            scene: surface.scene(&preset),
+            preset,
+        });
     }
     let (bundle, preset, scene) = load_scene(args)?;
     Ok(Drawing { url: bundle.url.clone(), provenance: bundle.manifest.provenance.clone(), preset, scene })
@@ -436,22 +448,6 @@ pub fn load_drawing(args: &Args) -> Result<Drawing, CliError> {
 pub fn bake_command(args: &Args) -> Result<(), CliError> {
     let mut accepted = Args::SCENE.to_vec();
     accepted.extend(["resolution", "tiles", "depth-tolerance", "outline", "dump", "output"]);
-    // Refused whether given a value or not, before `only` would call either
-    // a bare option wanting a value: both need the depth buffer.
-    if args.given("dump") {
-        // PORT: phase 4 -- `--dump` writes each layer's strokes as npy and the
-        // depth frame as JSON; the frame is the depth buffer's.
-        return Err(CliError(
-            "--dump writes the depth buffer's frame, which the port does not render yet (phase 4)".to_string(),
-        ));
-    }
-    if args.given("outline") {
-        // PORT: phase 4 -- the outline is traced from the depth buffer
-        // (`BakeOptions.outline`, `DepthImage::outline`).
-        return Err(CliError(
-            "--outline is traced from the depth buffer, which the port does not render yet (phase 4)".to_string(),
-        ));
-    }
     args.only("bake", &accepted)?;
     let drawing = load_drawing(args)?;
     let output = PathBuf::from(args.string("output")?);
@@ -472,25 +468,105 @@ pub fn bake_command(args: &Args) -> Result<(), CliError> {
     let result = bake(&drawing.scene, &options)?;
     let elapsed = started.elapsed();
     write_svg(&result.strokes, &output)?;
+    // Each stroke layer by the layer it draws: a scene's layer, one width
+    // of a solid's hatching ("hatching 2/4"), or past them the outline,
+    // traced from the depth buffer and carried by no layer.
+    let names: Vec<String> = (0..result.strokes.layers.len())
+        .map(|i| result.specs.get(i).map_or_else(|| "outline".to_string(), |s| s.name.clone()))
+        .collect();
+    if let Some(prefix) = args.flag("dump") {
+        dump(prefix, &drawing.scene, &result, &names, &options)?;
+    }
     println!(
-        "{} -> {}  [{}]\n  depth      none: the port bakes strokes only\n  strokes    {} paths, length {:.1}\n  took       {:.3} s",
+        "{} -> {}  [{}]\n  depth      {}\n  strokes    {} paths, length {:.1}\n  took       {:.3} s",
         file_name(&drawing.url),
         file_name(&output),
         drawing.preset.name,
+        match (&result.frame, &result.surface) {
+            (Some(frame), Some(_)) => format!(
+                "{}x{} in {} pass{}",
+                frame.rows,
+                frame.cols,
+                result.tiles * result.tiles,
+                if result.tiles == 1 { "" } else { "es" }
+            ),
+            (Some(frame), None) => {
+                format!("{}x{}, not rendered: every curve is tested by sphere tracing", frame.rows, frame.cols)
+            }
+            _ => "none: the port bakes a landscape's strokes only".to_string(),
+        },
         result.strokes.path_count(),
         result.strokes.total_length(),
         elapsed.as_secs_f64()
     );
-    for (spec, (style, paths)) in result.specs.iter().zip(&result.strokes.layers) {
+    for (index, (style, paths)) in result.strokes.layers.iter().enumerate() {
         println!(
             "    {:<14} {:<7} paths  lw {}{}",
-            spec.name,
+            names[index],
             paths.count(),
             style.width,
-            if spec.clipped { "" } else { "  unclipped" }
+            result.specs.get(index).map_or("  from the depth buffer", |s| if s.clipped { "" } else { "  unclipped" })
         );
     }
     Ok(())
+}
+
+/// `bake --dump PREFIX`: the strokes as arrays, so a comparison is on
+/// geometry rather than on rasterized pixels -- each layer's vertices and
+/// offsets as float32 npy, `PREFIX.INDEX.NAME.npy` and `.idx.npy` by its
+/// place in the frame's `layers`, a width's slash no part of a file name -- and
+/// the depth frame as JSON. The frame is the one Swift's bake covers the
+/// drawing with, `DepthFrame::covering` its view bounds at the resolution,
+/// which needs no depth pass: a parametric bake's own, a landscape's or a
+/// solid's computed here.
+fn dump(
+    prefix: &str,
+    scene: &Scene,
+    result: &kurven_bake::Bake,
+    names: &[String],
+    options: &BakeOptions,
+) -> Result<(), CliError> {
+    // Swift names a layer's files by its name alone, so two layers of one
+    // name, or a layer named "outline" beside the traced outline, write
+    // over each other; the port puts the layer's place in `layers` first.
+    for (index, (_, paths)) in result.strokes.layers.iter().enumerate() {
+        let name = names[index].replace('/', "of");
+        let flat: Vec<f32> = paths.vertices.iter().flat_map(|v| [v.x() as f32, v.y() as f32]).collect();
+        kurven_core::npy::write_f32(&flat, &[paths.vertices.len(), 2], format!("{prefix}.{index}.{name}.npy"))
+            .map_err(|e| CliError(e.to_string()))?;
+        let offsets: Vec<f32> = paths.offsets.iter().map(|&o| o as f32).collect();
+        kurven_core::npy::write_f32(&offsets, &[offsets.len()], format!("{prefix}.{index}.{name}.idx.npy"))
+            .map_err(|e| CliError(e.to_string()))?;
+    }
+    let frame = match result.frame {
+        Some(frame) => frame,
+        None => {
+            let bounds =
+                scene.view_bounds()?.ok_or_else(|| CliError(kurven_bake::BakeError::EmptyScene.to_string()))?;
+            kurven_core::depth::DepthFrame::covering(&bounds, options.resolution)
+        }
+    };
+    let meta = json::object([
+        (
+            "axis0",
+            json::JsonValue::Array(vec![
+                json::JsonValue::Double(frame.axis0.lo),
+                json::JsonValue::Double(frame.axis0.hi),
+            ]),
+        ),
+        (
+            "axis1",
+            json::JsonValue::Array(vec![
+                json::JsonValue::Double(frame.axis1.lo),
+                json::JsonValue::Double(frame.axis1.hi),
+            ]),
+        ),
+        ("shape", json::JsonValue::Array(vec![json::JsonValue::Int(frame.rows), json::JsonValue::Int(frame.cols)])),
+        ("depthTolerance", json::JsonValue::Double(options.depth_tolerance.unwrap_or(scene.depth_tolerance))),
+        ("layers", json::JsonValue::Array(names.iter().map(|n| json::JsonValue::String(n.clone())).collect())),
+    ]);
+    let path = format!("{prefix}.frame.json");
+    std::fs::write(&path, meta.canonical() + "\n").map_err(|e| CliError(format!("{path}: {e}")))
 }
 
 /// `SVG.render(strokes)` with its defaults, written as Swift's bake writes it.
@@ -503,17 +579,53 @@ pub fn write_svg(strokes: &Strokes, output: &Path) -> Result<(), CliError> {
 mod tests {
     use super::*;
 
+    /// A layer named "outline" beside the traced outline: each dumped under
+    /// its own place, where Swift's names would write one over the other.
     #[test]
-    fn outline_and_dump_are_refused_with_a_value_or_without() {
-        for words in [
-            vec!["bake", "b.kurven", "--outline", "-o", "x.svg"],
-            vec!["bake", "b.kurven", "--outline", "0.4", "-o", "x.svg"],
-            vec!["bake", "b.kurven", "--dump", "-o", "x.svg"],
-            vec!["bake", "b.kurven", "--dump", "dir", "-o", "x.svg"],
-            vec!["bake", "b.kurven", "-o", "x.svg", "--outline"],
+    fn dumped_layers_are_named_by_their_place() {
+        use kurven_core::surface_request::{Shape, SurfaceRequest};
+        use kurven_surfaces::{SurfaceBundle, SurfaceDrawing};
+        let request = SurfaceRequest {
+            grid: 64,
+            lines: Some((6, 3)),
+            ..SurfaceRequest::new(Shape::Torus { major: 2.0, minor: 1.0 })
+        };
+        let drawing = SurfaceDrawing::build(&request, None, false).unwrap();
+        let mut specs: Vec<LayerSpec> = drawing.layers.iter().map(|l| l.spec.clone()).collect();
+        specs[0].name = "outline".to_string();
+        let drawing = drawing.restyled(&specs).unwrap();
+        let dir = std::env::temp_dir().join(format!("kurven-dump-{}", std::process::id()));
+        let bundle = dir.join("torus.kurven");
+        let preset = CameraPreset { buffer: 200, ..SurfaceRequest::preset() };
+        SurfaceBundle::new(&bundle, drawing, vec![preset], GIT_SHA).write(&bundle, None).unwrap();
+        let prefix = dir.join("d");
+        let out = dir.join("x.svg");
+        let words = [
+            "bake",
+            bundle.to_str().unwrap(),
+            "--outline",
+            "0.5",
+            "--dump",
+            prefix.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ];
+        bake_command(&Args::new(&words)).unwrap();
+        let first = dir.join("d.0.outline.npy");
+        let last = dir.join(format!("d.{}.outline.npy", specs.len()));
+        let both = first.exists() && last.exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(both, "the layer named outline and the traced outline are dumped apart");
+    }
+
+    #[test]
+    fn a_bare_dump_or_outline_wants_a_value() {
+        for (words, bare) in [
+            (vec!["bake", "b.kurven", "--dump", "-o", "x.svg"], "dump"),
+            (vec!["bake", "b.kurven", "-o", "x.svg", "--outline"], "outline"),
         ] {
             let e = bake_command(&Args::new(&words)).unwrap_err().0;
-            assert!(e.contains("depth buffer") && e.contains("phase 4"), "{words:?}: {e}");
+            assert_eq!(e, format!("--{bare} wants a value"), "{words:?}");
         }
     }
 
