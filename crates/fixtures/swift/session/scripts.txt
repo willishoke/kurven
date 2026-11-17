@@ -42,6 +42,9 @@ gamma-paint           1.5e-4 1e-5 gamma    --pick 600,550 --add graph_u --pick 4
 gamma-remove-undo     1.5e-4 1e-5 gamma    --pick 600,550 --remove ang_minor --remove mag_minor --undo --save @saved.kurven --bake @drawing.svg
 gamma-window          1.5e-4 1e-5 gamma    --set rMax=2 --truncation 4 --save @saved.kurven --bake @drawing.svg
 gamma-res-undo        1.5e-4 1e-5 gamma    --set res=100 --levels mag_major=5 --undo --save @saved.kurven --bake @drawing.svg
+# Swift's defect, ported as it is (crates/FINDINGS.md, Phase 6): a level
+# count, then a resample, saves the count and draws the manifest's levels.
+gamma-levels-then-window 1.5e-4 1e-5 gamma --hide folds --levels mag_major=5 --set res=100 --save @saved.kurven --bake @drawing.svg
 banded-truncation     1.5e-4 1e-5 banded   --truncation 4 --save @saved.kurven --bake @drawing.svg
 banded-strokes        1.5e-4 1e-5 banded   --strokes riser_hatch=30 --save @saved.kurven --bake @drawing.svg
 rational-levels       1.5e-4 1e-5 rational --levels mag_major=3 --save @dragged.kurven --truncation 2.5 --save @saved.kurven --bake @drawing.svg
