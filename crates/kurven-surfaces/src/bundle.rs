@@ -3,9 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use kurven_core::bundle::BundleError;
+use kurven_core::bundle::{BundleError, BundleFiles, Source, holds_key_in, write_files};
 use kurven_core::camera::Camera;
-use kurven_core::json::{self, JsonObject};
+use kurven_core::json::JsonObject;
 use kurven_core::manifest::{CameraPreset, LayerSpec, ManifestError, Provenance, SchemaError, SurfaceManifest};
 use kurven_core::scene::{PreviewMode, Scene};
 use kurven_core::surface_request::{Shape, SurfaceRequest};
@@ -48,6 +48,14 @@ impl From<ManifestError> for SurfaceBundleError {
 impl From<kurven_core::json::JsonError> for SurfaceBundleError {
     fn from(e: kurven_core::json::JsonError) -> SurfaceBundleError {
         SurfaceBundleError::Schema(SchemaError::Json(e))
+    }
+}
+impl From<BundleError> for SurfaceBundleError {
+    fn from(e: BundleError) -> SurfaceBundleError {
+        match e {
+            BundleError::Schema(e) => SurfaceBundleError::Schema(e),
+            other => SurfaceBundleError::Bundle(other),
+        }
     }
 }
 impl From<DrawingError> for SurfaceBundleError {
@@ -129,29 +137,18 @@ impl SurfaceBundle {
     /// landscape: its manifest has a `surface` (`BundleManifest`). False
     /// where it has no manifest, for the landscape's reader to say so.
     pub fn holds_surface(url: &Path) -> Result<bool, SurfaceBundleError> {
-        let file = url.join("manifest.json");
-        if !file.exists() {
-            return Ok(false);
-        }
-        let text =
-            std::fs::read_to_string(&file).map_err(|e| SurfaceBundleError::Io(format!("{}: {e}", file.display())))?;
-        Ok(json::parse(&text)?.object("Manifest")?.contains_key("surface"))
+        Ok(holds_key_in(&Source::Directory(url), "surface")?)
     }
 
     /// Read a bundle and build its drawing: the request built, then drawn
     /// with the manifest's layers.
     pub fn read(url: &Path) -> Result<SurfaceBundle, SurfaceBundleError> {
-        let file = url.join("manifest.json");
-        if !file.exists() {
-            let name = url.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            return Err(SurfaceBundleError::Bundle(BundleError::MissingFile {
-                file: "manifest.json".to_string(),
-                bundle: name,
-            }));
-        }
-        let text =
-            std::fs::read_to_string(&file).map_err(|e| SurfaceBundleError::Io(format!("{}: {e}", file.display())))?;
-        let manifest = SurfaceManifest::from_json(&json::parse(&text)?)?;
+        SurfaceBundle::read_from(&Source::Directory(url))
+    }
+
+    /// `read`, wherever the bundle's files are: a directory, or in memory.
+    pub fn read_from(source: &Source) -> Result<SurfaceBundle, SurfaceBundleError> {
+        let manifest = SurfaceManifest::from_json(&source.manifest_json()?)?;
         if manifest.presets.is_empty() {
             return Err(ManifestError::Unsupported(
                 "a parametric surface with no camera preset: it has no view to open at or to bake from".to_string(),
@@ -159,7 +156,7 @@ impl SurfaceBundle {
             .into());
         }
         let drawing = SurfaceDrawing::build(&manifest.surface, None, false)?.restyled(&manifest.layers)?;
-        Ok(SurfaceBundle { url: url.to_path_buf(), manifest, drawing })
+        Ok(SurfaceBundle { url: source.url(), manifest, drawing })
     }
 
     /// Write the bundle: a directory holding its manifest, with `layers` in
@@ -167,16 +164,16 @@ impl SurfaceBundle {
     /// manifest is written to a temporary file and renamed into place, as
     /// Swift's `atomically: true` does.
     pub fn write(&self, url: &Path, layers: Option<&[LayerSpec]>) -> Result<(), SurfaceBundleError> {
+        Ok(write_files(&self.files(layers), url)?)
+    }
+
+    /// The files `write` writes: the manifest alone.
+    pub fn files(&self, layers: Option<&[LayerSpec]>) -> BundleFiles {
         let mut manifest = self.manifest.clone();
         if let Some(layers) = layers {
             manifest.layers = layers.to_vec();
         }
-        let io = |e: std::io::Error| SurfaceBundleError::Io(format!("{}: {e}", url.display()));
-        std::fs::create_dir_all(url).map_err(io)?;
-        let path = url.join("manifest.json");
-        let temporary = url.join(".manifest.json.tmp");
-        std::fs::write(&temporary, manifest.canonical_json()).map_err(io)?;
-        std::fs::rename(&temporary, &path).map_err(io)
+        BundleFiles::from([("manifest.json", manifest.canonical_json().into_bytes())])
     }
 
     /// The scene the bundle describes under one of its presets.

@@ -8,10 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::bundle::{BundleError, holds_key};
+use crate::bundle::{BundleError, BundleFiles, Source, holds_key, write_files};
 use crate::camera::Camera;
 use crate::hatching::FaceSelector;
-use crate::json::{self, JsonObject};
+use crate::json::JsonObject;
 use crate::manifest::{CameraPreset, LayerSource, LayerSpec, ManifestError, PolyhedronManifest, Provenance};
 use crate::polyline::Layer;
 use crate::scene::{PreviewMode, Scene};
@@ -98,16 +98,12 @@ impl PolyhedronBundle {
     /// Read a bundle: the solid built from its vertices and loops, checked,
     /// and its layers drawn on it.
     pub fn read(url: impl AsRef<Path>) -> Result<PolyhedronBundle, BundleError> {
-        let url = url.as_ref();
-        let file = url.join("manifest.json");
-        if !file.exists() {
-            return Err(BundleError::MissingFile {
-                file: "manifest.json".to_string(),
-                bundle: url.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-            });
-        }
-        let text = std::fs::read_to_string(&file).map_err(|e| BundleError::Io(format!("{}: {e}", file.display())))?;
-        let manifest = PolyhedronManifest::from_json(&json::parse(&text).map_err(|e| BundleError::Schema(e.into()))?)?;
+        PolyhedronBundle::read_from(&Source::Directory(url.as_ref()))
+    }
+
+    /// `read`, wherever the bundle's files are: a directory, or in memory.
+    pub fn read_from(source: &Source) -> Result<PolyhedronBundle, BundleError> {
+        let manifest = PolyhedronManifest::from_json(&source.manifest_json()?)?;
         if manifest.presets.is_empty() {
             return Err(BundleError::Schema(
                 ManifestError::Unsupported(
@@ -117,19 +113,18 @@ impl PolyhedronBundle {
             ));
         }
         let layers = manifest.layers.iter().map(|spec| PolyhedronBundle::drawn(spec, &manifest.solid)).collect();
-        Ok(PolyhedronBundle { url: url.to_path_buf(), manifest, layers })
+        Ok(PolyhedronBundle { url: source.url(), manifest, layers })
     }
 
     /// Write the bundle: a directory holding its manifest, written to a
     /// temporary file and renamed into place (Swift's `atomically: true`).
     pub fn write(&self, url: impl AsRef<Path>) -> Result<(), BundleError> {
-        let url = url.as_ref();
-        std::fs::create_dir_all(url).map_err(|e| BundleError::Io(format!("{}: {e}", url.display())))?;
-        let path = url.join("manifest.json");
-        let temporary = url.join(".manifest.json.tmp");
-        std::fs::write(&temporary, self.manifest.canonical_json())
-            .and_then(|()| std::fs::rename(&temporary, &path))
-            .map_err(|e| BundleError::Io(format!("{}: {e}", path.display())))
+        write_files(&self.files(), url)
+    }
+
+    /// The files `write` writes: the manifest alone.
+    pub fn files(&self) -> BundleFiles {
+        BundleFiles::from([("manifest.json", self.manifest.canonical_json().into_bytes())])
     }
 
     /// The scene the bundle describes under one of its presets.

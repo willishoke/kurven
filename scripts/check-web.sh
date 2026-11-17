@@ -35,6 +35,8 @@ APP="$ROOT/web/app"
 WORK="$CRATES/target/check-web"
 CLI="$CRATES/target/release/kurven-cli"
 WASM="$CRATES/target/wasm32-unknown-unknown/web/kurven_wasm.wasm"
+# The page's module: the session alone, without the golden sets.
+PAGE_WASM="$CRATES/target/page/wasm32-unknown-unknown/web/kurven_wasm.wasm"
 # A cargo command on the workspace, wherever this is run from: run in
 # crates/, so rustup takes the toolchain crates/rust-toolchain.toml pins.
 workspace() {
@@ -68,6 +70,7 @@ step "rustfmt" workspace fmt --all -- --check
 
 step "clippy, native" workspace clippy --release --workspace --all-targets -- -D warnings
 step "clippy, wasm" workspace clippy --release -p kurven-wasm --target wasm32-unknown-unknown -- -D warnings
+step "clippy, the page's wasm" workspace clippy --release -p kurven-wasm --target wasm32-unknown-unknown --no-default-features -- -D warnings
 
 # The std spellings of the transcendental functions, of fused multiply-add,
 # and of the reads of a sign bit (a NaN's is platform noise; real::sign_minus,
@@ -199,9 +202,75 @@ references() {
 }
 step "the port's reference drawings are Swift's, within crates/fixtures/references.txt" references
 
+# The session against Swift's app: every edit script of
+# crates/fixtures/swift/session/scripts.txt replayed by `kurven-cli app`, each
+# saved bundle's manifest byte for byte the one Swift's KurvenApp saved, and
+# each baked drawing held to Swift's by `kurven-cli compare` at the line's
+# tolerances. A file Swift wrote that the port did not, or the other way
+# round (but a landscape's grids, which make.sh leaves out), fails.
+session() {
+    local here="$CRATES/fixtures/swift/session" dir="$WORK/session"
+    local name distance length input rest out a f r failed=0 held=0 drawings=0
+    rm -rf "$dir"
+    while read -r name distance length input rest; do
+        case "$name" in '' | '#'*) continue ;; esac
+        out="$dir/$name"
+        mkdir -p "$out" || return 1
+        local args=()
+        [ "$input" != - ] && args+=("$here/inputs/$input.kurven")
+        for a in $rest; do
+            case "$a" in @*) args+=("$out/${a#@}") ;; *) args+=("$a") ;; esac
+        done
+        if ! (cd "$out" && "$CLI" app "${args[@]}" > "$out/.stdout" 2>&1); then
+            echo "$name: the port's app failed"
+            cat "$out/.stdout"
+            failed=1
+            continue
+        fi
+        [ -d "$here/$name" ] || { echo "$name: Swift wrote nothing; run crates/fixtures/swift/session/make.sh $name"; failed=1; continue; }
+        local theirs ours
+        theirs=$(cd "$here/$name" && find . -type f | sort)
+        ours=$(cd "$out" && find . -type f ! -name '*.npy' ! -name .stdout | sort)
+        if [ "$theirs" != "$ours" ]; then
+            echo "$name: Swift wrote [$theirs], the port [$ours]" | tr '\n' ' '
+            echo
+            failed=1
+            continue
+        fi
+        for f in $theirs; do
+            case "$f" in
+                *manifest.json)
+                    if cmp -s "$here/$name/$f" "$out/$f"; then held=$((held + 1)); else
+                        echo "$name: $f is not Swift's"
+                        diff "$here/$name/$f" "$out/$f" | head -c 2000
+                        failed=1
+                    fi
+                    ;;
+                *.svg)
+                    if r=$("$CLI" compare "$here/$name/$f" "$out/$f" --tolerance "$distance" --length-tolerance "$length"); then
+                        drawings=$((drawings + 1))
+                    else
+                        printf '%s: %s\n%s\n' "$name" "$f" "$r"
+                        failed=1
+                    fi
+                    ;;
+            esac
+        done
+    done < "$here/scripts.txt"
+    [ "$failed" = 0 ] && echo "$held manifest(s) byte for byte Swift's, $drawings drawing(s) within their tolerances"
+    return $failed
+}
+step "the session's edit scripts give Swift's bundles and drawings" session
+
+# Two builds: the check's module, with the golden sets and the timing
+# exports, and the page's, without them (`--no-default-features`), in a
+# build tree of its own so neither overwrites the other.
 wasm() {
     workspace build --profile web --target wasm32-unknown-unknown -p kurven-wasm || return 1
-    echo "kurven_wasm.wasm: $(wc -c < "$WASM" | tr -d ' ') bytes"
+    echo "kurven_wasm.wasm: $(wc -c < "$WASM" | tr -d ' ') bytes, with the golden sets"
+    (cd "$CRATES" && CARGO_TARGET_DIR="$CRATES/target/page" cargo build --profile web \
+        --target wasm32-unknown-unknown -p kurven-wasm --no-default-features) || return 1
+    echo "kurven_wasm.wasm: $(wc -c < "$PAGE_WASM" | tr -d ' ') bytes, the page's"
 }
 step "wasm build" wasm
 
@@ -212,9 +281,37 @@ identity() {
     "$CLI" fixtures "$native" >/dev/null &&
         node "$CRATES/kurven-wasm/goldens.mjs" "$WASM" "$browser" &&
         diff -r "$native" "$browser" &&
-        echo "$(find "$native" -type f | wc -l | tr -d ' ') golden file(s) byte-identical, native and wasm"
+        echo "$(find "$native" -type f | wc -l | tr -d ' ') golden file(s) byte-identical, native and wasm" || return 1
+    # The session's edit scripts through the module's session, against what
+    # `kurven-cli app` wrote natively in the session step: every bundle file
+    # and drawing, the grids of a resampled landscape among them.
+    local here="$CRATES/fixtures/swift/session" ran="$WORK/session" through="$WORK/session-wasm"
+    [ -d "$ran" ] || { echo "no native session run to compare: the session step did not run"; return 1; }
+    # Through both modules: the check's, and the page's, which is what a
+    # browser loads.
+    local module label
+    for module in "$WASM" "$PAGE_WASM"; do
+        label="the check's"
+        [ "$module" = "$PAGE_WASM" ] && label="the page's"
+        rm -rf "$through"
+        node "$CRATES/kurven-wasm/session.mjs" "$module" "$here/scripts.txt" "$here/inputs" "$through" &&
+            diff -r -x .stdout "$ran" "$through" &&
+            echo "$(find "$through" -type f | wc -l | tr -d ' ') session file(s) byte-identical, native and $label wasm" ||
+            return 1
+    done
 }
-step "wasm under Node writes the golden sets native writes, byte for byte" identity
+step "wasm under Node writes the golden sets and the session's files native writes, byte for byte" identity
+
+# The Worker protocol end to end under Node (worker_threads, no browser): the
+# page's client (web/app/src/engine/client.ts) driving the wasm module in a
+# Worker, its saved manifest Swift's and its drawing native's, a superseded
+# view dropped, and a hung edit cancelled and the document replayed; against
+# the check's module and the page's.
+worker() {
+    node "$APP/test/worker.test.mjs" "$WASM" "$CRATES/fixtures/swift/session" "$WORK/session" &&
+        node "$APP/test/worker.test.mjs" "$PAGE_WASM" "$CRATES/fixtures/swift/session" "$WORK/session"
+}
+step "the Worker protocol under Node" worker
 
 # The page: its pinned packages installed when the lock is newer than the
 # install, then a type check and a build.
