@@ -115,7 +115,8 @@ impl Curvature {
 /// `surface [torus | sn | periodic | forced] [options]`: the drawing a
 /// request builds, saved as a bundle with `--save`, baked to `-o` otherwise.
 /// `surface solid` is a polyhedron's (`solid::solid_command`); a preview
-/// (`--preview`, a `.png` output) is the GPU's (Phase 7), and is refused.
+/// (`--preview`, a `.png` output) is the GPU's, which the page has
+/// (web/app/src/gpu) and the CLI does not, and is refused.
 pub fn surface_command(args: &Args) -> Result<(), CliError> {
     let shape = args.positional.get(1).map(String::as_str).unwrap_or("torus");
     if shape == "solid" {
@@ -426,9 +427,12 @@ pub fn surface_command(args: &Args) -> Result<(), CliError> {
     }
     let output = PathBuf::from(args.string("output")?);
     if preview || output.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")) {
-        // PORT: phase 7 -- the realtime preview, one frame offscreen (`renderPreview`, PNG).
+        // Swift's `renderPreview`, one frame offscreen to a PNG, is Metal's.
+        // The port's preview is WebGPU's, in the page (web/app/src/gpu); a
+        // native build has no GPU to draw it with (crates/FINDINGS.md,
+        // "Phase 7: differences from Swift, by construction").
         return Err(CliError(
-            "the preview is drawn by the GPU, which the port does not have yet (phase 7)".to_string(),
+            "the preview is drawn by the GPU, in the page (web/app); the CLI has none: bake to .svg".to_string(),
         ));
     }
     let options = BakeOptions {

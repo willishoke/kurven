@@ -149,7 +149,9 @@ impl Headless<'_> {
                 self.out(format!("Kurven: {status}"));
             }
             if args.iter().any(|a| a == "--screenshot") {
-                return Err(self.fail("--screenshot draws the preview, which needs the GPU (Phase 7)"));
+                return Err(self.fail(
+                    "--screenshot draws the preview, which needs the GPU: the page's (web/app), not the engine's",
+                ));
             }
             return Ok(());
         }
@@ -158,7 +160,9 @@ impl Headless<'_> {
             return self.surface(&name, args);
         }
         if args.iter().any(|a| a == "--thumbnails") {
-            return Err(self.fail("--thumbnails draws the picker's pictures, which needs the GPU (Phase 7)"));
+            return Err(self.fail(
+                "--thumbnails draws the picker's pictures, which needs the GPU: the page's (web/app), not the engine's",
+            ));
         }
         if args.iter().any(|a| a == "--resample")
             && let Some(path) = &bundle_path
@@ -166,7 +170,8 @@ impl Headless<'_> {
             return self.resample(path, args);
         }
         if args.iter().any(|a| a == "--screenshot") && bundle_path.is_some() {
-            return Err(self.fail("--screenshot draws the preview, which needs the GPU (Phase 7)"));
+            return Err(self
+                .fail("--screenshot draws the preview, which needs the GPU: the page's (web/app), not the engine's"));
         }
         if (value_after(args, "--bake").is_some() || value_after(args, "--save").is_some())
             && let Some(path) = &bundle_path
@@ -354,7 +359,8 @@ impl Headless<'_> {
         self.out(line);
         let (save, bake) = (value_after(args, "--save"), value_after(args, "--bake"));
         if args.iter().any(|a| a == "--screenshot") {
-            return Err(self.fail("--screenshot draws the preview, which needs the GPU (Phase 7)"));
+            return Err(self
+                .fail("--screenshot draws the preview, which needs the GPU: the page's (web/app), not the engine's"));
         }
         if save.is_none() && bake.is_none() {
             return Err(self.fail("with nothing to write, the app opens a window, which a headless run has none of"));
@@ -423,7 +429,8 @@ impl Headless<'_> {
             });
         }
         if args.iter().any(|a| a == "--screenshot") {
-            return Err(self.fail("--screenshot draws the preview, which needs the GPU (Phase 7)"));
+            return Err(self
+                .fail("--screenshot draws the preview, which needs the GPU: the page's (web/app), not the engine's"));
         }
         Ok(())
     }
@@ -507,7 +514,8 @@ impl Headless<'_> {
         let line = format!("Kurven: rebuilt {path} natively — {}", self.summary());
         self.out(line);
         if args.iter().any(|a| a == "--screenshot") {
-            return Err(self.fail("--screenshot draws the preview, which needs the GPU (Phase 7)"));
+            return Err(self
+                .fail("--screenshot draws the preview, which needs the GPU: the page's (web/app), not the engine's"));
         }
         Ok(())
     }
@@ -860,7 +868,9 @@ impl Headless<'_> {
                     self.bake(&value, resolution)?;
                 }
                 "--screenshot" | "--inspector" => {
-                    return Err(self.fail(&format!("{flag} draws the window, which needs the GPU (Phase 7)")));
+                    return Err(self.fail(&format!(
+                        "{flag} draws the window, which needs the GPU: the page's (web/app), not the engine's"
+                    )));
                 }
                 "--dump" => {
                     self.document.settle();

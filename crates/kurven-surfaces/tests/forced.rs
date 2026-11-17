@@ -2,7 +2,8 @@
 //! fitted and drawn (`forcedTorusTests`), the preview's folds read off the
 //! grid (`gridFoldTests`), and a surface drawing described and built
 //! (`surfaceDrawingTests`), with Swift's tolerances throughout. What times
-//! or compares the GPU preview waits for it (Phase 7).
+//! or compares the GPU preview needs a GPU, and is the browser lane's, or
+//! left out where that lane cannot run it (each says which).
 //!
 //! The system is `toroidal_manifolds.ipynb`'s. Its second frequency was found
 //! independently in a scipy prototype (DOP853 at rtol 1e-11, NAFF by
@@ -364,9 +365,13 @@ fn an_orbit_frame_of_the_forced_torus_folds_and_all_keeps_up() {
 
 /// "surfaces: an orbit frame of the forced torus, folds and all, keeps up":
 /// Swift's bound, a whole preview frame (`MetalRenderer.renderPreview`) at a
-/// new camera, median under 25 ms.
+/// new camera, median under 25 ms. Not ported: a whole frame is the page's
+/// now, the engine's draft in the Worker and the GPU's passes, and the
+/// forced torus's fit (80 s natively) is past what the browser lane waits
+/// for; the grid folds, the CPU half, are held to 25 ms above
+/// (crates/FINDINGS.md, "Swift's GPU suites in the browser lane").
 #[test]
-#[ignore = "PORT: phase 7 -- the GPU preview"]
+#[ignore = "needs a GPU, and the forced torus's fit is past the browser lane's time"]
 fn an_orbit_frame_of_the_forced_torus_keeps_up_on_the_gpu() {}
 
 // MARK: - a surface drawing, described and built

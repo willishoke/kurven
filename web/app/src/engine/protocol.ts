@@ -64,6 +64,9 @@ export type Request =
    * src/gpu/frame.ts): what it holds under `have` is not sent again. */
   | { kind: "preview"; draft: boolean; have?: { content?: string; layers?: string[] } }
   | { kind: "bake"; svg?: boolean }
+  /** The shown surface's coordinate image by the CPU rasterizer, with the
+   * frame, view and clip the GPU renders the same image by. */
+  | { kind: "surfaceImage"; resolution: number }
   | { kind: "grids" }
   | { kind: "save"; name: string }
   | { kind: "headless"; args: string[] };

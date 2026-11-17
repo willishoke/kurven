@@ -116,8 +116,8 @@ impl fmt::Display for CompositeError {
 
 impl std::error::Error for CompositeError {}
 
-/// A part's own drawing reaching what the port has not brought across (the
-/// GPU's, Phase 7) is refused through the composite, by its text.
+/// A part's own drawing reaching what the port has not brought across is
+/// refused through the composite, by its text.
 impl From<PortRefusal> for CompositeError {
     fn from(refusal: PortRefusal) -> Self {
         CompositeError(refusal.to_string())

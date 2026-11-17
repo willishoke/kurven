@@ -194,6 +194,24 @@ window.kurven = {
   },
   /** Draw a frame now, and read the pixels it left. */
   draw: (wish: "draft" | "rest", read = false) => view.drawNow(wish, read),
+  /** The shown surface's coordinate image, by the engine's CPU rasterizer
+   * and by the GPU's passes, over the same frame. */
+  surfaceImage: async (resolution: number) => {
+    if (!renderer) throw new Error("no WebGPU");
+    const answer = await client.request({ kind: "surfaceImage", resolution });
+    if (answer.stale || !answer.reply.ok) throw new Error(answer.stale ? "stale" : answer.reply.error);
+    const r = answer.reply as unknown as {
+      frame: { rows: number; cols: number };
+      view: number[];
+      clip: number[];
+      surfaceDepthRange: [number, number];
+      span: number;
+    };
+    // The resources the GPU renders from are the frame's: draw one first.
+    await view.drawNow("draft");
+    const gpu = await renderer.renderSurfaceImage(r.view, r.clip, r.surfaceDepthRange, r.frame.rows, r.frame.cols);
+    return { ...r, cpu: { depth: answer.arrays.depth, coords: answer.arrays.coords }, gpu };
+  },
   probe: () => (renderer ? probeLayout(renderer.device) : Promise.resolve(["no WebGPU"])),
   adapter: () => (renderer ? renderer.device.adapterInfo : null),
   held: () => (renderer ? { ...renderer.holds(), bytes: renderer.heldBytes() } : null),

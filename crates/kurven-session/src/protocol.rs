@@ -599,6 +599,46 @@ impl Session {
                 let out = preview_json(&preview, &mut arrays);
                 Ok((out, arrays))
             }
+            "surfaceImage" => {
+                // A parametric surface's coordinate image as the bake's CPU
+                // rasterizer renders it (`SurfaceImage::rasterize`), over the
+                // frame covering its grid at `resolution`, with what the GPU
+                // needs to render the same frame: the view, the frame's clip
+                // (buffer order) and the coordinate pass's depth range,
+                // padded as `renderSurface` pads it. What the browser lane
+                // holds the WebGPU coordinate pass to.
+                let resolution = integer(o, "resolution")?;
+                if !(2..=4096).contains(&resolution) {
+                    return Err(refuse(format!("a resolution is 2 to 4096, not {resolution}")));
+                }
+                let scene = d.shown_scene().ok_or("nothing shown")?;
+                let surface = scene.parametric().ok_or("the scene is not a parametric surface")?;
+                let view = scene.camera.view;
+                let (mut lo, mut hi) = (Vec3::splat(f64::INFINITY), Vec3::splat(f64::NEG_INFINITY));
+                for &p in surface.positions.iter() {
+                    let q = view.apply(p).v;
+                    lo = lo.min(q);
+                    hi = hi.max(q);
+                }
+                let bounds = kurven_core::spaces::AABB::new(lo, hi);
+                let frame = DepthFrame::covering(&bounds, resolution);
+                let image = kurven_core::surface_image::SurfaceImage::rasterize(surface, &view, frame);
+                let pad = 1e-3 * (hi.z - lo.z) + 1e-6;
+                let flat = |m: &kurven_core::simd::Mat4| {
+                    json::doubles(&m.columns.iter().flat_map(|c| c.to_array()).collect::<Vec<_>>())
+                };
+                let mut out = JsonObject::new();
+                out.insert("frame".to_string(), frame_json(&frame));
+                out.insert("view".to_string(), flat(&view.m));
+                out.insert("clip".to_string(), flat(&frame.metal_clip()));
+                out.insert("surfaceDepthRange".to_string(), json::doubles(&[lo.z - pad, hi.z + pad]));
+                out.insert("span".to_string(), JsonValue::Double(hi.z - lo.z));
+                let arrays = vec![
+                    ("depth".to_string(), Array::f32(image.depth.values.iter().copied())),
+                    ("coords".to_string(), Array::f32(image.coords.iter().flatten().copied())),
+                ];
+                Ok((out, arrays))
+            }
             "bake" => {
                 // The judged strokes, what Export writes: each layer's
                 // page-space points and its offsets, and the SVG when asked.

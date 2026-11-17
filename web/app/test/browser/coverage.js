@@ -66,9 +66,11 @@ globalThis.kurvenCoverage = (() => {
     return mask;
   }
 
-  /** The judged strokes of a `bake` reply: page points are view x and y. */
-  function judgedMask(frame, reply, arrays) {
-    const paths = reply.strokes.map((_, i) => {
+  /** The judged strokes of a `bake` reply: page points are view x and y.
+   * `only`, when given, is the one stroke layer to rasterize. */
+  function judgedMask(frame, reply, arrays, only) {
+    const layers = reply.strokes.map((_, i) => i).filter((i) => only === undefined || i === only);
+    const paths = layers.map((i) => {
       const pts = arrays[`stroke.${i}.points`];
       return { offsets: arrays[`stroke.${i}.offsets`], x: (k) => pts[2 * k], y: (k) => pts[2 * k + 1] };
     });
@@ -123,5 +125,55 @@ globalThis.kurvenCoverage = (() => {
     return { pixels: all, stray: far / Math.max(all, 1) };
   }
 
-  return { strokeMask, judgedMask, unclippedMask, measure, stray };
+  /** Swift's "metal: the GPU coordinate pass is the CPU rasterizer's":
+   * coverage and depth differ only on edges -- of the drawing, or of a sheet
+   * in front of another, where some neighbouring pixel of the CPU image is
+   * empty or far away -- and on under half a percent of the pixels; and where
+   * the two agree, so do the coordinates, to within a grid cell (the short
+   * way round a periodic axis), which is the front-most point the CPU image's
+   * holds. `surface` is the resources' `{ cells, samples, spacing }`. */
+  function compareImages(gpu, cpu, rows, cols, span, surface) {
+    const isCovered = (img, k) => img.depth[k] > -1e29;
+    const edgeAt = (k) => {
+      const row = Math.floor(k / cols), col = k % cols;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const rr = row + dr, cc = col + dc;
+          if (rr < 0 || rr >= rows || cc < 0 || cc >= cols) return true;
+          const n = rr * cols + cc;
+          if (!isCovered(cpu, n) || Math.abs(cpu.depth[n] - cpu.depth[k]) > 0.05 * span) return true;
+        }
+      }
+      return false;
+    };
+    const delta = (d, axis) => {
+      const period = surface.spacing[axis] * surface.cells[axis];
+      return surface.cells[axis] === surface.samples[axis] ? d - period * Math.round(d / period) : d;
+    };
+    let covered = 0, strays = 0, onEdge = 0, worstDepth = 0, checked = 0, coordWrong = 0, worstCoord = 0;
+    for (let k = 0; k < rows * cols; k++) {
+      const a = isCovered(gpu, k), b = isCovered(cpu, k);
+      if (a || b) covered++;
+      const differs = a !== b || (a && Math.abs(gpu.depth[k] - cpu.depth[k]) > 1e-4 * span);
+      if (a && b && !differs) {
+        worstDepth = Math.max(worstDepth, Math.abs(gpu.depth[k] - cpu.depth[k]));
+        if (!edgeAt(k)) {
+          checked++;
+          let off = 0;
+          for (const axis of [0, 1]) {
+            const d = Math.abs(delta(gpu.coords[2 * k + axis] - cpu.coords[2 * k + axis], axis));
+            off = Math.max(off, d / surface.spacing[axis]);
+          }
+          worstCoord = Math.max(worstCoord, off);
+          if (!(off <= 1)) coordWrong++;
+        }
+      }
+      if (!differs) continue;
+      strays++;
+      if (edgeAt(k)) onEdge++;
+    }
+    return { covered, strays, onEdge, worstDepth, checked, coordWrong, worstCoord };
+  }
+
+  return { strokeMask, judgedMask, unclippedMask, measure, stray, compareImages };
 })();

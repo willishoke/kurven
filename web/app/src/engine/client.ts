@@ -90,7 +90,7 @@ export interface Options {
 }
 
 /** Requests that change nothing the journal must replay. */
-const VIEWS = new Set(["state", "frame", "preview", "bake", "grids", "save", "headless"]);
+const VIEWS = new Set(["state", "frame", "preview", "surfaceImage", "bake", "grids", "save", "headless"]);
 /** Requests after which the document is a clean slate. */
 const OPENING = new Set(["open", "create", "createSurface"]);
 /** Settings an open keeps, so the last of each before it is replayed. */

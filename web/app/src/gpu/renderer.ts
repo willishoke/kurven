@@ -612,6 +612,101 @@ export class PreviewRenderer {
     return this.layerSlots;
   }
 
+  /** A parametric surface's coordinate image on the GPU (`renderSurface`):
+   * its depth pass, MAX-blended, and its coordinate pass behind a LESS test,
+   * over a frame of `rows` by `cols` the engine describes by its view and
+   * clip, read back row by row. What the browser lane holds to the bake's CPU
+   * rasterizer, as Swift's suite holds Metal's pass to it. */
+  async renderSurfaceImage(
+    view: ArrayLike<number>,
+    clip: ArrayLike<number>,
+    depthRange: [number, number],
+    rows: number,
+    cols: number,
+  ): Promise<{ depth: Float32Array; coords: Float32Array }> {
+    const res = this.resources;
+    if (!res || res.json.kind !== "parametric") throw new Error("renderSurfaceImage: no parametric surface is held");
+    const device = this.device;
+    this.fits(cols, rows, "the image");
+    const uniformBytes = new ArrayBuffer(UNIFORMS_SIZE);
+    writeUniforms(new DataView(uniformBytes), 0, {
+      view,
+      clip,
+      domainLo: [0, 0],
+      domainSize: [0, 0],
+      grid: [0, 0],
+      gridSize: [0, 0],
+      step: 1,
+      truncationHeight: finite(null),
+      regionCount: 0,
+      empty: EMPTY,
+    });
+    device.queue.writeBuffer(this.uniforms, 0, uniformBytes);
+    const surfaceBytes = new ArrayBuffer(SURFACE_SIZE);
+    writeSurface(new DataView(surfaceBytes), 0, {
+      samples: res.json.samples,
+      cells: res.json.cells,
+      lo: res.json.lo,
+      spacing: res.json.spacing,
+      depthRange,
+    });
+    device.queue.writeBuffer(this.surface, 0, surfaceBytes);
+    const read = TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC;
+    const depth = device.createTexture({ size: [cols, rows], format: "r32float", usage: read });
+    const coords = device.createTexture({ size: [cols, rows], format: "rg32float", usage: read });
+    const z = device.createTexture({ size: [cols, rows], format: "depth32float", usage: TextureUsage.RENDER_ATTACHMENT });
+    const t = { depth, coords };
+    const bind = (name: "paramDepth" | "coord") =>
+      device.createBindGroup({
+        layout: this.pipelines[name].getBindGroupLayout(0),
+        entries: BINDINGS[name].map((binding) => ({ binding, resource: this.resource(binding, res, t) })),
+      });
+    const encoder = device.createCommandEncoder();
+    const first = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: depth.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: EMPTY, g: 0, b: 0, a: 0 } },
+      ],
+    });
+    first.setPipeline(this.pipelines.paramDepth);
+    first.setBindGroup(0, bind("paramDepth"));
+    first.draw(res.cells * 6);
+    first.end();
+    const second = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: coords.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: EMPTY, g: EMPTY, b: 0, a: 0 } },
+      ],
+      depthStencilAttachment: { view: z.createView(), depthLoadOp: "clear", depthStoreOp: "discard", depthClearValue: 1 },
+    });
+    second.setPipeline(this.pipelines.coord);
+    second.setBindGroup(0, bind("coord"));
+    second.draw(res.cells * 6);
+    second.end();
+    const rowOf = (bytes: number) => Math.ceil((bytes * cols) / 256) * 256;
+    const buffers = [4, 8].map((bytes) =>
+      device.createBuffer({ size: rowOf(bytes) * rows, usage: BufferUsage.MAP_READ | BufferUsage.COPY_DST }),
+    );
+    encoder.copyTextureToBuffer({ texture: depth }, { buffer: buffers[0]!, bytesPerRow: rowOf(4) }, [cols, rows]);
+    encoder.copyTextureToBuffer({ texture: coords }, { buffer: buffers[1]!, bytesPerRow: rowOf(8) }, [cols, rows]);
+    device.queue.submit([encoder.finish()]);
+    const out = await Promise.all(
+      [4, 8].map(async (bytes, i) => {
+        const b = buffers[i]!;
+        await b.mapAsync(MapMode.READ);
+        const mapped = new Float32Array(b.getMappedRange());
+        const per = bytes / 4;
+        const values = new Float32Array(per * rows * cols);
+        for (let r = 0; r < rows; r++) {
+          values.set(mapped.subarray((r * rowOf(bytes)) / 4, (r * rowOf(bytes)) / 4 + per * cols), per * cols * r);
+        }
+        b.unmap();
+        b.destroy();
+        return values;
+      }),
+    );
+    for (const x of [depth, coords, z]) x.destroy();
+    return { depth: out[0]!, coords: out[1]! };
+  }
+
   /** A texture's pixels, row by row, four bytes each in its own order
    * (`bgra8unorm` reads B, G, R, A). */
   async readPixels(texture: GPUTexture): Promise<Uint8Array> {
