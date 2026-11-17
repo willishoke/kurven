@@ -64,6 +64,9 @@ function sliderInput(
   let active: SliderDrag | null = null;
   let byKey = false;
   input.addEventListener("pointerdown", () => {
+    // One drag of a slider at a time: a second pointer on it while the
+    // first holds it is not a second drag (its begin would have no end).
+    if (active) return;
     active = drag();
     active.begin();
     const up = () => {
@@ -132,27 +135,39 @@ class IntervalControl {
     };
     const [loKey, hiKey] = keys;
     const dragOf = (key: string) => () => new SliderDrag(host.engine, { slider: "landscape", label: key }, () => host.moved());
+    // The thumbs show the value sent, held off each other, by pointer or
+    // key: they do not cross where the window cannot.
     this.loState = sliderInput(
       this.lo,
       dragOf(loKey),
       (x, d) => {
         const v = clampLo(x);
+        this.lo.value = String(v);
         this.current.lo = v;
         this.paint();
         d.move(v);
       },
-      (x) => set(loKey, clampLo(x)),
+      (x) => {
+        const v = clampLo(x);
+        this.lo.value = String(v);
+        set(loKey, v);
+      },
     );
     this.hiState = sliderInput(
       this.hi,
       dragOf(hiKey),
       (x, d) => {
         const v = clampHi(x);
+        this.hi.value = String(v);
         this.current.hi = v;
         this.paint();
         d.move(v);
       },
-      (x) => set(hiKey, clampHi(x)),
+      (x) => {
+        const v = clampHi(x);
+        this.hi.value = String(v);
+        set(hiKey, v);
+      },
     );
     this.loField.addEventListener("change", () => {
       const x = Number(this.loField.value);
@@ -221,6 +236,7 @@ export class Panel {
   private readonly exportButton: HTMLButtonElement;
   private readonly cancelButton: HTMLButtonElement;
   readonly exportStatus: HTMLElement;
+  private readonly noticeLine: HTMLElement;
   private readonly landscapeSections: HTMLElement[];
   private isExporting = false;
 
@@ -390,17 +406,25 @@ export class Panel {
       ),
     );
 
+    this.noticeLine = h("p", { class: "notice", id: "notice", role: "alert", hidden: true });
     this.landscapeSections = [truncation];
     this.root = h(
       "aside",
       { class: "panel", "aria-label": "Controls" },
       h("header", {}, h("h1", {}, "kurven"), this.title),
+      this.noticeLine,
       landscape,
       truncation,
       camera,
       layers,
       exporting,
     );
+  }
+
+  /** Say something about the page itself (a link refused), or nothing. */
+  notice(text: string | null): void {
+    this.noticeLine.textContent = text ?? "";
+    this.noticeLine.hidden = !text;
   }
 
   setCatalog(presets: Preset[]): void {
@@ -413,10 +437,15 @@ export class Panel {
     if (text === "" && now === undefined) return;
     void engine.send({ kind: "expression", expression: text }).then((reply) => {
       if (!reply) return;
+      if (reply.ok) this.host.changed();
+      // Typed on since return was pressed: what is in the field is newer
+      // than this reply, which neither takes it over nor marks it.
+      if (this.formula.input.value !== text) return;
       if (reply.ok) {
         this.formula.editing = false;
         this.formula.clearError();
-        this.host.changed();
+        const now = engine.state?.landscape?.expression;
+        if (typeof now === "string") this.formula.show(now);
       } else {
         const at = (reply.at as { message: string; position: number | null; length: number } | undefined) ?? null;
         this.formula.showError(text, at, at ? `${at.message}${at.position !== null ? ` (at character ${at.position + 1})` : ""}` : (reply.error ?? "refused"));

@@ -55,10 +55,14 @@ export class Formula {
     });
   }
 
-  /** The engine's expression, unless one is being typed. */
+  /** The engine's expression, unless one is being typed. Text replaced
+   * takes its marks with it: they were of the text refused. */
   show(expression: string): void {
     if (this.editing && document.activeElement === this.input) return;
-    if (this.input.value !== expression) this.input.value = expression;
+    if (this.input.value !== expression) {
+      this.input.value = expression;
+      this.clearError();
+    }
     this.editing = false;
   }
 
