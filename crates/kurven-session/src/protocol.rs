@@ -15,16 +15,18 @@
 //! A bundle's files are staged first (`Session::stage`), since they are
 //! bytes, and opened by name (`{"kind": "open", "name": ...}`).
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use kurven_core::bundle::BundleFiles;
+use kurven_core::bundle::{BundleFiles, normal_path};
 use kurven_core::json::{self, JsonObject, JsonValue};
 use kurven_core::manifest::{DomainAxis, LayerSource, Truncation};
+use kurven_core::navigation::Framing;
 use kurven_core::navigation::{Gesture, Viewport};
 use kurven_core::polyline::Layer;
 use kurven_core::scene::PreviewMode;
 use kurven_core::simd::{Vec2, Vec3};
-use kurven_core::spaces::P3;
+use kurven_core::spaces::{Angle, P2, P3};
 use kurven_core::surface_request::{Field, surface_key};
 use kurven_core::svg;
 use kurven_landscape::catalog::Catalog;
@@ -79,37 +81,74 @@ pub struct Session {
     staged: BTreeMap<String, BundleFiles>,
 }
 
-struct Refusal(String);
+/// Why a request was refused, and whether it had reached the document
+/// first: a refusal of its arguments touches nothing, one the document
+/// makes (an `open` whose bundle cannot be read, an edit the document says
+/// no to) has changed it. The reply says which (`touched`), so a client
+/// replaying the requests that changed the document replays these too.
+struct Refusal {
+    message: String,
+    touched: bool,
+}
+
+/// A refusal before the document was touched.
+fn refuse(message: impl Into<String>) -> Refusal {
+    Refusal { message: message.into(), touched: false }
+}
+
+/// A refusal the document made, having been touched.
+fn refused_after(message: impl Into<String>) -> Refusal {
+    Refusal { message: message.into(), touched: true }
+}
 
 impl From<String> for Refusal {
     fn from(s: String) -> Refusal {
-        Refusal(s)
+        refuse(s)
     }
 }
 
 impl From<&str> for Refusal {
     fn from(s: &str) -> Refusal {
-        Refusal(s.to_string())
+        refuse(s)
     }
 }
 
 type Answer = Result<(JsonObject, Vec<(String, Array)>), Refusal>;
 
 fn number(o: &JsonObject, key: &str) -> Result<f64, Refusal> {
-    o.get(key).and_then(JsonValue::as_f64).ok_or_else(|| Refusal(format!("wants a number '{key}'")))
+    o.get(key).and_then(JsonValue::as_f64).ok_or_else(|| refuse(format!("wants a number '{key}'")))
 }
 
 fn text<'a>(o: &'a JsonObject, key: &str) -> Result<&'a str, Refusal> {
-    o.get(key).and_then(JsonValue::as_str).ok_or_else(|| Refusal(format!("wants a string '{key}'")))
+    o.get(key).and_then(JsonValue::as_str).ok_or_else(|| refuse(format!("wants a string '{key}'")))
 }
 
 fn numbers(o: &JsonObject, key: &str, n: usize) -> Result<Vec<f64>, Refusal> {
-    let list = o.get(key).and_then(JsonValue::as_array).ok_or_else(|| Refusal(format!("wants '{key}'")))?;
+    let list = o.get(key).and_then(JsonValue::as_array).ok_or_else(|| refuse(format!("wants '{key}'")))?;
     let values: Vec<f64> = list.iter().filter_map(JsonValue::as_f64).collect();
     if values.len() != n || list.len() != n {
-        return Err(Refusal(format!("'{key}' wants {n} numbers")));
+        return Err(refuse(format!("'{key}' wants {n} numbers")));
     }
     Ok(values)
+}
+
+/// A whole number: a count, a size, a resolution. A number with a fraction,
+/// or past what an i64 holds, is refused, not truncated.
+fn integer(o: &JsonObject, key: &str) -> Result<i64, Refusal> {
+    let value = o.get(key).ok_or_else(|| refuse(format!("wants a whole number '{key}'")))?;
+    if let JsonValue::Int(i) = value {
+        return Ok(*i);
+    }
+    match value.as_f64() {
+        Some(x) if x.fract() == 0.0 && x.abs() < 9.0e15 => Ok(x as i64),
+        _ => Err(refuse(format!("'{key}' wants a whole number"))),
+    }
+}
+
+/// An index: a whole number, not negative.
+fn index(o: &JsonObject, key: &str) -> Result<usize, Refusal> {
+    let i = integer(o, key)?;
+    usize::try_from(i).map_err(|_| refuse(format!("'{key}' wants an index, not {i}")))
 }
 
 fn vec2(o: &JsonObject, key: &str) -> Result<Vec2, Refusal> {
@@ -117,7 +156,12 @@ fn vec2(o: &JsonObject, key: &str) -> Result<Vec2, Refusal> {
     Ok(Vec2::new(v[0], v[1]))
 }
 
-fn layer_arrays(prefix: &str, layers: &[Layer], arrays: &mut Vec<(String, Array)>) -> Vec<JsonValue> {
+fn layer_arrays(
+    prefix: &str,
+    layers: &[Layer],
+    visible: &[usize],
+    arrays: &mut Vec<(String, Array)>,
+) -> Vec<JsonValue> {
     layers
         .iter()
         .enumerate()
@@ -132,6 +176,7 @@ fn layer_arrays(prefix: &str, layers: &[Layer], arrays: &mut Vec<(String, Array)
                 ("width", JsonValue::Double(layer.spec.width)),
                 ("color", json::string(&layer.spec.color)),
                 ("clipped", JsonValue::Bool(layer.spec.clipped)),
+                ("visible", JsonValue::Bool(visible.contains(&i))),
             ])
         })
         .collect()
@@ -145,7 +190,9 @@ impl Session {
     /// Stage a file of the bundle `bundle`, at `path` in it, for an `open`
     /// or a `headless` run to read.
     pub fn stage(&mut self, bundle: &str, path: &str, bytes: Vec<u8>) {
-        self.staged.entry(bundle.to_string()).or_default().insert(path.to_string(), bytes);
+        // Under its path as a source reads it, so `./a.npy` staged again as
+        // `a.npy` replaces it rather than standing beside it.
+        self.staged.entry(bundle.to_string()).or_default().insert(normal_path(path), bytes);
     }
 
     /// Forget every staged bundle.
@@ -155,22 +202,24 @@ impl Session {
 
     /// Answer one request.
     pub fn call(&mut self, request: &str) -> Reply {
-        let answer = match json::parse(request) {
-            Ok(JsonValue::Object(o)) => self.answer(&o),
-            Ok(_) => Err(Refusal("a request is a JSON object".to_string())),
-            Err(error) => Err(Refusal(format!("not JSON: {error}"))),
+        let parsed = json::parse(request);
+        let headless = matches!(&parsed, Ok(v) if v.get("kind").and_then(JsonValue::as_str) == Some("headless"));
+        let answer = match &parsed {
+            Ok(JsonValue::Object(o)) => self.answer(o),
+            Ok(_) => Err(refuse("a request is a JSON object")),
+            Err(error) => Err(refuse(format!("not JSON: {error}"))),
         };
-        let headless =
-            matches!(json::parse(request), Ok(ref v) if v.get("kind").and_then(JsonValue::as_str) == Some("headless"));
         let (mut o, arrays) = match answer {
             Ok((mut o, arrays)) => {
                 o.insert("ok".to_string(), JsonValue::Bool(true));
+                o.insert("touched".to_string(), JsonValue::Bool(true));
                 (o, arrays)
             }
-            Err(Refusal(error)) => {
+            Err(Refusal { message, touched }) => {
                 let mut o = JsonObject::new();
                 o.insert("ok".to_string(), JsonValue::Bool(false));
-                o.insert("error".to_string(), JsonValue::String(error));
+                o.insert("touched".to_string(), JsonValue::Bool(touched));
+                o.insert("error".to_string(), JsonValue::String(message));
                 (o, Vec::new())
             }
         };
@@ -196,28 +245,27 @@ impl Session {
         match kind {
             "state" => none(),
             "open" => {
-                let name = text(o, "name")?.to_string();
-                let files = self.staged.get(&name).ok_or_else(|| Refusal(format!("no bundle '{name}' staged")))?;
-                let files = files.clone();
-                let d = &mut self.document;
-                d.load(&name, &files);
+                let name = text(o, "name")?;
+                let Session { document: d, staged } = self;
+                let files = staged.get(name).ok_or_else(|| refuse(format!("no bundle '{name}' staged")))?;
+                d.load(name, files);
                 d.settle();
                 if let State::Failed(_, why) = d.state() {
-                    return Err(Refusal(why.clone()));
+                    return Err(refused_after(why.clone()));
                 }
                 none()
             }
             "create" => {
                 let name = text(o, "preset")?;
                 let preset =
-                    Catalog::native().preset(name).ok_or_else(|| Refusal(format!("no preset '{name}'")))?.clone();
+                    Catalog::native().preset(name).ok_or_else(|| refuse(format!("no preset '{name}'")))?.clone();
                 d.create(&preset);
                 d.settle();
                 none()
             }
             "createSurface" => {
                 let name = text(o, "preset")?;
-                let preset = SurfacePreset::named(name).ok_or_else(|| Refusal(format!("no surface '{name}'")))?;
+                let preset = SurfacePreset::named(name).ok_or_else(|| refuse(format!("no surface '{name}'")))?;
                 d.create_surface(&preset);
                 d.settle();
                 none()
@@ -225,7 +273,7 @@ impl Session {
             "expression" => {
                 // The formula field: a new expression, the window kept.
                 let expression = text(o, "expression")?.to_string();
-                kurven_math::expression::Expression::compile(&expression).map_err(|e| Refusal(e.to_string()))?;
+                kurven_math::expression::Expression::compile(&expression).map_err(|e| refuse(e.to_string()))?;
                 if d.landscape_request().is_none() {
                     return Err("an expression is a landscape's".into());
                 }
@@ -245,8 +293,8 @@ impl Session {
                 if let Some(surface) = d.surface_request().cloned() {
                     let field = Field::parse(&key)
                         .filter(|&f| surface.get(f).is_some())
-                        .ok_or_else(|| Refusal(format!("the surface has no field '{key}'")))?;
-                    surface.setting(field, value, &surface_key).map_err(|e| Refusal(e.to_string()))?;
+                        .ok_or_else(|| refuse(format!("the surface has no field '{key}'")))?;
+                    surface.setting(field, value, &surface_key).map_err(|e| refuse(e.to_string()))?;
                     Slider::SurfaceField { field, label: key }.set(d, value);
                 } else if d.landscape_request().is_some() {
                     let slider = Slider::Landscape { label: key.clone() };
@@ -256,7 +304,7 @@ impl Session {
                 }
                 d.settle();
                 match d.paint_status.clone() {
-                    Some(why) => Err(Refusal(why)),
+                    Some(why) => Err(refused_after(why)),
                     None => none(),
                 }
             }
@@ -278,7 +326,7 @@ impl Session {
                         }
                         _ => slider.set(d, number(o, "value")?),
                     },
-                    other => return Err(Refusal(format!("a drag's phase is begin, move or end, not {other}"))),
+                    other => return Err(refuse(format!("a drag's phase is begin, move or end, not {other}"))),
                 }
                 d.settle();
                 none()
@@ -302,7 +350,7 @@ impl Session {
                 Slider::Strokes { name: name.to_string() }.set(d, count);
                 d.settle();
                 match d.paint_status.clone() {
-                    Some(why) => Err(Refusal(why)),
+                    Some(why) => Err(refused_after(why)),
                     None => none(),
                 }
             }
@@ -312,13 +360,13 @@ impl Session {
                 Slider::SurfaceField { field: Field::Relief, label: "Relief".to_string() }.set(d, value);
                 d.settle();
                 match d.paint_status.clone() {
-                    Some(why) => Err(Refusal(why)),
+                    Some(why) => Err(refused_after(why)),
                     None => none(),
                 }
             }
             "truncation" => {
                 let truncation = Truncation::from_json(o.get("truncation").ok_or("wants a 'truncation'")?)
-                    .map_err(|e| Refusal(e.to_string()))?;
+                    .map_err(|e| refuse(e.to_string()))?;
                 d.edit_truncation(truncation, "Truncation");
                 d.settle();
                 none()
@@ -342,11 +390,11 @@ impl Session {
                     .paint_choices(&pick)
                     .into_iter()
                     .find(|c| c.id() == name)
-                    .ok_or_else(|| Refusal(format!("nothing called '{name}' to add here")))?;
+                    .ok_or_else(|| refuse(format!("nothing called '{name}' to add here")))?;
                 d.add(&choice);
                 d.settle();
                 match d.paint_status.clone() {
-                    Some(why) => Err(Refusal(why)),
+                    Some(why) => Err(refused_after(why)),
                     None => none(),
                 }
             }
@@ -358,8 +406,8 @@ impl Session {
                     .painted_layers(&pick)
                     .into_iter()
                     .find(|&i| layers.get(i).is_some_and(|l| l.name == name))
-                    .ok_or_else(|| Refusal(format!("no layer '{name}' on the picked face")))?;
-                d.remove_layer(index).map_err(|e| Refusal(e.0))?;
+                    .ok_or_else(|| refuse(format!("no layer '{name}' on the picked face")))?;
+                d.remove_layer(index).map_err(|e| refuse(e.0))?;
                 d.settle();
                 none()
             }
@@ -372,7 +420,7 @@ impl Session {
                     }
                     None => d.function_periods(&expression),
                 };
-                d.add_function(&expression, periods).map_err(|e| Refusal(e.0))?;
+                d.add_function(&expression, periods).map_err(|e| refuse(e.0))?;
                 d.settle();
                 none()
             }
@@ -392,7 +440,7 @@ impl Session {
                 let axis = match text(o, "axis")? {
                     "real" => DomainAxis::Real,
                     "imag" => DomainAxis::Imag,
-                    other => return Err(Refusal(format!("an axis is real or imag, not {other}"))),
+                    other => return Err(refuse(format!("an axis is real or imag, not {other}"))),
                 };
                 d.paint_axis(axis);
                 d.settle();
@@ -405,7 +453,11 @@ impl Session {
                 none()
             }
             "hide" => {
-                d.toggle(number(o, "layer")? as usize);
+                let layer = index(o, "layer")?;
+                if layer >= d.layers().len() {
+                    return Err(refuse(format!("no layer {layer}")));
+                }
+                d.toggle(layer);
                 none()
             }
             "gesture" => {
@@ -419,9 +471,28 @@ impl Session {
                         let p = numbers(g, "point", 3)?;
                         Gesture::Retarget(P3::new(p[0], p[1], p[2]))
                     }
-                    other => return Err(Refusal(format!("no gesture '{other}'"))),
+                    other => return Err(refuse(format!("no gesture '{other}'"))),
                 };
                 d.apply(&gesture);
+                none()
+            }
+            "camera" => {
+                // A camera set outright: what a run of gestures left it, as
+                // the state's `camera.exact` reports it, to the bit. Gestures
+                // move nothing else (`Navigator::applying`), so a client can
+                // replay a run of them as this one request.
+                let Some(mut n) = d.navigator else { return none() };
+                let target = numbers(o, "target", 3)?;
+                let center = numbers(o, "center", 2)?;
+                n.orbit.azimuth = Angle::from_radians(number(o, "azimuth")?);
+                n.orbit.elevation = Angle::from_radians(number(o, "elevation")?);
+                n.orbit.target = P3::new(target[0], target[1], target[2]);
+                n.orbit.distance = match o.get("distance") {
+                    None | Some(JsonValue::Null) => None,
+                    Some(_) => Some(number(o, "distance")?),
+                };
+                n.framing = Framing::new(P2::new(center[0], center[1]), number(o, "unitsPerPixel")?);
+                d.navigator = Some(n);
                 none()
             }
             "fit" => {
@@ -430,8 +501,7 @@ impl Session {
             }
             "preset" => {
                 let presets = presets(d);
-                let index = number(o, "index")? as usize;
-                let preset = presets.get(index).cloned().ok_or("no such preset")?;
+                let preset = presets.get(index(o, "index")?).cloned().ok_or("no such preset")?;
                 d.use_preset(&preset);
                 none()
             }
@@ -440,7 +510,11 @@ impl Session {
                 none()
             }
             "viewport" => {
-                d.viewport = Viewport::new(number(o, "width")? as i64, number(o, "height")? as i64);
+                let (width, height) = (integer(o, "width")?, integer(o, "height")?);
+                if width < 1 || height < 1 {
+                    return Err(refuse(format!("a viewport is at least a pixel, not {width} by {height}")));
+                }
+                d.viewport = Viewport::new(width, height);
                 none()
             }
             "mode" => {
@@ -448,7 +522,7 @@ impl Session {
                     "drawing" => PreviewMode::Drawing,
                     "depth" => PreviewMode::Depth,
                     "shaded" => PreviewMode::Shaded(kurven_core::scene::Lighting::default()),
-                    other => return Err(Refusal(format!("no mode '{other}'"))),
+                    other => return Err(refuse(format!("no mode '{other}'"))),
                 };
                 none()
             }
@@ -458,20 +532,26 @@ impl Session {
                 none()
             }
             "draftResolution" => {
-                d.draft_resolution = (number(o, "value")? as i64).max(8);
+                let value = integer(o, "value")?;
+                if value < 8 {
+                    return Err(refuse(format!("a draft resolution is at least 8, not {value}")));
+                }
+                d.draft_resolution = value;
                 none()
             }
             "bakeResolution" => {
-                d.bake_resolution = number(o, "value")? as i64;
+                d.bake_resolution = integer(o, "value")?;
                 none()
             }
             "frame" => {
                 // The curves a frame draws, in world space: a draft's, or the
-                // window's layout at rest.
+                // window's layout at rest, of the scene the window shows (the
+                // picked face's boundary last), each saying whether it is
+                // drawn (`shown_visible_layers`).
                 let draft = o.get("draft").and_then(JsonValue::as_bool).unwrap_or(true);
                 let layers = if draft { d.draft_layers() } else { d.rest_layout() };
                 let mut arrays = Vec::new();
-                let described = layer_arrays("layer", &layers, &mut arrays);
+                let described = layer_arrays("layer", &layers, &d.shown_visible_layers(), &mut arrays);
                 let mut out = JsonObject::new();
                 out.insert("layers".to_string(), JsonValue::Array(described));
                 Ok((out, arrays))
@@ -479,7 +559,7 @@ impl Session {
             "bake" => {
                 // The judged strokes, what Export writes: each layer's
                 // page-space points and its offsets, and the SVG when asked.
-                let strokes = d.bake().map_err(Refusal)?;
+                let strokes = d.bake().map_err(refuse)?;
                 let mut arrays = Vec::new();
                 let mut styles = Vec::new();
                 for (i, (style, paths)) in strokes.layers.iter().enumerate() {
@@ -554,7 +634,7 @@ impl Session {
                     .collect();
                 let staged = &self.staged;
                 let run = headless::run(&args, &|path: &str| {
-                    staged.get(path).cloned().ok_or_else(|| format!("{path} is not a bundle directory"))
+                    staged.get(path).map(Cow::Borrowed).ok_or_else(|| format!("{path} is not a bundle directory"))
                 });
                 let mut arrays = Vec::new();
                 let mut outputs = Vec::new();
@@ -580,7 +660,7 @@ impl Session {
                 out.insert("outputs".to_string(), JsonValue::Array(outputs));
                 Ok((out, arrays))
             }
-            other => Err(Refusal(format!("no request '{other}'"))),
+            other => Err(refuse(format!("no request '{other}'"))),
         }
     }
 
@@ -663,6 +743,19 @@ impl Session {
                     ("center", json::doubles(&[n.framing.center.x(), n.framing.center.y()])),
                     ("unitsPerPixel", JsonValue::Double(n.framing.units_per_pixel)),
                     ("perspective", JsonValue::Bool(n.orbit.is_perspective())),
+                    // The values a `camera` request sets, to the bit: the
+                    // angles in radians as the orbit holds them.
+                    (
+                        "exact",
+                        json::object([
+                            ("azimuth", JsonValue::Double(n.orbit.azimuth.radians)),
+                            ("elevation", JsonValue::Double(n.orbit.elevation.radians)),
+                            ("target", json::doubles(&[n.orbit.target.x(), n.orbit.target.y(), n.orbit.target.z()])),
+                            ("distance", n.orbit.distance.map_or(JsonValue::Null, JsonValue::Double)),
+                            ("center", json::doubles(&[n.framing.center.x(), n.framing.center.y()])),
+                            ("unitsPerPixel", JsonValue::Double(n.framing.units_per_pixel)),
+                        ]),
+                    ),
                 ]),
             );
         }
@@ -714,6 +807,15 @@ impl Session {
         o.insert("bakeResolution".to_string(), JsonValue::Int(d.bake_resolution));
         o.insert("draftResolution".to_string(), JsonValue::Int(d.draft_resolution));
         o.insert("canBake".to_string(), JsonValue::Bool(d.can_bake()));
+        o.insert("refine".to_string(), JsonValue::Bool(d.refine_contours));
+        o.insert(
+            "mode".to_string(),
+            json::string(match d.mode {
+                PreviewMode::Drawing => "drawing",
+                PreviewMode::Shaded(_) => "shaded",
+                PreviewMode::Depth => "depth",
+            }),
+        );
         JsonValue::Object(o)
     }
 }
@@ -731,10 +833,10 @@ fn slider(o: &JsonObject) -> Result<Slider, Refusal> {
         "truncation" => Slider::Truncation,
         "surfaceField" => {
             let raw = text(s, "field")?;
-            let field = Field::parse(raw).ok_or_else(|| Refusal(format!("no field '{raw}'")))?;
+            let field = Field::parse(raw).ok_or_else(|| refuse(format!("no field '{raw}'")))?;
             Slider::SurfaceField { field, label: s.get("label").and_then(JsonValue::as_str).unwrap_or(raw).to_string() }
         }
-        other => return Err(Refusal(format!("no slider '{other}'"))),
+        other => return Err(refuse(format!("no slider '{other}'"))),
     })
 }
 

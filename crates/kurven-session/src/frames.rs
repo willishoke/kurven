@@ -10,6 +10,10 @@
 //! the rest to the depth test; the judged strokes, what Export writes, are
 //! the bake of the scene the window shows (`Document::bake`), every curve
 //! tested, which the page draws at rest (HANDOFF-web-port.md, "Two tiers").
+//!
+//! Both draw the scene the window shows (`Document::shown_scene`), the
+//! picked face's boundary over it, as Swift's `MetalView` draws
+//! `shownScene`; which layers are drawn is `shown_visible_layers`.
 
 use kurven_core::hatching::FaceKind;
 use kurven_core::manifest::LayerSource;
@@ -23,7 +27,7 @@ impl Document {
     /// layer as the scene holds it. What the GPU depth-tests while the camera
     /// moves.
     pub fn draft_layers(&self) -> Vec<Layer> {
-        let Some(scene) = self.framed_scene() else { return Vec::new() };
+        let Some(scene) = self.shown_scene() else { return Vec::new() };
         let Some(h) = scene.heightfield() else { return scene.layers().to_vec() };
         let view = scene.camera.view;
         scene
@@ -45,7 +49,7 @@ impl Document {
     /// to the depth test. Swift's window does this off the main thread at
     /// each camera rest.
     pub fn rest_layout(&self) -> Vec<Layer> {
-        let Some(scene) = self.framed_scene() else { return Vec::new() };
+        let Some(scene) = self.shown_scene() else { return Vec::new() };
         let Some(h) = scene.heightfield() else { return scene.layers().to_vec() };
         let view = scene.camera.view;
         scene

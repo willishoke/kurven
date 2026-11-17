@@ -14,6 +14,8 @@
 //! `--thumbnails`, a window left open. A pick reads the CPU's stand-in for
 //! the preview's depth (`picking::preview_depth`).
 
+use std::borrow::Cow;
+
 use kurven_core::bundle::BundleFiles;
 use kurven_core::manifest::ManifestError;
 use kurven_core::manifest::{DomainAxis, Truncation};
@@ -52,12 +54,16 @@ struct Exit(i32);
 struct Headless<'a> {
     document: Document,
     run: Run,
-    open: &'a dyn Fn(&str) -> Result<BundleFiles, String>,
+    open: &'a Opener<'a>,
 }
+
+/// How a run reads the bundle at a path: its files, read (a directory) or
+/// borrowed (files already in memory, which are then not copied).
+pub type Opener<'a> = dyn Fn(&str) -> Result<Cow<'a, BundleFiles>, String> + 'a;
 
 /// Run the app's command line headlessly (`args` without the program's
 /// name). `open` reads the bundle at a path.
-pub fn run(args: &[String], open: &dyn Fn(&str) -> Result<BundleFiles, String>) -> Run {
+pub fn run<'a>(args: &[String], open: &'a Opener<'a>) -> Run {
     let mut h = Headless { document: Document::new(), run: Run::default(), open };
     let code = match h.dispatch(args) {
         Ok(()) => 0,

@@ -374,9 +374,24 @@ impl Document {
         self.scene.as_ref().map(|s| s.layers()).unwrap_or(&[])
     }
 
-    /// The indices of the layers drawn, as the preview's options name them.
+    /// The indices of the layers drawn, as the preview's options name them
+    /// (Swift's `previewOptions`).
     pub fn visible_layers(&self) -> Vec<usize> {
         (0..self.layers().len()).filter(|i| !self.hidden_layers.contains(i)).collect()
+    }
+
+    /// `visible_layers`, with the picked face's boundary drawn: the last
+    /// layer of `shown_scene` when something is picked (Swift's
+    /// `shownOptions`).
+    pub fn shown_visible_layers(&self) -> Vec<usize> {
+        let mut visible = self.visible_layers();
+        if let Some(selection) = &self.selection {
+            let last = selection.scene.layers().len().saturating_sub(1);
+            if !visible.contains(&last) {
+                visible.push(last);
+            }
+        }
+        visible
     }
 
     // MARK: - loading

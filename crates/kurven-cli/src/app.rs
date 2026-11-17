@@ -4,6 +4,7 @@
 //! reads the bundle named on the line and writes what the run saved, baked
 //! and dumped.
 
+use std::borrow::Cow;
 use std::path::Path;
 
 use kurven_core::bundle::{BundleFiles, write_files};
@@ -53,7 +54,7 @@ pub fn write_outputs(outputs: &[Output]) -> Result<(), String> {
 /// Run the app's command line: print what it printed, write what it wrote,
 /// and exit as it exits.
 pub fn app_command(args: &[String]) -> i32 {
-    let run = headless::run(args, &read_bundle);
+    let run = headless::run(args, &|path: &str| read_bundle(path).map(Cow::Owned));
     for line in &run.stdout {
         println!("{line}");
     }
