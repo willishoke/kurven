@@ -14,7 +14,7 @@
 
 mod common;
 
-use common::par_map;
+use common::{alone, par_map, sharing};
 use kurven_core::camera::Camera;
 use kurven_core::hatching::FaceSelector;
 use kurven_core::integral_curves::{End, Limits, Section, Traced, VectorField};
@@ -556,6 +556,7 @@ fn tangent(path: &[Vec2], i: usize, s: f64) -> Vec2 {
 /// "lines of curvature: on the forced torus the two families cross at right angles in space, each once round"
 #[test]
 fn on_the_forced_torus_the_two_families_cross_at_right_angles_in_space_each_once_round() {
+    let _beside = sharing();
     let surface = forced();
     let face = surface.face();
     let copy = &face.copies[0];
@@ -572,12 +573,12 @@ fn on_the_forced_torus_the_two_families_cross_at_right_angles_in_space_each_once
     }
     let mut families: Vec<Vec<Vec<Vec2>>> = Vec::new();
     let (mut returned, mut curves, mut off_section) = (0, 0, 0.0);
-    let mut took = [Duration::ZERO, Duration::ZERO];
-    // Each family traced twice, timed with the returns a curve is followed
-    // for past its first, and without. A seed's curve is traced on its own
-    // (`traced_integral_curves` maps each seed in turn), so each tracing is
-    // spread over threads a few seeds at a time, its curves joined in the
-    // seeds' order and its time the sum of its parts'.
+    // Each family traced twice, with the returns a curve is followed for
+    // past its first, and without. A seed's curve is traced on its own
+    // (`traced_integral_curves` maps each seed in turn), so both families'
+    // seeds are spread over the threads, as many to a call as share them
+    // out evenly, the curves joined in the seeds' order; each of the two
+    // tracings is timed as the wall time of the whole spread.
     let curvatures = [PrincipalCurvature::Greater, PrincipalCurvature::Lesser];
     let seeded: Vec<(DirectionField, Vec<P2<ParamSpace>>, Option<Section>)> = curvatures
         .iter()
@@ -591,40 +592,34 @@ fn on_the_forced_torus_the_two_families_cross_at_right_angles_in_space_each_once
             (field, points, section)
         })
         .collect();
-    let mut tracings: Vec<(usize, bool, usize)> = Vec::new();
-    for (family, (_, points, _)) in seeded.iter().enumerate() {
-        for once_round in [false, true] {
-            for start in (0..points.len()).step_by(4) {
-                tracings.push((family, once_round, start));
+    let threads = common::threads();
+    let trace = |once_round: bool| -> (Vec<Vec<Traced>>, Duration) {
+        let limits = if once_round { Limits { closing_returns: 0, ..Limits::default() } } else { Limits::default() };
+        let mut calls: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
+        for (family, (_, points, _)) in seeded.iter().enumerate() {
+            let per_call = points.len().div_ceil(threads).max(1);
+            for start in (0..points.len()).step_by(per_call) {
+                calls.push((family, start..(start + per_call).min(points.len())));
             }
         }
-    }
-    let parts = par_map(&tracings, |&(family, once_round, start)| {
-        let (field, points, section) = &seeded[family];
-        let limits = if once_round { Limits { closing_returns: 0, ..Limits::default() } } else { Limits::default() };
-        let seeds = &points[start..(start + 4).min(points.len())];
         let clock = Instant::now();
-        let traced = surface.traced_integral_curves(field, seeds, section.as_ref(), &limits);
-        (traced, clock.elapsed())
-    });
-    let mut traced_all = curvatures.iter().enumerate().flat_map(|(family, _)| {
-        [false, true].map(|once_round| {
-            let mut curves: Vec<Traced> = Vec::new();
-            let mut time = Duration::ZERO;
-            for (&(f, o, _), (traced, elapsed)) in tracings.iter().zip(&parts) {
-                if f == family && o == once_round {
-                    curves.extend(traced.iter().cloned());
-                    time += *elapsed;
-                }
-            }
-            (curves, time)
-        })
-    });
+        let parts = par_map(&calls, |(family, seeds)| {
+            let (field, points, section) = &seeded[*family];
+            surface.traced_integral_curves(field, &points[seeds.clone()], section.as_ref(), &limits)
+        });
+        let took = clock.elapsed();
+        let mut families: Vec<Vec<Traced>> = vec![Vec::new(); seeded.len()];
+        for ((family, _), traced) in calls.iter().zip(parts) {
+            families[*family].extend(traced);
+        }
+        (families, took)
+    };
+    let (full, full_took) = trace(false);
+    let (_, once_round_took) = trace(true);
+    let took = [full_took, once_round_took];
+    let mut traced_all = full.into_iter();
     for curvature in curvatures {
-        let (traced, full) = traced_all.next().expect("a tracing");
-        let (_, once_round) = traced_all.next().expect("a tracing");
-        took[0] += full;
-        took[1] += once_round;
+        let traced = traced_all.next().expect("a tracing");
         let fixed = if curvature == PrincipalCurvature::Greater { 1 } else { 0 };
         for curve in &traced {
             curves += 1;
@@ -728,7 +723,7 @@ fn on_the_forced_torus_the_two_families_cross_at_right_angles_in_space_each_once
          curve it was seeded on back to it",
         format!(
             "k₁ − k₂ ≥ {least:.3}; {curves} curves, {returned} returned, ends off the section by {off_section:.1e}; \
-             traced in {:?}, {:?} once round alone",
+             both families traced in {:?}, {:?} once round alone (wall time, spread over {threads} threads)",
             took[0], took[1]
         ),
     );
@@ -925,7 +920,9 @@ fn the_manifest() {
     );
     // By arc length they are counted off the level set's length before
     // any is placed: a hundred-thousandth apart round the outer equator
-    // would be some two million.
+    // would be some two million. Timed alone: the forced torus's tracings,
+    // spread over every core, do not run meanwhile.
+    let timed = alone();
     let clock = Instant::now();
     let tiny = match torus.integral_curves(
         &DirectionField::PrincipalDirection(PrincipalCurvature::Greater),
@@ -936,6 +933,7 @@ fn the_manifest() {
         Err(e) => e.to_string().contains(&words),
     };
     let took = clock.elapsed();
+    drop(timed);
     expect(
         &mut failures,
         tiny && took < Duration::from_secs(2),
