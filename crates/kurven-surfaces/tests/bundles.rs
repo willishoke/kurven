@@ -174,13 +174,16 @@ fn a_parametric_surfaces_bundle_bakes_what_its_request_bakes_for_every_surface()
     // own, independent of the others: side by side, the checks in order.
     let outcomes = par_map(&requests, |(label, request)| {
         let drawing = build(request, None);
-        let direct = svg_of(&drawing.scene(Camera::oblique(&SurfaceRequest::PROJECTION)), &options);
-        let url = directory.join(&format!("{label}.kurven"));
-        bundle(&url, drawing).write(&url, None).unwrap_or_else(|e| panic!("{label}: written: {e}"));
-        let text = std::fs::read_to_string(url.join("manifest.json")).expect("the manifest written");
-        let read = read(&url);
-        let from_bundle = svg_of(&read.scene(&read.manifest.presets[0]), &options);
-        (direct, text, read, from_bundle)
+        // The request's bake and the bundle's round trip, side by side.
+        std::thread::scope(|scope| {
+            let direct = scope.spawn(|| svg_of(&drawing.scene(Camera::oblique(&SurfaceRequest::PROJECTION)), &options));
+            let url = directory.join(&format!("{label}.kurven"));
+            bundle(&url, drawing.clone()).write(&url, None).unwrap_or_else(|e| panic!("{label}: written: {e}"));
+            let text = std::fs::read_to_string(url.join("manifest.json")).expect("the manifest written");
+            let read = read(&url);
+            let from_bundle = svg_of(&read.scene(&read.manifest.presets[0]), &options);
+            (direct.join().unwrap(), text, read, from_bundle)
+        })
     });
     for ((label, request), (direct, text, read, from_bundle)) in requests.iter().zip(outcomes) {
         let strokes = direct.matches("<polyline").count();
