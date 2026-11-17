@@ -28,8 +28,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::{
-    build, densely_hidden, drawn_triangles, first_hit, par_map, per_unit, random_heightfield, stress_cameras,
-    test_camera,
+    MeshIndex, alone, build, densely_hidden, drawn_triangles, exactly_hidden, first_hit, par_map, per_unit,
+    random_heightfield, sharing, stress_cameras, test_camera,
 };
 use kurven_core::grid::Grid2D;
 use kurven_core::hatching::FaceKind;
@@ -48,109 +48,6 @@ use kurven_core::surface::{ContourRefine, Magnitude, Surface};
 use kurven_landscape::{Catalog, LandscapeRequest};
 use kurven_math::{real, swift};
 
-/// Whether the line from `origin` along `direction`, up to distance
-/// `up_to`, passes under some triangle of `mesh` by more than `depth_tolerance`,
-/// perpendicular to that triangle: for every triangle with a footprint, the
-/// stretch of the line over the footprint, and the triangle's gap at its ends,
-/// which is where a linear gap is least. The start of the line counts only
-/// when `start_inside`. Brute force over the triangles, sharing nothing
-/// with the traversal.
-fn under_some_triangle(
-    mesh: &Mesh<WorldSpace>,
-    origin: Vec3,
-    direction: Vec3,
-    depth_tolerance: f64,
-    start_inside: bool,
-    up_to: f64,
-) -> bool {
-    let (o, d) = (Vec2::new(origin.x, origin.y), Vec2::new(direction.x, direction.y));
-    for t in &mesh.triangles {
-        let (a, b, c) =
-            (mesh.vertices[t[0] as usize].v, mesh.vertices[t[1] as usize].v, mesh.vertices[t[2] as usize].v);
-        let n = (b - a).cross(c - a);
-        let len = n.length();
-        // A wall, seen from above, has no footprint and is no one's triangle.
-        if !(len > 0.0 && n.z.abs() > 1e-12 * len) {
-            continue;
-        }
-        let cosine = n.z.abs() / len;
-        // The line clipped to the footprint: inside each edge's half-plane,
-        // with the footprint's linear curve.
-        let corners = [Vec2::new(a.x, a.y), Vec2::new(b.x, b.y), Vec2::new(c.x, c.y)];
-        let sign = if n.z > 0.0 { 1.0 } else { -1.0 };
-        let (mut lo, mut hi) = (0.0f64, f64::INFINITY);
-        let mut empty = false;
-        for k in 0..3 {
-            let (p, q) = (corners[k], corners[(k + 1) % 3]);
-            let e = q - p;
-            let f0 = sign * (e.x * (o.y - p.y) - e.y * (o.x - p.x));
-            let f1 = sign * (e.x * d.y - e.y * d.x); // f(t) = f0 + t f1 >= 0
-            if f1.abs() < 1e-15 {
-                if f0 < -1e-12 {
-                    empty = true;
-                    break;
-                }
-                continue;
-            }
-            let root = -f0 / f1;
-            if f1 > 0.0 {
-                lo = swift::max(lo, root);
-            } else {
-                hi = swift::min(hi, root);
-            }
-        }
-        hi = swift::min(hi, up_to);
-        if empty || !(lo <= hi) || !(hi.is_finite() || lo.is_finite()) {
-            continue;
-        }
-        let gap = |s: f64| -> f64 {
-            let p = origin + s * direction;
-            let z = a.z - (n.x * (p.x - a.x) + n.y * (p.y - a.y)) / n.z;
-            (p.z - z) * cosine
-        };
-        for s in [lo, hi] {
-            if s.is_finite() && (s > 1e-12 || start_inside) && gap(s) + depth_tolerance < 0.0 {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Whether a point is under the drawn surface, or on it to within
-/// `tolerance`: under some triangle whose footprint holds it.
-fn under_surface(mesh: &Mesh<WorldSpace>, p: Vec3, tolerance: f64) -> bool {
-    under_some_triangle(mesh, p, Vec3::new(0.0, 0.0, 1.0), -tolerance, true, 0.0)
-}
-
-/// The oracle for the traversal, brute force over the drawn triangles and
-/// sharing nothing with it. A point that starts inside the solid (strictly
-/// over the domain) is in its own surface's neighbourhood until the line
-/// first crosses out: there it is hidden only if it lies under some triangle
-/// by more than the depth tolerance, perpendicular to that triangle. After that, any
-/// crossing of the boundary beyond the depth tolerance's reach along the line is
-/// occlusion. `per_unit` is view depth per unit along the line.
-#[allow(clippy::too_many_arguments)]
-fn exactly_hidden(
-    mesh: &Mesh<WorldSpace>,
-    p: Vec3,
-    toward: Vec3,
-    depth_tolerance: f64,
-    per_unit: f64,
-    strictly_inside: bool,
-    cell: f64,
-) -> bool {
-    let reach = depth_tolerance / per_unit;
-    let mut exit = 0.0;
-    if under_surface(mesh, p, 1e-9 * cell) {
-        exit = first_hit(mesh, p, toward, 1e-10).unwrap_or(f64::INFINITY);
-    }
-    if under_some_triangle(mesh, p, toward, depth_tolerance, strictly_inside, exit) {
-        return true;
-    }
-    first_hit(mesh, p, toward, swift::max(exit, reach) + 1e-10).is_some()
-}
-
 fn rgamma() -> kurven_core::bundle::KurvenBundle {
     let preset = Catalog::native().preset("rgamma").unwrap();
     build(&LandscapeRequest::from_preset(preset, 240), true)
@@ -166,12 +63,17 @@ fn rgamma() -> kurven_core::bundle::KurvenBundle {
 /// nearer graph and not the drawing.
 #[test]
 fn a_heightfield_bake_is_the_same_drawing_at_every_depth_resolution() {
+    // rgamma's two drawings are timed, alone: no other test of the file
+    // runs meanwhile.
+    let timed = alone();
     let bundle = rgamma();
     let scene = Scene::from_bundle(&bundle, &bundle.manifest.presets[0]);
     let start = Instant::now();
     let reference = scene.visible_layers(None, None).unwrap();
     let again = scene.visible_layers(None, None).unwrap();
     let elapsed = start.elapsed();
+    drop(timed);
+    let _beside = sharing();
     let paths: usize = reference.iter().map(|(_, p)| p.count()).sum();
     let length: f64 = reference.iter().map(|(_, p)| p.total_length()).sum();
     eprintln!("rgamma: {paths} paths, {length:.1} units, {elapsed:?} for two drawings");
@@ -188,34 +90,54 @@ fn a_heightfield_bake_is_the_same_drawing_at_every_depth_resolution() {
     );
     assert!(elapsed < Duration::from_secs(60), "two drawings ran in reasonable time: {elapsed:?}");
 
-    // The steep case: erf under a truncation of 14 over a four-unit window,
-    // where the depth test lost a third of the contour curves to pixel
-    // span. The curves the test removes are removed by the solid, not by a
-    // pixel.
+    let (same, kept, facing_only, buried, behind) = steep_drawings();
+    eprintln!("steep: {kept} of {facing_only} units kept; {behind} behind, {buried} buried");
+    assert!(same, "the steep drawing too is the same strokes every time");
+    assert!(
+        kept > 0.5 * facing_only,
+        "of the facing contour curves, the solid hides what lies behind a nearer graph: {kept:.1} of \
+         {facing_only:.1} units kept; {behind} hidden vertices above their own triangle, {buried} under it"
+    );
+}
+
+/// The steep case of `a_heightfield_bake_is_the_same_drawing_at_every_depth_resolution`:
+/// erf under a truncation of 14 over a four-unit window, where the depth
+/// test lost a third of the contour curves to pixel span. The curves the
+/// test removes are removed by the solid, not by a pixel. Whether its two
+/// drawings are the same strokes; the length of the facing contour curves
+/// kept, and of all of them; and of the hidden facing vertices, those
+/// buried under their own drawn surface and those behind a nearer graph.
+fn steep_drawings() -> (bool, f64, f64, usize, usize) {
     let mut steep = LandscapeRequest::from_preset(Catalog::native().preset("erf").unwrap(), 240);
     steep.domain = Domain::new(Interval::new(-2.0, 2.0), Interval::new(-2.0, 2.0));
     steep.truncation = Some(Truncation::Uniform(14.0));
     let steep_bundle = build(&steep, true);
     let steep_scene = Scene::from_bundle(&steep_bundle, &steep_bundle.manifest.presets[0]);
+    // The same scene drawn twice, one after the other: the second drawing,
+    // made after the first, is its strokes.
     let first = steep_scene.visible_layers(None, None).unwrap();
     let second = steep_scene.visible_layers(None, None).unwrap();
-    assert!(first == second, "the steep drawing too is the same strokes every time");
+    let same = first == second;
     // What the solid hides of the facing contour curves, and why: curves
     // behind a nearer graph, or curves under its own drawn surface by more
     // than the depth tolerance. Reported, since neither number is a target;
-    // the floor only says the traversal is not erasing the drawing.
+    // the floor only says the traversal is not erasing the drawing. Each
+    // layer on its own, summed in order.
     let h = steep_scene.heightfield().unwrap();
     let view = steep_scene.camera.view;
     let vis = HeightfieldVisibility::new(h.clone(), &view, steep_scene.depth_tolerance);
-    let (mut kept, mut facing_only, mut buried, mut behind) = (0.0, 0.0, 0, 0);
-    for layer in steep_scene.layers() {
-        if !(layer.spec.clipped && steep_scene.geometry().face_of(&layer.spec) == Some(FaceKind::Graph)) {
-            continue;
-        }
-        kept += h
+    let layers: Vec<&Layer> = steep_scene
+        .layers()
+        .iter()
+        .filter(|layer| layer.spec.clipped && steep_scene.geometry().face_of(&layer.spec) == Some(FaceKind::Graph))
+        .collect();
+    let per_layer = par_map(&layers, |layer| {
+        let kept = h
             .visible_curves(&layer.paths, Some(FaceKind::Graph), &view, steep_scene.depth_tolerance, 0.0)
             .total_length();
-        facing_only += h.visible_curves(&layer.paths, Some(FaceKind::Graph), &view, f64::INFINITY, 0.0).total_length();
+        let facing_only =
+            h.visible_curves(&layer.paths, Some(FaceKind::Graph), &view, f64::INFINITY, 0.0).total_length();
+        let (mut buried, mut behind) = (0, 0);
         for &v in &layer.paths.vertices {
             if vis.facing(v.xy()) > 0.0 && !vis.is_clear(v) {
                 if v.z() < h.drawn_height(v.xy()) {
@@ -225,12 +147,16 @@ fn a_heightfield_bake_is_the_same_drawing_at_every_depth_resolution() {
                 }
             }
         }
+        (kept, facing_only, buried, behind)
+    });
+    let (mut kept, mut facing_only, mut buried, mut behind) = (0.0, 0.0, 0, 0);
+    for (k, f, u, b) in per_layer {
+        kept += k;
+        facing_only += f;
+        buried += u;
+        behind += b;
     }
-    assert!(
-        kept > 0.5 * facing_only,
-        "of the facing contour curves, the solid hides what lies behind a nearer graph: {kept:.1} of \
-         {facing_only:.1} units kept; {behind} hidden vertices above their own triangle, {buried} under it"
-    );
+    (same, kept, facing_only, buried, behind)
 }
 
 /// "stress: on a real drawing the traversal is the brute-force ray cast".
@@ -241,6 +167,7 @@ fn a_heightfield_bake_is_the_same_drawing_at_every_depth_resolution() {
 /// left out and the traversal and cast are still held to agree there.
 #[test]
 fn on_a_real_drawing_the_traversal_is_the_brute_force_ray_cast() {
+    let _beside = sharing();
     let bundle = rgamma();
     let scene = Scene::from_bundle(&bundle, &bundle.manifest.presets[0]);
     // The grid test: the drawing without its function, whose solid is
@@ -253,6 +180,9 @@ fn on_a_real_drawing_the_traversal_is_the_brute_force_ray_cast() {
     let vis = HeightfieldVisibility::new(h.clone(), &view, scene.depth_tolerance);
     let toward = -view.projection_direction();
     let per_unit = per_unit(&view, toward);
+    // The brute force over the drawn triangles, through an index of those
+    // each point's lines can meet (`MeshIndex`): the same answers.
+    let index = MeshIndex::new(&mesh, toward);
     let d = h.surface.domain();
     let (blo, bhi) = (
         Vec2::new(d.real.lo.min(d.real.hi), d.imag.lo.min(d.imag.hi)),
@@ -276,7 +206,7 @@ fn on_a_real_drawing_the_traversal_is_the_brute_force_ray_cast() {
         let cast: Vec<bool> = par_map(vertices, |&v| {
             let strictly_inside =
                 v.x() > blo.x + 1e-9 && v.x() < bhi.x - 1e-9 && v.y() > blo.y + 1e-9 && v.y() < bhi.y - 1e-9;
-            !exactly_hidden(&mesh, v.v, toward, scene.depth_tolerance, per_unit, strictly_inside, cell)
+            !exactly_hidden(&index, v.v, toward, scene.depth_tolerance, per_unit, strictly_inside, cell)
         });
         for (k, v) in vertices.iter().enumerate() {
             if !facing[k] {
@@ -488,6 +418,7 @@ fn scaling_the_drawing_scales_the_drawing() {
 /// up the line of sight".
 #[test]
 fn on_a_reflected_or_a_turned_tile_the_traversal_on_f_is_the_walk_up_the_line_of_sight() {
+    let _beside = sharing();
     // Two poles of a smooth bump on a grid of eight, so that the line of
     // sight dips under f between crossings, where only the search of
     // each interval, bracketed by the rate the gap changes, finds it.
@@ -540,6 +471,12 @@ fn on_a_reflected_or_a_turned_tile_the_traversal_on_f_is_the_walk_up_the_line_of
                     }
                     if q.x >= -1.0 && q.x <= 3.0 && q.y >= -1.0 && q.y <= 1.0 {
                         least = swift::min(least, q.z - h.surface_height(P2::new(q.x, q.y)));
+                        // The least gap only falls: under f by more than the
+                        // ten-thousandth the comparison asks, the walk's
+                        // verdict is made.
+                        if least < -1e-4 {
+                            break;
+                        }
                     }
                     t += 2e-4;
                 }
@@ -568,6 +505,7 @@ fn on_a_reflected_or_a_turned_tile_the_traversal_on_f_is_the_walk_up_the_line_of
         let wrong: usize = results.iter().map(|r| r.1).sum();
         let seen: usize = results.iter().map(|r| r.2).sum();
         let example = results.iter().map(|r| r.3.as_str()).find(|e| !e.is_empty()).unwrap_or("");
+        eprintln!("{name}: {wrong} of {compared} disagree, {seen} clear");
         assert!(
             wrong == 0 && compared > 2000 && seen > compared / 10 && seen < compared,
             "{name}: the traversal and the walk agree: {wrong} of {compared} disagree, {seen} clear{example}"
@@ -578,6 +516,7 @@ fn on_a_reflected_or_a_turned_tile_the_traversal_on_f_is_the_walk_up_the_line_of
 /// "stress: on a 4x4 grid the traversal is the brute-force ray cast, exactly".
 #[test]
 fn on_a_4x4_grid_the_traversal_is_the_brute_force_ray_cast_exactly() {
+    let _beside = sharing();
     // Heights drawn at random on a grid of four cells a side: every
     // cell is a different slope, every crossing is a crease, and no
     // approximation has anywhere to hide. The traversal is held to a ray

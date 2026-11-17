@@ -22,7 +22,7 @@
 use std::sync::Arc;
 
 use crate::common::{
-    build, drawn_triangles, exactly_hidden, first_hit, par_map, piece_meshes, ray_visible, test_camera,
+    RayCache, build, drawn_triangles, exactly_hidden, par_map, piece_meshes, ray_visible, test_camera,
 };
 use kurven_core::bundle::KurvenBundle;
 use kurven_core::camera::{Camera, Projection};
@@ -82,12 +82,15 @@ pub fn triangle_cast(
     bx: Option<Box3>,
     model: impl Fn(Vec3) -> Vec3 + Send + Sync + 'static,
 ) -> Cast {
+    // The brute force over every triangle, from each origin, through an
+    // index of the triangles each can meet (`RayCache`): the same answers.
+    let meshes = RayCache::new(meshes);
     Arc::new(move |p, to_eye| {
         let (q, face) = match bx {
             Some(b) => outside(model(p), b, size),
             None => (model(p), None),
         };
-        let clear = |x: Vec3| meshes.iter().all(|m| first_hit(m, x, to_eye, 1e-9 * size).is_none());
+        let clear = |x: Vec3| meshes.clear(x, to_eye, 1e-9 * size);
         let truth = clear(q);
         // On a face, nudged only along it.
         let nudges: Vec<Vec3> = across_sight(to_eye)
@@ -403,7 +406,8 @@ pub struct TopTriangle {
 /// top -- bucketed over (x, y): the top's normals at a point on it, and a
 /// cast from such a point.
 pub struct TerrainTops {
-    pub solid: Mesh<WorldSpace>,
+    /// The drawn triangles, the one mesh, cast against through its index.
+    pub solid: RayCache,
     pub triangles: Vec<TopTriangle>,
     pub lo: Vec2,
     pub cell: Vec2,
@@ -464,7 +468,7 @@ impl TerrainTops {
                 }
             }
         }
-        TerrainTops { solid: mesh, triangles, lo, cell, n, buckets, size, tolerance }
+        TerrainTops { solid: RayCache::new(vec![mesh]), triangles, lo, cell, n, buckets, size, tolerance }
     }
 
     /// The cast from a point on the top, in the landscape's own coordinates
@@ -490,7 +494,7 @@ impl TerrainTops {
             if !facing.iter().all(|&f| f > 1e-9) {
                 return None;
             }
-            let clear = |x: Vec3| first_hit(&tops.solid, x, to_eye, 1e-9 * tops.size).is_none();
+            let clear = |x: Vec3| tops.solid.clear(x, to_eye, 1e-9 * tops.size);
             let truth = clear(q);
             let nudges: Vec<Vec3> = normals
                 .iter()

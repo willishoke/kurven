@@ -11,6 +11,9 @@
 //! generator here is taken in (0, ω/2], so the two must agree to that
 //! prototype's precision.
 
+mod common;
+
+use common::{alone, par_map, sharing};
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -260,10 +263,14 @@ fn hausdorff(a: &PolylineSet<ViewSpace>, b: &PolylineSet<ViewSpace>) -> f64 {
 /// The viewport the preview suites frame in.
 const VIEWPORT: Viewport = Viewport { width: 1600, height: 1200 };
 
-/// The forced torus at the preview's grid, 1024 x 512.
-fn forced_preview_surface() -> ParametricSurface {
-    let found = found();
-    found.surface(&revolution(found), (1024, 512)).expect("the revolved torus").0
+/// The forced torus at the preview's grid, 1024 x 512, built once for the
+/// file, as `found` is: two suites read it.
+fn forced_preview_surface() -> &'static ParametricSurface {
+    static SURFACE: OnceLock<ParametricSurface> = OnceLock::new();
+    SURFACE.get_or_init(|| {
+        let found = found();
+        found.surface(&revolution(found), (1024, 512)).expect("the revolved torus").0
+    })
 }
 
 /// "surfaces: the preview's grid folds are the exact folds, to a pixel"
@@ -272,35 +279,44 @@ fn the_previews_grid_folds_are_the_exact_folds_to_a_pixel() {
     let forced = forced_preview_surface();
     let sn = PeriodicTorus::jacobi_sn(0.64, 0.0, &PeriodicOptions::default()).expect("the sn torus builds").surface;
     let mut checks = Checks::default();
-    for (name, surface) in [("forced", &forced), ("sn", &sn)] {
-        let normals = surface.grid_normals();
-        for projection in [
-            ObliqueProjection { shear: 0.0, x_angle: -55.0, z_angle: 30.0, flip_x: false, y_scale: None },
-            ObliqueProjection { shear: 0.5, x_angle: -30.0, z_angle: 110.0, flip_x: false, y_scale: None },
-        ] {
-            let camera = Camera::oblique(&projection);
-            let sight = camera.view.projection_direction();
-            let exact = surface.fold_curves(sight, None, &[]);
-            let grid = surface.grid_fold_curves(&normals, sight).expect("a normal per grid point");
-            let scene = Scene::parametric_scene(surface.clone(), Vec::new(), camera, PreviewMode::Drawing, 0.0);
-            let Some(bounds) = scene.quick_bounds(20_000) else {
-                checks.expect(false, format!("{name} has bounds"));
-                continue;
-            };
-            let px = Framing::fitting(&bounds, VIEWPORT, Framing::FIT_MARGIN).units_per_pixel;
-            let d = hausdorff(&exact.mapped(&camera.view), &grid.mapped(&camera.view)) / px;
-            let label = format!(
-                "{name}, x {}° z {}°: within a pixel at {}x{}: Hausdorff {d:.3} px; {} exact runs, {} grid runs",
-                projection.x_angle as i64,
-                projection.z_angle as i64,
-                VIEWPORT.width,
-                VIEWPORT.height,
-                exact.count(),
-                grid.count()
-            );
-            println!("{label}");
-            checks.expect(exact.count() > 0 && grid.count() > 0 && d < 1.0, label);
-        }
+    // Each surface under each projection, independent of the others: side by
+    // side, checked in turn.
+    let projections = [
+        ObliqueProjection { shear: 0.0, x_angle: -55.0, z_angle: 30.0, flip_x: false, y_scale: None },
+        ObliqueProjection { shear: 0.5, x_angle: -30.0, z_angle: 110.0, flip_x: false, y_scale: None },
+    ];
+    let normals = [forced.grid_normals(), sn.grid_normals()];
+    let cases: Vec<(usize, &str, &ParametricSurface, ObliqueProjection)> = [("forced", forced), ("sn", &sn)]
+        .into_iter()
+        .enumerate()
+        .flat_map(|(k, (name, surface))| projections.iter().map(move |&projection| (k, name, surface, projection)))
+        .collect();
+    let _beside = sharing();
+    let outcomes = par_map(&cases, |&(k, name, surface, projection)| {
+        let camera = Camera::oblique(&projection);
+        let sight = camera.view.projection_direction();
+        let exact = surface.fold_curves(sight, None, &[]);
+        let grid = surface.grid_fold_curves(&normals[k], sight).expect("a normal per grid point");
+        let scene = Scene::parametric_scene(surface.clone(), Vec::new(), camera, PreviewMode::Drawing, 0.0);
+        let Some(bounds) = scene.quick_bounds(20_000) else {
+            return (false, format!("{name} has bounds"));
+        };
+        let px = Framing::fitting(&bounds, VIEWPORT, Framing::FIT_MARGIN).units_per_pixel;
+        let d = hausdorff(&exact.mapped(&camera.view), &grid.mapped(&camera.view)) / px;
+        let label = format!(
+            "{name}, x {}° z {}°: within a pixel at {}x{}: Hausdorff {d:.3} px; {} exact runs, {} grid runs",
+            projection.x_angle as i64,
+            projection.z_angle as i64,
+            VIEWPORT.width,
+            VIEWPORT.height,
+            exact.count(),
+            grid.count()
+        );
+        (exact.count() > 0 && grid.count() > 0 && d < 1.0, label)
+    });
+    for (ok, label) in outcomes {
+        println!("{label}");
+        checks.expect(ok, label);
     }
     checks.done();
 }
@@ -332,22 +348,35 @@ fn an_orbit_frame_of_the_forced_torus_folds_and_all_keeps_up() {
     // it pays only for what the camera changes.
     let normals = forced.grid_normals();
     let mut frames: Vec<f64> = Vec::new();
-    for frame in 0..7 {
+    // The frames in turn, each frame's grid folds timed alone; then each
+    // frame's exact folds, which nothing times and which are independent
+    // of one another, side by side, and checked in turn.
+    // The timed stretch runs alone: no other test of the file meanwhile.
+    let timed = alone();
+    let mut shown = Vec::new();
+    for _ in 0..7 {
         navigator = navigator.applying(&Gesture::Orbit(Vec2::new(12.0, 3.0)), VIEWPORT);
         let camera = navigator.camera();
         let sight = camera.view.projection_direction();
         let t = Instant::now();
         let grid = forced.grid_fold_curves(&normals, sight).expect("a normal per grid point");
         frames.push(milliseconds(t.elapsed()));
+        shown.push((camera, navigator.framing.units_per_pixel, grid));
+    }
+    drop(timed);
+    let _beside = sharing();
+    let outcomes = par_map(&shown, |(camera, units_per_pixel, grid)| {
+        let sight = camera.view.projection_direction();
         let exact = forced.fold_curves(sight, None, &[]);
-        let d = hausdorff(&exact.mapped(&camera.view), &grid.mapped(&camera.view)) / navigator.framing.units_per_pixel;
+        let d = hausdorff(&exact.mapped(&camera.view), &grid.mapped(&camera.view)) / units_per_pixel;
+        (exact.count(), grid.count(), d)
+    });
+    for (frame, (exact, grid, d)) in outcomes.into_iter().enumerate() {
         checks.expect(
-            exact.count() > 0 && grid.count() > 0 && d < 1.0,
+            exact > 0 && grid > 0 && d < 1.0,
             format!(
-                "frame {frame}: the grid folds are the exact folds, to a pixel: Hausdorff {d:.3} px; {} exact runs, \
-                 {} grid runs",
-                exact.count(),
-                grid.count()
+                "frame {frame}: the grid folds are the exact folds, to a pixel: Hausdorff {d:.3} px; {exact} exact runs, \
+                 {grid} grid runs"
             ),
         );
     }
@@ -432,12 +461,16 @@ fn names(d: &SurfaceDrawing) -> Vec<&str> {
 #[test]
 fn a_surface_request_builds_its_drawing_and_an_edit_keeps_what_it_can() {
     let mut checks = Checks::default();
+    // The fit and the re-place are timed against each other, alone: no
+    // other test of the file runs meanwhile.
+    let timed = alone();
     let t = Instant::now();
     let first = build(&forced_request(2.5, 30, None), None);
     let fitted = t.elapsed();
     let t = Instant::now();
     let second = build(&forced_request(3.0, 30, None), Some(&first));
     let kept = t.elapsed();
+    drop(timed);
     checks.expect(
         first.torus().is_some() && first.embedded && names(&first) == ["trajectory", "folds"],
         format!("a forced drawing is its trajectory and its folds, on an embedded torus: {:?}", names(&first)),
@@ -484,17 +517,11 @@ fn a_surface_request_builds_its_drawing_and_an_edit_keeps_what_it_can() {
             && a.layers.iter().map(|l| &l.spec).eq(b.layers.iter().map(|l| &l.spec))
             && a.layers.iter().map(|l| &l.paths).eq(b.layers.iter().map(|l| &l.paths))
     }
-    let mut edit = |label: &str, from: &SurfaceRequest, to: &SurfaceRequest, keeps_surface: bool| {
-        let before = build(from, None);
-        let edited = build(to, Some(&before));
-        let fresh = build(to, None);
-        checks.expect(
-            same(&edited, &fresh) && (edited.content == before.content) == keeps_surface,
-            format!(
-                "{label}: the edit is the drawing built afresh, and {}",
-                if keeps_surface { "keeps the surface" } else { "has a new surface" }
-            ),
-        );
+    // Each edit is three builds, independent of every other edit: listed in
+    // turn, built side by side, and checked in turn.
+    let mut edits: Vec<(&str, SurfaceRequest, SurfaceRequest, bool)> = Vec::new();
+    let mut edit = |label: &'static str, from: &SurfaceRequest, to: &SurfaceRequest, keeps_surface: bool| {
+        edits.push((label, from.clone(), to.clone(), keeps_surface));
     };
     let ring = SurfaceRequest {
         grid: 128,
@@ -562,6 +589,23 @@ fn a_surface_request_builds_its_drawing_and_an_edit_keeps_what_it_can() {
     }
     edit("forced, linear curve on", &forced, &forced_wound, true);
     edit("forced, linear curve slope", &forced_wound, &forced_steeper, true);
+    let beside = sharing();
+    let outcomes = par_map(&edits, |(_, from, to, keeps_surface)| {
+        let before = build(from, None);
+        let edited = build(to, Some(&before));
+        let fresh = build(to, None);
+        same(&edited, &fresh) && (edited.content == before.content) == *keeps_surface
+    });
+    drop(beside);
+    for ((label, _, _, keeps_surface), ok) in edits.iter().zip(outcomes) {
+        checks.expect(
+            ok,
+            format!(
+                "{label}: the edit is the drawing built afresh, and {}",
+                if *keeps_surface { "keeps the surface" } else { "has a new surface" }
+            ),
+        );
+    }
     let wound_drawing = build(&forced_wound, None);
     checks.expect(
         names(&wound_drawing) == ["trajectory", "linearCurves", "folds"],

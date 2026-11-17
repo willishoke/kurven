@@ -661,6 +661,7 @@ fn a_stroke_is_hidden_up_to_where_the_walk_up_the_line_of_sight_meets_terrain() 
         let wrong: usize = tallies.iter().map(|t| t.2).sum();
         let explained: usize = tallies.iter().map(|t| t.3).sum();
         let example = tallies.iter().map(|t| t.4.as_str()).find(|e| !e.is_empty()).unwrap_or("");
+        eprintln!("{name}: {wrong} disagree of {compared} strokes, {explained} at the edge, {partly} partly hidden");
         assert!(
             wrong == 0 && partly > 10,
             "{name}: a stroke on a wall that faces the eye keeps what the walk sees: {wrong} disagree, of {compared} \
@@ -1294,6 +1295,10 @@ fn a_risers_hatching_and_bottom_edge_are_hidden_up_to_where_the_walk_meets_the_s
         let (compared, whole, kept, wrong, vertices, seen, hidden, wrong_vertices) =
             (sum(0), sum(1), sum(2), sum(3), sum(4), sum(5), sum(6), sum(7));
         partly += sum(8);
+        eprintln!(
+            "{name}: {wrong} of {compared} lines disagree ({whole} whole, {kept} kept); {wrong_vertices} of \
+             {vertices} bottom vertices ({seen} seen, {hidden} hidden)"
+        );
         assert!(
             wrong == 0 && wrong_vertices == 0 && whole > 100 && kept > 100 && seen > 100 && hidden > 100,
             "{name}: a riser's hatching and bottom edge keep what the walk up the line of sight sees: {wrong} of \
@@ -1737,6 +1742,7 @@ fn no_stroke_is_drawn_through_a_riser_and_none_is_hidden_that_the_walk_sees() {
         let worst = tallies.iter().map(|t| t.4).fold(0.0f64, |m, x| if x > m { x } else { m });
         let under_example = tallies.iter().map(|t| t.5.as_str()).find(|e| !e.is_empty()).unwrap_or("");
         let seen_example = tallies.iter().map(|t| t.6.as_str()).find(|e| !e.is_empty()).unwrap_or("");
+        eprintln!("{name}: {under} of {kept} kept under the solid, worst {worst}; {seen} of {dropped} dropped in view");
         assert!(
             under == 0 && seen == 0 && kept > 1000 && dropped > 100,
             "{name}: what is drawn and what is dropped where a line of sight crosses a riser agree with the walk: \

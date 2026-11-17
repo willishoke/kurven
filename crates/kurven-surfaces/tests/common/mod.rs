@@ -2,7 +2,7 @@
 //! round torus (`torusSees`, `realRoots`, `torusSeesFromOutside`), its test
 //! cameras and view bounds, and `compareWithRayCast`.
 
-#![allow(dead_code)]
+#![allow(dead_code, clippy::neg_cmp_op_on_partial_ord, clippy::manual_range_contains)]
 
 use kurven_core::camera::{rotation_x, rotation_z};
 use kurven_core::depth::DepthImage;
@@ -12,6 +12,11 @@ use kurven_core::spaces::{AABB, Angle, P2, P3, ParamSpace, Transform, ViewSpace,
 use kurven_core::splitmix::SplitMix;
 use kurven_core::visibility::SurfaceVisibility;
 use kurven_math::{real, swift};
+
+#[path = "../../../test-support/threads.rs"]
+mod threads;
+#[allow(unused_imports)]
+pub use threads::{alone, par_map, sharing, threads};
 
 /// Whether a point of the torus of revolution `(R, r)` about z is seen from
 /// direction `eye` (unit, pointing from the point toward the viewer).
