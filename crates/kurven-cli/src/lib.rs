@@ -7,8 +7,10 @@
 //! - [`references`] bakes the reference drawings as `References.swift` does;
 //! - [`surface`] is `surface`, a parametric surface's drawing, and its
 //!   `surface solid` dispatches to [`solid`], a polyhedron by name;
-//! - [`scene`] draws several bundles as one composite.
+//! - [`scene`] draws several bundles as one composite;
+//! - [`app`] is the app's headless command line, through the session.
 
+pub mod app;
 pub mod args;
 pub mod commands;
 pub mod compare;

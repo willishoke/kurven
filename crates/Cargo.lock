@@ -18,6 +18,7 @@ dependencies = [
  "kurven-golden",
  "kurven-landscape",
  "kurven-math",
+ "kurven-session",
  "kurven-surfaces",
 ]
 
@@ -63,6 +64,9 @@ version = "0.1.0"
 dependencies = [
  "kurven-bake",
  "kurven-core",
+ "kurven-landscape",
+ "kurven-math",
+ "kurven-surfaces",
 ]
 
 [[package]]
@@ -80,6 +84,7 @@ name = "kurven-wasm"
 version = "0.1.0"
 dependencies = [
  "kurven-golden",
+ "kurven-session",
 ]
 
 [[package]]

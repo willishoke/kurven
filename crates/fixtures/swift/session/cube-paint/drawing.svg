@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1.6514 -0.9788 3.3027 3.8493" width="1536" height="1790.165">
+<g fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(0,1.8918) scale(1,-1)">
+<g stroke="#000000" stroke-width="0.00086">
+<polyline points="-1.3849,0.0512 -1.5774,0.5577"/>
+<polyline points="-1.1925,-0.14 -1.5774,0.873"/>
+<polyline points="-1,-0.3312 -1.5774,1.1883"/>
+<polyline points="-0.8075,-0.5223 -1.5774,1.5036"/>
+<polyline points="-0.6151,-0.7135 -1.5774,1.8189"/>
+<polyline points="-0.4226,-0.9047 -1.5774,2.1342"/>
+<polyline points="-0.4226,-0.5894 -1.3849,1.943"/>
+<polyline points="-0.4226,-0.2741 -1.1925,1.7518"/>
+<polyline points="-0.4226,0.0411 -1,1.5606"/>
+<polyline points="-0.4226,0.3564 -0.8075,1.3694"/>
+<polyline points="-0.4226,0.6717 -0.6151,1.1782"/>
+<polyline points="-0.0893,-0.7943 -0.4226,-0.5894"/>
+<polyline points="0.244,-0.684 -0.4226,-0.2741"/>
+<polyline points="0.5774,-0.5736 -0.4226,0.0411"/>
+<polyline points="0.9107,-0.4632 -0.4226,0.3564"/>
+<polyline points="1.244,-0.3528 -0.4226,0.6717"/>
+<polyline points="1.5774,-0.2424 -0.4226,0.987"/>
+<polyline points="1.5774,0.0729 -0.0893,1.0974"/>
+<polyline points="1.5774,0.3882 0.244,1.2078"/>
+<polyline points="1.5774,0.7035 0.5774,1.3182"/>
+<polyline points="1.5774,1.0187 0.9107,1.4286"/>
+<polyline points="1.5774,1.334 1.244,1.5389"/>
+<polyline points="-1.3849,1.943 -1.244,2.2446"/>
+<polyline points="-1.1925,1.7518 -0.9107,2.3549"/>
+<polyline points="-1,1.5606 -0.5774,2.4653"/>
+<polyline points="-0.8075,1.3694 -0.244,2.5757"/>
+<polyline points="-0.6151,1.1782 0.0893,2.6861"/>
+<polyline points="-0.4226,0.987 0.4226,2.7965"/>
+<polyline points="-0.0893,1.0974 0.6151,2.6053"/>
+<polyline points="0.244,1.2078 0.8075,2.4141"/>
+<polyline points="0.5774,1.3182 1,2.2229"/>
+<polyline points="0.9107,1.4286 1.1925,2.0317"/>
+<polyline points="1.244,1.5389 1.3849,1.8405"/>
+</g>
+<g stroke="#000000" stroke-width="0.00172">
+<polyline points="-1.5774,0.2424 -0.4226,-0.9047"/>
+<polyline points="-1.5774,0.2424 -1.5774,2.1342"/>
+<polyline points="-0.4226,-0.9047 1.5774,-0.2424"/>
+<polyline points="-0.4226,-0.9047 -0.4226,0.987"/>
+<polyline points="1.5774,-0.2424 1.5774,1.6493"/>
+<polyline points="-1.5774,2.1342 -0.4226,0.987"/>
+<polyline points="-1.5774,2.1342 0.4226,2.7965"/>
+<polyline points="-0.4226,0.987 1.5774,1.6493"/>
+<polyline points="0.4226,2.7965 1.5774,1.6493"/>
+</g>
+</g>
+</svg>

@@ -5,6 +5,8 @@
 //! to `derive` (`surface.rs`), the face contours (`face_contour.rs`) and the
 //! hatchings, the wall edges and the truncation edge (`hatch.rs`).
 
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -17,19 +19,174 @@ use crate::polyline::{Layer, PolylineSet};
 use crate::spaces::{P3, WorldSpace};
 use crate::surface::{ContourRefine, Surface};
 
+/// A bundle's files by their path inside it: what a bundle is read from and
+/// written to in memory, where the page has no file system. On disk a
+/// bundle is a directory of the same files (`Source::Directory`).
+///
+/// Each path is kept as `normal_path` reads it, made so once when it is put
+/// in (`insert`), so a lookup normalises the path it is given and gets it
+/// from the map, never scanning it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BundleFiles(BTreeMap<String, Vec<u8>>);
+
+impl BundleFiles {
+    pub fn new() -> BundleFiles {
+        BundleFiles::default()
+    }
+
+    /// Put a file in at `path`, as `normal_path` reads it, over any there.
+    pub fn insert(&mut self, path: &str, bytes: Vec<u8>) {
+        self.0.insert(normal_path(path), bytes);
+    }
+
+    /// The file at `path`, read as `normal_path` reads it.
+    pub fn get(&self, path: &str) -> Option<&[u8]> {
+        self.0.get(&normal_path(path)).map(Vec::as_slice)
+    }
+
+    /// The files by their (normal) paths, in order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &[u8])> {
+        self.0.iter().map(|(k, v)| (k.as_str(), v.as_slice()))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<const N: usize> From<[(&str, Vec<u8>); N]> for BundleFiles {
+    fn from(files: [(&str, Vec<u8>); N]) -> BundleFiles {
+        let mut out = BundleFiles::new();
+        for (path, bytes) in files {
+            out.insert(path, bytes);
+        }
+        out
+    }
+}
+
+impl IntoIterator for BundleFiles {
+    type Item = (String, Vec<u8>);
+    type IntoIter = std::collections::btree_map::IntoIter<String, Vec<u8>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+/// A path inside a bundle as both sources read it: its components but the
+/// empty and `.` ones, joined by `/`. `./height.npy` and `height.npy`, or
+/// `layers//a.npy` and `layers/a.npy`, name one file.
+pub fn normal_path(rel: &str) -> String {
+    rel.split('/').filter(|c| !c.is_empty() && *c != ".").collect::<Vec<_>>().join("/")
+}
+
+/// Where a reader takes a bundle's files from: a directory, as Swift reads
+/// one, or files in memory under a name, as the page holds one. Not in
+/// Swift, which reads URLs only.
+#[derive(Debug, Clone, Copy)]
+pub enum Source<'a> {
+    Directory(&'a Path),
+    Memory { name: &'a str, files: &'a BundleFiles },
+}
+
+impl Source<'_> {
+    /// The bundle's name, as a refusal names it: the directory's last
+    /// component, or the name it is held under.
+    pub fn name(&self) -> String {
+        match self {
+            Source::Directory(url) => url.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            Source::Memory { name, .. } => Path::new(name)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| name.to_string()),
+        }
+    }
+
+    /// The URL a bundle read from here records: the directory, or the name.
+    pub fn url(&self) -> PathBuf {
+        match self {
+            Source::Directory(url) => url.to_path_buf(),
+            Source::Memory { name, .. } => PathBuf::from(name),
+        }
+    }
+
+    /// Whether the bundle holds a file at `rel`.
+    pub fn has(&self, rel: &str) -> bool {
+        match self {
+            Source::Directory(url) => url.join(normal_path(rel)).exists(),
+            Source::Memory { files, .. } => files.get(rel).is_some(),
+        }
+    }
+
+    /// The bytes of the file at `rel`, or `MissingFile` naming it: read from
+    /// a directory, or borrowed from memory without a copy.
+    pub fn read(&self, rel: &str) -> Result<Cow<'_, [u8]>, BundleError> {
+        let missing = || BundleError::MissingFile { file: rel.to_string(), bundle: self.name() };
+        match self {
+            Source::Directory(url) => {
+                let u = url.join(normal_path(rel));
+                if !u.exists() {
+                    return Err(missing());
+                }
+                std::fs::read(&u).map(Cow::Owned).map_err(|e| BundleError::Io(format!("{}: {e}", u.display())))
+            }
+            Source::Memory { files, .. } => files.get(rel).map(Cow::Borrowed).ok_or_else(missing),
+        }
+    }
+
+    /// The text of the file at `rel`.
+    pub fn text(&self, rel: &str) -> Result<String, BundleError> {
+        std::str::from_utf8(&self.read(rel)?).map(str::to_string).map_err(|e| BundleError::Io(format!("{}: {e}", rel)))
+    }
+
+    /// The manifest, parsed as JSON.
+    pub fn manifest_json(&self) -> Result<crate::json::JsonValue, BundleError> {
+        crate::json::parse(&self.text("manifest.json")?).map_err(|e| BundleError::Schema(e.into()))
+    }
+}
+
 /// Whether the bundle at `url` has a manifest holding `key` at its top
 /// level: how a surface's bundle (`surface`) and a polyhedron's
 /// (`polyhedron`) are told from a landscape's (Swift's
 /// `SurfaceBundle.holdsSurface`, `PolyhedronBundle.holdsPolyhedron`). False
 /// where it has no manifest, for the landscape's reader to say so.
 pub fn holds_key(url: impl AsRef<Path>, key: &str) -> Result<bool, BundleError> {
-    let file = url.as_ref().join("manifest.json");
-    if !file.exists() {
+    holds_key_in(&Source::Directory(url.as_ref()), key)
+}
+
+/// `holds_key` of a bundle wherever its files are.
+pub fn holds_key_in(source: &Source, key: &str) -> Result<bool, BundleError> {
+    if !source.has("manifest.json") {
         return Ok(false);
     }
-    let text = std::fs::read_to_string(&file).map_err(|e| BundleError::Io(format!("{}: {e}", file.display())))?;
-    let json = crate::json::parse(&text).map_err(|e| BundleError::Schema(e.into()))?;
-    Ok(json.object("Manifest").map_err(|e| BundleError::Schema(e.into()))?.contains_key(key))
+    Ok(source.manifest_json()?.object("Manifest").map_err(|e| BundleError::Schema(e.into()))?.contains_key(key))
+}
+
+/// Write `files` into the directory `url`, the manifest last and by a
+/// temporary file renamed into place, so a bundle whose manifest exists is
+/// a bundle whose arrays are complete (Swift writes it `atomically`).
+pub fn write_files(files: &BundleFiles, url: impl AsRef<Path>) -> Result<(), BundleError> {
+    let url = url.as_ref();
+    let io = |e: std::io::Error, p: &Path| BundleError::Io(format!("{}: {e}", p.display()));
+    std::fs::create_dir_all(url).map_err(|e| io(e, url))?;
+    for (rel, bytes) in files.iter().filter(|(rel, _)| *rel != "manifest.json") {
+        let path = url.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| io(e, parent))?;
+        }
+        std::fs::write(&path, bytes).map_err(|e| io(e, &path))?;
+    }
+    if let Some(manifest) = files.get("manifest.json") {
+        let path = url.join("manifest.json");
+        let temporary = url.join(".manifest.json.tmp");
+        std::fs::write(&temporary, manifest)
+            .and_then(|()| std::fs::rename(&temporary, &path))
+            .map_err(|e| io(e, &path))?;
+    }
+    Ok(())
 }
 
 /// Why a bundle cannot be read or written.
@@ -277,20 +434,15 @@ impl KurvenBundle {
 
     /// Read a bundle directory.
     pub fn read(url: impl AsRef<Path>) -> Result<KurvenBundle, BundleError> {
-        let url = url.as_ref();
-        let name = url.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let file = |rel: &str| -> Result<PathBuf, BundleError> {
-            let u = url.join(rel);
-            if !u.exists() {
-                return Err(BundleError::MissingFile { file: rel.to_string(), bundle: name.clone() });
-            }
-            Ok(u)
-        };
+        KurvenBundle::read_from(&Source::Directory(url.as_ref()))
+    }
 
-        let manifest = Manifest::read(file("manifest.json")?)?;
+    /// Read a bundle wherever its files are: a directory, or files in memory.
+    pub fn read_from(source: &Source) -> Result<KurvenBundle, BundleError> {
+        let manifest = Manifest::from_json(&source.manifest_json()?)?;
 
         let grid = |r: &GridRef| -> Result<Grid2D<f32>, BundleError> {
-            let a = npy::read(file(&r.file)?)?;
+            let a = npy::parse(&source.read(&r.file)?)?;
             let expected = vec![r.shape.0.max(0) as usize, r.shape.1.max(0) as usize];
             if a.shape != expected || r.shape.0 < 0 || r.shape.1 < 0 {
                 return Err(BundleError::ShapeMismatch { file: r.file.clone(), expected, found: a.shape.clone() });
@@ -322,8 +474,8 @@ impl KurvenBundle {
             let Some((vertices, offsets)) = spec.files() else {
                 continue;
             };
-            let v = npy::read(file(vertices)?)?;
-            let o = npy::read(file(offsets)?)?;
+            let v = npy::parse(&source.read(vertices)?)?;
+            let o = npy::parse(&source.read(offsets)?)?;
             let verts: Vec<P3<WorldSpace>> = v.rows3()?.into_iter().map(|r| P3::new(r[0], r[1], r[2])).collect();
             let offsets = o.ints()?;
             let last = offsets.last().copied().unwrap_or(0);
@@ -343,8 +495,8 @@ impl KurvenBundle {
 
         let mut wall_mesh: Option<Mesh<WorldSpace>> = None;
         if let Walls::Mesh { vertices, triangles } = &manifest.occluder.walls {
-            let v = npy::read(file(vertices)?)?;
-            let t = npy::read(file(triangles)?)?;
+            let v = npy::parse(&source.read(vertices)?)?;
+            let t = npy::parse(&source.read(triangles)?)?;
             wall_mesh = Some(Mesh::new(
                 v.rows3()?.into_iter().map(|r| P3::new(r[0], r[1], r[2])).collect(),
                 t.rows3i()?.into_iter().map(|r| r.map(|i| i as i32)).collect(),
@@ -352,7 +504,7 @@ impl KurvenBundle {
         }
 
         Ok(KurvenBundle {
-            url: url.to_path_buf(),
+            url: source.url(),
             manifest,
             surface,
             layers: OnceLock::new(),
@@ -483,17 +635,24 @@ impl KurvenBundle {
     /// and a manifest naming files that are not there is worse than refusing.
     pub fn write(&self, url: impl AsRef<Path>) -> Result<(), BundleError> {
         let url = url.as_ref();
+        let name = url.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        write_files(&self.files(&name)?, url)
+    }
+
+    /// The files `write` writes, by their path in the bundle: the two grids
+    /// and the manifest naming them. `name` is the bundle's, for a refusal.
+    pub fn files(&self, name: &str) -> Result<BundleFiles, BundleError> {
         if !self.manifest.layers.iter().all(|l| l.files().is_none()) {
             return Err(BundleError::MissingFile {
                 file: "layers/*.npy (this bundle has dumped layers)".to_string(),
-                bundle: url.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                bundle: name.to_string(),
             });
         }
-        std::fs::create_dir_all(url).map_err(|e| BundleError::Io(format!("{}: {e}", url.display())))?;
+        let mut files = BundleFiles::new();
         let height = &*self.surface.height;
-        npy::write_f32(&height.values, &[height.height, height.width], url.join("height.npy"))?;
+        files.insert("height.npy", npy::encode_f32(&height.values, &[height.height, height.width]));
         if let Some(phase) = &self.surface.phase {
-            npy::write_f32(&phase.values, &[phase.height, phase.width], url.join("phase.npy"))?;
+            files.insert("phase.npy", npy::encode_f32(&phase.values, &[phase.height, phase.width]));
         }
         let mut written = self.manifest.clone();
         written.height = GridRef {
@@ -508,13 +667,29 @@ impl KurvenBundle {
                 dtype: NpyDType::Float32,
             });
         }
-        // The manifest goes last, so a bundle whose manifest exists is a
-        // bundle whose arrays are complete. Swift writes it atomically; so
-        // does this, by a temporary file renamed into place.
-        let path = url.join("manifest.json");
-        let temporary = url.join(".manifest.json.tmp");
-        std::fs::write(&temporary, written.canonical_json())
-            .and_then(|()| std::fs::rename(&temporary, &path))
-            .map_err(|e| BundleError::Io(format!("{}: {e}", path.display())))
+        files.insert("manifest.json", written.canonical_json().into_bytes());
+        Ok(files)
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+
+    #[test]
+    fn a_path_in_memory_is_read_as_a_directory_reads_it() {
+        assert_eq!(normal_path("./height.npy"), "height.npy");
+        assert_eq!(normal_path("layers//a.npy"), "layers/a.npy");
+        assert_eq!(normal_path("/layers/./a.npy/"), "layers/a.npy");
+        let files = BundleFiles::from([("./height.npy", vec![1u8]), ("layers//a.npy", vec![2u8])]);
+        let source = Source::Memory { name: "x.kurven", files: &files };
+        assert_eq!(&*source.read("height.npy").unwrap(), &[1u8]);
+        assert_eq!(&*source.read("layers//a.npy").unwrap(), &[2u8]);
+        // Kept under the normal path, once.
+        assert_eq!(files.iter().map(|(k, _)| k).collect::<Vec<_>>(), ["height.npy", "layers/a.npy"]);
+        assert!(source.has("./layers/a.npy"));
+        assert!(matches!(source.read("phase.npy"), Err(BundleError::MissingFile { .. })));
+        // Borrowed, not copied.
+        assert!(matches!(source.read("height.npy").unwrap(), Cow::Borrowed(_)));
     }
 }

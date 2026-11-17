@@ -1,0 +1,57 @@
+# The app's headless edits, each replayed natively in Rust (`kurven-cli app`)
+# and held to what Swift's app (`KurvenApp`) wrote for the same line.
+#
+#   NAME DISTANCE LENGTH INPUT ARGS...
+#
+# INPUT is a bundle under inputs/, given to the app as its bare path; an
+# argument @FILE is FILE in the script's own directory (a saved bundle or a
+# baked drawing). `make.sh` runs the Swift app over every line and keeps each
+# saved bundle's manifest and each drawing; scripts/check-web.sh runs the
+# Rust app, requires every manifest byte for byte, and compares every drawing
+# with `kurven-cli compare` at DISTANCE page units and LENGTH relative (the
+# reference drawings' floor, crates/fixtures/references.txt). The wasm module
+# under Node must write what native writes, byte for byte.
+#
+# Which path of App.swift a line takes is App.swift's rule: a painting flag
+# (--add, --remove, --function, --undo, --redo, --axis, --light, --truncation,
+# --hide, --drag, --relief, --dump, --inspector) or a pick with an edit runs
+# the edits in order (`headlessPaint`); --save or --bake alone runs the levels,
+# then the strokes, then a surface's fields (`headlessBundle`); --surface and
+# --landscape open from the catalog.
+
+# A parametric surface's request, levels and function.
+sn-set                1.5e-4 1e-5 sn       --set major=2.5 --save @saved.kurven --bake @drawing.svg
+sn-levels             1.5e-4 1e-5 sn       --levels mag_major=5 --save @saved.kurven --bake @drawing.svg
+sn-conformal          1.5e-4 1e-5 sn       --set conformal=1 --save @saved.kurven --bake @drawing.svg
+sn-levels-undo        1.5e-4 1e-5 sn       --levels mag_minor=9 --save @dragged.kurven --undo --save @saved.kurven --bake @drawing.svg
+sn-function           1.5e-4 1e-5 sn       --function sin(z) --save @saved.kurven --bake @drawing.svg
+sn-function-undo-redo 1.5e-4 1e-5 sn       --function cos(z) --periods 6.283185307179586,6.283185307179586 --save @painted.kurven --undo --save @undone.kurven --redo --save @saved.kurven --bake @drawing.svg
+sn-paint              1.5e-4 1e-5 sn       --pick 600,350 --add surface_u --add lines --remove folds --save @saved.kurven --bake @drawing.svg
+relief-set            1.5e-4 1e-5 relief   --relief 0.25 --save @saved.kurven --bake @drawing.svg
+# sn in relief at 0.5 and over is a Phase 4 difference, the CLIs' alike
+# (crates/FINDINGS.md, Phase 6), so the relief here stays under it.
+relief-undo           1.5e-4 1e-5 relief   --relief 0.3 --relief 0.1 --undo --save @saved.kurven --bake @drawing.svg
+torus-paint           1.5e-4 1e-5 torus    --pick 600,350 --add lines_of_curvature_greater --function sn(z,0.5) --add mag_major --save @saved.kurven --bake @drawing.svg
+torus-set-undo        1.5e-4 1e-5 torus    --set minor=0.7 --set major=2.2 --undo --save @saved.kurven --bake @drawing.svg
+# A landscape: the truncation, levels, strokes, painting, and its window.
+gamma-truncation      1.5e-4 1e-5 gamma    --truncation 3 --save @saved.kurven --bake @drawing.svg
+gamma-truncation-undo 1.5e-4 1e-5 gamma    --truncation 3 --truncation 7 --undo --save @saved.kurven --bake @drawing.svg
+gamma-levels          1.5e-4 1e-5 gamma    --levels mag_minor=12 --save @saved.kurven --bake @drawing.svg
+gamma-strokes         1.5e-4 1e-5 gamma    --strokes wall_hatch=40 --save @saved.kurven --bake @drawing.svg
+gamma-paint           1.5e-4 1e-5 gamma    --pick 600,550 --add graph_u --pick 450,450 --add walls_height --pick 450,250 --axis imag --save @saved.kurven --bake @drawing.svg
+gamma-remove-undo     1.5e-4 1e-5 gamma    --pick 600,550 --remove ang_minor --remove mag_minor --undo --save @saved.kurven --bake @drawing.svg
+gamma-window          1.5e-4 1e-5 gamma    --set rMax=2 --truncation 4 --save @saved.kurven --bake @drawing.svg
+gamma-res-undo        1.5e-4 1e-5 gamma    --set res=100 --levels mag_major=5 --undo --save @saved.kurven --bake @drawing.svg
+# Swift's defect, ported as it is (crates/FINDINGS.md, Phase 6): a level
+# count, then a resample, saves the count and draws the manifest's levels.
+gamma-levels-then-window 1.5e-4 1e-5 gamma --hide folds --levels mag_major=5 --set res=100 --save @saved.kurven --bake @drawing.svg
+banded-truncation     1.5e-4 1e-5 banded   --truncation 4 --save @saved.kurven --bake @drawing.svg
+banded-strokes        1.5e-4 1e-5 banded   --strokes riser_hatch=30 --save @saved.kurven --bake @drawing.svg
+rational-levels       1.5e-4 1e-5 rational --levels mag_major=3 --save @dragged.kurven --truncation 2.5 --save @saved.kurven --bake @drawing.svg
+# A polyhedron's hatching.
+frame-strokes         1.5e-4 1e-5 frame    --strokes hatching=40 --save @saved.kurven --bake @drawing.svg
+frame-strokes-undo    1.5e-4 1e-5 frame    --strokes hatching=30 --undo --save @saved.kurven --bake @drawing.svg
+cube-paint            1.5e-4 1e-5 cube     --pick 600,350 --add hatching --strokes hatching=12 --save @saved.kurven --bake @drawing.svg
+# Opened from the catalog, a surface and a landscape (no input).
+catalog-surface       1.5e-4 1e-5 -        --surface sn --set modulus=0.5 --save @saved.kurven --bake @drawing.svg
+catalog-landscape     1.5e-4 1e-5 -        --landscape moebius --resolution 160 --truncation 3 --save @saved.kurven

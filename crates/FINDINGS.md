@@ -1939,6 +1939,382 @@ wasm byte-identical.
   runs (`clip_on_runs`), placing the cut on the chord; the `surface`
   command reads `--lines-of-curvature` once.
 
+## 2026-11-16 · Phase 6: the session, what came across
+
+`Sources/KurvenApp`'s state and edit logic is `crates/kurven-session`, a
+module per Swift file, without the views: Document.swift (`document.rs`: the
+state, opening a bundle, adopting a landscape, a surface or a polyhedron with
+the camera fitted or kept, navigation, levels, `drawn_layers`, the bake of
+the scene the window shows), Edits.swift (`edits.rs`: `Edited`, `edit`,
+`set_edited`, a drag as one step, `refusal`, undo and redo), Landscape.swift
+(`landscape.rs`: `create`, `landscape_edited`, `pump`, `restyle`, `redraw`,
+`set_truncation`, hatch counts, the plateaus' axis, `save_bundle`,
+`Styling`, `applying(overrides:)`), Surfaces.swift (`surfaces.rs`),
+Polyhedra.swift (`polyhedra.rs`), Paint.swift (`paint.rs`: the layers on a
+face, the Add menu, add, remove, painting a function, the paint sliders),
+Picking.swift (`picking.rs`), the five sliders' callbacks (`sliders.rs`:
+`LandscapeSlider`, `LevelSlider`, `StrokeSlider`, `LightSlider`,
+`SurfaceFieldSlider`, and the truncation slider of LandscapeSection.swift),
+and App.swift's headless command line (`headless.rs`: `headlessPaint`,
+`headlessBundle`, `headlessSurface`, `headlessLandscape`, `headlessPick`,
+`resample`), which `kurven-cli app` runs. Two additions: `frames.rs`, the
+draft and rest tiers of a frame (MetalView.swift and `LineGeometry.layOut`'s
+engine half), and `protocol.rs`, the session as JSON messages and typed
+arrays, which kurven-wasm exports.
+
+Not ported, being views or the GPU's: App.swift's windows, menus and
+panels, Inspector, the three sections' SwiftUI, Gallery and Thumbnails (the
+picker's pictures are drawn by the preview), FrameClock, MetalView. A
+headless `--screenshot`, `--inspector` or `--thumbnails` is refused as
+needing the GPU (Phase 7), and a command line that would leave a window open
+is refused.
+
+To read a bundle in memory, where the page has no file system, the three
+bundle readers read from a `Source` (a directory, or `BundleFiles` under a
+name) and give the files they write (`files()`); the path readers and writers
+are those over a directory.
+
+## 2026-11-16 · Swift's detached tasks are jobs, landed in the order they started
+
+The document's slow work in Swift -- a sampling, a restyle, a layer's levels,
+a surface's build or restyle, a polyhedron's restyle, a face's boundary --
+runs on a detached task whose result lands back on the main actor, where it
+cannot interleave with an edit. Here each is a `Job` queued on the document
+(`jobs.rs`) holding what the task captured, and `settle` runs them in the
+order they were started, landing each as Swift's continuation does; a
+landing can start more. Swift's headless run waits for the document to
+settle after every edit (`settle()` in `headlessPaint`), and so does every
+request of the protocol.
+
+The one way this can differ: two of Swift's tasks in flight at once land in
+whichever order they finish. One edit starts two at once only where it changes a
+landscape's styling and its samples together, as an undo across steps can,
+and there the restyle, from grids in memory, finishes first in Swift as it
+lands first here. No gate script shows a difference. Swift's status lines carry the time
+a job took; the port's do not (`Instant` panics on wasm32-unknown-unknown,
+and a status is not a drawing).
+
+## 2026-11-16 · A pick reads a CPU cast until the page has a depth pass
+
+Swift picks a face at a pixel by reading the preview's depth texture
+(`MetalRenderer.previewDepth`) and taking the texel's centre back through the
+camera. Until Phase 7's depth pass, `picking::preview_depth` casts the
+texel's centre against the triangles the depth pass draws, in doubles: a
+landscape's grid decimated by its step at the drawn height (min(|f|, h), or
+the clamped grid under bands), per tile and cut to its region as
+`kv_height_vertex` cuts it, with the occluder's triangles; a parametric
+surface's grid; a solid's `mesh()`. Held to Swift on 42 pixels of each of
+the seven gate inputs and sn in relief: all 336 picks name the same face (or
+nothing) as Swift's app, and the points agree to the four decimals Swift
+prints. `Document::pick(point)` takes the world point, as Swift's
+`pick(at:)` does, so the page can pass the one its own depth pass reads.
+
+## 2026-11-16 · The binding is the plain C ABI, not wasm-bindgen
+
+The handoff left the choice to Phase 6. The C ABI is kept:
+
+- **Size.** The C ABI adds no JS glue and no runtime: the exports are plain
+  functions. wasm-bindgen adds its generated JS and its describe machinery,
+  which its CLI then strips from the module. It was not measured: neither
+  the crate nor its CLI is on this machine, and the CLI is a tool, which the
+  rules say to ask for.
+- **Simplicity.** The protocol is narrow on purpose: a JSON request in, a
+  JSON reply and some typed arrays out. That is `kv_alloc`, `kv_free`,
+  `kv_stage`, `kv_call` and four readers of the reply, 82 lines of
+  TypeScript (`web/app/src/engine/module.ts`) and no build step. With
+  wasm-bindgen the module could not be loaded without the generated glue,
+  whose version must match the crate's, and the goldens' Node harness would
+  need it too.
+- **Typed arrays.** Equal. Either way an array leaves linear memory by one
+  copy (wasm-bindgen's `Vec<f32>` return copies into a `Float32Array`; here
+  `memory.buffer.slice`), and that copy is what the Worker transfers to the
+  page without copying again. Neither can transfer linear memory itself.
+
+The golden sets keep their C-ABI path, behind a default feature (`goldens`);
+the page's module is built `--no-default-features`.
+
+## 2026-11-16 · The session against Swift's app: 28 edit scripts
+
+`crates/fixtures/swift/session/scripts.txt` holds 28 of the app's headless
+command lines; `make.sh` runs Swift's KurvenApp (`swift build -c release`)
+over them, on eight input bundles Swift's kurven-cli wrote (gamma at 160,
+gamma banded at 140, (z²−1)/(z²+1) at 120, sn, sn in relief at 0.4, a torus,
+the frame under Turing's pattern, a cube), and keeps what each saved and
+baked: 32 manifests and 27 drawings (8.2 MB with the inputs). Every flag the
+gate names is in them -- `--set` (a surface's field, a landscape's window
+and resolution), `--levels`, `--strokes`, `--relief`, `--truncation`,
+`--pick` with `--add` and `--remove`, `--function` with and without
+`--periods`, `--undo` -- and `--redo`, `--axis`, `--hide`, the catalog's
+`--surface` and `--landscape`, and both of App.swift's paths (in order,
+`headlessPaint`; levels then strokes then fields, `headlessBundle`).
+check-web's session step replays each line through `kurven-cli app`. Result:
+all 32 manifests byte for byte Swift's; all 27 drawings with Swift's layers,
+Swift's stroke counts in every layer, and Hausdorff distance 0 and length 0
+at the SVG's four decimals in every layer, held at the reference drawings'
+floor, 1.5e-4 page units and 1e-5 of length. The wasm module under Node
+writes every file the native run writes byte for byte (`session.mjs`, in the
+identity step), the resampled landscapes' grids among them.
+
+## 2026-11-16 · sn in relief at 0.5 and over: a Phase 4 difference
+
+The first relief-undo script, `--relief 0.6 --relief 0.2 --undo`, failed: its
+mag_minor layer is 9.4e-3 page units from Swift's. The session is not the
+cause: `kurven-cli surface sn --relief 0.6 -o x.svg` differs the same way
+between the two CLIs, and the session's own drawing is the Rust CLI's to the
+bit. By amplitude, the CLIs against each other: 0.1, 0.2, 0.3 (and the
+reference 0.4) at 0; 0.5 layer 3 at 2.0e-2; 0.6 layer 1 at 9.4e-3; 0.7
+layers 0, 1, 3 up to 4.2e-2; 0.8 layer 0 at 1.5e-2; 0.9 layers 1 and 5 up to
+7.5e-2; 1.0 layers 1 and 5 up to 9.6e-2. At 0.6 the stroke counts agree and
+the difference is a visibility cut: a stroke's end 2.5e-3 apart and a
+two-vertex stub placed at another point of one curve. Phase 4 held sn in
+relief at 0.4 only. That lane is Phase 4's and was not opened here; the gate's
+relief edits stay under 0.5 and say why. Reproduction: `kurven-cli surface sn
+--relief 0.6 -o a.svg` in each, `kurven-cli compare`.
+
+## 2026-11-16 · Where the Swift looks wrong (Phase 6, ported as it is)
+
+- **A level count, then a resample, saves one thing and draws another.**
+  `gamma.kurven --hide folds --levels mag_major=5 --set res=100 --save
+  s.kurven --bake d.svg`: the bundle saved has mag_major at 5 levels, the
+  drawing has it at the manifest's 9 (25 strokes, where the same two edits
+  in the other order draw 14). The resample's landing adopts the new bundle
+  with `curvesWanted = nil`, and nothing asks for the counted levels again;
+  `levelCounts` still holds the count, which `drawnLayers` saves. The port
+  does the same (gate script `gamma-levels-then-window`, at 0 against
+  Swift). The fix in both: adopt a resampled bundle with `curvesWanted =
+  false` when `levelCounts` is not empty, as `install` does after a restyle.
+- **`--open` cannot be used with an edit.** `headlessPaint` walks every
+  argument and refuses `--open` as "not an editing step", so the paint path
+  takes the bundle only as a bare argument, which App.swift's own message
+  tells you not to use for a window. Ported as is; the gate passes the bare
+  path.
+- **`--set` edits a landscape only on the paint path.** `headlessBundle`'s
+  `--set` reads a surface's fields alone ("gamma has no field 'res'; it has:
+  "), where `headlessPaint`'s edits a landscape's window too. So `--set
+  res=100 --save s.kurven` fails and `--hide folds --set res=100 --save
+  s.kurven` works. Ported as is.
+
+## 2026-11-16 · Phase 6: differences from Swift, by construction
+
+- **No file system.** A run of the app's command line reads its bundle
+  through an opener and returns what it saves, bakes and dumps;
+  `kurven-cli app` writes them.
+- **Statuses without times**, above; and `--drag truncation|levels N`
+  reports no main-actor stall, which a Worker does not have.
+- **The accent colour** of a picked face's boundary is macOS's default blue,
+  `#007aff`; Swift reads the system's.
+- **Undo.** Swift's `UndoManager`, grouped one registration an event, is a
+  stack of steps, each putting back the `Edited` before it and filing the
+  opposite step, as the closure `registerUndo` files does; a new step clears
+  what could be redone.
+- **Numbers on the command line** are read by Rust's parser (no C
+  hexadecimal floats), as `kurven-cli` reads them.
+
+## 2026-11-16 · The Worker protocol
+
+`web/app/src/engine/`: `protocol.ts` (the requests, the document's state,
+the messages both ways), `module.ts` (the C ABI), `worker.ts` (`serve(port)`,
+one request at a time, each reply's arrays transferred) with
+`worker-entry.ts` for a browser Worker, and `client.ts` (`EngineClient`).
+Requests are answered in order, numbered by the client. A view (a frame, a
+bake, the grids) is asked for under a key: at most one per key is in flight,
+a newer ask waits replacing any waiting one, and the in-flight one is stale
+when it lands if a newer ask came meanwhile; a stale ask's promise resolves
+`{ stale: true }`, its data dropped. A hung request is cancelled by hand or
+by a timeout: the client terminates the Worker, rejects what is pending with
+`Cancelled`, starts a new Worker, and replays the journal (every bundle
+staged and every edit answered) before any new request, so the new Worker
+holds the document as it was before the request that hung. The TypeScript
+uses erasable syntax only (`erasableSyntaxOnly`), so Node 26 runs it as it
+is; `web/app/test/worker.test.mjs` (check-web, "the Worker protocol under
+Node") drives the client and the module in a worker_threads Worker: open,
+truncate, save (Swift's manifest byte for byte) and bake (native's SVG byte
+for byte), undo, three asks of one view (stale, stale, delivered), and
+`besseli(1e12, z)` painted on a torus cancelled by a 1.5 s timeout, after
+which the document is the one before the edit and takes the next edit.
+
+## 2026-11-16 · Interactive timings: one thread, native and wasm
+
+cn and gamma from the catalog at the app's default resolution (600), through
+the protocol (`kurven-session/tests/interactive.rs`, ignored, and
+`kurven-wasm/interactive.mjs`), on this machine (Apple Silicon), one thread,
+wasm the check's module (opt-level 3) under Node 26:
+
+| request | cn native | cn wasm | gamma native | gamma wasm |
+|---|---|---|---|---|
+| open: sample, contours on f | 566 ms | 855 ms | 140 ms | 346 ms |
+| camera change, draft frame (folds on the grid) | 10.5 ms | 20 ms | 3.4 ms | 5.6 ms |
+| camera change, rest frame (the window's layout) | 1,783 ms | 2,664 ms | 250 ms | 690 ms |
+| camera change, judged strokes (the bake) | 23.1 s | 34.9 s | 1.02 s | 2.93 s |
+| truncation drag, a step (restyle) | 267 ms | 349 ms | 88 ms | 213 ms |
+| truncation drag, draft frame | 10.4 ms | 16 ms | 3.5 ms | 5.4 ms |
+| truncation drag, rest frame (the window's layout) | 1,537 ms | 2,287 ms | 237 ms | 673 ms |
+| truncation drag, judged strokes (the bake) | 18.4 s | 27.8 s | 1.01 s | 2.90 s |
+
+The rest frame is Swift's window's (`LineGeometry.layOut(draft: false)`): the
+folds on the exact fold and tested against the solid, and the clipped curves
+on the walls tested by their wall; every other curve is left to the GPU's
+depth test. Swift's was ~127 ms on cn on 18 cores; the port's single thread
+takes 1.78 s native, 2.66 s in wasm, of which the folds are 1.27 s (911
+vertices) and the walls 0.53 s (5,356 vertices) natively; gamma's 134 and
+107 ms. The judged strokes, every curve tested as the bake tests it at a
+quarter pixel, are 23 s on cn: not a rest frame anyone waits for.
+
+What would close the gap, measured or not:
+
+1. **At rest, draw what Swift's window draws**, not the judged strokes: the
+   page's rest frame is `frame` with `draft: false` and the GPU's depth test
+   (Phase 7); the judged strokes are what Export writes, made on demand and
+   cancellable. This is the handoff's "judged strokes at rest" corrected by
+   the numbers.
+2. **A pool of Workers without threads.** Swift spreads this work over its
+   cores with `concurrentPerform` (the fold curves' rows and seeds, each
+   tested vertex), and the port's loops are the same pieces in order, so it
+   splits across N Workers, each holding the same document (the journal
+   replays into each, as a restart does), each answering for its share of
+   the rows and curves. No cross-origin isolation is needed; the cost is N copies of the
+   document and of every sampling. At 8 Workers cn's 2.66 s would be about
+   0.35 s, gamma's 0.69 s about 0.1 s. Not built.
+3. **Wasm threads** (rayon over `SharedArrayBuffer`) need COOP/COEP
+   headers, which GitHub Pages cannot set (a service worker can fake them
+   for a same-origin page); the hosting question (handoff question 3)
+   decides it. Not adopted, as the brief says.
+
+## 2026-11-16 · The wasm module's size, by profile
+
+Each the `web` profile (LTO, one codegen unit, panic=abort, strip) with an
+opt-level, built in a target directory of its own; time from the same
+interactive script under Node:
+
+| build | bytes | gzip -9 | cn rest | gamma rest | cn bake | gamma open |
+|---|---|---|---|---|---|---|
+| opt 3, with goldens (the check's) | 2,511,593 | 864,444 | 2,679 ms | 703 ms | 34.9 s | 339 ms |
+| opt "s", with goldens | 2,017,870 | 695,015 | 3,000 ms | 855 ms | 38.8 s | 432 ms |
+| opt "z", with goldens | 1,729,302 | 599,127 | 3,127 ms | 922 ms | 40.7 s | 470 ms |
+| opt 3, no LTO, 16 units | 2,687,260 | 911,700 | 2,691 ms | 700 ms | 34.6 s | 342 ms |
+| opt 3, the page's (no goldens) | 2,220,820 | 756,264 | | | | |
+| opt "s", the page's | 1,772,180 | 611,088 | | | | |
+| opt "z", the page's | 1,518,175 | 523,797 | | | | |
+
+"s" saves 20% of the bytes for 11 to 27% more time, "z" 31% for 17 to 39%
+(its draft frames are twice as slow); LTO saves 7% and no time. The golden
+sets are 290 KB of the module. The profile stays at opt-level 3: the page's
+module is 756 KB gzipped, and the engine is slow enough already. No
+binaryen (`wasm-opt`): it is a tool to ask for.
+
+## 2026-11-16 · Phase 6 status
+
+**Ported**: Sources/KurvenApp's state and edits (`kurven-session`), the app's
+headless command line (`kurven-cli app`), the session as a protocol, the
+wasm binding (C ABI) and the Worker protocol with its client. **The gate**:
+28 edit scripts against Swift's app, 32 manifests byte for byte and 27
+drawings at 0 (check-web, "the session's edit scripts"); the same scripts
+byte-identical through the wasm module under Node (the identity step); the
+Worker protocol end to end under Node; the session's own tests
+(`kurven-session/tests/document.rs`: an edit one undo step, a drag one step
+and a draft until let go, a refusal no step, the git sha an undo puts back).
+**Not done**: the relief lane above (Phase 4's); the GPU's half of the
+frames, the depth pass a pick reads and the picker's pictures (Phase 7); the
+page (Phase 8). Nothing of the session waits on a `PORT:` hole.
+
+## 2026-11-16 · Review of PR #70: the client, the frames, the protocol
+
+- **Restarts.** A second cancel during a replay took the half-rebuilt
+  journal and lost what was not yet replayed, and the first cancel's
+  promise rejected unhandled. Now a replay leaves the journal whole until
+  it has run, a restart terminates the Worker being replayed into and
+  replays the same journal into the next, an overtaken boot is rejected
+  (a terminated Worker never says it will not load) so its replay gives
+  way, and every caller of an earlier restart waits for the last replay.
+  Tested with cancels back to back, one 40 ms into a replay, and one exactly
+  at a replay's second request (against a Worker that fails on purpose,
+  which then receives all four journaled requests).
+- **close()** rejects what is pending, clears its timeouts and refuses
+  every later call; a hung edit pending at close no longer restarts a
+  Worker when its timeout comes.
+- **Failures.** A stage has an id and its own reply, so a bundle the
+  engine refuses rejects that stage, which is not journaled; a failure
+  says whether the module trapped, and only a trap restarts. An engine
+  that will not load is said to the request waiting, and the next request
+  loads it again.
+- **Journal by effect.** Every reply says whether the request touched the
+  document (`touched`: false only for a refusal of its arguments, or an
+  open of a name never staged). A failed open, which forgets the
+  document's edits and leaves it a failure, is journaled and replays to the
+  same failure.
+- **Compaction.** From the last open, create or createSurface (each a
+  clean slate), keeping the last viewport, mode, draft resolution and
+  refine before it, which an open keeps, and every staged bundle, which a
+  later open may read; a run of gestures as one `camera` request, set to
+  the bit from the state's `camera.exact` (gestures move the navigator
+  alone, and summing them would not be exact: the orbit's folds do not
+  associate in floating point, and its elevation is clamped); a run of
+  moves of the landscape, truncation, light or levels slider as its last
+  (each sets a value outright and is never refused; a surface field's or a
+  hatching's step can be refused and keep the one before, so theirs are
+  kept); a run of one outright setting as its last; a bundle staged again
+  over an earlier one that no open between reads. A 300-gesture session
+  with a five-move drag and twenty viewports replays as its three staged
+  bundles and its open plus five entries, to the same document and camera to
+  the bit. What is not compacted: a toggle (`hide`) and a refusable move.
+  The replayed document equals the last one reported but for status lines,
+  which are messages (a save's, a bake's, a pick's are not replayed).
+  One exception to "to the bit": JSON cannot write -0.0, so a camera angle
+  that is exactly -0 would replay as +0.
+- **Frames** drew `framed_scene`; they draw `shown_scene` now, the picked
+  face's boundary last, each layer saying whether it is drawn
+  (`shown_visible_layers`, Swift's `shownOptions`).
+- **Paths in memory** were found by exact key where a directory joins the
+  path; both read `normal_path` now (`./a.npy`, `a//b.npy`), and a file in
+  memory is borrowed, not copied, as are the staged files an `open` or a
+  headless run reads. `call` parses a request once.
+- **Indices and sizes** (hide, preset, viewport, the resolutions) are
+  whole numbers or refused, where `as usize` made -1 and 1.5 into 0 and 1.
+- **The page's module** (`--no-default-features`) now runs the session's
+  scripts byte-identically to native and the whole Worker test, in
+  check-web, as the check's module does.
+
+The session gate is unchanged: 32 manifests byte for byte, 27 drawings at
+0, against the committed Swift outputs.
+
+## 2026-11-16 · Second review of PR #70
+
+- **A failed open is no clean slate.** Swift's `Document.load` sets
+  `.loading`, clears the scene, the navigator, what was queued and the
+  edits, and on a read that fails sets `.failed`; the landscape's or the
+  surface's request, the level counts, the hidden layers and the styling
+  stay. The engine does the same (it is Swift's), and the request it kept
+  shows in the state. The client's compaction cut the journal at the
+  failed open and replayed a document without that request; it now cuts
+  only at an open that succeeded. Tested: open gamma, open a broken
+  bundle, set rMax, drag rMax, cancel; the replayed document is the live
+  one (the test fails with the old rule). The edits after a failed open do
+  nothing in either: `edited` is nil, and a landscape drag's draft finds
+  the samples asked for already "shown" (`pump`'s `shown.samples(as:)`),
+  so nothing is sampled. That is Swift's, kept.
+- **A request racing a restart** waited for the `ready` it read, and could
+  be posted to the new Worker before it had loaded and been replayed. It
+  waits again while a restart has replaced the Worker, checked by its
+  epoch as it is sent.
+- **A journaled entry that traps on every replay** restarted the Worker
+  forever. Two traps in a row on one entry cut the journal there, with
+  what follows (which may depend on it), and the next call is told
+  (`JournalTruncated`).
+- **Unknown layers.** Swift's `paintLevels`, `paintStrokes`, `paintLight`
+  and `paintResetLevels` pass over a layer they do not find; its headless
+  run refuses one before ("no layer ... with levels to drag"). The protocol
+  refuses one as the headless run does, touching nothing, so it is not
+  journaled.
+- **save** says why it cannot save (`save_bundle` returns the reason).
+- **Copies.** A reply's array is encoded once from where its values lie
+  and moved into the module's reply; `kv_stage` takes the staged file's
+  allocation (`kv_alloc` lends a boxed slice) rather than copying it, so a
+  staged bundle is held once; the copy the host makes out of linear memory
+  is the one the Worker transfers.
+- **BundleFiles** is a type of its own, its paths normal when put in, so a
+  lookup is a plain get. `kurven-cli app` reads a bundle's regular files
+  alone, follows no symbolic link and reads no dotfile.
+
 ## 2026-11-16 · sn in relief past its reach: the coordinate image, not the port
 
 Phase 6 found `surface sn --relief A` drawn differently by the two CLIs from

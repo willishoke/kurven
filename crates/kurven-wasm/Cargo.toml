@@ -11,7 +11,14 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-kurven-golden.workspace = true
+kurven-golden = { workspace = true, optional = true }
+kurven-session.workspace = true
+
+# The port's golden sets and the timing exports, which the check runs under
+# Node; the page's module leaves them out (`--no-default-features`).
+[features]
+default = ["goldens"]
+goldens = ["dep:kurven-golden"]
 
 [lints]
 workspace = true

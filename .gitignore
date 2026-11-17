@@ -15,6 +15,7 @@ venv/
 !tests/fixtures/composite/*.svg
 !tests/fixtures/fields/*.svg
 !crates/fixtures/swift/*.svg
+!crates/fixtures/swift/session/**/*.svg
 # The port's golden sets are kept whatever they hold; check-web.sh refuses a
 # golden file these rules would leave out.
 !crates/fixtures/rust/**/*.svg
@@ -30,6 +31,7 @@ venv/
 !tests/fixtures/hatch/*.kurven/
 !tests/fixtures/fields/*.kurven/
 !crates/fixtures/rust/**/*.kurven/
+!crates/fixtures/swift/session/**/*.kurven/
 
 .build/
 *.xcodeproj/
