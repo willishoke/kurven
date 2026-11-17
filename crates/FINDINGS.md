@@ -2803,3 +2803,30 @@ Locally, one full run of the lane timed out on cn under `gpu` and
 `fallback` and on the fallback's own test (600 s each, against 40 s and
 70 s usually) while the machine stalled; the same tests re-run passed at
 the numbers above (cn 99.97% / 100.00% on Metal, 100.00% in the fallback).
+
+## 2026-11-17 · The browser lane in CI: WebGPU works on Linux, presenting does not
+
+The second CI round answered it: on ubuntu, SwiftShader's adapter is there
+(google/swiftshader, a fallback adapter, `float32-blendable` among its
+features), a device is made, and the layout probe's compute pass passes;
+the device is lost ("destroyed: Device was destroyed.") the moment a canvas
+is presented, headless and headed under xvfb alike. The page never destroys
+a device: it is the GPU process's canvas interop. (The adapter step itself
+did not run: `--project swiftshader adapter` reads `adapter` as a second
+project, `--project` taking a list; the filter goes first now.)
+
+So the SwiftShader project draws **offscreen** (`?offscreen=1`,
+`PreviewView`'s `offscreen`): each frame into a texture of the canvas's size
+and of the format the renderer's colour pipelines are built for (the
+preferred canvas format), read back by `copyTextureToBuffer`, the canvas
+never configured. The pixels are the canvas's: the same renderer and frame,
+pipelines, format and size, which `present.spec.ts` holds to byte for byte --
+sn at rest drawn on the canvas and read back, then drawn again offscreen:
+0 bytes differ, on Metal and on SwiftShader on this Mac, under each of the
+three presentation projects. Presenting is its own project (`present`, the
+swiftshader flags), apart from the gate, since on Linux it can take the GPU
+process down, and twice more with the compositor elsewhere (`present-gl`:
+`--disable-vulkan-surface --disable-features=Vulkan --use-angle=swiftshader`;
+`present-angle`: `--use-gl=angle --use-angle=swiftshader`); on Linux each
+is allowed to fail, saying how in its annotation. On the Mac's own GPU
+(`gpu`) the gate presents, as before, and the presentation test must pass.

@@ -15,11 +15,12 @@ test.beforeEach(({}, info) => {
   test.skip(info.project.name === "fallback", "the GPU preview's");
 });
 
-async function open(page: Page, size: string, name: string, manifest: object): Promise<void> {
+async function open(page: Page, size: string, name: string, manifest: object, project: string): Promise<void> {
   page.on("console", (m) => {
     if (m.type() === "error") console.log(`console: ${m.text()}`);
   });
-  await page.goto(`/?size=${size}&slope=0`);
+  // SwiftShader draws offscreen (preview.spec.ts says why).
+  await page.goto(`/?size=${size}&slope=0${project === "swiftshader" ? "&offscreen=1" : ""}`);
   await page.waitForFunction(() => document.body.dataset.ready === "true", null, { timeout: 120_000 });
   await page.addScriptTag({ path: coverage });
   await page.evaluate(
@@ -50,7 +51,7 @@ test("a parametric surface's preview draws what its bake draws", async ({ page }
   m.layers[1].width = 0.3;
   m.presets[0].projection = { flipX: false, shear: 0.5, xAngle: -50, yScale: null, zAngle: 25 };
   m.presets[0].depthTolerance = 0;
-  await open(page, "900x700", "torus-lines.kurven", m);
+  await open(page, "900x700", "torus-lines.kurven", m, info.project.name);
   const result = await page.evaluate(async () => {
     const k = (window as any).kurven;
     const C = (globalThis as any).kurvenCoverage;
@@ -92,7 +93,7 @@ test("a torus nearly edge-on keeps its outline whole at rest", async ({ page }, 
   m.surface.shape.grid = 200;
   m.presets[0].projection.xAngle = -89.5;
   m.presets[0].projection.zAngle = 118.2;
-  await open(page, "1400x900", "sn-edge-on.kurven", m);
+  await open(page, "1400x900", "sn-edge-on.kurven", m, info.project.name);
   const r = await page.evaluate(async () => {
     const k = (window as any).kurven;
     const C = (globalThis as any).kurvenCoverage;
@@ -146,7 +147,7 @@ test("the GPU coordinate pass is the CPU rasterizer's", async ({ page }, info) =
       m.surface.grid = 384;
       m.surface.shape = { kind: "torus", major, minor };
       m.presets[0].projection = projection;
-      await open(page, "900x700", `torus-${major}-${name}.kurven`, m);
+      await open(page, "900x700", `torus-${major}-${name}.kurven`, m, info.project.name);
       const r = await page.evaluate(async () => {
         const k = (window as any).kurven;
         const C = (globalThis as any).kurvenCoverage;

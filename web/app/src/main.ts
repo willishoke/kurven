@@ -12,6 +12,7 @@
 //   &gpu=0               the page without WebGPU: judged strokes at rest
 //   &size=900x700        the canvas in device pixels, rather than the window
 //   &slope=0             the preview's slope scale (default 1)
+//   &offscreen=1         draw into a texture, never presented (view.ts)
 //
 // A bundle is opened by the browser lane through `window.kurven.open`. The
 // formula field, the controls and the rest are Phase 8's.
@@ -87,7 +88,7 @@ const view = new PreviewView(client, canvas, renderer, {
   // screen as on any other.
   strokeWidth: DEFAULT_OPTIONS.strokeWidth * scale,
   slopeScale: slope !== null ? Number(slope) : DEFAULT_OPTIONS.slopeScale,
-});
+}, query.get("offscreen") === "1");
 view.onFrame((t) => {
   status.textContent =
     `${state?.title ?? ""} · ${view.usesGPU ? "WebGPU" : `judged strokes only (${fallbackReason})`} · ` +
@@ -198,6 +199,8 @@ window.kurven = {
   },
   /** Draw a frame now, and read the pixels it left. */
   draw: (wish: "draft" | "rest", read = false) => view.drawNow(wish, read),
+  /** The last frame drawn again offscreen, read back. */
+  redrawOffscreen: () => view.redrawOffscreen(),
   /** The shown surface's coordinate image, by the engine's CPU rasterizer
    * and by the GPU's passes, over the same frame. */
   surfaceImage: async (resolution: number) => {

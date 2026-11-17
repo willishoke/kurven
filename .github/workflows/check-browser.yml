@@ -5,10 +5,12 @@
 #
 # The first run lost the WebGPU device at the first frame on every
 # SwiftShader test, and passed the fallback (crates/FINDINGS.md, "The browser
-# lane in CI"). Until SwiftShader is known to work here, each run tries it
-# two ways, headless and headed under xvfb, each first printing what the
-# adapter and the device are and Chromium's own errors (DEBUG=pw:browser),
-# and fails if neither way passes; the fallback must pass on its own.
+# lane in CI"); the second showed WebGPU working on SwiftShader and the
+# device lost the moment a canvas is presented. So the SwiftShader gate draws
+# offscreen (the same pixels, held to the canvas's where presenting works),
+# headless, and headed under xvfb if that fails; presenting is tried three
+# ways, allowed to fail; each step prints the adapter, the device and
+# Chromium's errors (DEBUG=pw:browser). The fallback must pass on its own.
 
 name: check-browser
 
@@ -47,14 +49,14 @@ jobs:
         continue-on-error: true
         env:
           DEBUG: pw:browser
-        run: scripts/check-browser.sh --project swiftshader adapter
+        run: scripts/check-browser.sh adapter --project=swiftshader
 
       - name: "SwiftShader, headed under xvfb: the adapter, the device, Chromium's errors"
         continue-on-error: true
         env:
           DEBUG: pw:browser
           KURVEN_HEADED: "1"
-        run: xvfb-run -a scripts/check-browser.sh --project swiftshader adapter
+        run: xvfb-run -a scripts/check-browser.sh adapter --project=swiftshader
 
       - name: SwiftShader, headless
         id: headless
@@ -68,6 +70,14 @@ jobs:
         env:
           KURVEN_HEADED: "1"
         run: xvfb-run -a scripts/check-browser.sh --project swiftshader
+
+      # Presenting a canvas, three ways; each allowed to fail on Linux, its
+      # annotation and Chromium's errors saying how (present.spec.ts).
+      - name: Presenting a canvas on SwiftShader, three ways
+        continue-on-error: true
+        env:
+          DEBUG: pw:browser
+        run: scripts/check-browser.sh --project=present --project=present-gl --project=present-angle
 
       - name: Without WebGPU
         run: scripts/check-browser.sh --project fallback

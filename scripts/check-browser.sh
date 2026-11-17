@@ -2,8 +2,9 @@
 # The browser lane: the page's preview in Chromium, by Playwright. Separate
 # from scripts/check-web.sh, which needs no browser.
 #
-#   scripts/check-browser.sh                 # swiftshader and fallback, and gpu on a Mac
-#   scripts/check-browser.sh --project gpu   # any of Playwright's own arguments
+#   scripts/check-browser.sh                   # swiftshader, present and fallback, and gpu on a Mac
+#   scripts/check-browser.sh adapter --project=gpu   # Playwright's own arguments: a filter
+#                                                    # goes before --project, which takes a list
 #
 # It builds the page's wasm module (as check-web.sh does, in its own build
 # tree), builds the page, puts the module beside it, and runs
@@ -49,7 +50,7 @@ step "Chromium"
 step "the browser lane"
 args=("$@")
 if [ ${#args[@]} = 0 ]; then
-    args=(--project swiftshader --project fallback)
+    args=(--project swiftshader --project present --project fallback)
     [ "$(uname)" = Darwin ] && args+=(--project gpu)
 fi
 cd "$APP" && npx playwright test "${args[@]}"

@@ -61,12 +61,33 @@ export class PreviewView {
   private idle: ReturnType<typeof setTimeout> | null = null;
   private readonly listeners: ((t: Timing) => void)[] = [];
 
-  constructor(client: EngineClient, canvas: HTMLCanvasElement, renderer: PreviewRenderer | null, options = DEFAULT_OPTIONS) {
+  /** Where an offscreen frame is drawn, when the canvas is not (`offscreen`). */
+  private target: GPUTexture | null = null;
+  readonly offscreen: boolean;
+
+  /** `offscreen`: draw each frame into a texture of the canvas's size and
+   * format and never configure the canvas, so nothing is presented. The
+   * pixels are the ones the canvas would show: the same renderer, pipelines
+   * and target format (the preferred canvas format the renderer's colour
+   * pipelines are built for), the same size; the browser lane holds the two
+   * to each other byte for byte where presentation works. For a GPU process
+   * that can run WebGPU but not present it (SwiftShader on Linux, headless). */
+  constructor(
+    client: EngineClient,
+    canvas: HTMLCanvasElement,
+    renderer: PreviewRenderer | null,
+    options = DEFAULT_OPTIONS,
+    offscreen = false,
+  ) {
+    this.offscreen = offscreen;
     this.client = client;
     this.canvas = canvas;
     this.renderer = renderer;
     this.options = { ...options };
-    if (renderer) {
+    if (renderer && offscreen) {
+      this.gpu = null;
+      this.ctx = null;
+    } else if (renderer) {
       const gpu = canvas.getContext("webgpu") as GPUCanvasContext | null;
       if (!gpu) throw new Error("the canvas has no WebGPU context");
       gpu.configure({
@@ -143,6 +164,36 @@ export class PreviewView {
     }
   }
 
+  /** The offscreen target at the canvas's size, made again when it changes. */
+  private offscreenTarget(): GPUTexture {
+    const renderer = this.renderer;
+    if (!renderer) throw new Error("no renderer");
+    const { width, height } = this.canvas;
+    if (!this.target || this.target.width !== width || this.target.height !== height) {
+      this.target?.destroy();
+      this.target = renderer.device.createTexture({
+        size: [width, height],
+        format: renderer.format,
+        usage: TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC,
+      });
+    }
+    return this.target;
+  }
+
+  /** The last frame drawn again, into the offscreen target, and its pixels:
+   * what the browser lane holds the canvas's pixels to. */
+  async redrawOffscreen(): Promise<Pixels> {
+    const renderer = this.renderer;
+    const frame = this.frame;
+    if (!renderer || !frame) throw new Error("no frame drawn on the GPU");
+    return this.exclusive(async () => {
+      const target = this.offscreenTarget();
+      renderer.render(frame, target, this.options);
+      const data = await renderer.readPixels(target);
+      return { width: target.width, height: target.height, order: orderOf(renderer.format), data };
+    });
+  }
+
   /** Wait for every frame wished so far to be drawn. */
   async settled(): Promise<void> {
     while (this.inFlight || this.waiting.draft || this.waiting.rest || this.idle) {
@@ -176,7 +227,7 @@ export class PreviewView {
   private async draw(wish: Wish, onPixels?: (p: Pixels) => void, read = false): Promise<Timing> {
     const started = performance.now();
     let timing: Timing;
-    if (this.renderer && this.gpu) {
+    if (this.renderer) {
       const renderer = this.renderer;
       // A restarted engine names its scenes afresh (its keys start with its
       // own nonce, so none it sends can be mistaken for a held one); what the
@@ -194,7 +245,7 @@ export class PreviewView {
       const frame = reply as unknown as Reply & PreviewFrame;
       const drawStarted = performance.now();
       renderer.take(frame, arrays as Arrays);
-      const target = this.gpu.getCurrentTexture();
+      const target = this.gpu ? this.gpu.getCurrentTexture() : this.offscreenTarget();
       renderer.render(frame, target, this.options);
       // Read in the same task, before the canvas texture is presented.
       const pixels = read ? renderer.readPixels(target) : null;

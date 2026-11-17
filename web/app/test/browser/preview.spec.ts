@@ -20,12 +20,17 @@ const scenes = [
   { name: "frame", query: "", bundle: "frame.kurven" },
 ] as const;
 
-async function load(page: Page, query: string, bundle?: string): Promise<void> {
+/** SwiftShader draws offscreen: its GPU process runs WebGPU but cannot
+ * present a canvas on Linux (crates/FINDINGS.md); the pixels are the ones a
+ * canvas would show, which present.spec.ts holds to the canvas's. */
+const offscreen = (project: string) => (project === "swiftshader" ? "&offscreen=1" : "");
+
+async function load(page: Page, query: string, bundle?: string, project = ""): Promise<void> {
   page.on("console", (m) => {
     if (m.type() === "error") console.log(`console: ${m.text()}`);
   });
   page.on("pageerror", (e) => console.log(`page error: ${e.message}`));
-  await page.goto(`/?size=900x700&slope=0${query ? `&${query}` : ""}`);
+  await page.goto(`/?size=900x700&slope=0${offscreen(project)}${query ? `&${query}` : ""}`);
   await page.waitForFunction(() => document.body.dataset.ready === "true", null, { timeout: 120_000 });
   await page.addScriptTag({ path: coverage });
   if (bundle) {
@@ -80,7 +85,7 @@ async function measure(page: Page): Promise<Measured> {
 
 for (const scene of scenes) {
   test(`the preview at rest draws what the judged strokes draw: ${scene.name}`, async ({ page }, info) => {
-    await load(page, scene.query, "bundle" in scene ? scene.bundle : undefined);
+    await load(page, scene.query, "bundle" in scene ? scene.bundle : undefined, info.project.name);
     const m = await measure(page);
     const line =
       `${info.project.name} ${scene.name}: recall ${(100 * m.recall).toFixed(2)}% of ${m.baked} judged pixels, ` +
@@ -108,7 +113,7 @@ for (const scene of scenes) {
 
 test("the structs the page writes are the ones the shaders read", async ({ page }, info) => {
   test.skip(info.project.name === "fallback", "no WebGPU");
-  await load(page, "");
+  await load(page, "", undefined, info.project.name);
   const wrong = await page.evaluate(() => (window as any).kurven.probe());
   expect(wrong).toEqual([]);
 });
@@ -126,7 +131,7 @@ test("without WebGPU the page draws the judged strokes", async ({ page }, info) 
 test("frame times: drafts while the camera moves, and the frame at rest", async ({ page }, info) => {
   test.skip(info.project.name === "fallback", "no WebGPU");
   for (const scene of ["landscape=cn", "surface=sn"]) {
-    await load(page, scene);
+    await load(page, scene, undefined, info.project.name);
     const t = await page.evaluate(async () => {
       const k = (window as any).kurven;
       await k.settled();

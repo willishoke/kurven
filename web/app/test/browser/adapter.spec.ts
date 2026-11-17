@@ -7,7 +7,7 @@
 
 import { expect, test } from "@playwright/test";
 
-test("the adapter, the device and a presented canvas", async ({ page }, info) => {
+test("the adapter and the device", async ({ page }, info) => {
   test.skip(info.project.name === "fallback", "no WebGPU by design");
   page.on("console", (m) => console.log(`console ${m.type()}: ${m.text()}`));
   page.on("pageerror", (e) => console.log(`page error: ${e.message}`));
@@ -43,22 +43,6 @@ test("the adapter, the device and a presented canvas", async ({ page }, info) =>
     });
     await step("probe", () => (window as any).kurven.probe());
     if (device) {
-      const d = device as GPUDevice;
-      await step("canvas", async () => {
-        const canvas = document.createElement("canvas");
-        canvas.width = canvas.height = 16;
-        document.body.append(canvas);
-        const ctx = canvas.getContext("webgpu") as GPUCanvasContext;
-        ctx.configure({ device: d, format: navigator.gpu.getPreferredCanvasFormat(), alphaMode: "opaque" });
-        const encoder = d.createCommandEncoder();
-        const pass = encoder.beginRenderPass({
-          colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 1, g: 0, b: 0, a: 1 } }],
-        });
-        pass.end();
-        d.queue.submit([encoder.finish()]);
-        await d.queue.onSubmittedWorkDone();
-        return "presented";
-      });
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     return out;

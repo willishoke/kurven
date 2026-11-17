@@ -58,12 +58,64 @@ export default defineConfig({
   projects: [
     {
       name: "swiftshader",
+      // Presenting is its own project's: on Linux it can take the GPU
+      // process down with it, and Chromium stops trying a GPU process that
+      // keeps crashing.
+      testIgnore: /present\.spec\.ts/,
+      use: {
+        channel: "chromium",
+        launchOptions: { args: ["--enable-unsafe-webgpu", "--use-webgpu-adapter=swiftshader", ...linux] },
+      },
+    },
+    {
+      name: "present",
+      testMatch: /present\.spec\.ts/,
       use: {
         channel: "chromium",
         launchOptions: { args: ["--enable-unsafe-webgpu", "--use-webgpu-adapter=swiftshader", ...linux] },
       },
     },
     { name: "gpu", use: { channel: "chromium", launchOptions: { args: ["--enable-unsafe-webgpu"] } } },
+    // Two more ways to present a canvas on SwiftShader, for present.spec.ts
+    // alone: the compositor on GL through ANGLE's SwiftShader while Dawn
+    // keeps SwiftShader's Vulkan, and ANGLE named outright.
+    {
+      name: "present-gl",
+      testMatch: /present\.spec\.ts/,
+      use: {
+        channel: "chromium",
+        launchOptions: {
+          args: [
+            "--enable-unsafe-webgpu",
+            "--use-webgpu-adapter=swiftshader",
+            "--enable-unsafe-swiftshader",
+            "--disable-vulkan-surface",
+            "--disable-features=Vulkan",
+            "--use-angle=swiftshader",
+            "--enable-logging=stderr",
+            "--v=0",
+          ],
+        },
+      },
+    },
+    {
+      name: "present-angle",
+      testMatch: /present\.spec\.ts/,
+      use: {
+        channel: "chromium",
+        launchOptions: {
+          args: [
+            "--enable-unsafe-webgpu",
+            "--use-webgpu-adapter=swiftshader",
+            "--enable-unsafe-swiftshader",
+            "--use-gl=angle",
+            "--use-angle=swiftshader",
+            "--enable-logging=stderr",
+            "--v=0",
+          ],
+        },
+      },
+    },
     { name: "fallback", use: { channel: "chromium", launchOptions: { args: ["--disable-gpu"] } } },
   ],
 });
