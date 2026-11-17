@@ -371,6 +371,11 @@ test("Export is the native bake's bytes, and the URL reproduces the drawing", as
 test("a slow frame at rest: the page says so, stays live, and drafts follow it", async ({ page }, info) => {
   test.skip(info.project.name === "fallback", "without WebGPU the frame at rest is the bake; the export test covers it");
   await load(page, at(info.project.name, { landscape: "cn" }));
+  await spy(page);
+  const start = await page.evaluate(() => ({
+    camera: (window as any).kurven.state().camera.exact,
+    given: (window as any).kurven.input.given.length,
+  }));
   // Move, then hold still: the frame at rest starts, and the indicator says so.
   const canvas = page.locator("#preview");
   const box = (await canvas.boundingBox())!;
@@ -402,6 +407,21 @@ test("a slow frame at rest: the page says so, stays live, and drafts follow it",
   console.log(`${info.project.name}: a draft asked during cn's frame at rest was drawn ${Date.now() - asked} ms later`);
   await idle(page);
   await expect(page.locator("#indicator-text")).toContainText("at rest");
+  // The gestures given while the engine was held went in batches, and left
+  // the camera each one alone would have, to the bit.
+  const sent: string[] = await page.evaluate(() => (window as any).kurven.sent);
+  expect(sent).toContain("gestures");
+  const check = await page.evaluate(async (start) => {
+    const k = (window as any).kurven;
+    const ended = k.state().camera.exact;
+    const given = k.input.given.slice(start.given);
+    await k.request({ kind: "camera", ...start.camera });
+    for (const gesture of given) await k.request({ kind: "gesture", gesture });
+    const one = (await k.request({ kind: "state" })).reply.state.camera.exact;
+    return { ended, one, count: given.length };
+  }, start);
+  expect(check.count).toBeGreaterThan(3);
+  expect(check.one).toEqual(check.ended);
 });
 
 test("at phone width: the drawing the full width, the controls under it, nothing to scroll sideways", async ({ page }, info) => {
@@ -423,4 +443,159 @@ test("at phone width: the drawing the full width, the controls under it, nothing
   expect(await page.evaluate(() => document.activeElement?.id)).toBe("function");
   await page.keyboard.press("Tab");
   expect(await page.evaluate(() => document.activeElement?.id)).toBe("formula");
+});
+
+/** A link's fragment for `link`, uncompressed (link.ts reads both). */
+function fragment(link: unknown): string {
+  return `#k1j.${Buffer.from(JSON.stringify({ v: 1, ...(link as object) })).toString("base64url")}`;
+}
+
+/** Record the kinds of request the page sends from now on. */
+async function spy(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const k = (window as any).kurven;
+    const sent: unknown[] = [];
+    k.sent = sent;
+    const request = k.client.request.bind(k.client);
+    k.client.request = (r: any, o: any) => {
+      sent.push(r.kind === "drag" ? `drag ${r.phase}` : r.kind);
+      return request(r, o);
+    };
+  });
+}
+
+test("a link asking for more than the controls reach is refused, and the page says so", async ({ page }, info) => {
+  // A document's link, made by the engine, then made to ask too much.
+  await load(page, at(info.project.name));
+  const good = await page.evaluate(async () => {
+    const k = (window as any).kurven;
+    const edited = (await k.request({ kind: "edited" })).reply.edited;
+    return { edited, camera: k.state().camera.exact };
+  });
+  for (const [what, change] of [
+    ["resolution", (l: any) => (l.edited.landscape.resolution = 1_000_000)],
+    ["levels", (l: any) => (l.edited.levelCounts = { mag_major: 1_000_000_000 })],
+  ] as const) {
+    const link: any = { ...structuredClone(good), hidden: [], mode: "depth", depthTolerance: 0.02, bakeResolution: 4000, refine: false };
+    change(link);
+    const fresh = await page.context().newPage();
+    await load(fresh, `${at(info.project.name)}${fragment(link)}`);
+    await expect(fresh.locator("#notice")).toContainText("This link was refused");
+    await expect(fresh.locator("#notice")).toContainText(what === "resolution" ? "Samples slider" : "level slider");
+    // Nothing of it stays: the page opened its own landscape, at its own
+    // settings, and the URL is that landscape's.
+    const s = await state(fresh);
+    expect(s.landscape.name).toBe("gamma");
+    expect(s.mode).toBe("drawing");
+    expect(s.refine).toBe(true);
+    const url = await fresh.evaluate(() => (window as any).kurven.linked());
+    expect(url).not.toContain(fragment(link));
+    await fresh.close();
+  }
+});
+
+test("a link pasted into the tab is opened, and not written over", async ({ page }, info) => {
+  await load(page, at(info.project.name));
+  await page.locator('[data-levels="mag_major"]').focus();
+  await page.keyboard.press("ArrowLeft");
+  await idle(page);
+  const first = await page.evaluate(() => (window as any).kurven.linked());
+  const edited = await page.evaluate(async () => (await (window as any).kurven.request({ kind: "edited" })).reply.edited);
+  await page.selectOption("#function", "sin");
+  await idle(page);
+  const second = await page.evaluate(() => (window as any).kurven.linked());
+  expect(second).not.toBe(first);
+  // The first link, pasted.
+  await page.evaluate((hash) => (location.hash = hash), new URL(first).hash);
+  await page.waitForFunction(() => (window as any).kurven.state().landscape.name === "gamma", null, { timeout: 120_000 });
+  await idle(page);
+  const now = await page.evaluate(async () => (await (window as any).kurven.request({ kind: "edited" })).reply.edited);
+  expect(now).toEqual(edited);
+  expect(await page.evaluate(() => (window as any).kurven.linked())).toBe(first);
+});
+
+test("the formula keeps what is typed after return, and drops marks the text has left", async ({ page }, info) => {
+  await load(page, at(info.project.name));
+  const field = page.locator("#formula");
+  // Typed on while the engine samples what return sent.
+  await field.fill("z^2");
+  await field.press("Enter");
+  await page.keyboard.type(" + 1");
+  await idle(page);
+  // Every reply that renders the panel since (the link's `edited` among
+  // them) has left the field alone.
+  await page.evaluate(() => (window as any).kurven.linked());
+  await page.evaluate(() => (window as any).kurven.send({ kind: "state" }));
+  expect(await field.inputValue()).toBe("z^2 + 1");
+  expect((await state(page)).landscape.expression).toBe("z^2");
+  // A refusal's marks, then another landscape chosen: the field shows its
+  // expression, and the marks of the refused text go with it.
+  await field.fill("foo(z)");
+  await field.press("Enter");
+  await expect(page.locator("#formula-marker")).toBeVisible();
+  await page.selectOption("#function", "sin");
+  await idle(page);
+  expect(await field.inputValue()).toBe((await state(page)).landscape.expression);
+  await expect(page.locator("#formula-marker")).toHaveCount(0);
+  await expect(page.locator("#formula-error")).toBeEmpty();
+  await expect(field).not.toHaveAttribute("aria-invalid", "true");
+});
+
+test("the page's keys work wherever focus is but a text field", async ({ page }, info) => {
+  await load(page, at(info.project.name));
+  // On a layer's check box: 2 is the shaded preview.
+  await page.locator('li[data-layer="folds"] input[type="checkbox"]').focus();
+  await page.keyboard.press("2");
+  await idle(page);
+  expect((await state(page)).mode).toBe("shaded");
+  // On a slider: its arrow is an edit, ⌘Z undoes it.
+  const levels = page.locator('[data-levels="mag_major"]');
+  const count = (await state(page)).layers.find((l: any) => l.name === "mag_major").levels;
+  await levels.focus();
+  await page.keyboard.press("ArrowRight");
+  await idle(page);
+  expect((await state(page)).layers.find((l: any) => l.name === "mag_major").levels).toBe(count + 1);
+  await page.keyboard.press("ControlOrMeta+z");
+  await idle(page);
+  expect((await state(page)).layers.find((l: any) => l.name === "mag_major").levels).toBe(count);
+  // On a radio button: 1 is the drawing.
+  await page.locator('#mode input[value="depth"]').focus();
+  await page.keyboard.press("1");
+  await idle(page);
+  expect((await state(page)).mode).toBe("drawing");
+  // In the formula, the keys are the formula's.
+  await page.locator("#formula").focus();
+  await page.keyboard.press("3");
+  await idle(page);
+  expect((await state(page)).mode).toBe("drawing");
+});
+
+test("a slider is one drag at a time, and a window's thumbs do not cross", async ({ page }, info) => {
+  await load(page, at(info.project.name));
+  await spy(page);
+  // A second pointer on a slider already held is no second drag.
+  await page.evaluate(() => {
+    const range = document.querySelector('[data-levels="mag_major"]')!;
+    for (let id = 1; id <= 2; id++) range.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: id }));
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1 }));
+  });
+  await idle(page);
+  const sent: string[] = await page.evaluate(() => (window as any).kurven.sent);
+  expect(sent.filter((k) => k === "drag begin").length).toBe(1);
+  expect(sent.filter((k) => k === "drag end").length).toBe(1);
+  // The low thumb of Re dragged far past the high one stops a fiftieth of
+  // the reach short of it, and shows where it stopped.
+  const before = (await state(page)).landscape.domain.real;
+  await dragThumb(page, "#re-lo", 80, 10);
+  await idle(page);
+  const re = (await state(page)).landscape.domain.real;
+  const reach = await page.evaluate(() => {
+    const r = document.querySelector<HTMLInputElement>("#re-lo")!;
+    return Number(r.max) - Number(r.min);
+  });
+  expect(re.hi).toBe(before.hi);
+  expect(re.lo).toBeLessThan(re.hi);
+  expect(re.hi - re.lo).toBeGreaterThanOrEqual(reach / 50 - 1e-12);
+  expect(Number(await page.inputValue("#re-lo"))).toBe(re.lo);
+  expect(Number(await page.inputValue("#re-lo"))).toBeLessThan(Number(await page.inputValue("#re-hi")));
 });
