@@ -16,10 +16,26 @@ import { defineConfig } from "@playwright/test";
 
 const port = Number(process.env.KURVEN_PORT ?? 4175);
 // On Linux, Dawn reaches SwiftShader through Vulkan, which Chromium leaves
-// off there unless asked, and a headless run has no surface to present a
-// Vulkan swapchain to. Not yet observed on a CI runner
-// (crates/FINDINGS.md, "The browser lane in CI").
-const linux = process.platform === "linux" ? ["--enable-features=Vulkan", "--disable-vulkan-surface"] : [];
+// off there unless asked; recent Chromium refuses WebGPU on SwiftShader
+// without `--enable-unsafe-swiftshader`; and a GPU blocklisted on a CI
+// runner keeps the GPU process from starting WebGPU at all. Chromium's own
+// warnings and errors go to stderr, which Playwright prints under
+// DEBUG=pw:browser (.github/workflows/check-browser.yml). The first CI run,
+// with Vulkan and --disable-vulkan-surface alone, lost the device at the first
+// frame (crates/FINDINGS.md, "The browser lane in CI").
+const linux =
+  process.platform === "linux"
+    ? [
+        "--enable-unsafe-swiftshader",
+        "--use-angle=swiftshader",
+        "--enable-features=Vulkan",
+        "--ignore-gpu-blocklist",
+        "--enable-logging=stderr",
+        "--v=0",
+      ]
+    : [];
+// A headed Chromium, under xvfb on a runner: KURVEN_HEADED=1.
+const headless = process.env.KURVEN_HEADED !== "1";
 
 export default defineConfig({
   testDir: "test/browser",
@@ -27,7 +43,12 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   reporter: [["list"]],
-  use: { baseURL: `http://localhost:${port}`, viewport: { width: 1000, height: 800 }, deviceScaleFactor: 1 },
+  use: {
+    baseURL: `http://localhost:${port}`,
+    viewport: { width: 1000, height: 800 },
+    deviceScaleFactor: 1,
+    headless,
+  },
   webServer: {
     command: `npx vite preview --port ${port} --strictPort`,
     url: `http://localhost:${port}/kurven_wasm.wasm`,

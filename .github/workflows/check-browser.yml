@@ -3,11 +3,12 @@
 # page without WebGPU. Separate from check-web.yml, which needs no browser;
 # this one installs Playwright's pinned Chromium and its system libraries.
 #
-# Not yet observed on a runner: nothing has been pushed since it was
-# written. Its first run is the test that Chromium's WebGPU reaches
-# SwiftShader on ubuntu with the flags web/app/playwright.config.ts gives it
-# on Linux; if it does not, that is a finding for crates/FINDINGS.md, and the
-# `fallback` project still runs.
+# The first run lost the WebGPU device at the first frame on every
+# SwiftShader test, and passed the fallback (crates/FINDINGS.md, "The browser
+# lane in CI"). Until SwiftShader is known to work here, each run tries it
+# two ways, headless and headed under xvfb, each first printing what the
+# adapter and the device are and Chromium's own errors (DEBUG=pw:browser),
+# and fails if neither way passes; the fallback must pass on its own.
 
 name: check-browser
 
@@ -23,7 +24,7 @@ concurrency:
 jobs:
   check-browser:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
@@ -35,11 +36,44 @@ jobs:
         with:
           node-version: 26
 
-      - name: The page's packages, and Playwright's Chromium with its libraries
+      - name: The page's packages, Playwright's Chromium with its libraries, and xvfb
         working-directory: web/app
         run: |
           npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
+          sudo apt-get install -y xvfb
 
-      - name: Check
-        run: scripts/check-browser.sh --project swiftshader --project fallback
+      - name: "SwiftShader, headless: the adapter, the device, Chromium's errors"
+        continue-on-error: true
+        env:
+          DEBUG: pw:browser
+        run: scripts/check-browser.sh --project swiftshader adapter
+
+      - name: "SwiftShader, headed under xvfb: the adapter, the device, Chromium's errors"
+        continue-on-error: true
+        env:
+          DEBUG: pw:browser
+          KURVEN_HEADED: "1"
+        run: xvfb-run -a scripts/check-browser.sh --project swiftshader adapter
+
+      - name: SwiftShader, headless
+        id: headless
+        continue-on-error: true
+        run: scripts/check-browser.sh --project swiftshader
+
+      - name: SwiftShader, headed under xvfb
+        id: headed
+        if: steps.headless.outcome == 'failure'
+        continue-on-error: true
+        env:
+          KURVEN_HEADED: "1"
+        run: xvfb-run -a scripts/check-browser.sh --project swiftshader
+
+      - name: Without WebGPU
+        run: scripts/check-browser.sh --project fallback
+
+      - name: SwiftShader passed one way or the other
+        if: steps.headless.outcome == 'failure' && steps.headed.outcome != 'success'
+        run: |
+          echo "the swiftshader project failed headless and headed; see the adapter steps above"
+          exit 1

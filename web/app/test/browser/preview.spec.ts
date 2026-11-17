@@ -43,6 +43,7 @@ async function load(page: Page, query: string, bundle?: string): Promise<void> {
 
 interface Measured {
   usesGPU: boolean;
+  fallbackReason: string | null;
   baked: number;
   recall: number;
   stroked: number;
@@ -73,7 +74,7 @@ async function measure(page: Page): Promise<Measured> {
     const preview0 = await k.request({ kind: "preview", draft: true });
     const view = preview0.reply.uniforms.view;
     const control = C.stray(C.unclippedMask(frame, view, drawn.reply, drawn.arrays), judged, pixels.width, pixels.height);
-    return { usesGPU: k.usesGPU, ...m, control, rest: timing };
+    return { usesGPU: k.usesGPU, fallbackReason: k.fallbackReason, ...m, control, rest: timing };
   });
 }
 
@@ -88,7 +89,9 @@ for (const scene of scenes) {
     console.log(line);
     info.annotations.push({ type: "coverage", description: line });
     await page.locator("#preview").screenshot({ path: info.outputPath(`${scene.name}.png`) });
-    expect(m.usesGPU).toBe(info.project.name !== "fallback");
+    expect(m.usesGPU, `WebGPU or not, as the project says (the page's fallback: ${m.fallbackReason})`).toBe(
+      info.project.name !== "fallback",
+    );
     expect(m.baked).toBeGreaterThan(5000);
     expect(m.recall, "the curves the judged strokes keep, the preview draws").toBeGreaterThan(0.99);
     expect(m.precision, "and the curves the preview draws, the judged strokes keep").toBeGreaterThan(0.99);

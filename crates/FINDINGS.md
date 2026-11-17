@@ -2767,3 +2767,39 @@ files another agent was reworking); the rest frame still blocks the Worker
   `max(step, 1)`; a step of none would draw a flat sheet at one texel, and
   the port takes the CPU's rule everywhere. Mesh corners are looked up by
   one function (`for_each_triangle`), and the keys by one hash.
+
+## 2026-11-17 · The browser lane in CI: the first run, and the second attempt
+
+The first run of check-browser.yml on ubuntu passed the fallback and failed
+every SwiftShader test within seconds: "WebGPU device lost (destroyed):
+Device was destroyed", then "A valid external Instance reference no longer
+exists" from `mapAsync` -- the old headless shell's symptom on the Mac, the
+GPU process gone. The flags were `--enable-unsafe-webgpu
+--use-webgpu-adapter=swiftshader --enable-features=Vulkan
+--disable-vulkan-surface`. The second attempt, which cannot be run here:
+
+- on Linux, `--enable-unsafe-swiftshader` (recent Chromium refuses WebGPU
+  on SwiftShader without it), `--use-angle=swiftshader`,
+  `--enable-features=Vulkan`, `--ignore-gpu-blocklist`, and Chromium's own
+  warnings and errors on stderr (`--enable-logging=stderr --v=0`, printed
+  under `DEBUG=pw:browser`); `--disable-vulkan-surface` dropped;
+- a first test, `adapter.spec.ts`, that prints the adapter (vendor,
+  architecture, fallback or not), its features and limits, whether it has
+  `float32-blendable` (the depth pass's MAX blend, which the renderer
+  checks before asking for a device, falling back with the reason), a
+  device asked for, the layout probe, a canvas cleared and presented, and
+  the device's loss with its reason; on this Mac it passes on SwiftShader
+  and on Metal, with `float32-blendable` on both. The gate's failure says
+  the page's fallback reason;
+- the workflow runs the adapter test headless and headed under `xvfb-run`,
+  then the SwiftShader project headless and, if that fails, headed under
+  xvfb, and the fallback, and fails unless the fallback and one of the two
+  SwiftShader runs pass.
+
+If two rounds do not get SwiftShader working on ubuntu, the SwiftShader
+project stays a local lane and CI runs the fallback alone.
+
+Locally, one full run of the lane timed out on cn under `gpu` and
+`fallback` and on the fallback's own test (600 s each, against 40 s and
+70 s usually) while the machine stalled; the same tests re-run passed at
+the numbers above (cn 99.97% / 100.00% on Metal, 100.00% in the fallback).
