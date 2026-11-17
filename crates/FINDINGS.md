@@ -1718,6 +1718,8 @@ and `--dump` writes strokes and frame; the CLI has `surface`.
 
 ## 2026-11-16 · The coordinate image is Swift's CPU rasterizer, not Metal's pass
 
+*Superseded 2026-11-16, its last paragraph: sn in relief at 0.4 is past its reach and tested by the image, not sphere traced; see "sn in relief past its reach: the coordinate image, not the port".*
+
 Swift's bake takes a parametric surface's coordinate image from Metal
 (`MetalRenderer.renderSurface`, `kv_param_vertex` in Shaders.swift). What
 Metal computes: the grid's points uploaded as float32 texels; view and clip
@@ -2030,3 +2032,21 @@ fold whose front part the front-most test's tolerance (two footprints and
 a cell) takes for the vertex's own neighbourhood: the blind spot
 Visibility.swift's doc names, which facing covers only on a surface that
 bounds a solid. The port and Swift agree on every one of them.
+
+## 2026-11-16 · Review of PR #71: one rasterized path, the how, the test
+
+- **Every image-tested surface reference is rasterized, by one path.**
+  References.swift's `baked` draws a parametric surface with no tubular
+  neighbourhood by `rasterizedBake` (Bake.swift's frame, tolerance and
+  layers, with the coordinate image by `SurfaceImage.rasterize` in place of
+  Metal's; written once, a named mirror of Bake.swift, since sharing the
+  code would mean editing KurvenBake). So sn-relief at 0.4 is now baked
+  so too, and comes out byte for byte as its Metal bake did; no SVG of the
+  32 changed. The surfaces table in both CLIs carries the flag, which adds
+  ", its coordinate image by SurfaceImage.rasterize in place of Metal's"
+  to the `how`; Swift refuses a scene whose flag is wrong. The header says
+  so. `references` takes 10.1 s, as before.
+- **The test** reads sn's poles at iK' and 2K + iK' from the quarter
+  periods, each plateau against its own foot on the bare torus, and checks
+  the reach at 0.3 and 0.4 rather than at 0.33 and 0.34 (the entry above
+  names the old pair).
