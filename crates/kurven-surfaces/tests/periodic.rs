@@ -527,8 +527,8 @@ fn sn_in_relief_past_a_third_is_tested_by_the_image_and_passes_through_its_axis(
     // `surface sn --relief A`: R = 2, r = 1, so the reach is min(r, R - r)
     // = 1, and |sn| is truncated at 3. The relief bounds a solid, and is
     // sphere traced, only while 3A < 1; from A = 1/3 the coordinate image
-    // alone tests it, and the reference drawing sn-relief at 0.4 is one so
-    // tested. Past it the relief goes through the torus's axis: sn's poles
+    // alone tests it, and the reference drawings sn-relief (0.4) and
+    // sn-relief-1 are so tested. Past it the relief goes through the torus's axis: sn's poles
     // lie on the inner equator, at u = 0 and u = 2K (a half turn round the
     // ring) with v = K', and |sn| = 3 round each, so each plateau stands at
     // x = (R - r) - 3A on its side and crosses the axis into the relief
@@ -552,8 +552,24 @@ fn sn_in_relief_past_a_third_is_tested_by_the_image_and_passes_through_its_axis(
         SurfaceDrawing::build(&request, None, false).expect("sn in relief")
     };
     let camera = Camera::oblique(&SurfaceRequest::PROJECTION);
+    // sn's poles in its plane, at iK' and 2K + iK', and where they sit on the
+    // bare torus (amplitude 0 is the torus itself): on the inner equator,
+    // r = 1 in from the ring of radius 2, a half turn apart.
+    let m = 0.64;
+    let (k, kp) = (Jacobi::quarter_period(m), Jacobi::quarter_period(1.0 - m));
+    let poles = [P2::<ParamSpace>::new(0.0, kp), P2::new(2.0 * k, kp)];
+    let bare = drawing(0.0).surface;
+    let feet = poles.map(|c| (bare.map)(c).position);
+    let out = feet.map(|p| Vec3::new(p.x, p.y, 0.0) / Vec3::new(p.x, p.y, 0.0).length());
     let mut failures: Vec<String> = Vec::new();
-    for (amplitude, solid) in [(0.3, true), (0.33, true), (0.34, false), (0.4, false), (1.0, false)] {
+    expect(
+        &mut failures,
+        feet.iter().zip(&out).all(|(p, e)| (*p - *e).length() < 1e-12) && (out[0] + out[1]).length() < 1e-12,
+        "sn's poles sit on the inner equator, a half turn apart",
+        &format!("{feet:?}"),
+    );
+    // Clear of the reach either way, so a margin added to it moves nothing.
+    for (amplitude, solid) in [(0.3, true), (0.4, false), (1.0, false)] {
         let surface = drawing(amplitude).surface;
         let traced = SurfaceVisibility::sphere_tracing(surface.clone(), camera.view).is_ok();
         expect(
@@ -562,16 +578,15 @@ fn sn_in_relief_past_a_third_is_tested_by_the_image_and_passes_through_its_axis(
             &format!("at {amplitude} the relief {} a solid", if solid { "bounds" } else { "bounds no" }),
             &format!("outward {:?}, sphere traced {traced}", surface.outward),
         );
-        // The two plateaus on the inner equator, at u = 0 and u = 2K.
-        let (half_u, half_v) = (0.5 * surface.u.range.hi, 0.5 * surface.v.range.hi);
-        let near = (surface.map)(P2::new(0.0, half_v)).position;
-        let far = (surface.map)(P2::new(half_u, half_v)).position;
+        // Each plateau, |sn| = 3, stands 3A in from its foot along the
+        // torus's normal: (R - r) - 3A out from the axis, past it from A = 1/3.
         let x = 1.0 - 3.0 * amplitude;
+        let plateaus = poles.map(|c| (surface.map)(c).position);
         expect(
             &mut failures,
-            (near - Vec3::new(x, 0.0, 0.0)).length() < 1e-12 && (far - Vec3::new(-x, 0.0, 0.0)).length() < 1e-12,
-            &format!("at {amplitude} the plateaus on the inner equator stand at x = ±{x:.2}"),
-            &format!("{near:?} and {far:?}"),
+            plateaus.iter().zip(&out).all(|(p, e)| (*p - *e * x).length() < 1e-12),
+            &format!("at {amplitude} the plateaus on the inner equator stand {x:.2} out from the axis"),
+            &format!("{plateaus:?}"),
         );
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
