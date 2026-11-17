@@ -199,6 +199,66 @@ references() {
 }
 step "the port's reference drawings are Swift's, within crates/fixtures/references.txt" references
 
+# The session against Swift's app: every edit script of
+# crates/fixtures/swift/session/scripts.txt replayed by `kurven-cli app`, each
+# saved bundle's manifest byte for byte the one Swift's KurvenApp saved, and
+# each baked drawing held to Swift's by `kurven-cli compare` at the line's
+# tolerances. A file Swift wrote that the port did not, or the other way
+# round (but a landscape's grids, which make.sh leaves out), fails.
+session() {
+    local here="$CRATES/fixtures/swift/session" dir="$WORK/session"
+    local name distance length input rest out a f r failed=0 held=0 drawings=0
+    rm -rf "$dir"
+    while read -r name distance length input rest; do
+        case "$name" in '' | '#'*) continue ;; esac
+        out="$dir/$name"
+        mkdir -p "$out" || return 1
+        local args=()
+        [ "$input" != - ] && args+=("$here/inputs/$input.kurven")
+        for a in $rest; do
+            case "$a" in @*) args+=("$out/${a#@}") ;; *) args+=("$a") ;; esac
+        done
+        if ! (cd "$out" && "$CLI" app "${args[@]}" > "$out/.stdout" 2>&1); then
+            echo "$name: the port's app failed"
+            cat "$out/.stdout"
+            failed=1
+            continue
+        fi
+        [ -d "$here/$name" ] || { echo "$name: Swift wrote nothing; run crates/fixtures/swift/session/make.sh $name"; failed=1; continue; }
+        local theirs ours
+        theirs=$(cd "$here/$name" && find . -type f | sort)
+        ours=$(cd "$out" && find . -type f ! -name '*.npy' ! -name .stdout | sort)
+        if [ "$theirs" != "$ours" ]; then
+            echo "$name: Swift wrote [$theirs], the port [$ours]" | tr '\n' ' '
+            echo
+            failed=1
+            continue
+        fi
+        for f in $theirs; do
+            case "$f" in
+                *manifest.json)
+                    if cmp -s "$here/$name/$f" "$out/$f"; then held=$((held + 1)); else
+                        echo "$name: $f is not Swift's"
+                        diff "$here/$name/$f" "$out/$f" | head -c 2000
+                        failed=1
+                    fi
+                    ;;
+                *.svg)
+                    if r=$("$CLI" compare "$here/$name/$f" "$out/$f" --tolerance "$distance" --length-tolerance "$length"); then
+                        drawings=$((drawings + 1))
+                    else
+                        printf '%s: %s\n%s\n' "$name" "$f" "$r"
+                        failed=1
+                    fi
+                    ;;
+            esac
+        done
+    done < "$here/scripts.txt"
+    [ "$failed" = 0 ] && echo "$held manifest(s) byte for byte Swift's, $drawings drawing(s) within their tolerances"
+    return $failed
+}
+step "the session's edit scripts give Swift's bundles and drawings" session
+
 wasm() {
     workspace build --profile web --target wasm32-unknown-unknown -p kurven-wasm || return 1
     echo "kurven_wasm.wasm: $(wc -c < "$WASM" | tr -d ' ') bytes"
