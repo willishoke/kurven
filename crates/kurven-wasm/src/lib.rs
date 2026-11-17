@@ -1,22 +1,139 @@
 //! The engine as the page's WebAssembly module.
 //!
-//! In Phase 0 the module exports one thing: the port's golden sets
-//! ([`kurven_golden::all`]), so the check can run them under Node and require
-//! the bytes native writes. The binding is the plain C ABI, read with nothing
-//! but `WebAssembly.instantiate`: the harness needs no generated glue and no
-//! npm package. The Worker protocol of Phase 6 decides whether the page's
-//! binding is this or wasm-bindgen.
+//! The binding is the plain C ABI (pointer and length), read with nothing
+//! but `WebAssembly.instantiate`: no generated glue, no npm package, no
+//! wasm-bindgen CLI to keep in step with a crate (crates/FINDINGS.md, Phase
+//! 6, says why this and not wasm-bindgen). Two things are exported.
 //!
-//! A host calls `goldens()` once, which generates the sets and returns how
-//! many files there are, then reads file `i`'s path and bytes from the
-//! module's memory at `golden_path_ptr(i)` (`golden_path_len(i)` bytes) and
+//! **The session** (`kurven_session::protocol`), one document per module
+//! instance, which is one per Worker. The host stages a bundle's files with
+//! `kv_stage` (each file's bytes in memory it got from `kv_alloc`), sends a
+//! request as JSON to `kv_call`, which answers with the reply's length, and
+//! reads the reply at `kv_reply_ptr()` and its typed arrays, the `i`th at
+//! `kv_array_ptr(i)` for `kv_array_len(i)` bytes, little-endian. The bytes
+//! stay until the next call; a host copies them out (`ArrayBuffer.slice`),
+//! and the copy is what a Worker transfers to the page.
+//!
+//! **The port's golden sets** ([`kurven_golden::all`]), so the check can run
+//! them under Node and require the bytes native writes: a host calls
+//! `goldens()` once, which generates the sets and returns how many files
+//! there are, then reads file `i`'s path and bytes from the module's memory
+//! at `golden_path_ptr(i)` (`golden_path_len(i)` bytes) and
 //! `golden_bytes_ptr(i)` (`golden_bytes_len(i)` bytes). `bake_gallery_plate`
 //! bakes a gallery plate, and `bake_surface_reference` a surface drawing, for
 //! timing.
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use kurven_golden::Golden;
+use kurven_session::protocol::{Reply, Session};
+
+// MARK: - the session
+
+/// The last reply's JSON and its arrays' bytes, kept until the next call.
+type Kept = Option<(Vec<u8>, Vec<Vec<u8>>)>;
+
+static SESSION: OnceLock<Mutex<(Session, Kept)>> = OnceLock::new();
+
+fn with_session<T>(body: impl FnOnce(&mut Session, &mut Kept) -> T) -> T {
+    let lock = SESSION.get_or_init(|| Mutex::new((Session::new(), None)));
+    let mut guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (session, reply) = &mut *guard;
+    body(session, reply)
+}
+
+/// `len` bytes the host may write into, for `kv_stage` and `kv_call`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kv_alloc(len: usize) -> *mut u8 {
+    let mut bytes = vec![0u8; len.max(1)];
+    let ptr = bytes.as_mut_ptr();
+    std::mem::forget(bytes);
+    ptr
+}
+
+/// Give back what `kv_alloc` lent.
+///
+/// # Safety
+/// `ptr` and `len` must be a pair `kv_alloc` returned, freed once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kv_free(ptr: *mut u8, len: usize) {
+    drop(unsafe { Vec::from_raw_parts(ptr, len.max(1), len.max(1)) });
+}
+
+/// The bytes at `ptr`, which the host wrote into memory `kv_alloc` lent.
+unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
+    if len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(ptr, len) } }
+}
+
+/// Stage a file of the bundle named `bundle`, at `path` in it (`Session::stage`).
+///
+/// # Safety
+/// Each pointer and length must lie in memory the host wrote.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kv_stage(
+    bundle: *const u8,
+    bundle_len: usize,
+    path: *const u8,
+    path_len: usize,
+    data: *const u8,
+    data_len: usize,
+) -> u32 {
+    let (Ok(bundle), Ok(path)) = (
+        std::str::from_utf8(unsafe { bytes(bundle, bundle_len) }),
+        std::str::from_utf8(unsafe { bytes(path, path_len) }),
+    ) else {
+        return 0;
+    };
+    let data = unsafe { bytes(data, data_len) }.to_vec();
+    with_session(|session, _| session.stage(bundle, path, data));
+    1
+}
+
+/// Forget every staged bundle.
+#[unsafe(no_mangle)]
+pub extern "C" fn kv_unstage() {
+    with_session(|session, _| session.unstage());
+}
+
+/// Answer the JSON request at `ptr` (`Session::call`). Returns the reply's
+/// length; the reply and its arrays stay until the next call.
+///
+/// # Safety
+/// `ptr` and `len` must lie in memory the host wrote.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kv_call(ptr: *const u8, len: usize) -> usize {
+    let request = String::from_utf8_lossy(unsafe { bytes(ptr, len) }).into_owned();
+    with_session(|session, kept| {
+        let Reply { json, arrays } = session.call(&request);
+        let n = json.len();
+        *kept = Some((json.into_bytes(), arrays.iter().map(|(_, a)| a.bytes()).collect()));
+        n
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kv_reply_ptr() -> *const u8 {
+    with_session(|_, kept| kept.as_ref().map_or(std::ptr::null(), |(json, _)| json.as_ptr()))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kv_array_count() -> usize {
+    with_session(|_, kept| kept.as_ref().map_or(0, |(_, arrays)| arrays.len()))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kv_array_ptr(index: usize) -> *const u8 {
+    with_session(|_, kept| {
+        kept.as_ref().and_then(|(_, arrays)| arrays.get(index)).map_or(std::ptr::null(), |a| a.as_ptr())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kv_array_len(index: usize) -> usize {
+    with_session(|_, kept| kept.as_ref().and_then(|(_, arrays)| arrays.get(index)).map_or(0, |a| a.len()))
+}
+
+// MARK: - the golden sets
 
 static GOLDENS: OnceLock<Vec<Golden>> = OnceLock::new();
 

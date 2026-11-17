@@ -272,9 +272,18 @@ identity() {
     "$CLI" fixtures "$native" >/dev/null &&
         node "$CRATES/kurven-wasm/goldens.mjs" "$WASM" "$browser" &&
         diff -r "$native" "$browser" &&
-        echo "$(find "$native" -type f | wc -l | tr -d ' ') golden file(s) byte-identical, native and wasm"
+        echo "$(find "$native" -type f | wc -l | tr -d ' ') golden file(s) byte-identical, native and wasm" || return 1
+    # The session's edit scripts through the module's session, against what
+    # `kurven-cli app` wrote natively in the session step: every bundle file
+    # and drawing, the grids of a resampled landscape among them.
+    local here="$CRATES/fixtures/swift/session" ran="$WORK/session" through="$WORK/session-wasm"
+    [ -d "$ran" ] || { echo "no native session run to compare: the session step did not run"; return 1; }
+    rm -rf "$through"
+    node "$CRATES/kurven-wasm/session.mjs" "$WASM" "$here/scripts.txt" "$here/inputs" "$through" &&
+        diff -r -x .stdout "$ran" "$through" &&
+        echo "$(find "$through" -type f | wc -l | tr -d ' ') session file(s) byte-identical, native and wasm"
 }
-step "wasm under Node writes the golden sets native writes, byte for byte" identity
+step "wasm under Node writes the golden sets and the session's files native writes, byte for byte" identity
 
 # The page: its pinned packages installed when the lock is newer than the
 # install, then a type check and a build.

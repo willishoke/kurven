@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 kurven-golden.workspace = true
+kurven-session.workspace = true
 
 [lints]
 workspace = true
