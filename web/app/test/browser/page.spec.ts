@@ -599,3 +599,170 @@ test("a slider is one drag at a time, and a window's thumbs do not cross", async
   expect(Number(await page.inputValue("#re-lo"))).toBe(re.lo);
   expect(Number(await page.inputValue("#re-lo"))).toBeLessThan(Number(await page.inputValue("#re-hi")));
 });
+
+/** Fail on any error the page throws or leaves unhandled. */
+function strict(page: Page): string[] {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  return errors;
+}
+
+/** gamma's link as the engine and the page write it, changed by `change`. */
+async function gammaLink(page: Page, change: (link: any) => void): Promise<string> {
+  const link = await page.evaluate(async () => {
+    const k = (window as any).kurven;
+    const edited = (await k.request({ kind: "edited" })).reply.edited;
+    const s = k.state();
+    return { edited, camera: s.camera.exact, hidden: [], mode: "drawing", depthTolerance: s.depthTolerance, bakeResolution: s.bakeResolution, refine: true };
+  });
+  change(link);
+  return fragment(link);
+}
+
+test("malformed links are refused and said, and the page starts as it would", async ({ page }, info) => {
+  await load(page, at(info.project.name));
+  const { deflateRawSync } = await import("node:zlib");
+  const bomb = `#k1.${deflateRawSync(Buffer.alloc(2_000_000, 0x20)).toString("base64url")}`;
+  const cases: [string, string, string][] = [
+    ["a zip bomb", bomb, "inflates past 64 KB"],
+    ["a long fragment", `#k1j.${"A".repeat(20_000)}`, "longer than 16 KB"],
+    ["not base64url", "#k1.%%%", "not written as this page writes links"],
+    ["not JSON", `#k1j.${Buffer.from("{nope").toString("base64url")}`, "does not hold JSON"],
+    ["hidden as a number", await gammaLink(page, (l) => (l.hidden = 5)), "hidden layers"],
+    ["a camera without a target", await gammaLink(page, (l) => delete l.camera.target), "camera"],
+    [
+      "a layer kind a link does not carry",
+      await gammaLink(page, (l) =>
+        l.edited.layers.push({
+          name: "stored",
+          role: "magnitude",
+          width: 0.2,
+          color: "#000000",
+          clipped: true,
+          heightPolicy: "magnitude",
+          source: { kind: "file", vertices: "a.npy", offsets: "b.npy" },
+        }),
+      ),
+      "carries no file layer",
+    ],
+    [
+      "wall edges past the walls",
+      await gammaLink(page, (l) => {
+        for (const x of l.edited.layers) if (x.name === "wall_edges") x.source.edges = [0, 9];
+      }),
+      "an edge no wall has",
+    ],
+  ];
+  for (const [what, hash, says] of cases) {
+    const started = Date.now();
+    const fresh = await page.context().newPage();
+    const errors = strict(fresh);
+    await load(fresh, `${at(info.project.name)}${hash}`);
+    await expect(fresh.locator("#notice"), what).toContainText("This link was refused");
+    await expect(fresh.locator("#notice"), what).toContainText(says);
+    expect((await state(fresh)).landscape.name, what).toBe("gamma");
+    expect(errors, what).toEqual([]);
+    await fresh.close();
+    console.log(`${info.project.name}: ${what} refused in ${Date.now() - started} ms`);
+  }
+});
+
+test("a link that cannot be made leaves the open document and what it can undo", async ({ page }, info) => {
+  const errors = strict(page);
+  await load(page, at(info.project.name));
+  const height = page.locator('input[type="number"][aria-label="Truncation height"]');
+  await height.fill("3.5");
+  await height.press("Enter");
+  await idle(page);
+  const before = await page.evaluate(async () => (await (window as any).kurven.request({ kind: "edited" })).reply.edited);
+  const undo = (await state(page)).undo;
+  expect(undo).toEqual({ can: true, name: "Truncation" });
+  // Each end of its window finite, the width not: it passes the bounds, and
+  // cannot be sampled.
+  const hash = await gammaLink(page, (l) => {
+    l.edited.landscape.domain = { real: { lo: -1e308, hi: 1e308 }, imag: { lo: 0, hi: 2 } };
+    l.edited.layers = l.edited.layers.filter((x: any) => x.source.kind !== "hatching");
+  });
+  await page.evaluate((h) => (location.hash = h), hash);
+  await expect(page.locator("#notice")).toContainText("could not be made");
+  await idle(page);
+  expect(await page.evaluate(async () => (await (window as any).kurven.request({ kind: "edited" })).reply.edited)).toEqual(before);
+  expect((await state(page)).undo).toEqual(undo);
+  // ...and the URL is the open document's again.
+  expect(await page.evaluate(() => (window as any).kurven.linked())).not.toContain(hash);
+  // A link opened, but one of its settings refused: said.
+  const partly = await gammaLink(page, (l) => (l.depthTolerance = -1));
+  await page.evaluate((h) => (location.hash = h), partly);
+  await expect(page.locator("#notice")).toContainText("opened, but not all of it");
+  expect(errors).toEqual([]);
+});
+
+test("a cancel leaves no request unhandled, and a drag held through it is let go", async ({ page }, info) => {
+  const errors = strict(page);
+  await load(page, at(info.project.name));
+  const levels = page.locator('[data-levels="mag_major"]');
+  const count = (await state(page)).layers.find((l: any) => l.name === "mag_major").levels;
+  // Take hold of a level slider; while it is held, an export starts and is
+  // cancelled, and the hand moves and lets go.
+  const box = (await levels.boundingBox())!;
+  const frac = await levels.evaluate((i: HTMLInputElement) => (Number(i.value) - Number(i.min)) / (Number(i.max) - Number(i.min)));
+  const x = box.x + 7 + frac * (box.width - 14);
+  await page.mouse.move(x, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.waitForFunction(() => (window as any).kurven.engine.busy.length === 0);
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>("#export")!.click());
+  await page.mouse.move(x + 20, box.y + box.height / 2, { steps: 4 });
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>("#cancel-export")!.click());
+  await page.mouse.up();
+  await expect(page.locator("#export-status")).toContainText("cancelled");
+  await idle(page);
+  // The drag was closed: a step from the keyboard is an edit of its own.
+  await levels.focus();
+  await page.keyboard.press("ArrowRight");
+  await idle(page);
+  const s = await state(page);
+  expect(s.undo.name).toBe("Levels of mag_major");
+  const now = s.layers.find((l: any) => l.name === "mag_major").levels;
+  await page.keyboard.press("ControlOrMeta+z");
+  await idle(page);
+  expect((await state(page)).layers.find((l: any) => l.name === "mag_major").levels).toBe(now - 1);
+  expect(count).toBeGreaterThan(0);
+  expect(errors).toEqual([]);
+});
+
+test("a formula typed and not sampled stays, said, until return or escape", async ({ page }, info) => {
+  await load(page, at(info.project.name));
+  const field = page.locator("#formula");
+  await field.fill("z^5");
+  // Focus elsewhere, and a reply renders the panel: the text stays.
+  await page.locator('li[data-layer="folds"] input[type="checkbox"]').uncheck();
+  await idle(page);
+  expect(await field.inputValue()).toBe("z^5");
+  await expect(page.locator("#formula-draft")).toBeVisible();
+  await expect(field).toHaveAttribute("data-draft", "true");
+  expect((await state(page)).landscape.expression).toBe("gamma(z)");
+  // Escape puts back the landscape's.
+  await field.focus();
+  await page.keyboard.press("Escape");
+  expect(await field.inputValue()).toBe("gamma(z)");
+  await expect(page.locator("#formula-draft")).toBeHidden();
+  // Return samples it.
+  await field.fill("z^5");
+  await field.press("Enter");
+  await idle(page);
+  expect((await state(page)).landscape.expression).toBe("z^5");
+  await expect(page.locator("#formula-draft")).toBeHidden();
+});
+
+test("the sliders reach as far as the engine says", async ({ page }, info) => {
+  await load(page, at(info.project.name));
+  const controls = await page.evaluate(async () => (await (window as any).kurven.request({ kind: "catalog" })).reply.controls);
+  const samples = page.locator("#samples");
+  expect(Number(await samples.getAttribute("min"))).toBe(controls.samples.min);
+  expect(Number(await samples.getAttribute("max"))).toBe(controls.samples.max);
+  expect(Number(await samples.getAttribute("step"))).toBe(controls.samples.step);
+  const levels = page.locator('[data-levels="mag_major"]');
+  expect(Number(await levels.getAttribute("min"))).toBe(controls.levels.min);
+  expect(Number(await levels.getAttribute("max"))).toBe(controls.levels.max);
+  expect(Number(await page.locator("#truncation-height").getAttribute("min"))).toBe(controls.truncation.min);
+});
