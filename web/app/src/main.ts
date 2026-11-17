@@ -27,14 +27,14 @@
 import "./page/style.css";
 
 import { browserWorker, Cancelled, EngineClient, VIEWS } from "./engine/client.ts";
-import type { Bundle, DocumentState, Edited, Preset, Request } from "./engine/protocol.ts";
+import type { Bundle, Controls, DocumentState, Edited, Preset, Request } from "./engine/protocol.ts";
 import { DEFAULT_OPTIONS, PreviewRenderer, Unsupported } from "./gpu/renderer.ts";
 import { probeLayout } from "./gpu/layout.ts";
 import { PreviewView, type Timing } from "./gpu/view.ts";
 import { CanvasInput } from "./page/canvas.ts";
 import { Panel } from "./page/controls.ts";
 import { h } from "./page/dom.ts";
-import { Engine, Latest } from "./page/engine.ts";
+import { Engine, Latest, quietly } from "./page/engine.ts";
 import { decode, encode, hides, linkOf, restoring } from "./page/link.ts";
 
 const query = new URLSearchParams(location.search);
@@ -89,8 +89,8 @@ const panel = new Panel({
   engine,
   changed: () => view.changed(),
   moved: () => view.moved(),
-  exportSVG: () => void exportSVG(),
-  cancelExport: () => void client.cancel("the export was cancelled"),
+  exportSVG: () => void exportSVG().catch(quietly),
+  cancelExport: () => void client.cancel("the export was cancelled").catch(quietly),
 });
 app.replaceChildren(stage, panel.root);
 if (!view.usesGPU) {
@@ -194,6 +194,14 @@ function scheduleLink(): void {
 }
 
 async function writeLink(): Promise<void> {
+  try {
+    await writingLink();
+  } catch (error) {
+    quietly(error);
+  }
+}
+
+async function writingLink(): Promise<void> {
   const state = engine.state;
   if (!state || restoringLink) return;
   const reply = await engine.send({ kind: "edited" });
@@ -301,18 +309,22 @@ window.addEventListener("keydown", (e) => {
 // MARK: - opening: a link, the query, or Γ
 
 const catalog = await engine.send({ kind: "catalog" });
-panel.setCatalog((catalog?.presets as Preset[] | undefined) ?? []);
+if (!catalog?.ok || !catalog.controls) throw new Error(`the engine gave no catalog: ${catalog?.error ?? "no reply"}`);
+panel.setCatalog((catalog.presets as Preset[] | undefined) ?? [], catalog.controls as Controls);
 
 /** Open the link a fragment holds: "none" when it holds none, "refused"
  * when it cannot be read or the engine refuses what it asks for (the page
  * then says why, and the document is the one before), "opened". */
 async function openLink(hash: string): Promise<"none" | "refused" | "opened"> {
+  const refused = (why: string): "refused" => {
+    panel.notice(`This link was refused: ${why}`);
+    return "refused";
+  };
   let link;
   try {
     link = await decode(hash);
   } catch (error) {
-    panel.notice(`This link could not be read: ${error instanceof Error ? error.message : String(error)}`);
-    return "refused";
+    return refused(error instanceof Error ? error.message : String(error));
   }
   if (!link) return "none";
   if (linkTimer) {
@@ -320,35 +332,45 @@ async function openLink(hash: string): Promise<"none" | "refused" | "opened"> {
     linkTimer = null;
   }
   restoringLink = true;
+  const wasRefine = engine.state?.refine ?? true;
+  const wasMode = engine.state?.mode ?? "drawing";
+  // What was sent before the landscape, put back if anything is refused:
+  // the engine's `restore` changes nothing it refuses, so neither does the
+  // page.
+  const putBack = async () => {
+    if (link.refine !== wasRefine) await engine.send({ kind: "refine", on: wasRefine });
+    if (link.mode !== wasMode) await engine.send({ kind: "mode", mode: wasMode });
+  };
   try {
-    // The settings an open keeps go first, and are put back if the
-    // landscape is refused: a refused link changes nothing.
-    const wasRefine = engine.state?.refine ?? true;
-    const wasMode = engine.state?.mode ?? "drawing";
     const { before, after } = restoring(link, [canvas.width, canvas.height]);
     // A setting the page already has is not sent again (a refinement
     // switched on redraws every layer).
     const sending = before.filter(
       (r) => !(r.kind === "refine" && r.on === wasRefine) && !(r.kind === "mode" && r.mode === wasMode),
     );
-    let reply = null;
-    for (const r of sending) reply = await engine.send(r);
-    if (!reply?.ok) {
-      if (link.refine !== wasRefine) await engine.send({ kind: "refine", on: wasRefine });
-      if (link.mode !== wasMode) await engine.send({ kind: "mode", mode: wasMode });
-      panel.notice(`This link was refused: ${reply?.error ?? "the engine did not answer"}`);
-      return "refused";
+    // Every reply read: any refusal refuses the link.
+    for (const r of sending) {
+      const reply = await engine.send(r);
+      if (!reply?.ok) {
+        await putBack();
+        return refused(reply?.error ?? `the engine did not answer its ${r.kind}`);
+      }
     }
     const restored = engine.state;
-    if (restored) for (const r of hides(link, restored)) await engine.send(r);
-    const refused: string[] = [];
-    for (const r of after) {
-      const answer = await engine.send(r);
-      if (answer && !answer.ok) refused.push(answer.error ?? r.kind);
+    const rest = [...(restored ? hides(link, restored) : []), ...after];
+    const partly: string[] = [];
+    for (const r of rest) {
+      const reply = await engine.send(r);
+      if (!reply?.ok) partly.push(reply?.error ?? `no answer to its ${r.kind}`);
     }
-    panel.notice(refused.length ? `This link was opened, but not all of it: ${refused.join("; ")}` : null);
+    panel.notice(partly.length ? `This link was opened, but not all of it: ${partly.join("; ")}` : null);
     lastLinked = hash;
     return "opened";
+  } catch (error) {
+    // A cancel or a failure mid-way: said, and the settings put back as far
+    // as the engine will take them.
+    await putBack().catch(quietly);
+    return refused(error instanceof Error ? error.message : String(error));
   } finally {
     restoringLink = false;
   }
@@ -359,13 +381,15 @@ async function openLink(hash: string): Promise<"none" | "refused" | "opened"> {
 window.addEventListener("hashchange", () => {
   const hash = location.hash;
   if (hash === lastLinked) return;
-  void openLink(hash).then((opened) => {
-    if (opened === "opened") view.changed();
-    else if (opened === "refused") {
-      lastLinked = hash;
-      scheduleLink();
-    }
-  });
+  void openLink(hash)
+    .then((opened) => {
+      if (opened === "opened") view.changed();
+      else if (opened === "refused") {
+        lastLinked = hash;
+        scheduleLink();
+      }
+    })
+    .catch(quietly);
 });
 
 await engine.send({ kind: "viewport", width: canvas.width, height: canvas.height });
