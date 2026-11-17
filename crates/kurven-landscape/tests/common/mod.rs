@@ -5,6 +5,8 @@
 
 #![allow(dead_code, clippy::neg_cmp_op_on_partial_ord, clippy::manual_range_contains)]
 
+use std::sync::{Arc, Mutex, OnceLock};
+
 use kurven_core::bundle::KurvenBundle;
 use kurven_core::camera::{rotation_x, rotation_z};
 use kurven_core::grid::Grid2D;
@@ -219,6 +221,49 @@ impl BoxGrid {
     }
 }
 
+/// Whether two directions are the same, bit for bit.
+fn same_direction(a: Vec3, b: Vec3) -> bool {
+    a.to_array().map(f64::to_bits) == b.to_array().map(f64::to_bits)
+}
+
+/// The ball the indexes below trust an origin to lie in: about the centre
+/// of a mesh's box, four times its radius and distance from 0. Each widens
+/// its boxes by rounding bounded by how far an origin within it can lie from
+/// a vertex (`span`) and from 0 (`far`), so an origin outside it is tested
+/// against every triangle.
+struct Reach {
+    centre: Vec3,
+    radius: f64,
+    reach: f64,
+}
+
+impl Reach {
+    fn of(mesh: &Mesh<WorldSpace>) -> Reach {
+        let (mut blo, mut bhi) = (Vec3::splat(f64::INFINITY), Vec3::splat(f64::NEG_INFINITY));
+        for v in &mesh.vertices {
+            blo = blo.min(v.v);
+            bhi = bhi.max(v.v);
+        }
+        let centre = if blo.x.is_finite() { 0.5 * (blo + bhi) } else { Vec3::ZERO };
+        let radius = if blo.x.is_finite() { 0.5 * (bhi - blo).length() } else { 0.0 };
+        Reach { centre, radius, reach: 4.0 * (radius + centre.length()) + 1e-300 }
+    }
+
+    /// The most an origin within reach lies from a vertex.
+    fn span(&self) -> f64 {
+        self.reach + self.radius
+    }
+
+    /// The most an origin within reach lies from 0.
+    fn far(&self) -> f64 {
+        self.centre.length() + self.reach
+    }
+
+    fn holds(&self, origin: Vec3) -> bool {
+        (origin - self.centre).length() <= self.reach
+    }
+}
+
 /// `first_hit` against one mesh along one direction, asked of many origins:
 /// the same brute force, over only the triangles that can answer. Each
 /// triangle is projected along the direction onto a plane, and bucketed by
@@ -239,10 +284,9 @@ pub struct RayIndex {
     /// The plane's axes, and the triangles' widened boxes on it.
     axes: (Vec3, Vec3),
     grid: BoxGrid,
-    /// Origins farther than `reach` from `centre` are tested against every
-    /// triangle: the widening assumes them within it.
-    centre: Vec3,
-    reach: f64,
+    /// Origins out of reach are tested against every triangle: the
+    /// widening assumes them within it.
+    reach: Reach,
     check: Option<Mesh<WorldSpace>>,
 }
 
@@ -262,23 +306,13 @@ impl RayIndex {
             }
             prepared.push(Prepared { a, e1, e2, p, inv: 1.0 / det });
         }
-        let (mut blo, mut bhi) = (Vec3::splat(f64::INFINITY), Vec3::splat(f64::NEG_INFINITY));
-        for v in &mesh.vertices {
-            blo = blo.min(v.v);
-            bhi = bhi.max(v.v);
-        }
-        let centre = if blo.x.is_finite() { 0.5 * (blo + bhi) } else { Vec3::ZERO };
-        let radius = if blo.x.is_finite() { 0.5 * (bhi - blo).length() } else { 0.0 };
-        let reach = 4.0 * (radius + centre.length()) + 1e-300;
+        let reach = Reach::of(mesh);
         let along = direction.length();
         let unit = direction / along;
         let ax = unit.cross(if unit.z.abs() < 0.9 { Vec3::new(0.0, 0.0, 1.0) } else { Vec3::new(1.0, 0.0, 0.0) });
         let ax = ax.normalized();
         let ay = unit.cross(ax);
-        // The farthest an origin within reach and a vertex lie from 0, and
-        // so the most an origin lies from a vertex.
-        let far = centre.length() + reach;
-        let span = reach + radius;
+        let (far, span) = (reach.far(), reach.span());
         let project = |x: Vec3| Vec2::new(x.dot(ax), x.dot(ay));
         let mut always = Vec::new();
         let mut boxes: Vec<Option<(Vec2, Vec2)>> = Vec::with_capacity(prepared.len());
@@ -315,7 +349,6 @@ impl RayIndex {
             always,
             axes: (ax, ay),
             grid: BoxGrid::new(&boxes, (side, side)),
-            centre,
             reach,
             check: std::env::var_os("KURVEN_RAY_INDEX_CHECK").map(|_| mesh.clone()),
         }
@@ -324,7 +357,7 @@ impl RayIndex {
     /// Each candidate triangle's hit from `origin`, until `stop` says so.
     fn visit(&self, origin: Vec3, after: f64, mut stop: impl FnMut(f64) -> bool) {
         let d = self.direction;
-        if !((origin - self.centre).length() <= self.reach) {
+        if !self.reach.holds(origin) {
             for t in &self.prepared {
                 if let Some(h) = t.hit(origin, d, after)
                     && stop(h)
@@ -367,7 +400,7 @@ impl RayIndex {
 
     /// `first_hit(mesh, origin, direction, after)`, the same double.
     pub fn first_hit(&self, origin: Vec3, direction: Vec3, after: f64) -> Option<f64> {
-        if direction.to_array().map(f64::to_bits) != self.direction.to_array().map(f64::to_bits) {
+        if !same_direction(direction, self.direction) {
             panic!("a ray index asked along {direction:?}, built along {:?}", self.direction);
         }
         let mut best: Option<f64> = None;
@@ -384,7 +417,7 @@ impl RayIndex {
     /// `first_hit(mesh, origin, direction, after).is_some()`, stopping at
     /// the first hit.
     pub fn hits(&self, origin: Vec3, direction: Vec3, after: f64) -> bool {
-        if direction.to_array().map(f64::to_bits) != self.direction.to_array().map(f64::to_bits) {
+        if !same_direction(direction, self.direction) {
             panic!("a ray index asked along {direction:?}, built along {:?}", self.direction);
         }
         let mut any = false;
@@ -400,47 +433,57 @@ impl RayIndex {
     }
 }
 
-fn same_direction(a: Vec3, b: Vec3) -> bool {
-    a.to_array().map(f64::to_bits) == b.to_array().map(f64::to_bits)
-}
-
-/// Meshes cast against from many origins, along one direction as a rule:
-/// a `RayIndex` of each, built along the first direction asked, and
-/// `first_hit` itself along any other.
+/// Meshes cast against from many origins along a few directions: a
+/// `RayIndex` of each mesh per direction asked, built when it is first
+/// asked. The first direction's are read without a lock; any other's are
+/// kept by direction, so no direction falls back to the brute force.
 pub struct RayCache {
     meshes: Vec<Mesh<WorldSpace>>,
-    built: std::sync::OnceLock<Vec<RayIndex>>,
+    first: OnceLock<(Vec3, Vec<RayIndex>)>,
+    others: Mutex<Vec<(Vec3, Arc<Vec<RayIndex>>)>>,
 }
 
 impl RayCache {
     pub fn new(meshes: Vec<Mesh<WorldSpace>>) -> RayCache {
-        RayCache { meshes, built: std::sync::OnceLock::new() }
+        RayCache { meshes, first: OnceLock::new(), others: Mutex::new(Vec::new()) }
     }
 
     pub fn meshes(&self) -> &[Mesh<WorldSpace>] {
         &self.meshes
     }
 
-    /// The indexes, when they were built along `direction`.
-    fn along(&self, direction: Vec3) -> Option<&[RayIndex]> {
-        let built = self.built.get_or_init(|| self.meshes.iter().map(|m| RayIndex::new(m, direction)).collect());
-        (built.is_empty() || same_direction(built[0].direction, direction)).then_some(built.as_slice())
+    fn built(&self, direction: Vec3) -> Vec<RayIndex> {
+        self.meshes.iter().map(|m| RayIndex::new(m, direction)).collect()
+    }
+
+    /// `body` of the indexes along `direction`.
+    fn along<R>(&self, direction: Vec3, body: impl FnOnce(&[RayIndex]) -> R) -> R {
+        let first = self.first.get_or_init(|| (direction, self.built(direction)));
+        if same_direction(first.0, direction) {
+            return body(&first.1);
+        }
+        let indexes = {
+            let mut others = self.others.lock().unwrap_or_else(|e| e.into_inner());
+            match others.iter().find(|o| same_direction(o.0, direction)) {
+                Some(o) => Arc::clone(&o.1),
+                None => {
+                    let built = Arc::new(self.built(direction));
+                    others.push((direction, Arc::clone(&built)));
+                    built
+                }
+            }
+        };
+        body(&indexes)
     }
 
     /// `first_hit(mesh, origin, direction, after).is_none()` for every mesh.
     pub fn clear(&self, origin: Vec3, direction: Vec3, after: f64) -> bool {
-        match self.along(direction) {
-            Some(indexes) => indexes.iter().all(|r| !r.hits(origin, direction, after)),
-            None => self.meshes.iter().all(|m| first_hit(m, origin, direction, after).is_none()),
-        }
+        self.along(direction, |indexes| indexes.iter().all(|r| !r.hits(origin, direction, after)))
     }
 
     /// `first_hit` against the one mesh `k`.
     pub fn first_hit(&self, k: usize, origin: Vec3, direction: Vec3, after: f64) -> Option<f64> {
-        match self.along(direction) {
-            Some(indexes) => indexes[k].first_hit(origin, direction, after),
-            None => first_hit(&self.meshes[k], origin, direction, after),
-        }
+        self.along(direction, |indexes| indexes[k].first_hit(origin, direction, after))
     }
 }
 
@@ -881,8 +924,8 @@ pub struct FootprintIndex {
     axes: (Vec2, Vec2),
     strip: BoxGrid,
     farthest: Vec<f64>,
-    centre: Vec3,
-    reach: f64,
+    /// Points out of reach are tested against every triangle.
+    reach: Reach,
     check: Option<Mesh<WorldSpace>>,
 }
 
@@ -900,15 +943,8 @@ impl FootprintIndex {
                 )
             })
             .collect();
-        let (mut blo, mut bhi) = (Vec3::splat(f64::INFINITY), Vec3::splat(f64::NEG_INFINITY));
-        for v in &mesh.vertices {
-            blo = blo.min(v.v);
-            bhi = bhi.max(v.v);
-        }
-        let centre = if blo.x.is_finite() { 0.5 * (blo + bhi) } else { Vec3::ZERO };
-        let radius = if blo.x.is_finite() { 0.5 * (bhi - blo).length() } else { 0.0 };
-        let reach = 4.0 * (radius + centre.length()) + 1e-300;
-        let span = reach + radius + centre.length();
+        let reach = Reach::of(mesh);
+        let span = reach.span() + reach.centre.length();
         let dxy = Vec2::new(toward.x, toward.y);
         let along = if dxy.length() > 1e-9 { dxy / dxy.length() } else { Vec2::new(1.0, 0.0) };
         let across = Vec2::new(-along.y, along.x);
@@ -953,7 +989,6 @@ impl FootprintIndex {
             axes: (across, along),
             strip,
             farthest,
-            centre,
             reach,
             check: std::env::var_os("KURVEN_RAY_INDEX_CHECK").map(|_| mesh.clone()),
         }
@@ -981,7 +1016,7 @@ impl FootprintIndex {
         let o = Vec2::new(origin.x, origin.y);
         let straight_up = direction.x == 0.0 && direction.y == 0.0;
         let along_sight = same_direction(direction, self.toward) && Vec2::new(direction.x, direction.y).length() > 1e-9;
-        if !((straight_up || along_sight) && (origin - self.centre).length() <= self.reach) {
+        if !((straight_up || along_sight) && self.reach.holds(origin)) {
             return self.feet.iter().any(|f| f.under(origin, direction, depth_tolerance, start_inside, up_to));
         }
         if self.always.iter().any(test) {

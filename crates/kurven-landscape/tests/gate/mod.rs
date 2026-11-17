@@ -406,9 +406,8 @@ pub struct TopTriangle {
 /// top -- bucketed over (x, y): the top's normals at a point on it, and a
 /// cast from such a point.
 pub struct TerrainTops {
-    pub solid: Mesh<WorldSpace>,
-    /// `solid` cast against through an index (`RayCache`).
-    rays: RayCache,
+    /// The drawn triangles, the one mesh, cast against through its index.
+    pub solid: RayCache,
     pub triangles: Vec<TopTriangle>,
     pub lo: Vec2,
     pub cell: Vec2,
@@ -469,8 +468,7 @@ impl TerrainTops {
                 }
             }
         }
-        let rays = RayCache::new(vec![mesh.clone()]);
-        TerrainTops { solid: mesh, rays, triangles, lo, cell, n, buckets, size, tolerance }
+        TerrainTops { solid: RayCache::new(vec![mesh]), triangles, lo, cell, n, buckets, size, tolerance }
     }
 
     /// The cast from a point on the top, in the landscape's own coordinates
@@ -496,7 +494,7 @@ impl TerrainTops {
             if !facing.iter().all(|&f| f > 1e-9) {
                 return None;
             }
-            let clear = |x: Vec3| tops.rays.clear(x, to_eye, 1e-9 * tops.size);
+            let clear = |x: Vec3| tops.solid.clear(x, to_eye, 1e-9 * tops.size);
             let truth = clear(q);
             let nudges: Vec<Vec3> = normals
                 .iter()
