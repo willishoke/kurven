@@ -6,9 +6,9 @@
 //! `depth` output and the outline; no stroke of a landscape or a polyhedron
 //! reads it, since every layer arrives tested by its face and the scene's
 //! occlusion test (`Scene::visible_layers`). So for those the port bakes the
-//! strokes and renders a buffer only for the outline, which is traced from
-//! it, on the CPU (`depth_pass::render_depth`) -- there is no PNG (the page
-//! rasterizes). A parametric surface's coordinate image and its depth are
+//! strokes and renders the pass only for the outline, which is traced from
+//! its coverage, on the CPU and a strip of rows at a time
+//! (`depth_pass::coverage`) -- there is no PNG (the page rasterizes). A parametric surface's coordinate image and its depth are
 //! rendered by the CPU rasterizer (`SurfaceImage::rasterize`), which a
 //! surface with no exact test reads, and its outline is traced from that
 //! depth.
@@ -16,10 +16,11 @@
 use std::fmt;
 use std::sync::Arc;
 
-use kurven_core::depth::{DepthFrame, DepthImage};
+use kurven_core::depth::DepthFrame;
 use kurven_core::depth_pass;
 use kurven_core::hatching::FaceSelector;
 use kurven_core::hidden_line::HiddenLine;
+use kurven_core::hidden_line::outline_of_coverage;
 use kurven_core::manifest::{LayerSource, LayerSpec};
 use kurven_core::parametric::PortRefusal;
 use kurven_core::polyline::PolylineSet;
@@ -27,6 +28,10 @@ use kurven_core::scene::{Scene, SceneGeometry};
 use kurven_core::spaces::PageSpace;
 use kurven_core::surface_image::SurfaceImage;
 use kurven_core::svg::{Strokes, Style};
+
+/// How many rows of a landscape's or a solid's depth pass are rendered at a
+/// time for its outline: 512 rows of a 20000-pixel frame hold 41 MB of depth.
+pub const OUTLINE_STRIP: i64 = 512;
 
 /// Metal's largest texture side, which `BakeOptions.tileCount` splits the
 /// depth pass by (`KurvenMetal/Renderer.swift`).
@@ -115,10 +120,10 @@ pub struct Bake {
     /// landscape's or a solid's where its depth pass is rendered for the
     /// outline; None where nothing reads a depth pass.
     pub frame: Option<DepthFrame>,
-    /// A landscape's or a solid's depth pass, rendered on the CPU
-    /// (`depth_pass::render_depth`) when the outline is asked for, which is
-    /// traced from it: the only thing a landscape's bake reads off it.
-    pub depth: Option<Arc<DepthImage>>,
+    /// Whether a landscape's or a solid's depth pass was rendered: for the
+    /// outline alone, the only thing its bake reads off the pass, and so
+    /// kept only as the outline's coverage, never as the frame's depth.
+    pub depth_rendered: bool,
     /// A parametric scene's front-most surface coordinates and depth, in one
     /// pass over the whole frame, where something reads
     /// them: a surface with no tubular neighbourhood, a clipped layer with
@@ -161,7 +166,7 @@ fn bake_rendering(scene: &Scene, options: &BakeOptions, always: bool) -> Result<
         return Err(BakeError::Perspective);
     }
     let mut n = options.tile_count(options.resolution);
-    let mut depth: Option<Arc<DepthImage>> = None;
+    let mut coverage: Option<Vec<f32>> = None;
     let depth_tolerance = options.depth_tolerance.unwrap_or(scene.depth_tolerance);
     let (frame, image) = match scene.geometry() {
         SceneGeometry::Parametric(surface) => {
@@ -198,13 +203,15 @@ fn bake_rendering(scene: &Scene, options: &BakeOptions, always: bool) -> Result<
             }
             if options.outline.is_some() {
                 // The outline is traced from the depth pass
-                // (`MetalRenderer.renderDepth`), rendered here on the CPU, in
-                // one pass, which Swift's stitched tiles stand for, as a
-                // parametric surface's image is.
+                // (`MetalRenderer.renderDepth`), rendered here on the CPU,
+                // its coverage alone kept, and a strip of rows at a time, so
+                // the depth held is a strip's however large the frame: the
+                // bound Swift's tiles give Metal's pass. Every sample is the
+                // whole frame's, so the strips stand for one pass.
                 let Some(bounds) = scene.view_bounds()? else { return Err(BakeError::EmptyScene) };
                 let frame = DepthFrame::covering(&bounds, options.resolution);
                 n = 1;
-                depth = Some(Arc::new(depth_pass::render_depth(scene, &scene.camera.view, frame)));
+                coverage = Some(depth_pass::coverage(scene, &scene.camera.view, frame, OUTLINE_STRIP));
                 (Some(frame), None)
             } else {
                 (None, None)
@@ -221,15 +228,15 @@ fn bake_rendering(scene: &Scene, options: &BakeOptions, always: bool) -> Result<
     if let Some(width) = options.outline {
         if let Some(image) = &image {
             layers.push((Style { color: "#000000".to_string(), width }, image.depth.outline()));
-        } else if let Some(depth) = &depth {
-            layers.push((Style { color: "#000000".to_string(), width }, depth.outline()));
+        } else if let (Some(coverage), Some(frame)) = (coverage.take(), frame) {
+            layers.push((Style { color: "#000000".to_string(), width }, outline_of_coverage(frame, coverage)));
         }
     }
     Ok(Bake {
         strokes: Strokes { layers },
         specs: visible.into_iter().map(|(layer, _)| layer.spec).collect(),
         frame,
-        depth,
+        depth_rendered: options.outline.is_some() && image.is_none() && frame.is_some(),
         surface: image,
         tiles: n,
     })

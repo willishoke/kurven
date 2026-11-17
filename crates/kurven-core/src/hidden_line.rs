@@ -16,7 +16,7 @@
 //! bake is this.
 
 use crate::contour;
-use crate::depth::{DepthImage, RasterOrder};
+use crate::depth::{DepthFrame, DepthImage, RasterOrder};
 use crate::grid::Grid2D;
 use crate::manifest::{Domain, Interval};
 use crate::occlusion::OcclusionTest;
@@ -166,35 +166,40 @@ impl DepthImage {
     /// None of the three plates draws one -- they are bounded by their own wall
     /// curves -- so the bake offers it rather than assuming it.
     pub fn outline(&self) -> PolylineSet<PageSpace> {
-        let frame = self.frame;
-        if frame.rows < 2 || frame.cols < 2 {
-            return PolylineSet::empty();
-        }
         let coverage: Vec<f32> = self.values.iter().map(|&v| if v > self.empty { 1.0 } else { -1.0 }).collect();
-        // A grid whose sample positions are the frame's own grid, so a
-        // contour vertex comes out in view units without a second mapping.
-        let grid = Grid2D::new(
-            frame.cols as usize,
-            frame.rows as usize,
-            Domain::new(Interval::new(frame.axis1.lo, frame.axis1.hi), Interval::new(frame.axis0.lo, frame.axis0.hi)),
-            coverage,
-        );
-        let paths: Vec<Vec<P3<PageSpace>>> = contour::lines(&grid, 0.0, None)
-            .into_iter()
-            .map(|line| {
-                line.into_iter()
-                    .map(|p| match frame.order {
-                        // `p.x` is the column value and `p.y` the row value;
-                        // which view component each is depends on the
-                        // frame's raster order.
-                        RasterOrder::Buffer => P3::new(p.y(), p.x(), 0.0),
-                        RasterOrder::Screen => P3::new(p.x(), p.y(), 0.0),
-                    })
-                    .collect()
-            })
-            .collect();
-        PolylineSet::from_paths(&paths)
+        outline_of_coverage(self.frame, coverage)
     }
+}
+
+/// `DepthImage::outline` of a coverage already binarized, +1 drawn and -1
+/// not, row major over `frame`: what a pass rendered in strips gives.
+pub fn outline_of_coverage(frame: DepthFrame, coverage: Vec<f32>) -> PolylineSet<PageSpace> {
+    if frame.rows < 2 || frame.cols < 2 {
+        return PolylineSet::empty();
+    }
+    // A grid whose sample positions are the frame's own grid, so a
+    // contour vertex comes out in view units without a second mapping.
+    let grid = Grid2D::new(
+        frame.cols as usize,
+        frame.rows as usize,
+        Domain::new(Interval::new(frame.axis1.lo, frame.axis1.hi), Interval::new(frame.axis0.lo, frame.axis0.hi)),
+        coverage,
+    );
+    let paths: Vec<Vec<P3<PageSpace>>> = contour::lines(&grid, 0.0, None)
+        .into_iter()
+        .map(|line| {
+            line.into_iter()
+                .map(|p| match frame.order {
+                    // `p.x` is the column value and `p.y` the row value;
+                    // which view component each is depends on the
+                    // frame's raster order.
+                    RasterOrder::Buffer => P3::new(p.y(), p.x(), 0.0),
+                    RasterOrder::Screen => P3::new(p.x(), p.y(), 0.0),
+                })
+                .collect()
+        })
+        .collect();
+    PolylineSet::from_paths(&paths)
 }
 
 #[cfg(test)]

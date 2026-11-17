@@ -482,7 +482,7 @@ pub fn bake_command(args: &Args) -> Result<(), CliError> {
         file_name(&drawing.url),
         file_name(&output),
         drawing.preset.name,
-        match (&result.frame, result.surface.is_some() || result.depth.is_some()) {
+        match (&result.frame, result.surface.is_some() || result.depth_rendered) {
             (Some(frame), true) => format!(
                 "{}x{} in {} pass{}",
                 frame.rows,

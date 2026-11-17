@@ -49,7 +49,7 @@ fn a_tiled_bake_draws_what_a_single_pass_bake_draws() {
 }
 
 /// A landscape's outline is traced from its depth pass, rendered on the
-/// CPU (`depth_pass::render_depth`): a closed curve round the drawing, last
+/// CPU a strip at a time (`depth_pass::coverage`): a curve round the drawing, last
 /// and black at the width asked, within the frame, and the same however the
 /// pass is split, since it is rendered whole.
 #[test]
@@ -63,8 +63,10 @@ fn a_landscapes_outline_is_traced_from_its_depth_pass() {
     assert_eq!((style.color.as_str(), style.width), ("#000000", 0.5));
     assert!(outline.count() >= 1 && outline.vertices.len() > 8, "{} paths", outline.count());
     let frame = outlined.frame.expect("the depth pass's frame");
-    let depth = outlined.depth.as_ref().expect("the depth pass");
-    assert!(depth.values.iter().any(|&v| v > depth.empty), "the pass drew the landscape");
+    assert!(outlined.depth_rendered, "the pass was rendered");
+    // Rendered in strips, the outline is the whole pass's.
+    let whole = kurven_core::depth_pass::render_depth(&scene, &scene.camera.view, frame);
+    assert_eq!(outline, &whole.outline());
     let (lo0, hi0) = (frame.axis0.lo.min(frame.axis0.hi), frame.axis0.lo.max(frame.axis0.hi));
     let (lo1, hi1) = (frame.axis1.lo.min(frame.axis1.hi), frame.axis1.lo.max(frame.axis1.hi));
     for v in &outline.vertices {
