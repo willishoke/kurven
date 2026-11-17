@@ -47,6 +47,13 @@
 //! kurven-cli references <fixtures> <dir> [--only NAME,...]
 //!     Bake the landscape reference drawings into <dir> as Swift's
 //!     `references` bakes them, with index.json.
+//!
+//! kurven-cli app BUNDLE [--set K=V] [--levels L=N] [--strokes L=N] [--relief A]
+//!           [--truncation H] [--pick PX,PY] [--add NAME] [--remove LAYER]
+//!           [--function EXPR [--periods P1,P2]] [--undo] [--redo] ... [--save B] [--bake S]
+//!     The app's command line with no window (`KurvenApp BUNDLE ...`), its
+//!     edits run in order through the session (kurven-session), what it
+//!     saves and bakes written where it says.
 //! ```
 
 use std::path::Path;
@@ -67,7 +74,8 @@ const USAGE: &str = "usage: kurven-cli fixtures <dir>
        kurven-cli references <fixtures> <dir> [--only NAME,...]
        kurven-cli surface [torus | sn | periodic | forced] [options] [--save B] [-o out.svg]
        kurven-cli surface solid [--kind NAME] [options] [--save B] [-o out.svg]
-       kurven-cli scene A.kurven B.kurven [--at X,Y,Z[,S]] ... [--preset NAME] [--no-refine] -o out.svg";
+       kurven-cli scene A.kurven B.kurven [--at X,Y,Z[,S]] ... [--preset NAME] [--no-refine] -o out.svg
+       kurven-cli app BUNDLE [edits as the app takes them] [--save B] [--bake S]";
 
 /// A command ported from Swift's kurven-cli: Swift's argument reading, and
 /// its exit status 1 with `kurven-cli: <error>` on a refusal.
@@ -141,6 +149,7 @@ fn main() -> ExitCode {
         Some("bake") => return swift_command(bake_command),
         Some("references") => return swift_command(references_command),
         Some("surface") => return swift_command(surface_command),
+        Some("app") => return ExitCode::from(kurven_cli::app::app_command(&args[1..]).clamp(0, 255) as u8),
         Some("scene") => {
             return match scene_command(&args[1..]) {
                 Ok(()) => ExitCode::SUCCESS,

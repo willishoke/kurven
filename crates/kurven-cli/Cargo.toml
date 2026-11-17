@@ -18,6 +18,7 @@ kurven-landscape.workspace = true
 kurven-bake.workspace = true
 kurven-surfaces.workspace = true
 kurven-golden.workspace = true
+kurven-session.workspace = true
 
 [lints]
 workspace = true
