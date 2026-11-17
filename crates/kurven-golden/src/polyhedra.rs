@@ -163,6 +163,7 @@ fn composite() -> Bake {
         strokes,
         specs: visible.into_iter().map(|(layer, _)| layer.spec).collect(),
         frame: None,
+        depth_rendered: false,
         surface: None,
         tiles: 1,
     }

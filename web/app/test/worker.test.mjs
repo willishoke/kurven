@@ -195,6 +195,22 @@ assert.deepEqual(unsaid(replayed), unsaid(long), "the bounded replay gives the s
 assert.deepEqual(replayed.camera.exact, long.camera.exact);
 checks += 3;
 
+// A preview's keys name the engine instance: a restarted Worker counts its
+// scenes from one again, so a key the page held from the last could name a
+// scene of this one; each engine's nonce (module.ts, `seed`) starts its keys,
+// and none of the new Worker's is one the old gave, for the same scene or a
+// new one.
+const viewKeys = (answer) => [answer.reply.content, ...answer.reply.layers.map((l) => l.key)];
+const beforeRestart = viewKeys(fresh(await client.request({ kind: "preview", draft: true })));
+await client.cancel("a new engine for the preview's keys");
+const sameScene = viewKeys(fresh(await client.request({ kind: "preview", draft: true })));
+fresh(await client.request({ kind: "open", name: torus }));
+const newScene = viewKeys(fresh(await client.request({ kind: "preview", draft: true })));
+for (const k of [...sameScene, ...newScene]) assert.ok(!beforeRestart.includes(k), `${k} was the old engine's`);
+assert.notEqual(sameScene[0].split("~")[0], beforeRestart[0].split("~")[0], "a new nonce");
+fresh(await client.request({ kind: "open", name: gamma }));
+checks += 2;
+
 // Closed: what is pending is rejected, its timeout disarmed, and nothing
 // after is taken. The pending edit here would hang, and its timeout would
 // restart the Worker if it were still armed.

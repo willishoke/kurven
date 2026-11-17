@@ -482,15 +482,15 @@ pub fn bake_command(args: &Args) -> Result<(), CliError> {
         file_name(&drawing.url),
         file_name(&output),
         drawing.preset.name,
-        match (&result.frame, &result.surface) {
-            (Some(frame), Some(_)) => format!(
+        match (&result.frame, result.surface.is_some() || result.depth_rendered) {
+            (Some(frame), true) => format!(
                 "{}x{} in {} pass{}",
                 frame.rows,
                 frame.cols,
                 result.tiles * result.tiles,
                 if result.tiles == 1 { "" } else { "es" }
             ),
-            (Some(frame), None) => {
+            (Some(frame), false) => {
                 format!("{}x{}, not rendered: every curve is tested by sphere tracing", frame.rows, frame.cols)
             }
             _ => "none: the port bakes a landscape's strokes only".to_string(),

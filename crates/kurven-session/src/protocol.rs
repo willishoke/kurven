@@ -16,9 +16,10 @@
 //! bytes, and opened by name (`{"kind": "open", "name": ...}`).
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use kurven_core::bundle::BundleFiles;
+use kurven_core::depth::DepthFrame;
 use kurven_core::json::{self, JsonObject, JsonValue};
 use kurven_core::manifest::{DomainAxis, LayerSource, Truncation};
 use kurven_core::navigation::Framing;
@@ -35,6 +36,7 @@ use kurven_surfaces::drawing::SurfacePreset;
 use crate::document::{Document, State};
 use crate::headless::{self, Output};
 use crate::landscape::applying_overrides;
+use crate::preview::{Pipeline, Preview, Resources};
 use crate::sliders::Slider;
 
 /// A typed array a reply carries: its element type and its bytes,
@@ -91,6 +93,10 @@ pub struct Reply {
 pub struct Session {
     pub document: Document,
     staged: BTreeMap<String, BundleFiles>,
+    /// This engine instance's name, which starts every preview key: a
+    /// Worker seeds it at load (`seed`), so a key held from an earlier
+    /// Worker cannot name a scene of this one. Empty natively.
+    nonce: String,
 }
 
 /// Why a request was refused, and whether it had reached the document
@@ -256,7 +262,7 @@ impl Session {
             "state" => none(),
             "open" => {
                 let name = text(o, "name")?;
-                let Session { document: d, staged } = self;
+                let Session { document: d, staged, .. } = self;
                 let files = staged.get(name).ok_or_else(|| refuse(format!("no bundle '{name}' staged")))?;
                 d.load(name, files);
                 d.settle();
@@ -578,9 +584,81 @@ impl Session {
                 out.insert("layers".to_string(), JsonValue::Array(described));
                 Ok((out, arrays))
             }
+            "seed" => {
+                // The engine instance's name, which a Worker gives at load:
+                // letters and digits, at most 64.
+                let nonce = text(o, "nonce")?;
+                if nonce.is_empty() || nonce.len() > 64 || !nonce.chars().all(|c| c.is_ascii_alphanumeric()) {
+                    return Err(refuse("a nonce is 1 to 64 letters and digits"));
+                }
+                self.nonce = nonce.to_string();
+                none()
+            }
+            "preview" => {
+                // A frame of the preview, for the page's GPU: the resources
+                // and each layer's segments, under keys, and the uniforms.
+                // What the page says it holds (`have`) is not sent again.
+                let draft = o.get("draft").and_then(JsonValue::as_bool).unwrap_or(true);
+                let have = o.get("have").and_then(JsonValue::as_object);
+                let content = have.and_then(|h| h.get("content")).and_then(JsonValue::as_str);
+                let keys: BTreeSet<String> = have
+                    .and_then(|h| h.get("layers"))
+                    .and_then(JsonValue::as_array)
+                    .map(|a| a.iter().filter_map(|k| k.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default();
+                let Some(preview) = self.document.preview(draft, &self.nonce, content, &keys) else {
+                    return Err(refuse("nothing to preview"));
+                };
+                let mut arrays = Vec::new();
+                let out = preview_json(&preview, &mut arrays);
+                Ok((out, arrays))
+            }
+            "surfaceImage" => {
+                // A parametric surface's coordinate image as the bake's CPU
+                // rasterizer renders it (`SurfaceImage::rasterize`), over the
+                // frame covering its grid at `resolution`, with what the GPU
+                // needs to render the same frame: the view, the frame's clip
+                // (buffer order) and the coordinate pass's depth range,
+                // padded as `renderSurface` pads it. What the browser lane
+                // holds the WebGPU coordinate pass to.
+                let resolution = integer(o, "resolution")?;
+                if !(2..=4096).contains(&resolution) {
+                    return Err(refuse(format!("a resolution is 2 to 4096, not {resolution}")));
+                }
+                let scene = d.shown_scene().ok_or("nothing shown")?;
+                let surface = scene.parametric().ok_or("the scene is not a parametric surface")?;
+                let view = scene.camera.view;
+                let (mut lo, mut hi) = (Vec3::splat(f64::INFINITY), Vec3::splat(f64::NEG_INFINITY));
+                for &p in surface.positions.iter() {
+                    let q = view.apply(p).v;
+                    lo = lo.min(q);
+                    hi = hi.max(q);
+                }
+                let bounds = kurven_core::spaces::AABB::new(lo, hi);
+                let frame = DepthFrame::covering(&bounds, resolution);
+                let image = kurven_core::surface_image::SurfaceImage::rasterize(surface, &view, frame);
+                let pad = 1e-3 * (hi.z - lo.z) + 1e-6;
+                let flat = |m: &kurven_core::simd::Mat4| {
+                    json::doubles(&m.columns.iter().flat_map(|c| c.to_array()).collect::<Vec<_>>())
+                };
+                let mut out = JsonObject::new();
+                out.insert("frame".to_string(), frame_json(&frame));
+                out.insert("view".to_string(), flat(&view.m));
+                out.insert("clip".to_string(), flat(&frame.metal_clip()));
+                out.insert("surfaceDepthRange".to_string(), json::doubles(&[lo.z - pad, hi.z + pad]));
+                out.insert("span".to_string(), JsonValue::Double(hi.z - lo.z));
+                let arrays = vec![
+                    ("depth".to_string(), Array::f32(image.depth.values.iter().copied())),
+                    ("coords".to_string(), Array::f32(image.coords.iter().flatten().copied())),
+                ];
+                Ok((out, arrays))
+            }
             "bake" => {
                 // The judged strokes, what Export writes: each layer's
                 // page-space points and its offsets, and the SVG when asked.
+                // The frame maps a page point to the viewport's pixel, as the
+                // preview's does.
+                let frame = d.navigator.map(|n| n.framing.frame(d.viewport));
                 let strokes = d.bake().map_err(refuse)?;
                 let mut arrays = Vec::new();
                 let mut styles = Vec::new();
@@ -600,6 +678,7 @@ impl Session {
                 }
                 let mut out = JsonObject::new();
                 out.insert("strokes".to_string(), JsonValue::Array(styles));
+                out.insert("frame".to_string(), frame.as_ref().map_or(JsonValue::Null, frame_json));
                 Ok((out, arrays))
             }
             "grids" => {
@@ -907,4 +986,135 @@ fn presets(d: &Document) -> Vec<kurven_core::manifest::CameraPreset> {
         return b.manifest.presets.clone();
     }
     Vec::new()
+}
+
+/// A pixel grid as the page reads it: `DepthFrame::index`'s terms.
+fn frame_json(f: &DepthFrame) -> JsonValue {
+    json::object([
+        ("axis0", json::doubles(&[f.axis0.lo, f.axis0.hi])),
+        ("axis1", json::doubles(&[f.axis1.lo, f.axis1.hi])),
+        ("rows", JsonValue::Int(f.rows)),
+        ("cols", JsonValue::Int(f.cols)),
+        ("nudge", JsonValue::Double(f.nudge)),
+    ])
+}
+
+/// A number, or null for Swift's infinity.
+fn finite(x: Option<f64>) -> JsonValue {
+    x.map_or(JsonValue::Null, JsonValue::Double)
+}
+
+fn floats(xs: &[f32]) -> JsonValue {
+    JsonValue::Array(xs.iter().map(|&x| JsonValue::Double(f64::from(x))).collect())
+}
+
+/// A frame of the preview as JSON, its arrays pushed beside it, single
+/// precision, as the GPU takes them.
+fn preview_json(p: &Preview, arrays: &mut Vec<(String, Array)>) -> JsonObject {
+    let f32s = |xs: &mut dyn Iterator<Item = f64>| Array::f32(xs.map(|x| x as f32).collect::<Vec<_>>());
+    let resources = match &p.resources {
+        None => JsonValue::Null,
+        Some(Resources::Heightfield {
+            heights,
+            grid_width,
+            grid_height,
+            truncation_baked,
+            step,
+            decimated_width,
+            decimated_height,
+            domain_lo,
+            domain_size,
+            tiles,
+            region,
+            walls,
+        }) => {
+            arrays.push(("resource.heights".to_string(), Array::f32(heights.values.iter().copied())));
+            arrays.push(("resource.tiles".to_string(), f32s(&mut tiles.iter().flatten().copied())));
+            arrays.push(("resource.region".to_string(), f32s(&mut region.iter().flatten().copied())));
+            arrays.push(("resource.walls".to_string(), f32s(&mut walls.iter().flatten().copied())));
+            json::object([
+                ("kind", json::string("heightfield")),
+                ("gridSize", json::ints(&[*grid_width as i64, *grid_height as i64])),
+                ("grid", json::ints(&[*decimated_width as i64, *decimated_height as i64])),
+                ("domainLo", json::doubles(domain_lo)),
+                ("domainSize", json::doubles(domain_size)),
+                ("truncationBaked", JsonValue::Bool(*truncation_baked)),
+                ("step", JsonValue::Int(*step as i64)),
+            ])
+        }
+        Some(Resources::Solid { walls }) => {
+            arrays.push(("resource.walls".to_string(), f32s(&mut walls.iter().flatten().copied())));
+            json::object([("kind", json::string("solid"))])
+        }
+        Some(Resources::Parametric { positions, samples, cells, lo, spacing }) => {
+            arrays.push(("resource.positions".to_string(), f32s(&mut positions.iter().flatten().copied())));
+            json::object([
+                ("kind", json::string("parametric")),
+                ("samples", json::ints(&[samples[0] as i64, samples[1] as i64])),
+                ("cells", json::ints(&[cells[0] as i64, cells[1] as i64])),
+                ("lo", json::doubles(lo)),
+                ("spacing", json::doubles(spacing)),
+            ])
+        }
+    };
+    let u = &p.uniforms;
+    let flat = |m: &[[f64; 4]; 4]| json::doubles(&m.iter().flatten().copied().collect::<Vec<_>>());
+    let uniforms = json::object([
+        ("view", flat(&u.view)),
+        ("clip", flat(&u.clip)),
+        ("truncationHeight", finite(u.truncation_height)),
+        ("frame", frame_json(&u.frame)),
+        ("depthTolerance", JsonValue::Double(u.depth_tolerance)),
+        ("lightDirection", floats(&u.light_direction)),
+        ("ambient", JsonValue::Double(f64::from(u.ambient))),
+        ("depthRange", json::doubles(&u.depth_range)),
+        ("surfaceDepthRange", u.surface_depth_range.map_or(JsonValue::Null, |r| json::doubles(&r))),
+        ("sight", json::doubles(&u.sight)),
+        ("eye", json::doubles(&u.eye)),
+        ("perspective", JsonValue::Bool(u.perspective)),
+    ]);
+    let layers = p
+        .layers
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let (pipeline, on_folds) = match l.pipeline {
+                Pipeline::Stroke => ("stroke", false),
+                Pipeline::Surface { on_folds } => ("surface", on_folds),
+            };
+            if let Some(g) = &l.segments {
+                arrays.push((format!("layer.{i}.positions"), Array::f32(g.positions.iter().copied())));
+                arrays.push((format!("layer.{i}.normals"), Array::f32(g.normals.iter().copied())));
+                if !g.coords.is_empty() {
+                    arrays.push((format!("layer.{i}.coords"), Array::f32(g.coords.iter().copied())));
+                }
+            }
+            json::object([
+                ("name", json::string(&l.name)),
+                ("key", json::string(&l.key)),
+                ("visible", JsonValue::Bool(l.visible)),
+                ("pipeline", json::string(pipeline)),
+                ("onFolds", JsonValue::Bool(on_folds)),
+                ("color", floats(&l.color)),
+                ("width", JsonValue::Double(l.width)),
+                ("depthTolerance", finite(l.depth_tolerance)),
+                ("refusal", l.refusal.as_deref().map_or(JsonValue::Null, json::string)),
+                ("segments", l.segments.as_ref().map_or(JsonValue::Null, |g| JsonValue::Int(g.count() as i64))),
+            ])
+        })
+        .collect();
+    let mut out = JsonObject::new();
+    out.insert("content".to_string(), json::string(&p.content));
+    out.insert("resources".to_string(), resources);
+    out.insert("uniforms".to_string(), uniforms);
+    out.insert(
+        "mode".to_string(),
+        json::string(match p.mode {
+            PreviewMode::Drawing => "drawing",
+            PreviewMode::Shaded(_) => "shaded",
+            PreviewMode::Depth => "depth",
+        }),
+    );
+    out.insert("layers".to_string(), JsonValue::Array(layers));
+    out
 }

@@ -29,6 +29,8 @@
 /** A request the engine answers: kurven_session::protocol's. */
 export type Request =
   | { kind: "state" }
+  /** The engine instance's name, given by the Worker at load (module.ts). */
+  | { kind: "seed"; nonce: string }
   | { kind: "open"; name: string }
   | { kind: "create"; preset: string }
   | { kind: "createSurface"; preset: string }
@@ -60,7 +62,13 @@ export type Request =
   | { kind: "draftResolution"; value: number }
   | { kind: "bakeResolution"; value: number }
   | { kind: "frame"; draft: boolean }
+  /** A frame of the preview for the page's GPU (kurven_session::preview,
+   * src/gpu/frame.ts): what it holds under `have` is not sent again. */
+  | { kind: "preview"; draft: boolean; have?: { content?: string; layers?: string[] } }
   | { kind: "bake"; svg?: boolean }
+  /** The shown surface's coordinate image by the CPU rasterizer, with the
+   * frame, view and clip the GPU renders the same image by. */
+  | { kind: "surfaceImage"; resolution: number }
   | { kind: "grids" }
   | { kind: "save"; name: string }
   | { kind: "headless"; args: string[] };

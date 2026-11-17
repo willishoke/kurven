@@ -399,9 +399,12 @@ fn clipped_circles_on_a_torus_have_the_ray_casts_visible_length() {
 }
 
 /// "metal: the GPU coordinate pass is the CPU rasterizer's" (`surfaceGPUTests`):
-/// Metal's coordinate pass held to the CPU rasterizer.
+/// Metal's coordinate pass held to the CPU rasterizer. It needs a GPU, so it
+/// runs in the browser lane (scripts/check-browser.sh), the WebGPU passes
+/// against `SurfaceImage::rasterize`: web/app/test/browser/surfaces.spec.ts,
+/// "the GPU coordinate pass is the CPU rasterizer's".
 #[test]
-#[ignore = "PORT: phase 7 -- the GPU preview"]
+#[ignore = "needs a GPU: runs in the browser lane, web/app/test/browser/surfaces.spec.ts"]
 fn the_gpu_coordinate_pass_is_the_cpu_rasterizers() {}
 
 /// "bake: `surface sn` bakes the same SVG at resolutions 1000 and 3000"

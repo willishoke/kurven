@@ -5,23 +5,27 @@
 //! drawn over the scene in the accent colour, through the stroke path the
 //! curves take, tested as they are.
 //!
-//! The depth buffer is the GPU preview's (Phase 7). Until the page has one,
-//! `preview_depth` stands in for `MetalRenderer.previewDepth(atPixel:)`: the
-//! triangles the depth pass draws, cast at the texel's centre on the CPU in
-//! doubles, where Metal rasterizes them in floats. A pick reads the point
-//! only to name the face within a few pixels of it, so the two name the same
-//! face but at a face's very edge.
+//! Swift reads the depth off the preview's depth buffer. The engine has no
+//! GPU, and the page's depth pass (web/app/src/gpu) lives on the other side of
+//! the Worker, so `preview_depth` stands in for
+//! `MetalRenderer.previewDepth(atPixel:)`: the triangles the depth pass draws
+//! (`depth_pass::drawn_triangles`, the one enumeration of them), cast at the
+//! texel's centre on the CPU in doubles, where the GPU rasterizes them in
+//! floats. A pick reads the point only to name the face within a few pixels
+//! of it, so the two name the same face but at a face's very edge, and a
+//! click costs no round trip to the page's GPU.
 
 use std::sync::Arc;
 
+use kurven_core::depth_pass::drawn_triangles;
 use kurven_core::face::Face;
-use kurven_core::manifest::{HeightPolicy, LayerRole, LayerSource, LayerSpec, Truncation};
+use kurven_core::manifest::{HeightPolicy, LayerRole, LayerSource, LayerSpec};
 use kurven_core::navigation::{Navigator, Viewport};
 use kurven_core::pick::{FacePick, PickedBoundary};
 use kurven_core::polyline::{Layer, PolylineSet};
 use kurven_core::scene::{ContentID, Scene, SceneGeometry};
 use kurven_core::simd::{Vec2, Vec3};
-use kurven_core::spaces::{P2, P3, Transform, ViewSpace, WorldSpace};
+use kurven_core::spaces::{P3, WorldSpace};
 
 use crate::document::{Document, Selection};
 use crate::jobs::{BoundaryStatus, Job};
@@ -203,8 +207,8 @@ fn d(x: f64) -> String {
 }
 
 /// The view depth the preview's depth pass leaves at a texel, or None where
-/// it draws nothing: the stand-in for `MetalRenderer.previewDepth(atPixel:)`
-/// until the page has a depth pass. The texel's centre is its view point
+/// it draws nothing: the stand-in for `MetalRenderer.previewDepth(atPixel:)`.
+/// The texel's centre is its view point
 /// (`Navigator::world_point_at_texel`); the depth is the front-most, the
 /// greatest view z, of the triangles the pass draws there: a landscape's
 /// grid, decimated by its step, at the drawn height, per tile and cut to its
@@ -218,73 +222,9 @@ pub fn preview_depth(scene: &Scene, navigator: &Navigator, viewport: Viewport, t
     let view = navigator.camera().view;
     let q = navigator.framing.view_point(Vec2::new(texel[0] as f64 + 0.5, texel[1] as f64 + 0.5), viewport);
     let mut cast = Cast { at: Vec2::new(q.x(), q.y()), depth: None };
-    match scene.geometry() {
-        SceneGeometry::Heightfield(h) => {
-            let banded = matches!(h.surface.truncation, Truncation::RealBands { .. });
-            let grid = if banded { h.surface.clamped() } else { (*h.surface.height).clone() };
-            let ceiling = match &h.surface.truncation {
-                Truncation::Uniform(height) if !banded => *height,
-                _ => f64::INFINITY,
-            };
-            // The decimated grid the shader draws (`Grid2D::decimated_extent`):
-            // node k at index min(k step, n - 1), placed on the decimated
-            // domain at k over its count less one.
-            let step = h.step.max(1);
-            let (w, hh) = (grid.width, grid.height);
-            let (dw, dh, domain) = grid.decimated_extent(step);
-            if dw < 2 || dh < 2 {
-                return None;
-            }
-            let at = |a: usize, b: usize| -> (Vec2, usize) {
-                let d = Vec2::new(
-                    domain.real.lo + domain.real.length() * a as f64 / (dw - 1) as f64,
-                    domain.imag.lo + domain.imag.length() * b as f64 / (dh - 1) as f64,
-                );
-                let index = (b * step).min(hh - 1) * w + (a * step).min(w - 1);
-                (d, index)
-            };
-            for tile in &h.tiles {
-                // A cell survives only when all four of its corners are in
-                // the region: the notch is an absence of geometry.
-                let corner = |a: usize, b: usize| -> Option<Vec3> {
-                    let (d, index) = at(a, b);
-                    let world = tile.apply(P3::new(d.x, d.y, 0.0));
-                    if !h.region.contains(P2::new(world.x(), world.y())) {
-                        return None;
-                    }
-                    let z = kurven_math::swift::min(grid.values[index] as f64, ceiling);
-                    Some(view.apply(P3::new(world.x(), world.y(), z)).v)
-                };
-                for b in 0..dh - 1 {
-                    for a in 0..dw - 1 {
-                        let (Some(c00), Some(c10), Some(c01), Some(c11)) =
-                            (corner(a, b), corner(a + 1, b), corner(a, b + 1), corner(a + 1, b + 1))
-                        else {
-                            continue;
-                        };
-                        cast.triangle(c00, c10, c01);
-                        cast.triangle(c10, c11, c01);
-                    }
-                }
-            }
-            cast.mesh(&h.occluder.vertices, &h.occluder.triangles, &view);
-        }
-        SceneGeometry::Parametric(s) => {
-            let (nu, nv) = (s.u.cells() as i64, s.v.cells() as i64);
-            let at = |i: i64, j: i64| view.apply(s.position(i, j)).v;
-            for j in 0..nv {
-                for i in 0..nu {
-                    let (c00, c10, c01, c11) = (at(i, j), at(i + 1, j), at(i, j + 1), at(i + 1, j + 1));
-                    cast.triangle(c00, c10, c01);
-                    cast.triangle(c10, c11, c01);
-                }
-            }
-        }
-        SceneGeometry::Solid(solid) => {
-            let mesh = solid.mesh();
-            cast.mesh(&mesh.vertices, &mesh.triangles, &view);
-        }
-    }
+    // The triangles the depth pass draws, the one enumeration of them
+    // (`depth_pass::drawn_triangles`), each corner through the camera.
+    drawn_triangles(scene, |a, b, c| cast.triangle(view.apply(a).v, view.apply(b).v, view.apply(c).v));
     cast.depth
 }
 
@@ -295,16 +235,6 @@ struct Cast {
 }
 
 impl Cast {
-    fn mesh(&mut self, vertices: &[P3<WorldSpace>], triangles: &[[i32; 3]], view: &Transform<WorldSpace, ViewSpace>) {
-        let points: Vec<Vec3> = vertices.iter().map(|&v| view.apply(v).v).collect();
-        for t in triangles {
-            let get = |k: i32| usize::try_from(k).ok().and_then(|k| points.get(k).copied());
-            if let (Some(a), Some(b), Some(c)) = (get(t[0]), get(t[1]), get(t[2])) {
-                self.triangle(a, b, c);
-            }
-        }
-    }
-
     fn triangle(&mut self, a: Vec3, b: Vec3, c: Vec3) {
         let p = self.at;
         let area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);

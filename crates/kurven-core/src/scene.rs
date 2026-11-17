@@ -54,6 +54,12 @@ impl ContentID {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         ContentID { raw: NEXT.fetch_add(1, Ordering::Relaxed) }
     }
+
+    /// The identity as a number: what the page keys its GPU resources by,
+    /// across the Worker's boundary.
+    pub fn raw(&self) -> u64 {
+        self.raw
+    }
 }
 
 /// A heightfield over the complex plane, as the plates draw it: the surface,

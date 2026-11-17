@@ -15,7 +15,6 @@
 //! picked face's boundary over it, as Swift's `MetalView` draws
 //! `shownScene`; which layers are drawn is `shown_visible_layers`.
 
-use kurven_core::hatching::FaceKind;
 use kurven_core::manifest::LayerSource;
 use kurven_core::polyline::Layer;
 
@@ -45,26 +44,17 @@ impl Document {
     /// The layers the window lays out at rest (`LineGeometry.layOut(draft:
     /// false)`), in world space: a landscape's fold curves on the exact fold
     /// and tested by the solid, the clipped curves on its walls tested by
-    /// the wall they stand on, every other layer as the scene holds it, left
-    /// to the depth test. Swift's window does this off the main thread at
-    /// each camera rest.
+    /// the wall they stand on; a sphere-traced surface's folds and clipped
+    /// curves with coordinates, and a solid's clipped layers, as the bake
+    /// tests them; every other layer as the scene holds it, left to the
+    /// depth test (`preview::lay_out`). Swift's window does this off the main
+    /// thread at each camera rest.
     pub fn rest_layout(&self) -> Vec<Layer> {
         let Some(scene) = self.shown_scene() else { return Vec::new() };
-        let Some(h) = scene.heightfield() else { return scene.layers().to_vec() };
-        let view = scene.camera.view;
         scene
             .layers()
             .iter()
-            .map(|layer| {
-                let paths = if matches!(layer.spec.source, LayerSource::FoldCurves) {
-                    h.visible_folds(&view, scene.depth_tolerance, true, scene.resolution)
-                } else if layer.spec.clipped && scene.geometry().face_of(&layer.spec) == Some(FaceKind::Wall) {
-                    h.visible_wall_curves(&layer.paths, &view, scene.depth_tolerance, scene.resolution)
-                } else {
-                    return layer.clone();
-                };
-                Layer { spec: layer.spec.clone(), paths }
-            })
+            .map(|layer| Layer { spec: layer.spec.clone(), paths: crate::preview::lay_out(layer, &scene, false).paths })
             .collect()
     }
 }

@@ -829,9 +829,11 @@ fn a_double_zero_and_a_double_pole_each_hold_two_rays_of_every_level() {
 
 /// "preview: a parametric surface draws what its bake draws" (`surfacePreviewTests`):
 /// the preview's curves, at rest and in a draft, against the bake's strokes
-/// rasterized into the preview's pixels.
+/// rasterized into the preview's pixels. It needs a GPU, so it runs in the
+/// browser lane (scripts/check-browser.sh), with Swift's scene, camera and
+/// thresholds: web/app/test/browser/surfaces.spec.ts.
 #[test]
-#[ignore = "PORT: phase 7 -- the GPU preview"]
+#[ignore = "needs a GPU: runs in the browser lane, web/app/test/browser/surfaces.spec.ts"]
 fn a_parametric_surface_preview_draws_what_its_bake_draws() {}
 
 /// "surfaces: a linear curve is a straight line on the flat torus, placed on the grid"
@@ -987,7 +989,9 @@ fn a_linear_curve_is_a_straight_line_on_the_flat_torus_placed_on_the_grid() {
 /// "preview: a torus nearly edge-on keeps its outline whole at rest" (`edgeOnPreviewTests`):
 /// sn seen from half a degree off its equatorial plane, the window drawing
 /// at rest what sphere tracing keeps, and the draft held to showing the
-/// difference.
+/// difference. It needs a GPU, so it runs in the browser lane
+/// (scripts/check-browser.sh), with Swift's scene, camera and thresholds:
+/// web/app/test/browser/surfaces.spec.ts.
 #[test]
-#[ignore = "PORT: phase 7 -- the GPU preview"]
+#[ignore = "needs a GPU: runs in the browser lane, web/app/test/browser/surfaces.spec.ts"]
 fn a_torus_nearly_edge_on_keeps_its_outline_whole_at_rest() {}

@@ -1,0 +1,89 @@
+# The browser lane (scripts/check-browser.sh): the page's preview in
+# Chromium, held to the judged strokes, on WebGPU over SwiftShader, and the
+# page without WebGPU. Separate from check-web.yml, which needs no browser;
+# this one installs Playwright's pinned Chromium and its system libraries.
+#
+# The first run lost the WebGPU device at the first frame on every
+# SwiftShader test, and passed the fallback (crates/FINDINGS.md, "The browser
+# lane in CI"); the second showed WebGPU working on SwiftShader and the
+# device lost the moment a canvas is presented. So the SwiftShader gate draws
+# offscreen (the same pixels, held to the canvas's where presenting works),
+# headless, and headed under xvfb if that fails; presenting is tried three
+# ways, allowed to fail; each step prints the adapter, the device and
+# Chromium's errors (DEBUG=pw:browser). The fallback must pass on its own.
+
+name: check-browser
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: check-browser-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The pinned Rust, with the wasm target
+        working-directory: crates
+        run: rustup toolchain install --no-self-update
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+
+      - name: The page's packages, Playwright's Chromium with its libraries, and xvfb
+        working-directory: web/app
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          sudo apt-get install -y xvfb
+
+      - name: "SwiftShader, headless: the adapter, the device, Chromium's errors"
+        continue-on-error: true
+        env:
+          DEBUG: pw:browser
+        run: scripts/check-browser.sh adapter --project=swiftshader
+
+      - name: "SwiftShader, headed under xvfb: the adapter, the device, Chromium's errors"
+        continue-on-error: true
+        env:
+          DEBUG: pw:browser
+          KURVEN_HEADED: "1"
+        run: xvfb-run -a scripts/check-browser.sh adapter --project=swiftshader
+
+      - name: SwiftShader, headless
+        id: headless
+        continue-on-error: true
+        run: scripts/check-browser.sh --project swiftshader
+
+      - name: SwiftShader, headed under xvfb
+        id: headed
+        if: steps.headless.outcome == 'failure'
+        continue-on-error: true
+        env:
+          KURVEN_HEADED: "1"
+        run: xvfb-run -a scripts/check-browser.sh --project swiftshader
+
+      # Presenting a canvas, three ways; each allowed to fail on Linux, its
+      # annotation and Chromium's errors saying how (present.spec.ts).
+      - name: Presenting a canvas on SwiftShader, three ways
+        continue-on-error: true
+        env:
+          DEBUG: pw:browser
+        run: scripts/check-browser.sh --project=present --project=present-gl --project=present-angle
+
+      - name: Without WebGPU
+        run: scripts/check-browser.sh --project fallback
+
+      - name: SwiftShader passed one way or the other
+        if: steps.headless.outcome == 'failure' && steps.headed.outcome != 'success'
+        run: |
+          echo "the swiftshader project failed headless and headed; see the adapter steps above"
+          exit 1
