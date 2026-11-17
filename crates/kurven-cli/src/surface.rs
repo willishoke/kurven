@@ -60,24 +60,28 @@ pub fn adding(added: &[LayerSpec], layers: &[LayerSpec]) -> Vec<LayerSpec> {
     out
 }
 
-/// The layers `--lines-of-curvature greater|lesser|both` adds to a surface
-/// over `rectangle`: one family of lines of curvature, or both, each through
-/// `--curvature-seeds` N seeds (24 by default) round a coordinate curve
-/// (`LayerSpec::lines_of_curvature`), drawn `--curvature-width` wide, by
-/// default `width`, the coordinate curves'. A flag with no layer to apply it
-/// to is refused, and so is what the surface `request` builds cannot draw,
-/// sn in relief, as its manifest refuses it.
-pub fn curvature_layers(
-    args: &Args,
-    rectangle: (ParamAxis, ParamAxis),
+/// What `--lines-of-curvature greater|lesser|both` asks of a surface: one
+/// family of lines of curvature, or both, each through `--curvature-seeds`
+/// N seeds (24 by default) round a coordinate curve, drawn
+/// `--curvature-width` wide, by default the coordinate curves' width.
+/// Swift's `curvatureLayers(_:over:width:on:)`, read once: the flags are
+/// parsed and refused here (`curvature_flags`) before the surface is built,
+/// and the layers laid over its rectangle after (`layers`).
+pub struct Curvature {
+    families: Vec<PrincipalCurvature>,
+    count: i64,
     width: f64,
-    request: &SurfaceRequest,
-) -> Result<Vec<LayerSpec>, CliError> {
+}
+
+/// The flags of `--lines-of-curvature`, or None without it. A flag with no
+/// layer to apply it to is refused, and so is what the surface `request`
+/// builds cannot draw, sn in relief, as its manifest refuses it.
+pub fn curvature_flags(args: &Args, width: f64, request: &SurfaceRequest) -> Result<Option<Curvature>, CliError> {
     let Some(text) = args.flag("lines-of-curvature") else {
         if let Some(orphan) = ["curvature-seeds", "curvature-width"].into_iter().find(|o| args.given(o)) {
             return Err(CliError(format!("--{orphan} applies to --lines-of-curvature, and none is given")));
         }
-        return Ok(Vec::new());
+        return Ok(None);
     };
     let families = match text {
         "greater" => vec![PrincipalCurvature::Greater],
@@ -90,13 +94,22 @@ pub fn curvature_layers(
     if !(1..=most).contains(&count) {
         return Err(CliError(format!("--curvature-seeds wants 1 to {most} seeds, got {count}")));
     }
-    let w = args.positive("curvature-width")?.unwrap_or(width);
-    let layers: Vec<LayerSpec> =
-        families.into_iter().map(|c| LayerSpec::lines_of_curvature(c, rectangle, count, w)).collect();
-    if let Some(why) = layers.iter().find_map(|l| SurfaceManifest::unsupported(&l.source, request)) {
+    let width = args.positive("curvature-width")?.unwrap_or(width);
+    let curvature = Curvature { families, count, width };
+    // What the manifest refuses depends on the request and the layer's
+    // kind, not on where its seeds fall: asked over a turn each way.
+    let turn = (ParamAxis::angle(2), ParamAxis::angle(2));
+    if let Some(why) = curvature.layers(turn).iter().find_map(|l| SurfaceManifest::unsupported(&l.source, request)) {
         return Err(CliError(why));
     }
-    Ok(layers)
+    Ok(Some(curvature))
+}
+
+impl Curvature {
+    /// The layers over `rectangle` (`LayerSpec::lines_of_curvature`).
+    pub fn layers(&self, rectangle: (ParamAxis, ParamAxis)) -> Vec<LayerSpec> {
+        self.families.iter().map(|&c| LayerSpec::lines_of_curvature(c, rectangle, self.count, self.width)).collect()
+    }
 }
 
 /// `surface [torus | sn | periodic | forced] [options]`: the drawing a
@@ -332,7 +345,7 @@ pub fn surface_command(args: &Args) -> Result<(), CliError> {
         Err(other) => return Err(other.into()),
     }
     // `--lines-of-curvature`: refused before anything is built.
-    curvature_layers(args, (ParamAxis::angle(2), ParamAxis::angle(2)), width, &request)?;
+    let curvature = curvature_flags(args, width, &request)?;
     let started = Instant::now();
     let mut drawing = SurfaceDrawing::build(&request, None, false)?;
     let built = started.elapsed().as_secs_f64();
@@ -345,7 +358,9 @@ pub fn surface_command(args: &Args) -> Result<(), CliError> {
         (u.range.length().abs() / 48.0, v.range.length().abs() / 48.0),
         false,
     )?;
-    shading.extend(curvature_layers(args, (u, v), width, &request)?);
+    if let Some(curvature) = &curvature {
+        shading.extend(curvature.layers((u, v)));
+    }
     if !shading.is_empty() {
         let specs: Vec<LayerSpec> = drawing.layers.iter().map(|l| l.spec.clone()).collect();
         drawing = drawing.restyled(&adding(&shading, &specs))?;
