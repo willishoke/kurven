@@ -1,0 +1,283 @@
+/* The page: paper and ink, the drawing first. The canvas is a white sheet
+   in both themes, as the plate is; the chrome around it follows the
+   reader's light or dark. No fonts are fetched: the stacks name what a
+   machine already has. */
+
+:root {
+  color-scheme: light;
+  --paper: #f6f4ef;
+  --ink: #1c1a16;
+  --muted: #6b655a;
+  --rule: #d9d4c8;
+  --panel: #fffdf8;
+  --sheet: #ffffff;
+  --accent: #b3261e; /* a red the plates never use: what went wrong, what is busy */
+  --focus: #1f3fd1;
+  --serif: "Newsreader", "Iowan Old Style", Georgia, "Times New Roman", serif;
+  --sans: "Source Sans 3", -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #17161a;
+    --ink: #ece8df;
+    --muted: #a39c8e;
+    --rule: #34313a;
+    --panel: #201e24;
+    --accent: #ff8a80;
+    --focus: #7d93ff;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #17161a;
+  --ink: #ece8df;
+  --muted: #a39c8e;
+  --rule: #34313a;
+  --panel: #201e24;
+  --accent: #ff8a80;
+  --focus: #7d93ff;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.4;
+}
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.app {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  height: 100dvh;
+}
+
+/* The stage: the drawing, and what the engine is doing. */
+.stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--sheet);
+  border-right: 1px solid var(--rule);
+}
+.stage canvas {
+  display: block;
+  touch-action: none;
+  cursor: grab;
+}
+.stage canvas:active { cursor: grabbing; }
+.indicator {
+  position: absolute;
+  left: 12px;
+  top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font: 12px/1.3 var(--mono);
+  color: #6b655a;
+  background: rgba(255, 255, 255, 0.85);
+  padding: 2px 7px;
+  border-radius: 3px;
+  pointer-events: none;
+}
+.indicator .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #c9c3b5;
+}
+.indicator[data-busy="true"] { color: #1c1a16; }
+.indicator[data-busy="true"] .dot { background: #b3261e; animation: pulse 0.9s ease-in-out infinite alternate; }
+@keyframes pulse { from { opacity: 0.25; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .indicator[data-busy="true"] .dot { animation: none; }
+}
+.hint {
+  position: absolute;
+  right: 12px;
+  bottom: 8px;
+  font-size: 12px;
+  color: #6b655a;
+  pointer-events: none;
+}
+
+/* The panel: the controls, in the order the Swift app's inspector has them. */
+.panel {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 14px 16px 28px;
+  background: var(--paper);
+}
+.panel header { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.panel h1 {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 1.5rem;
+  margin: 0;
+  letter-spacing: 0.01em;
+}
+.panel .title {
+  font-family: var(--serif);
+  font-size: 1.05rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+section { border-top: 1px solid var(--rule); padding: 10px 0 12px; margin-top: 10px; }
+section > h2 {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+.row { display: grid; grid-template-columns: 4.6rem minmax(0, 1fr); align-items: center; gap: 0.5rem; margin: 6px 0; }
+.row > .label { color: var(--muted); font-size: 0.9rem; }
+.notes { font-size: 0.85rem; color: var(--muted); margin: 4px 0 0; }
+
+select, input[type="text"], input[type="number"], button {
+  font: inherit;
+  font-size: 0.92rem;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+}
+select { width: 100%; padding: 4px 6px; }
+input[type="number"] {
+  width: 4.4rem;
+  padding: 3px 4px;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+button { padding: 4px 10px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--ink); }
+button:disabled { opacity: 0.5; cursor: default; }
+input[type="range"] { width: 100%; margin: 0; accent-color: var(--ink); }
+output { font-family: var(--mono); font-size: 0.82rem; font-variant-numeric: tabular-nums; text-align: right; }
+
+/* The formula: an input, and over it a mirror of its text that marks the
+   characters the engine said are at fault. */
+.formula { position: relative; }
+.formula input, .formula .mirror {
+  font-family: var(--mono);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  white-space: pre;
+}
+.formula input { width: 100%; border-color: var(--rule); background: var(--panel); border-radius: 3px; }
+.formula input[aria-invalid="true"] { border-color: var(--accent); }
+.formula .mirror {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: transparent;
+  pointer-events: none;
+}
+.formula .mirror mark {
+  color: transparent;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  text-decoration: underline wavy var(--accent);
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+}
+.error { color: var(--accent); font-size: 0.85rem; margin: 4px 0 0; min-height: 0; }
+.error:empty { display: none; }
+
+/* Two thumbs on one track: the pair is the control (LandscapeSection.swift). */
+.interval { display: grid; grid-template-columns: 4.4rem minmax(0, 1fr) 4.4rem; align-items: center; gap: 0.4rem; }
+.track { position: relative; height: 22px; }
+.track::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 10px;
+  height: 2px;
+  background: var(--rule);
+}
+.track .span { position: absolute; top: 10px; height: 2px; background: var(--ink); }
+.track input[type="range"] {
+  position: absolute;
+  inset: 0;
+  height: 22px;
+  background: none;
+  pointer-events: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.track input[type="range"]::-webkit-slider-runnable-track { background: none; height: 22px; }
+.track input[type="range"]::-moz-range-track { background: none; }
+.track input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  pointer-events: auto;
+  width: 14px;
+  height: 14px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 1.5px solid var(--ink);
+  cursor: pointer;
+}
+.track input[type="range"]::-moz-range-thumb {
+  pointer-events: auto;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 1.5px solid var(--ink);
+  cursor: pointer;
+}
+.track input[type="range"]:focus-visible { outline: none; }
+.track input[type="range"]:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+.slider { display: grid; grid-template-columns: minmax(0, 1fr) 4.4rem; align-items: center; gap: 0.5rem; }
+
+/* Segmented choices: real radio buttons, drawn as one strip. */
+.segmented { display: flex; border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; margin: 0; padding: 0; min-width: 0; }
+.segmented legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.segmented label { flex: 1; position: relative; text-align: center; font-size: 0.86rem; padding: 3px 4px; cursor: pointer; }
+.segmented label + label { border-left: 1px solid var(--rule); }
+.segmented input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.segmented label:has(input:checked) { background: var(--ink); color: var(--paper); }
+.segmented label:has(input:disabled) { opacity: 0.45; cursor: default; }
+.segmented label:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+.buttons { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+
+.layers { list-style: none; margin: 0; padding: 0; }
+.layers li { padding: 4px 0; }
+.layers li + li { border-top: 1px dotted var(--rule); }
+.layers .name { display: flex; align-items: center; gap: 0.45rem; cursor: pointer; }
+.layers .name small { color: var(--muted); font-family: var(--mono); font-size: 0.72rem; margin-left: auto; }
+.layers .levels { display: grid; grid-template-columns: 3.4rem minmax(0, 1fr) 2rem auto; align-items: center; gap: 0.4rem; padding-left: 1.5rem; font-size: 0.82rem; color: var(--muted); }
+.layers .levels button { padding: 0 6px; font-size: 0.82rem; }
+.bands { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); margin: 6px 0 0; }
+
+.export { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.export .primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.status { font-size: 0.82rem; color: var(--muted); margin: 6px 0 0; overflow-wrap: anywhere; }
+.keys { font-size: 0.8rem; color: var(--muted); margin: 8px 0 0; }
+kbd { font-family: var(--mono); font-size: 0.75rem; border: 1px solid var(--rule); border-radius: 2px; padding: 0 3px; }
+
+@media (max-width: 760px) {
+  .app { display: block; height: auto; }
+  .stage { height: 62svh; min-height: 280px; border-right: 0; border-bottom: 1px solid var(--rule); }
+  .panel { overflow: visible; }
+  .hint { display: none; }
+}
+.formula-field { margin: 8px 0 4px; }
+.formula-field > .label { display: block; color: var(--muted); font-size: 0.9rem; margin-bottom: 3px; font-family: var(--serif); font-style: italic; }
