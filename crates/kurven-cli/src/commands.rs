@@ -513,7 +513,8 @@ pub fn bake_command(args: &Args) -> Result<(), CliError> {
 
 /// `bake --dump PREFIX`: the strokes as arrays, so a comparison is on
 /// geometry rather than on rasterized pixels -- each layer's vertices and
-/// offsets as float32 npy, a width's slash no part of a file name -- and
+/// offsets as float32 npy, `PREFIX.INDEX.NAME.npy` and `.idx.npy` by its
+/// place in the frame's `layers`, a width's slash no part of a file name -- and
 /// the depth frame as JSON. The frame is the one Swift's bake covers the
 /// drawing with, `DepthFrame::covering` its view bounds at the resolution,
 /// which needs no depth pass: a parametric bake's own, a landscape's or a
@@ -525,13 +526,16 @@ fn dump(
     names: &[String],
     options: &BakeOptions,
 ) -> Result<(), CliError> {
+    // Swift names a layer's files by its name alone, so two layers of one
+    // name, or a layer named "outline" beside the traced outline, write
+    // over each other; the port puts the layer's place in `layers` first.
     for (index, (_, paths)) in result.strokes.layers.iter().enumerate() {
         let name = names[index].replace('/', "of");
         let flat: Vec<f32> = paths.vertices.iter().flat_map(|v| [v.x() as f32, v.y() as f32]).collect();
-        kurven_core::npy::write_f32(&flat, &[paths.vertices.len(), 2], format!("{prefix}.{name}.npy"))
+        kurven_core::npy::write_f32(&flat, &[paths.vertices.len(), 2], format!("{prefix}.{index}.{name}.npy"))
             .map_err(|e| CliError(e.to_string()))?;
         let offsets: Vec<f32> = paths.offsets.iter().map(|&o| o as f32).collect();
-        kurven_core::npy::write_f32(&offsets, &[offsets.len()], format!("{prefix}.{name}.idx.npy"))
+        kurven_core::npy::write_f32(&offsets, &[offsets.len()], format!("{prefix}.{index}.{name}.idx.npy"))
             .map_err(|e| CliError(e.to_string()))?;
     }
     let frame = match result.frame {
@@ -574,6 +578,45 @@ pub fn write_svg(strokes: &Strokes, output: &Path) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A layer named "outline" beside the traced outline: each dumped under
+    /// its own place, where Swift's names would write one over the other.
+    #[test]
+    fn dumped_layers_are_named_by_their_place() {
+        use kurven_core::surface_request::{Shape, SurfaceRequest};
+        use kurven_surfaces::{SurfaceBundle, SurfaceDrawing};
+        let request = SurfaceRequest {
+            grid: 64,
+            lines: Some((6, 3)),
+            ..SurfaceRequest::new(Shape::Torus { major: 2.0, minor: 1.0 })
+        };
+        let drawing = SurfaceDrawing::build(&request, None, false).unwrap();
+        let mut specs: Vec<LayerSpec> = drawing.layers.iter().map(|l| l.spec.clone()).collect();
+        specs[0].name = "outline".to_string();
+        let drawing = drawing.restyled(&specs).unwrap();
+        let dir = std::env::temp_dir().join(format!("kurven-dump-{}", std::process::id()));
+        let bundle = dir.join("torus.kurven");
+        let preset = CameraPreset { buffer: 200, ..SurfaceRequest::preset() };
+        SurfaceBundle::new(&bundle, drawing, vec![preset], GIT_SHA).write(&bundle, None).unwrap();
+        let prefix = dir.join("d");
+        let out = dir.join("x.svg");
+        let words = [
+            "bake",
+            bundle.to_str().unwrap(),
+            "--outline",
+            "0.5",
+            "--dump",
+            prefix.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ];
+        bake_command(&Args::new(&words)).unwrap();
+        let first = dir.join("d.0.outline.npy");
+        let last = dir.join(format!("d.{}.outline.npy", specs.len()));
+        let both = first.exists() && last.exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(both, "the layer named outline and the traced outline are dumped apart");
+    }
 
     #[test]
     fn a_bare_dump_or_outline_wants_a_value() {
