@@ -35,7 +35,7 @@ export interface Pixels {
   data: Uint8Array;
 }
 
-type Wish = "draft" | "rest";
+export type Wish = "draft" | "rest";
 
 export class PreviewView {
   readonly canvas: HTMLCanvasElement;
@@ -60,6 +60,10 @@ export class PreviewView {
   private restartsSeen = 0;
   private idle: ReturnType<typeof setTimeout> | null = null;
   private readonly listeners: ((t: Timing) => void)[] = [];
+  private readonly workers: ((work: Wish | null) => void)[] = [];
+  /** The frame being computed and drawn now, if any: what the page's
+   * indicator says while a slow frame at rest blocks the engine. */
+  working: Wish | null = null;
 
   /** Where an offscreen frame is drawn, when the canvas is not (`offscreen`). */
   private target: GPUTexture | null = null;
@@ -111,6 +115,17 @@ export class PreviewView {
   /** Call `listener` after every frame drawn. */
   onFrame(listener: (t: Timing) => void): void {
     this.listeners.push(listener);
+  }
+
+  /** Call `listener` when a frame starts being asked for and drawn, and with
+   * null when it is done. */
+  onWork(listener: (work: Wish | null) => void): void {
+    this.workers.push(listener);
+  }
+
+  private setWorking(work: Wish | null): void {
+    this.working = work;
+    for (const l of this.workers) l(work);
   }
 
   /** The camera or a control moved: a draft now, and the frame at rest once
@@ -225,6 +240,15 @@ export class PreviewView {
   }
 
   private async draw(wish: Wish, onPixels?: (p: Pixels) => void, read = false): Promise<Timing> {
+    this.setWorking(wish);
+    try {
+      return await this.drawFrame(wish, onPixels, read);
+    } finally {
+      this.setWorking(null);
+    }
+  }
+
+  private async drawFrame(wish: Wish, onPixels?: (p: Pixels) => void, read = false): Promise<Timing> {
     const started = performance.now();
     let timing: Timing;
     if (this.renderer) {

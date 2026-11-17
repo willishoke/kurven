@@ -8,7 +8,7 @@
 // compact so a replay is bounded by what the document is, not by how long
 // it was edited:
 //
-// - An `open`, `create` or `createSurface` that succeeds is a clean slate
+// - An `open`, `create`, `createSurface` or `restore` that succeeds is a clean slate
 //   (the engine forgets the document's edits and its camera, and adopts the
 //   new one whole), so the requests before it are dropped, but for the last
 //   of each that sets what an open keeps (`viewport`, `mode`,
@@ -90,13 +90,24 @@ export interface Options {
 }
 
 /** Requests that change nothing the journal must replay. */
-const VIEWS = new Set(["state", "frame", "preview", "surfaceImage", "bake", "grids", "save", "headless"]);
+const VIEWS = new Set([
+  "state",
+  "catalog",
+  "edited",
+  "frame",
+  "preview",
+  "surfaceImage",
+  "bake",
+  "grids",
+  "save",
+  "headless",
+]);
 /** Requests after which the document is a clean slate. */
-const OPENING = new Set(["open", "create", "createSurface"]);
+const OPENING = new Set(["open", "create", "createSurface", "restore"]);
 /** Settings an open keeps, so the last of each before it is replayed. */
 const KEPT_BY_OPEN = new Set(["viewport", "mode", "draftResolution", "refine"]);
 /** Settings set outright, so a run of one is its last. */
-const OUTRIGHT = new Set(["viewport", "mode", "draftResolution", "bakeResolution", "refine"]);
+const OUTRIGHT = new Set(["viewport", "mode", "draftResolution", "bakeResolution", "refine", "depthTolerance"]);
 /** Sliders whose moves set a value outright and are never refused. */
 const OUTRIGHT_SLIDERS = new Set(["landscape", "truncation", "light", "levels"]);
 
@@ -172,6 +183,13 @@ export class EngineClient {
   /** How many entries a replay would send. */
   get journalLength(): number {
     return this.journal.length;
+  }
+
+  /** The journal's requests, in order, without its staged bundles: what a
+   * native session replays to hold the same document (`kurven-cli
+   * session`), as a restarted Worker replays it. */
+  get journaled(): Request[] {
+    return this.journal.flatMap((e) => (e.kind === "request" ? [e.request] : []));
   }
 
   // MARK: - the Worker
