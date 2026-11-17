@@ -2722,3 +2722,48 @@ and the goldens unchanged.
 torus's GPU frame suite; the two landscape suites' depth-buffer halves (in
 files another agent was reworking); the rest frame still blocks the Worker
 (cn 2.2 s); the page is Phase 8's.
+
+## 2026-11-17 · Review of PR #73: keys, the queue, the outline's memory
+
+- **Keys across a restart.** `ContentID`s are counted per process, and a
+  restarted Worker counts from one again, so a key the page held could name
+  a scene of the new engine, which would then send nothing for it. Every
+  preview key now starts with the engine's nonce, which the Worker gives at
+  load (`seed`, 16 hex digits from `crypto.getRandomValues`; empty
+  natively), and the page lets go of what it holds when the client
+  restarts. Held by the Worker test (a restart, the same scene replayed and
+  a new one: no key of the new engine is one the old gave) and a native
+  test of two seeded sessions.
+- **What a layout's key depends on.** The camera key hashed the scene's
+  resolution, which every zoom changes, so a zoom re-sent sphere-traced and
+  solid layouts and draft folds. It is Swift's `cachedLines` key now, the
+  camera's view and projection and whether a draft; a landscape's tested
+  layout at rest adds the resolution it was placed to, and a held one
+  placed at least as finely serves (`VisibleLines.serves`: zooming out
+  keeps it, zooming in tests again). Tested on sn and gamma.
+- **A layer the scene cannot test** (`Scene::visible` refusing) came back as
+  carried with its tolerance already unreachable, drawing hidden curves.
+  It is depth-tested now, as a draft leaves it, and the frame says why
+  (`refusal`); the engine remembers the refusal by key, so a frame that
+  sends no segments for it still tests it. No refusal is constructed in the
+  port today, so this is untested by a real case.
+- **One frame in flight.** `drawNow` went around the queue and could send a
+  second `preview` with the same holdings; it goes through it now. A rest
+  wished while a draft waited replaced it; the draft goes first now. A drag
+  ends on `pointercancel` and `lostpointercapture` as on `pointerup`.
+- **The outline's memory.** The bake rendered the whole frame's depth for
+  the outline, about a gigabyte at 16000 pixels, then a coverage grid as
+  large again. The pass is rendered 512 rows at a time now and only the
+  coverage kept (`depth_pass::coverage`); every sample is the whole pass's,
+  so the outline is the same (the depth pass test holds strips of 1 to 1000
+  rows to the whole, and gamma's and the frame's outlined SVGs are the same
+  bytes). The coverage grid the contour reads is still the frame's size in
+  float32, as Swift's stitched buffer is.
+- **One rule for the drawn grid.** `depth_pass::DrawnGrid` is the grid the
+  pass draws (bands baked in, a uniform truncation the ceiling), shared by
+  the GPU's resources, the CPU's pass and a pick, the bundle's grid shared
+  rather than copied. Its step is at least one: Swift's Metal side passes
+  `Heightfield.step` as it is, where every CPU reader in Swift takes
+  `max(step, 1)`; a step of none would draw a flat sheet at one texel, and
+  the port takes the CPU's rule everywhere. Mesh corners are looked up by
+  one function (`for_each_triangle`), and the keys by one hash.
