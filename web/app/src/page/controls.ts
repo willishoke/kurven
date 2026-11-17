@@ -4,9 +4,9 @@
 // Nothing here is the model: a control's value is the latest state's, and
 // a control being moved shows where the hand is until the engine answers.
 
-import type { DocumentState, Domain, Preset, Request, Truncation } from "../engine/protocol.ts";
+import type { Controls, DocumentState, Domain, Preset, Request, Truncation } from "../engine/protocol.ts";
 import { h, shown } from "./dom.ts";
-import { type Engine, SliderDrag } from "./engine.ts";
+import { type Engine, quietly, SliderDrag } from "./engine.ts";
 import { Formula } from "./formula.ts";
 
 /** What the panel asks of the page around it. */
@@ -74,7 +74,7 @@ function sliderInput(
       window.removeEventListener("pointercancel", up);
       const d = active;
       active = null;
-      if (d) void d.end();
+      if (d) void d.end().catch(quietly);
     };
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", up);
@@ -131,7 +131,7 @@ class IntervalControl {
     const clampLo = (x: number) => Math.min(x, this.current.hi - gap());
     const clampHi = (x: number) => Math.max(x, this.current.lo + gap());
     const set = (key: string, value: number) => {
-      void host.engine.send({ kind: "set", key, value }).then(() => host.changed());
+      host.engine.edit({ kind: "set", key, value }, () => host.changed());
     };
     const [loKey, hiKey] = keys;
     const dragOf = (key: string) => () => new SliderDrag(host.engine, { slider: "landscape", label: key }, () => host.moved());
@@ -212,6 +212,8 @@ export class Panel {
   readonly formula: Formula;
   private readonly host: Host;
   private presets: Preset[] = [];
+  /** How far the sliders reach: the engine's, from the catalog reply. */
+  private reach: Controls | null = null;
   private readonly title: HTMLElement;
   private readonly fn: HTMLSelectElement;
   private readonly notes: HTMLElement;
@@ -252,17 +254,13 @@ export class Panel {
       if (!preset) return;
       this.formula.editing = false;
       this.formula.clearError();
-      void engine.send({ kind: "create", preset }).then(() => host.changed());
+      engine.edit({ kind: "create", preset }, () => host.changed());
     });
     this.notes = h("p", { class: "notes" });
     this.formula = new Formula((text) => this.submit(text));
-    this.formula.input.addEventListener("formula-reset", () => {
-      const e = this.host.engine.state?.landscape?.expression;
-      if (typeof e === "string") this.formula.input.value = e;
-    });
     this.re = new IntervalControl(host, "Re", ["rMin", "rMax"]);
     this.im = new IntervalControl(host, "Im", ["iMin", "iMax"]);
-    this.samples = h("input", { type: "range", id: "samples", min: 120, max: 2000, step: 20, "aria-label": "Samples along the window's longer side" });
+    this.samples = h("input", { type: "range", id: "samples", "aria-label": "Samples along the window's longer side" });
     this.samplesOut = h("output", { for: "samples" });
     this.samplesState = sliderInput(
       this.samples,
@@ -271,7 +269,7 @@ export class Panel {
         this.samplesOut.value = String(x);
         d.move(x);
       },
-      (x) => void engine.send({ kind: "set", key: "res", value: x }).then(() => host.changed()),
+      (x) => engine.edit({ kind: "set", key: "res", value: x }, () => host.changed()),
     );
     this.landscapeStatus = h("p", { class: "status", id: "landscape-status", "aria-live": "polite" });
     const landscape = h(
@@ -311,7 +309,7 @@ export class Panel {
     for (const input of Object.values(this.truncationKinds)) {
       input.addEventListener("change", () => this.truncate(input.value as Truncation["kind"]));
     }
-    this.height = h("input", { type: "range", id: "truncation-height", min: 0.1, step: "any", "aria-label": "Truncation height" });
+    this.height = h("input", { type: "range", id: "truncation-height", step: "any", "aria-label": "Truncation height" });
     this.heightField = h("input", { type: "number", step: "0.1", min: 0, "aria-label": "Truncation height" });
     this.heightState = sliderInput(
       this.height,
@@ -347,7 +345,7 @@ export class Panel {
     // MARK: the camera and the mode
     this.presetButtons = h("div", { class: "buttons", id: "presets" });
     const fit = h("button", { type: "button", id: "fit", title: "Fit the drawing to the canvas (f)" }, "Fit");
-    fit.addEventListener("click", () => void engine.send({ kind: "fit" }).then(() => host.changed()));
+    fit.addEventListener("click", () => engine.edit({ kind: "fit" }, () => host.changed()));
     const mode = (value: DocumentState["mode"]) => h("input", { type: "radio", name: "mode", value });
     this.modes = { drawing: mode("drawing"), shaded: mode("shaded"), depth: mode("depth") };
     const modes = h(
@@ -427,16 +425,23 @@ export class Panel {
     this.noticeLine.hidden = !text;
   }
 
-  setCatalog(presets: Preset[]): void {
+  /** The catalog's presets, and the reach of the sliders, which every
+   * slider is built to: the engine holds a link to the same. */
+  setCatalog(presets: Preset[], reach: Controls): void {
     this.presets = presets;
+    this.reach = reach;
+    this.samples.min = String(reach.samples.min);
+    this.samples.max = String(reach.samples.max);
+    this.samples.step = String(reach.samples.step);
+    this.height.min = String(reach.truncation.min);
+    this.layerKey = ""; // the level sliders are made again to it
   }
 
   private submit(text: string): void {
     const engine = this.host.engine;
     const now = engine.state?.landscape?.expression;
     if (text === "" && now === undefined) return;
-    void engine.send({ kind: "expression", expression: text }).then((reply) => {
-      if (!reply) return;
+    engine.edit({ kind: "expression", expression: text }, (reply) => {
       if (reply.ok) this.host.changed();
       // Typed on since return was pressed: what is in the field is newer
       // than this reply, which neither takes it over nor marks it.
@@ -454,7 +459,7 @@ export class Panel {
   }
 
   private sendTruncation(t: Truncation): void {
-    void this.host.engine.send({ kind: "truncation", truncation: t }).then(() => this.host.changed());
+    this.host.engine.edit({ kind: "truncation", truncation: t }, () => this.host.changed());
   }
 
   /** TruncationSection.swift's `apply`: a kind chosen. */
@@ -465,7 +470,7 @@ export class Panel {
   }
 
   private setMode(mode: DocumentState["mode"]): void {
-    void this.host.engine.send({ kind: "mode", mode }).then(() => this.host.changed());
+    this.host.engine.edit({ kind: "mode", mode }, () => this.host.changed());
   }
 
   /** Show what the engine says. */
@@ -540,7 +545,7 @@ export class Panel {
       this.presetButtons.replaceChildren(
         ...state.presets.map((p, index) => {
           const b = h("button", { type: "button", "data-preset": index }, p);
-          b.addEventListener("click", () => void this.host.engine.send({ kind: "preset", index }).then(() => this.host.changed()));
+          b.addEventListener("click", () => this.host.engine.edit({ kind: "preset", index }, () => this.host.changed()));
           return b;
         }),
       );
@@ -576,17 +581,25 @@ export class Panel {
     const engine = this.host.engine;
     const id = `layer-${index}`;
     const box = h("input", { type: "checkbox", id });
-    box.addEventListener("change", () => void engine.send({ kind: "hide", layer: index }).then(() => this.host.changed()));
+    box.addEventListener("change", () => engine.edit({ kind: "hide", layer: index }, () => this.host.changed()));
     const li = h(
       "li",
       { "data-layer": name },
       h("label", { class: "name", for: id }, box, LAYER_WORDS[name] ?? name, h("small", {}, name)),
     );
-    if (hasLevels) {
-      const range = h("input", { type: "range", min: 2, max: 80, step: 1, "aria-label": `Levels of ${LAYER_WORDS[name] ?? name}`, "data-levels": name });
+    const levels = this.reach?.levels;
+    if (hasLevels && levels) {
+      const range = h("input", {
+        type: "range",
+        min: levels.min,
+        max: levels.max,
+        step: 1,
+        "aria-label": `Levels of ${LAYER_WORDS[name] ?? name}`,
+        "data-levels": name,
+      });
       const out = h("output", {});
       const reset = h("button", { type: "button", title: "The levels the landscape chose", "aria-label": `Reset the levels of ${name}` }, "↺");
-      reset.addEventListener("click", () => void engine.send({ kind: "resetLevels", layer: name }).then(() => this.host.changed()));
+      reset.addEventListener("click", () => engine.edit({ kind: "resetLevels", layer: name }, () => this.host.changed()));
       this.levelDrags.set(
         name,
         sliderInput(
@@ -596,7 +609,7 @@ export class Panel {
             out.value = String(x);
             d.move(x);
           },
-          (x) => void engine.send({ kind: "levels", layer: name, count: x }).then(() => this.host.changed()),
+          (x) => engine.edit({ kind: "levels", layer: name, count: x }, () => this.host.changed()),
         ),
       );
       li.append(h("div", { class: "levels" }, h("span", {}, "levels"), range, out, reset));
@@ -614,6 +627,6 @@ export class Panel {
 
   /** Keys for the whole page: f, 1, 2, 3, undo and redo. */
   request(r: Request): void {
-    void this.host.engine.send(r).then(() => this.host.changed());
+    this.host.engine.edit(r, () => this.host.changed());
   }
 }

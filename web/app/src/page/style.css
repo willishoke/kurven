@@ -281,3 +281,5 @@ kbd { font-family: var(--mono); font-size: 0.75rem; border: 1px solid var(--rule
 .formula-field { margin: 8px 0 4px; }
 .formula-field > .label { display: block; color: var(--muted); font-size: 0.9rem; margin-bottom: 3px; font-family: var(--serif); font-style: italic; }
 .notice { color: var(--accent); font-size: 0.86rem; margin: 8px 0 0; padding: 6px 8px; border: 1px solid var(--accent); border-radius: 3px; overflow-wrap: anywhere; }
+.draft-note { color: var(--muted); font-size: 0.82rem; font-style: italic; margin: 4px 0 0; }
+.formula input[data-draft="true"] { border-style: dashed; }

@@ -124,6 +124,15 @@ export interface Preset {
   notes: string;
 }
 
+/** How far the window's controls reach: the engine's (`sliders::reach`),
+ * which a link is held to, sent in the `catalog` reply. */
+export interface Controls {
+  samples: { min: number; max: number; step: number };
+  levels: { min: number; max: number };
+  strokes: { min: number; max: number };
+  truncation: { min: number };
+}
+
 /** Where an expression went wrong, as the `expression` refusal says it: in
  * characters as the language counts them (Unicode scalar values). */
 export interface ExpressionAt {

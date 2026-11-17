@@ -13,9 +13,13 @@ export class Formula {
   readonly input: HTMLInputElement;
   private readonly mirror: HTMLElement;
   private readonly message: HTMLElement;
-  /** True from the first keystroke until the expression is sent or reset:
-   * the engine's expression does not overwrite what is being typed. */
+  private readonly draft: HTMLElement;
+  /** True from the first keystroke until the expression is sampled or put
+   * back (escape): the engine's expression does not overwrite what is
+   * typed, focused or not, while the two differ. */
   editing = false;
+  /** The engine's expression, as last shown. */
+  private engines = "";
 
   constructor(onSubmit: (text: string) => void) {
     this.input = h("input", {
@@ -29,16 +33,23 @@ export class Formula {
     });
     this.mirror = h("div", { class: "mirror", "aria-hidden": "true" });
     this.message = h("p", { class: "error", id: "formula-error", role: "status" });
+    this.draft = h(
+      "p",
+      { class: "draft-note", id: "formula-draft", hidden: true },
+      "Not sampled yet: return samples it, escape puts back the landscape's.",
+    );
     this.root = h(
       "div",
       { class: "formula-field" },
       h("label", { class: "label", for: "formula" }, "f(z) ="),
       h("div", { class: "formula" }, this.input, this.mirror),
       this.message,
+      this.draft,
     );
     this.input.addEventListener("input", () => {
       this.editing = true;
       this.clearError();
+      this.markDraft();
     });
     this.input.addEventListener("scroll", () => {
       this.mirror.scrollLeft = this.input.scrollLeft;
@@ -48,22 +59,43 @@ export class Formula {
         e.preventDefault();
         onSubmit(this.input.value);
       } else if (e.key === "Escape") {
-        this.editing = false;
-        this.clearError();
-        this.input.dispatchEvent(new CustomEvent("formula-reset", { bubbles: true }));
+        this.revert();
       }
     });
   }
 
-  /** The engine's expression, unless one is being typed. Text replaced
-   * takes its marks with it: they were of the text refused. */
+  /** The engine's expression, unless something else is typed and not yet
+   * sampled: that stays, said to be unsampled, until return samples it or
+   * escape puts this back. Text replaced takes its marks with it: they
+   * were of the text refused. */
   show(expression: string): void {
-    if (this.editing && document.activeElement === this.input) return;
+    this.engines = expression;
+    if (this.editing && this.input.value !== expression) {
+      this.markDraft();
+      return;
+    }
+    this.editing = false;
     if (this.input.value !== expression) {
       this.input.value = expression;
       this.clearError();
     }
+    this.markDraft();
+  }
+
+  /** Put back the engine's expression, dropping what was typed. */
+  revert(): void {
     this.editing = false;
+    this.input.value = this.engines;
+    this.clearError();
+    this.markDraft();
+  }
+
+  /** Say whether the field holds text the engine has not sampled. */
+  private markDraft(): void {
+    const drafted = this.editing && this.input.value !== this.engines;
+    if (drafted) this.input.dataset.draft = "true";
+    else delete this.input.dataset.draft;
+    this.draft.hidden = !drafted;
   }
 
   /** Mark where `text` went wrong. */
