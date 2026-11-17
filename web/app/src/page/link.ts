@@ -99,24 +99,131 @@ export async function encode(link: Link): Promise<string> {
   return `#k1.${base64url(packed)}`;
 }
 
-/** The link a fragment holds, or null if it holds none. Throws on one that
- * is malformed, saying so. */
-export async function decode(hash: string): Promise<Link | null> {
-  const m = hash.match(/^#k1(j?)\.([A-Za-z0-9_-]+)$/);
-  if (!m) return null;
-  let bytes = unbase64url(m[2] ?? "");
-  if (m[1] !== "j") {
-    bytes = await through(bytes, new DecompressionStream("deflate-raw") as TransformStream<Uint8Array, Uint8Array>);
+/** The longest fragment read: a link is about 1.3 KB deflated (a typed
+ * expression's, the catalog's are shorter) and 7.5 KB plain, so 16 KB is
+ * twice the plainest, and a fragment past it is not one of the page's. */
+export const MOST_FRAGMENT = 16 * 1024;
+/** The most JSON a fragment may inflate to: a link's is 5 to 6 KB (nine
+ * layers, their levels listed), so 64 KB is ten times that, and an inflate
+ * that runs past it (a zip bomb) is stopped there, before it is parsed. */
+export const MOST_JSON = 64 * 1024;
+
+/** Why a link is refused. */
+export class LinkError extends Error {}
+
+/** Inflate `bytes`, refusing once past `MOST_JSON` bytes out. */
+async function inflate(bytes: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  const reader = (stream as ReadableStream<Uint8Array>).getReader();
+  const chunks: Uint8Array[] = [];
+  let n = 0;
+  for (;;) {
+    let next;
+    try {
+      next = await reader.read();
+    } catch {
+      throw new LinkError("its compressed part is not deflate data");
+    }
+    if (next.done) break;
+    n += next.value.length;
+    if (n > MOST_JSON) {
+      await reader.cancel().catch(() => {});
+      throw new LinkError(`it inflates past ${MOST_JSON / 1024} KB, which no link of this page does`);
+    }
+    chunks.push(next.value);
   }
-  const value = JSON.parse(new TextDecoder().decode(bytes)) as Partial<Link> & { v?: number };
-  if (value.v !== 1 || !value.edited || !value.camera) throw new Error("not a kurven link this page can read");
-  return {
-    edited: value.edited,
-    hidden: value.hidden ?? [],
-    camera: value.camera,
-    mode: value.mode ?? "drawing",
-    depthTolerance: value.depthTolerance ?? 0.02,
-    bakeResolution: value.bakeResolution ?? 4000,
-    refine: value.refine ?? true,
+  const out = new Uint8Array(n);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
+}
+
+const isNumber = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
+const isObject = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
+const numbers = (x: unknown, n: number): x is number[] => Array.isArray(x) && x.length === n && x.every(isNumber);
+
+/** `value` as a link, every field of the right type, or a LinkError naming
+ * the first that is not. The engine holds what the numbers ask for to the
+ * controls' reach (`restore`); this holds the shape, so nothing the page
+ * does with a link reads a field that is not there. */
+function checked(value: unknown): Link {
+  const fail = (what: string): never => {
+    throw new LinkError(`its ${what} is not what a link holds`);
   };
+  if (!isObject(value) || value.v !== 1) throw new LinkError("it is not a link this page can read");
+  const edited = value.edited;
+  if (!isObject(edited)) return fail("landscape");
+  const l = edited.landscape;
+  if (!isObject(l) || typeof l.expression !== "string" || typeof l.name !== "string" || !Number.isInteger(l.resolution)) {
+    return fail("landscape");
+  }
+  const d = l.domain;
+  const interval = (i: unknown) => isObject(i) && isNumber(i.lo) && isNumber(i.hi);
+  if (!isObject(d) || !interval(d.real) || !interval(d.imag)) return fail("window");
+  if (!Array.isArray(edited.layers) || !edited.layers.every(isObject)) return fail("layers");
+  if (!isObject(edited.truncation) || typeof edited.truncation.kind !== "string") return fail("truncation");
+  const counts = edited.levelCounts;
+  if (!isObject(counts) || !Object.values(counts).every((n) => Number.isInteger(n))) return fail("level counts");
+  const hidden = value.hidden ?? [];
+  if (!Array.isArray(hidden) || !hidden.every((h) => typeof h === "string")) return fail("hidden layers");
+  const c = value.camera;
+  if (
+    !isObject(c) ||
+    !isNumber(c.azimuth) ||
+    !isNumber(c.elevation) ||
+    !numbers(c.target, 3) ||
+    !numbers(c.center, 2) ||
+    !isNumber(c.unitsPerPixel) ||
+    !(c.distance === null || c.distance === undefined || isNumber(c.distance))
+  ) {
+    return fail("camera");
+  }
+  const mode = value.mode ?? "drawing";
+  if (mode !== "drawing" && mode !== "shaded" && mode !== "depth") return fail("mode");
+  const depthTolerance = value.depthTolerance ?? 0.02;
+  if (!isNumber(depthTolerance)) return fail("depth tolerance");
+  const bakeResolution = value.bakeResolution ?? 4000;
+  if (!Number.isInteger(bakeResolution)) return fail("bake resolution");
+  const refine = value.refine ?? true;
+  if (typeof refine !== "boolean") return fail("refinement");
+  return {
+    edited: edited as unknown as Edited,
+    hidden: hidden as string[],
+    camera: { ...(c as unknown as ExactCamera), distance: (c.distance as number | null | undefined) ?? null },
+    mode,
+    depthTolerance: depthTolerance as number,
+    bakeResolution: bakeResolution as number,
+    refine,
+  };
+}
+
+/** The link a fragment holds, or null if it holds none. Throws a LinkError
+ * saying why for one that is too long, will not inflate within bounds, is
+ * not JSON, or is not a link's shape. */
+export async function decode(hash: string): Promise<Link | null> {
+  if (!hash.startsWith("#k1")) return null;
+  if (hash.length > MOST_FRAGMENT) throw new LinkError(`it is longer than ${MOST_FRAGMENT / 1024} KB, which no link of this page is`);
+  const m = hash.match(/^#k1(j?)\.([A-Za-z0-9_-]+)$/);
+  if (!m) throw new LinkError("it is not written as this page writes links");
+  let bytes: Uint8Array;
+  try {
+    bytes = unbase64url(m[2] ?? "");
+  } catch {
+    throw new LinkError("it is not base64url");
+  }
+  if (m[1] === "j") {
+    if (bytes.length > MOST_JSON) throw new LinkError(`it holds more than ${MOST_JSON / 1024} KB`);
+  } else {
+    bytes = await inflate(bytes);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw new LinkError("it does not hold JSON");
+  }
+  return checked(value);
 }
