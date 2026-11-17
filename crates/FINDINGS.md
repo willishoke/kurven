@@ -2426,3 +2426,299 @@ bounds a solid. The port and Swift agree on every one of them.
   periods, each plateau against its own foot on the bare torus, and checks
   the reach at 0.3 and 0.4 rather than at 0.33 and 0.34 (the entry above
   names the old pair).
+
+## 2026-11-17 · Phase 7: the preview, what came across
+
+`Sources/KurvenMetal` is split where its class mixes two jobs. What a frame
+draws is decided in the engine, in doubles: `kurven-session/src/preview.rs`
+ports `SceneResources` and `SurfaceResources` (`Resources`, keyed on
+`Scene.content`), `LineGeometry.isTestedExactly` and `layOut`
+(`is_tested_exactly`, `lay_out`), `SurfaceStrokeGeometry.layout`, and
+`renderPreview`'s and `renderParametricPreview`'s choice for each layer of
+pipeline, depth tolerance, colour and width, with the uniforms
+(`KVUniforms`, the frame-wide `KVShading` and `KVStroke`, the coordinate
+pass's padded depth range). The protocol's `preview` request sends it as
+JSON and float32 arrays. Drawing it is the page's: `web/app/src/gpu`:
+
+- `shaders.ts`: the WGSL port of Shaders.swift, one module as Swift's one
+  library: the heightfield's implicit mesh and the walls into the depth
+  pass, MAX-blended into r32float; a parametric surface's depth pass and
+  coordinate pass (rg32float behind a LESS test on normalized view depth);
+  paper, shaded (normal from screen-space derivatives, no depth
+  attachment) and the depth view; strokes as screen-space quads tested at
+  the centreline against the depth pass with the slope-scaled tolerance,
+  hidden where a graph's normal faces away; surface strokes tested by the
+  front-most coordinate and facing; and `kv_layout_probe`.
+- `layout.ts`: the structs at WGSL's offsets, and `probeLayout`, which has
+  the GPU read every field back (Swift's layout probe).
+- `renderer.ts`: `PreviewRenderer`, Swift's passes in Swift's order; the
+  scene's resources a single-entry memo on the content, each layer's
+  segments a buffer under the engine's key, so a camera change uploads the
+  uniforms and the layers the camera moved and nothing else.
+- `view.ts`: the canvas, drafts while the camera moves and the frame at rest
+  a quarter second after (MetalView's clock), one frame asked at a time,
+  the newest wish waiting; `fallback.ts`: without WebGPU, the judged
+  strokes drawn with Canvas 2D at rest.
+- `main.ts`: the least page that shows it: a canvas, drag to orbit,
+  shift-drag to pan, the wheel to zoom toward the cursor, `f` to fit, `1` `2`
+  `3` for the modes, as Swift's GestureView maps them; the query picks a
+  catalog landscape or surface. The formula field and the rest are Phase 8's.
+
+## 2026-11-17 · Phase 7: differences from Swift, by construction
+
+- **No infinity in a shader.** Swift hands Metal an infinite depth
+  tolerance (drawn as it comes) and an infinite truncation height (none).
+  WGSL lets an implementation assume no infinity reaches a shader, and
+  canonical JSON cannot write one, so the engine sends `null` and the page
+  writes the largest float, `UNREACHABLE`; `stroke_visible` passes a stroke
+  at that tolerance without adding to it, and `coord_rate`'s starting
+  "infinitely far" is the same constant.
+- **WGSL's layout, not C's.** A `vec3f` is twelve bytes in WGSL and sixteen
+  in MSL, so `KVShading.ambient` sits at 44, not 48; the probe holds the
+  page's writers to the shader's reading of every field of every struct,
+  and passes on SwiftShader and on Metal.
+- **A buffer per layer.** Swift keeps every layer's segments end to end in
+  one buffer and passes each draw its `first`; the page keeps each layer's
+  under the engine's key, so a frame that moves the folds re-uploads the
+  folds alone, and `first` is always zero and is not passed. A layer's
+  `KVShading` and `KVStroke`, set per draw by `setVertexBytes` in Swift,
+  are a `KVLayer` slot per layer in one uniform buffer.
+- **`float32-blendable`.** The depth pass MAX-blends an r32float target,
+  which WebGPU allows only with that feature. SwiftShader and Metal both
+  have it; an adapter without it gets the fallback (judged strokes at
+  rest), not a second depth semantic.
+- **The rest frame blocks the Worker.** Swift lays out the tested strokes
+  on another thread and draws drafts meanwhile; the engine is one Worker,
+  so a draft asked during cn's 2.2 s rest layout waits for it. The interim
+  is Phase 6's list ("Interactive timings"): a pool of Workers, or wasm
+  threads.
+- **`frame`'s rest layout is now `layOut`'s for every scene.** Phase 6's
+  `rest_layout` tested a landscape's folds and walls and left a surface's
+  and a solid's layers as carried; it is now `preview::lay_out`, Swift's
+  `layOut(draft: false)`: a sphere-traced surface's folds and clipped
+  curves with coordinates, and a solid's clipped layers, as the bake tests
+  them.
+- **A pick still casts on the CPU.** Swift reads the preview's depth
+  texture; the page's is on the other side of the Worker, and a pick needs
+  the point only to name the face. `preview_depth` keeps Phase 6's cast,
+  its triangles now `depth_pass::drawn_triangles`, the one enumeration the
+  CPU depth pass and the cast share. One change from Phase 6's: a landscape
+  whose decimated grid has fewer than two nodes a side still has its
+  occluder's triangles cast, as Metal draws the walls whatever the grid.
+- **No preview natively.** `kurven-cli surface --preview` (a PNG), and the
+  app's `--screenshot` and `--thumbnails`, stay refused, now saying the
+  preview is the page's: a native build has no GPU, and the port's preview
+  is WebGPU in the page.
+
+## 2026-11-17 · Headless Chromium and WebGPU: what works here
+
+Playwright 1.63.0 (`@playwright/test`, a dev dependency of web/app, the one
+added) pins Chromium revision 1243, Chrome for Testing 153.0.8010.12, which
+was already in ~/Library/Caches/ms-playwright. Probed on this machine
+(Apple Silicon, macOS), over http://localhost (WebGPU wants a secure
+context; `about:blank` has no `navigator.gpu`):
+
+| browser | flags | adapter | a WebGPU canvas |
+|---|---|---|---|
+| headless shell (old headless) | none | none | -- |
+| headless shell | `--enable-unsafe-webgpu` | SwiftShader | device lost at the first frame: "A valid external Instance reference no longer exists" |
+| Chrome for Testing, new headless (`channel: "chromium"`) | `--enable-unsafe-webgpu` | Apple, metal-3 | draws |
+| the same | `--enable-unsafe-webgpu --use-webgpu-adapter=swiftshader` | Google, SwiftShader (fallback adapter) | draws |
+| the same | `--disable-gpu` | none (`navigator.gpu` is there, `requestAdapter` answers null) | -- |
+
+So the lane runs Chrome for Testing in its new headless mode, never the
+shell: `swiftshader` (Dawn's CPU Vulkan, the same on any machine),
+`gpu` (the machine's GPU, Metal here) and `fallback` (`--disable-gpu`, the
+page with no adapter). Both adapters offer `float32-blendable`; SwiftShader's
+largest texture is 8192 (Metal's 16384), which the renderer asks for and
+checks. `--disable-features=WebGPU` and `--disable-webgpu` leave the Metal
+adapter in place; `--disable-gpu` is what takes WebGPU away.
+
+## 2026-11-17 · The browser lane's gate: the preview at rest against the judged strokes
+
+`scripts/check-browser.sh` builds the page's module and the page, puts the
+module beside it, and runs `web/app/test/browser` against `vite preview`.
+The measure is Swift's own, from "preview: a parametric surface draws what
+its bake draws" (`test/browser/coverage.js`): a preview pixel is a stroke
+where 299 r + 587 g + 114 b < 224,000; the judged strokes (the engine's
+`bake` of the same frame, page points being view x and y) are rasterized
+along each centreline at a quarter pixel into the frame's pixels
+(`DepthFrame::index`); recall is the share of judged pixels with a preview
+stroke within one pixel, precision the share of preview stroke pixels with
+a judged pixel within two, both held above 0.99 with more than 5,000 judged
+pixels, at a 900 by 700 viewport, the slope allowance off (the bake's
+predicate), each scene at the camera it opens with. Results, identical in
+the coverage on both GPUs but for a few drawn pixels:
+
+| scene | judged px | recall | drawn px (SwiftShader / Metal) | precision | control: unclipped px stray |
+|---|---|---|---|---|---|
+| gamma (catalog, landscape) | 32,683 | 100.00% / 99.99% | 54,494 / 52,749 | 100.00% | 14.2% of 58,138 |
+| cn (catalog, landscape) | 52,612 | 99.97% | 73,283 / 72,805 | 100.00% | 3.4% of 74,090 |
+| sn (catalog, surface) | 34,587 | 100.00% | 39,342 / 39,401 | 100.00% | 27.4% of 60,780 |
+| the picture frame (polyhedron) | 31,545 | 100.00% | 41,615 / 41,548 | 100.00% | 29.7% of 61,343 |
+
+**The control.** Swift draws the same curves with no visibility test and
+asks that over a fifth of their pixels have no judged stroke within two
+pixels, or the measure proves nothing; on its torus that holds, as it does
+on sn (27.4%) and the frame (29.7%). On a landscape it does not: the
+hidden contours of gamma and cn run within two pixels of visible ones far
+more often (14.2%, 3.4%). The lane asks the control of every scene in the
+form the gate itself gives it -- drawn unclipped, the curves fail the gate's
+precision, stray > 1 − 0.99 -- and Swift's fifth of sn and the frame. That
+is a weaker control on cn than Swift's on its torus: recall carries the
+landscapes' gate, and a preview drawing cn's hidden contours would show at
+96.6% precision, under the 99%. No threshold of the gate was changed.
+
+**Without WebGPU** (`fallback`, Chromium with `--disable-gpu`: no adapter),
+the page says why ("WebGPU has no adapter here") and draws the judged
+strokes with Canvas 2D at rest; held to their own rasterization by the same
+measure, all four scenes are at 100.00% recall and precision. The bake is
+the slow part there: cn's judged strokes take 35 to 46 s in Chromium's
+Worker (Phase 6's 34.9 s under Node), and the page shows nothing new for
+that long.
+
+## 2026-11-17 · Frame times in Chromium: cn and sn
+
+From the lane's timing test: open from the catalog (the app's resolution,
+600), at 900 by 700, eight orbit steps of (6, 1) pixels each drawn as a
+draft, then the frame at rest, three times over; medians. "Engine" is the
+`preview` request answered in the Worker (wasm, one thread), arrays and
+all; "GPU" is from taking the reply in to the queue's work done.
+
+| frame | Metal: engine | Metal: GPU | Metal: total | SwiftShader: GPU | SwiftShader: total |
+|---|---|---|---|---|---|
+| cn, draft | 16.1 ms | 2.6 ms | 18.9 ms | 1,440 ms | 1,456 ms |
+| cn, rest | 2,214 ms | 7.0 ms | 2,221 ms | 1,394 ms | 3,613 ms |
+| sn, draft | 1.6 ms | 2.8 ms | 4.3 ms | 665 ms | 667 ms |
+| sn, rest | 90 ms | 4.9 ms | 95 ms | 416 ms | 506 ms |
+
+A draft costs the engine cn's fold curves traced on the grid for the camera
+(Phase 6 measured 20 ms under Node) and sn's none -- its grid folds are
+derived for each camera too, from the grid normals the engine keeps -- and
+uploads the uniforms and the folds' segments alone (the rest are held under
+their keys: 6.9 MB on the GPU for cn, 4.8 MB for sn). On a real GPU the
+passes take 3 to 7 ms; on SwiftShader, a CPU, seconds, which is why the
+lane's numbers for it are coverage, not speed. cn's rest frame is the
+engine's 2.2 s of tested folds and walls (Phase 6: 2.66 s under Node),
+which a camera that keeps moving waits behind (above, "the rest frame
+blocks the Worker"); Swift's window does it in ~127 ms on 18 cores. sn at
+rest sphere traces its folds and every clipped curve: 90 ms.
+
+## 2026-11-17 · The depth pass of a landscape or a solid, on the CPU
+
+Phase 4 left the bake's outline of a landscape or a solid refused, waiting
+for a depth pass. The evidence on what reads Swift's depth pass, from
+Bake.swift and the app: the outline (`DepthImage.outline`), the `depth`
+output, a pick (`previewDepth`), and the preview's per-fragment test. No
+stroke of a bake reads it. So the preview's pass is the page's GPU, and the
+bake's is the CPU's: `kurven_core::depth_pass` rasterizes the triangles the
+pass draws (`drawn_triangles`: the decimated grid at the drawn height,
+tile by tile, cut to the region as `kv_height_vertex` cuts it, then the
+occluder; a solid's mesh; a parametric surface's grid) into a
+`DepthImage` with `SurfaceImage::rasterize`'s choices (the frame's grid
+points as samples, inclusive edges at -1e-12, float32 depth replaced only by
+a strictly greater one). `bake` renders it, whole, when the outline is
+asked for, and traces the outline from it; the CLI reports the pass
+(`bake gamma.kurven --outline 0.5`: 4000 by 4000, 0.257 s against 0.188 s
+without). Picking
+keeps its per-pixel cast, now over the same `drawn_triangles`. Held by a
+cube seen from above (every sample inside its square covered at its top, to
+the float, none outside) and the bake's own test (the outline is the last
+layer, black at the width asked, inside the frame, and the same however the
+pass is asked to be split). Not compared against Swift's Metal pass: no
+Swift golden carries an outline, and the two differ on edges by
+construction, as the coordinate image's do.
+
+Two halves of Swift suites in `kurven-landscape/tests` that read a depth
+buffer were left out for the want of one ("stress: on a real drawing the
+traversal is the brute-force ray cast"'s count of what a 1000-pixel buffer
+hides in the pit; "solids: ... the depth pass rasterized its faces"). They
+can be restored with `depth_pass::render_depth`; those files were being
+reworked by another agent during this phase and were not touched.
+
+## 2026-11-17 · Swift's GPU suites in the browser lane
+
+Phase 4 left four suites ignored for the GPU. They cannot run natively; the
+stubs in kurven-surfaces now say where each runs, and three run in
+`web/app/test/browser/surfaces.spec.ts`, each scene a surface bundle (the
+session fixtures' manifest with Swift's request and camera put in), at
+Swift's thresholds:
+
+- **"preview: a parametric surface draws what its bake draws"**: the round
+  torus at 512 by 256, 24 by 12 coordinate curves and its folds, shear 0.5,
+  azimuth 25°, elevation -50°, 900 by 700. At rest and in a draft, recall
+  and precision 100.00% (19,380 judged pixels; 36,497 drawn) on Metal and
+  on SwiftShader; the control 35.2% stray (Swift asks over 20%).
+- **"preview: a torus nearly edge-on keeps its outline whole at rest"**: sn
+  (sn's grid 200, the surface's 600) from xAngle -89.5°, zAngle 118.2°, at
+  1400 by 900, the folds alone: at rest 100.000% of 4,213 judged pixels
+  (Swift asks over 99.9%), the draft 99.525% on Metal and 99.644% on
+  SwiftShader (Swift asks under the rest less 0.2%): the draft, tested per
+  fragment against the coordinate image, breaks the outline as in Swift.
+- **"metal: the GPU coordinate pass is the CPU rasterizer's"**: the WebGPU
+  depth and coordinate passes against `SurfaceImage::rasterize` over the
+  same frame (the protocol's `surfaceImage` request: the CPU image, with the
+  view, the buffer-order clip and the padded depth range the GPU renders it
+  by), on Swift's two tori (R/r 2 and 1.25, 384 by 192) at 800 pixels from
+  two cameras, one sheared (bundle presets, where Swift builds its cameras
+  in the test; any camera holds the claim). On Metal: 26 to 38 of about
+  500,000 covered pixels differ in coverage or by more than 1e-4 of the
+  depth span, every one on an edge (Swift: all on edges, under half a
+  percent); depth elsewhere within 5.5e-4 absolute; and where the two
+  agree, the GPU's coordinate is the CPU's front-most point's within 0.02
+  of a grid cell everywhere off an edge (in place of Swift's check against
+  the map, which the CPU image passes natively). **On SwiftShader the claim
+  fails, and is skipped there, not loosened**: 7,486 pixels differ, 5,102
+  of them off an edge, nearly all in depth alone, by 1e-4 to 3e-3 of the
+  span, half each way, at about 1.5% of the covered pixels; Metal has 22
+  such. SwiftShader's interpolation of a varying across a triangle is
+  coarser than Metal's; the strokes, which read the coordinate image and
+  not its depth, pass the two suites above on it.
+- **"surfaces: an orbit frame of the forced torus, folds and all, keeps
+  up"**, the GPU half: not ported. A frame is now the engine's draft in the
+  Worker and the page's passes, both timed by the lane on cn and sn; the
+  forced torus's fit takes about 80 s natively, past what the lane waits
+  for. The CPU half (the grid folds, median under 25 ms) passes natively.
+  The drawing suite's last check (a warm renderer's preview against a fresh
+  one's) is not ported either.
+
+## 2026-11-17 · The browser lane in CI
+
+`.github/workflows/check-browser.yml` runs `scripts/check-browser.sh
+--project swiftshader --project fallback` on ubuntu-latest, after `npx
+playwright install --with-deps chromium`. It has not run: nothing has been
+pushed. On Linux, Dawn reaches SwiftShader through Vulkan, which Chromium
+leaves off unless asked, so the config adds `--enable-features=Vulkan
+--disable-vulkan-surface` there and nowhere else; whether that suffices on a
+runner is the workflow's first finding. The `fallback` project needs no GPU
+at all, and the `gpu` project is for a machine with one (the script runs it
+on a Mac). A run takes about five minutes here, most of it cn's judged
+strokes (about 35 to 46 s each in the Worker) and SwiftShader's frames.
+
+## 2026-11-17 · Phase 7 status
+
+**Ported**: the preview. The engine half of KurvenMetal
+(`kurven-session/src/preview.rs`: resources keyed on content, the layout of
+each layer under a key, the per-layer choices and the uniforms) and the
+protocol's `preview` request; the WGSL shaders, the renderer, the three
+modes, the layout probe and the canvas in `web/app/src/gpu`; the fallback
+without WebGPU; the least page that shows it (`main.ts`). The CPU depth pass
+of a landscape or a solid (`kurven_core::depth_pass`) and with it the bake's
+outline, which was Phase 7's refusal; picking keeps its cast over the same
+triangles. Every `PORT: phase 7` hole is closed or, where it needs a GPU the
+engine does not have (the CLI's preview PNG, the app's `--screenshot` and
+`--thumbnails`), a refusal that says the GPU is the page's.
+
+**The gate** (`scripts/check-browser.sh`, Chromium 153 by Playwright 1.63.0):
+gamma, cn, sn and the picture frame at rest against the judged strokes,
+recall 99.97 to 100.00% and precision 100.00% on SwiftShader and on Metal,
+Swift's thresholds; the fallback drawing them at 100.00%; the WGSL structs
+read back as written; three of Swift's four GPU suites, one of them on Metal
+only (above). 22 passed and 8 skipped by design (each project's own) on
+this machine. check-web green, without a browser; the session's 28 scripts
+and the goldens unchanged.
+
+**Not done**: the browser lane has not run on Linux or in CI; the forced
+torus's GPU frame suite; the two landscape suites' depth-buffer halves (in
+files another agent was reworking); the rest frame still blocks the Worker
+(cn 2.2 s); the page is Phase 8's.
