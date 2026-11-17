@@ -15,7 +15,7 @@
 // with every pan.)
 
 import type { Gesture } from "../engine/protocol.ts";
-import type { Engine } from "./engine.ts";
+import { type Engine, quietly } from "./engine.ts";
 
 export class CanvasInput {
   private readonly engine: Engine;
@@ -70,7 +70,7 @@ export class CanvasInput {
     this.sending = this.engine
       .send(request)
       .then(() => this.moved())
-      .catch((error: unknown) => console.error("kurven gesture:", error))
+      .catch(quietly)
       .finally(() => {
         this.sending = null;
         this.pump();

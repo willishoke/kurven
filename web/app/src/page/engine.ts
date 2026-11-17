@@ -3,7 +3,7 @@
 // The page keeps no state of its own: what it shows is the latest state the
 // engine sent (HANDOFF-web-port.md, Architecture, rule 1).
 
-import type { Answer, EngineClient } from "../engine/client.ts";
+import { type Answer, Cancelled, type EngineClient } from "../engine/client.ts";
 import type { DocumentState, Reply, Request, Slider, TypedArray } from "../engine/protocol.ts";
 
 /** What a request makes the engine do, for the indicator. */
@@ -62,6 +62,19 @@ export class Engine {
   /** Send a request; the reply, with the state it carries taken in. */
   async send(request: Request): Promise<Reply | null> {
     return (await this.call(request))?.reply ?? null;
+  }
+
+  /** Send an edit and, once answered, call `after` with the reply. A
+   * request a cancel dropped (the export's Cancel restarts the Worker and
+   * replays what was answered) is let go quietly: the document is the
+   * replayed one, and the next state shows it. Anything else is logged. */
+  edit(request: Request, after?: (reply: Reply) => void): void {
+    this.send(request).then(
+      (reply) => {
+        if (reply && after) after(reply);
+      },
+      quietly,
+    );
   }
 
   /** Wait until every request sent so far, and any it led to, is answered. */
@@ -134,10 +147,7 @@ export class Latest<T> {
     const { value } = this.waiting;
     this.waiting = null;
     this.running = this.job(value)
-      .then(
-        () => undefined,
-        (error: unknown) => console.error("kurven:", error),
-      )
+      .then(() => undefined, quietly)
       .finally(() => {
         this.running = null;
         this.pump();
@@ -161,6 +171,9 @@ export class SliderDrag {
   private readonly control: Slider;
   private readonly moves: Latest<number | [number, number]>;
   private readonly after: () => void;
+  /** Whether the engine took hold of the slider: false when a cancel
+   * dropped the begin, and then the drag sends nothing more. */
+  private began: Promise<boolean> = Promise.resolve(false);
   active = false;
 
   constructor(engine: Engine, control: Slider, after: () => void) {
@@ -168,6 +181,7 @@ export class SliderDrag {
     this.control = control;
     this.after = after;
     this.moves = new Latest(async (value) => {
+      if (!(await this.began)) return;
       await engine.send({ kind: "drag", control, phase: "move", value });
       after();
     });
@@ -176,7 +190,16 @@ export class SliderDrag {
   begin(): void {
     if (this.active) return;
     this.active = true;
-    void this.engine.send({ kind: "drag", control: this.control, phase: "begin" }).then(this.after);
+    this.began = this.engine.send({ kind: "drag", control: this.control, phase: "begin" }).then(
+      () => {
+        this.after();
+        return true;
+      },
+      (error: unknown) => {
+        quietly(error);
+        return false;
+      },
+    );
   }
 
   move(value: number | [number, number]): void {
@@ -184,11 +207,32 @@ export class SliderDrag {
     this.moves.push(value);
   }
 
+  /** Let go. A begin the engine took is always ended: a let-go a cancel
+   * drops is sent again once the Worker is back, so the replayed document
+   * closes the drag and files its one undo step. */
   async end(): Promise<void> {
     if (!this.active) return;
     this.active = false;
     await this.moves.flush();
-    await this.engine.send({ kind: "drag", control: this.control, phase: "end" });
-    this.after();
+    if (!(await this.began)) return;
+    for (let tries = 0; tries < 3; tries++) {
+      try {
+        await this.engine.send({ kind: "drag", control: this.control, phase: "end" });
+        this.after();
+        return;
+      } catch (error) {
+        if (!(error instanceof Cancelled)) {
+          quietly(error);
+          return;
+        }
+      }
+    }
   }
+}
+
+/** A request's failure as the page takes it: one a cancel dropped is
+ * expected (the Worker was restarted on purpose), anything else is logged. */
+export function quietly(error: unknown): void {
+  if (error instanceof Cancelled) return;
+  console.error("kurven:", error);
 }
