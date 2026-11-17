@@ -54,7 +54,7 @@ impl Document {
         scene
             .layers()
             .iter()
-            .map(|layer| Layer { spec: layer.spec.clone(), paths: crate::preview::lay_out(layer, &scene, false) })
+            .map(|layer| Layer { spec: layer.spec.clone(), paths: crate::preview::lay_out(layer, &scene, false).paths })
             .collect()
     }
 }

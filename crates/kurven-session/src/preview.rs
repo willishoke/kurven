@@ -29,13 +29,15 @@
 //! WGSL may assume none reaches a shader, so the page writes the largest
 //! float in its place, which every comparison it enters treats the same way.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use kurven_core::camera::Projection;
 use kurven_core::depth::DepthFrame;
+use kurven_core::depth_pass::{DrawnGrid, for_each_triangle};
+use kurven_core::grid::Grid2D;
 use kurven_core::hatching::FaceKind;
-use kurven_core::manifest::{LayerRole, LayerSource, Region, Truncation};
+use kurven_core::manifest::{LayerRole, LayerSource, Region};
 use kurven_core::parametric::ParametricSurface;
 use kurven_core::polyline::{Layer, PolylineSet};
 use kurven_core::scene::{ContentID, PreviewMode, Scene, SceneGeometry};
@@ -55,14 +57,15 @@ pub const EMPTY_SENTINEL: f32 = -1e30;
 #[derive(Debug, Clone)]
 pub enum Resources {
     Heightfield {
-        /// The grid the shader reads heights from, row major: the bundle's
-        /// |f|, or `clamped()` under bands, whose truncation depends on x and
-        /// is folded in (`truncation_baked`).
-        heights: Vec<f32>,
+        /// The grid the shader reads heights from (`DrawnGrid`), row major:
+        /// the bundle's |f|, shared, not copied, or `clamped()` under bands,
+        /// whose truncation depends on x and is folded in (`truncation_baked`).
+        heights: Arc<Grid2D<f32>>,
         grid_width: usize,
         grid_height: usize,
         truncation_baked: bool,
-        /// The subsampling step the grid is drawn at (`Heightfield.step`).
+        /// The subsampling step the grid is drawn at, at least one
+        /// (`DrawnGrid::step`, which says why).
         step: usize,
         /// The decimated grid, `Grid2D::decimated_extent` by the step:
         /// dimensions and domain only.
@@ -90,21 +93,18 @@ impl Resources {
     pub fn of(scene: &Scene) -> Resources {
         match scene.geometry() {
             SceneGeometry::Heightfield(h) => {
-                let (grid, truncation_baked) = match h.surface.truncation {
-                    Truncation::None | Truncation::Uniform(_) => ((*h.surface.height).clone(), false),
-                    Truncation::RealBands { .. } => (h.surface.clamped(), true),
-                };
-                let (decimated_width, decimated_height, d) = grid.decimated_extent(h.step);
+                let drawn = DrawnGrid::of(h);
+                let (decimated_width, decimated_height, d) = drawn.grid.decimated_extent(drawn.step);
                 let region = match &h.region {
                     Region::Inside(p) => p.edges().iter().map(|e| [e.start.x(), e.start.y()]).collect(),
                     Region::Full => Vec::new(),
                 };
                 Resources::Heightfield {
-                    grid_width: grid.width,
-                    grid_height: grid.height,
-                    heights: grid.values.to_vec(),
-                    truncation_baked,
-                    step: h.step,
+                    grid_width: drawn.grid.width,
+                    grid_height: drawn.grid.height,
+                    heights: drawn.grid,
+                    truncation_baked: drawn.truncation_baked,
+                    step: drawn.step,
                     decimated_width,
                     decimated_height,
                     domain_lo: [d.real.lo, d.imag.lo],
@@ -133,13 +133,8 @@ impl Resources {
 /// (`SceneResources.flattened`). A triangle naming a vertex the mesh does
 /// not have is left out, where Swift's index traps.
 fn flattened(vertices: &[P3<WorldSpace>], triangles: &[[i32; 3]]) -> Vec<[f64; 3]> {
-    let get = |k: i32| usize::try_from(k).ok().and_then(|k| vertices.get(k));
     let mut out = Vec::with_capacity(3 * triangles.len());
-    for t in triangles {
-        if let (Some(a), Some(b), Some(c)) = (get(t[0]), get(t[1]), get(t[2])) {
-            out.extend([a, b, c].map(|p| [p.x(), p.y(), p.z()]));
-        }
-    }
+    for_each_triangle(vertices, triangles, |a, b, c| out.extend([a, b, c].map(|p| [p.x(), p.y(), p.z()])));
     out
 }
 
@@ -200,6 +195,9 @@ pub struct LayerDraw {
     /// The depth tolerance this layer is tested at; `None` is Swift's
     /// infinity, strokes drawn as they come.
     pub depth_tolerance: Option<f64>,
+    /// Why the scene could not test the layer, which is then drawn as
+    /// carried and depth-tested; `None` when it could.
+    pub refusal: Option<String>,
     /// The segments, when the page does not hold the key and the layer is
     /// drawn.
     pub segments: Option<Segments>,
@@ -239,9 +237,21 @@ pub struct Preview {
 #[derive(Default)]
 pub struct Memo {
     normals: Option<(ContentID, Arc<Vec<[f32; 3]>>)>,
+    /// The content the refusals below are of, and the layers by key that the
+    /// scene could not test: kept, so a frame that sends no segments for a
+    /// held key still depth-tests them.
+    content: String,
+    refused: BTreeMap<String, String>,
 }
 
 impl Memo {
+    fn forget_unless(&mut self, content: &str) {
+        if self.content != content {
+            self.content = content.to_string();
+            self.refused.clear();
+        }
+    }
+
     fn grid_normals(&mut self, scene: &Scene, surface: &ParametricSurface) -> Arc<Vec<[f32; 3]>> {
         if let Some((content, normals)) = &self.normals
             && *content == scene.content()
@@ -296,16 +306,17 @@ pub fn scene_is_tested_exactly(scene: &Scene) -> bool {
 /// are the bake's, and empty in a draft, which draws them from the surface
 /// strokes; a solid's edges and hatching at rest are the bake's, cut in closed
 /// form, and in a draft left, as carried, to the depth test.
-pub fn lay_out(layer: &Layer, scene: &Scene, draft: bool) -> PolylineSet<WorldSpace> {
+pub fn lay_out(layer: &Layer, scene: &Scene, draft: bool) -> Laid {
     let tested = is_tested_exactly(layer, scene);
     let view = scene.camera.view;
+    let laid = |paths| Laid { paths, refusal: None };
     match scene.geometry() {
         SceneGeometry::Parametric(_) if tested => {
             // Per fragment against the coordinate image, the folds and the
             // strokes running along them drew as dashes wherever the
             // front-most coordinate at a pixel flipped between the near
             // sheet and the one behind it, which at a fold is everywhere.
-            if draft { PolylineSet::new(Vec::new(), vec![0], None) } else { world(scene, layer) }
+            if draft { laid(PolylineSet::new(Vec::new(), vec![0], None)) } else { world(scene, layer) }
         }
         // Every width of a hatching is drawn at the layer's.
         SceneGeometry::Solid(_) if tested && !draft => world(scene, layer),
@@ -315,27 +326,38 @@ pub fn lay_out(layer: &Layer, scene: &Scene, draft: bool) -> PolylineSet<WorldSp
             // traversal's depth tolerance on f, so vertices fell alternately
             // in front of the graph and behind it and the fold drew as
             // dashes: at rest every vertex is moved onto the exact fold.
-            if draft {
+            laid(if draft {
                 h.on_grid().fold_curves(&view, false)
             } else {
                 h.visible_folds(&view, scene.depth_tolerance, true, scene.resolution)
-            }
+            })
         }
         SceneGeometry::Heightfield(h)
             if tested && !draft && scene.geometry().face_of(&layer.spec) == Some(FaceKind::Wall) =>
         {
-            h.visible_wall_curves(&layer.paths, &view, scene.depth_tolerance, scene.resolution)
+            laid(h.visible_wall_curves(&layer.paths, &view, scene.depth_tolerance, scene.resolution))
         }
-        _ => layer.paths.clone(),
+        _ => laid(layer.paths.clone()),
     }
+}
+
+/// A layer laid out: its strokes, and why the scene could not test them when
+/// it could not (a port refusal), in which case the strokes are the layer's
+/// as carried and must be left to the depth test, not drawn as they come.
+pub struct Laid {
+    pub paths: PolylineSet<WorldSpace>,
+    pub refusal: Option<String>,
 }
 
 /// A layer as the bake tests it (`Scene.visible`), every width of it, taken
 /// back to world space for the stroke shader: `LineGeometry.solidTested` and
-/// `sphereTraced`. A layer the scene cannot test (a port refusal) is drawn
-/// as carried.
-fn world(scene: &Scene, layer: &Layer) -> PolylineSet<WorldSpace> {
-    let Ok(seen) = scene.visible(layer, None, None) else { return layer.paths.clone() };
+/// `sphereTraced`. A layer the scene cannot test (a port refusal) comes back
+/// as carried, with the refusal, for the caller to depth-test.
+fn world(scene: &Scene, layer: &Layer) -> Laid {
+    let seen = match scene.visible(layer, None, None) {
+        Ok(seen) => seen,
+        Err(refusal) => return Laid { paths: layer.paths.clone(), refusal: Some(refusal.to_string()) },
+    };
     let back = scene.camera.view.inverse();
     let mut vertices = Vec::new();
     let mut offsets = vec![0];
@@ -344,7 +366,7 @@ fn world(scene: &Scene, layer: &Layer) -> PolylineSet<WorldSpace> {
         vertices.extend(paths.vertices.iter().map(|&p: &P3<ViewSpace>| back.apply(p)));
         offsets.extend(paths.offsets.iter().skip(1).map(|&o| o + base));
     }
-    PolylineSet::new(vertices, offsets, None)
+    Laid { paths: PolylineSet::new(vertices, offsets, None), refusal: None }
 }
 
 /// `MetalRenderer.color`: `#rrggbb` or `#rgb` to four floats, black for
@@ -360,29 +382,49 @@ pub fn color(hex: &str) -> [f32; 4] {
     }
 }
 
-/// FNV-1a over the bits that make a camera what it is to a layout: the
-/// view matrix, the projection, the resolution the strokes were tested to,
-/// and whether a draft.
-fn camera_key(scene: &Scene, draft: bool) -> String {
+/// FNV-1a over words: the one hash the keys use.
+fn fnv(words: impl IntoIterator<Item = u64>) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut eat = |x: u64| {
+    for x in words {
         for b in x.to_le_bytes() {
             h ^= u64::from(b);
             h = h.wrapping_mul(0x0000_0100_0000_01b3);
         }
+    }
+    h
+}
+
+/// The view matrix's bits.
+fn view_words(scene: &Scene) -> impl Iterator<Item = u64> + '_ {
+    scene.camera.view.m.columns.into_iter().flat_map(|c| c.to_array()).map(f64::to_bits)
+}
+
+/// What a layout for the camera depends on, as Swift's `cachedLines` keys
+/// it: the camera (`Camera` equality: its view and its projection) and
+/// whether a draft. Not the resolution: a zoom moves the framing, not the
+/// camera, and a draft (Swift's resolution infinite) and a sphere-traced or
+/// a solid's layout (Swift's 0) serve every zoom. A landscape's tested
+/// layout at rest, placed to the scene's resolution, adds that
+/// (`resolution_key`).
+fn camera_key(scene: &Scene, draft: bool) -> String {
+    let projection = match scene.camera.projection {
+        Projection::Orthographic { .. } => 0,
+        Projection::Perspective { fov_y } => fov_y.radians.to_bits() | 1,
     };
-    for c in scene.camera.view.m.columns {
-        for x in c.to_array() {
-            eat(x.to_bits());
-        }
-    }
-    match scene.camera.projection {
-        Projection::Orthographic { .. } => eat(0),
-        Projection::Perspective { fov_y } => eat(fov_y.radians.to_bits() | 1),
-    }
-    eat(scene.resolution.to_bits());
-    eat(u64::from(draft));
-    format!("{h:016x}")
+    format!("{:016x}", fnv(view_words(scene).chain([projection, u64::from(draft)])))
+}
+
+/// The key of a landscape's tested layout at rest: `base` at the scene's
+/// resolution, or a held one placed at least as finely, which serves it
+/// (`VisibleLines.serves`: a layout serves a scene that asks no finer, so
+/// zooming out keeps it and zooming in tests again).
+fn resolution_key(base: &str, resolution: f64, have: &BTreeSet<String>) -> String {
+    let prefix = format!("{base}@");
+    have.range(prefix.clone()..)
+        .take_while(|k| k.starts_with(&prefix))
+        .find(|k| u64::from_str_radix(&k[prefix.len()..], 16).is_ok_and(|bits| f64::from_bits(bits) <= resolution))
+        .cloned()
+        .unwrap_or_else(|| format!("{prefix}{:016x}", resolution.to_bits()))
 }
 
 fn columns(m: &Mat4) -> [[f64; 4]; 4] {
@@ -470,7 +512,17 @@ impl Document {
     /// a draft while the camera or a control moves, the window's layout at
     /// rest. `have_content` and `have` are the keys the page holds; what it
     /// holds is not built again.
-    pub fn preview(&mut self, draft: bool, have_content: Option<&str>, have: &BTreeSet<String>) -> Option<Preview> {
+    ///
+    /// `nonce` names the engine instance -- a Worker seeds it at load -- and
+    /// starts every key, so a key a page held from an engine since restarted,
+    /// whose counted `ContentID`s start again at one, names nothing here.
+    pub fn preview(
+        &mut self,
+        draft: bool,
+        nonce: &str,
+        have_content: Option<&str>,
+        have: &BTreeSet<String>,
+    ) -> Option<Preview> {
         let scene = self.shown_scene()?;
         let navigator = self.navigator?;
         let visible = self.shown_visible_layers();
@@ -494,13 +546,7 @@ impl Document {
             let pad = 0.05 * (hi - lo) + 1e-6;
             [lo - pad, hi + pad]
         });
-        let truncation_height = match scene.heightfield() {
-            Some(h) => match h.surface.truncation {
-                Truncation::Uniform(height) => Some(height),
-                _ => None,
-            },
-            None => None,
-        };
+        let truncation_height = scene.heightfield().and_then(DrawnGrid::ceiling_of);
         let lighting = match self.mode {
             PreviewMode::Shaded(l) => l,
             // `KVShading`'s light outside the shaded mode, as Swift fills it;
@@ -524,7 +570,8 @@ impl Document {
             perspective: scene.camera.is_perspective(),
         };
 
-        let content = scene.content().raw().to_string();
+        let content = format!("{nonce}~{}", scene.content().raw());
+        self.preview_memo.forget_unless(&content);
         let resources = (have_content != Some(content.as_str())).then(|| Resources::of(&scene));
         let widest = scene.layers().iter().map(|l| l.spec.width).fold(None, |m: Option<f64>, w| {
             Some(match m {
@@ -569,6 +616,7 @@ impl Document {
                 color: color(&layer.spec.color),
                 width,
                 depth_tolerance,
+                refusal: None,
                 segments: None,
             };
             let mut draw = if let Some(s) = &parametric {
@@ -631,7 +679,9 @@ impl Document {
                 // A layout is the camera's where the layer is tested for it;
                 // a heightfield's draft folds are too, traced for it on the
                 // grid.
-                let key = if (tested && !draft) || (heightfield && folds) {
+                let key = if heightfield && tested && !draft {
+                    resolution_key(&format!("{curves}.{i}.lines.{camera}"), scene.resolution, have)
+                } else if (tested && !draft) || (heightfield && folds) {
                     format!("{curves}.{i}.lines.{camera}")
                 } else {
                     format!("{curves}.{i}.lines")
@@ -639,8 +689,17 @@ impl Document {
                 base(key, Pipeline::Stroke, tolerance)
             };
             if shown && !have.contains(&draw.key) {
-                let paths = lay_out(layer, &scene, if parametric.is_some() { lines_draft } else { draft });
-                draw.segments = Some(line_segments(&paths, &scene, layer));
+                let laid = lay_out(layer, &scene, if parametric.is_some() { lines_draft } else { draft });
+                if let Some(refusal) = laid.refusal {
+                    self.preview_memo.refused.insert(draw.key.clone(), refusal);
+                }
+                draw.segments = Some(line_segments(&laid.paths, &scene, layer));
+            }
+            // A layer the scene could not test is drawn as carried, and so is
+            // left to the depth test, as a draft leaves it, with the reason.
+            if let Some(refusal) = self.preview_memo.refused.get(&draw.key) {
+                draw.depth_tolerance = layer.spec.clipped.then_some(scene.depth_tolerance);
+                draw.refusal = Some(refusal.clone());
             }
             layers.push(draw);
         }
@@ -652,14 +711,5 @@ impl Document {
 /// which depend on the line of sight and nothing else of the camera
 /// (`cachedFolds`, keyed by `view`).
 fn view_bits(scene: &Scene) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for c in scene.camera.view.m.columns {
-        for x in c.to_array() {
-            for b in x.to_bits().to_le_bytes() {
-                h ^= u64::from(b);
-                h = h.wrapping_mul(0x0000_0100_0000_01b3);
-            }
-        }
-    }
-    h
+    fnv(view_words(scene))
 }

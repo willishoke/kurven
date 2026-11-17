@@ -93,6 +93,10 @@ pub struct Reply {
 pub struct Session {
     pub document: Document,
     staged: BTreeMap<String, BundleFiles>,
+    /// This engine instance's name, which starts every preview key: a
+    /// Worker seeds it at load (`seed`), so a key held from an earlier
+    /// Worker cannot name a scene of this one. Empty natively.
+    nonce: String,
 }
 
 /// Why a request was refused, and whether it had reached the document
@@ -258,7 +262,7 @@ impl Session {
             "state" => none(),
             "open" => {
                 let name = text(o, "name")?;
-                let Session { document: d, staged } = self;
+                let Session { document: d, staged, .. } = self;
                 let files = staged.get(name).ok_or_else(|| refuse(format!("no bundle '{name}' staged")))?;
                 d.load(name, files);
                 d.settle();
@@ -580,6 +584,16 @@ impl Session {
                 out.insert("layers".to_string(), JsonValue::Array(described));
                 Ok((out, arrays))
             }
+            "seed" => {
+                // The engine instance's name, which a Worker gives at load:
+                // letters and digits, at most 64.
+                let nonce = text(o, "nonce")?;
+                if nonce.is_empty() || nonce.len() > 64 || !nonce.chars().all(|c| c.is_ascii_alphanumeric()) {
+                    return Err(refuse("a nonce is 1 to 64 letters and digits"));
+                }
+                self.nonce = nonce.to_string();
+                none()
+            }
             "preview" => {
                 // A frame of the preview, for the page's GPU: the resources
                 // and each layer's segments, under keys, and the uniforms.
@@ -592,7 +606,7 @@ impl Session {
                     .and_then(JsonValue::as_array)
                     .map(|a| a.iter().filter_map(|k| k.as_str().map(str::to_string)).collect())
                     .unwrap_or_default();
-                let Some(preview) = d.preview(draft, content, &keys) else {
+                let Some(preview) = self.document.preview(draft, &self.nonce, content, &keys) else {
                     return Err(refuse("nothing to preview"));
                 };
                 let mut arrays = Vec::new();
@@ -1014,7 +1028,7 @@ fn preview_json(p: &Preview, arrays: &mut Vec<(String, Array)>) -> JsonObject {
             region,
             walls,
         }) => {
-            arrays.push(("resource.heights".to_string(), Array::f32(heights.iter().copied())));
+            arrays.push(("resource.heights".to_string(), Array::f32(heights.values.iter().copied())));
             arrays.push(("resource.tiles".to_string(), f32s(&mut tiles.iter().flatten().copied())));
             arrays.push(("resource.region".to_string(), f32s(&mut region.iter().flatten().copied())));
             arrays.push(("resource.walls".to_string(), f32s(&mut walls.iter().flatten().copied())));
@@ -1084,6 +1098,7 @@ fn preview_json(p: &Preview, arrays: &mut Vec<(String, Array)>) -> JsonObject {
                 ("color", floats(&l.color)),
                 ("width", JsonValue::Double(l.width)),
                 ("depthTolerance", finite(l.depth_tolerance)),
+                ("refusal", l.refusal.as_deref().map_or(JsonValue::Null, json::string)),
                 ("segments", l.segments.as_ref().map_or(JsonValue::Null, |g| JsonValue::Int(g.count() as i64))),
             ])
         })

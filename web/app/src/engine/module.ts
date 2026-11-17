@@ -30,7 +30,14 @@ export class Engine {
 
   static async load(bytes: ArrayBuffer): Promise<Engine> {
     const { instance } = await WebAssembly.instantiate(bytes, {});
-    return new Engine(instance.exports as unknown as Exports);
+    const engine = new Engine(instance.exports as unknown as Exports);
+    // The instance's name, which starts every key its preview frames give:
+    // a restarted engine counts its scenes from one again, and a page must
+    // not take a key of this one for a key of the last (kurven_session's
+    // `seed`).
+    const nonce = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("");
+    engine.call({ kind: "seed", nonce });
+    return engine;
   }
 
   /** Bytes into memory the module lent, and the loan back afterwards. */

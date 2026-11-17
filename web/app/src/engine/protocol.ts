@@ -29,6 +29,8 @@
 /** A request the engine answers: kurven_session::protocol's. */
 export type Request =
   | { kind: "state" }
+  /** The engine instance's name, given by the Worker at load (module.ts). */
+  | { kind: "seed"; nonce: string }
   | { kind: "open"; name: string }
   | { kind: "create"; preset: string }
   | { kind: "createSurface"; preset: string }

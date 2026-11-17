@@ -126,3 +126,58 @@ fn colors_are_swifts() {
     assert_eq!(color("red"), [0.0, 0.0, 0.0, 1.0]);
     assert_eq!(Pipeline::Surface { on_folds: true }, Pipeline::Surface { on_folds: true });
 }
+
+/// An engine restarted counts its `ContentID`s from one again, so the same
+/// bundle opened by two engines can be the same number; each engine's name
+/// (`seed`, a Worker's at load) starts its keys, and a page holding the
+/// first's keys is sent everything by the second.
+#[test]
+fn keys_held_from_another_engine_name_nothing() {
+    let mut a = Session::new();
+    let mut b = Session::new();
+    reply(&mut a, r#"{"kind":"seed","nonce":"a1"}"#);
+    reply(&mut b, r#"{"kind":"seed","nonce":"b2"}"#);
+    open(&mut a, "gamma");
+    open(&mut b, "gamma");
+    let (first, _) = reply(&mut a, r#"{"kind":"preview","draft":true}"#);
+    let have = holding(&first);
+    let (second, names) = reply(&mut b, &format!(r#"{{"kind":"preview","draft":true,"have":{have}}}"#));
+    assert_ne!(first.get("content"), second.get("content"));
+    assert!(keys(&first).iter().all(|k| !keys(&second).contains(k)), "no key of one engine is the other's");
+    assert!(names.contains(&"resource.heights".to_string()), "everything sent again: {names:?}");
+    let (r, _) = reply(&mut a, r#"{"kind":"seed","nonce":"no-dashes"}"#);
+    assert_eq!(r.get("ok"), Some(&JsonValue::Bool(false)));
+}
+
+/// A zoom moves the framing, not the camera: a sphere-traced surface's
+/// layout at rest and a draft's are kept (Swift's resolutions 0 and
+/// infinite serve every zoom); a landscape's tested layout at rest is kept
+/// zooming out and tested again zooming in (`VisibleLines.serves`).
+#[test]
+fn a_zoom_keeps_what_serves_it() {
+    let zoom =
+        |factor: f64| format!(r#"{{"kind":"gesture","gesture":{{"kind":"zoom","factor":{factor},"at":[600,400]}}}}"#);
+    let mut s = Session::new();
+    open(&mut s, "sn");
+    for draft in [true, false] {
+        let request = format!(r#"{{"kind":"preview","draft":{draft}}}"#);
+        let (before, _) = reply(&mut s, &request);
+        reply(&mut s, &zoom(1.5));
+        let (after, _) = reply(&mut s, &request);
+        assert_eq!(keys(&before), keys(&after), "sn, draft {draft}: a zoom keeps every layout");
+    }
+
+    let mut s = Session::new();
+    open(&mut s, "gamma");
+    let rest = r#"{"kind":"preview","draft":false}"#;
+    let (at, _) = reply(&mut s, rest);
+    let folds = |f: &JsonValue| layer_field(f, "folds", "key").as_str().unwrap().to_string();
+    // Zoomed out, the held layout, placed more finely, serves.
+    reply(&mut s, &zoom(0.5));
+    let (out, _) = reply(&mut s, &format!(r#"{{"kind":"preview","draft":false,"have":{}}}"#, holding(&at)));
+    assert_eq!(folds(&out), folds(&at), "zooming out keeps the tested folds");
+    // Zoomed in past it, they are tested again.
+    reply(&mut s, &zoom(4.0));
+    let (inside, _) = reply(&mut s, &format!(r#"{{"kind":"preview","draft":false,"have":{}}}"#, holding(&at)));
+    assert_ne!(folds(&inside), folds(&at), "zooming in tests the folds again");
+}

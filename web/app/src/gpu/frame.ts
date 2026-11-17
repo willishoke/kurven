@@ -55,6 +55,9 @@ export interface LayerJSON {
   width: number;
   /** Null: drawn as it comes (Swift's infinite tolerance). */
   depthTolerance: number | null;
+  /** Why the engine could not test the layer for the camera, which it then
+   * sends as carried, depth-tested; null when it could. */
+  refusal: string | null;
   /** The segments sent with this frame, or null when the page holds the key
    * (or the layer is hidden). */
   segments: number | null;
