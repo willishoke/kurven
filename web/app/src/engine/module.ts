@@ -47,9 +47,13 @@ export class Engine {
     }
   }
 
+  /** The file's bytes go into memory the module lends and then owns: it
+   * keeps them as staged, without a copy, so they are not freed here. */
   stage(bundle: string, path: string, bytes: Uint8Array): void {
-    const ok = this.lend([encoder.encode(bundle), encoder.encode(path), bytes], (a) =>
-      this.wasm.kv_stage(a[0]!, a[1]!, a[2]!, a[3]!, a[4]!, a[5]!),
+    const data = this.wasm.kv_alloc(bytes.length);
+    new Uint8Array(this.wasm.memory.buffer, data, bytes.length).set(bytes);
+    const ok = this.lend([encoder.encode(bundle), encoder.encode(path)], (a) =>
+      this.wasm.kv_stage(a[0]!, a[1]!, a[2]!, a[3]!, data, bytes.length),
     );
     if (!ok) throw new Error(`could not stage ${bundle}/${path}`);
   }

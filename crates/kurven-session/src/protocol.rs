@@ -18,7 +18,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use kurven_core::bundle::{BundleFiles, normal_path};
+use kurven_core::bundle::BundleFiles;
 use kurven_core::json::{self, JsonObject, JsonValue};
 use kurven_core::manifest::{DomainAxis, LayerSource, Truncation};
 use kurven_core::navigation::Framing;
@@ -37,33 +37,45 @@ use crate::headless::{self, Output};
 use crate::landscape::applying_overrides;
 use crate::sliders::Slider;
 
-/// A typed array a reply carries.
+/// A typed array a reply carries: its element type and its bytes,
+/// little-endian, as the page's typed array holds them. Encoded once, from
+/// the values where they lie, and moved, never copied again, to the module's
+/// reply (`into_bytes`); the one copy after is the host's out of linear
+/// memory, which the Worker transfers.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Array {
-    F64(Vec<f64>),
-    F32(Vec<f32>),
-    U32(Vec<u32>),
-    U8(Vec<u8>),
+pub struct Array {
+    kind: &'static str,
+    bytes: Vec<u8>,
 }
 
 impl Array {
-    pub fn type_name(&self) -> &'static str {
-        match self {
-            Array::F64(_) => "f64",
-            Array::F32(_) => "f32",
-            Array::U32(_) => "u32",
-            Array::U8(_) => "u8",
-        }
+    pub fn f64(values: impl IntoIterator<Item = f64>) -> Array {
+        Array { kind: "f64", bytes: values.into_iter().flat_map(f64::to_le_bytes).collect() }
     }
 
-    /// Its bytes, little-endian, as the page's typed array holds them.
-    pub fn bytes(&self) -> Vec<u8> {
-        match self {
-            Array::F64(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
-            Array::F32(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
-            Array::U32(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
-            Array::U8(v) => v.clone(),
-        }
+    pub fn f32(values: impl IntoIterator<Item = f32>) -> Array {
+        Array { kind: "f32", bytes: values.into_iter().flat_map(f32::to_le_bytes).collect() }
+    }
+
+    pub fn u32(values: impl IntoIterator<Item = u32>) -> Array {
+        Array { kind: "u32", bytes: values.into_iter().flat_map(u32::to_le_bytes).collect() }
+    }
+
+    /// Bytes as they are, moved in.
+    pub fn u8(bytes: Vec<u8>) -> Array {
+        Array { kind: "u8", bytes }
+    }
+
+    pub fn type_name(&self) -> &'static str {
+        self.kind
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
     }
 }
 
@@ -166,11 +178,9 @@ fn layer_arrays(
         .iter()
         .enumerate()
         .map(|(i, layer)| {
-            let vertices: Vec<f32> =
-                layer.paths.vertices.iter().flat_map(|v| [v.x() as f32, v.y() as f32, v.z() as f32]).collect();
-            let offsets: Vec<u32> = layer.paths.offsets.iter().map(|&o| o as u32).collect();
-            arrays.push((format!("{prefix}.{i}.vertices"), Array::F32(vertices)));
-            arrays.push((format!("{prefix}.{i}.offsets"), Array::U32(offsets)));
+            let vertices = layer.paths.vertices.iter().flat_map(|v| [v.x() as f32, v.y() as f32, v.z() as f32]);
+            arrays.push((format!("{prefix}.{i}.vertices"), Array::f32(vertices)));
+            arrays.push((format!("{prefix}.{i}.offsets"), Array::u32(layer.paths.offsets.iter().map(|&o| o as u32))));
             json::object([
                 ("name", json::string(&layer.spec.name)),
                 ("width", JsonValue::Double(layer.spec.width)),
@@ -192,7 +202,7 @@ impl Session {
     pub fn stage(&mut self, bundle: &str, path: &str, bytes: Vec<u8>) {
         // Under its path as a source reads it, so `./a.npy` staged again as
         // `a.npy` replaces it rather than standing beside it.
-        self.staged.entry(bundle.to_string()).or_default().insert(normal_path(path), bytes);
+        self.staged.entry(bundle.to_string()).or_default().insert(path, bytes);
     }
 
     /// Forget every staged bundle.
@@ -311,6 +321,12 @@ impl Session {
             "drag" => {
                 // A slider taken hold of, moved, let go: one undo step.
                 let slider = slider(o)?;
+                match &slider {
+                    Slider::Levels { name } => with_levels(d, name)?,
+                    Slider::Strokes { name } => with_strokes(d, name)?,
+                    Slider::Light { name } => with_light(d, name)?,
+                    _ => {}
+                }
                 match text(o, "phase")? {
                     "begin" => slider.editing_changed(d, true),
                     "end" => slider.editing_changed(d, false),
@@ -334,18 +350,22 @@ impl Session {
             "levels" => {
                 let name = text(o, "layer")?;
                 let count = number(o, "count")?;
+                with_levels(d, name)?;
                 Slider::Levels { name: name.to_string() }.set(d, count);
                 d.settle();
                 none()
             }
             "resetLevels" => {
-                d.paint_reset_levels(text(o, "layer")?);
+                let name = text(o, "layer")?;
+                with_levels(d, name)?;
+                d.paint_reset_levels(name);
                 d.settle();
                 none()
             }
             "strokes" => {
                 let name = text(o, "layer")?;
                 let count = number(o, "count")?;
+                with_strokes(d, name)?;
                 d.paint_status = None;
                 Slider::Strokes { name: name.to_string() }.set(d, count);
                 d.settle();
@@ -448,7 +468,9 @@ impl Session {
             }
             "light" => {
                 let l = numbers(o, "direction", 3)?;
-                d.paint_light(Vec3::new(l[0], l[1], l[2]), text(o, "layer")?);
+                let name = text(o, "layer")?;
+                with_light(d, name)?;
+                d.paint_light(Vec3::new(l[0], l[1], l[2]), name);
                 d.settle();
                 none()
             }
@@ -563,10 +585,10 @@ impl Session {
                 let mut arrays = Vec::new();
                 let mut styles = Vec::new();
                 for (i, (style, paths)) in strokes.layers.iter().enumerate() {
-                    let points: Vec<f64> = paths.vertices.iter().flat_map(|p| [p.x(), p.y()]).collect();
-                    let offsets: Vec<u32> = paths.offsets.iter().map(|&o| o as u32).collect();
-                    arrays.push((format!("stroke.{i}.points"), Array::F64(points)));
-                    arrays.push((format!("stroke.{i}.offsets"), Array::U32(offsets)));
+                    let points = paths.vertices.iter().flat_map(|p| [p.x(), p.y()]);
+                    let offsets = paths.offsets.iter().map(|&o| o as u32);
+                    arrays.push((format!("stroke.{i}.points"), Array::f64(points)));
+                    arrays.push((format!("stroke.{i}.offsets"), Array::u32(offsets)));
                     styles.push(json::object([
                         ("width", JsonValue::Double(style.width)),
                         ("color", json::string(&style.color)),
@@ -574,7 +596,7 @@ impl Session {
                 }
                 if o.get("svg").and_then(JsonValue::as_bool) == Some(true) {
                     let text = svg::render(&strokes, svg::FIGURE_WIDTH, svg::MARGIN, svg::DECIMALS);
-                    arrays.push(("svg".to_string(), Array::U8(text.into_bytes())));
+                    arrays.push(("svg".to_string(), Array::u8(text.into_bytes())));
                 }
                 let mut out = JsonObject::new();
                 out.insert("strokes".to_string(), JsonValue::Array(styles));
@@ -590,33 +612,31 @@ impl Session {
                     let h = &*b.surface.height;
                     out.insert("shape".to_string(), json::ints(&[h.height as i64, h.width as i64]));
                     out.insert("domain".to_string(), b.manifest.domain.json());
-                    arrays.push(("height".to_string(), Array::F32(h.values.clone())));
+                    arrays.push(("height".to_string(), Array::f32(h.values.iter().copied())));
                     if let Some(p) = &b.surface.phase {
-                        arrays.push(("phase".to_string(), Array::F32(p.values.clone())));
+                        arrays.push(("phase".to_string(), Array::f32(p.values.iter().copied())));
                     }
                 } else if let Some(s) = d.scene().and_then(|s| s.parametric()) {
                     out.insert("shape".to_string(), json::ints(&[s.v.samples as i64, s.u.samples as i64]));
-                    let p: Vec<f32> =
-                        s.positions.iter().flat_map(|v| [v.x() as f32, v.y() as f32, v.z() as f32]).collect();
-                    arrays.push(("positions".to_string(), Array::F32(p)));
+                    let p = s.positions.iter().flat_map(|v| [v.x() as f32, v.y() as f32, v.z() as f32]);
+                    arrays.push(("positions".to_string(), Array::f32(p)));
                 } else if let Some(solid) = d.scene().and_then(|s| s.solid()) {
                     let mesh = solid.mesh();
-                    let v: Vec<f32> =
-                        mesh.vertices.iter().flat_map(|v| [v.x() as f32, v.y() as f32, v.z() as f32]).collect();
-                    let t: Vec<u32> = mesh.triangles.iter().flat_map(|t| t.map(|k| k as u32)).collect();
-                    arrays.push(("vertices".to_string(), Array::F32(v)));
-                    arrays.push(("triangles".to_string(), Array::U32(t)));
+                    let v = mesh.vertices.iter().flat_map(|v| [v.x() as f32, v.y() as f32, v.z() as f32]);
+                    let t = mesh.triangles.iter().flat_map(|t| t.map(|k| k as u32));
+                    arrays.push(("vertices".to_string(), Array::f32(v)));
+                    arrays.push(("triangles".to_string(), Array::u32(t)));
                 }
                 Ok((out, arrays))
             }
             "save" => {
                 let name = text(o, "name")?;
-                let files = d.save_bundle(name).ok_or("nothing to save")?;
+                let files = d.save_bundle(name).map_err(refuse)?;
                 let mut arrays = Vec::new();
                 let mut names = Vec::new();
                 for (path, bytes) in files {
                     names.push(json::string(&path));
-                    arrays.push((format!("file:{path}"), Array::U8(bytes)));
+                    arrays.push((format!("file:{path}"), Array::u8(bytes)));
                 }
                 let mut out = JsonObject::new();
                 out.insert("files".to_string(), JsonValue::Array(names));
@@ -638,17 +658,17 @@ impl Session {
                 });
                 let mut arrays = Vec::new();
                 let mut outputs = Vec::new();
-                for output in &run.outputs {
+                for output in run.outputs {
                     match output {
                         Output::Bundle { path, files } => {
+                            outputs.push(json::string(&path));
                             for (rel, bytes) in files {
-                                arrays.push((format!("{path}/{rel}"), Array::U8(bytes.clone())));
+                                arrays.push((format!("{path}/{rel}"), Array::u8(bytes)));
                             }
-                            outputs.push(json::string(path));
                         }
                         Output::File { path, bytes } => {
-                            arrays.push((path.clone(), Array::U8(bytes.clone())));
-                            outputs.push(json::string(path));
+                            outputs.push(json::string(&path));
+                            arrays.push((path, Array::u8(bytes)));
                         }
                     }
                 }
@@ -838,6 +858,41 @@ fn slider(o: &JsonObject) -> Result<Slider, Refusal> {
         }
         other => return Err(refuse(format!("no slider '{other}'"))),
     })
+}
+
+// A layer a control names must be one that has the control. Swift's
+// `paintLevels`, `paintStrokes`, `paintLight` and `paintResetLevels` pass
+// over a name they do not find, saying nothing; its headless run refuses
+// one first ("no layer ... with levels to drag"). The protocol refuses it
+// as the headless run does, touching nothing, so a client does not journal
+// an edit that did nothing (crates/FINDINGS.md, second review of PR #70).
+
+/// `name` is a layer with levels to set (`--levels`'s test).
+fn with_levels(d: &Document, name: &str) -> Result<(), Refusal> {
+    let index = d.layer_specs().iter().position(|s| s.name == name);
+    match index.and_then(|i| d.levels_for_layer(i)) {
+        Some(_) => Ok(()),
+        None => Err(refuse(format!("no layer '{name}' with levels to set"))),
+    }
+}
+
+/// `name` is a hatching with strokes to set (`--strokes`'s test).
+fn with_strokes(d: &Document, name: &str) -> Result<(), Refusal> {
+    let index = d.edited().and_then(|e| e.layers.iter().position(|l| l.name == name));
+    match index.and_then(|i| d.hatch_count(i)) {
+        Some(_) => Ok(()),
+        None => Err(refuse(format!("no hatching '{name}' with strokes to set"))),
+    }
+}
+
+/// `name` is a layer read under a light (`--light`'s test).
+fn with_light(d: &Document, name: &str) -> Result<(), Refusal> {
+    let lit = d.edited().and_then(|e| e.layers.iter().find(|l| l.name == name).map(|l| l.source.light().is_some()));
+    if lit == Some(true) {
+        Ok(())
+    } else {
+        Err(refuse(format!("no layer '{name}' read under a light: an isophote or a half-Lambert tone")))
+    }
 }
 
 /// The open bundle's camera presets.

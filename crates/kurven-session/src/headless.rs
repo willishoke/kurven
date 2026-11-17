@@ -225,7 +225,7 @@ impl Headless<'_> {
         }
         .unwrap_or_default();
         self.out(format!("Kurven: {status}"));
-        if let Some(files) = files {
+        if let Ok(files) = files {
             self.run.outputs.push(Output::Bundle { path: path.to_string(), files });
         }
         if !status.starts_with("saved") {

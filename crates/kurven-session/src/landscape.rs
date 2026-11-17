@@ -513,8 +513,10 @@ impl Document {
     /// parametric surface or a polyhedron, each keeping its layers as they
     /// are drawn, at the levels their sliders set (`drawn_layers`). Swift's
     /// `saveBundle(to:)`, which writes them to a URL; `name` is the bundle's,
-    /// for its status and a refusal.
-    pub fn save_bundle(&mut self, name: &str) -> Option<BundleFiles> {
+    /// for its status and a refusal. Refused with the reason: nothing open,
+    /// or a bundle that cannot be written (dumped layers), which the status
+    /// says too, as Swift's does.
+    pub fn save_bundle(&mut self, name: &str) -> Result<BundleFiles, String> {
         let result = match &self.state {
             State::Ready(Opened::Landscape(bundle)) => {
                 let mut manifest = bundle.manifest.clone();
@@ -525,7 +527,8 @@ impl Document {
             }
             State::Ready(Opened::Surface(bundle)) => Ok(bundle.files(Some(&self.drawn_layers()))),
             State::Ready(Opened::Polyhedron(bundle)) => Ok(bundle.files()),
-            State::Empty | State::Failed(..) => return None,
+            State::Empty => return Err("nothing is open to save".to_string()),
+            State::Failed(_, why) => return Err(format!("nothing to save: the bundle did not open ({why})")),
         };
         let short =
             std::path::Path::new(name).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -540,7 +543,7 @@ impl Document {
         } else {
             self.surface_status = Some(status);
         }
-        result.ok()
+        result
     }
 }
 

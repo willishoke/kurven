@@ -81,3 +81,29 @@ fn a_run_of_gestures_is_one_camera_request_to_the_bit() {
     let (fa, fb) = (a.call(r#"{"kind":"frame","draft":false}"#), b.call(r#"{"kind":"frame","draft":false}"#));
     assert_eq!(fa, fb, "the same frame, array for array");
 }
+
+#[test]
+fn a_control_naming_a_layer_without_it_is_refused_touching_nothing() {
+    let mut s = Session::new();
+    open(&mut s, "gamma");
+    for request in [
+        r#"{"kind":"levels","layer":"nope","count":5}"#,
+        r#"{"kind":"resetLevels","layer":"nope"}"#,
+        r#"{"kind":"strokes","layer":"mag_major","count":5}"#,
+        r#"{"kind":"light","layer":"wall_hatch","direction":[1,0,1]}"#,
+        r#"{"kind":"drag","control":{"slider":"levels","name":"wall_hatch"},"phase":"begin"}"#,
+    ] {
+        let r = reply(&mut s, request);
+        assert_eq!(r.get("ok"), Some(&JsonValue::Bool(false)), "{request}");
+        assert_eq!(r.get("touched"), Some(&JsonValue::Bool(false)), "{request}");
+    }
+    let r = reply(&mut s, r#"{"kind":"levels","layer":"mag_major","count":5}"#);
+    assert_eq!(r.get("ok"), Some(&JsonValue::Bool(true)));
+}
+
+#[test]
+fn a_save_that_cannot_be_made_says_why() {
+    let mut s = Session::new();
+    let r = reply(&mut s, r#"{"kind":"save","name":"x.kurven"}"#);
+    assert_eq!(r.get("error").and_then(JsonValue::as_str), Some("nothing is open to save"));
+}

@@ -29,10 +29,13 @@ function lend(bytes) {
   return [ptr, bytes.length];
 }
 
+// The file's bytes are lent and then owned by the module (kv_stage), so
+// only the name and the path are freed here.
 function stage(bundle, path, data) {
-  const parts = [encoder.encode(bundle), encoder.encode(path), data].map(lend);
-  const ok = wasm.kv_stage(...parts.flat());
-  for (const [ptr, len] of parts) wasm.kv_free(ptr, len);
+  const names = [encoder.encode(bundle), encoder.encode(path)].map(lend);
+  const [ptr, len] = lend(data);
+  const ok = wasm.kv_stage(...names.flat(), ptr, len);
+  for (const [p, l] of names) wasm.kv_free(p, l);
   if (!ok) throw new Error(`could not stage ${bundle}/${path}`);
 }
 

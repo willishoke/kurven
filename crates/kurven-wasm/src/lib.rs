@@ -43,13 +43,23 @@ fn with_session<T>(body: impl FnOnce(&mut Session, &mut Kept) -> T) -> T {
     body(session, reply)
 }
 
-/// `len` bytes the host may write into, for `kv_stage` and `kv_call`.
+/// `len` bytes the host may write into, for `kv_stage` and `kv_call`: a
+/// boxed slice, whose allocation is exactly its length, so `kv_free` and
+/// `kv_stage` can take it back by pointer and length alone.
 #[unsafe(no_mangle)]
 pub extern "C" fn kv_alloc(len: usize) -> *mut u8 {
-    let mut bytes = vec![0u8; len.max(1)];
-    let ptr = bytes.as_mut_ptr();
-    std::mem::forget(bytes);
-    ptr
+    Box::into_raw(vec![0u8; len.max(1)].into_boxed_slice()) as *mut u8
+}
+
+/// The allocation `kv_alloc` lent at `ptr` for `len` bytes, taken back.
+///
+/// # Safety
+/// `ptr` and `len` must be a pair `kv_alloc` returned, taken back once.
+unsafe fn taken(ptr: *mut u8, len: usize) -> Vec<u8> {
+    let boxed = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len.max(1))) };
+    let mut bytes = boxed.into_vec();
+    bytes.truncate(len);
+    bytes
 }
 
 /// Give back what `kv_alloc` lent.
@@ -58,7 +68,7 @@ pub extern "C" fn kv_alloc(len: usize) -> *mut u8 {
 /// `ptr` and `len` must be a pair `kv_alloc` returned, freed once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kv_free(ptr: *mut u8, len: usize) {
-    drop(unsafe { Vec::from_raw_parts(ptr, len.max(1), len.max(1)) });
+    drop(unsafe { taken(ptr, len) });
 }
 
 /// The bytes at `ptr`, which the host wrote into memory `kv_alloc` lent.
@@ -67,25 +77,30 @@ unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
 }
 
 /// Stage a file of the bundle named `bundle`, at `path` in it (`Session::stage`).
+/// The file's bytes are taken as they are, not copied: `data` must be what
+/// `kv_alloc` lent, and the session owns it after, so the host does not free
+/// it (it frees the name and the path as usual), and a bundle is not held
+/// twice while it is staged.
 ///
 /// # Safety
-/// Each pointer and length must lie in memory the host wrote.
+/// Each pointer and length must lie in memory the host wrote; `data` and
+/// `data_len` a pair `kv_alloc` returned, not freed after.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kv_stage(
     bundle: *const u8,
     bundle_len: usize,
     path: *const u8,
     path_len: usize,
-    data: *const u8,
+    data: *mut u8,
     data_len: usize,
 ) -> u32 {
+    let data = unsafe { taken(data, data_len) };
     let (Ok(bundle), Ok(path)) = (
         std::str::from_utf8(unsafe { bytes(bundle, bundle_len) }),
         std::str::from_utf8(unsafe { bytes(path, path_len) }),
     ) else {
         return 0;
     };
-    let data = unsafe { bytes(data, data_len) }.to_vec();
     with_session(|session, _| session.stage(bundle, path, data));
     1
 }
@@ -107,7 +122,7 @@ pub unsafe extern "C" fn kv_call(ptr: *const u8, len: usize) -> usize {
     with_session(|session, kept| {
         let Reply { json, arrays } = session.call(&request);
         let n = json.len();
-        *kept = Some((json.into_bytes(), arrays.iter().map(|(_, a)| a.bytes()).collect()));
+        *kept = Some((json.into_bytes(), arrays.into_iter().map(|(_, a)| a.into_bytes()).collect()));
         n
     })
 }
