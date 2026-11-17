@@ -24,6 +24,7 @@ pub mod contour_memo;
 pub mod convex_partition;
 pub mod cover;
 pub mod depth;
+pub mod depth_pass;
 pub mod face;
 pub mod face_contour;
 pub mod fixtures;

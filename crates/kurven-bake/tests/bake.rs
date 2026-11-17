@@ -48,16 +48,31 @@ fn a_tiled_bake_draws_what_a_single_pass_bake_draws() {
     assert_eq!(finer.strokes, whole.strokes, "the resolution changes no stroke");
 }
 
-/// A landscape's outline is traced from the depth pass, which the port
-/// renders with the GPU preview (Phase 7); a parametric surface's comes
-/// from its coordinate image's depth.
+/// A landscape's outline is traced from its depth pass, rendered on the
+/// CPU (`depth_pass::render_depth`): a closed curve round the drawing, last
+/// and black at the width asked, within the frame, and the same however the
+/// pass is split, since it is rendered whole.
 #[test]
-fn a_landscapes_outline_is_refused_until_there_is_a_depth_pass() {
+fn a_landscapes_outline_is_traced_from_its_depth_pass() {
     let (_, scene) = uniform_mesh();
-    match bake(&scene, &BakeOptions { outline: Some(0.5), ..BakeOptions::new(64) }) {
-        Err(BakeError::Port(refusal)) => assert_eq!(refusal.phase, 7),
-        other => panic!("an outline is a typed refusal: {other:?}"),
+    let plain = bake(&scene, &BakeOptions::new(64)).unwrap();
+    let outlined = bake(&scene, &BakeOptions { outline: Some(0.5), ..BakeOptions::new(64) }).unwrap();
+    assert_eq!(outlined.strokes.layers.len(), plain.strokes.layers.len() + 1);
+    assert_eq!(&outlined.strokes.layers[..plain.strokes.layers.len()], &plain.strokes.layers[..]);
+    let (style, outline) = outlined.strokes.layers.last().unwrap();
+    assert_eq!((style.color.as_str(), style.width), ("#000000", 0.5));
+    assert!(outline.count() >= 1 && outline.vertices.len() > 8, "{} paths", outline.count());
+    let frame = outlined.frame.expect("the depth pass's frame");
+    let depth = outlined.depth.as_ref().expect("the depth pass");
+    assert!(depth.values.iter().any(|&v| v > depth.empty), "the pass drew the landscape");
+    let (lo0, hi0) = (frame.axis0.lo.min(frame.axis0.hi), frame.axis0.lo.max(frame.axis0.hi));
+    let (lo1, hi1) = (frame.axis1.lo.min(frame.axis1.hi), frame.axis1.lo.max(frame.axis1.hi));
+    for v in &outline.vertices {
+        assert!(v.x() >= lo0 && v.x() <= hi0 && v.y() >= lo1 && v.y() <= hi1, "{v:?} inside the frame");
     }
+    let split = bake(&scene, &BakeOptions { outline: Some(0.5), tiles: Some(3), ..BakeOptions::new(64) }).unwrap();
+    assert_eq!(split.strokes, outlined.strokes);
+    assert_eq!(split.tiles, 1);
 }
 
 /// Every layer the scene draws, in order, each named by its spec and styled

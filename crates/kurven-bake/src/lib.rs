@@ -6,16 +6,18 @@
 //! `depth` output and the outline; no stroke of a landscape or a polyhedron
 //! reads it, since every layer arrives tested by its face and the scene's
 //! occlusion test (`Scene::visible_layers`). So for those the port bakes the
-//! strokes and renders no buffer -- there is no PNG (the page rasterizes) --
-//! and an outline, which is traced from the buffer, is a typed refusal. A
-//! parametric surface's coordinate image and its depth are rendered by the
-//! CPU rasterizer (`SurfaceImage::rasterize`), which a surface with no exact
-//! test reads, and its outline is traced from that depth.
+//! strokes and renders a buffer only for the outline, which is traced from
+//! it, on the CPU (`depth_pass::render_depth`) -- there is no PNG (the page
+//! rasterizes). A parametric surface's coordinate image and its depth are
+//! rendered by the CPU rasterizer (`SurfaceImage::rasterize`), which a
+//! surface with no exact test reads, and its outline is traced from that
+//! depth.
 
 use std::fmt;
 use std::sync::Arc;
 
-use kurven_core::depth::DepthFrame;
+use kurven_core::depth::{DepthFrame, DepthImage};
+use kurven_core::depth_pass;
 use kurven_core::hatching::FaceSelector;
 use kurven_core::hidden_line::HiddenLine;
 use kurven_core::manifest::{LayerSource, LayerSpec};
@@ -44,7 +46,7 @@ pub struct BakeOptions {
     /// Trace the outline of the drawn region and add it as a final stroke
     /// layer. Off by default: the plates are bounded by their own wall strokes, and
     /// an outline on top of that is a second edge. Traced from the depth
-    /// buffer, so refused by the port until it has one.
+    /// buffer, which the port renders on the CPU for it.
     pub outline: Option<f64>,
 }
 
@@ -109,9 +111,14 @@ pub struct Bake {
     /// the depth buffer.
     pub specs: Vec<LayerSpec>,
     /// The frame a parametric scene's depth and coordinates are rendered on,
-    /// `DepthFrame::covering` its view bounds at the resolution; None for a
-    /// landscape or a solid, whose depth pass the port does not render.
+    /// `DepthFrame::covering` its view bounds at the resolution, and a
+    /// landscape's or a solid's where its depth pass is rendered for the
+    /// outline; None where nothing reads a depth pass.
     pub frame: Option<DepthFrame>,
+    /// A landscape's or a solid's depth pass, rendered on the CPU
+    /// (`depth_pass::render_depth`) when the outline is asked for, which is
+    /// traced from it: the only thing a landscape's bake reads off it.
+    pub depth: Option<Arc<DepthImage>>,
     /// A parametric scene's front-most surface coordinates and depth, in one
     /// pass over the whole frame, where something reads
     /// them: a surface with no tubular neighbourhood, a clipped layer with
@@ -120,8 +127,8 @@ pub struct Bake {
     /// it.
     pub surface: Option<Arc<SurfaceImage>>,
     /// How many passes the depth took, per axis: Swift's tile count for a
-    /// landscape or a solid (whose depth the port does not render), one for
-    /// a parametric scene, which the CPU rasterizer renders whole.
+    /// landscape or a solid whose depth the port does not render, one where
+    /// the CPU rasterizer renders it, whole.
     pub tiles: i64,
 }
 
@@ -137,8 +144,7 @@ pub struct Bake {
 /// for, reads none, and the port renders none, about a hundred megabytes at
 /// a 3000-pixel bake, for the same strokes. For a landscape or a solid it
 /// takes the layers alone, the same strokes at any resolution and split,
-/// and refuses an outline, which is traced from a depth pass it does not
-/// render.
+/// and renders its depth pass on the CPU, whole, only for an outline.
 pub fn bake(scene: &Scene, options: &BakeOptions) -> Result<Bake, BakeError> {
     bake_rendering(scene, options, false)
 }
@@ -155,6 +161,7 @@ fn bake_rendering(scene: &Scene, options: &BakeOptions, always: bool) -> Result<
         return Err(BakeError::Perspective);
     }
     let mut n = options.tile_count(options.resolution);
+    let mut depth: Option<Arc<DepthImage>> = None;
     let depth_tolerance = options.depth_tolerance.unwrap_or(scene.depth_tolerance);
     let (frame, image) = match scene.geometry() {
         SceneGeometry::Parametric(surface) => {
@@ -190,16 +197,18 @@ fn bake_rendering(scene: &Scene, options: &BakeOptions, always: bool) -> Result<
                 return Err(BakeError::EmptyScene);
             }
             if options.outline.is_some() {
-                // PORT: phase 7 -- render the depth pass of a landscape or a solid
-                // (`MetalRenderer.renderDepth`; the WebGPU depth pass) and add
-                // `DepthImage::outline` of it as a last layer.
-                return Err(BakeError::Port(PortRefusal {
-                    phase: 7,
-                    what: "the outline of a landscape or a solid, which is traced from the depth pass the port does \
-                           not render",
-                }));
+                // The outline is traced from the depth pass
+                // (`MetalRenderer.renderDepth`), rendered here on the CPU, in
+                // one pass, which Swift's stitched tiles stand for, as a
+                // parametric surface's image is.
+                let Some(bounds) = scene.view_bounds()? else { return Err(BakeError::EmptyScene) };
+                let frame = DepthFrame::covering(&bounds, options.resolution);
+                n = 1;
+                depth = Some(Arc::new(depth_pass::render_depth(scene, &scene.camera.view, frame)));
+                (Some(frame), None)
+            } else {
+                (None, None)
             }
-            (None, None)
         }
     };
     // Every layer comes tested by its face and the scene's occlusion
@@ -209,13 +218,18 @@ fn bake_rendering(scene: &Scene, options: &BakeOptions, always: bool) -> Result<
     let visible = scene.visible_layers(Some(depth_tolerance), image.as_ref())?;
     let mut layers: Vec<(Style, PolylineSet<PageSpace>)> =
         visible.iter().map(|(layer, seen)| (Style::of(&layer.spec), HiddenLine::pass(seen))).collect();
-    if let (Some(width), Some(image)) = (options.outline, &image) {
-        layers.push((Style { color: "#000000".to_string(), width }, image.depth.outline()));
+    if let Some(width) = options.outline {
+        if let Some(image) = &image {
+            layers.push((Style { color: "#000000".to_string(), width }, image.depth.outline()));
+        } else if let Some(depth) = &depth {
+            layers.push((Style { color: "#000000".to_string(), width }, depth.outline()));
+        }
     }
     Ok(Bake {
         strokes: Strokes { layers },
         specs: visible.into_iter().map(|(layer, _)| layer.spec).collect(),
         frame,
+        depth,
         surface: image,
         tiles: n,
     })
