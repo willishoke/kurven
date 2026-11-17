@@ -107,3 +107,83 @@ fn a_save_that_cannot_be_made_says_why() {
     let r = reply(&mut s, r#"{"kind":"save","name":"x.kurven"}"#);
     assert_eq!(r.get("error").and_then(JsonValue::as_str), Some("nothing is open to save"));
 }
+
+#[test]
+fn an_expression_is_refused_where_it_went_wrong_touching_nothing() {
+    let mut s = Session::new();
+    reply(&mut s, r#"{"kind":"viewport","width":200,"height":150}"#);
+    reply(&mut s, r#"{"kind":"create","preset":"gamma"}"#);
+    let r = reply(&mut s, r#"{"kind":"expression","expression":"gamma(z, 2)"}"#);
+    assert_eq!(r.get("ok"), Some(&JsonValue::Bool(false)));
+    assert_eq!(r.get("touched"), Some(&JsonValue::Bool(false)));
+    let at = r.get("at").unwrap();
+    assert_eq!(at.get("position").and_then(JsonValue::as_i64), Some(0));
+    assert_eq!(at.get("length").and_then(JsonValue::as_i64), Some(11));
+    assert_eq!(at.get("message").and_then(JsonValue::as_str), Some("gamma takes 1 argument, not 2"));
+    // Counted in characters, as the language counts them: Γ is one.
+    let r = reply(&mut s, r#"{"kind":"expression","expression":"Γ(z) + )"}"#);
+    assert_eq!(r.get("at").unwrap().get("position").and_then(JsonValue::as_i64), Some(7));
+    // Empty input, at its start, as language.json freezes it.
+    let r = reply(&mut s, r#"{"kind":"expression","expression":""}"#);
+    assert_eq!(r.get("at").unwrap().get("position").and_then(JsonValue::as_i64), Some(0));
+}
+
+#[test]
+fn the_catalog_lists_its_presets_with_their_windows() {
+    let mut s = Session::new();
+    let r = reply(&mut s, r#"{"kind":"catalog"}"#);
+    let presets = r.get("presets").and_then(JsonValue::as_array).unwrap();
+    let names: Vec<&str> = presets.iter().filter_map(|p| p.get("name").and_then(JsonValue::as_str)).collect();
+    assert!(names.contains(&"gamma") && names.contains(&"cn"), "{names:?}");
+    assert!(presets.iter().all(|p| p.get("window").is_some() && p.get("label").is_some()));
+}
+
+/// The document's edited state, its camera and what the bake writes.
+fn snapshot(s: &mut Session) -> (JsonValue, JsonValue, Vec<u8>) {
+    let edited = reply(s, r#"{"kind":"edited"}"#).get("edited").cloned().unwrap();
+    let camera =
+        reply(s, r#"{"kind":"state"}"#).get("state").unwrap().get("camera").unwrap().get("exact").cloned().unwrap();
+    let bake = s.call(r#"{"kind":"bake","svg":true}"#);
+    let svg = bake.arrays.into_iter().find(|(n, _)| n == "svg").unwrap().1.into_bytes();
+    (edited, camera, svg)
+}
+
+#[test]
+fn a_restored_landscape_is_the_one_edited_and_bakes_the_same_bytes() {
+    let mut a = Session::new();
+    for r in [
+        r#"{"kind":"viewport","width":400,"height":300}"#,
+        r#"{"kind":"create","preset":"gamma"}"#,
+        r#"{"kind":"set","key":"res","value":140}"#,
+        r#"{"kind":"expression","expression":"gamma(z) + 1/z"}"#,
+        r#"{"kind":"set","key":"rMax","value":3.25}"#,
+        r#"{"kind":"truncation","truncation":{"kind":"uniform","height":3.5}}"#,
+        r#"{"kind":"levels","layer":"mag_major","count":5}"#,
+        r#"{"kind":"gesture","gesture":{"kind":"orbit","delta":[30,-12]}}"#,
+        r#"{"kind":"gesture","gesture":{"kind":"zoom","factor":1.3,"at":[120,80]}}"#,
+        r#"{"kind":"depthTolerance","value":0.03}"#,
+    ] {
+        let r = reply(&mut a, r);
+        assert_eq!(r.get("ok"), Some(&JsonValue::Bool(true)), "{r:?}");
+    }
+    let (edited, camera, svg) = snapshot(&mut a);
+    assert_eq!(edited.get("levelCounts").unwrap().get("mag_major").and_then(JsonValue::as_i64), Some(5));
+
+    // Another viewport: the camera, set outright, carries the framing.
+    let mut b = Session::new();
+    reply(&mut b, r#"{"kind":"viewport","width":640,"height":640}"#);
+    let mut restore = edited.as_object().unwrap().clone();
+    restore.insert("kind".to_string(), json::string("restore"));
+    let r = reply(&mut b, &JsonValue::Object(restore).canonical());
+    assert_eq!(r.get("ok"), Some(&JsonValue::Bool(true)), "{r:?}");
+    let state = r.get("state").unwrap();
+    assert_eq!(state.get("undo").unwrap().get("can"), Some(&JsonValue::Bool(false)));
+    let mut cam = camera.as_object().unwrap().clone();
+    cam.insert("kind".to_string(), json::string("camera"));
+    reply(&mut b, &JsonValue::Object(cam).canonical());
+    reply(&mut b, r#"{"kind":"depthTolerance","value":0.03}"#);
+    let (edited_b, camera_b, svg_b) = snapshot(&mut b);
+    assert_eq!(edited_b, edited);
+    assert_eq!(camera_b, camera);
+    assert!(svg == svg_b, "the restored landscape bakes other bytes");
+}

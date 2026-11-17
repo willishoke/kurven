@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use kurven_core::bundle::BundleFiles;
 use kurven_core::depth::DepthFrame;
 use kurven_core::json::{self, JsonObject, JsonValue};
-use kurven_core::manifest::{DomainAxis, LayerSource, Truncation};
+use kurven_core::manifest::{DomainAxis, LayerSource, LayerSpec, Truncation};
 use kurven_core::navigation::Framing;
 use kurven_core::navigation::{Gesture, Viewport};
 use kurven_core::polyline::Layer;
@@ -30,12 +30,13 @@ use kurven_core::simd::{Vec2, Vec3};
 use kurven_core::spaces::{Angle, P2, P3};
 use kurven_core::surface_request::{Field, surface_key};
 use kurven_core::svg;
-use kurven_landscape::catalog::Catalog;
+use kurven_landscape::catalog::{Catalog, LandscapeRequest};
 use kurven_surfaces::drawing::SurfacePreset;
 
 use crate::document::{Document, State};
+use crate::edits::Edited;
 use crate::headless::{self, Output};
-use crate::landscape::applying_overrides;
+use crate::landscape::{Styling, applying_overrides};
 use crate::preview::{Pipeline, Preview, Resources};
 use crate::sliders::Slider;
 
@@ -107,16 +108,37 @@ pub struct Session {
 struct Refusal {
     message: String,
     touched: bool,
+    /// More the reply says beside the message: where an expression went
+    /// wrong (`at`).
+    detail: JsonObject,
 }
 
 /// A refusal before the document was touched.
 fn refuse(message: impl Into<String>) -> Refusal {
-    Refusal { message: message.into(), touched: false }
+    Refusal { message: message.into(), touched: false, detail: JsonObject::new() }
 }
 
 /// A refusal the document made, having been touched.
 fn refused_after(message: impl Into<String>) -> Refusal {
-    Refusal { message: message.into(), touched: true }
+    Refusal { message: message.into(), touched: true, detail: JsonObject::new() }
+}
+
+/// An expression refused where it went wrong: the message, and the
+/// character it went wrong at and how many after it are at fault, counted as
+/// the language counts them (Unicode scalar values, a CR LF pair one), so
+/// the formula field can mark them (`at`; a position of null for empty
+/// input). Touches nothing.
+fn positioned(error: &kurven_math::expression::ExpressionError) -> Refusal {
+    let mut r = refuse(error.to_string());
+    r.detail.insert(
+        "at".to_string(),
+        json::object([
+            ("message", json::string(&error.message)),
+            ("position", error.position.map_or(JsonValue::Null, |p| JsonValue::Int(p as i64))),
+            ("length", JsonValue::Int(error.length as i64)),
+        ]),
+    );
+    r
 }
 
 impl From<String> for Refusal {
@@ -231,8 +253,8 @@ impl Session {
                 o.insert("touched".to_string(), JsonValue::Bool(true));
                 (o, arrays)
             }
-            Err(Refusal { message, touched }) => {
-                let mut o = JsonObject::new();
+            Err(Refusal { message, touched, detail }) => {
+                let mut o = detail;
                 o.insert("ok".to_string(), JsonValue::Bool(false));
                 o.insert("touched".to_string(), JsonValue::Bool(touched));
                 o.insert("error".to_string(), JsonValue::String(message));
@@ -260,6 +282,66 @@ impl Session {
         let none = || Ok((JsonObject::new(), Vec::new()));
         match kind {
             "state" => none(),
+            "catalog" => {
+                // The catalog's presets, for the formula's dropdown: each
+                // its name, label, notes, expression, the rectangle worth
+                // looking at and how far the window's sliders reach.
+                let catalog = Catalog::native();
+                let mut out = JsonObject::new();
+                out.insert("presets".to_string(), JsonValue::Array(catalog.presets.iter().map(|p| p.json()).collect()));
+                out.insert("defaultResolution".to_string(), JsonValue::Int(catalog.default_resolution));
+                Ok((out, Vec::new()))
+            }
+            "edited" => {
+                // What is edited now, whole (`Document::edited`): a
+                // landscape's request, the styling it is drawn with and the
+                // level counts. What the page's URL holds, and `restore`
+                // takes back.
+                let mut out = JsonObject::new();
+                out.insert("edited".to_string(), d.edited().map_or(JsonValue::Null, |e| edited_json(&e)));
+                Ok((out, Vec::new()))
+            }
+            "restore" => {
+                // A landscape as a link names it: `edited`'s fields.
+                let request = o.get("landscape").ok_or("wants a 'landscape'")?;
+                let request = LandscapeRequest::from_json(request).map_err(|e| refuse(e.to_string()))?;
+                kurven_math::expression::Expression::compile(&request.expression).map_err(|e| positioned(&e))?;
+                let layers = o
+                    .get("layers")
+                    .and_then(JsonValue::as_array)
+                    .ok_or("wants 'layers'")?
+                    .iter()
+                    .map(LayerSpec::from_json)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| refuse(e.to_string()))?;
+                let truncation = Truncation::from_json(o.get("truncation").ok_or("wants a 'truncation'")?)
+                    .map_err(|e| refuse(e.to_string()))?;
+                let mut counts = BTreeMap::new();
+                if let Some(c) = o.get("levelCounts") {
+                    let c = c.as_object().ok_or("'levelCounts' wants an object")?;
+                    for (name, n) in c {
+                        let n =
+                            n.as_i64().ok_or_else(|| refuse(format!("the level count of {name} is a whole number")))?;
+                        counts.insert(name.clone(), n);
+                    }
+                }
+                d.restore_landscape(request, Styling { truncation, layers }, counts);
+                d.settle();
+                if let State::Failed(_, why) = d.state() {
+                    return Err(refused_after(why.clone()));
+                }
+                none()
+            }
+            "depthTolerance" => {
+                // The Visibility section's field (Inspector.swift): how far
+                // behind a surface a point may lie and still be drawn.
+                let value = number(o, "value")?;
+                if !(value.is_finite() && value >= 0.0) {
+                    return Err(refuse(format!("a depth tolerance is a number at least 0, not {value}")));
+                }
+                d.depth_tolerance = value;
+                none()
+            }
             "open" => {
                 let name = text(o, "name")?;
                 let Session { document: d, staged, .. } = self;
@@ -289,7 +371,7 @@ impl Session {
             "expression" => {
                 // The formula field: a new expression, the window kept.
                 let expression = text(o, "expression")?.to_string();
-                kurven_math::expression::Expression::compile(&expression).map_err(|e| refuse(e.to_string()))?;
+                kurven_math::expression::Expression::compile(&expression).map_err(|e| positioned(&e))?;
                 if d.landscape_request().is_none() {
                     return Err("an expression is a landscape's".into());
                 }
@@ -986,6 +1068,19 @@ fn presets(d: &Document) -> Vec<kurven_core::manifest::CameraPreset> {
         return b.manifest.presets.clone();
     }
     Vec::new()
+}
+
+/// What is edited, as `edited` sends it and `restore` reads it.
+fn edited_json(e: &Edited) -> JsonValue {
+    json::object([
+        ("landscape", e.landscape.as_ref().map_or(JsonValue::Null, LandscapeRequest::json)),
+        ("layers", JsonValue::Array(e.layers.iter().map(LayerSpec::json).collect())),
+        ("truncation", e.truncation.as_ref().map_or(JsonValue::Null, Truncation::json)),
+        (
+            "levelCounts",
+            JsonValue::Object(e.level_counts.iter().map(|(k, v)| (k.clone(), JsonValue::Int(*v))).collect()),
+        ),
+    ])
 }
 
 /// A pixel grid as the page reads it: `DepthFrame::index`'s terms.
