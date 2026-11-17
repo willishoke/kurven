@@ -28,8 +28,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::{
-    MeshIndex, build, densely_hidden, drawn_triangles, exactly_hidden, first_hit, par_map, per_unit,
-    random_heightfield, stress_cameras, test_camera,
+    MeshIndex, alone, build, densely_hidden, drawn_triangles, exactly_hidden, first_hit, par_map, per_unit,
+    random_heightfield, sharing, stress_cameras, test_camera,
 };
 use kurven_core::grid::Grid2D;
 use kurven_core::hatching::FaceKind;
@@ -63,42 +63,41 @@ fn rgamma() -> kurven_core::bundle::KurvenBundle {
 /// nearer graph and not the drawing.
 #[test]
 fn a_heightfield_bake_is_the_same_drawing_at_every_depth_resolution() {
-    // The steep case shares nothing with rgamma's: it is built and drawn on
-    // a thread of its own while rgamma's two drawings are made and checked,
-    // and checked after them.
-    std::thread::scope(|scope| {
-        let steep_case = scope.spawn(steep_drawings);
-        let bundle = rgamma();
-        let scene = Scene::from_bundle(&bundle, &bundle.manifest.presets[0]);
-        let start = Instant::now();
-        let reference = scene.visible_layers(None, None).unwrap();
-        let again = scene.visible_layers(None, None).unwrap();
-        let elapsed = start.elapsed();
-        let paths: usize = reference.iter().map(|(_, p)| p.count()).sum();
-        let length: f64 = reference.iter().map(|(_, p)| p.total_length()).sum();
-        eprintln!("rgamma: {paths} paths, {length:.1} units, {elapsed:?} for two drawings");
-        assert!(paths > 200 && length > 100.0, "the drawing draws: {paths} paths, {length:.1} units of curves");
-        let differing: Vec<&str> = reference
-            .iter()
-            .zip(&again)
-            .filter(|((_, a), (_, b))| a != b)
-            .map(|((l, _), _)| l.spec.name.as_str())
-            .collect();
-        assert!(
-            reference.len() == again.len() && differing.is_empty(),
-            "every layer is what it was, vertex for vertex; differs: {differing:?}"
-        );
-        assert!(elapsed < Duration::from_secs(60), "two drawings ran in reasonable time: {elapsed:?}");
+    // rgamma's two drawings are timed, alone: no other test of the file
+    // runs meanwhile.
+    let timed = alone();
+    let bundle = rgamma();
+    let scene = Scene::from_bundle(&bundle, &bundle.manifest.presets[0]);
+    let start = Instant::now();
+    let reference = scene.visible_layers(None, None).unwrap();
+    let again = scene.visible_layers(None, None).unwrap();
+    let elapsed = start.elapsed();
+    drop(timed);
+    let _beside = sharing();
+    let paths: usize = reference.iter().map(|(_, p)| p.count()).sum();
+    let length: f64 = reference.iter().map(|(_, p)| p.total_length()).sum();
+    eprintln!("rgamma: {paths} paths, {length:.1} units, {elapsed:?} for two drawings");
+    assert!(paths > 200 && length > 100.0, "the drawing draws: {paths} paths, {length:.1} units of curves");
+    let differing: Vec<&str> = reference
+        .iter()
+        .zip(&again)
+        .filter(|((_, a), (_, b))| a != b)
+        .map(|((l, _), _)| l.spec.name.as_str())
+        .collect();
+    assert!(
+        reference.len() == again.len() && differing.is_empty(),
+        "every layer is what it was, vertex for vertex; differs: {differing:?}"
+    );
+    assert!(elapsed < Duration::from_secs(60), "two drawings ran in reasonable time: {elapsed:?}");
 
-        let (same, kept, facing_only, buried, behind) = steep_case.join().unwrap();
-        eprintln!("steep: {kept} of {facing_only} units kept; {behind} behind, {buried} buried");
-        assert!(same, "the steep drawing too is the same strokes every time");
-        assert!(
-            kept > 0.5 * facing_only,
-            "of the facing contour curves, the solid hides what lies behind a nearer graph: {kept:.1} of \
-             {facing_only:.1} units kept; {behind} hidden vertices above their own triangle, {buried} under it"
-        );
-    });
+    let (same, kept, facing_only, buried, behind) = steep_drawings();
+    eprintln!("steep: {kept} of {facing_only} units kept; {behind} behind, {buried} buried");
+    assert!(same, "the steep drawing too is the same strokes every time");
+    assert!(
+        kept > 0.5 * facing_only,
+        "of the facing contour curves, the solid hides what lies behind a nearer graph: {kept:.1} of \
+         {facing_only:.1} units kept; {behind} hidden vertices above their own triangle, {buried} under it"
+    );
 }
 
 /// The steep case of `a_heightfield_bake_is_the_same_drawing_at_every_depth_resolution`:
@@ -114,9 +113,11 @@ fn steep_drawings() -> (bool, f64, f64, usize, usize) {
     steep.truncation = Some(Truncation::Uniform(14.0));
     let steep_bundle = build(&steep, true);
     let steep_scene = Scene::from_bundle(&steep_bundle, &steep_bundle.manifest.presets[0]);
-    // The two drawings, side by side.
-    let drawings = par_map(&[0, 1], |_| steep_scene.visible_layers(None, None).unwrap());
-    let same = drawings[0] == drawings[1];
+    // The same scene drawn twice, one after the other: the second drawing,
+    // made after the first, is its strokes.
+    let first = steep_scene.visible_layers(None, None).unwrap();
+    let second = steep_scene.visible_layers(None, None).unwrap();
+    let same = first == second;
     // What the solid hides of the facing contour curves, and why: curves
     // behind a nearer graph, or curves under its own drawn surface by more
     // than the depth tolerance. Reported, since neither number is a target;
@@ -166,6 +167,7 @@ fn steep_drawings() -> (bool, f64, f64, usize, usize) {
 /// left out and the traversal and cast are still held to agree there.
 #[test]
 fn on_a_real_drawing_the_traversal_is_the_brute_force_ray_cast() {
+    let _beside = sharing();
     let bundle = rgamma();
     let scene = Scene::from_bundle(&bundle, &bundle.manifest.presets[0]);
     // The grid test: the drawing without its function, whose solid is
@@ -292,6 +294,7 @@ fn on_a_real_drawing_the_traversal_is_the_brute_force_ray_cast() {
 /// "stress: scaling the drawing scales the drawing".
 #[test]
 fn scaling_the_drawing_scales_the_drawing() {
+    let _beside = sharing();
     // The whole drawing -- heights, domain, truncations, walls, curves and depth tolerance --
     // scaled by a power of two, so every float scales exactly; the tested
     // curves must be the tested curves scaled, vertex for vertex. A rule with a
@@ -416,6 +419,7 @@ fn scaling_the_drawing_scales_the_drawing() {
 /// up the line of sight".
 #[test]
 fn on_a_reflected_or_a_turned_tile_the_traversal_on_f_is_the_walk_up_the_line_of_sight() {
+    let _beside = sharing();
     // Two poles of a smooth bump on a grid of eight, so that the line of
     // sight dips under f between crossings, where only the search of
     // each interval, bracketed by the rate the gap changes, finds it.
@@ -513,6 +517,7 @@ fn on_a_reflected_or_a_turned_tile_the_traversal_on_f_is_the_walk_up_the_line_of
 /// "stress: on a 4x4 grid the traversal is the brute-force ray cast, exactly".
 #[test]
 fn on_a_4x4_grid_the_traversal_is_the_brute_force_ray_cast_exactly() {
+    let _beside = sharing();
     // Heights drawn at random on a grid of four cells a side: every
     // cell is a different slope, every crossing is a crease, and no
     // approximation has anywhere to hide. The traversal is held to a ray
@@ -625,6 +630,7 @@ fn on_a_4x4_grid_the_traversal_is_the_brute_force_ray_cast_exactly() {
 /// "stress: the facing read off the grid converges on the drawn triangles".
 #[test]
 fn the_facing_read_off_the_grid_converges_on_the_drawn_triangles() {
+    let _beside = sharing();
     // The one approximation left in the predicate, measured rather than
     // hidden. Curves on the surface are cut by the central-difference normal
     // -- the normal the fold curves are traced from, so a contour ends on
