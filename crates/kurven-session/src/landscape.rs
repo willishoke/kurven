@@ -93,7 +93,9 @@ impl Document {
     /// Swift's; the page's addition (crates/FINDINGS.md, Phase 8). The
     /// request is sent with the styling in it, as `landscape_edited` sends
     /// one, and kept as the controls say it, so the document is the one that
-    /// was linked: the same samples, the same styling, the same levels.
+    /// was linked: the same samples, the same styling, the same levels. It
+    /// settles before it returns (the level counts are set on what the
+    /// sampling adopted), so its caller need not.
     pub fn restore_landscape(
         &mut self,
         request: LandscapeRequest,

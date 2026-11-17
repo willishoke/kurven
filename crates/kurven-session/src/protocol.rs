@@ -38,7 +38,7 @@ use crate::edits::Edited;
 use crate::headless::{self, Output};
 use crate::landscape::{Styling, applying_overrides};
 use crate::preview::{Pipeline, Preview, Resources};
-use crate::sliders::Slider;
+use crate::sliders::{Slider, reach};
 
 /// A typed array a reply carries: its element type and its bytes,
 /// little-endian, as the page's typed array holds them. Encoded once, from
@@ -290,6 +290,7 @@ impl Session {
                 let mut out = JsonObject::new();
                 out.insert("presets".to_string(), JsonValue::Array(catalog.presets.iter().map(|p| p.json()).collect()));
                 out.insert("defaultResolution".to_string(), JsonValue::Int(catalog.default_resolution));
+                out.insert("controls".to_string(), reach::json());
                 Ok((out, Vec::new()))
             }
             "edited" => {
@@ -325,12 +326,27 @@ impl Session {
                         counts.insert(name.clone(), n);
                     }
                 }
-                linkable(&request, &layers, &counts)?;
-                d.restore_landscape(request, Styling { truncation, layers }, counts);
-                d.settle();
-                if let State::Failed(_, why) = d.state() {
-                    return Err(refused_after(why.clone()));
+                linkable(&request, &layers, &truncation, &counts)?;
+                // Made in a document of its own, which takes what an open
+                // keeps from this one, and put in this one's place only once
+                // it holds the landscape: a link that cannot be made leaves
+                // the open document, and what it can undo, as they were.
+                let mut next = Document {
+                    viewport: d.viewport,
+                    mode: d.mode,
+                    draft_resolution: d.draft_resolution,
+                    refine_contours: d.refine_contours,
+                    ..Document::default()
+                };
+                next.restore_landscape(request, Styling { truncation, layers }, counts);
+                if next.bundle().is_none() {
+                    let why = match next.state() {
+                        State::Failed(_, why) => why.clone(),
+                        _ => next.landscape_status.clone().unwrap_or_else(|| "nothing was sampled".to_string()),
+                    };
+                    return Err(refuse(format!("the link's landscape could not be made: {why}")));
                 }
+                *d = next;
                 none()
             }
             "depthTolerance" => {
@@ -609,19 +625,20 @@ impl Session {
                 if !(upp.is_finite() && upp > 0.0) {
                     return Err(refuse(format!("a camera's units per pixel are a positive number, not {upp}")));
                 }
-                if let Some(x) = o.get("distance").and_then(JsonValue::as_f64)
+                let distance = match o.get("distance") {
+                    None | Some(JsonValue::Null) => None,
+                    Some(_) => Some(number(o, "distance")?),
+                };
+                if let Some(x) = distance
                     && !(x.is_finite() && x > 0.0)
                 {
                     return Err(refuse(format!("a camera's distance is a positive number, not {x}")));
                 }
-                n.orbit.azimuth = Angle::from_radians(number(o, "azimuth")?);
-                n.orbit.elevation = Angle::from_radians(number(o, "elevation")?);
+                n.orbit.azimuth = Angle::from_radians(angles[0]);
+                n.orbit.elevation = Angle::from_radians(angles[1]);
                 n.orbit.target = P3::new(target[0], target[1], target[2]);
-                n.orbit.distance = match o.get("distance") {
-                    None | Some(JsonValue::Null) => None,
-                    Some(_) => Some(number(o, "distance")?),
-                };
-                n.framing = Framing::new(P2::new(center[0], center[1]), number(o, "unitsPerPixel")?);
+                n.orbit.distance = distance;
+                n.framing = Framing::new(P2::new(center[0], center[1]), upp);
                 d.navigator = Some(n);
                 none()
             }
@@ -1096,27 +1113,38 @@ fn gesture(g: &JsonObject) -> Result<Gesture, Refusal> {
     })
 }
 
-/// The Samples slider's reach (LandscapeSection.swift).
-const LINK_SAMPLES: std::ops::RangeInclusive<i64> = 120..=2000;
-/// A level slider's reach (PaintSection.swift).
-const LINK_LEVEL_COUNTS: std::ops::RangeInclusive<i64> = 2..=80;
-/// A strokes slider's top, across the window's longer side (PaintSection.swift).
-const LINK_STROKES: f64 = 400.0;
-/// The most levels a contour layer of a link may list. Not a slider's
+/// The most layers a link may carry: the catalog's landscapes have nine.
+const LINK_LAYERS: usize = 64;
+/// The most levels a contour layer of a link may list. Not a control's
 /// reach: a layer lists the levels its landscape chose (forty for a minor
 /// family of the catalog's), which a level slider's count resamples; this
 /// bounds the work a link can ask for.
 const LINK_LEVELS: usize = 1000;
+/// The most seeds a link's slope lines may list, or be spaced to along
+/// the window's longer side; a bound on work, as a strokes slider's top.
+const LINK_SEEDS: f64 = 400.0;
+/// The most bands a link's truncation may have; a bound on work (each is a
+/// riser and its hatching), far past the plates' four.
+const LINK_BANDS: usize = 64;
 
-/// Whether a link asks for no more than the window's controls can: a
-/// link is someone else's text, and the page samples what it says on
-/// open. The Samples, level and strokes sliders' reaches, a window with
-/// area, and a bound on each contour layer's levels. Refused, touching
-/// nothing, saying which.
-fn linkable(request: &LandscapeRequest, layers: &[LayerSpec], counts: &BTreeMap<String, i64>) -> Result<(), Refusal> {
-    if !LINK_SAMPLES.contains(&request.resolution) {
+/// Whether a link asks for no more than the window's controls can: a link
+/// is someone else's text, and the page samples what it says on open.
+/// Each kind of layer a landscape's link can carry is held to a reach
+/// (`sliders::reach`) or a stated bound on work; a kind with none -- a layer
+/// stored as arrays, a parametric surface's or a polyhedron's -- is refused,
+/// as are a window without area, a resolution or a level count past its
+/// slider, and a truncation that is not finite. Refused, touching nothing,
+/// saying which.
+fn linkable(
+    request: &LandscapeRequest,
+    layers: &[LayerSpec],
+    truncation: &Truncation,
+    counts: &BTreeMap<String, i64>,
+) -> Result<(), Refusal> {
+    let (least, most, _) = reach::SAMPLES;
+    if !(least..=most).contains(&request.resolution) {
         return Err(refuse(format!(
-            "a link's landscape is sampled 120 to 2000 across, as the Samples slider reaches, not {}",
+            "a link's landscape is sampled {least} to {most} across, as the Samples slider reaches, not {}",
             request.resolution
         )));
     }
@@ -1126,32 +1154,77 @@ fn linkable(request: &LandscapeRequest, layers: &[LayerSpec], counts: &BTreeMap<
             return Err(refuse(format!("a link's window has {axis} from {} to {}, which is no interval", i.lo, i.hi)));
         }
     }
+    let (least, most) = reach::LEVEL_COUNTS;
     for (name, &n) in counts {
-        if !LINK_LEVEL_COUNTS.contains(&n) {
-            return Err(refuse(format!("a link's {name} has {n} levels; a level slider reaches 2 to 80")));
+        if !(least..=most).contains(&n) {
+            return Err(refuse(format!("a link's {name} has {n} levels; a level slider reaches {least} to {most}")));
         }
     }
+    let finite = |x: f64| x.is_finite();
+    match truncation {
+        Truncation::None => {}
+        Truncation::Uniform(h) if finite(*h) => {}
+        Truncation::RealBands { bands, beyond }
+            if bands.len() <= LINK_BANDS
+                && bands.iter().all(|b| finite(b.below) && finite(b.height))
+                && !beyond.is_nan() => {}
+        _ => return Err(refuse(format!("a link's truncation is not finite, or has more than {LINK_BANDS} bands"))),
+    }
+    if layers.len() > LINK_LAYERS {
+        return Err(refuse(format!("a link carries {} layers, more than {LINK_LAYERS}", layers.len())));
+    }
     let reach = d.real.length().max(d.imag.length());
+    let strokes = reach::STROKES.1 as f64;
     for layer in layers {
-        match &layer.source {
-            LayerSource::Contour { levels, .. } if levels.len() > LINK_LEVELS => {
-                return Err(refuse(format!(
-                    "a link's {} lists {} levels, more than {LINK_LEVELS}",
-                    layer.name,
-                    levels.len()
-                )));
+        let name = &layer.name;
+        let fine = match &layer.source {
+            LayerSource::Contour { levels, light, .. } => {
+                if levels.len() > LINK_LEVELS {
+                    return Err(refuse(format!(
+                        "a link's {name} lists {} levels, more than {LINK_LEVELS}",
+                        levels.len()
+                    )));
+                }
+                levels.iter().all(|&x| finite(x)) && light.is_none_or(|l| finite(l.x) && finite(l.y) && finite(l.z))
             }
             LayerSource::Hatching { hatching, .. } => {
                 let s = hatching.spacing;
-                if !(s.is_finite() && s > 0.0 && (reach / s).round() <= LINK_STROKES) {
+                if !(finite(s) && s > 0.0 && (reach / s).round() <= strokes) {
                     return Err(refuse(format!(
-                        "a link's {} is hatched at a spacing of {s}: more than 400 strokes across the window, as a \
-                         strokes slider reaches",
-                        layer.name
+                        "a link's {name} is hatched at a spacing of {s}: more than {strokes} strokes across the \
+                         window, as a strokes slider reaches"
                     )));
                 }
+                finite(hatching.angle)
             }
-            _ => {}
+            LayerSource::WallEdges { edges, base } => {
+                // A landscape's walls are its window's four sides.
+                let mut seen = BTreeSet::new();
+                finite(*base) && edges.len() <= 4 && edges.iter().all(|&e| (0..4).contains(&e) && seen.insert(e))
+            }
+            LayerSource::TruncationEdge { .. } | LayerSource::FoldCurves => true,
+            LayerSource::IntegralCurves { seeds, .. } => {
+                let many = match &seeds.spacing {
+                    kurven_core::manifest::Spacing::Values(_, values) => {
+                        values.len() as f64 > LINK_SEEDS || !values.iter().all(|&x| finite(x))
+                    }
+                    kurven_core::manifest::Spacing::ArcLength(s) => {
+                        !(finite(*s) && *s > 0.0 && reach / s <= LINK_SEEDS)
+                    }
+                };
+                if many {
+                    return Err(refuse(format!(
+                        "a link's {name} is seeded more finely than {LINK_SEEDS} seeds across the window"
+                    )));
+                }
+                finite(seeds.level)
+            }
+            other => {
+                return Err(refuse(format!("a landscape's link carries no {} layer, as {name} is", other.kind())));
+            }
+        };
+        if !fine {
+            return Err(refuse(format!("a link's {name} holds a number that is not finite, or an edge no wall has")));
         }
     }
     Ok(())
