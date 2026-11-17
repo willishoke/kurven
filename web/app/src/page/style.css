@@ -277,7 +277,6 @@ kbd { font-family: var(--mono); font-size: 0.75rem; border: 1px solid var(--rule
   .app { display: block; height: auto; }
   .stage { height: 62svh; min-height: 280px; border-right: 0; border-bottom: 1px solid var(--rule); }
   .panel { overflow: visible; }
-  .hint { display: none; }
 }
 .formula-field { margin: 8px 0 4px; }
 .formula-field > .label { display: block; color: var(--muted); font-size: 0.9rem; margin-bottom: 3px; font-family: var(--serif); font-style: italic; }

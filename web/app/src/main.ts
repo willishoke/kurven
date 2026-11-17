@@ -94,7 +94,9 @@ const panel = new Panel({
 });
 app.replaceChildren(stage, panel.root);
 if (!view.usesGPU) {
-  stage.append(h("p", { class: "hint" }, `judged strokes only: ${fallbackReason ?? "no WebGPU"}`));
+  // Said where the drawing is: no drafts here, and each frame at rest is the
+  // bake (the browser lane reads it as #status, Phase 7's name).
+  stage.append(h("p", { class: "hint", id: "status" }, `judged strokes only: ${fallbackReason ?? "no WebGPU"}`));
 }
 
 // MARK: - the canvas's size
