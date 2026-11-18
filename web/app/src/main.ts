@@ -2,67 +2,56 @@
 // (crates/kurven-session, run in a Worker through crates/kurven-wasm); the
 // page renders state and sends edits (HANDOFF-web-port.md, Architecture).
 //
-// Phase 7's page is the preview and enough around it to see it and test it:
-// a canvas, orbit (drag), pan (shift-drag), zoom toward the cursor (wheel),
-// fit (f), and the three modes (1, 2, 3), as the Swift app's GestureView
-// maps them. What it shows comes from the query:
+// Phase 8, steps 1 to 3: the formula with its errors at their place, the
+// catalog, the canvas (orbit, pan, zoom toward the cursor, fit), the window
+// as two thumbs per axis, the resolution, the truncation height, the layers
+// and their level counts, the camera's presets, the three modes, Export SVG
+// (the judged strokes, the native bake's bytes), and the whole state in the
+// URL's fragment (page/link.ts).
 //
-//   ?landscape=cn        a catalog landscape (`create`)
+// The engine is one Worker: a frame at rest (cn's folds and walls, about
+// 2.2 s) holds it, and whatever the page asks meanwhile waits behind it.
+// The page says so (the indicator over the canvas) and never waits itself:
+// controls and gestures are coalesced, so a hand that keeps moving costs one
+// request behind, never a queue (crates/FINDINGS.md, Phase 8).
+//
+// The query, for the browser lane and for looking:
+//
+//   ?landscape=cn        a catalog landscape (`create`), where no link is
 //   ?surface=sn          a catalog surface (`createSurface`)
 //   &gpu=0               the page without WebGPU: judged strokes at rest
-//   &size=900x700        the canvas in device pixels, rather than the window
+//   &size=900x700        the canvas in device pixels, rather than the stage
 //   &slope=0             the preview's slope scale (default 1)
-//   &offscreen=1         draw into a texture, never presented (view.ts)
-//
-// A bundle is opened by the browser lane through `window.kurven.open`. The
-// formula field, the controls and the rest are Phase 8's.
+//   &offscreen=1         draw into a texture, never presented (gpu/view.ts)
 
-import { browserWorker, EngineClient } from "./engine/client.ts";
-import type { Bundle, DocumentState, Gesture, Request } from "./engine/protocol.ts";
+import "./page/style.css";
+
+import { browserWorker, Cancelled, EngineClient, VIEWS } from "./engine/client.ts";
+import type { Bundle, Controls, DocumentState, Edited, Preset, Request } from "./engine/protocol.ts";
 import { DEFAULT_OPTIONS, PreviewRenderer, Unsupported } from "./gpu/renderer.ts";
 import { probeLayout } from "./gpu/layout.ts";
-import { PreviewView } from "./gpu/view.ts";
+import { PreviewView, type Timing } from "./gpu/view.ts";
+import { CanvasInput } from "./page/canvas.ts";
+import { Panel } from "./page/controls.ts";
+import { h } from "./page/dom.ts";
+import { Engine, Latest, quietly } from "./page/engine.ts";
+import { decode, encode, hides, linkOf, restoring } from "./page/link.ts";
 
 const query = new URLSearchParams(location.search);
 const app = document.querySelector<HTMLElement>("#app");
 if (!app) throw new Error("index.html has no #app");
 
-const canvas = document.createElement("canvas");
-canvas.id = "preview";
-canvas.style.display = "block";
-canvas.style.touchAction = "none";
-const status = document.createElement("p");
-status.id = "status";
-status.style.font = "12px ui-monospace, monospace";
-status.style.margin = "4px 8px";
-app.replaceChildren(canvas, status);
-
 const scale = window.devicePixelRatio || 1;
 const size = query.get("size")?.match(/^(\d+)x(\d+)$/);
 const fixed = size ? { width: Number(size[1]), height: Number(size[2]) } : null;
-function measure(): { width: number; height: number } {
-  if (fixed) return fixed;
-  return {
-    width: Math.max(1, Math.round(window.innerWidth * scale)),
-    height: Math.max(1, Math.round((window.innerHeight - 24) * scale)),
-  };
-}
-const first = measure();
-canvas.width = first.width;
-canvas.height = first.height;
-canvas.style.width = `${first.width / scale}px`;
-canvas.style.height = `${first.height / scale}px`;
+
+const canvas = h("canvas", { id: "preview", "aria-label": "The drawing. Drag to orbit; arrows orbit from the keyboard." });
+const indicatorText = h("span", { id: "indicator-text" });
+const indicator = h("div", { class: "indicator", id: "indicator", role: "status", "aria-live": "polite" }, h("span", { class: "dot" }), indicatorText);
+const stage = h("main", { class: fixed ? "stage fixed" : "stage" }, canvas, indicator);
 
 const client = new EngineClient(browserWorker, `${import.meta.env.BASE_URL}kurven_wasm.wasm`);
-let state: DocumentState | null = null;
-
-async function send(request: Request): Promise<DocumentState | null> {
-  const answer = await client.request(request);
-  if (answer.stale) return state;
-  if (!answer.reply.ok) status.textContent = answer.reply.error ?? "refused";
-  state = answer.reply.state ?? state;
-  return state;
-}
+const engine = new Engine(client);
 
 /** Why the page draws without WebGPU, if it does. */
 let fallbackReason: string | null = null;
@@ -82,97 +71,340 @@ async function makeRenderer(): Promise<PreviewRenderer | null> {
 
 const renderer = await makeRenderer();
 const slope = query.get("slope");
-const view = new PreviewView(client, canvas, renderer, {
-  ...DEFAULT_OPTIONS,
-  // The widest stroke, in device pixels: a stroke as wide on a dense
-  // screen as on any other.
-  strokeWidth: DEFAULT_OPTIONS.strokeWidth * scale,
-  slopeScale: slope !== null ? Number(slope) : DEFAULT_OPTIONS.slopeScale,
-}, query.get("offscreen") === "1");
-view.onFrame((t) => {
-  status.textContent =
-    `${state?.title ?? ""} · ${view.usesGPU ? "WebGPU" : `judged strokes only (${fallbackReason})`} · ` +
-    `${t.kind} ${t.engineMs.toFixed(0)} ms engine, ${t.drawMs.toFixed(1)} ms drawing`;
-});
-
-await send({ kind: "viewport", width: canvas.width, height: canvas.height });
-const landscape = query.get("landscape");
-const surface = query.get("surface");
-let opened: DocumentState | null = null;
-if (landscape) opened = await send({ kind: "create", preset: landscape });
-else if (surface) opened = await send({ kind: "createSurface", preset: surface });
-if (opened?.kind === "landscape" || opened?.kind === "surface") view.changed();
-
-// MARK: - input, as the Swift app's GestureView maps it
-
-function gesture(g: Gesture): void {
-  void send({ kind: "gesture", gesture: g }).then(() => view.moved());
-}
-
-let drag: { x: number; y: number } | null = null;
-canvas.addEventListener("pointerdown", (e) => {
-  drag = { x: e.clientX, y: e.clientY };
-  canvas.setPointerCapture(e.pointerId);
-});
-canvas.addEventListener("pointermove", (e) => {
-  if (!drag) return;
-  const d: [number, number] = [(e.clientX - drag.x) * scale, (e.clientY - drag.y) * scale];
-  drag = { x: e.clientX, y: e.clientY };
-  if (d[0] === 0 && d[1] === 0) return;
-  // Shift or option pans, matching the modifier most CAD tools use for
-  // "move the paper rather than the camera".
-  if (e.shiftKey || e.altKey) gesture({ kind: "pan", delta: [-d[0], d[1]] });
-  else gesture({ kind: "orbit", delta: d });
-});
-// A drag ends however the pointer is let go of: up, cancelled by the
-// browser, or its capture lost.
-for (const ended of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
-  canvas.addEventListener(ended, () => {
-    drag = null;
-  });
-}
-canvas.addEventListener(
-  "wheel",
-  (e) => {
-    e.preventDefault();
-    // Toward the cursor, not the centre: under an orthographic camera that
-    // is exactly "hold the point under the pointer still".
-    const rect = canvas.getBoundingClientRect();
-    const at: [number, number] = [(e.clientX - rect.left) * scale, (e.clientY - rect.top) * scale];
-    const steps = (-e.deltaY * (e.deltaMode === 0 ? 0.01 : 0.1)) / scale;
-    if (steps !== 0) gesture({ kind: "zoom", factor: Math.exp(steps), at });
+const view = new PreviewView(
+  client,
+  canvas,
+  renderer,
+  {
+    ...DEFAULT_OPTIONS,
+    // The widest stroke, in device pixels: as wide on a dense screen as on
+    // any other.
+    strokeWidth: DEFAULT_OPTIONS.strokeWidth * scale,
+    slopeScale: slope !== null ? Number(slope) : DEFAULT_OPTIONS.slopeScale,
   },
-  { passive: false },
+  query.get("offscreen") === "1",
 );
-window.addEventListener("keydown", (e) => {
-  const act = async (r: Request) => {
-    await send(r);
-    view.changed();
-  };
-  switch (e.key) {
-    case "f":
-      void act({ kind: "fit" });
-      break;
-    case "1":
-      void act({ kind: "mode", mode: "drawing" });
-      break;
-    case "2":
-      void act({ kind: "mode", mode: "shaded" });
-      break;
-    case "3":
-      void act({ kind: "mode", mode: "depth" });
-      break;
-  }
+
+const panel = new Panel({
+  engine,
+  changed: () => view.changed(),
+  moved: () => view.moved(),
+  exportSVG: () => void exportSVG().catch(quietly),
+  cancelExport: () => void client.cancel("the export was cancelled").catch(quietly),
 });
-window.addEventListener("resize", () => {
-  if (fixed) return;
+app.replaceChildren(stage, panel.root);
+if (!view.usesGPU) {
+  // Said where the drawing is: no drafts here, and each frame at rest is the
+  // bake (the browser lane reads it as #status, Phase 7's name).
+  stage.append(h("p", { class: "hint", id: "status" }, `judged strokes only: ${fallbackReason ?? "no WebGPU"}`));
+}
+
+// MARK: - the canvas's size
+
+/** The canvas in device pixels: the stage's inside, whole pixels down. */
+function measure(): { width: number; height: number } {
+  if (fixed) return fixed;
+  return {
+    width: Math.max(1, Math.floor(stage.clientWidth * scale)),
+    height: Math.max(1, Math.floor(stage.clientHeight * scale)),
+  };
+}
+
+/** Size the canvas to the stage. Its CSS size is its device size over the
+ * device's scale exactly, so a pointer's pixel is the engine's pixel. */
+function resize(): boolean {
   const next = measure();
+  if (canvas.width === next.width && canvas.height === next.height) return false;
   canvas.width = next.width;
   canvas.height = next.height;
   canvas.style.width = `${next.width / scale}px`;
   canvas.style.height = `${next.height / scale}px`;
-  void send({ kind: "viewport", width: next.width, height: next.height }).then(() => view.changed());
+  return true;
+}
+resize();
+
+const viewports = new Latest<[number, number]>(async ([width, height]) => {
+  await engine.send({ kind: "viewport", width, height });
+  view.changed();
 });
+if (!fixed) {
+  new ResizeObserver(() => {
+    if (resize()) viewports.push([canvas.width, canvas.height]);
+  }).observe(stage);
+}
+
+// MARK: - what the engine is doing
+
+let exporting: { started: number } | null = null;
+let lastFrame: Timing | null = null;
+let restStarted = 0;
+
+function seconds(ms: number): string {
+  return ms < 1000 ? `${ms.toFixed(0)} ms` : `${(ms / 1000).toFixed(1)} s`;
+}
+
+/** The indicator over the canvas: what holds the engine, and for how long. */
+function indicate(): void {
+  const now = performance.now();
+  let text: string;
+  let busy = true;
+  if (exporting) text = `exporting: baking the judged strokes… ${seconds(now - exporting.started)}`;
+  else if (engine.busy.length) text = `${engine.busy[engine.busy.length - 1]}…`;
+  else if (view.working === "rest") {
+    text = view.usesGPU
+      ? `drawing at rest: testing the folds and walls… ${seconds(now - restStarted)}`
+      : `drawing the judged strokes… ${seconds(now - restStarted)}`;
+  } else if (view.working === "draft") text = "draft";
+  else {
+    busy = false;
+    text = lastFrame ? `${lastFrame.kind === "draft" ? "draft" : "at rest"} · ${seconds(lastFrame.engineMs)}` : "";
+  }
+  indicatorText.textContent = text;
+  indicator.dataset.busy = String(busy);
+  document.body.dataset.busy = String(busy);
+}
+engine.onBusy(indicate);
+view.onWork((work) => {
+  if (work === "rest") restStarted = performance.now();
+  indicate();
+});
+view.onFrame((t) => {
+  lastFrame = t;
+  indicate();
+});
+setInterval(() => {
+  if (indicator.dataset.busy === "true") indicate();
+}, 200);
+
+// MARK: - the state, shown, and written to the URL
+
+let linkTimer: ReturnType<typeof setTimeout> | null = null;
+let linking: Promise<void> = Promise.resolve();
+let restoringLink = false;
+/** The fragment the page last wrote or opened: one that differs is a link
+ * pasted in, which `hashchange` opens and nothing overwrites first. */
+let lastLinked = "";
+
+function scheduleLink(): void {
+  if (linkTimer) clearTimeout(linkTimer);
+  linkTimer = setTimeout(() => {
+    linkTimer = null;
+    linking = linking.then(writeLink, writeLink);
+  }, 400);
+}
+
+async function writeLink(): Promise<void> {
+  try {
+    await writingLink();
+  } catch (error) {
+    quietly(error);
+  }
+}
+
+async function writingLink(): Promise<void> {
+  const state = engine.state;
+  if (!state || restoringLink) return;
+  const reply = await engine.send({ kind: "edited" });
+  const edited = (reply?.edited as Edited | null | undefined) ?? null;
+  const link = linkOf(engine.state ?? state, edited);
+  if (!link) return;
+  if (location.hash !== lastLinked && location.hash.startsWith("#k1")) return; // a new link, not yet opened
+  const hash = await encode(link);
+  if (hash !== location.hash) history.replaceState(null, "", `${location.pathname}${location.search}${hash}`);
+  lastLinked = hash;
+}
+
+engine.onState((state: DocumentState, request: Request) => {
+  panel.render(state);
+  if (!VIEWS.has(request.kind)) scheduleLink();
+});
+
+// MARK: - Export SVG: the judged strokes, never the GPU's draft
+
+let lastExport: Uint8Array | null = null;
+
+async function exportSVG(): Promise<void> {
+  if (exporting) return;
+  exporting = { started: performance.now() };
+  panel.exporting(true);
+  panel.exportStatus.textContent = "";
+  indicate();
+  try {
+    const answer = await engine.call({ kind: "bake", svg: true });
+    if (!answer) return;
+    const { reply, arrays } = answer;
+    if (!reply.ok) {
+      panel.exportStatus.textContent = reply.error ?? "the bake was refused";
+      return;
+    }
+    const svg = arrays.svg;
+    if (!(svg instanceof Uint8Array)) throw new Error("the bake sent no SVG");
+    lastExport = svg;
+    const name = `${(engine.state?.title ?? "kurven").replace(/[\\/:*?"<>|\s]+/g, "_")}.svg`;
+    const url = URL.createObjectURL(new Blob([svg as BlobPart], { type: "image/svg+xml" }));
+    const a = h("a", { href: url, download: name });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    const took = seconds(performance.now() - exporting.started);
+    panel.exportStatus.textContent = `${engine.state?.status.bake ?? ""} → ${name}, ${svg.length.toLocaleString()} bytes, in ${took}`;
+  } catch (error) {
+    if (error instanceof Cancelled) {
+      panel.exportStatus.textContent = "cancelled: the engine was restarted and the document replayed";
+      view.changed();
+    } else {
+      panel.exportStatus.textContent = `export failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  } finally {
+    exporting = null;
+    panel.exporting(false);
+    indicate();
+  }
+}
+
+// MARK: - input
+
+const input = new CanvasInput(engine, canvas, scale, () => view.moved());
+
+/** Inputs that take typed text, whose keys are theirs: a slider, a check
+ * box or a radio button takes no letters, digits or ⌘Z of its own. */
+const TYPED = new Set(["text", "number", "search", "email", "url", "tel", "password"]);
+
+function takesText(el: Element | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.isContentEditable || el instanceof HTMLTextAreaElement) return true;
+  // A select answers letters by choosing the option they start.
+  if (el instanceof HTMLSelectElement) return true;
+  return el instanceof HTMLInputElement && TYPED.has(el.type);
+}
+
+window.addEventListener("keydown", (e) => {
+  if (takesText(e.target as Element | null)) return;
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && (e.key === "z" || e.key === "Z")) {
+    e.preventDefault();
+    panel.request({ kind: e.shiftKey ? "redo" : "undo" });
+    return;
+  }
+  if (mod && e.key === "y") {
+    e.preventDefault();
+    panel.request({ kind: "redo" });
+    return;
+  }
+  if (mod || e.altKey) return;
+  const keyed: Record<string, Request> = {
+    f: { kind: "fit" },
+    "1": { kind: "mode", mode: "drawing" },
+    "2": { kind: "mode", mode: "shaded" },
+    "3": { kind: "mode", mode: "depth" },
+  };
+  const r = keyed[e.key];
+  if (r) {
+    e.preventDefault();
+    panel.request(r);
+  }
+});
+
+// MARK: - opening: a link, the query, or Γ
+
+const catalog = await engine.send({ kind: "catalog" });
+if (!catalog?.ok || !catalog.controls) throw new Error(`the engine gave no catalog: ${catalog?.error ?? "no reply"}`);
+panel.setCatalog((catalog.presets as Preset[] | undefined) ?? [], catalog.controls as Controls);
+
+/** Open the link a fragment holds: "none" when it holds none, "refused"
+ * when it cannot be read or the engine refuses what it asks for (the page
+ * then says why, and the document is the one before), "opened". */
+async function openLink(hash: string): Promise<"none" | "refused" | "opened"> {
+  const refused = (why: string): "refused" => {
+    panel.notice(`This link was refused: ${why}`);
+    return "refused";
+  };
+  let link;
+  try {
+    link = await decode(hash);
+  } catch (error) {
+    return refused(error instanceof Error ? error.message : String(error));
+  }
+  if (!link) return "none";
+  if (linkTimer) {
+    clearTimeout(linkTimer);
+    linkTimer = null;
+  }
+  restoringLink = true;
+  const wasRefine = engine.state?.refine ?? true;
+  const wasMode = engine.state?.mode ?? "drawing";
+  // What was sent before the landscape, put back if anything is refused:
+  // the engine's `restore` changes nothing it refuses, so neither does the
+  // page.
+  const putBack = async () => {
+    if (link.refine !== wasRefine) await engine.send({ kind: "refine", on: wasRefine });
+    if (link.mode !== wasMode) await engine.send({ kind: "mode", mode: wasMode });
+  };
+  try {
+    const { before, after } = restoring(link, [canvas.width, canvas.height]);
+    // A setting the page already has is not sent again (a refinement
+    // switched on redraws every layer).
+    const sending = before.filter(
+      (r) => !(r.kind === "refine" && r.on === wasRefine) && !(r.kind === "mode" && r.mode === wasMode),
+    );
+    // Every reply read: any refusal refuses the link.
+    for (const r of sending) {
+      const reply = await engine.send(r);
+      if (!reply?.ok) {
+        await putBack();
+        return refused(reply?.error ?? `the engine did not answer its ${r.kind}`);
+      }
+    }
+    const restored = engine.state;
+    const rest = [...(restored ? hides(link, restored) : []), ...after];
+    const partly: string[] = [];
+    for (const r of rest) {
+      const reply = await engine.send(r);
+      if (!reply?.ok) partly.push(reply?.error ?? `no answer to its ${r.kind}`);
+    }
+    panel.notice(partly.length ? `This link was opened, but not all of it: ${partly.join("; ")}` : null);
+    lastLinked = hash;
+    return "opened";
+  } catch (error) {
+    // A cancel or a failure mid-way: said, and the settings put back as far
+    // as the engine will take them.
+    await putBack().catch(quietly);
+    return refused(error instanceof Error ? error.message : String(error));
+  } finally {
+    restoringLink = false;
+  }
+}
+
+// A link pasted into this tab: opened, not overwritten. One refused leaves
+// the document as it was, and the URL is put back to it.
+window.addEventListener("hashchange", () => {
+  const hash = location.hash;
+  if (hash === lastLinked) return;
+  void openLink(hash)
+    .then((opened) => {
+      if (opened === "opened") view.changed();
+      else if (opened === "refused") {
+        lastLinked = hash;
+        scheduleLink();
+      }
+    })
+    .catch(quietly);
+});
+
+await engine.send({ kind: "viewport", width: canvas.width, height: canvas.height });
+const first = await openLink(location.hash);
+// A link refused is overwritten by the document opened in its place.
+if (first === "refused") lastLinked = location.hash;
+if (first !== "opened") {
+  const landscape = query.get("landscape");
+  const surface = query.get("surface");
+  if (surface) await engine.send({ kind: "createSurface", preset: surface });
+  else if (landscape !== "") await engine.send({ kind: "create", preset: landscape ?? "gamma" });
+}
+if (engine.state) panel.render(engine.state);
+view.changed();
+indicate();
 
 // MARK: - the browser lane's handle (web/app/test/browser)
 
@@ -184,18 +416,24 @@ declare global {
 
 window.kurven = {
   view,
+  engine,
+  client,
+  input,
   usesGPU: view.usesGPU,
   fallbackReason,
-  state: () => state,
-  send,
+  state: () => engine.state,
+  send: async (r: Request) => {
+    await engine.send(r);
+    return engine.state;
+  },
   /** A request, its reply and arrays as they come. */
   request: (r: Request) => client.request(r),
   /** Open a bundle given as its files. */
   open: async (bundle: Bundle) => {
     await client.stage(bundle);
-    const s = await send({ kind: "open", name: bundle.name });
+    await engine.send({ kind: "open", name: bundle.name });
     view.changed();
-    return s;
+    return engine.state;
   },
   /** Draw a frame now, and read the pixels it left. */
   draw: (wish: "draft" | "rest", read = false) => view.drawNow(wish, read),
@@ -222,6 +460,34 @@ window.kurven = {
   probe: () => (renderer ? probeLayout(renderer.device) : Promise.resolve(["no WebGPU"])),
   adapter: () => (renderer ? renderer.device.adapterInfo : null),
   held: () => (renderer ? { ...renderer.holds(), bytes: renderer.heldBytes() } : null),
-  settled: () => view.settled(),
+  /** Every frame wished drawn, every gesture and control sent. */
+  settled: async () => {
+    for (;;) {
+      await input.settled();
+      await viewports.flush();
+      await engine.settled();
+      await view.settled();
+      // A frame or a reply can have led to another: settled when none did.
+      if (!engine.busy.length && view.working === null) {
+        await engine.settled();
+        if (view.working === null) return;
+      }
+    }
+  },
+  /** The URL once every change so far is written into it. */
+  linked: async () => {
+    await input.settled();
+    if (linkTimer) {
+      clearTimeout(linkTimer);
+      linkTimer = null;
+      linking = linking.then(writeLink, writeLink);
+    }
+    await linking;
+    return location.href;
+  },
+  /** The requests a native session replays to hold this document. */
+  journal: () => client.journaled,
+  /** The last SVG exported, as text. */
+  lastExport: () => (lastExport ? new TextDecoder().decode(lastExport) : null),
 };
 document.body.dataset.ready = "true";

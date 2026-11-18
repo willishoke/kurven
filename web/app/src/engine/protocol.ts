@@ -29,6 +29,15 @@
 /** A request the engine answers: kurven_session::protocol's. */
 export type Request =
   | { kind: "state" }
+  /** The catalog's landscape presets, for the formula's dropdown. */
+  | { kind: "catalog" }
+  /** What is edited now, whole: what the page's URL holds. */
+  | { kind: "edited" }
+  /** A landscape as a link names it: `edited`'s fields, sampled afresh with
+   * no edits to undo (Phase 8; kurven_session::Document::restore_landscape). */
+  | ({ kind: "restore" } & Edited)
+  /** The Visibility section's depth tolerance (Inspector.swift). */
+  | { kind: "depthTolerance"; value: number }
   /** The engine instance's name, given by the Worker at load (module.ts). */
   | { kind: "seed"; nonce: string }
   | { kind: "open"; name: string }
@@ -52,6 +61,9 @@ export type Request =
   | { kind: "light"; layer: string; direction: [number, number, number] }
   | { kind: "hide"; layer: number }
   | { kind: "gesture"; gesture: Gesture }
+  /** Gestures in order, each applied as `gesture` applies it: the camera
+   * they make one by one, in one request. */
+  | { kind: "gestures"; gestures: Gesture[] }
   | ({ kind: "camera" } & ExactCamera)
   | { kind: "fit" }
   | { kind: "preset"; index: number }
@@ -72,6 +84,62 @@ export type Request =
   | { kind: "grids" }
   | { kind: "save"; name: string }
   | { kind: "headless"; args: string[] };
+
+/** What is edited (kurven_session::edits::Edited): a landscape's request,
+ * the styling it is drawn with -- its layers as a manifest describes them
+ * and its truncation -- and the level counts the sliders set. */
+export interface Edited {
+  landscape: LandscapeRequest;
+  layers: unknown[];
+  truncation: Truncation;
+  levelCounts: Record<string, number>;
+}
+
+/** A landscape's request as the engine writes it (`LandscapeRequest::json`). */
+export interface LandscapeRequest {
+  expression: string;
+  name: string;
+  resolution: number;
+  domain: Domain;
+  truncation?: Truncation;
+  spacing?: number;
+  layers?: unknown[];
+}
+
+/** A rectangle of the complex plane. */
+export interface Domain {
+  real: { lo: number; hi: number };
+  imag: { lo: number; hi: number };
+}
+
+/** A catalog entry (`FunctionPreset::json`). */
+export interface Preset {
+  name: string;
+  label: string;
+  expression: string;
+  domain: Domain;
+  /** How far the window's sliders reach. */
+  window: Domain;
+  truncation: number | null;
+  notes: string;
+}
+
+/** How far the window's controls reach: the engine's (`sliders::reach`),
+ * which a link is held to, sent in the `catalog` reply. */
+export interface Controls {
+  samples: { min: number; max: number; step: number };
+  levels: { min: number; max: number };
+  strokes: { min: number; max: number };
+  truncation: { min: number };
+}
+
+/** Where an expression went wrong, as the `expression` refusal says it: in
+ * characters as the language counts them (Unicode scalar values). */
+export interface ExpressionAt {
+  message: string;
+  position: number | null;
+  length: number;
+}
 
 /** A truncation as a manifest writes it. */
 export type Truncation =

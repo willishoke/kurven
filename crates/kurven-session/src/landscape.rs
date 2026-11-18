@@ -87,6 +87,47 @@ impl Document {
         self.send(request, true, false);
     }
 
+    /// Start a landscape from what a link names (the page's URL): its
+    /// request, the styling it was drawn with and its level counts, sampled
+    /// afresh and fitted as `create` starts one, with no edits to undo. Not
+    /// Swift's; the page's addition (crates/FINDINGS.md, Phase 8). The
+    /// request is sent with the styling in it, as `landscape_edited` sends
+    /// one, and kept as the controls say it, so the document is the one that
+    /// was linked: the same samples, the same styling, the same levels. It
+    /// settles before it returns (the level counts are set on what the
+    /// sampling adopted), so its caller need not.
+    pub fn restore_landscape(
+        &mut self,
+        request: LandscapeRequest,
+        styling: Styling,
+        level_counts: std::collections::BTreeMap<String, i64>,
+    ) {
+        self.landscape = Some(request.clone());
+        self.generation += 1;
+        self.surface_wanted = None;
+        self.surface_styled = None;
+        self.forget_edits();
+        let mut sent = request.clone();
+        sent.truncation = Some(styling.truncation);
+        sent.layers = Some(styling.layers);
+        self.send(sent, true, false);
+        self.settle();
+        if self.bundle().is_none() {
+            return;
+        }
+        // A framed adoption reads the request back from the bundle (its
+        // canonical expression, its layers); the controls say the one
+        // linked, as a resample's landing keeps the one edited.
+        self.landscape = Some(request);
+        // ...and clears the level counts, so they are set on the landscape
+        // it adopted.
+        if !level_counts.is_empty() {
+            self.level_counts = level_counts;
+            self.rebuild_curves(false);
+            self.settle();
+        }
+    }
+
     /// The controls changed. `draft` is true while one is being dragged.
     pub fn landscape_edited(&mut self, draft: bool) {
         let Some(mut request) = self.landscape.clone() else { return };

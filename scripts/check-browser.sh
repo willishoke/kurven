@@ -13,6 +13,10 @@
 # (Chrome for Testing 153, Playwright's revision 1243), installed on first
 # use by `npx playwright install chromium`, which needs the network once.
 #
+# The page (Phase 8, page.spec.ts): driven as a user drives it, its Export
+# held byte for byte to `kurven-cli session` baking the same requests
+# natively (crates/target/release/kurven-cli), and its URL to a fresh page.
+#
 # The gate (HANDOFF-web-port.md, Phase 7): for a landscape (cn), a surface
 # (sn) and a polyhedron (the picture frame), the preview at rest against
 # the judged strokes the engine bakes for the same frame, by Swift's
@@ -35,6 +39,9 @@ step() {
 step "the page's wasm module"
 (cd "$CRATES" && CARGO_TARGET_DIR="$CRATES/target/page" cargo build --profile web \
     --target wasm32-unknown-unknown -p kurven-wasm --no-default-features) || exit 1
+
+step "kurven-cli, natively: the reference the page's Export is held to"
+(cd "$CRATES" && cargo build --release -p kurven-cli) || exit 1
 
 step "the page"
 if [ ! -f "$APP/node_modules/.package-lock.json" ] ||

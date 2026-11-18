@@ -8,7 +8,8 @@
 //! - [`surface`] is `surface`, a parametric surface's drawing, and its
 //!   `surface solid` dispatches to [`solid`], a polyhedron by name;
 //! - [`scene`] draws several bundles as one composite;
-//! - [`app`] is the app's headless command line, through the session.
+//! - [`app`] is the app's headless command line, through the session;
+//! - [`session`] runs the page's requests natively, and bakes what they left.
 
 pub mod app;
 pub mod args;
@@ -16,6 +17,7 @@ pub mod commands;
 pub mod compare;
 pub mod references;
 pub mod scene;
+pub mod session;
 pub mod solid;
 pub mod surface;
 pub mod svg;

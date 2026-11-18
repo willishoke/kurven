@@ -170,3 +170,39 @@ fn set_surface_field(document: &mut Document, field: Field, label: &str, value: 
         document.edit_surface(next, label);
     }
 }
+
+/// How far the window's controls reach: Swift's views hold these
+/// (LandscapeSection.swift's Samples slider, PaintSection.swift's level and
+/// strokes sliders, TruncationSection's height); here they are the
+/// engine's, once. The page builds its sliders from them (the `catalog`
+/// reply's `controls`), and a link is held to them (`protocol::linkable`):
+/// a link asks for no more than a hand on the controls could.
+pub mod reach {
+    /// Samples along the window's longer side: from, to, by.
+    pub const SAMPLES: (i64, i64, i64) = (120, 2000, 20);
+    /// A contour family's level count.
+    pub const LEVEL_COUNTS: (i64, i64) = (2, 80);
+    /// A hatching's strokes across the window's longer side.
+    pub const STROKES: (i64, i64) = (2, 400);
+    /// The truncation height slider's least value.
+    pub const TRUNCATION_LEAST: f64 = 0.1;
+
+    /// The reaches as the page reads them.
+    pub fn json() -> kurven_core::json::JsonValue {
+        use kurven_core::json::{self, JsonValue};
+        let range = |lo: i64, hi: i64| json::object([("min", JsonValue::Int(lo)), ("max", JsonValue::Int(hi))]);
+        json::object([
+            (
+                "samples",
+                json::object([
+                    ("min", JsonValue::Int(SAMPLES.0)),
+                    ("max", JsonValue::Int(SAMPLES.1)),
+                    ("step", JsonValue::Int(SAMPLES.2)),
+                ]),
+            ),
+            ("levels", range(LEVEL_COUNTS.0, LEVEL_COUNTS.1)),
+            ("strokes", range(STROKES.0, STROKES.1)),
+            ("truncation", json::object([("min", JsonValue::Double(TRUNCATION_LEAST))])),
+        ])
+    }
+}

@@ -2966,3 +2966,233 @@ process down, and twice more with the compositor elsewhere (`present-gl`:
 `present-angle`: `--use-gl=angle --use-angle=swiftshader`); on Linux each
 is allowed to fail, saying how in its annotation. On the Mac's own GPU
 (`gpu`) the gate presents, as before, and the presentation test must pass.
+
+## 2026-11-17 · Phase 8: the page, steps 1 to 3
+
+`web/app/src/main.ts` and `web/app/src/page/`: no framework, the engine
+behind `EngineClient` as before, so a pool of Workers can replace the one
+Worker without the page knowing. Every control sends an edit and shows the
+state the reply carries; the page's only memory is where a hand is while
+a control moves.
+
+- **Step 1.** The formula field (`formula.ts`): return sends `expression`;
+  a refusal carries `at` (below) and the field marks those characters with
+  a mirror of its text laid over it in the same font, its left edge where
+  the field's text puts them (held to 1.5 px by measuring the text). The
+  catalog's dropdown, with "… (typed)" for a typed expression, as Swift's
+  picker shows it. The canvas (`canvas.ts`): drag orbits, shift- or
+  option-drag pans, the wheel or a pinch zooms toward the pointer, `f`
+  fits; from the keyboard with the canvas focused, the arrows orbit,
+  shift and the arrows pan, + and - zoom about the centre. Export SVG:
+  `bake` with `svg`, downloaded, cancellable (a cancel restarts the Worker
+  and replays the journal, as a hung request does).
+- **Step 2.** The window as two thumbs on one track per axis, a field for
+  each end, the ends a fiftieth of the reach apart, the reach the preset's
+  window or room around a typed one (LandscapeSection.swift); Samples
+  (120 to 2000 by 20); the truncation as None, At a height (a slider to
+  max(3 h, 10) and a field) and Per band of Re (shown, its rows read only:
+  bands are step 6); each layer's visibility, named in the glossary's words
+  with its manifest name beside it, and its level count (2 to 80) with a
+  reset; the camera's presets, Fit; Drawing, Shaded and Depth, and 1 2 3.
+  ⌘Z and ⇧⌘Z (Ctrl on other machines) undo and redo.
+- **Step 3.** The URL's fragment holds the state (`link.ts`): what is
+  edited (`edited`: the landscape's request, its layers and truncation as
+  drawn, the level counts), the camera to the bit (`camera.exact`), the
+  hidden layers by name, the mode, the depth tolerance, the bake's
+  resolution and whether contours are placed by f; JSON, deflated
+  (`CompressionStream("deflate-raw")`, or plain where a browser has none),
+  base64url, `#k1.`: about 1.3 KB for a typed expression. It is rewritten
+  (`history.replaceState`) 0.4 s after the last change. A page opened on
+  one sends `viewport`, `refine` and `mode` (what an open keeps), then
+  `restore`, then `hide` by place, `depthTolerance`, `bakeResolution` and
+  `camera`; the camera carries its framing, so a page of another size
+  shows the same drawing. A link holds a landscape only: a surface, a
+  polyhedron or a bundle opened read-only writes none (steps 5 to 7).
+
+**Protocol additions** (kurven-session's `protocol.rs`, each tested in
+`tests/protocol.rs`): `expression` refused with `at` = {message, position,
+length}, in characters as the language counts them (an empty expression is
+at 0, as language.json freezes it); `catalog` (the presets with their
+windows); `edited`; `restore` (`Document::restore_landscape`: the request
+sent with its styling as `landscape_edited` sends one, sampled and fitted
+as `create` does, no edits to undo, the request then kept as linked -- a
+framed adoption reads it back from the bundle, canonical expression and
+all -- and the level counts set on the landscape adopted, since an
+adoption clears them); `depthTolerance` (the Visibility section's field in
+Inspector.swift, which a camera preset also sets). The client journals a
+restore as an open and `depthTolerance` as a setting set outright, and
+gives its journal's requests (`journaled`). `kurven-cli session REQUESTS
+-o out.svg` runs requests natively, one a line, and bakes what they left.
+
+## 2026-11-17 · Export is the native bake's bytes; a link is the drawing
+
+`page.spec.ts` edits a document as a user does (a typed expression, a
+window end, the truncation height, a level count, a hidden layer, the
+shaded mode, an orbit and a zoom toward the cursor), clicks Export, and
+compares the download to `kurven-cli session` running the page's journal
+natively: the same bytes, in every project. Then the URL, opened in a
+fresh page at 1180 by 760 (the first was 1000 by 800): `edited`, the
+camera to the bit, every layer's state, the mode, the depth tolerance and
+the bake's resolution are the first page's, its Export is the same bytes,
+and the restored page's journal (which starts at its `restore`) run
+natively gives them too. Native and wasm agreeing is the identity step's
+claim; this adds that the page's Export is the judged strokes of the
+document the page shows, and that a link loses nothing a drawing reads.
+
+## 2026-11-17 · What a slow frame at rest forces
+
+The Worker answers one request at a time and a wasm call cannot be
+interrupted, so whatever the page asks while a frame at rest is being laid
+out waits for it: a gesture's reply, the draft after it, an edit. Measured
+by the lane (cn at 600, a drag during its frame at rest, to that drag's
+draft drawn): 2.7 to 2.8 s on Metal, 5.5 s on SwiftShader (two runs each), which is cn's rest
+layout (2.2 s) plus the draft's own time. The page adds no wait of its own:
+gestures are summed while one is with the engine (one request behind,
+never a queue); a slider's moves are coalesced, latest wins, and its
+let-go waits only for the last move; a draft wished goes before a rest
+waiting. The page itself never blocks (the engine is off the main thread):
+fields take keys and controls move while the engine is busy, and the
+indicator over the canvas says what holds it ("drawing at rest: testing the
+folds and walls… 1.4 s", "sampling…", "exporting: baking the judged
+strokes…") with the seconds. Cancelling a frame at rest to draw a draft
+sooner would mean a restart and a replay (cn's open alone is 0.86 s of
+sampling), so it is not done; a pool of Workers or wasm threads is the
+owner's decision (Phase 6, "Interactive timings").
+
+## 2026-11-17 · Where the Swift looks wrong (Phase 8, ported as it is)
+
+- **A window or Samples drag samples nothing while it moves.**
+  `LandscapeSlider.set` during a drag sets `document.landscape` and no
+  more; `editingChanged(true)` samples the request as it was, at the draft
+  resolution, and `editingChanged(false)` the new one in full. So the
+  drawing shows a coarse copy of the old window for the whole drag, then
+  the new window. The port does the same (probed: gamma's grid is the old
+  window's at 240 after a move, the new one's at 600 after the let-go), and
+  so does the page. A literal's slider does sample each move
+  (`dragLandscape(draft:)` in `move`). The fix in both: `set` calls
+  `dragLandscape(draft: true)` while a drag lasts.
+- **A typed expression's window reach moves with the window.** Swift
+  derives it from the current domain on every redraw, so it stretches under
+  the thumb as it moves; the page pins it for the length of a drag, as
+  Swift pins a literal's reach. A view's detail, not the engine's.
+- **A slider's label is the request's key.** The protocol's landscape
+  slider passes its label to `applying_overrides`, so the page names the
+  window's and the resolution's sliders `rMin`, `rMax`, `iMin`, `iMax`,
+  `res`, and the undo step is named so, where Swift's says "Re", "Im" and
+  "Samples".
+- **A hidden layer is baked.** Swift's Bake writes `framedScene` whole,
+  hidden layers and all, and so does the port's: hiding is the preview's.
+  The page's Export follows, and says so nowhere yet; the fallback, which
+  draws the judged strokes, draws hidden layers too.
+
+## 2026-11-17 · Phase 8 status (steps 1 to 3)
+
+**Done**: steps 1 to 3 of the page (above), with five protocol additions,
+`Document::restore_landscape`, and `kurven-cli session`. **The gate**:
+`web/app/test/browser/page.spec.ts`, five tests run in the swiftshader
+(offscreen), gpu (Metal) and fallback projects: the formula and its
+error marks, at language.json's positions; the catalog, the canvas's
+gestures (zoom's anchor held to 1e-9), a window thumb and the truncation
+height dragged (drafts while the height moves, with WebGPU), a layer
+hidden, levels stepped and dragged, the three modes, a preset, undo;
+Export byte for byte `kurven-cli session` on the page's journal, the URL
+to a fresh page of another size (the same document, the same bytes, and
+natively from its journal); cn's frame at rest; phone width. The whole
+lane: 40 passed, 11 skipped by design (each project's own; the slow-frame
+test needs WebGPU), 7.9 minutes. check-web green, its gates unchanged
+(44 goldens and 87 session files byte-identical native and wasm, the
+session's 28 scripts against Swift's).
+
+**Not done**: steps 4 to 7 (the picker's thumbnails, surfaces and their
+controls, banded truncation's rows, picking and painting and undo's UI,
+`.kurven` files); a link to a surface or a polyhedron; Swift's literal
+sliders (a row for each number in the expression), its Perspective switch
+and depth tolerance field, which the page has no control for (the depth
+tolerance travels in the URL); the presentation and CI runs on Linux of
+the new tests (not run here).
+
+## 2026-11-17 · Review of PR #75: links held to the controls, gestures in order
+
+- **A link is held to what the controls reach.** `restore` sampled
+  whatever a link said: a resolution of a million or a billion levels would
+  hang the Worker on open. It now refuses, touching nothing, a resolution
+  outside the Samples slider's 120 to 2000, a window with no area, a level
+  count outside a level slider's 2 to 80, a hatching of more than a strokes
+  slider's 400 lines across the window, and a contour layer listing more
+  than 1,000 levels (a bound on work; the catalog's own families list 40 at
+  most). `bakeResolution` is refused as the bake refuses it (1 to 20,000),
+  and `camera` refuses non-finite values and units per pixel or a distance
+  that are not positive. Every catalog landscape still restores from what
+  is edited. The page says a refused link in its notice line with the
+  engine's reason, puts back the refinement and mode it sent first, and
+  opens its own landscape, whose link then replaces the refused one.
+- **Gestures are batched, not summed.** The entry above ("What a slow
+  frame at rest forces") said gestures are summed while one is with the
+  engine; summing put the camera elsewhere than the gestures one by one
+  (the orbit's arithmetic does not associate, its elevation is clamped,
+  zooms were taken about the latest anchor and reordered against pans).
+  They now wait in order and go as one `gestures` request, which applies
+  each as `gesture` does: one request behind, and the same camera to the
+  bit, natively (a mixed sequence) and in the page (the gestures given
+  during cn's frame at rest replayed one by one).
+- **The page.** A link pasted into the tab is opened (`hashchange`) and not
+  written over; the page's keys work wherever focus is but in a field
+  that takes text (a select counts: it answers letters); a reply to the
+  formula no longer overwrites or marks text typed after return, and text
+  the engine replaces takes its marks with it; a second pointer on a held
+  slider starts no second drag; a window's thumbs show the clamped value.
+  The page tells edits from looks by the client's `VIEWS`.
+
+Each has a test in `page.spec.ts` (the formula's checked to fail without
+its fix). The lane: 55 passed, 11 skipped by design, 9.5 minutes; a draft
+asked during cn's frame at rest drawn 2.8 s later on Metal, 5.6 s on
+SwiftShader, as before. Export and the link's round trip are the same
+bytes as natively, in all three projects. check-web green.
+
+## 2026-11-17 · Second review of PR #75: a link is untrusted input
+
+- **Every layer a link carries is bounded, or refused.** `linkable` is an
+  allow-list: contours (at most 1,000 levels, finite), hatchings (at most a
+  strokes slider's 400 lines across the window), wall edges (distinct
+  sides of the window's four), the truncation edge, fold curves, slope
+  lines (at most 400 seeds, listed or by arc length across the window);
+  any other kind, a layer stored as arrays among them, is refused, as are
+  more than 64 layers and a truncation that is not finite or has more than
+  64 bands.
+- **A refused link changes nothing.** `restore` makes the landscape in a
+  document of its own, which takes what an open keeps (viewport, mode,
+  draft resolution, refinement), and replaces the open one only once it
+  holds the landscape. A link whose sampling fails (a window whose width
+  overflows a double) leaves the open document and its undo history as
+  they were, natively and in the page. `restore_landscape` settles; the
+  protocol's arm no longer does as well.
+- **A link is read within bounds.** The fragment is refused past 16 KB (a
+  link is 1.3 KB deflated, 7.5 KB plain); the deflate is streamed and
+  stopped past 64 KB out (a link's JSON is 5 to 6 KB); every field the page
+  reads is checked for its type before anything is sent. Each refusal is
+  said in the notice line, and the page starts at its own landscape; every
+  reply of an opening is read, and a refused setting after the landscape
+  is said as "opened, but not all of it".
+- **Cancels.** Every edit goes through `Engine.edit`, and failures through
+  `quietly`, which lets a request the export's Cancel dropped go; a drag
+  the engine took hold of is always let go, its end sent again after a
+  restart.
+- **The formula keeps a draft** typed and not sampled, said as unsampled,
+  until return samples it or escape puts the engine's back.
+- **The controls' reach is the engine's** (`sliders::reach`): `linkable`
+  holds a link to it, and the `catalog` reply sends it to the page, which
+  builds its Samples, level and truncation sliders from it. Swift's views
+  keep their own copies, which the port does not touch.
+- **`camera`** assigns the values it validated.
+
+Tests: four native (an allow-list of kinds; a failed link leaving gamma
+and its undo; the catalog's reach; every catalog landscape restoring) and
+five in the browser lane (eight malformed links, each refused in 1 to 3 s;
+a failed link pasted into a tab; a cancel during a held drag with no error
+left unhandled; the formula's draft; the sliders' reach). The lane: 70
+passed, 11 skipped by design, 11.8 minutes, run under `caffeinate`: this
+laptop sleeps during long runs, and tests that took 7 to 15 minutes in one
+run (a long fragment "refused in 408 s") were the machine asleep
+(`pmset -g log`: DarkWake), the same test refusing in 0.4 s awake. Export
+and the link's round trip are the same bytes as natively in all three
+projects. check-web green.

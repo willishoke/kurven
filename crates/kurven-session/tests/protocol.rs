@@ -1,7 +1,7 @@
 //! The protocol's own rules: what a refusal says it touched, indices
 //! refused rather than truncated, the camera set to the bit.
 
-use kurven_core::json::{self, JsonValue};
+use kurven_core::json::{self, JsonObject, JsonValue};
 use kurven_session::protocol::Session;
 
 fn reply(session: &mut Session, request: &str) -> JsonValue {
@@ -106,4 +106,366 @@ fn a_save_that_cannot_be_made_says_why() {
     let mut s = Session::new();
     let r = reply(&mut s, r#"{"kind":"save","name":"x.kurven"}"#);
     assert_eq!(r.get("error").and_then(JsonValue::as_str), Some("nothing is open to save"));
+}
+
+#[test]
+fn an_expression_is_refused_where_it_went_wrong_touching_nothing() {
+    let mut s = Session::new();
+    reply(&mut s, r#"{"kind":"viewport","width":200,"height":150}"#);
+    reply(&mut s, r#"{"kind":"create","preset":"gamma"}"#);
+    let r = reply(&mut s, r#"{"kind":"expression","expression":"gamma(z, 2)"}"#);
+    assert_eq!(r.get("ok"), Some(&JsonValue::Bool(false)));
+    assert_eq!(r.get("touched"), Some(&JsonValue::Bool(false)));
+    let at = r.get("at").unwrap();
+    assert_eq!(at.get("position").and_then(JsonValue::as_i64), Some(0));
+    assert_eq!(at.get("length").and_then(JsonValue::as_i64), Some(11));
+    assert_eq!(at.get("message").and_then(JsonValue::as_str), Some("gamma takes 1 argument, not 2"));
+    // Counted in characters, as the language counts them: Γ is one.
+    let r = reply(&mut s, r#"{"kind":"expression","expression":"Γ(z) + )"}"#);
+    assert_eq!(r.get("at").unwrap().get("position").and_then(JsonValue::as_i64), Some(7));
+    // Empty input, at its start, as language.json freezes it.
+    let r = reply(&mut s, r#"{"kind":"expression","expression":""}"#);
+    assert_eq!(r.get("at").unwrap().get("position").and_then(JsonValue::as_i64), Some(0));
+}
+
+#[test]
+fn the_catalog_lists_its_presets_with_their_windows() {
+    let mut s = Session::new();
+    let r = reply(&mut s, r#"{"kind":"catalog"}"#);
+    let presets = r.get("presets").and_then(JsonValue::as_array).unwrap();
+    let names: Vec<&str> = presets.iter().filter_map(|p| p.get("name").and_then(JsonValue::as_str)).collect();
+    assert!(names.contains(&"gamma") && names.contains(&"cn"), "{names:?}");
+    assert!(presets.iter().all(|p| p.get("window").is_some() && p.get("label").is_some()));
+}
+
+/// The document's edited state, its camera and what the bake writes.
+fn snapshot(s: &mut Session) -> (JsonValue, JsonValue, Vec<u8>) {
+    let edited = reply(s, r#"{"kind":"edited"}"#).get("edited").cloned().unwrap();
+    let camera =
+        reply(s, r#"{"kind":"state"}"#).get("state").unwrap().get("camera").unwrap().get("exact").cloned().unwrap();
+    let bake = s.call(r#"{"kind":"bake","svg":true}"#);
+    let svg = bake.arrays.into_iter().find(|(n, _)| n == "svg").unwrap().1.into_bytes();
+    (edited, camera, svg)
+}
+
+#[test]
+fn a_restored_landscape_is_the_one_edited_and_bakes_the_same_bytes() {
+    let mut a = Session::new();
+    for r in [
+        r#"{"kind":"viewport","width":400,"height":300}"#,
+        r#"{"kind":"create","preset":"gamma"}"#,
+        r#"{"kind":"set","key":"res","value":140}"#,
+        r#"{"kind":"expression","expression":"gamma(z) + 1/z"}"#,
+        r#"{"kind":"set","key":"rMax","value":3.25}"#,
+        r#"{"kind":"truncation","truncation":{"kind":"uniform","height":3.5}}"#,
+        r#"{"kind":"levels","layer":"mag_major","count":5}"#,
+        r#"{"kind":"gesture","gesture":{"kind":"orbit","delta":[30,-12]}}"#,
+        r#"{"kind":"gesture","gesture":{"kind":"zoom","factor":1.3,"at":[120,80]}}"#,
+        r#"{"kind":"depthTolerance","value":0.03}"#,
+    ] {
+        let r = reply(&mut a, r);
+        assert_eq!(r.get("ok"), Some(&JsonValue::Bool(true)), "{r:?}");
+    }
+    let (edited, camera, svg) = snapshot(&mut a);
+    assert_eq!(edited.get("levelCounts").unwrap().get("mag_major").and_then(JsonValue::as_i64), Some(5));
+
+    // Another viewport: the camera, set outright, carries the framing.
+    let mut b = Session::new();
+    reply(&mut b, r#"{"kind":"viewport","width":640,"height":640}"#);
+    let mut restore = edited.as_object().unwrap().clone();
+    restore.insert("kind".to_string(), json::string("restore"));
+    let r = reply(&mut b, &JsonValue::Object(restore).canonical());
+    assert_eq!(r.get("ok"), Some(&JsonValue::Bool(true)), "{r:?}");
+    let state = r.get("state").unwrap();
+    assert_eq!(state.get("undo").unwrap().get("can"), Some(&JsonValue::Bool(false)));
+    let mut cam = camera.as_object().unwrap().clone();
+    cam.insert("kind".to_string(), json::string("camera"));
+    reply(&mut b, &JsonValue::Object(cam).canonical());
+    reply(&mut b, r#"{"kind":"depthTolerance","value":0.03}"#);
+    let (edited_b, camera_b, svg_b) = snapshot(&mut b);
+    assert_eq!(edited_b, edited);
+    assert_eq!(camera_b, camera);
+    assert!(svg == svg_b, "the restored landscape bakes other bytes");
+}
+
+#[test]
+fn every_catalog_landscape_restores_from_what_is_edited() {
+    let catalog = reply(&mut Session::new(), r#"{"kind":"catalog"}"#);
+    for preset in catalog.get("presets").and_then(JsonValue::as_array).unwrap() {
+        let name = preset.get("name").and_then(JsonValue::as_str).unwrap();
+        let mut a = Session::new();
+        reply(&mut a, r#"{"kind":"viewport","width":200,"height":150}"#);
+        reply(&mut a, &format!(r#"{{"kind":"create","preset":"{name}"}}"#));
+        let edited = reply(&mut a, r#"{"kind":"edited"}"#).get("edited").cloned().unwrap();
+        let mut restore = edited.as_object().unwrap().clone();
+        restore.insert("kind".to_string(), json::string("restore"));
+        let mut b = Session::new();
+        reply(&mut b, r#"{"kind":"viewport","width":200,"height":150}"#);
+        let r = reply(&mut b, &JsonValue::Object(restore).canonical());
+        assert_eq!(r.get("ok"), Some(&JsonValue::Bool(true)), "{name}: {r:?}");
+        assert_eq!(reply(&mut b, r#"{"kind":"edited"}"#).get("edited"), Some(&edited), "{name}");
+    }
+}
+
+#[test]
+fn a_link_asking_for_more_than_the_controls_reach_is_refused_touching_nothing() {
+    let mut a = Session::new();
+    reply(&mut a, r#"{"kind":"viewport","width":200,"height":150}"#);
+    reply(&mut a, r#"{"kind":"create","preset":"gamma"}"#);
+    let edited = reply(&mut a, r#"{"kind":"edited"}"#).get("edited").cloned().unwrap();
+    let base = edited.as_object().unwrap().clone();
+    let landscape = |key: &str, value: JsonValue| {
+        let mut o = base.clone();
+        let mut l = o["landscape"].as_object().unwrap().clone();
+        l.insert(key.to_string(), value);
+        o.insert("landscape".to_string(), JsonValue::Object(l));
+        o
+    };
+    let layer = |name: &str, change: &dyn Fn(&mut JsonObject)| {
+        let mut o = base.clone();
+        let layers: Vec<JsonValue> = o["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                let mut l = l.as_object().unwrap().clone();
+                if l["name"].as_str() == Some(name) {
+                    let mut source = l["source"].as_object().unwrap().clone();
+                    change(&mut source);
+                    l.insert("source".to_string(), JsonValue::Object(source));
+                }
+                JsonValue::Object(l)
+            })
+            .collect();
+        o.insert("layers".to_string(), JsonValue::Array(layers));
+        o
+    };
+    let mut counts = base.clone();
+    counts.insert("levelCounts".to_string(), json::object([("mag_major", JsonValue::Int(1_000_000_000))]));
+    let mut window = base.clone();
+    let mut l = window["landscape"].as_object().unwrap().clone();
+    l.insert("domain".to_string(), json::parse(r#"{"real":{"lo":1,"hi":1},"imag":{"lo":0,"hi":2}}"#).unwrap());
+    window.insert("landscape".to_string(), JsonValue::Object(l));
+    let cases = [
+        ("resolution", landscape("resolution", JsonValue::Int(1_000_000))),
+        ("levels", counts),
+        ("window", window),
+        (
+            "hatching",
+            layer("wall_hatch", &|s| {
+                s.insert("spacing".to_string(), JsonValue::Double(1e-9));
+            }),
+        ),
+        (
+            "contour levels",
+            layer("mag_minor", &|s| {
+                s.insert(
+                    "levels".to_string(),
+                    json::doubles(&(0..5000).map(|k| f64::from(k) * 1e-3).collect::<Vec<_>>()),
+                );
+            }),
+        ),
+    ];
+    for (what, mut link) in cases {
+        link.insert("kind".to_string(), json::string("restore"));
+        let mut b = Session::new();
+        let r = reply(&mut b, &JsonValue::Object(link).canonical());
+        assert_eq!(r.get("ok"), Some(&JsonValue::Bool(false)), "{what}");
+        assert_eq!(r.get("touched"), Some(&JsonValue::Bool(false)), "{what}");
+        assert_eq!(r.get("state").unwrap().get("kind").and_then(JsonValue::as_str), Some("empty"), "{what}");
+        println!("{what}: {}", r.get("error").and_then(JsonValue::as_str).unwrap());
+    }
+    for bad in [r#"{"kind":"bakeResolution","value":0}"#, r#"{"kind":"bakeResolution","value":1000000000}"#] {
+        assert_eq!(reply(&mut a, bad).get("touched"), Some(&JsonValue::Bool(false)), "{bad}");
+    }
+    let mut camera = reply(&mut a, r#"{"kind":"state"}"#)
+        .get("state")
+        .unwrap()
+        .get("camera")
+        .unwrap()
+        .get("exact")
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+    camera.insert("kind".to_string(), json::string("camera"));
+    camera.insert("unitsPerPixel".to_string(), JsonValue::Double(0.0));
+    assert_eq!(reply(&mut a, &JsonValue::Object(camera).canonical()).get("touched"), Some(&JsonValue::Bool(false)));
+}
+
+#[test]
+fn gestures_in_one_request_leave_the_camera_each_alone_leaves() {
+    let gestures = [
+        r#"{"kind":"orbit","delta":[13.5,-4]}"#,
+        r#"{"kind":"zoom","factor":1.37,"at":[40,20]}"#,
+        r#"{"kind":"orbit","delta":[2,900]}"#,
+        r#"{"kind":"pan","delta":[-7,3.25]}"#,
+        r#"{"kind":"zoom","factor":0.61,"at":[150,90]}"#,
+        r#"{"kind":"orbit","delta":[-31,-2.5]}"#,
+    ];
+    let open = |s: &mut Session| {
+        reply(s, r#"{"kind":"viewport","width":200,"height":150}"#);
+        reply(s, r#"{"kind":"create","preset":"sin"}"#);
+    };
+    let (mut one, mut all) = (Session::new(), Session::new());
+    open(&mut one);
+    open(&mut all);
+    for g in gestures {
+        reply(&mut one, &format!(r#"{{"kind":"gesture","gesture":{g}}}"#));
+    }
+    reply(&mut all, &format!(r#"{{"kind":"gestures","gestures":[{}]}}"#, gestures.join(",")));
+    let camera = |s: &mut Session| {
+        reply(s, r#"{"kind":"state"}"#).get("state").unwrap().get("camera").unwrap().get("exact").cloned().unwrap()
+    };
+    assert_eq!(camera(&mut one), camera(&mut all));
+    // A malformed gesture applies none of them.
+    let before = camera(&mut all);
+    let r = reply(&mut all, r#"{"kind":"gestures","gestures":[{"kind":"orbit","delta":[1,1]},{"kind":"spin"}]}"#);
+    assert_eq!(r.get("touched"), Some(&JsonValue::Bool(false)));
+    assert_eq!(camera(&mut all), before);
+}
+
+/// gamma's link, as `edited` and `restore` spell it, changed by `change`.
+fn gamma_link(change: impl FnOnce(&mut JsonObject)) -> String {
+    let mut a = Session::new();
+    reply(&mut a, r#"{"kind":"viewport","width":200,"height":150}"#);
+    reply(&mut a, r#"{"kind":"create","preset":"gamma"}"#);
+    let mut link = reply(&mut a, r#"{"kind":"edited"}"#).get("edited").unwrap().as_object().unwrap().clone();
+    change(&mut link);
+    link.insert("kind".to_string(), json::string("restore"));
+    JsonValue::Object(link).canonical()
+}
+
+/// `link`'s layers, with the source of the one named `name` changed.
+fn change_source(link: &mut JsonObject, name: &str, change: &dyn Fn(&mut JsonObject)) {
+    let layers: Vec<JsonValue> = link["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            let mut l = l.as_object().unwrap().clone();
+            if l["name"].as_str() == Some(name) {
+                let mut source = l["source"].as_object().unwrap().clone();
+                change(&mut source);
+                l.insert("source".to_string(), JsonValue::Object(source));
+            }
+            JsonValue::Object(l)
+        })
+        .collect();
+    link.insert("layers".to_string(), JsonValue::Array(layers));
+}
+
+#[test]
+fn a_link_carries_only_the_layers_it_can_hold_to_a_bound() {
+    let slope_lines = json::parse(
+        r##"{"name":"slope_lines","role":"phase","width":0.2,"color":"#000000","clipped":true,"heightPolicy":"magnitude",
+            "source":{"kind":"integralCurves","field":{"kind":"slope","of":"magnitude"},
+                      "seeds":{"on":{"field":"magnitude","level":1},"at":{"kind":"arcLength","spacing":1e-9}},
+                      "faces":{"kind":"graph","tiled":false}}}"##,
+    )
+    .unwrap();
+    let file = json::parse(
+        r##"{"name":"stored","role":"magnitude","width":0.2,"color":"#000000","clipped":true,"heightPolicy":"magnitude",
+            "source":{"kind":"file","vertices":"layers/a.npy","offsets":"layers/b.npy"}}"##,
+    )
+    .unwrap();
+    let add = |layer: JsonValue| {
+        move |l: &mut JsonObject| {
+            let mut layers = l["layers"].as_array().unwrap().to_vec();
+            layers.push(layer.clone());
+            l.insert("layers".to_string(), JsonValue::Array(layers));
+        }
+    };
+    let cases: Vec<(&str, String)> = vec![
+        (
+            "wall edges",
+            gamma_link(|l| {
+                change_source(l, "wall_edges", &|s| {
+                    s.insert("edges".to_string(), json::ints(&[0, 0, 7]));
+                })
+            }),
+        ),
+        ("slope lines", gamma_link(add(slope_lines.clone()))),
+        ("a stored layer", gamma_link(add(file.clone()))),
+        (
+            "many layers",
+            gamma_link(|l| {
+                let one = l["layers"].as_array().unwrap()[0].clone();
+                l.insert("layers".to_string(), JsonValue::Array(vec![one; 100]));
+            }),
+        ),
+        (
+            "many bands",
+            gamma_link(|l| {
+                let bands: Vec<JsonValue> = (0..1000)
+                    .map(|k| {
+                        json::object([("below", JsonValue::Double(f64::from(k))), ("height", JsonValue::Double(3.0))])
+                    })
+                    .collect();
+                l.insert(
+                    "truncation".to_string(),
+                    json::object([
+                        ("kind", json::string("realBands")),
+                        ("bands", JsonValue::Array(bands)),
+                        ("beyond", JsonValue::Double(3.0)),
+                    ]),
+                );
+            }),
+        ),
+    ];
+    for (what, link) in cases {
+        let mut b = Session::new();
+        let r = reply(&mut b, &link);
+        assert_eq!(r.get("ok"), Some(&JsonValue::Bool(false)), "{what}");
+        assert_eq!(r.get("touched"), Some(&JsonValue::Bool(false)), "{what}");
+        println!("{what}: {}", r.get("error").and_then(JsonValue::as_str).unwrap());
+    }
+}
+
+#[test]
+fn a_link_that_cannot_be_sampled_leaves_the_open_document_and_its_undo() {
+    let mut s = Session::new();
+    reply(&mut s, r#"{"kind":"viewport","width":200,"height":150}"#);
+    reply(&mut s, r#"{"kind":"create","preset":"gamma"}"#);
+    reply(&mut s, r#"{"kind":"truncation","truncation":{"kind":"uniform","height":3.5}}"#);
+    let before = reply(&mut s, r#"{"kind":"edited"}"#).get("edited").cloned().unwrap();
+    let undo = reply(&mut s, r#"{"kind":"state"}"#).get("state").unwrap().get("undo").cloned().unwrap();
+    // Each end finite, the window's width not: the bound passes it, and
+    // the sampling cannot place a grid on it.
+    let link = gamma_link(|l| {
+        let mut r = l["landscape"].as_object().unwrap().clone();
+        r.insert(
+            "domain".to_string(),
+            json::parse(r#"{"real":{"lo":-1e308,"hi":1e308},"imag":{"lo":0,"hi":2}}"#).unwrap(),
+        );
+        l.insert("landscape".to_string(), JsonValue::Object(r));
+        let kept: Vec<JsonValue> = l["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|x| x.get("source").and_then(|s| s.get("kind")).and_then(JsonValue::as_str) != Some("hatching"))
+            .cloned()
+            .collect();
+        l.insert("layers".to_string(), JsonValue::Array(kept));
+    });
+    let r = reply(&mut s, &link);
+    assert_eq!(r.get("ok"), Some(&JsonValue::Bool(false)));
+    assert_eq!(r.get("touched"), Some(&JsonValue::Bool(false)));
+    assert!(r.get("error").and_then(JsonValue::as_str).unwrap().contains("could not be made"), "{r:?}");
+    assert_eq!(reply(&mut s, r#"{"kind":"edited"}"#).get("edited"), Some(&before));
+    let state = reply(&mut s, r#"{"kind":"state"}"#);
+    assert_eq!(state.get("state").unwrap().get("undo"), Some(&undo));
+    assert_eq!(state.get("state").unwrap().get("kind").and_then(JsonValue::as_str), Some("landscape"));
+    // ...and it still undoes the step it had.
+    reply(&mut s, r#"{"kind":"undo"}"#);
+    assert_ne!(reply(&mut s, r#"{"kind":"edited"}"#).get("edited"), Some(&before));
+}
+
+#[test]
+fn the_catalog_says_how_far_the_controls_reach() {
+    let r = reply(&mut Session::new(), r#"{"kind":"catalog"}"#);
+    let c = r.get("controls").unwrap();
+    assert_eq!(c.get("samples").unwrap().get("max").and_then(JsonValue::as_i64), Some(2000));
+    assert_eq!(c.get("levels").unwrap().get("max").and_then(JsonValue::as_i64), Some(80));
+    assert_eq!(c.get("strokes").unwrap().get("max").and_then(JsonValue::as_i64), Some(400));
 }
