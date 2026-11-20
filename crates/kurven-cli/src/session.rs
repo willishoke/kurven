@@ -1,5 +1,6 @@
 //! `kurven-cli session REQUESTS [-o out.svg] [--state S.json] [--edited E.json]
-//! [--stage NAME DIR]... [--save NAME DIR]`: the page's protocol run natively. Each line of REQUESTS is one request as
+//! [--stage NAME DIR]... [--save NAME DIR] [--replies DIR]`: the page's protocol
+//! run natively. Each line of REQUESTS is one request as
 //! the page sends it to its Worker (`web/app/src/engine/protocol.ts`), run in
 //! order through the same `Session` the wasm module wraps; a refusal is
 //! printed and the run goes on, as the page goes on. Then the judged strokes
@@ -8,7 +9,9 @@
 //! as JSON, when asked. `--stage` stages a bundle directory's files under
 //! NAME first, as the page stages a bundle it opens (an `open` names it);
 //! `--save` writes what the page's Save bundle saves (`{"kind": "save"}`)
-//! into DIR, its files at their paths.
+//! into DIR, its files at their paths; `--replies` writes every reply, its
+//! JSON and its arrays (`replies`), as `crates/kurven-wasm/requests.mjs`
+//! writes the wasm module's, which the check requires to be the same bytes.
 //! The browser lane holds the page's exported SVG to
 //! this, byte for byte (crates/FINDINGS.md, Phase 8).
 
@@ -21,6 +24,7 @@ pub fn session_command(args: &[String]) -> Result<(), String> {
     let (mut svg, mut state, mut edited) = (None, None, None);
     let mut staged: Vec<(String, String)> = Vec::new();
     let mut save: Option<(String, String)> = None;
+    let mut replies: Option<String> = None;
     let mut words = args.iter();
     while let Some(word) = words.next() {
         let mut value = |flag: &str| words.next().cloned().ok_or_else(|| format!("{flag} wants a path"));
@@ -32,6 +36,7 @@ pub fn session_command(args: &[String]) -> Result<(), String> {
                 let name = value("--stage")?;
                 staged.push((name, value("--stage")?));
             }
+            "--replies" => replies = Some(value("--replies")?),
             "--save" => {
                 let name = value("--save")?;
                 save = Some((name, value("--save")?));
@@ -47,8 +52,16 @@ pub fn session_command(args: &[String]) -> Result<(), String> {
     for (name, dir) in &staged {
         stage_directory(&mut session, name, std::path::Path::new(dir), "")?;
     }
-    for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
-        let reply = json::parse(&session.call(line).json).map_err(|e| format!("{path}:{}: {e}", n + 1))?;
+    if let Some(dir) = &replies {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
+    }
+    // A line starting with `#` is a comment (a fixture says what it stages).
+    for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty() && !l.starts_with('#')) {
+        let answer = session.call(line);
+        if let Some(dir) = &replies {
+            write_reply(dir, n + 1, &answer)?;
+        }
+        let reply = json::parse(&answer.json).map_err(|e| format!("{path}:{}: {e}", n + 1))?;
         if reply.get("ok").and_then(JsonValue::as_bool) != Some(true) {
             let error = reply.get("error").and_then(JsonValue::as_str).unwrap_or("refused");
             eprintln!("kurven-cli: {path}:{}: refused: {error}", n + 1);
@@ -115,6 +128,22 @@ fn stage_directory(session: &mut Session, name: &str, dir: &std::path::Path, pre
             let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             session.stage(name, &at, bytes);
         }
+    }
+    Ok(())
+}
+
+/// A reply as `--replies` writes it: `NNNN.json`, and each array as
+/// `NNNN.<name>.bin`, its name's characters outside `[A-Za-z0-9._-]` as `_`.
+fn write_reply(dir: &str, line: usize, reply: &kurven_session::protocol::Reply) -> Result<(), String> {
+    let base = std::path::Path::new(dir);
+    let write = |name: String, bytes: &[u8]| {
+        std::fs::write(base.join(&name), bytes).map_err(|e| format!("{}: {e}", base.join(&name).display()))
+    };
+    write(format!("{line:04}.json"), reply.json.as_bytes())?;
+    for (name, array) in &reply.arrays {
+        let safe: String =
+            name.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).collect();
+        write(format!("{line:04}.{safe}.bin"), array.bytes())?;
     }
     Ok(())
 }

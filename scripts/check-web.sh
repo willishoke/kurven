@@ -302,6 +302,28 @@ identity() {
 }
 step "wasm under Node writes the golden sets and the session's files native writes, byte for byte" identity
 
+# The page's requests of steps 4 to 7 (crates/fixtures/page/*.jsonl: the
+# picker's thumbnails, a surface's controls, a banded truncation dragged, a
+# face picked and painted, bundles opened from files and saved), every
+# reply -- its JSON and its arrays -- through the page's module under Node,
+# byte for byte what `kurven-cli session --replies` answers natively.
+requests() {
+    local here="$CRATES/fixtures/page" inputs="$CRATES/fixtures/swift/session/inputs" f name
+    local stages=(--stage frame.kurven "$inputs/frame.kurven" --stage gamma.kurven "$inputs/gamma.kurven"
+        --stage relief.kurven "$inputs/relief.kurven" --stage cube.kurven "$inputs/cube.kurven"
+        --stage levels.kurven "$here/levels.kurven")
+    for f in "$here"/*.jsonl; do
+        name="$(basename "$f" .jsonl)"
+        rm -rf "$WORK/requests-native/$name" "$WORK/requests-wasm/$name"
+        "$CLI" session "$f" "${stages[@]}" --replies "$WORK/requests-native/$name" 2>/dev/null &&
+            node "$CRATES/kurven-wasm/requests.mjs" "$PAGE_WASM" "$f" "$WORK/requests-wasm/$name" "${stages[@]}" &&
+            diff -r "$WORK/requests-native/$name" "$WORK/requests-wasm/$name" &&
+            echo "$name: $(find "$WORK/requests-native/$name" -type f | wc -l | tr -d ' ') reply file(s) byte-identical, native and the page's wasm" ||
+            return 1
+    done
+}
+step "the page's requests (steps 4 to 7) answered the same natively and in wasm, byte for byte" requests
+
 # The Worker protocol end to end under Node (worker_threads, no browser): the
 # page's client (web/app/src/engine/client.ts) driving the wasm module in a
 # Worker, its saved manifest Swift's and its drawing native's, a superseded

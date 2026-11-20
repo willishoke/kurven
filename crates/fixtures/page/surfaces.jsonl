@@ -1,0 +1,28 @@
+# A surface's controls (step 5): a torus's radius typed past its reach, its
+# lines counted, the linear curve on and its slope dragged to a fraction,
+# then a function painted (periodic) and its samples; sn's coordinate
+# curves, conformal, its modulus dragged; the forced torus's components.
+{"kind":"viewport","width":900,"height":700}
+{"kind":"createSurface","preset":"torus"}
+{"kind":"surfaceField","field":"major","value":7}
+{"kind":"surfaceLineCount","axis":"across","count":11}
+{"kind":"linearCurve","on":true}
+{"kind":"drag","control":{"slider":"surfaceField","field":"slope","label":"Slope"},"phase":"begin"}
+{"kind":"drag","control":{"slider":"surfaceField","field":"slope","label":"Slope"},"phase":"move","value":0.6612,"rest":true}
+{"kind":"drag","control":{"slider":"surfaceField","field":"slope","label":"Slope"},"phase":"end"}
+{"kind":"preview","draft":false}
+{"kind":"bake","svg":true}
+{"kind":"function","expression":"sin(z)"}
+{"kind":"surfaceField","field":"grid","value":200}
+{"kind":"bake","svg":true}
+{"kind":"createSurface","preset":"sn"}
+{"kind":"surfaceLines","on":true}
+{"kind":"surfaceField","field":"conformal","value":1}
+{"kind":"drag","control":{"slider":"surfaceField","field":"modulus","label":"Modulus"},"phase":"begin"}
+{"kind":"drag","control":{"slider":"surfaceField","field":"modulus","label":"Modulus"},"phase":"move","value":0.5,"rest":true}
+{"kind":"drag","control":{"slider":"surfaceField","field":"modulus","label":"Modulus"},"phase":"end"}
+{"kind":"bake","svg":true}
+{"kind":"createSurface","preset":"forced"}
+{"kind":"component","field":"radial","value":1}
+{"kind":"linearCurve","on":true}
+{"kind":"state"}

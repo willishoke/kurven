@@ -1,0 +1,12 @@
+# Step 7: bundles opened from files -- refused past the controls' reach,
+# touching nothing -- and saved.
+{"kind":"viewport","width":900,"height":700}
+{"kind":"create","preset":"sin"}
+{"kind":"open","name":"levels.kurven","untrusted":true}
+{"kind":"open","name":"gamma.kurven","untrusted":true}
+{"kind":"truncation","truncation":{"kind":"uniform","height":4}}
+{"kind":"save","name":"gamma.kurven"}
+{"kind":"open","name":"relief.kurven","untrusted":true}
+{"kind":"save","name":"relief.kurven"}
+{"kind":"open","name":"cube.kurven","untrusted":true}
+{"kind":"save","name":"cube.kurven"}
