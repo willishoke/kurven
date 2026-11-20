@@ -3529,4 +3529,13 @@ range** (SurfaceSection's `quantize` result goes to `set` as it is), so a
 forced torus whose rotation number lay past 2 would rest its Slope slider
 outside the slider's own range; ported as it is.
 
-Gates after the review: below, in the status entry's place, as run.
+**CI's first run of PR #77** failed at the page's requests step on Linux:
+`crates/fixtures/page/levels.kurven/` was left out by .gitignore's
+`*.kurven/` and never committed, and the step discarded the native
+session's errors, so it said nothing of why. The bundle is negated in
+.gitignore as the session's inputs are and committed; the step's errors
+are printed; and the step first requires every file it reads
+(`crates/fixtures/page`, the session's inputs) to be the commit's -- none
+ignored, none untracked, none changed since (`committed` in check-web.sh,
+checked failing for an ignored, an untracked and a staged fixture) -- so a
+missing fixture fails on this Mac first.
