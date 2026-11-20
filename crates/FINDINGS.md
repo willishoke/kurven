@@ -3402,3 +3402,81 @@ not done.
   `caffeinate`. Every coverage figure is the one before: the frame at rest
   is the same strokes, laid out elsewhere.
 - **Not run**: the lane on Linux or in CI; the measurement test there.
+
+## 2026-11-19 · Review of PR #76: shares name their document, drifted helpers come back
+
+A code review gave ten findings. Each was checked against the code; all ten
+were real, and all ten are fixed. None was rejected. Where a fix stops short
+of what was asked, it says so below.
+
+1. **A helper that drifted was never brought back.** It is now. Every share
+   names the fingerprint of the document it was asked of: `bakePiece` and
+   `bakeAssemble` the bake's (`Document::bake_fingerprint`: the framed scene,
+   the depth tolerance, the bake's resolution), and `restLayout` the frame at
+   rest's. An engine holding another document refuses the share with
+   `another: true`. The pool then marks the helper (`dirty`), restarts it and
+   replays the primary's journal into it (`adopt`), and hands the share out
+   again, twice at most. A helper is marked the same way when a share fails
+   other than by a cancel or a dead Worker (a replay cut short,
+   `JournalTruncated`, among them), and when it refuses a layout. Tested in
+   `pool.test.mjs`: every helper's document changed behind the pool's back,
+   then one helper's, then a frame at rest with every helper drifted; each
+   time the bytes or the frame are the primary's. `JournalTruncated` itself
+   is not forced in a test: it takes the same path as any failure that is not
+   a cancel.
+2. **The log grew without bound.** A client now keeps the log only once a
+   pool asks it to (`keepLog`), so without a pool (`?pool=0`) and on a
+   helper's own client nothing is logged. It is trimmed with the journal to
+   twice the journal's length plus sixteen: a helper further behind than that
+   replays the journal rather than catch up, so nothing older is of use.
+   Tested: 120 viewports and a 40-move drag leave the log within the bound,
+   the helpers' logs empty, and a client with no pool logs nothing.
+3. **An assembly after the document moved on mixed two documents.** The
+   pieces are all of the plan's document, since a piece of another is
+   refused. The decision is to **export the plan's document consistently**,
+   as one engine's bake, asked before an edit, baked the document as it was.
+   `bakeAssemble` carries the plan's fingerprint and frame. When the primary
+   still holds that document the reply is `bake`'s. When it has moved on,
+   the strokes and SVG are the plan's document's, the frame is the plan's,
+   the reply says `snapshot`, and the bake's status says "of the document as
+   it was when the bake was asked". The page downloads it, and its status
+   line says so. Tested natively: a move and a truncation between the pieces
+   and the assembly give the bytes and frame of the bake before them.
+4. **A cancel during assembly still downloaded the SVG.** The bake now
+   rejects with `Cancelled` when the job was abandoned while the primary put
+   the pieces together, and the page writes nothing. Tested.
+5. **Every refusal of a given layout was swallowed.** Now only a frame that a
+   move overtook (the epoch moved) is let go quietly. Any other refusal is
+   logged, counted (`view.fallbacks`), and the frame at rest is laid out by
+   the page's engine itself, so the rest still refines.
+6. **A refused piece reported the first refusal in time.** It now reports the
+   first in plan order. Once a piece at index k is refused, no piece after k
+   is handed out, those before it still are, and the lowest refused index is
+   reported. Tested with two pieces refused on purpose, the later one
+   answering first: the bake reports the earlier, as its status too. No real
+   piece can be refused today: the port constructs no `PortRefusal`, and a
+   piece of another scene is refused as of another document. So the
+   equivalence with the single engine is tested on the refusals that do
+   happen, before the pieces: a perspective camera gives the same error and
+   the same status pooled and alone (natively and under Node).
+7. **`rest_layers` ran a whole preview.** It is now keys alone: for each shown
+   layer tested for the camera, its key at rest (`preview::rest_key`, which
+   `preview` itself now uses for the same keys) against what the page holds.
+   It builds no resources, lays out nothing, and leaves the preview's memo
+   alone. Tested: holding the frame at rest's keys it wants none, holding
+   none it wants exactly the tested layers.
+8. **The fingerprint was rehashed on every ask.** It is now cached per slot
+   (the frame at rest's, the bake's), keyed on the scene's content and
+   curves, its camera, depth tolerance and resolution, and the bake's
+   resolution. A `ContentID` is counted per process and is new whenever a
+   scene's geometry or curves are (the preview's keys rest on the same
+   claim), so the key changes whenever what is hashed can.
+9. **Two copies of the bake's preconditions, and of `have`'s parsing.**
+   `Document::bake` now asks the same `bake_inputs_said` the plan does, and
+   both `preview` and `restLayers` read what the page holds with one parser
+   (`holdings`).
+10. **A pool of at least one helper on a one-core machine.** `poolSize` is 0
+    for one core or none reported, so the page runs on its own engine.
+
+Both gates were green after the fixes; the counts are in the report of this
+round.
