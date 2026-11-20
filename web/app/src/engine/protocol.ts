@@ -46,8 +46,17 @@ export type Request =
   | { kind: "expression"; expression: string }
   | { kind: "set"; key: string; value: number }
   /** `rest`: a surface field's slider value, which the engine clamps and
-   * rests at its step or a detent within reach (SurfaceSection.swift). */
-  | { kind: "drag"; control: Slider; phase: "begin" | "move" | "end"; value?: number | [number, number]; rest?: boolean }
+   * rests at its step or a detent within reach (SurfaceSection.swift).
+   * `truncation`: a banded truncation's height dragged, the whole truncation
+   * as its rows set it (TruncationSection.swift). */
+  | {
+      kind: "drag";
+      control: Slider;
+      phase: "begin" | "move" | "end";
+      value?: number | [number, number];
+      rest?: boolean;
+      truncation?: Truncation;
+    }
   /** A catalog entry's picture for the picker, in a scene of its own: the
    * preview frame at rest, or with `judged` the judged strokes (Phase 8,
    * step 4; kurven_session::thumbnails). */
@@ -59,6 +68,9 @@ export type Request =
   | { kind: "surfaceLineCount"; axis: "around" | "across"; count: number }
   | { kind: "linearCurve"; on: boolean }
   | { kind: "component"; field: "radial" | "axial"; value: number }
+  /** The periods "Function…" offers for an expression (Phase 8, step 6): the
+   * catalog's (`known`), and the one the sheet opens with (`offered`). */
+  | { kind: "periods"; expression: string }
   | { kind: "levels"; layer: string; count: number }
   | { kind: "resetLevels"; layer: string }
   | { kind: "strokes"; layer: string; count: number }
@@ -158,7 +170,8 @@ export interface ExpressionAt {
 export type Truncation =
   | { kind: "none" }
   | { kind: "uniform"; height: number }
-  | { kind: "realBands"; bands: { below: number; height: number }[]; beyond: number };
+  /** `beyond` absent: none, everything past the last band drawn as it is. */
+  | { kind: "realBands"; bands: { below: number; height: number }[]; beyond?: number };
 
 /** A control named in a drag. */
 export type Slider =
@@ -230,7 +243,14 @@ export interface LayerState {
   levels?: number;
   strokes?: number;
   light?: [number, number, number];
+  /** The light's azimuth and elevation, in degrees. */
+  lightAngles?: [number, number];
+  /** Which way a plateau hatching runs. */
+  axis?: "real" | "imag";
   spacing?: number;
+  /** The drawn layer's paths, and whether it is tested for visibility. */
+  paths?: number;
+  clipped?: boolean;
 }
 
 /** The document as the page shows it: everything a control reads. */
@@ -260,9 +280,16 @@ export interface DocumentState {
     face: string;
     copy: number;
     title: string;
+    /** What a layer added here lies on (`paintCaption`). */
+    caption: string;
     choices: { id: string; label: string }[];
     layers: string[];
+    /** Whether "Function…" is offered, and the function painted now. */
+    takesFunction: boolean;
+    expression: string;
   } | null;
+  /** A polyhedron, as its section describes it. */
+  polyhedron: { solid: string; boundary: string; shapeLabel: string; shape: string } | null;
   undo: { can: boolean; name: string | null };
   redo: { can: boolean; name: string | null };
   current: boolean;

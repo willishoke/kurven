@@ -142,6 +142,45 @@ impl Document {
         }
     }
 
+    /// What the picked face is, and what a layer added there lies on
+    /// (`paintCaption`).
+    pub fn paint_caption(&mut self, pick: &FacePick) -> String {
+        let count = match self.scene.clone() {
+            Some(scene) => self.faces_of(&scene).iter().filter(|f| f.id.kind() == pick.face.kind()).count(),
+            None => 0,
+        };
+        let tiles = if self.paints_every_tile() { ", on every tile" } else { "" };
+        match pick.face {
+            FaceID::Graph => format!("Picked the graph. A layer added here lies on the graph{tiles}."),
+            FaceID::Plateau { band } => format!(
+                "Picked plateau {band}. A layer added here lies on {}{tiles}.",
+                if count == 1 {
+                    "the whole plateau, wherever |f| reaches the truncation".to_string()
+                } else {
+                    format!("all {count} plateaus")
+                }
+            ),
+            FaceID::Riser { .. } | FaceID::TileBoundaryRiser { .. } => format!(
+                "Picked {pick}. A layer added here lies on {}{tiles}.",
+                if count == 1 { "it".to_string() } else { format!("all {count} risers") }
+            ),
+            FaceID::Wall { edge } => format!(
+                "Picked wall {edge}. A layer added here lies on wall {edge} alone; a layer listed may lie on other \
+                 walls too."
+            ),
+            FaceID::Surface => "Picked the surface, which is one face.".to_string(),
+            FaceID::Solid { face } => {
+                format!("Picked face {face}. Hatching added here lies on all {count} faces of the solid.")
+            }
+        }
+    }
+
+    /// Whether "Function…" is offered on the pick: on a surface whose
+    /// request takes a function painted on it.
+    pub fn offers_function(&self, pick: &FacePick) -> bool {
+        pick.face == FaceID::Surface && self.edited().and_then(|e| e.request).is_some_and(|r| r.takes_function())
+    }
+
     // MARK: - adding
 
     /// What the Add menu offers on the picked face: a contour of each field

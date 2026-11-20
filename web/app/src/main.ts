@@ -106,7 +106,7 @@ const panel = new Panel({
   cancelExport: () => void client.cancel("the export was cancelled").catch(quietly),
   browse: () => picker.open(),
 });
-app.replaceChildren(stage, panel.root, picker.dialog);
+app.replaceChildren(stage, panel.root, picker.dialog, panel.paint.sheet.dialog);
 if (!view.usesGPU) {
   // Said where the drawing is: no drafts here, and each frame at rest is the
   // bake (the browser lane reads it as #status, Phase 7's name).

@@ -555,187 +555,184 @@ pub fn preview_scene(
     have_content: Option<&str>,
     have: &BTreeSet<String>,
 ) -> Preview {
-    {
-        let Framed { navigator, viewport, mode } = at;
-        let frame = navigator.framing.frame(viewport);
-        let clip = match scene.camera.projection {
-            Projection::Orthographic { .. } => frame.metal_clip(),
-            Projection::Perspective { fov_y } => {
-                kurven_core::camera::Camera::perspective_clip(fov_y, frame.cols as f64 / frame.rows as f64)
-            }
-        };
-        let view = scene.camera.view;
-        let parametric = scene.parametric().cloned();
-        let bounds =
-            (matches!(mode, PreviewMode::Depth) || parametric.is_some()).then(|| scene.quick_bounds(QUICK_BOUNDS));
-        let depth_range = match (&mode, bounds.flatten()) {
-            (PreviewMode::Depth, Some(b)) => [b.lo.z, b.hi.z],
-            _ => [0.0, 1.0],
-        };
-        let surface_depth_range = parametric.as_ref().map(|_| {
-            let (lo, hi) = bounds.flatten().map_or((-1.0, 1.0), |b| (b.lo.z, b.hi.z));
-            let pad = 0.05 * (hi - lo) + 1e-6;
-            [lo - pad, hi + pad]
-        });
-        let truncation_height = scene.heightfield().and_then(DrawnGrid::ceiling_of);
-        let lighting = match mode {
-            PreviewMode::Shaded(l) => l,
-            // `KVShading`'s light outside the shaded mode, as Swift fills it;
-            // nothing reads it there.
-            _ => kurven_core::scene::Lighting { direction: [0.4, -0.6, 0.7], ambient: 0.25 },
-        };
-        let sight = view.projection_direction();
-        let eye = view.inverse().apply(P3::<ViewSpace>::new(0.0, 0.0, 0.0));
-        let uniforms = Uniforms {
-            view: columns(&view.m),
-            clip: columns(&clip),
-            truncation_height,
-            frame,
-            depth_tolerance: scene.depth_tolerance,
-            light_direction: lighting.direction,
-            ambient: lighting.ambient,
-            depth_range,
-            surface_depth_range,
-            sight: [sight.x, sight.y, sight.z],
-            eye: [eye.x(), eye.y(), eye.z()],
-            perspective: scene.camera.is_perspective(),
-        };
-
-        let content = format!("{nonce}~{}", scene.content().raw());
-        memo.forget_unless(&content);
-        let resources = (have_content != Some(content.as_str())).then(|| Resources::of(&scene));
-        let widest = scene.layers().iter().map(|l| l.spec.width).fold(None, |m: Option<f64>, w| {
-            Some(match m {
-                Some(m) => kurven_math::swift::max(m, w),
-                None => w,
-            })
-        });
-        // Every key starts with the content and the curves: a new scene is new
-        // geometry, whatever its layers' places.
-        let curves = format!("{content}.{}", scene.curves().raw());
-        let camera = camera_key(&scene, draft);
-        // The strokes of a parametric scene's layout are the camera's only
-        // if some layer is tested for it (Swift's `lineGeometry(for:draft:)`
-        // asks `visible && draft`).
-        let lines_draft = draft && scene_is_tested_exactly(&scene);
-        let grid = match &parametric {
-            Some(s)
-                if s.outward.is_some()
-                    && scene
-                        .layers()
-                        .iter()
-                        .any(|l| l.paths.coords.is_some() && !matches!(l.spec.source, LayerSource::FoldCurves)) =>
-            {
-                Some(memo.grid_normals(&scene, s))
-            }
-            _ => None,
-        };
-        let mut layers = Vec::with_capacity(scene.layers().len());
-        for (i, layer) in scene.layers().iter().enumerate() {
-            let tested = is_tested_exactly(layer, &scene);
-            let folds = matches!(layer.spec.source, LayerSource::FoldCurves);
-            let shown = visible.contains(&i);
-            let width = match widest {
-                Some(w) if w > 0.0 => layer.spec.width / w,
-                _ => 1.0,
-            };
-            let base = |key: String, pipeline: Pipeline, depth_tolerance: Option<f64>| LayerDraw {
-                name: layer.spec.name.clone(),
-                key,
-                visible: shown,
-                pipeline,
-                color: color(&layer.spec.color),
-                width,
-                depth_tolerance,
-                refusal: None,
-                segments: None,
-            };
-            let mut draw = if let Some(s) = &parametric {
-                // `renderParametricPreview`: at rest a sphere-traced surface's
-                // strokes come tested by the solid, and are drawn as they
-                // come; otherwise a layer with coordinates is tested per
-                // fragment by the surface pipeline, and one without by depth.
-                let sphere_traced = !draft && tested;
-                let tolerance = (layer.spec.clipped && !sphere_traced).then_some(scene.depth_tolerance);
-                let surface = layer.spec.clipped && !sphere_traced && (folds || layer.paths.coords.is_some());
-                if surface {
-                    let key = if folds {
-                        format!("{curves}.{i}.folds.{:016x}", view_bits(&scene))
-                    } else {
-                        format!("{curves}.{i}.surface")
-                    };
-                    let mut d = base(key, Pipeline::Surface { on_folds: folds }, tolerance);
-                    if shown && !have.contains(&d.key) {
-                        let paths = if folds {
-                            let normals = memo.grid_normals(&scene, s);
-                            s.grid_fold_curves(&normals, sight)
-                                .unwrap_or_else(|_| PolylineSet::new(Vec::new(), vec![0], None))
-                        } else {
-                            layer.paths.clone()
-                        };
-                        // An outline -- a truncation edge -- lies on a crease,
-                        // where the normal says nothing: laid out as fold
-                        // strokes, with no facing.
-                        let crease = folds || layer.spec.role == LayerRole::Outline;
-                        d.segments = Some(surface_segments(&paths, s, crease, grid.as_deref().map(|g| g.as_slice())));
-                    }
-                    // A layer the surface pipeline has nothing of draws from
-                    // the lines, as Swift's `curves.draw(i)` falls through.
-                    if d.segments.as_ref().is_none_or(|g| g.count() > 0) {
-                        layers.push(d);
-                        continue;
-                    }
-                }
-                let key = if tested { format!("{curves}.{i}.lines.{camera}") } else { format!("{curves}.{i}.lines") };
-                base(key, Pipeline::Stroke, tolerance)
-            } else {
-                // `renderPreview`: unclipped strokes are drawn with an
-                // unreachable depth tolerance rather than a second pipeline: a
-                // cut-face hatch lies *in* the wall it hatches. A
-                // heightfield's folds and wall strokes, and a solid's tested
-                // strokes, were tested on the way in, unless this frame is a
-                // draft, which leaves them to the test.
-                let heightfield = scene.heightfield().is_some();
-                let mut done = heightfield && scene.geometry().face_of(&layer.spec) == Some(FaceKind::Wall);
-                if folds {
-                    done = true;
-                }
-                if scene.solid().is_some() && tested {
-                    done = true;
-                }
-                if draft {
-                    done = false;
-                }
-                let tolerance = (layer.spec.clipped && !done).then_some(scene.depth_tolerance);
-                // A layout is the camera's where the layer is tested for it;
-                // a heightfield's draft folds are too, traced for it on the
-                // grid.
-                let key = if heightfield && tested && !draft {
-                    resolution_key(&format!("{curves}.{i}.lines.{camera}"), scene.resolution, have)
-                } else if (tested && !draft) || (heightfield && folds) {
-                    format!("{curves}.{i}.lines.{camera}")
-                } else {
-                    format!("{curves}.{i}.lines")
-                };
-                base(key, Pipeline::Stroke, tolerance)
-            };
-            if shown && !have.contains(&draw.key) {
-                let laid = lay_out(layer, &scene, if parametric.is_some() { lines_draft } else { draft });
-                if let Some(refusal) = laid.refusal {
-                    memo.refused.insert(draw.key.clone(), refusal);
-                }
-                draw.segments = Some(line_segments(&laid.paths, &scene, layer));
-            }
-            // A layer the scene could not test is drawn as carried, and so is
-            // left to the depth test, as a draft leaves it, with the reason.
-            if let Some(refusal) = memo.refused.get(&draw.key) {
-                draw.depth_tolerance = layer.spec.clipped.then_some(scene.depth_tolerance);
-                draw.refusal = Some(refusal.clone());
-            }
-            layers.push(draw);
+    let Framed { navigator, viewport, mode } = at;
+    let frame = navigator.framing.frame(viewport);
+    let clip = match scene.camera.projection {
+        Projection::Orthographic { .. } => frame.metal_clip(),
+        Projection::Perspective { fov_y } => {
+            kurven_core::camera::Camera::perspective_clip(fov_y, frame.cols as f64 / frame.rows as f64)
         }
-        Preview { content, resources, uniforms, mode, layers }
+    };
+    let view = scene.camera.view;
+    let parametric = scene.parametric().cloned();
+    let bounds = (matches!(mode, PreviewMode::Depth) || parametric.is_some()).then(|| scene.quick_bounds(QUICK_BOUNDS));
+    let depth_range = match (&mode, bounds.flatten()) {
+        (PreviewMode::Depth, Some(b)) => [b.lo.z, b.hi.z],
+        _ => [0.0, 1.0],
+    };
+    let surface_depth_range = parametric.as_ref().map(|_| {
+        let (lo, hi) = bounds.flatten().map_or((-1.0, 1.0), |b| (b.lo.z, b.hi.z));
+        let pad = 0.05 * (hi - lo) + 1e-6;
+        [lo - pad, hi + pad]
+    });
+    let truncation_height = scene.heightfield().and_then(DrawnGrid::ceiling_of);
+    let lighting = match mode {
+        PreviewMode::Shaded(l) => l,
+        // `KVShading`'s light outside the shaded mode, as Swift fills it;
+        // nothing reads it there.
+        _ => kurven_core::scene::Lighting { direction: [0.4, -0.6, 0.7], ambient: 0.25 },
+    };
+    let sight = view.projection_direction();
+    let eye = view.inverse().apply(P3::<ViewSpace>::new(0.0, 0.0, 0.0));
+    let uniforms = Uniforms {
+        view: columns(&view.m),
+        clip: columns(&clip),
+        truncation_height,
+        frame,
+        depth_tolerance: scene.depth_tolerance,
+        light_direction: lighting.direction,
+        ambient: lighting.ambient,
+        depth_range,
+        surface_depth_range,
+        sight: [sight.x, sight.y, sight.z],
+        eye: [eye.x(), eye.y(), eye.z()],
+        perspective: scene.camera.is_perspective(),
+    };
+
+    let content = format!("{nonce}~{}", scene.content().raw());
+    memo.forget_unless(&content);
+    let resources = (have_content != Some(content.as_str())).then(|| Resources::of(scene));
+    let widest = scene.layers().iter().map(|l| l.spec.width).fold(None, |m: Option<f64>, w| {
+        Some(match m {
+            Some(m) => kurven_math::swift::max(m, w),
+            None => w,
+        })
+    });
+    // Every key starts with the content and the curves: a new scene is new
+    // geometry, whatever its layers' places.
+    let curves = format!("{content}.{}", scene.curves().raw());
+    let camera = camera_key(scene, draft);
+    // The strokes of a parametric scene's layout are the camera's only
+    // if some layer is tested for it (Swift's `lineGeometry(for:draft:)`
+    // asks `visible && draft`).
+    let lines_draft = draft && scene_is_tested_exactly(scene);
+    let grid = match &parametric {
+        Some(s)
+            if s.outward.is_some()
+                && scene
+                    .layers()
+                    .iter()
+                    .any(|l| l.paths.coords.is_some() && !matches!(l.spec.source, LayerSource::FoldCurves)) =>
+        {
+            Some(memo.grid_normals(scene, s))
+        }
+        _ => None,
+    };
+    let mut layers = Vec::with_capacity(scene.layers().len());
+    for (i, layer) in scene.layers().iter().enumerate() {
+        let tested = is_tested_exactly(layer, scene);
+        let folds = matches!(layer.spec.source, LayerSource::FoldCurves);
+        let shown = visible.contains(&i);
+        let width = match widest {
+            Some(w) if w > 0.0 => layer.spec.width / w,
+            _ => 1.0,
+        };
+        let base = |key: String, pipeline: Pipeline, depth_tolerance: Option<f64>| LayerDraw {
+            name: layer.spec.name.clone(),
+            key,
+            visible: shown,
+            pipeline,
+            color: color(&layer.spec.color),
+            width,
+            depth_tolerance,
+            refusal: None,
+            segments: None,
+        };
+        let mut draw = if let Some(s) = &parametric {
+            // `renderParametricPreview`: at rest a sphere-traced surface's
+            // strokes come tested by the solid, and are drawn as they
+            // come; otherwise a layer with coordinates is tested per
+            // fragment by the surface pipeline, and one without by depth.
+            let sphere_traced = !draft && tested;
+            let tolerance = (layer.spec.clipped && !sphere_traced).then_some(scene.depth_tolerance);
+            let surface = layer.spec.clipped && !sphere_traced && (folds || layer.paths.coords.is_some());
+            if surface {
+                let key = if folds {
+                    format!("{curves}.{i}.folds.{:016x}", view_bits(scene))
+                } else {
+                    format!("{curves}.{i}.surface")
+                };
+                let mut d = base(key, Pipeline::Surface { on_folds: folds }, tolerance);
+                if shown && !have.contains(&d.key) {
+                    let paths = if folds {
+                        let normals = memo.grid_normals(scene, s);
+                        s.grid_fold_curves(&normals, sight)
+                            .unwrap_or_else(|_| PolylineSet::new(Vec::new(), vec![0], None))
+                    } else {
+                        layer.paths.clone()
+                    };
+                    // An outline -- a truncation edge -- lies on a crease,
+                    // where the normal says nothing: laid out as fold
+                    // strokes, with no facing.
+                    let crease = folds || layer.spec.role == LayerRole::Outline;
+                    d.segments = Some(surface_segments(&paths, s, crease, grid.as_deref().map(|g| g.as_slice())));
+                }
+                // A layer the surface pipeline has nothing of draws from
+                // the lines, as Swift's `curves.draw(i)` falls through.
+                if d.segments.as_ref().is_none_or(|g| g.count() > 0) {
+                    layers.push(d);
+                    continue;
+                }
+            }
+            let key = if tested { format!("{curves}.{i}.lines.{camera}") } else { format!("{curves}.{i}.lines") };
+            base(key, Pipeline::Stroke, tolerance)
+        } else {
+            // `renderPreview`: unclipped strokes are drawn with an
+            // unreachable depth tolerance rather than a second pipeline: a
+            // cut-face hatch lies *in* the wall it hatches. A
+            // heightfield's folds and wall strokes, and a solid's tested
+            // strokes, were tested on the way in, unless this frame is a
+            // draft, which leaves them to the test.
+            let heightfield = scene.heightfield().is_some();
+            let mut done = heightfield && scene.geometry().face_of(&layer.spec) == Some(FaceKind::Wall);
+            if folds {
+                done = true;
+            }
+            if scene.solid().is_some() && tested {
+                done = true;
+            }
+            if draft {
+                done = false;
+            }
+            let tolerance = (layer.spec.clipped && !done).then_some(scene.depth_tolerance);
+            // A layout is the camera's where the layer is tested for it;
+            // a heightfield's draft folds are too, traced for it on the
+            // grid.
+            let key = if heightfield && tested && !draft {
+                resolution_key(&format!("{curves}.{i}.lines.{camera}"), scene.resolution, have)
+            } else if (tested && !draft) || (heightfield && folds) {
+                format!("{curves}.{i}.lines.{camera}")
+            } else {
+                format!("{curves}.{i}.lines")
+            };
+            base(key, Pipeline::Stroke, tolerance)
+        };
+        if shown && !have.contains(&draw.key) {
+            let laid = lay_out(layer, scene, if parametric.is_some() { lines_draft } else { draft });
+            if let Some(refusal) = laid.refusal {
+                memo.refused.insert(draw.key.clone(), refusal);
+            }
+            draw.segments = Some(line_segments(&laid.paths, scene, layer));
+        }
+        // A layer the scene could not test is drawn as carried, and so is
+        // left to the depth test, as a draft leaves it, with the reason.
+        if let Some(refusal) = memo.refused.get(&draw.key) {
+            draw.depth_tolerance = layer.spec.clipped.then_some(scene.depth_tolerance);
+            draw.refusal = Some(refusal.clone());
+        }
+        layers.push(draw);
     }
+    Preview { content, resources, uniforms, mode, layers }
 }
 
 /// The view matrix's bits alone, for a parametric surface's grid folds,

@@ -4,6 +4,10 @@
 // shift and the arrows pan, + and - zoom about the centre. Each is a
 // `Gesture` value the engine folds into its navigator (navigation.rs).
 //
+// A click held still picks the face under it, or clears the pick off the
+// drawing (GestureView's mouseUp): a click that orbits picks nothing. The
+// engine reads the point under the pixel and names the face.
+//
 // Gestures are batched, never merged: while one request is with the
 // engine, what the hand does next waits in order, and goes as one
 // `gestures` request that applies each as a `gesture` request would. So a
@@ -29,6 +33,8 @@ export class CanvasInput {
    * replays them one by one to check the batches. */
   readonly given: Gesture[] = [];
   private readonly pointers = new Map<number, { x: number; y: number }>();
+  /** Whether the pointer down now has moved since it went down. */
+  private dragged = false;
 
   constructor(engine: Engine, canvas: HTMLCanvasElement, scale: number, moved: () => void) {
     this.engine = engine;
@@ -39,6 +45,7 @@ export class CanvasInput {
     canvas.setAttribute("role", "img");
     canvas.addEventListener("pointerdown", (e) => this.down(e));
     canvas.addEventListener("pointermove", (e) => this.move(e));
+    canvas.addEventListener("pointerup", (e) => this.up(e));
     for (const ended of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
       canvas.addEventListener(ended, (e) => this.pointers.delete(e.pointerId));
     }
@@ -84,6 +91,7 @@ export class CanvasInput {
   }
 
   private down(e: PointerEvent): void {
+    if (this.pointers.size === 0) this.dragged = false;
     this.canvas.focus({ preventScroll: true });
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     this.canvas.setPointerCapture(e.pointerId);
@@ -93,6 +101,7 @@ export class CanvasInput {
     const last = this.pointers.get(e.pointerId);
     if (!last) return;
     if (this.pointers.size === 2) {
+      this.dragged = true;
       // A pinch: the change in the two pointers' spread, about their middle.
       const [a, b] = [...this.pointers.entries()];
       if (!a || !b) return;
@@ -108,9 +117,19 @@ export class CanvasInput {
     const d: [number, number] = [(e.clientX - last.x) * this.scale, (e.clientY - last.y) * this.scale];
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (d[0] === 0 && d[1] === 0) return;
+    this.dragged = true;
     // Shift or option pans: "move the paper rather than the camera".
     if (e.shiftKey || e.altKey) this.give({ kind: "pan", delta: [-d[0], d[1]] });
     else this.give({ kind: "orbit", delta: d });
+  }
+
+  /** A click, held still, with one pointer: a pick at its pixel, after the
+   * gestures given before it. */
+  private up(e: PointerEvent): void {
+    if (!this.pointers.has(e.pointerId) || this.pointers.size !== 1 || this.dragged || e.button !== 0) return;
+    if (e.detail > 1) return; // the second click of a double click
+    const pixel = this.at(e.clientX, e.clientY);
+    void this.settled().then(() => this.engine.edit({ kind: "pick", pixel }, () => this.moved()));
   }
 
   private wheel(e: WheelEvent): void {

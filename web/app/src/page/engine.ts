@@ -4,7 +4,7 @@
 // engine sent (HANDOFF-web-port.md, Architecture, rule 1).
 
 import { type Answer, Cancelled, type EngineClient } from "../engine/client.ts";
-import type { DocumentState, Reply, Request, Slider, TypedArray } from "../engine/protocol.ts";
+import type { DocumentState, Reply, Request, Slider, Truncation, TypedArray } from "../engine/protocol.ts";
 
 /** What a request makes the engine do, for the indicator. */
 function doing(r: Request): string | null {
@@ -33,6 +33,15 @@ function doing(r: Request): string | null {
     case "undo":
     case "redo":
       return "undoing";
+    case "pick":
+      return "picking";
+    case "add":
+    case "remove":
+    case "function":
+    case "strokes":
+    case "axis":
+    case "light":
+      return "painting";
     case "bake":
       return "baking the judged strokes";
     default:
@@ -83,6 +92,13 @@ export class Engine {
       },
       quietly,
     );
+  }
+
+  /** A look at the document under a view key: not journaled, and a newer
+   * look under the same key supersedes it (null when it did). */
+  async look(request: Request, view: string): Promise<Reply | null> {
+    const answer = await this.client.request(request, { view });
+    return answer.stale ? null : answer.reply;
   }
 
   /** Wait until every request sent so far, and any it led to, is answered. */
@@ -177,7 +193,7 @@ export class Latest<T> {
 export class SliderDrag {
   private readonly engine: Engine;
   private readonly control: Slider;
-  private readonly moves: Latest<number | [number, number]>;
+  private readonly moves: Latest<number | [number, number] | Truncation>;
   private readonly after: () => void;
   /** Whether the engine took hold of the slider: false when a cancel
    * dropped the begin, and then the drag sends nothing more. */
@@ -192,7 +208,9 @@ export class SliderDrag {
     this.after = after;
     this.moves = new Latest(async (value) => {
       if (!(await this.began)) return;
-      await engine.send({ kind: "drag", control, phase: "move", value, ...(rest ? { rest: true } : {}) });
+      // A banded truncation's height moves the whole truncation.
+      const moved = typeof value === "object" && !Array.isArray(value) ? { truncation: value } : { value };
+      await engine.send({ kind: "drag", control, phase: "move", ...moved, ...(rest ? { rest: true } : {}) });
       after();
     });
   }
@@ -212,7 +230,7 @@ export class SliderDrag {
     );
   }
 
-  move(value: number | [number, number]): void {
+  move(value: number | [number, number] | Truncation): void {
     if (!this.active) return;
     this.moves.push(value);
   }

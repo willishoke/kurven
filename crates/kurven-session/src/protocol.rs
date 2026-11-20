@@ -547,6 +547,22 @@ impl Session {
                 d.settle();
                 none()
             }
+            "periods" => {
+                // The periods "Function…" offers for an expression: the
+                // catalog's rectangle for it (`known`, which a sheet takes
+                // as the expression is typed), and the one it opens with
+                // (`offered`: the painted function's own, the catalog's, or
+                // the surface's). A view: nothing is changed.
+                let expression = text(o, "expression")?;
+                let mut out = JsonObject::new();
+                let pair = |p: (f64, f64)| json::doubles(&[p.0, p.1]);
+                out.insert(
+                    "known".to_string(),
+                    kurven_surfaces::drawing::periods_of(expression).map_or(JsonValue::Null, pair),
+                );
+                out.insert("offered".to_string(), pair(d.function_periods(expression)));
+                Ok((out, Vec::new()))
+            }
             "drag" => {
                 // A slider taken hold of, moved, let go: one undo step.
                 let slider = slider(o)?;
@@ -576,6 +592,13 @@ impl Session {
                             // its step or a detent within reach.
                             let value = crate::surface_controls::slid(d, *field, number(o, "value")?);
                             slider.set(d, value);
+                        }
+                        // A banded truncation's height dragged: the whole
+                        // truncation, as TruncationSection's band rows set it.
+                        Slider::Truncation if o.contains_key("truncation") => {
+                            let t = Truncation::from_json(o.get("truncation").ok_or("wants a 'truncation'")?)
+                                .map_err(|e| refuse(e.to_string()))?;
+                            d.edit_truncation(t, "Truncation");
                         }
                         _ => slider.set(d, number(o, "value")?),
                     },
@@ -1040,6 +1063,7 @@ impl Session {
         o.insert("landscape".to_string(), d.landscape_request().map_or(JsonValue::Null, |r| r.json()));
         o.insert("surface".to_string(), d.surface_request().map_or(JsonValue::Null, |r| r.json()));
         o.insert("surfaceControls".to_string(), crate::surface_controls::json(d));
+        o.insert("polyhedron".to_string(), d.polyhedron_bundle().map_or(JsonValue::Null, polyhedron_json));
         o.insert("truncation".to_string(), if d.bundle().is_some() { d.truncation().json() } else { JsonValue::Null });
         // The layers as the controls show them: the edited ones, each with
         // what its control reads.
@@ -1067,6 +1091,19 @@ impl Session {
                 }
                 if let Some(light) = spec.source.light() {
                     l.insert("light".to_string(), json::doubles(&[light.x, light.y, light.z]));
+                    let (azimuth, elevation) = light_angles(light);
+                    l.insert("lightAngles".to_string(), json::doubles(&[azimuth, elevation]));
+                }
+                if let Some(axis) = spec.source.plateau_hatch_axis() {
+                    let axis = if axis == DomainAxis::Real { "real" } else { "imag" };
+                    l.insert("axis".to_string(), json::string(axis));
+                }
+                // The drawn layer of that name: how many paths, and whether
+                // it is tested for visibility (the Layers list's count and
+                // "unclipped").
+                if let Some(layer) = d.layers().iter().find(|x| x.spec.name == spec.name) {
+                    l.insert("paths".to_string(), JsonValue::Int(layer.paths.count() as i64));
+                    l.insert("clipped".to_string(), JsonValue::Bool(layer.spec.clipped));
                 }
                 if let LayerSource::Hatching { hatching, .. } = &spec.source {
                     l.insert("spacing".to_string(), JsonValue::Double(hatching.spacing));
@@ -1123,12 +1160,19 @@ impl Session {
                         .iter()
                         .filter_map(|&i| specs.get(i).map(|s| json::string(&s.name)))
                         .collect();
+                    let painted = match d.edited().and_then(|e| e.request).map(|r| r.shape) {
+                        Some(kurven_core::surface_request::Shape::Periodic { expression, .. }) => expression,
+                        _ => String::new(),
+                    };
                     json::object([
                         ("face", json::string(&pick.face.to_string())),
                         ("copy", JsonValue::Int(pick.copy as i64)),
                         ("title", json::string(&d.paint_title(&pick))),
+                        ("caption", json::string(&d.paint_caption(&pick))),
                         ("choices", JsonValue::Array(choices)),
                         ("layers", JsonValue::Array(on)),
+                        ("takesFunction", JsonValue::Bool(d.offers_function(&pick))),
+                        ("expression", json::string(&painted)),
                     ])
                 }
             },
@@ -1365,6 +1409,37 @@ fn presets(d: &Document) -> Vec<kurven_core::manifest::CameraPreset> {
         return b.manifest.presets.clone();
     }
     Vec::new()
+}
+
+/// A light's azimuth round z and elevation over the xy plane, in degrees
+/// (`LightSlider.angles(of:)`).
+fn light_angles(light: Vec3) -> (f64, f64) {
+    let l = light.normalized();
+    let degrees = 180.0 / core::f64::consts::PI;
+    (
+        kurven_math::real::atan2(l.y, l.x) * degrees,
+        kurven_math::real::asin(kurven_math::swift::min(kurven_math::swift::max(l.z, -1.0), 1.0)) * degrees,
+    )
+}
+
+/// A polyhedron as the Polyhedron section describes it (Inspector.swift's
+/// `polyhedron(_:)`): what it is, its boundary, and its genus or shells.
+fn polyhedron_json(bundle: &kurven_core::polyhedron_bundle::PolyhedronBundle) -> JsonValue {
+    let solid = bundle.solid();
+    let edges = solid.is_diagonal.iter().filter(|&&d| !d).count();
+    let shape = match solid.genus() {
+        Some(genus) => ("Genus", format!("{genus}{}", if solid.is_convex() { ", convex" } else { ", not convex" })),
+        None => ("Shells", format!("{}, χ = {}", solid.shell_count(), solid.euler_characteristic())),
+    };
+    json::object([
+        ("solid", json::string(&bundle.manifest.provenance.function)),
+        (
+            "boundary",
+            json::string(&format!("{} vertices, {edges} edges, {} faces", solid.vertices.len(), solid.faces.len())),
+        ),
+        ("shapeLabel", json::string(shape.0)),
+        ("shape", json::string(&shape.1)),
+    ])
 }
 
 /// What is edited, as `edited` sends it and `restore` reads it.

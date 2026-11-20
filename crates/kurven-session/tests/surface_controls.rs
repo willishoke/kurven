@@ -118,7 +118,7 @@ fn quantize_takes_the_first_nearest_detent_within_reach() {
     // Two equally near: the first, as Swift's `min(by:)` keeps it.
     assert_eq!(quantize(0.45, 0.001, &[0.44, 0.46], 0.015), 0.44);
     assert_eq!(quantize(117.0, 1.0, &[115.0, 344.0], 4.0), 115.0);
-    assert_eq!(control(kurven_core::surface_request::Field::Harmonics).slides, false);
+    assert!(!control(kurven_core::surface_request::Field::Harmonics).slides);
 }
 
 #[test]

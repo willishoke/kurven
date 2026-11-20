@@ -354,3 +354,29 @@ kbd { font-family: var(--mono); font-size: 0.75rem; border: 1px solid var(--rule
 @media (prefers-reduced-motion: reduce) { .picker .picture .spinner { animation: none; } }
 .picker .cell .label { font-size: 0.92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .picker .cell .formula { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Step 6: the edit buttons, a layer's controls, bands, the Curves on
+   section, the polyhedron's facts, the function sheet. */
+.buttons.edit { margin-top: 8px; }
+.buttons.edit button { font-size: 0.82rem; padding: 2px 8px; max-width: 49%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layers .count { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); min-width: 2.2rem; text-align: right; }
+.layers .unclipped { font-size: 0.72rem; color: var(--muted); font-style: italic; }
+.layers .name .remove, .band .remove { padding: 0 7px; font-size: 0.9rem; line-height: 1.3; }
+.layer-controls .segmented.axis { margin: 4px 0 2px 1.5rem; }
+.band { display: grid; grid-template-columns: auto 3.6rem auto minmax(0, 1fr) 2.6rem auto; align-items: center; gap: 0.35rem; margin: 5px 0; font-size: 0.82rem; }
+.band input[type="number"] { width: 3.6rem; }
+.faint { color: var(--muted); }
+.notes.faint { font-style: italic; }
+.status.warn { color: #b05a00; }
+.facts { display: grid; grid-template-columns: 5.2rem minmax(0, 1fr); gap: 2px 0.5rem; margin: 0; font-size: 0.88rem; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.sheet { width: min(460px, calc(100vw - 32px)); border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); color: var(--ink); padding: 16px 18px; }
+.sheet::backdrop { background: rgba(20, 18, 14, 0.35); }
+.sheet h2 { font-family: var(--serif); font-weight: 500; font-size: 1.15rem; margin: 0 0 10px; }
+.sheet .field { display: grid; grid-template-columns: 4.6rem minmax(0, 1fr); align-items: center; gap: 0.5rem; margin: 8px 0; }
+.sheet .field > span { color: var(--muted); }
+.sheet input[type="text"] { width: 100%; padding: 4px 6px; font-family: var(--mono); }
+.sheet input[type="number"] { width: 8.5rem; }
+.buttons.end { justify-content: flex-end; margin-top: 10px; }
+.sheet .primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }

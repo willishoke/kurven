@@ -4,10 +4,13 @@
 // Nothing here is the model: a control's value is the latest state's, and
 // a control being moved shows where the hand is until the engine answers.
 
-import type { Controls, DocumentState, Domain, Preset, Request, Truncation } from "../engine/protocol.ts";
+import type { Controls, DocumentState, Domain, LayerState, Preset, Request, Truncation } from "../engine/protocol.ts";
 import { h, shown } from "./dom.ts";
 import { type Engine, quietly, SliderDrag } from "./engine.ts";
 import { Formula } from "./formula.ts";
+import { BandRows } from "./bands.ts";
+import { controlsKey, LAYER_WORDS, LayerControls } from "./layers.ts";
+import { PaintSection } from "./paint.ts";
 import { SurfaceSection } from "./surface.ts";
 
 /** What the panel asks of the page around it. */
@@ -24,23 +27,6 @@ export interface Host {
   browse(): void;
 }
 
-/** The glossary's words for the layers a landscape's catalog draws, by the
- * names its manifest gives them (docs/glossary.md). */
-const LAYER_WORDS: Record<string, string> = {
-  mag_major: "|f| level curves",
-  mag_minor: "|f| level curves, minor",
-  ang_major: "arg f level curves",
-  ang_minor: "arg f level curves, minor",
-  truncation_edge: "truncation edge",
-  plateau_hatch: "plateau hatching",
-  riser_hatch: "riser hatching",
-  wall_edges: "wall edges",
-  wall_hatch: "wall hatching",
-  folds: "fold curves",
-  slope_lines: "slope lines",
-  isophotes: "isophotes",
-};
-
 type Interval = { lo: number; hi: number };
 
 /** Where a landscape's truncation tops out: its height, or its highest band. */
@@ -49,7 +35,7 @@ function ceilingOf(t: Truncation | null): number | null {
   if (t.kind === "uniform") return t.height;
   if (t.kind === "realBands") {
     const heights = t.bands.map((b) => b.height);
-    if (Number.isFinite(t.beyond)) heights.push(t.beyond);
+    if (t.beyond !== undefined && Number.isFinite(t.beyond)) heights.push(t.beyond);
     return heights.length ? Math.max(...heights) : null;
   }
   return null;
@@ -231,13 +217,13 @@ export class Panel {
   private readonly height: HTMLInputElement;
   private readonly heightField: HTMLInputElement;
   private readonly heightState: { dragging: () => boolean };
-  private readonly bands: HTMLElement;
+  private readonly bands: BandRows;
   private readonly truncationNote: HTMLElement;
   private readonly presetButtons: HTMLElement;
   private readonly modes: Record<DocumentState["mode"], HTMLInputElement>;
   private readonly layers: HTMLUListElement;
   private layerKey = "";
-  private readonly levelDrags = new Map<string, { dragging: () => boolean }>();
+  private readonly layerControls = new Map<string, LayerControls>();
   private readonly exportButton: HTMLButtonElement;
   private readonly cancelButton: HTMLButtonElement;
   readonly exportStatus: HTMLElement;
@@ -245,6 +231,11 @@ export class Panel {
   private readonly landscapeSections: HTMLElement[];
   private readonly landscapeSection: HTMLElement;
   readonly surface: SurfaceSection;
+  readonly paint: PaintSection;
+  private readonly polyhedron: HTMLElement;
+  private readonly polyhedronFacts: HTMLElement;
+  private readonly undoButton: HTMLButtonElement;
+  private readonly redoButton: HTMLButtonElement;
   private isExporting = false;
 
   constructor(host: Host) {
@@ -337,7 +328,7 @@ export class Panel {
       h("label", { class: "label", for: "truncation-height" }, "Height"),
       h("div", { class: "slider" }, this.height, this.heightField),
     );
-    this.bands = h("p", { class: "bands", id: "bands" });
+    this.bands = new BandRows(host, () => this.reach?.truncation.min ?? 0.1);
     this.truncationNote = h("p", { class: "notes" });
     const truncation = h(
       "section",
@@ -345,7 +336,7 @@ export class Panel {
       h("h2", { id: "h-truncation" }, "Truncation"),
       kinds,
       this.heightRow,
-      this.bands,
+      this.bands.root,
       this.truncationNote,
     );
 
@@ -415,15 +406,34 @@ export class Panel {
     this.landscapeSections = [truncation];
     this.landscapeSection = landscape;
     this.surface = new SurfaceSection(host);
+    this.paint = new PaintSection(host);
+    // A polyhedron's solid is its bundle's and its visibility exact, so it
+    // has no controls of its own but its layers' (Inspector.swift).
+    this.polyhedronFacts = h("dl", { class: "facts", id: "polyhedron-facts" });
+    this.polyhedron = h(
+      "section",
+      { "aria-labelledby": "h-polyhedron", id: "polyhedron-section" },
+      h("h2", { id: "h-polyhedron" }, "Polyhedron"),
+      this.polyhedronFacts,
+      h("p", { class: "status", id: "polyhedron-status", "aria-live": "polite" }),
+    );
+    // The Edit menu's Undo and Redo, named for the step (⌘Z, ⇧⌘Z).
+    this.undoButton = h("button", { type: "button", id: "undo", title: "⌘Z" }, "Undo");
+    this.redoButton = h("button", { type: "button", id: "redo", title: "⇧⌘Z" }, "Redo");
+    this.undoButton.addEventListener("click", () => this.request({ kind: "undo" }));
+    this.redoButton.addEventListener("click", () => this.request({ kind: "redo" }));
     this.root = h(
       "aside",
       { class: "panel", "aria-label": "Controls" },
       h("header", {}, h("h1", {}, "kurven"), this.title),
+      h("div", { class: "buttons edit", role: "group", "aria-label": "Edit" }, this.undoButton, this.redoButton),
       this.noticeLine,
       landscape,
       this.surface.root,
+      this.polyhedron,
       truncation,
       camera,
+      this.paint.root,
       layers,
       exporting,
     );
@@ -445,6 +455,7 @@ export class Panel {
     this.samples.step = String(reach.samples.step);
     this.height.min = String(reach.truncation.min);
     this.layerKey = ""; // the level sliders are made again to it
+    this.paint.setReach(reach);
   }
 
   private submit(text: string): void {
@@ -477,6 +488,14 @@ export class Panel {
     const current = ceilingOf(this.host.engine.state?.truncation ?? null) ?? 5;
     if (kind === "none") this.sendTruncation({ kind: "none" });
     else if (kind === "uniform") this.sendTruncation({ kind: "uniform", height: current });
+    else {
+      // Start from the truncation that is already there, as one band and a
+      // beyond: the first edit should be a change to this landscape, not a
+      // different one.
+      const d = (this.host.engine.state?.landscape as { domain?: Domain } | null)?.domain;
+      const middle = d ? (d.real.lo + d.real.hi) / 2 : 0;
+      this.sendTruncation({ kind: "realBands", bands: [{ below: middle, height: current }], beyond: current });
+    }
   }
 
   private setMode(mode: DocumentState["mode"]): void {
@@ -492,6 +511,27 @@ export class Panel {
     // polyhedron has no controls of its own but its layers' (Inspector.swift).
     this.landscapeSection.hidden = state.surface !== null || state.kind === "polyhedron";
     this.surface.render(state);
+    this.paint.render(state);
+    this.polyhedron.hidden = state.polyhedron === null;
+    if (state.polyhedron) {
+      const p = state.polyhedron;
+      const facts: [string, string][] = [
+        ["Solid", p.solid],
+        ["Boundary", p.boundary],
+        [p.shapeLabel, p.shape],
+      ];
+      const key = facts.flat().join("|");
+      if (this.polyhedronFacts.dataset.key !== key) {
+        this.polyhedronFacts.dataset.key = key;
+        this.polyhedronFacts.replaceChildren(...facts.flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]));
+      }
+      const status = this.polyhedron.querySelector<HTMLElement>("#polyhedron-status");
+      if (status) status.textContent = state.status.polyhedron ?? "";
+    }
+    this.undoButton.disabled = !state.undo.can;
+    this.undoButton.textContent = state.undo.name ? `Undo ${state.undo.name}` : "Undo";
+    this.redoButton.disabled = !state.redo.can;
+    this.redoButton.textContent = state.redo.name ? `Redo ${state.redo.name}` : "Redo";
     const request = state.landscape as { name?: string; expression?: string; domain?: Domain; resolution?: number } | null;
 
     // The function.
@@ -530,7 +570,6 @@ export class Panel {
     const t = state.truncation;
     if (t) {
       this.truncationKinds[t.kind].checked = true;
-      this.truncationKinds.realBands.disabled = t.kind !== "realBands";
       this.heightRow.hidden = t.kind !== "uniform";
       if (t.kind === "uniform" && !this.heightState.dragging()) {
         const ceiling = Math.max((ceilingOf(t) ?? 5) * 3, 10);
@@ -538,17 +577,12 @@ export class Panel {
         this.height.value = String(t.height);
         if (document.activeElement !== this.heightField) this.heightField.value = shown(t.height, 4);
       }
-      this.bands.hidden = t.kind !== "realBands";
-      this.bands.textContent =
-        t.kind === "realBands"
-          ? [...t.bands.map((b) => `Re < ${shown(b.below)}: ${shown(b.height)}`), `beyond: ${Number.isFinite(t.beyond) ? shown(t.beyond) : "none"}`].join(" · ")
-          : "";
+      this.bands.root.hidden = t.kind !== "realBands";
+      if (t.kind === "realBands") this.bands.update(t, Math.max((ceilingOf(t) ?? 5) * 3, 10));
       this.truncationNote.textContent =
         t.kind === "none"
           ? "The surface is drawn at |f|, however far up that goes. A function with a pole wants a truncation; one without does not."
-          : t.kind === "realBands"
-            ? "A banded truncation: a height per band of Re. Its rows are not editable here yet; choose a height to replace it."
-            : "";
+          : "";
       this.truncationNote.hidden = this.truncationNote.textContent === "";
     }
 
@@ -571,64 +605,50 @@ export class Panel {
   }
 
   private renderLayers(state: DocumentState): void {
-    const key = state.layers.map((l) => `${l.name}:${l.levels !== undefined}`).join("|");
+    const key = state.layers.map(controlsKey).join("|") + `|${this.reach !== null}`;
     if (key !== this.layerKey) {
       this.layerKey = key;
-      this.levelDrags.clear();
-      this.layers.replaceChildren(...state.layers.map((l, i) => this.layerRow(l.name, i, l.levels !== undefined)));
+      this.layerControls.clear();
+      this.layers.replaceChildren(...state.layers.map((l, i) => this.layerRow(l, i)));
     }
     state.layers.forEach((l) => {
       const li = this.layers.querySelector<HTMLLIElement>(`li[data-layer="${CSS.escape(l.name)}"]`);
       if (!li) return;
       const box = li.querySelector<HTMLInputElement>("input[type=checkbox]");
       if (box) box.checked = !l.hidden;
-      const range = li.querySelector<HTMLInputElement>("input[type=range]");
-      const out = li.querySelector<HTMLOutputElement>("output");
-      if (range && out && l.levels !== undefined && !this.levelDrags.get(l.name)?.dragging()) {
-        range.value = String(l.levels);
-        out.value = String(l.levels);
-      }
+      const count = li.querySelector<HTMLElement>(".count");
+      if (count) count.textContent = l.paths !== undefined ? String(l.paths) : "";
+      const unclipped = li.querySelector<HTMLElement>(".unclipped");
+      if (unclipped) unclipped.hidden = l.clipped !== false;
+      this.layerControls.get(l.name)?.update(l);
     });
   }
 
-  private layerRow(name: string, index: number, hasLevels: boolean): HTMLLIElement {
+  /** A layer of the Layers list (Inspector.swift's `layerList`): shown or
+   * not, its name in the glossary's words with its manifest name, how many
+   * paths it draws, "unclipped" when it is not tested for visibility, and
+   * its own controls. */
+  private layerRow(layer: LayerState, index: number): HTMLLIElement {
     const engine = this.host.engine;
     const id = `layer-${index}`;
     const box = h("input", { type: "checkbox", id });
     box.addEventListener("change", () => engine.edit({ kind: "hide", layer: index }, () => this.host.changed()));
-    const li = h(
+    const controls = new LayerControls(this.host, this.reach, layer);
+    this.layerControls.set(layer.name, controls);
+    return h(
       "li",
-      { "data-layer": name },
-      h("label", { class: "name", for: id }, box, LAYER_WORDS[name] ?? name, h("small", {}, name)),
+      { "data-layer": layer.name },
+      h(
+        "label",
+        { class: "name", for: id },
+        box,
+        LAYER_WORDS[layer.name] ?? layer.name,
+        h("span", { class: "unclipped", hidden: true }, "unclipped"),
+        h("small", {}, layer.name),
+        h("span", { class: "count", title: "paths drawn" }),
+      ),
+      controls.root,
     );
-    const levels = this.reach?.levels;
-    if (hasLevels && levels) {
-      const range = h("input", {
-        type: "range",
-        min: levels.min,
-        max: levels.max,
-        step: 1,
-        "aria-label": `Levels of ${LAYER_WORDS[name] ?? name}`,
-        "data-levels": name,
-      });
-      const out = h("output", {});
-      const reset = h("button", { type: "button", title: "The levels the landscape chose", "aria-label": `Reset the levels of ${name}` }, "↺");
-      reset.addEventListener("click", () => engine.edit({ kind: "resetLevels", layer: name }, () => this.host.changed()));
-      this.levelDrags.set(
-        name,
-        sliderInput(
-          range,
-          () => new SliderDrag(engine, { slider: "levels", name }, () => this.host.moved()),
-          (x, d) => {
-            out.value = String(x);
-            d.move(x);
-          },
-          (x) => engine.edit({ kind: "levels", layer: name, count: x }, () => this.host.changed()),
-        ),
-      );
-      li.append(h("div", { class: "levels" }, h("span", {}, "levels"), range, out, reset));
-    }
-    return li;
   }
 
   /** The export button while the judged strokes are being made. */
