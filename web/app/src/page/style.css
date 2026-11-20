@@ -287,6 +287,11 @@ kbd { font-family: var(--mono); font-size: 0.75rem; border: 1px solid var(--rule
 
 /* The function row: the dropdown and the way to the picker beside it. */
 .row.function .pick { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.35rem; }
+.check { display: flex; align-items: center; gap: 0.45rem; margin: 6px 0; font-size: 0.92rem; cursor: pointer; }
+.pair { display: flex; align-items: center; gap: 0.35rem; }
+.pair .times { color: var(--muted); }
+#surface-status[data-building="true"]::before { content: "● "; color: var(--accent); }
+
 /* The picker (Gallery.swift): a sheet over the page, the catalogs as
    pictures, each the drawing the engine makes of it. */
 .picker {

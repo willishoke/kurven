@@ -31,6 +31,7 @@ pub mod polyhedra;
 pub mod preview;
 pub mod protocol;
 pub mod sliders;
+pub mod surface_controls;
 pub mod surfaces;
 pub mod thumbnails;
 

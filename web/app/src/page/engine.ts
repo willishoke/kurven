@@ -17,11 +17,19 @@ function doing(r: Request): string | null {
       return "sampling";
     case "drag":
       if (r.control.slider === "landscape") return r.phase === "move" ? null : "sampling";
+      if (r.control.slider === "surfaceField") return "building";
       return "restyling";
     case "truncation":
     case "levels":
     case "resetLevels":
       return "restyling";
+    case "createSurface":
+    case "surfaceField":
+    case "surfaceLines":
+    case "surfaceLineCount":
+    case "linearCurve":
+    case "component":
+      return "building";
     case "undo":
     case "redo":
       return "undoing";
@@ -176,13 +184,15 @@ export class SliderDrag {
   private began: Promise<boolean> = Promise.resolve(false);
   active = false;
 
-  constructor(engine: Engine, control: Slider, after: () => void) {
+  /** `rest`: the moves are a surface field's slider values, which the
+   * engine rests at the step or a detent within reach. */
+  constructor(engine: Engine, control: Slider, after: () => void, rest = false) {
     this.engine = engine;
     this.control = control;
     this.after = after;
     this.moves = new Latest(async (value) => {
       if (!(await this.began)) return;
-      await engine.send({ kind: "drag", control, phase: "move", value });
+      await engine.send({ kind: "drag", control, phase: "move", value, ...(rest ? { rest: true } : {}) });
       after();
     });
   }

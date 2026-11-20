@@ -8,6 +8,7 @@ import type { Controls, DocumentState, Domain, Preset, Request, Truncation } fro
 import { h, shown } from "./dom.ts";
 import { type Engine, quietly, SliderDrag } from "./engine.ts";
 import { Formula } from "./formula.ts";
+import { SurfaceSection } from "./surface.ts";
 
 /** What the panel asks of the page around it. */
 export interface Host {
@@ -57,7 +58,7 @@ function ceilingOf(t: Truncation | null): number | null {
 /** A range input that is dragged as one of the engine's sliders (taken
  * hold of, moved, let go: one undo step) and stepped from the keyboard as
  * an edit of its own, as SwiftUI's Slider is. */
-function sliderInput(
+export function sliderInput(
   input: HTMLInputElement,
   drag: () => SliderDrag,
   move: (value: number, drag: SliderDrag) => void,
@@ -243,6 +244,7 @@ export class Panel {
   private readonly noticeLine: HTMLElement;
   private readonly landscapeSections: HTMLElement[];
   private readonly landscapeSection: HTMLElement;
+  readonly surface: SurfaceSection;
   private isExporting = false;
 
   constructor(host: Host) {
@@ -412,12 +414,14 @@ export class Panel {
     this.noticeLine = h("p", { class: "notice", id: "notice", role: "alert", hidden: true });
     this.landscapeSections = [truncation];
     this.landscapeSection = landscape;
+    this.surface = new SurfaceSection(host);
     this.root = h(
       "aside",
       { class: "panel", "aria-label": "Controls" },
       h("header", {}, h("h1", {}, "kurven"), this.title),
       this.noticeLine,
       landscape,
+      this.surface.root,
       truncation,
       camera,
       layers,
@@ -484,9 +488,10 @@ export class Panel {
     this.title.textContent = state.title;
     const isLandscape = state.kind === "landscape" && state.landscape !== null;
     for (const s of this.landscapeSections) s.hidden = !isLandscape;
-    // A surface or a polyhedron has no landscape to choose (Inspector.swift);
-    // the picker is the way back to one.
+    // A surface has its own section and a way back to the picker; a
+    // polyhedron has no controls of its own but its layers' (Inspector.swift).
     this.landscapeSection.hidden = state.surface !== null || state.kind === "polyhedron";
+    this.surface.render(state);
     const request = state.landscape as { name?: string; expression?: string; domain?: Domain; resolution?: number } | null;
 
     // The function.

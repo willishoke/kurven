@@ -45,11 +45,20 @@ export type Request =
   | { kind: "createSurface"; preset: string }
   | { kind: "expression"; expression: string }
   | { kind: "set"; key: string; value: number }
-  | { kind: "drag"; control: Slider; phase: "begin" | "move" | "end"; value?: number | [number, number] }
+  /** `rest`: a surface field's slider value, which the engine clamps and
+   * rests at its step or a detent within reach (SurfaceSection.swift). */
+  | { kind: "drag"; control: Slider; phase: "begin" | "move" | "end"; value?: number | [number, number]; rest?: boolean }
   /** A catalog entry's picture for the picker, in a scene of its own: the
    * preview frame at rest, or with `judged` the judged strokes (Phase 8,
    * step 4; kurven_session::thumbnails). */
   | { kind: "thumbnail"; entry: string; judged?: boolean }
+  /** A surface's number typed, stepped or switched, clamped to its control's
+   * reach (Phase 8, step 5; kurven_session::surface_controls). */
+  | { kind: "surfaceField"; field: string; value: number }
+  | { kind: "surfaceLines"; on: boolean }
+  | { kind: "surfaceLineCount"; axis: "around" | "across"; count: number }
+  | { kind: "linearCurve"; on: boolean }
+  | { kind: "component"; field: "radial" | "axial"; value: number }
   | { kind: "levels"; layer: string; count: number }
   | { kind: "resetLevels"; layer: string }
   | { kind: "strokes"; layer: string; count: number }
@@ -179,6 +188,37 @@ export interface ExactCamera {
   unitsPerPixel: number;
 }
 
+/** One number of a surface's request as its control shows it, with the
+ * engine's reach (kurven_session::surface_controls::control). */
+export interface SurfaceRow {
+  field: string;
+  label: string;
+  value: number | null;
+  min: number;
+  max: number;
+  step: number;
+  /** A slider, or only a field and a stepper. */
+  slides: boolean;
+  digits: number;
+  help: string;
+  /** Where the slider rests. */
+  detents: number[];
+}
+
+/** A surface's controls, from the request the controls say. */
+export interface SurfaceControls {
+  kind: string;
+  notes: string | null;
+  rows: SurfaceRow[];
+  components: { radial: number; axial: number } | null;
+  conformal: boolean | null;
+  linesSwitch: boolean;
+  lines: [number, number] | null;
+  lineCounts: { min: number; max: number; step: number };
+  linearCurve: { rows: SurfaceRow[]; description: string } | null;
+  building: boolean;
+}
+
 /** One layer as the controls show it. */
 export interface LayerState {
   name: string;
@@ -201,6 +241,7 @@ export interface DocumentState {
   status: Record<"landscape" | "surface" | "polyhedron" | "paint" | "pick" | "bake", string | null>;
   landscape: Record<string, unknown> | null;
   surface: Record<string, unknown> | null;
+  surfaceControls: SurfaceControls | null;
   truncation: Truncation | null;
   layers: LayerState[];
   levelCounts: Record<string, number>;

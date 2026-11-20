@@ -476,6 +476,77 @@ impl Session {
                     None => none(),
                 }
             }
+            "surfaceField" => {
+                // A surface's number typed, stepped or switched
+                // (SurfaceSection.swift's field, stepper and Conformal
+                // switch): clamped to the control's range, one undo step
+                // named for the control. Refused, touching nothing, for a
+                // field the shape has not or a value the request refuses.
+                let raw = text(o, "field")?;
+                let field = Field::parse(raw).ok_or_else(|| refuse(format!("no field '{raw}'")))?;
+                let value = number(o, "value")?;
+                let request = d.surface_request().ok_or("this is not a surface")?;
+                crate::surface_controls::settable(request, field, value).map_err(refuse)?;
+                d.paint_status = None;
+                d.type_surface_field(field, value);
+                d.settle();
+                match d.paint_status.clone() {
+                    Some(why) => Err(refused_after(why)),
+                    None => none(),
+                }
+            }
+            "surfaceLines" => {
+                // The coordinate curves switched on or off; a plain torus is
+                // its lines and has no switch.
+                let on = o.get("on").and_then(JsonValue::as_bool).ok_or("wants 'on'")?;
+                let request = d.surface_request().ok_or("this is not a surface")?;
+                if matches!(request.shape, kurven_core::surface_request::Shape::Torus { .. }) {
+                    return Err("a plain torus is its lines: they have no switch".into());
+                }
+                d.switch_lines(on);
+                d.settle();
+                none()
+            }
+            "surfaceLineCount" => {
+                // One of the coordinate curves' counts, clamped to 1...200.
+                let around = match text(o, "axis")? {
+                    "around" => true,
+                    "across" => false,
+                    other => return Err(refuse(format!("an axis is around or across, not {other}"))),
+                };
+                let count = integer(o, "count")?;
+                if d.surface_request().and_then(|r| r.lines).is_none() {
+                    return Err("the surface draws no coordinate curves".into());
+                }
+                d.set_line_count(around, count);
+                d.settle();
+                none()
+            }
+            "linearCurve" => {
+                let on = o.get("on").and_then(JsonValue::as_bool).ok_or("wants 'on'")?;
+                d.surface_request().ok_or("this is not a surface")?;
+                d.switch_linear_curve(on);
+                d.settle();
+                none()
+            }
+            "component" => {
+                // The forced torus's radius or height drawn from x, x′ or x″.
+                let field = match text(o, "field")? {
+                    "radial" => Field::Radial,
+                    "axial" => Field::Axial,
+                    other => return Err(refuse(format!("a component is radial or axial, not {other}"))),
+                };
+                let value = integer(o, "value")?;
+                if !(0..=2).contains(&value) {
+                    return Err(refuse(format!("a component is 0, 1 or 2, not {value}")));
+                }
+                if d.surface_request().and_then(|r| r.get(field)).is_none() {
+                    return Err("the surface has no state components".into());
+                }
+                d.choose_component(field, value);
+                d.settle();
+                none()
+            }
             "drag" => {
                 // A slider taken hold of, moved, let go: one undo step.
                 let slider = slider(o)?;
@@ -497,6 +568,14 @@ impl Session {
                         Slider::Light { .. } => {
                             let v = numbers(o, "value", 2)?;
                             slider.set_light(d, v[0], v[1]);
+                        }
+                        Slider::SurfaceField { field, .. }
+                            if o.get("rest").and_then(JsonValue::as_bool) == Some(true) =>
+                        {
+                            // A slider's own value: clamped, then rested at
+                            // its step or a detent within reach.
+                            let value = crate::surface_controls::slid(d, *field, number(o, "value")?);
+                            slider.set(d, value);
                         }
                         _ => slider.set(d, number(o, "value")?),
                     },
@@ -960,6 +1039,7 @@ impl Session {
         );
         o.insert("landscape".to_string(), d.landscape_request().map_or(JsonValue::Null, |r| r.json()));
         o.insert("surface".to_string(), d.surface_request().map_or(JsonValue::Null, |r| r.json()));
+        o.insert("surfaceControls".to_string(), crate::surface_controls::json(d));
         o.insert("truncation".to_string(), if d.bundle().is_some() { d.truncation().json() } else { JsonValue::Null });
         // The layers as the controls show them: the edited ones, each with
         // what its control reads.
