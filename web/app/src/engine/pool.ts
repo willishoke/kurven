@@ -23,6 +23,14 @@
 // the client cancels a request. A helper whose Worker dies is restarted by
 // its client, which replays its journal, and the share it held is handed
 // out again.
+//
+// Every share names the fingerprint of the document it was asked of, and a
+// helper holding another refuses it as such (`another`). A helper that so
+// refuses, or fails a share any other way, or whose replay was cut
+// (`JournalTruncated`), may hold another document than its place in the log
+// says; it is marked, and brought to the job's document from the primary's
+// journal (its Worker restarted and the journal replayed) before it is
+// asked anything again, the share it was refused handed out again.
 
 import { type Answer, Cancelled, EngineClient, type Snapshot, type WorkerHandle } from "./client.ts";
 import type { Laid, Piece, Request, TypedArray } from "./protocol.ts";
@@ -34,6 +42,9 @@ interface Helper {
   cuts: number;
   /** A share is in flight on it. */
   busy: boolean;
+  /** Its document may not be the one its place in the log says: brought to
+   * the next job's from the journal, not the log. */
+  dirty: boolean;
 }
 
 /** A job of the pool, while it runs. */
@@ -66,7 +77,9 @@ class Refused extends Error {
  * whose longest piece, the fold curves, does not split; and each helper
  * holds a copy of the document). */
 export function poolSize(cores: number | undefined): number {
-  return Math.max(1, Math.min(8, (cores ?? 2) - 1));
+  // One core, or none said: no helpers, the page's engine alone.
+  if (cores === undefined || !(cores > 1)) return 0;
+  return Math.min(8, cores - 1);
 }
 
 export class EnginePool {
@@ -80,14 +93,17 @@ export class EnginePool {
   /** The jobs running or waiting to. */
   private readonly jobs = new Set<Job>();
   private closed = false;
-  /** Layouts at rest a helper gave of another document than the primary's:
-   * none, unless the two came apart. */
+  /** Shares a helper refused as asked of another document than it held,
+   * each followed by bringing it to the job's: none, unless the two came
+   * apart. */
   mismatches = 0;
   /** How many times a share was handed out again after its helper died. */
   reissued = 0;
 
   constructor(primary: EngineClient, spawn: () => WorkerHandle, wasm: ArrayBuffer | string, size: number) {
     this.primary = primary;
+    // The helpers catch up on the primary's log, which it keeps only for a pool.
+    primary.keepLog();
     this.spawn = spawn;
     this.wasm = wasm;
     this.size = Math.max(1, Math.floor(size));
@@ -116,6 +132,8 @@ export class EnginePool {
       const planned = await this.primary.request({ kind: "bakePlan" });
       if (planned.stale || !planned.reply.ok) return planned;
       const snapshot = this.primary.snapshot();
+      const fingerprint = planned.reply.fingerprint as string;
+      const frame = planned.reply.frame;
       const pieces = planned.reply.pieces as (Piece & { weight: number })[];
       const plan: Piece[] = pieces.map(({ weight: _, ...piece }) => piece as Piece);
       let results: Answered[] | null;
@@ -124,7 +142,7 @@ export class EnginePool {
           job,
           snapshot,
           pieces.map((p) => p.weight),
-          (k) => ({ kind: "bakePiece", piece: plan[k]! }),
+          (k) => ({ kind: "bakePiece", piece: plan[k]!, fingerprint }),
           current,
         );
       } catch (error) {
@@ -141,7 +159,16 @@ export class EnginePool {
       });
       if (job.abandoned) throw new Cancelled("the pool's work was cancelled");
       if (!current()) return { stale: true };
-      return this.primary.request({ kind: "bakeAssemble", svg, plan, colors }, { inputs });
+      // Put together by the primary as of the plan's document: if it has
+      // moved on since, the strokes are still the plan's, its frame theirs,
+      // and the reply says `snapshot`.
+      const assembled = await this.primary.request(
+        { kind: "bakeAssemble", svg, plan, colors, fingerprint, frame },
+        { inputs },
+      );
+      // Cancelled while it was put together: nothing is answered.
+      if (job.abandoned) throw new Cancelled("the pool's work was cancelled");
+      return assembled;
     });
   }
 
@@ -158,17 +185,27 @@ export class EnginePool {
       if (!fingerprint) return null;
       if (layers.length === 0) return { laid: [], fingerprint, inputs: {} };
       const snapshot = this.primary.snapshot();
-      const results = await this.share(job, snapshot, weights, (k) => ({ kind: "restLayout", layers: [layers[k]!] }), current);
+      let results: Answered[] | null;
+      try {
+        results = await this.share(
+          job,
+          snapshot,
+          weights,
+          (k) => ({ kind: "restLayout", layers: [layers[k]!], fingerprint }),
+          current,
+          true,
+        );
+      } catch (error) {
+        if (!(error instanceof Refused)) throw error;
+        // A layout the helper's document has no such layer for: the helper
+        // was marked, and the next frame at rest brings it back.
+        console.warn(`kurven: a frame at rest was refused by a helper (${error.message}); it stays a draft`);
+        return null;
+      }
       if (!results) return null;
       const laid: Laid[] = [];
       const inputs: Record<string, TypedArray> = {};
       for (const r of results) {
-        if (!r.reply.ok) throw new Error(`restLayout: ${r.reply.error ?? "refused"}`);
-        if (r.reply.fingerprint !== fingerprint) {
-          this.mismatches++;
-          console.warn("kurven: a helper laid out another document than the page's; the frame stays a draft");
-          return null;
-        }
         laid.push(...(r.reply.laid as Laid[]));
         Object.assign(inputs, r.arrays);
       }
@@ -223,52 +260,82 @@ export class EnginePool {
 
   /** Share `count = weights.length` requests among the helpers, each brought
    * to the document of `snapshot` first, the heaviest handed out first; the
-   * answers in the requests' order. Null when `current` stopped it. */
+   * answers in the requests' order. Null when `current` stopped it. A
+   * refusal throws `Refused` with the first in the requests' order;
+   * `marksRefused`: the helper that refused may hold another document. */
   private async share(
     job: Job,
     snapshot: Snapshot,
     weights: number[],
     request: (k: number) => Request,
     current: () => boolean,
+    marksRefused = false,
   ): Promise<Answered[] | null> {
     const queue = weights.map((_, k) => k).sort((a, b) => weights[b]! - weights[a]! || a - b);
     const helpers = this.ready(Math.min(this.size, queue.length), snapshot);
     const results: Answered[] = new Array(weights.length);
     const tries = new Map<number, number>();
     let failure: unknown = null;
-    let refused = false;
-    const wanted = () => !job.abandoned && failure === null && !refused && current();
-    const work = async (h: Helper): Promise<void> => {
-      try {
-        await this.sync(h, snapshot);
-      } catch (error) {
+    // The first share refused in the requests' order, not in time: the one
+    // the serial work would have stopped at. Shares after it are not handed
+    // out; those before it still are, since one of them may be refused too.
+    let refusedAt = Number.POSITIVE_INFINITY;
+    const going = () => !job.abandoned && failure === null && current();
+    const again = (k: number, error: unknown): void => {
+      const n = (tries.get(k) ?? 0) + 1;
+      if (n > 2) {
         failure ??= error;
         return;
       }
-      while (wanted()) {
-        const k = queue.shift();
-        if (k === undefined) return;
-        h.busy = true;
+      tries.set(k, n);
+      this.reissued++;
+      queue.unshift(k);
+    };
+    const work = async (h: Helper): Promise<void> => {
+      for (;;) {
         try {
-          const answer = await h.client.request(request(k));
-          if (answer.stale) throw new Error("a share of the pool's work went stale");
-          results[k] = answer;
-          if (!answer.reply.ok) refused = true;
+          await this.sync(h, snapshot);
         } catch (error) {
-          // The helper's Worker died, or was cancelled: its client restarted
-          // it and replays its journal, which is the snapshot's document, so
-          // the share goes out again, to whichever helper is free first.
-          const again = (tries.get(k) ?? 0) + 1;
-          if (error instanceof Cancelled && !job.abandoned && again <= 2) {
-            tries.set(k, again);
-            this.reissued++;
-            queue.unshift(k);
-          } else {
-            failure ??= error;
-          }
-        } finally {
-          h.busy = false;
+          failure ??= error;
+          return;
         }
+        let k: number | undefined;
+        while (going() && (k = queue.shift()) !== undefined) {
+          if (k > refusedAt) continue;
+          h.busy = true;
+          try {
+            const answer = await h.client.request(request(k));
+            if (answer.stale) throw new Error("a share of the pool's work went stale");
+            if (!answer.reply.ok && answer.reply.another === true) {
+              // Asked of another document than it holds: brought to the
+              // job's before it is asked again, the share handed out again.
+              this.mismatches++;
+              h.dirty = true;
+              again(k, new Error(answer.reply.error ?? "a share of another document"));
+              break;
+            }
+            results[k] = answer;
+            if (!answer.reply.ok) {
+              refusedAt = Math.min(refusedAt, k);
+              // A layout refused is the helper's document's doing: marked.
+              if (marksRefused) h.dirty = true;
+            }
+          } catch (error) {
+            // The helper's Worker died, or was cancelled: its client restarted
+            // it and replays its journal, which is the job's document, so the
+            // share goes out again. Anything else (its replay cut short, a
+            // failure of its own) leaves its document in doubt: marked.
+            if (!(error instanceof Cancelled)) h.dirty = true;
+            if (job.abandoned) return;
+            again(k, error);
+            if (h.dirty) break;
+          } finally {
+            h.busy = false;
+          }
+        }
+        // Out of the loop for a marked helper with shares left: brought
+        // back, and on with the queue.
+        if (!(h.dirty && going() && queue.some((j) => j <= refusedAt))) return;
       }
     };
     await Promise.all(helpers.map(work));
@@ -276,7 +343,7 @@ export class EnginePool {
     this.primary.forgetLog(Math.min(...this.helpers.map((h) => (h.cuts === snapshot.cuts ? h.at : snapshot.at))));
     if (job.abandoned) throw new Cancelled("the pool's work was cancelled");
     if (failure !== null) throw failure;
-    if (refused) throw new Refused(results.find((r) => r !== undefined && !r.reply.ok)!);
+    if (refusedAt !== Number.POSITIVE_INFINITY) throw new Refused(results[refusedAt]!);
     if (!current()) return null;
     return results;
   }
@@ -286,7 +353,7 @@ export class EnginePool {
   private ready(n: number, snapshot: Snapshot): Helper[] {
     while (this.helpers.length < n) {
       const client = new EngineClient(this.spawn, this.wasm, snapshot.journal);
-      this.helpers.push({ client, at: snapshot.at, cuts: snapshot.cuts, busy: false });
+      this.helpers.push({ client, at: snapshot.at, cuts: snapshot.cuts, busy: false, dirty: false });
     }
     return this.helpers.slice(0, n);
   }
@@ -296,8 +363,8 @@ export class EnginePool {
    * no longer reaches back so far or is longer than the journal, the
    * snapshot's journal replayed into a new Worker. */
   private async sync(h: Helper, snapshot: Snapshot): Promise<void> {
-    if (h.at === snapshot.at && h.cuts === snapshot.cuts) return;
-    const entries = h.at <= snapshot.at ? this.primary.catchUp(h.at, snapshot.at, h.cuts) : null;
+    if (!h.dirty && h.at === snapshot.at && h.cuts === snapshot.cuts) return;
+    const entries = !h.dirty && h.at <= snapshot.at ? this.primary.catchUp(h.at, snapshot.at, h.cuts) : null;
     let adopted = entries === null || entries.length > snapshot.journal.length;
     if (!adopted) {
       try {
@@ -314,5 +381,6 @@ export class EnginePool {
     if (adopted) await h.client.adopt(snapshot.journal);
     h.at = snapshot.at;
     h.cuts = snapshot.cuts;
+    h.dirty = false;
   }
 }

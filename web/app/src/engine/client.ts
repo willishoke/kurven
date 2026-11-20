@@ -203,8 +203,10 @@ export class EngineClient {
   state: DocumentState | null = null;
   /** How many times the Worker was restarted. */
   restarts = 0;
-  /** What was recorded, in order, from `logBase` on (the header says why). */
+  /** What was recorded, in order, from `logBase` on (the header says why),
+   * kept only once a pool asks for it (`keepLog`). */
   private log: { entry: Entry; replaces: boolean }[] = [];
+  private logging = false;
   private logBase = 0;
   /** How many times the journal was cut (`JournalTruncated`). */
   private cuts = 0;
@@ -241,6 +243,15 @@ export class EngineClient {
       out.push(this.log[i - this.logBase]!.entry);
     }
     return out;
+  }
+
+  /** Keep the log from now on, for a pool's helpers to catch up on: until
+   * then, and on a helper's own client, nothing is logged. */
+  keepLog(): void {
+    if (this.logging) return;
+    this.logging = true;
+    this.log = [];
+    this.logBase = 0;
   }
 
   /** Let go of the log before `at`: no engine will catch up from there. */
@@ -502,7 +513,13 @@ export class EngineClient {
 
   private record(entry: Entry): void {
     const { kept, replaces } = this.compact(entry);
+    if (!this.logging) return;
     this.log.push({ entry: kept, replaces });
+    // Trimmed with the journal: an engine that would catch up on more of the
+    // log than twice the journal (and a few) replays the journal instead
+    // (pool.ts's `sync`), so the log keeps no more, staged bundles and all.
+    const most = 2 * this.journal.length + 16;
+    if (this.log.length > most) this.forgetLog(this.logBase + this.log.length - most);
   }
 
   /** Put `entry` in the journal by the header's rules: what went in, and

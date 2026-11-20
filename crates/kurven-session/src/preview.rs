@@ -237,6 +237,11 @@ pub struct Preview {
 #[derive(Default)]
 pub struct Memo {
     normals: Option<(ContentID, Arc<Vec<[f32; 3]>>)>,
+    /// The document's fingerprints (`pool.rs`), the shown scene's and the
+    /// bake's, each with what it was hashed for: the scene's content and
+    /// curves, its camera, depth tolerance and resolution, and the bake's
+    /// resolution. A pool asks for them every rest and every piece.
+    pub(crate) fingerprints: std::sync::Mutex<[Option<Fingerprinted>; 2]>,
     /// The content the refusals below are of, and the layers by key that the
     /// scene could not test: kept, so a frame that sends no segments for a
     /// held key still depth-tests them.
@@ -263,6 +268,9 @@ impl Memo {
         normals
     }
 }
+
+/// A fingerprint, and the words that say what it was hashed for.
+pub(crate) type Fingerprinted = (Vec<u64>, String);
 
 /// `LineGeometry.isTestedExactly`: whether a layer's line geometry is the
 /// camera's -- a heightfield's fold curves, or the strokes in its walls; or,
@@ -589,7 +597,7 @@ impl Document {
             perspective: scene.camera.is_perspective(),
         };
 
-        let content = format!("{nonce}~{}", scene.content().raw());
+        let content = content_key(nonce, &scene);
         self.preview_memo.forget_unless(&content);
         let resources = (have_content != Some(content.as_str())).then(|| Resources::of(&scene));
         let widest = scene.layers().iter().map(|l| l.spec.width).fold(None, |m: Option<f64>, w| {
@@ -600,7 +608,7 @@ impl Document {
         });
         // Every key starts with the content and the curves: a new scene is new
         // geometry, whatever its layers' places.
-        let curves = format!("{content}.{}", scene.curves().raw());
+        let curves = curves_key(&content, &scene);
         let camera = camera_key(&scene, draft);
         // The strokes of a parametric scene's layout are the camera's only
         // if some layer is tested for it (Swift's `lineGeometry(for:draft:)`
@@ -698,9 +706,9 @@ impl Document {
                 // A layout is the camera's where the layer is tested for it;
                 // a heightfield's draft folds are too, traced for it on the
                 // grid.
-                let key = if heightfield && tested && !draft {
-                    resolution_key(&format!("{curves}.{i}.lines.{camera}"), scene.resolution, have)
-                } else if (tested && !draft) || (heightfield && folds) {
+                let key = if tested && !draft {
+                    rest_key(&scene, &curves, i, have)
+                } else if heightfield && folds {
                     format!("{curves}.{i}.lines.{camera}")
                 } else {
                     format!("{curves}.{i}.lines")
@@ -724,6 +732,26 @@ impl Document {
         }
         Some(Preview { content, resources, uniforms, mode: self.mode, layers })
     }
+}
+
+/// The key of a scene's resources: the engine's nonce and the scene's content.
+pub(crate) fn content_key(nonce: &str, scene: &Scene) -> String {
+    format!("{nonce}~{}", scene.content().raw())
+}
+
+/// The key every layer's starts with: the content's and the curves'.
+pub(crate) fn curves_key(content: &str, scene: &Scene) -> String {
+    format!("{content}.{}", scene.curves().raw())
+}
+
+/// The key of a tested layer's layout at rest (`is_tested_exactly`, not a
+/// draft): the camera's, and for a landscape the resolution its runs' ends
+/// are placed to, a held one placed at least as finely serving
+/// (`resolution_key`). What a frame at rest sends a layer's segments under,
+/// and what `Document::rest_layers` asks the page's holdings for.
+pub(crate) fn rest_key(scene: &Scene, curves: &str, i: usize, have: &BTreeSet<String>) -> String {
+    let base = format!("{curves}.{i}.lines.{}", camera_key(scene, false));
+    if scene.heightfield().is_some() { resolution_key(&base, scene.resolution, have) } else { base }
 }
 
 /// The view matrix's bits alone, for a parametric surface's grid folds,

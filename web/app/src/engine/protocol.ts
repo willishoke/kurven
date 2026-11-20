@@ -92,13 +92,17 @@ export type Request =
    * together, its arrays given as inputs, which answers as `bake` does (or
    * `failed`: a piece's refusal, said as the bake's status). */
   | { kind: "bakePlan" }
-  | { kind: "bakePiece"; piece: Piece }
-  | { kind: "bakeAssemble"; svg?: boolean; plan: Piece[]; colors: string[][] }
+  /** `fingerprint`: the plan's document; a helper holding another refuses
+   * the share as such (the reply's `another`). */
+  | { kind: "bakePiece"; piece: Piece; fingerprint: string }
+  /** `fingerprint` and `frame`: the plan's; put together after the document
+   * moved on, the reply says `snapshot`. */
+  | { kind: "bakeAssemble"; svg?: boolean; plan: Piece[]; colors: string[][]; fingerprint: string; frame: unknown }
   | { kind: "bakeAssemble"; failed: string }
   /** The frame at rest shared likewise: the layers it would lay out, holding
    * what `have` holds, and some of them laid out. */
   | { kind: "restLayers"; have?: { content?: string; layers?: string[] } }
-  | { kind: "restLayout"; layers: number[] }
+  | { kind: "restLayout"; layers: number[]; fingerprint: string }
   /** The shown surface's coordinate image by the CPU rasterizer, with the
    * frame, view and clip the GPU renders the same image by. */
   | { kind: "surfaceImage"; resolution: number }

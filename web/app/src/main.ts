@@ -278,6 +278,8 @@ async function exportSVG(): Promise<void> {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
     const took = seconds(performance.now() - exporting.started);
+    // Put together after an edit or a move, the bake's status says it is of
+    // the document as it was when Export was clicked, as one engine's was.
     panel.exportStatus.textContent = `${engine.state?.status.bake ?? ""} → ${name}, ${svg.length.toLocaleString()} bytes, in ${took}`;
   } catch (error) {
     if (error instanceof Cancelled) {

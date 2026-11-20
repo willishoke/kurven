@@ -54,6 +54,10 @@ type Made = { laid: RestLayout } | { judged: Extract<Answer, { stale: false }> }
 /** A frame at rest whose making the camera or a control overtook. */
 class Overtaken extends Error {}
 
+/** What a frame at rest was made from, when it was wished, and whether it
+ * is still the one wanted. */
+type Given = { made: Made; started: number; current: () => boolean };
+
 export class PreviewView {
   readonly canvas: HTMLCanvasElement;
   private readonly client: EngineClient;
@@ -92,6 +96,9 @@ export class PreviewView {
   private refineAgain = false;
   /** When the frame at rest now being made by the pool was wished. */
   refiningSince: number | null = null;
+  /** Frames at rest the page's engine laid out itself because it refused
+   * the helpers' layouts for another reason than a move. */
+  fallbacks = 0;
 
   /** Where an offscreen frame is drawn, when the canvas is not (`offscreen`). */
   private target: GPUTexture | null = null;
@@ -249,7 +256,7 @@ export class PreviewView {
     try {
       return await this.exclusive(async () => {
         if (!current()) throw new Overtaken();
-        return this.draw("rest", onPixels, read, { made, started });
+        return this.draw("rest", onPixels, read, { made, started, current });
       });
     } catch (error) {
       if (error instanceof Overtaken) return null;
@@ -351,7 +358,7 @@ export class PreviewView {
     wish: Wish,
     onPixels?: (p: Pixels) => void,
     read = false,
-    given?: { made: Made; started: number },
+    given?: Given,
   ): Promise<Timing> {
     this.setWorking(wish);
     try {
@@ -367,7 +374,7 @@ export class PreviewView {
     wish: Wish,
     onPixels?: (p: Pixels) => void,
     read = false,
-    given?: { made: Made; started: number },
+    given?: Given,
   ): Promise<Timing> {
     const started = given?.started ?? performance.now();
     let timing: Timing;
@@ -382,7 +389,7 @@ export class PreviewView {
       }
       const have = renderer.holds();
       const laid = given && "laid" in given.made ? given.made.laid : null;
-      const answer = await this.client.request(
+      let answer = await this.client.request(
         {
           kind: "preview",
           draft: wish === "draft",
@@ -392,10 +399,19 @@ export class PreviewView {
         laid ? { inputs: laid.inputs } : {},
       );
       if (answer.stale) throw new Error("a preview frame went stale");
+      if (!answer.reply.ok && laid) {
+        // Overtaken by a move or a change since: its own frame at rest
+        // follows, and this one is let go quietly.
+        if (given && !given.current()) throw new Overtaken();
+        // Refused for another reason (the page's engine holds another
+        // document than the helpers laid out, for no move the page made):
+        // said, and the frame at rest laid out by the page's engine itself.
+        this.fallbacks++;
+        console.warn(`kurven: the helpers' frame at rest was refused (${answer.reply.error ?? "refused"}); laid out here`);
+        answer = await this.client.request({ kind: "preview", draft: false, have });
+        if (answer.stale) throw new Error("a preview frame went stale");
+      }
       const { reply, arrays } = answer;
-      // Layouts of a document the page's engine no longer holds: an edit
-      // overtook them, and its own frame at rest follows.
-      if (!reply.ok && laid) throw new Overtaken();
       if (!reply.ok) throw new Error(`preview: ${reply.error ?? "refused"}`);
       const engineMs = performance.now() - started;
       const frame = reply as unknown as Reply & PreviewFrame;

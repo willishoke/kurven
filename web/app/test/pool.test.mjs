@@ -16,7 +16,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { Worker } from "node:worker_threads";
 import { Cancelled, EngineClient } from "../src/engine/client.ts";
-import { EnginePool } from "../src/engine/pool.ts";
+import { EnginePool, poolSize } from "../src/engine/pool.ts";
 
 const [wasmPath, session, native] = process.argv.slice(2);
 if (!wasmPath || !session || !native) {
@@ -166,7 +166,93 @@ assert.equal(pool.mismatches, 0);
 fresh(await client.request({ kind: "gesture", gesture: { kind: "orbit", delta: [5, 0] } }));
 const late = await client.request({ kind: "preview", draft: false, have, laid: laid.laid, fingerprint: laid.fingerprint }, { inputs: laid.inputs });
 assert.equal(late.reply.ok, false);
+assert.equal(late.reply.another, true, "refused as of another document");
+checks += 4;
+
+// A helper that drifts -- its document changed behind the pool's back --
+// refuses the shares asked of the page's document as of another; the pool
+// brings it back from the primary's journal and hands the shares out again,
+// and the bake is the page's engine's bytes.
+const drift = (c) => c.request({ kind: "truncation", truncation: { kind: "uniform", height: 1.7 } });
+for (const c of pool.clients) fresh(await drift(c));
+const mismatched = pool.mismatches;
+const reference = svgOf(await client.request({ kind: "bake", svg: true }));
+assert.deepEqual(svgOf(await pool.bake(true)), reference, "every helper drifted: brought back, the same bytes");
+assert.ok(pool.mismatches >= mismatched + 4, "each refused a share as of another document");
+fresh(await drift(pool.clients[2]));
+assert.deepEqual(svgOf(await pool.bake(true)), reference, "one helper drifted");
+// ...and the frame at rest: a drifted helper's layout is asked again of it,
+// brought back, and the frame served is the primary's own.
+for (const c of pool.clients) fresh(await drift(c));
+const draft2 = fresh(await client.request({ kind: "preview", draft: true }));
+const have2 = { content: draft2.reply.content, layers: draft2.reply.layers.map((l) => l.key) };
+const laid2 = await pool.layOutRest(have2, () => true);
+assert.ok(laid2 && laid2.laid.length > 0, "laid out, by helpers brought back");
+const served2 = fresh(await client.request({ kind: "preview", draft: false, have: have2, laid: laid2.laid, fingerprint: laid2.fingerprint }, { inputs: laid2.inputs }));
+const itself2 = fresh(await client.request({ kind: "preview", draft: false, have: have2 }));
+assert.deepEqual(unsaid(served2.reply), unsaid(itself2.reply));
+checks += 5;
+
+// A bake refused in its pieces reports the refusal the serial bake would:
+// the first in the plan's order, not the first to come back. Two pieces
+// refused on purpose, the later one first.
+const plan = fresh(await client.request({ kind: "bakePlan" })).reply.pieces;
+assert.ok(plan.length > 8);
+const same = (a, b) => JSON.stringify({ ...a, weight: 0 }) === JSON.stringify({ ...b, weight: 0 });
+const asks = pool.clients.map((c) => c.request.bind(c));
+pool.clients.forEach((c, i) => {
+  c.request = async (request, options) => {
+    if (request.kind === "bakePiece") {
+      for (const [k, wait] of [[3, 300], [7, 0]]) {
+        if (same(request.piece, plan[k])) {
+          await new Promise((resolve) => setTimeout(resolve, wait));
+          return { stale: false, reply: { ok: false, touched: false, error: `refused ${k}`, arrays: [] }, arrays: {} };
+        }
+      }
+    }
+    return asks[i](request, options);
+  };
+});
+const refused = await pool.bake(true);
+pool.clients.forEach((c, i) => (c.request = asks[i]));
+assert.equal(refused.reply.ok, false);
+assert.equal(refused.reply.error, "refused 3", "the first refused in the plan's order");
+assert.equal(client.state.status.bake, "refused 3", "said as the bake's status");
 checks += 3;
+
+// A bake refused before its pieces is refused as the page's engine's is.
+fresh(await client.request({ kind: "perspective", on: true }));
+const aloneRefused = await client.request({ kind: "bake" });
+const pooledRefused = await pool.bake(false);
+assert.equal(pooledRefused.reply.ok, false);
+assert.equal(pooledRefused.reply.error, aloneRefused.reply.error);
+fresh(await client.request({ kind: "perspective", on: false }));
+checks += 2;
+
+// Cancelled while the primary puts the pieces together: nothing answered.
+const assemble = client.request.bind(client);
+client.request = (request, options) => {
+  if (request.kind === "bakeAssemble") pool.cancel("cancelled while put together");
+  return assemble(request, options);
+};
+await assert.rejects(pool.bake(true), (error) => error instanceof Cancelled);
+client.request = assemble;
+checks += 1;
+
+// The log is the pool's: trimmed with the journal, and kept by no client
+// that has no pool, a helper's own among them.
+for (let k = 0; k < 120; k++) fresh(await client.request({ kind: "viewport", width: 900 + k, height: 700 }));
+for (let k = 0; k < 40; k++) fresh(await client.request({ kind: "drag", control: { slider: "truncation" }, phase: k ? "move" : "begin", value: 2 + k / 100 }));
+assert.ok(client.log.length <= 2 * client.journalLength + 16, `the log trimmed: ${client.log.length} for a journal of ${client.journalLength}`);
+for (const c of pool.clients) assert.equal(c.log.length, 0, "a helper keeps no log");
+const lone = new EngineClient(nodeWorker, wasm);
+await lone.stage(bundle(gamma));
+fresh(await lone.request({ kind: "open", name: gamma }));
+for (let k = 0; k < 20; k++) fresh(await lone.request({ kind: "gesture", gesture: { kind: "orbit", delta: [2, 1] } }));
+assert.equal(lone.log.length, 0, "no pool, no log");
+lone.close();
+assert.deepEqual([poolSize(undefined), poolSize(1), poolSize(2), poolSize(4), poolSize(18)], [0, 0, 1, 3, 8]);
+checks += 4;
 
 // What each engine holds: the module's linear memory after gamma.
 const memory = [client.memory, ...pool.clients.map((c) => c.memory)];

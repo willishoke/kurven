@@ -149,6 +149,31 @@ impl From<String> for Refusal {
     }
 }
 
+/// A pool's share refused (`pool.rs`): one asked of another document says
+/// so (`another`), for the pool to bring its engine to the document again.
+impl From<crate::pool::Refused> for Refusal {
+    fn from(r: crate::pool::Refused) -> Refusal {
+        let mut refusal = refuse(r.message);
+        if r.another {
+            refusal.detail.insert("another".to_string(), JsonValue::Bool(true));
+        }
+        refusal
+    }
+}
+
+/// What a frame's request says the page holds (`have`): the content's key
+/// and the layers' keys.
+fn holdings(o: &JsonObject) -> (Option<&str>, BTreeSet<String>) {
+    let have = o.get("have").and_then(JsonValue::as_object);
+    let content = have.and_then(|h| h.get("content")).and_then(JsonValue::as_str);
+    let keys = have
+        .and_then(|h| h.get("layers"))
+        .and_then(JsonValue::as_array)
+        .map(|a| a.iter().filter_map(|k| k.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    (content, keys)
+}
+
 impl From<&str> for Refusal {
     fn from(s: &str) -> Refusal {
         refuse(s)
@@ -734,13 +759,7 @@ impl Session {
                 // and each layer's segments, under keys, and the uniforms.
                 // What the page says it holds (`have`) is not sent again.
                 let draft = o.get("draft").and_then(JsonValue::as_bool).unwrap_or(true);
-                let have = o.get("have").and_then(JsonValue::as_object);
-                let content = have.and_then(|h| h.get("content")).and_then(JsonValue::as_str);
-                let keys: BTreeSet<String> = have
-                    .and_then(|h| h.get("layers"))
-                    .and_then(JsonValue::as_array)
-                    .map(|a| a.iter().filter_map(|k| k.as_str().map(str::to_string)).collect())
-                    .unwrap_or_default();
+                let (content, keys) = holdings(o);
                 // Layouts at rest another engine of a pool laid out
                 // (`pool.rs`), served here under this engine's keys.
                 let given = crate::pool::given_layout(&self.document, o, std::mem::take(&mut self.inputs))?;
@@ -820,16 +839,7 @@ impl Session {
             "bakeAssemble" => Ok(crate::pool::bake_assemble(d, o, std::mem::take(&mut self.inputs))?),
             // The frame at rest shared likewise: the layers it would lay
             // out, holding what `have` holds, and some of them laid out.
-            "restLayers" => {
-                let have = o.get("have").and_then(JsonValue::as_object);
-                let content = have.and_then(|h| h.get("content")).and_then(JsonValue::as_str);
-                let keys: BTreeSet<String> = have
-                    .and_then(|h| h.get("layers"))
-                    .and_then(JsonValue::as_array)
-                    .map(|a| a.iter().filter_map(|k| k.as_str().map(str::to_string)).collect())
-                    .unwrap_or_default();
-                Ok(crate::pool::rest_layers(&mut self.document, &self.nonce, content, &keys)?)
-            }
+            "restLayers" => Ok(crate::pool::rest_layers(&self.document, &self.nonce, &holdings(o).1)?),
             "restLayout" => Ok(crate::pool::rest_layout(d, o)?),
             "grids" => {
                 // What the draft preview draws the surface from: a

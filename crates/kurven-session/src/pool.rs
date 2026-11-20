@@ -21,12 +21,14 @@
 //!   serving engine's own keys without laying them out again.
 //!
 //! A share computed by an engine holding another document would be wrong
-//! without failing, so the frame at rest's shares carry the document's
-//! fingerprint (`Document::layout_fingerprint`), and a frame given a layout
-//! of another fingerprint is refused. A bake's pieces name the layers and
-//! paths they are of, and a piece the scene has no such share for is refused.
+//! without failing, so every share carries the fingerprint of the document
+//! it was asked of (`Document::layout_fingerprint` for the frame at rest,
+//! `bake_fingerprint` for the bake), and an engine holding another refuses
+//! it as such (`Refused::another`), which tells a pool to bring that engine
+//! to its document again. An assembly names its plan's fingerprint too, and
+//! one put together after the document moved on says so (`snapshot`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use kurven_bake::BakeOptions;
 use kurven_bake::pieces::{self, Baked, Piece};
@@ -38,7 +40,7 @@ use kurven_core::spaces::P3;
 use kurven_core::svg::{self, Strokes, Style};
 
 use crate::document::Document;
-use crate::preview::{Laid, fnv, is_tested_exactly, lay_out};
+use crate::preview::{Laid, content_key, curves_key, fnv, is_tested_exactly, lay_out, rest_key};
 use crate::protocol::Array;
 
 /// About how many vertices of a landscape's layer one piece of a bake tests:
@@ -49,11 +51,44 @@ use crate::protocol::Array;
 pub const VERTICES_PER_PIECE: usize = 1024;
 
 /// A reply's JSON and arrays, or why not.
-pub type Shared = Result<(JsonObject, Vec<(String, Array)>), String>;
+pub type Shared = Result<(JsonObject, Vec<(String, Array)>), Refused>;
+
+/// Why a share was refused, and whether because it was asked of another
+/// document than this engine holds (`another`): the asking engine's
+/// fingerprint is not this one's. A pool then brings the engine to its
+/// document again and asks once more; any other refusal is the work's own.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Refused {
+    pub message: String,
+    pub another: bool,
+}
+
+impl From<String> for Refused {
+    fn from(message: String) -> Refused {
+        Refused { message, another: false }
+    }
+}
+
+impl From<&str> for Refused {
+    fn from(message: &str) -> Refused {
+        Refused { message: message.to_string(), another: false }
+    }
+}
+
+/// Refused unless `o`'s `fingerprint` is `ours`: a share asked of another
+/// document.
+fn of_this_document(o: &JsonObject, ours: Option<String>, what: &str) -> Result<(), Refused> {
+    let theirs = o.get("fingerprint").and_then(JsonValue::as_str);
+    if theirs.is_none() || theirs.map(str::to_string) != ours {
+        return Err(Refused { message: format!("{what} is of another document"), another: true });
+    }
+    Ok(())
+}
 
 impl Document {
     /// The scene a bake draws and how, refused as `Document::bake` refuses
-    /// before it bakes: the message, which is also the bake's status.
+    /// before it bakes -- `bake` asks this too, so there is one rule: the
+    /// message, and whether it is said as the bake's status.
     fn bake_inputs(&self) -> Result<(Scene, BakeOptions), (String, bool)> {
         let Some(scene) = self.framed_scene() else { return Err(("nothing to bake".to_string(), false)) };
         if let Some(why) = CameraPreset::unsupported_buffer(self.bake_resolution) {
@@ -72,7 +107,7 @@ impl Document {
     }
 
     /// `bake_inputs`, a refusal said in the bake's status as `bake` says it.
-    fn bake_inputs_said(&mut self) -> Result<(Scene, BakeOptions), String> {
+    pub(crate) fn bake_inputs_said(&mut self) -> Result<(Scene, BakeOptions), String> {
         self.bake_inputs().map_err(|(why, said)| {
             if said {
                 self.bake_status = Some(why.clone());
@@ -97,14 +132,6 @@ impl Document {
         pieces::bake_piece(&scene, &options, piece).map_err(|error| format!("bake failed: {error}"))
     }
 
-    /// The judged strokes from their pieces, given in the plan's order, said
-    /// in the bake's status as `bake` says them.
-    pub fn bake_assembled(&mut self, plan: &[Piece], baked: Vec<Baked>) -> Result<Strokes, String> {
-        let strokes = pieces::assemble(plan, baked)?;
-        self.bake_status = Some(format!("{} paths", strokes.path_count()));
-        Ok(strokes)
-    }
-
     /// A bake that failed in one of its pieces, said in the bake's status.
     pub fn bake_failed(&mut self, status: String) -> String {
         self.bake_status = Some(status.clone());
@@ -112,25 +139,22 @@ impl Document {
     }
 
     /// The tested layers a frame at rest would lay out (`preview` with
-    /// `draft` false, holding `have`): every layer it asks `lay_out` of and
-    /// whose layout is the camera's, by its place in the shown scene. None
-    /// is laid out here.
-    pub fn rest_layers(
-        &mut self,
-        nonce: &str,
-        have_content: Option<&str>,
-        have: &std::collections::BTreeSet<String>,
-    ) -> Vec<usize> {
-        let mut wanted = Vec::new();
-        self.preview_laying(false, nonce, have_content, have, &mut |i, layer, scene, draft| {
-            if !draft && is_tested_exactly(layer, scene) {
-                wanted.push(i);
-                Laid { paths: PolylineSet::empty(), refusal: None }
-            } else {
-                lay_out(layer, scene, draft)
-            }
-        });
-        wanted
+    /// `draft` false, holding `have`), by their place in the shown scene:
+    /// each shown layer whose layout is the camera's (`is_tested_exactly`)
+    /// and whose key at rest (`preview::rest_key`, the key `preview` sends
+    /// it under) the page does not hold. Keys alone: nothing is laid out,
+    /// built or remembered.
+    pub fn rest_layers(&self, nonce: &str, have: &BTreeSet<String>) -> Vec<usize> {
+        let Some(scene) = self.shown_scene() else { return Vec::new() };
+        let shown = self.shown_visible_layers();
+        let curves = curves_key(&content_key(nonce, &scene), &scene);
+        (0..scene.layers().len())
+            .filter(|&i| {
+                shown.contains(&i)
+                    && is_tested_exactly(&scene.layers()[i], &scene)
+                    && !have.contains(&rest_key(&scene, &curves, i, have))
+            })
+            .collect()
     }
 
     /// The layouts at rest of the shown scene's layers `layers`, each as
@@ -158,36 +182,75 @@ impl Document {
     /// give the same; a layout given with another is of another document.
     pub fn layout_fingerprint(&self) -> Option<String> {
         let scene = self.shown_scene()?;
-        let mut words: Vec<u64> = Vec::new();
-        words.extend(scene.camera.view.m.columns.iter().flat_map(|c| c.to_array()).map(f64::to_bits));
-        words.push(u64::from(scene.camera.is_perspective()));
-        words.push(scene.depth_tolerance.to_bits());
-        words.push(scene.resolution.to_bits());
-        for layer in scene.layers() {
-            words.push(fnv(layer.spec.name.bytes().map(u64::from)));
-            words.push(u64::from(layer.spec.clipped));
-            words.push(layer.paths.vertices.len() as u64);
-            words.extend(layer.paths.offsets.iter().map(|&o| o as u64));
-            words.extend(layer.paths.vertices.iter().flat_map(|p| [p.x(), p.y(), p.z()]).map(f64::to_bits));
-        }
-        match scene.geometry() {
-            SceneGeometry::Heightfield(h) => {
-                let g = &*h.surface.height;
-                words.extend([g.width as u64, g.height as u64]);
-                words
-                    .extend([g.domain.real.lo, g.domain.real.hi, g.domain.imag.lo, g.domain.imag.hi].map(f64::to_bits));
-                words.extend(g.values.iter().map(|&v| u64::from(v.to_bits())));
-                words.extend(h.occluder.vertices.iter().flat_map(|p| [p.x(), p.y(), p.z()]).map(f64::to_bits));
-            }
-            SceneGeometry::Parametric(s) => {
-                words.extend(s.positions.iter().flat_map(|p| [p.x(), p.y(), p.z()]).map(f64::to_bits));
-            }
-            SceneGeometry::Solid(s) => {
-                words.extend(s.vertices.iter().flat_map(|p| [p.x(), p.y(), p.z()]).map(f64::to_bits));
-            }
-        }
-        Some(format!("{:016x}", fnv(words)))
+        Some(self.fingerprinted(0, &scene, &[]))
     }
+
+    /// What the bake is a function of, hashed likewise: the framed scene (no
+    /// picked face's boundary), the depth tolerance it is tested at and its
+    /// resolution. A piece or an assembly asked with another is of another
+    /// document.
+    pub fn bake_fingerprint(&self) -> Option<String> {
+        let scene = self.framed_scene()?;
+        Some(self.fingerprinted(1, &scene, &[self.bake_resolution as u64, self.depth_tolerance.to_bits()]))
+    }
+
+    /// `scene`'s fingerprint with `extra`, remembered in slot `slot` for what
+    /// it was hashed for: the scene's content and curves (counted per
+    /// process, and new whenever its geometry or curves are), its camera,
+    /// depth tolerance and resolution, and `extra`. A pool asks for it every
+    /// rest and every piece; hashing cn's grid and curves each time was the
+    /// cost of the ask.
+    fn fingerprinted(&self, slot: usize, scene: &Scene, extra: &[u64]) -> String {
+        let mut key = vec![scene.content().raw(), scene.curves().raw()];
+        key.extend(scene.camera.view.m.columns.iter().flat_map(|c| c.to_array()).map(f64::to_bits));
+        key.push(u64::from(scene.camera.is_perspective()));
+        key.extend([scene.depth_tolerance.to_bits(), scene.resolution.to_bits()]);
+        key.extend_from_slice(extra);
+        let mut memo = self.preview_memo.fingerprints.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((k, f)) = &memo[slot]
+            && *k == key
+        {
+            return f.clone();
+        }
+        let f = fingerprint(scene, extra);
+        memo[slot] = Some((key, f.clone()));
+        f
+    }
+}
+
+/// A scene's fingerprint, hashed afresh.
+fn fingerprint(scene: &Scene, extra: &[u64]) -> String {
+    let mut words: Vec<u64> = Vec::new();
+    words.extend(scene.camera.view.m.columns.iter().flat_map(|c| c.to_array()).map(f64::to_bits));
+    words.push(u64::from(scene.camera.is_perspective()));
+    words.push(scene.depth_tolerance.to_bits());
+    words.push(scene.resolution.to_bits());
+    words.extend_from_slice(extra);
+    for layer in scene.layers() {
+        words.push(fnv(layer.spec.name.bytes().map(u64::from)));
+        words.push(u64::from(layer.spec.clipped));
+        words.push(layer.spec.width.to_bits());
+        words.push(fnv(layer.spec.color.bytes().map(u64::from)));
+        words.push(layer.paths.vertices.len() as u64);
+        words.extend(layer.paths.offsets.iter().map(|&o| o as u64));
+        words.extend(layer.paths.vertices.iter().flat_map(|p| [p.x(), p.y(), p.z()]).map(f64::to_bits));
+    }
+    match scene.geometry() {
+        SceneGeometry::Heightfield(h) => {
+            let g = &*h.surface.height;
+            words.extend([g.width as u64, g.height as u64]);
+            words.extend([g.domain.real.lo, g.domain.real.hi, g.domain.imag.lo, g.domain.imag.hi].map(f64::to_bits));
+            words.extend(g.values.iter().map(|&v| u64::from(v.to_bits())));
+            words.extend(h.occluder.vertices.iter().flat_map(|p| [p.x(), p.y(), p.z()]).map(f64::to_bits));
+        }
+        SceneGeometry::Parametric(s) => {
+            words.extend(s.positions.iter().flat_map(|p| [p.x(), p.y(), p.z()]).map(f64::to_bits));
+        }
+        SceneGeometry::Solid(s) => {
+            words.extend(s.vertices.iter().flat_map(|p| [p.x(), p.y(), p.z()]).map(f64::to_bits));
+        }
+    }
+    format!("{:016x}", fnv(words))
 }
 
 // MARK: - the shares as messages
@@ -256,15 +319,25 @@ pub fn bake_plan(d: &mut Document) -> Shared {
     };
     let mut out = JsonObject::new();
     out.insert("pieces".to_string(), JsonValue::Array(plan.iter().map(|p| piece_json(p, weight(p))).collect()));
+    out.insert("fingerprint".to_string(), d.bake_fingerprint().map_or(JsonValue::Null, |f| json::string(&f)));
+    out.insert("frame".to_string(), frame_of(d));
     Ok((out, Vec::new()))
+}
+
+/// The frame that maps a page point to the viewport's pixel, as the
+/// preview's does: what `bake` answers with.
+fn frame_of(d: &Document) -> JsonValue {
+    d.navigator.map(|n| n.framing.frame(d.viewport)).as_ref().map_or(JsonValue::Null, crate::protocol::frame_json)
 }
 
 /// One piece's strokes: each stroke layer's colour in `colors`, its width in
 /// the array `piece.widths`, its page points (x, y, z) in `piece.K.points`
 /// and its offsets in `piece.K.offsets`, doubles and indices as the bake
-/// holds them, for `bakeAssemble` to take back to the bit.
+/// holds them, for `bakeAssemble` to take back to the bit. Refused, as of
+/// another document, unless its `fingerprint` is this document's bake's.
 pub fn bake_piece(d: &Document, o: &JsonObject) -> Shared {
     let piece = piece_of(o.get("piece").ok_or("wants a 'piece'")?)?;
+    of_this_document(o, d.bake_fingerprint(), "the piece")?;
     let baked = d.bake_piece(piece)?;
     let mut arrays = vec![("piece.widths".to_string(), Array::f64(baked.iter().map(|(s, _)| s.width)))];
     for (k, (_, paths)) in baked.iter().enumerate() {
@@ -282,10 +355,21 @@ pub fn bake_piece(d: &Document, o: &JsonObject) -> Shared {
 /// under `P.widths`, `P.K.points` and `P.K.offsets` for piece P. Answers as
 /// `bake` does. Or `failed`: a piece's refusal, said as the bake's status
 /// and given back.
+///
+/// `fingerprint` and `frame` are the plan's. The pieces are all of the
+/// plan's document (each was refused otherwise), so the strokes are that
+/// document's bake whatever this engine holds now. Where it holds that
+/// document still, the reply is `bake`'s; where it has moved on since (an
+/// edit or a move after Export was asked), the strokes are still the plan's
+/// document's, consistently: the frame is the plan's, the status says so,
+/// and the reply says `snapshot`, as one engine's bake, asked before the
+/// edit, baked the document as it was.
 pub fn bake_assemble(d: &mut Document, o: &JsonObject, mut inputs: BTreeMap<String, Vec<u8>>) -> Shared {
     if let Some(failed) = o.get("failed").and_then(JsonValue::as_str) {
-        return Err(d.bake_failed(failed.to_string()));
+        return Err(d.bake_failed(failed.to_string()).into());
     }
+    let theirs = o.get("fingerprint").and_then(JsonValue::as_str).ok_or("wants the plan's 'fingerprint'")?;
+    let snapshot = d.bake_fingerprint().as_deref() != Some(theirs);
     let plan: Vec<Piece> = o
         .get("plan")
         .and_then(JsonValue::as_array)
@@ -295,14 +379,14 @@ pub fn bake_assemble(d: &mut Document, o: &JsonObject, mut inputs: BTreeMap<Stri
         .collect::<Result<_, _>>()?;
     let colors = o.get("colors").and_then(JsonValue::as_array).ok_or("wants 'colors'")?;
     if colors.len() != plan.len() {
-        return Err(format!("{} pieces planned, colours for {}", plan.len(), colors.len()));
+        return Err(format!("{} pieces planned, colours for {}", plan.len(), colors.len()).into());
     }
     let mut baked = Vec::with_capacity(plan.len());
     for (p, colors) in colors.iter().enumerate() {
         let colors = colors.as_array().ok_or("a piece's colours are a list")?;
         let widths = doubles(take(&mut inputs, &format!("{p}.widths"))?)?;
         if widths.len() != colors.len() {
-            return Err(format!("piece {p} gives {} widths for {} colours", widths.len(), colors.len()));
+            return Err(format!("piece {p} gives {} widths for {} colours", widths.len(), colors.len()).into());
         }
         let mut layers: Baked = Vec::with_capacity(colors.len());
         for (k, (color, width)) in colors.iter().zip(widths).enumerate() {
@@ -313,15 +397,23 @@ pub fn bake_assemble(d: &mut Document, o: &JsonObject, mut inputs: BTreeMap<Stri
         }
         baked.push(layers);
     }
-    let strokes = d.bake_assembled(&plan, baked)?;
-    Ok(bake_reply(d, &strokes, o.get("svg").and_then(JsonValue::as_bool) == Some(true)))
+    let strokes = pieces::assemble(&plan, baked)?;
+    let (mut out, arrays) = bake_reply(d, &strokes, o.get("svg").and_then(JsonValue::as_bool) == Some(true));
+    if snapshot {
+        d.bake_status =
+            Some(format!("{} paths, of the document as it was when the bake was asked", strokes.path_count()));
+        out.insert("frame".to_string(), o.get("frame").cloned().unwrap_or(JsonValue::Null));
+        out.insert("snapshot".to_string(), JsonValue::Bool(true));
+    } else {
+        d.bake_status = Some(format!("{} paths", strokes.path_count()));
+    }
+    Ok((out, arrays))
 }
 
 /// What `bake` answers: each stroke layer's page points (x, y) and offsets,
 /// its style, the SVG when asked, and the frame that maps a page point to
 /// the viewport's pixel, as the preview's does.
 pub fn bake_reply(d: &Document, strokes: &Strokes, with_svg: bool) -> (JsonObject, Vec<(String, Array)>) {
-    let frame = d.navigator.map(|n| n.framing.frame(d.viewport));
     let mut arrays = Vec::new();
     let mut styles = Vec::new();
     for (i, (style, paths)) in strokes.layers.iter().enumerate() {
@@ -337,20 +429,15 @@ pub fn bake_reply(d: &Document, strokes: &Strokes, with_svg: bool) -> (JsonObjec
     }
     let mut out = JsonObject::new();
     out.insert("strokes".to_string(), JsonValue::Array(styles));
-    out.insert("frame".to_string(), frame.as_ref().map_or(JsonValue::Null, crate::protocol::frame_json));
+    out.insert("frame".to_string(), frame_of(d));
     (out, arrays)
 }
 
 /// The layers a frame at rest would lay out, holding `have`, each with its
 /// weight (its vertices; the fold curves, derived for the camera, weigh
 /// what the scene's largest layer does), and the document's fingerprint.
-pub fn rest_layers(
-    d: &mut Document,
-    nonce: &str,
-    have_content: Option<&str>,
-    have: &std::collections::BTreeSet<String>,
-) -> Shared {
-    let layers = d.rest_layers(nonce, have_content, have);
+pub fn rest_layers(d: &Document, nonce: &str, have: &BTreeSet<String>) -> Shared {
+    let layers = d.rest_layers(nonce, have);
     let scene = d.shown_scene().ok_or("nothing shown")?;
     let largest = scene.layers().iter().map(|l| l.paths.vertices.len()).max().unwrap_or(0);
     let weights: Vec<i64> = layers
@@ -371,7 +458,10 @@ pub fn rest_layers(
 /// The layouts at rest of `layers`: each one's world points (x, y, z) in
 /// `laid.I.vertices` and offsets in `laid.I.offsets`, its refusal in
 /// `laid`, and the document's fingerprint, for `preview` to be given.
+/// Refused, as of another document, unless its `fingerprint` is this
+/// document's.
 pub fn rest_layout(d: &Document, o: &JsonObject) -> Shared {
+    of_this_document(o, d.layout_fingerprint(), "the layout asked for")?;
     let layers: Vec<usize> = o
         .get("layers")
         .and_then(JsonValue::as_array)
@@ -403,13 +493,10 @@ pub fn given_layout(
     d: &Document,
     o: &JsonObject,
     mut inputs: BTreeMap<String, Vec<u8>>,
-) -> Result<Option<BTreeMap<usize, Laid>>, String> {
+) -> Result<Option<BTreeMap<usize, Laid>>, Refused> {
     let Some(laid) = o.get("laid") else { return Ok(None) };
     let laid = laid.as_array().ok_or("'laid' is a list")?;
-    let theirs = o.get("fingerprint").and_then(JsonValue::as_str);
-    if theirs.is_none() || theirs.map(str::to_string) != d.layout_fingerprint() {
-        return Err("the layout given is of another document".to_string());
-    }
+    of_this_document(o, d.layout_fingerprint(), "the layout given")?;
     let mut given = BTreeMap::new();
     for entry in laid {
         let i = entry.get("layer").and_then(JsonValue::as_i64).and_then(|i| usize::try_from(i).ok());
