@@ -77,7 +77,8 @@ export class EnginePool {
   size: number;
   private readonly helpers: Helper[] = [];
   private chain: Promise<unknown> = Promise.resolve();
-  private job: Job | null = null;
+  /** The jobs running or waiting to. */
+  private readonly jobs = new Set<Job>();
   private closed = false;
   /** Layouts at rest a helper gave of another document than the primary's:
    * none, unless the two came apart. */
@@ -175,12 +176,13 @@ export class EnginePool {
     });
   }
 
-  /** Stop the job running: no share more is handed out, and the helpers
-   * with one in flight are restarted (their documents replayed, as a
-   * cancelled request's are), so the job ends now with `Cancelled`. */
+  /** Stop the job running and every job waiting: no share more is handed
+   * out, and the helpers with one in flight are restarted (their documents
+   * replayed, as a cancelled request's are), so each ends now with
+   * `Cancelled`. */
   cancel(why = "cancelled"): void {
-    if (!this.job) return;
-    this.job.abandoned = true;
+    if (this.jobs.size === 0) return;
+    for (const job of this.jobs) job.abandoned = true;
     for (const h of this.helpers) if (h.busy) void h.client.cancel(why).catch(() => {});
   }
 
@@ -205,13 +207,14 @@ export class EnginePool {
   /** Run `work` once every job before it has ended, as the job running. */
   private run<T>(work: (job: Job) => Promise<T>): Promise<T> {
     const job: Job = { abandoned: false };
+    this.jobs.add(job);
     const running = this.chain.catch(() => {}).then(async () => {
-      if (this.closed) throw new Cancelled("the pool is closed");
-      this.job = job;
       try {
+        if (this.closed) throw new Cancelled("the pool is closed");
+        if (job.abandoned) throw new Cancelled("the pool's work was cancelled");
         return await work(job);
       } finally {
-        if (this.job === job) this.job = null;
+        this.jobs.delete(job);
       }
     });
     this.chain = running.catch(() => {});
