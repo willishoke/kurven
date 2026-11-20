@@ -153,7 +153,7 @@ pub fn window(lo: f64, hi: f64, axis: &str) -> Result<(), String> {
     if finite(lo) && finite(hi) && lo < hi && finite(hi - lo) {
         Ok(())
     } else {
-        Err(format!("the window has {axis} from {lo} to {hi}, which is no interval"))
+        Err(format!("the window has {axis} from {lo:?} to {hi:?}, which is no interval"))
     }
 }
 

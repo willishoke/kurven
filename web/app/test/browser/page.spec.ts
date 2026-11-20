@@ -696,11 +696,15 @@ test("a link that cannot be made leaves the open document and what it can undo",
   const before = await page.evaluate(async () => (await (window as any).kurven.request({ kind: "edited" })).reply.edited);
   const undo = (await state(page)).undo;
   expect(undo).toEqual({ can: true, name: "Truncation" });
-  // Each end of its window finite, the width not: it passes the bounds, and
-  // cannot be sampled.
+  // Each end of its window finite and its width too (a width that overflows
+  // is refused before, as no interval): it passes the bounds, and cannot be
+  // sampled. No hatching, the link's or its request's: across such a window
+  // it is past the strokes' bound.
   const hash = await gammaLink(page, (l) => {
-    l.edited.landscape.domain = { real: { lo: -1e308, hi: 1e308 }, imag: { lo: 0, hi: 2 } };
-    l.edited.layers = l.edited.layers.filter((x: any) => x.source.kind !== "hatching");
+    l.edited.landscape.domain = { real: { lo: -1e307, hi: 1e307 }, imag: { lo: 0, hi: 2 } };
+    const unhatched = (layers: any[]) => layers.filter((x: any) => x.source.kind !== "hatching");
+    l.edited.layers = unhatched(l.edited.layers);
+    if (l.edited.landscape.layers) l.edited.landscape.layers = unhatched(l.edited.landscape.layers);
   });
   await page.evaluate((h) => (location.hash = h), hash);
   await expect(page.locator("#notice")).toContainText("could not be made");

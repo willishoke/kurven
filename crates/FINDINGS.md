@@ -4018,7 +4018,10 @@ Ten findings, each checked against the code:
    60 places (the presets and the occluder). A manifest, and a link, holding
    any number past a double's range is now refused whole before a field is
    read (`files::every_number_finite`); the same replacement by `1e400`,
-   `1e300`, `-1e300` and `0` traps none of them. The link allow-list also
+   `1e300`, `-1e300` and `0` traps none of them. A window whose width
+   overflows (-1e308 to 1e308) is now refused as no interval, before its
+   sampling fails; the tests of a link that cannot be sampled (native and
+   in the browser lane) use one of -1e307 to 1e307 instead. The link allow-list also
    holds the layers and truncation its request carries, which it did not.
 5. **A function's samples held to the slider.** Fixed. A file's surface is
    held to Swift's own bounds (`SurfaceRequest::check`, which reading the
