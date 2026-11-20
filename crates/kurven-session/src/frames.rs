@@ -9,7 +9,10 @@
 //! against the solid (`visible_folds`, `visible_wall_curves`) and leaves
 //! the rest to the depth test; the judged strokes, what Export writes, are
 //! the bake of the scene the window shows (`Document::bake`), every curve
-//! tested, which the page draws at rest (HANDOFF-web-port.md, "Two tiers").
+//! tested, which the page draws at rest only without WebGPU. With a pool of
+//! engines the tested layers of the frame at rest are laid out by other
+//! engines and served by this one (`pool.rs`), as Swift's window lays them
+//! out off its main thread.
 //!
 //! Both draw the scene the window shows (`Document::shown_scene`), the
 //! picked face's boundary over it, as Swift's `MetalView` draws

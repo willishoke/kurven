@@ -139,11 +139,15 @@ export class Engine {
     }
     if (answer.stale) return null;
     const reply = answer.reply;
-    if (reply.state) {
-      this.state = reply.state;
-      for (const l of this.stateListeners) l(reply.state, request);
-    }
+    if (reply.state) this.take(reply.state, request);
     return { reply, arrays: answer.arrays };
+  }
+
+  /** A state the engine sent in reply to `request`, taken in as the page's:
+   * for a reply that came another way than `call` (the pool's). */
+  take(state: DocumentState, request: Request): void {
+    this.state = state;
+    for (const l of this.stateListeners) l(state, request);
   }
 
   private told(): void {

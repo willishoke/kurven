@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use kurven_bake::{BakeError, BakeOptions};
+use kurven_bake::BakeError;
 use kurven_core::bundle::{BundleFiles, KurvenBundle, Source};
 use kurven_core::face::Face;
 use kurven_core::manifest::{CameraPreset, LayerSource, LayerSpec, Truncation};
@@ -783,21 +783,8 @@ impl Document {
     /// `bake_resolution`: the same function `kurven-cli bake` calls, on the
     /// same value. Swift runs it on a task; a Worker's caller waits for it.
     pub fn bake(&mut self) -> Result<Strokes, String> {
-        let Some(scene) = self.framed_scene() else { return Err("nothing to bake".to_string()) };
-        if let Some(why) = CameraPreset::unsupported_buffer(self.bake_resolution) {
-            let status = format!("the resolution {why}");
-            self.bake_status = Some(status.clone());
-            return Err(status);
-        }
-        if !self.can_bake() {
-            let status = "switch off perspective to bake: the plates are orthographic, and a perspective bake has no \
-                          oracle"
-                .to_string();
-            self.bake_status = Some(status.clone());
-            return Err(status);
-        }
-        let mut options = BakeOptions::new(self.bake_resolution);
-        options.depth_tolerance = Some(self.depth_tolerance);
+        // The preconditions a pool's plan shares (`pool.rs`).
+        let (scene, options) = self.bake_inputs_said()?;
         match kurven_bake::bake(&scene, &options) {
             Ok(bake) => {
                 self.bake_status = Some(format!("{} paths", bake.strokes.path_count()));

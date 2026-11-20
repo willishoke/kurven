@@ -44,6 +44,15 @@
 // with everything after it, which may depend on it, and the next call is
 // told (`JournalTruncated`); the document is then the one up to that entry. The replayed document equals the last one reported but for its
 // status lines, which are messages: a save's or a bake's is not replayed.
+//
+// Other engines can hold the same document (pool.ts): beside the journal the
+// client keeps a log of what it recorded, in order, each entry marked when it
+// took the place of the one before (a camera, a slider's move, a setting set
+// outright: compaction's own claim that the new entry alone, where the old
+// one was, leaves the same document as both). An engine that has applied the
+// log up to some place catches up by applying the rest, each entry that a
+// later one took the place of left out; one that cannot (the journal was cut
+// since) starts again from a copy of the journal (`snapshot`).
 
 import type {
   Bundle,
@@ -95,6 +104,25 @@ export interface Options {
   view?: string;
   /** Cancel, restart and replay if no answer comes within this. */
   timeoutMs?: number;
+  /** Typed arrays given to this request alone, by name (`kv_give`): another
+   * engine's answer, which the request reads back to the bit. Copied as
+   * sent, so the caller keeps its own, unless `transfer`. */
+  inputs?: Record<string, TypedArray>;
+  /** The inputs are the caller's to give away: each array that is the whole
+   * of its buffer is transferred to the Worker, not copied, and is empty
+   * after. For arrays the caller does not read again. */
+  transfer?: boolean;
+}
+
+/** The document as the client's engine holds it at one moment, for another
+ * engine to hold too: the journal then, and how far the log had come. */
+export interface Snapshot {
+  /** The log's length then. */
+  at: number;
+  /** How many times the journal had been cut then: a log from before a cut
+   * cannot be caught up across it. */
+  cuts: number;
+  journal: readonly Entry[];
 }
 
 /** Requests that change nothing the journal must replay: views of the
@@ -110,6 +138,11 @@ export const VIEWS: ReadonlySet<string> = new Set([
   "grids",
   "save",
   "headless",
+  "bakePlan",
+  "bakePiece",
+  "bakeAssemble",
+  "restLayers",
+  "restLayout",
 ]);
 /** Requests after which the document is a clean slate. */
 const OPENING = new Set(["open", "create", "createSurface", "restore"]);
@@ -120,7 +153,9 @@ const OUTRIGHT = new Set(["viewport", "mode", "draftResolution", "bakeResolution
 /** Sliders whose moves set a value outright and are never refused. */
 const OUTRIGHT_SLIDERS = new Set(["landscape", "truncation", "light", "levels"]);
 
-type Entry =
+/** An entry of the journal: a staged bundle, or a request that touched the
+ * document. */
+export type Entry =
   | { kind: "stage"; bundle: Bundle }
   | { kind: "request"; request: Request; ok: boolean; camera?: ExactCamera };
 
@@ -179,14 +214,72 @@ export class EngineClient {
   state: DocumentState | null = null;
   /** How many times the Worker was restarted. */
   restarts = 0;
+  /** What was recorded, in order, from `logBase` on (the header says why),
+   * kept only once a pool asks for it (`keepLog`). */
+  private log: { entry: Entry; replaces: boolean }[] = [];
+  private logging = false;
+  private logBase = 0;
+  /** How many times the journal was cut (`JournalTruncated`). */
+  private cuts = 0;
+  /** The engine's linear memory, in bytes, after its last reply. */
+  memory = 0;
 
   private readonly spawn: () => WorkerHandle;
   private readonly wasm: ArrayBuffer | string;
 
-  constructor(spawn: () => WorkerHandle, wasm: ArrayBuffer | string) {
+  /** `journal`: what the new engine replays before any request, the
+   * journal of another client's engine, so it holds the same document. */
+  constructor(spawn: () => WorkerHandle, wasm: ArrayBuffer | string, journal: readonly Entry[] = []) {
     this.spawn = spawn;
     this.wasm = wasm;
+    this.journal = journal.slice();
     this.relaunch();
+  }
+
+  /** The document as this engine holds it now, for another to hold. */
+  snapshot(): Snapshot {
+    return { at: this.logBase + this.log.length, cuts: this.cuts, journal: this.journal.slice() };
+  }
+
+  /** What an engine that holds the document as of the log's place `from`
+   * applies to hold it as of `to`, each entry a later one took the place of
+   * left out; null when the log no longer holds `from` (it was let go of, or
+   * the journal was cut since `cuts`). */
+  catchUp(from: number, to: number, cuts: number): Entry[] | null {
+    if (cuts !== this.cuts || from < this.logBase || to > this.logBase + this.log.length || from > to) return null;
+    const out: Entry[] = [];
+    for (let i = from; i < to; i++) {
+      const next = i + 1 < to ? this.log[i + 1 - this.logBase] : undefined;
+      if (next?.replaces) continue;
+      out.push(this.log[i - this.logBase]!.entry);
+    }
+    return out;
+  }
+
+  /** Keep the log from now on, for a pool's helpers to catch up on: until
+   * then, and on a helper's own client, nothing is logged. */
+  keepLog(): void {
+    if (this.logging) return;
+    this.logging = true;
+    this.log = [];
+    this.logBase = 0;
+  }
+
+  /** Let go of the log before `at`: no engine will catch up from there. */
+  forgetLog(at: number): void {
+    const n = Math.min(Math.max(at - this.logBase, 0), this.log.length);
+    this.log.splice(0, n);
+    this.logBase += n;
+  }
+
+  /** Hold another document: the journal replaced by `journal`, the log
+   * begun again, the Worker restarted and the journal replayed into it. */
+  adopt(journal: readonly Entry[]): Promise<void> {
+    this.journal = journal.slice();
+    this.log = [];
+    this.logBase = 0;
+    this.cuts = 0;
+    return this.restart(new Cancelled("the engine was given another document"));
   }
 
   /** How many entries a replay would send. */
@@ -228,6 +321,7 @@ export class EngineClient {
           this.staged(message.id);
           return;
         case "reply":
+          if (message.memory !== undefined) this.memory = message.memory;
           this.answered(message.id, message.reply, message.arrays);
           return;
         case "failed":
@@ -361,7 +455,21 @@ export class EngineClient {
       const files = p.work.bundle.files.map((f) => ({ path: f.path, bytes: f.bytes.slice(0) }));
       this.post({ type: "stage", id: p.id, bundle: { name: p.work.bundle.name, files } }, files.map((f) => f.bytes));
     } else {
-      this.post({ type: "request", id: p.id, request: p.work.request });
+      const given = Object.entries(p.options.inputs ?? {});
+      const seen = new Set<ArrayBufferLike>();
+      const inputs = given.map(([name, a]) => {
+        const whole = a.byteOffset === 0 && a.byteLength === a.buffer.byteLength && !seen.has(a.buffer);
+        seen.add(a.buffer);
+        const bytes =
+          p.options.transfer && whole && a.buffer instanceof ArrayBuffer
+            ? a.buffer
+            : (a.buffer as ArrayBuffer).slice(a.byteOffset, a.byteOffset + a.byteLength);
+        return { name, bytes };
+      });
+      this.post(
+        { type: "request", id: p.id, request: p.work.request, ...(inputs.length ? { inputs } : {}) },
+        inputs.map((i) => i.bytes),
+      );
     }
   }
 
@@ -421,6 +529,19 @@ export class EngineClient {
   // MARK: - the journal
 
   private record(entry: Entry): void {
+    const { kept, replaces } = this.compact(entry);
+    if (!this.logging) return;
+    this.log.push({ entry: kept, replaces });
+    // Trimmed with the journal: an engine that would catch up on more of the
+    // log than twice the journal (and a few) replays the journal instead
+    // (pool.ts's `sync`), so the log keeps no more, staged bundles and all.
+    const most = 2 * this.journal.length + 16;
+    if (this.log.length > most) this.forgetLog(this.logBase + this.log.length - most);
+  }
+
+  /** Put `entry` in the journal by the header's rules: what went in, and
+   * whether it took the place of the journal's last entry. */
+  private compact(entry: Entry): { kept: Entry; replaces: boolean } {
     const j = this.journal;
     const last = j[j.length - 1];
     if (entry.kind === "stage") {
@@ -436,7 +557,7 @@ export class EngineClient {
           !e.bundle.files.every((f) => paths.has(normalPath(f.path))),
       );
       this.journal.push(entry);
-      return;
+      return { kept: entry, replaces: false };
     }
     const request = entry.request;
     /** The bundle a request reads or lets go of, by name. */
@@ -446,7 +567,9 @@ export class EngineClient {
       const read = j.some((e) => e.kind === "request" && e.request.kind === "open" && e.request.name === name);
       this.journal = j.filter((e) => read || !(e.kind === "stage" && e.bundle.name === name));
       if (read) this.journal.push(entry);
-      return;
+      // Logged either way: a helper that has staged the bundle (pool.ts)
+      // lets go of it too, and one that has not lets go of nothing.
+      return { kept: entry, replaces: false };
     }
     if (OPENING.has(request.kind) && entry.ok) {
       const lastOf = new Map<string, number>();
@@ -464,17 +587,19 @@ export class EngineClient {
           (e.kind === "request" && lastOf.get(e.request.kind) === i),
       );
       this.journal.push(entry);
-      return;
+      return { kept: entry, replaces: false };
     }
     const lastRequest = last?.kind === "request" ? last : undefined;
     const moving = (r: Request) => r.kind === "gesture" || r.kind === "gestures" || r.kind === "camera";
     if (moving(request) && entry.camera) {
-      const camera: Request = { kind: "camera", ...entry.camera };
+      const camera: Entry = { kind: "request", request: { kind: "camera", ...entry.camera }, ok: true, camera: entry.camera };
       const run = lastRequest && moving(lastRequest.request);
-      if (run && lastRequest.camera) j.pop();
-      j.push({ kind: "request", request: camera, ok: true, camera: entry.camera });
-      return;
+      const replaces = Boolean(run && lastRequest.camera);
+      if (replaces) j.pop();
+      j.push(camera);
+      return { kept: camera, replaces };
     }
+    let replaces = false;
     if (
       request.kind === "drag" &&
       request.phase === "move" &&
@@ -484,10 +609,13 @@ export class EngineClient {
       same(lastRequest.request.control, request.control)
     ) {
       j.pop();
+      replaces = true;
     } else if (OUTRIGHT.has(request.kind) && lastRequest?.request.kind === request.kind) {
       j.pop();
+      replaces = true;
     }
     j.push(entry);
+    return { kept: entry, replaces };
   }
 
   // MARK: - cancelling
@@ -501,6 +629,7 @@ export class EngineClient {
         const entry = this.journal[p.entry];
         this.truncated = new JournalTruncated(entry?.kind === "request" ? entry.request : null, why);
         this.journal = this.journal.slice(0, p.entry);
+        this.cuts++;
         this.trappedAt = null;
       } else {
         this.trappedAt = p.entry;

@@ -362,6 +362,19 @@ worker() {
 }
 step "the Worker protocol under Node" worker
 
+# The pool of engines under Node: helpers in worker_threads Workers holding
+# the page's document (web/app/src/engine/pool.ts). The judged strokes a
+# pool of 1, 2 and 4 bakes are the bytes the page's engine bakes alone and
+# the native session wrote; helpers catch up on edits, one killed mid-bake
+# is restarted and its piece handed out again, a cancel and a stale bake
+# end; a frame at rest served from the helpers' layouts is the primary's
+# own. Against the check's module and the page's.
+pool() {
+    node "$APP/test/pool.test.mjs" "$WASM" "$CRATES/fixtures/swift/session" "$WORK/session" &&
+        node "$APP/test/pool.test.mjs" "$PAGE_WASM" "$CRATES/fixtures/swift/session" "$WORK/session"
+}
+step "the pool of engines under Node: pooled bakes are native's bytes" pool
+
 # The page: its pinned packages installed when the lock is newer than the
 # install, then a type check and a build.
 page() {

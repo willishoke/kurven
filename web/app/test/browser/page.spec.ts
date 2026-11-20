@@ -368,7 +368,7 @@ test("Export is the native bake's bytes, and the URL reproduces the drawing", as
   await fresh.close();
 });
 
-test("a slow frame at rest: the page says so, stays live, and drafts follow it", async ({ page }, info) => {
+test("a slow frame at rest: the page says so, stays live, and drafts do not wait for it", async ({ page }, info) => {
   test.skip(info.project.name === "fallback", "without WebGPU the frame at rest is the bake; the export test covers it");
   await load(page, at(info.project.name, { landscape: "cn" }));
   await spy(page);
@@ -376,23 +376,25 @@ test("a slow frame at rest: the page says so, stays live, and drafts follow it",
     camera: (window as any).kurven.state().camera.exact,
     given: (window as any).kurven.input.given.length,
   }));
-  // Move, then hold still: the frame at rest starts, and the indicator says so.
+  // Move, then hold still: the frame at rest is laid out by the pool's
+  // helpers, the draft on the canvas meanwhile, and the indicator says so.
   const canvas = page.locator("#preview");
   const box = (await canvas.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width / 2 + 30, box.y + box.height / 2, { steps: 3 });
   await page.mouse.up();
-  await page.waitForFunction(() => (window as any).kurven.view.working === "rest", null, { timeout: 60_000 });
+  await page.waitForFunction(() => (window as any).kurven.view.isRefining, null, { timeout: 60_000 });
   await expect(page.locator("#indicator")).toHaveAttribute("data-busy", "true");
-  await expect(page.locator("#indicator-text")).toContainText("drawing at rest");
+  await expect(page.locator("#indicator-text")).toContainText("at rest: testing the folds and walls");
   // The page answers meanwhile: a control responds without the engine.
   const t0 = Date.now();
   await page.locator("#formula").fill("cn(z, 0.5)");
   expect(Date.now() - t0).toBeLessThan(1000);
   await page.locator("#formula").fill("");
-  // A gesture given now is coalesced, and its draft is drawn once the rest
-  // frame lets the engine go.
+  // A gesture given now is drawn as a draft at once: the page's engine is
+  // not the one laying out the frame at rest.
+  await page.waitForFunction(() => (window as any).kurven.view.isRefining, null, { timeout: 60_000 });
   const timings = await page.evaluate(() => (window as any).kurven.view.timings.length);
   const asked = Date.now();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -404,7 +406,21 @@ test("a slow frame at rest: the page says so, stays live, and drafts follow it",
     timings,
     { timeout: 60_000 },
   );
-  console.log(`${info.project.name}: a draft asked during cn's frame at rest was drawn ${Date.now() - asked} ms later`);
+  const waited = Date.now() - asked;
+  console.log(`${info.project.name}: a draft asked during cn's frame at rest was drawn ${waited} ms later`);
+  // On one engine it waited for the frame at rest: 2.7 to 2.8 s on Metal,
+  // 5.5 s on SwiftShader (crates/FINDINGS.md, "What a slow frame at rest
+  // forces"). A SwiftShader draft is 1.4 s of GPU on its own.
+  expect(waited).toBeLessThan(info.project.name === "gpu" ? 1500 : 4500);
+  // Held by slow work of its own (cn's frame at rest laid out on the page's
+  // engine, as without a pool), the gestures given meanwhile wait in order
+  // and go as one request.
+  const held = page.evaluate(() => (window as any).kurven.client.request({ kind: "frame", draft: false }).then(() => null));
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 24, box.y + box.height / 2 + 6, { steps: 6 });
+  await page.mouse.up();
+  await held;
   await idle(page);
   await expect(page.locator("#indicator-text")).toContainText("at rest");
   // The gestures given while the engine was held went in batches, and left

@@ -12,7 +12,9 @@
 //! the app's headless command line ([`headless`]), which the gate replays
 //! against Swift's. [`preview`] is `KurvenMetal`'s CPU half: what a preview
 //! frame draws, which the page's WebGPU renderer draws. [`protocol`] is the session as messages: an edit in as
-//! JSON, the state out as JSON, which `kurven-wasm` and the Worker speak.
+//! JSON, the state out as JSON, which `kurven-wasm` and the Worker speak;
+//! [`pool`] is the slow work shared among several engines holding the same
+//! document.
 
 // `!(x > 0.0)` stands for Swift's `guard x > 0 else`, so a NaN is refused as
 // Swift refuses it (kurven-core allows it for the same reason). A document's
@@ -29,6 +31,7 @@ pub mod landscape;
 pub mod paint;
 pub mod picking;
 pub mod polyhedra;
+pub mod pool;
 pub mod preview;
 pub mod protocol;
 pub mod sliders;
