@@ -302,6 +302,28 @@ identity() {
 }
 step "wasm under Node writes the golden sets and the session's files native writes, byte for byte" identity
 
+# Whether every file under the directories given (relative to the root) is
+# the commit's: none ignored by .gitignore, none untracked, none changed
+# since the commit. Says which, and fails, otherwise.
+committed() {
+    local ignored untracked failed=0
+    ignored=$(git -C "$ROOT" ls-files --others --ignored --exclude-standard -- "$@")
+    untracked=$(git -C "$ROOT" ls-files --others --exclude-standard -- "$@")
+    if [ -n "$ignored" ]; then
+        printf 'ignored by .gitignore, so never committed: %s\n' $ignored
+        failed=1
+    fi
+    if [ -n "$untracked" ]; then
+        printf 'not in the commit: %s\n' $untracked
+        failed=1
+    fi
+    if ! git -C "$ROOT" diff --quiet HEAD -- "$@"; then
+        git -C "$ROOT" diff --stat HEAD -- "$@"
+        failed=1
+    fi
+    return $failed
+}
+
 # The page's requests of steps 4 to 7 (crates/fixtures/page/*.jsonl: the
 # picker's thumbnails, a surface's controls, a banded truncation dragged, a
 # face picked and painted, bundles opened from files and saved), every
@@ -309,13 +331,18 @@ step "wasm under Node writes the golden sets and the session's files native writ
 # byte for byte what `kurven-cli session --replies` answers natively.
 requests() {
     local here="$CRATES/fixtures/page" inputs="$CRATES/fixtures/swift/session/inputs" f name
+    # What the step reads is the commit's: a fixture .gitignore leaves out,
+    # one not added, or one changed since, is refused here rather than
+    # missed on a machine that checks out the commit (PR #77's first CI run
+    # had no levels.kurven).
+    committed crates/fixtures/page crates/fixtures/swift/session/inputs || return 1
     local stages=(--stage frame.kurven "$inputs/frame.kurven" --stage gamma.kurven "$inputs/gamma.kurven"
         --stage relief.kurven "$inputs/relief.kurven" --stage cube.kurven "$inputs/cube.kurven"
         --stage levels.kurven "$here/levels.kurven")
     for f in "$here"/*.jsonl; do
         name="$(basename "$f" .jsonl)"
         rm -rf "$WORK/requests-native/$name" "$WORK/requests-wasm/$name"
-        "$CLI" session "$f" "${stages[@]}" --replies "$WORK/requests-native/$name" 2>/dev/null &&
+        "$CLI" session "$f" "${stages[@]}" --replies "$WORK/requests-native/$name" &&
             node "$CRATES/kurven-wasm/requests.mjs" "$PAGE_WASM" "$f" "$WORK/requests-wasm/$name" "${stages[@]}" &&
             diff -r "$WORK/requests-native/$name" "$WORK/requests-wasm/$name" &&
             echo "$name: $(find "$WORK/requests-native/$name" -type f | wc -l | tr -d ' ') reply file(s) byte-identical, native and the page's wasm" ||

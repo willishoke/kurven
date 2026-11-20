@@ -32,6 +32,7 @@ venv/
 !tests/fixtures/fields/*.kurven/
 !crates/fixtures/rust/**/*.kurven/
 !crates/fixtures/swift/session/**/*.kurven/
+!crates/fixtures/page/*.kurven/
 
 .build/
 *.xcodeproj/
