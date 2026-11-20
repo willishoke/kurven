@@ -46,6 +46,10 @@ export type Request =
   | { kind: "expression"; expression: string }
   | { kind: "set"; key: string; value: number }
   | { kind: "drag"; control: Slider; phase: "begin" | "move" | "end"; value?: number | [number, number] }
+  /** A catalog entry's picture for the picker, in a scene of its own: the
+   * preview frame at rest, or with `judged` the judged strokes (Phase 8,
+   * step 4; kurven_session::thumbnails). */
+  | { kind: "thumbnail"; entry: string; judged?: boolean }
   | { kind: "levels"; layer: string; count: number }
   | { kind: "resetLevels"; layer: string }
   | { kind: "strokes"; layer: string; count: number }

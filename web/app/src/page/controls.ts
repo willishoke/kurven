@@ -19,6 +19,8 @@ export interface Host {
   /** Export the judged strokes as SVG; cancel one under way. */
   exportSVG(): void;
   cancelExport(): void;
+  /** Open the picker: the catalogs as pictures. */
+  browse(): void;
 }
 
 /** The glossary's words for the layers a landscape's catalog draws, by the
@@ -240,6 +242,7 @@ export class Panel {
   readonly exportStatus: HTMLElement;
   private readonly noticeLine: HTMLElement;
   private readonly landscapeSections: HTMLElement[];
+  private readonly landscapeSection: HTMLElement;
   private isExporting = false;
 
   constructor(host: Host) {
@@ -272,11 +275,13 @@ export class Panel {
       (x) => engine.edit({ kind: "set", key: "res", value: x }, () => host.changed()),
     );
     this.landscapeStatus = h("p", { class: "status", id: "landscape-status", "aria-live": "polite" });
+    const browse = h("button", { type: "button", class: "browse", id: "browse", title: "The catalog as pictures" }, "Browse…");
+    browse.addEventListener("click", () => host.browse());
     const landscape = h(
       "section",
-      { "aria-labelledby": "h-landscape" },
+      { "aria-labelledby": "h-landscape", id: "landscape-section" },
       h("h2", { id: "h-landscape" }, "Landscape"),
-      h("div", { class: "row" }, h("label", { class: "label", for: "function" }, "Function"), this.fn),
+      h("div", { class: "row function" }, h("label", { class: "label", for: "function" }, "Function"), h("div", { class: "pick" }, this.fn, browse)),
       this.notes,
       this.formula.root,
       this.re.root,
@@ -406,6 +411,7 @@ export class Panel {
 
     this.noticeLine = h("p", { class: "notice", id: "notice", role: "alert", hidden: true });
     this.landscapeSections = [truncation];
+    this.landscapeSection = landscape;
     this.root = h(
       "aside",
       { class: "panel", "aria-label": "Controls" },
@@ -478,6 +484,9 @@ export class Panel {
     this.title.textContent = state.title;
     const isLandscape = state.kind === "landscape" && state.landscape !== null;
     for (const s of this.landscapeSections) s.hidden = !isLandscape;
+    // A surface or a polyhedron has no landscape to choose (Inspector.swift);
+    // the picker is the way back to one.
+    this.landscapeSection.hidden = state.surface !== null || state.kind === "polyhedron";
     const request = state.landscape as { name?: string; expression?: string; domain?: Domain; resolution?: number } | null;
 
     // The function.

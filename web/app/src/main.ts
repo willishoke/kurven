@@ -36,6 +36,7 @@ import { Panel } from "./page/controls.ts";
 import { h } from "./page/dom.ts";
 import { Engine, Latest, quietly } from "./page/engine.ts";
 import { decode, encode, hides, linkOf, restoring } from "./page/link.ts";
+import { type Entry, Picker, Thumbnails } from "./page/picker.ts";
 
 const query = new URLSearchParams(location.search);
 const app = document.querySelector<HTMLElement>("#app");
@@ -50,7 +51,8 @@ const indicatorText = h("span", { id: "indicator-text" });
 const indicator = h("div", { class: "indicator", id: "indicator", role: "status", "aria-live": "polite" }, h("span", { class: "dot" }), indicatorText);
 const stage = h("main", { class: fixed ? "stage fixed" : "stage" }, canvas, indicator);
 
-const client = new EngineClient(browserWorker, `${import.meta.env.BASE_URL}kurven_wasm.wasm`);
+const wasmURL = `${import.meta.env.BASE_URL}kurven_wasm.wasm`;
+const client = new EngineClient(browserWorker, wasmURL);
 const engine = new Engine(client);
 
 /** Why the page draws without WebGPU, if it does. */
@@ -85,14 +87,26 @@ const view = new PreviewView(
   query.get("offscreen") === "1",
 );
 
+// The picker's pictures: an engine of their own, started when the picker
+// is first opened, drawn on the window's GPU device (page/picker.ts).
+const thumbnails = new Thumbnails(wasmURL, renderer?.device ?? null);
+const picker = new Picker(thumbnails, (entry: Entry) => {
+  panel.formula.editing = false;
+  panel.formula.clearError();
+  const request: Request =
+    entry.kind === "surface" ? { kind: "createSurface", preset: entry.name } : { kind: "create", preset: entry.name };
+  engine.edit(request, () => view.changed());
+});
+
 const panel = new Panel({
   engine,
   changed: () => view.changed(),
   moved: () => view.moved(),
   exportSVG: () => void exportSVG().catch(quietly),
   cancelExport: () => void client.cancel("the export was cancelled").catch(quietly),
+  browse: () => picker.open(),
 });
-app.replaceChildren(stage, panel.root);
+app.replaceChildren(stage, panel.root, picker.dialog);
 if (!view.usesGPU) {
   // Said where the drawing is: no drafts here, and each frame at rest is the
   // bake (the browser lane reads it as #status, Phase 7's name).
@@ -311,6 +325,7 @@ window.addEventListener("keydown", (e) => {
 const catalog = await engine.send({ kind: "catalog" });
 if (!catalog?.ok || !catalog.controls) throw new Error(`the engine gave no catalog: ${catalog?.error ?? "no reply"}`);
 panel.setCatalog((catalog.presets as Preset[] | undefined) ?? [], catalog.controls as Controls);
+picker.setEntries((catalog.entries as Entry[] | undefined) ?? []);
 
 /** Open the link a fragment holds: "none" when it holds none, "refused"
  * when it cannot be read or the engine refuses what it asks for (the page
@@ -487,6 +502,12 @@ window.kurven = {
   },
   /** The requests a native session replays to hold this document. */
   journal: () => client.journaled,
+  /** The picker: open it, and the pictures as they stand. */
+  picker: {
+    open: () => picker.open(),
+    warmed: () => thumbnails.warm((catalog.entries as Entry[] | undefined) ?? []),
+    counts: () => ({ ...thumbnails.counts, pictures: thumbnails.pictures.size, failed: [...thumbnails.failed] }),
+  },
   /** The last SVG exported, as text. */
   lastExport: () => (lastExport ? new TextDecoder().decode(lastExport) : null),
 };

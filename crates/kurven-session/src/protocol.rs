@@ -291,7 +291,60 @@ impl Session {
                 out.insert("presets".to_string(), JsonValue::Array(catalog.presets.iter().map(|p| p.json()).collect()));
                 out.insert("defaultResolution".to_string(), JsonValue::Int(catalog.default_resolution));
                 out.insert("controls".to_string(), reach::json());
+                // The picker's cells: every function and surface, each with
+                // the key its picture is cached under (`thumbnails.rs`).
+                out.insert(
+                    "entries".to_string(),
+                    JsonValue::Array(crate::thumbnails::Entry::all().iter().map(|e| e.json()).collect()),
+                );
                 Ok((out, Vec::new()))
+            }
+            "thumbnail" => {
+                // A catalog entry's picture for the picker, built in a scene
+                // of its own (the open document is not touched): the frame
+                // the window's preview draws of it at rest, for the page's
+                // GPU, or with `judged` the judged strokes, for a page
+                // without one (`Thumbnails.swift`).
+                let id = text(o, "entry")?;
+                let entry = crate::thumbnails::Entry::named(id).ok_or_else(|| refuse(format!("no entry '{id}'")))?;
+                let thumbnail = crate::thumbnails::draw(&entry).map_err(refused_after)?;
+                let mut out = JsonObject::new();
+                out.insert("key".to_string(), json::string(&crate::thumbnails::key(&entry)));
+                let size = crate::thumbnails::SIZE;
+                if o.get("judged").and_then(JsonValue::as_bool) == Some(true) {
+                    let mut scene = thumbnail.scene;
+                    // A quarter of a drawable pixel, as the window bakes.
+                    scene.resolution = 0.25 * thumbnail.navigator.framing.units_per_pixel;
+                    let options = kurven_bake::BakeOptions::new(size.width.max(size.height));
+                    let bake = kurven_bake::bake(&scene, &options).map_err(|e| refused_after(e.to_string()))?;
+                    let mut arrays = Vec::new();
+                    let styles = stroke_arrays(&bake.strokes, &mut arrays);
+                    out.insert("strokes".to_string(), JsonValue::Array(styles));
+                    out.insert("frame".to_string(), frame_json(&thumbnail.navigator.framing.frame(size)));
+                    return Ok((out, arrays));
+                }
+                let visible: Vec<usize> = (0..thumbnail.scene.layers().len()).collect();
+                let at = crate::preview::Framed {
+                    navigator: thumbnail.navigator,
+                    viewport: size,
+                    mode: PreviewMode::Drawing,
+                };
+                let mut memo = crate::preview::Memo::default();
+                let preview = crate::preview::preview_scene(
+                    &mut memo,
+                    &thumbnail.scene,
+                    at,
+                    &visible,
+                    false,
+                    &self.nonce,
+                    None,
+                    &BTreeSet::new(),
+                );
+                let mut arrays = Vec::new();
+                for (k, v) in preview_json(&preview, &mut arrays) {
+                    out.insert(k, v);
+                }
+                Ok((out, arrays))
             }
             "edited" => {
                 // What is edited now, whole (`Document::edited`): a
@@ -785,17 +838,7 @@ impl Session {
                 let frame = d.navigator.map(|n| n.framing.frame(d.viewport));
                 let strokes = d.bake().map_err(refuse)?;
                 let mut arrays = Vec::new();
-                let mut styles = Vec::new();
-                for (i, (style, paths)) in strokes.layers.iter().enumerate() {
-                    let points = paths.vertices.iter().flat_map(|p| [p.x(), p.y()]);
-                    let offsets = paths.offsets.iter().map(|&o| o as u32);
-                    arrays.push((format!("stroke.{i}.points"), Array::f64(points)));
-                    arrays.push((format!("stroke.{i}.offsets"), Array::u32(offsets)));
-                    styles.push(json::object([
-                        ("width", JsonValue::Double(style.width)),
-                        ("color", json::string(&style.color)),
-                    ]));
-                }
+                let styles = stroke_arrays(&strokes, &mut arrays);
                 if o.get("svg").and_then(JsonValue::as_bool) == Some(true) {
                     let text = svg::render(&strokes, svg::FIGURE_WIDTH, svg::MARGIN, svg::DECIMALS);
                     arrays.push(("svg".to_string(), Array::u8(text.into_bytes())));
@@ -1255,6 +1298,23 @@ fn edited_json(e: &Edited) -> JsonValue {
             JsonValue::Object(e.level_counts.iter().map(|(k, v)| (k.clone(), JsonValue::Int(*v))).collect()),
         ),
     ])
+}
+
+/// Judged strokes as the page draws them: each layer's page-space points
+/// and offsets pushed as arrays, and its style.
+fn stroke_arrays(strokes: &kurven_core::svg::Strokes, arrays: &mut Vec<(String, Array)>) -> Vec<JsonValue> {
+    strokes
+        .layers
+        .iter()
+        .enumerate()
+        .map(|(i, (style, paths))| {
+            let points = paths.vertices.iter().flat_map(|p| [p.x(), p.y()]);
+            let offsets = paths.offsets.iter().map(|&o| o as u32);
+            arrays.push((format!("stroke.{i}.points"), Array::f64(points)));
+            arrays.push((format!("stroke.{i}.offsets"), Array::u32(offsets)));
+            json::object([("width", JsonValue::Double(style.width)), ("color", json::string(&style.color))])
+        })
+        .collect()
 }
 
 /// A pixel grid as the page reads it: `DepthFrame::index`'s terms.

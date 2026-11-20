@@ -41,6 +41,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 html, body { margin: 0; height: 100%; }
 body {
@@ -283,3 +284,68 @@ kbd { font-family: var(--mono); font-size: 0.75rem; border: 1px solid var(--rule
 .notice { color: var(--accent); font-size: 0.86rem; margin: 8px 0 0; padding: 6px 8px; border: 1px solid var(--accent); border-radius: 3px; overflow-wrap: anywhere; }
 .draft-note { color: var(--muted); font-size: 0.82rem; font-style: italic; margin: 4px 0 0; }
 .formula input[data-draft="true"] { border-style: dashed; }
+
+/* The function row: the dropdown and the way to the picker beside it. */
+.row.function .pick { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.35rem; }
+/* The picker (Gallery.swift): a sheet over the page, the catalogs as
+   pictures, each the drawing the engine makes of it. */
+.picker {
+  width: min(960px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.picker::backdrop { background: rgba(20, 18, 14, 0.35); }
+.picker header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 12px 16px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule);
+  z-index: 1;
+}
+.picker header h2 { font-family: var(--serif); font-weight: 500; font-size: 1.15rem; margin: 0; }
+.picker-progress { font-size: 0.82rem; color: var(--muted); flex: 1; }
+.picker input[type="search"] { font: inherit; font-size: 0.9rem; padding: 3px 6px; width: 10rem; color: var(--ink); background: var(--panel); border: 1px solid var(--rule); border-radius: 3px; }
+.picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 16px;
+  padding: 16px;
+}
+.picker-grid h3 { grid-column: 1 / -1; margin: 4px 0 -6px; font-size: 1rem; font-weight: 600; }
+.picker .cell {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+.picker .cell:hover, .picker .cell:focus-visible { background: color-mix(in srgb, var(--focus) 8%, transparent); border-color: var(--focus); }
+.picker .picture {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 440 / 300;
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.picker .picture img { width: 100%; height: 100%; object-fit: contain; }
+.picker .picture .failed { font-size: 0.8rem; color: var(--muted); }
+.picker .picture .spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--rule); border-top-color: var(--ink); animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { .picker .picture .spinner { animation: none; } }
+.picker .cell .label { font-size: 0.92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.picker .cell .formula { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

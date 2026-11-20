@@ -38,6 +38,7 @@ use kurven_core::depth_pass::{DrawnGrid, for_each_triangle};
 use kurven_core::grid::Grid2D;
 use kurven_core::hatching::FaceKind;
 use kurven_core::manifest::{LayerRole, LayerSource, Region};
+use kurven_core::navigation::{Navigator, Viewport};
 use kurven_core::parametric::ParametricSurface;
 use kurven_core::polyline::{Layer, PolylineSet};
 use kurven_core::scene::{ContentID, PreviewMode, Scene, SceneGeometry};
@@ -526,7 +527,37 @@ impl Document {
         let scene = self.shown_scene()?;
         let navigator = self.navigator?;
         let visible = self.shown_visible_layers();
-        let frame = navigator.framing.frame(self.viewport);
+        let at = Framed { navigator, viewport: self.viewport, mode: self.mode };
+        Some(preview_scene(&mut self.preview_memo, &scene, at, &visible, draft, nonce, have_content, have))
+    }
+}
+
+/// Where a frame is drawn from: the navigator, the viewport and the mode.
+#[derive(Debug, Clone, Copy)]
+pub struct Framed {
+    pub navigator: Navigator,
+    pub viewport: Viewport,
+    pub mode: PreviewMode,
+}
+
+/// A frame of the preview of `scene` (its camera the navigator's), drawn
+/// from `at` with the layers `visible` shown: `Document::preview`'s, for any
+/// scene, so the picker's thumbnails are drawn by the same path as the
+/// window (`thumbnails.rs`). `memo` is what the frames of one scene share.
+#[allow(clippy::too_many_arguments)]
+pub fn preview_scene(
+    memo: &mut Memo,
+    scene: &Scene,
+    at: Framed,
+    visible: &[usize],
+    draft: bool,
+    nonce: &str,
+    have_content: Option<&str>,
+    have: &BTreeSet<String>,
+) -> Preview {
+    {
+        let Framed { navigator, viewport, mode } = at;
+        let frame = navigator.framing.frame(viewport);
         let clip = match scene.camera.projection {
             Projection::Orthographic { .. } => frame.metal_clip(),
             Projection::Perspective { fov_y } => {
@@ -536,8 +567,8 @@ impl Document {
         let view = scene.camera.view;
         let parametric = scene.parametric().cloned();
         let bounds =
-            (matches!(self.mode, PreviewMode::Depth) || parametric.is_some()).then(|| scene.quick_bounds(QUICK_BOUNDS));
-        let depth_range = match (&self.mode, bounds.flatten()) {
+            (matches!(mode, PreviewMode::Depth) || parametric.is_some()).then(|| scene.quick_bounds(QUICK_BOUNDS));
+        let depth_range = match (&mode, bounds.flatten()) {
             (PreviewMode::Depth, Some(b)) => [b.lo.z, b.hi.z],
             _ => [0.0, 1.0],
         };
@@ -547,7 +578,7 @@ impl Document {
             [lo - pad, hi + pad]
         });
         let truncation_height = scene.heightfield().and_then(DrawnGrid::ceiling_of);
-        let lighting = match self.mode {
+        let lighting = match mode {
             PreviewMode::Shaded(l) => l,
             // `KVShading`'s light outside the shaded mode, as Swift fills it;
             // nothing reads it there.
@@ -571,7 +602,7 @@ impl Document {
         };
 
         let content = format!("{nonce}~{}", scene.content().raw());
-        self.preview_memo.forget_unless(&content);
+        memo.forget_unless(&content);
         let resources = (have_content != Some(content.as_str())).then(|| Resources::of(&scene));
         let widest = scene.layers().iter().map(|l| l.spec.width).fold(None, |m: Option<f64>, w| {
             Some(match m {
@@ -595,7 +626,7 @@ impl Document {
                         .iter()
                         .any(|l| l.paths.coords.is_some() && !matches!(l.spec.source, LayerSource::FoldCurves)) =>
             {
-                Some(self.preview_memo.grid_normals(&scene, s))
+                Some(memo.grid_normals(&scene, s))
             }
             _ => None,
         };
@@ -636,7 +667,7 @@ impl Document {
                     let mut d = base(key, Pipeline::Surface { on_folds: folds }, tolerance);
                     if shown && !have.contains(&d.key) {
                         let paths = if folds {
-                            let normals = self.preview_memo.grid_normals(&scene, s);
+                            let normals = memo.grid_normals(&scene, s);
                             s.grid_fold_curves(&normals, sight)
                                 .unwrap_or_else(|_| PolylineSet::new(Vec::new(), vec![0], None))
                         } else {
@@ -691,19 +722,19 @@ impl Document {
             if shown && !have.contains(&draw.key) {
                 let laid = lay_out(layer, &scene, if parametric.is_some() { lines_draft } else { draft });
                 if let Some(refusal) = laid.refusal {
-                    self.preview_memo.refused.insert(draw.key.clone(), refusal);
+                    memo.refused.insert(draw.key.clone(), refusal);
                 }
                 draw.segments = Some(line_segments(&laid.paths, &scene, layer));
             }
             // A layer the scene could not test is drawn as carried, and so is
             // left to the depth test, as a draft leaves it, with the reason.
-            if let Some(refusal) = self.preview_memo.refused.get(&draw.key) {
+            if let Some(refusal) = memo.refused.get(&draw.key) {
                 draw.depth_tolerance = layer.spec.clipped.then_some(scene.depth_tolerance);
                 draw.refusal = Some(refusal.clone());
             }
             layers.push(draw);
         }
-        Some(Preview { content, resources, uniforms, mode: self.mode, layers })
+        Preview { content, resources, uniforms, mode, layers }
     }
 }
 

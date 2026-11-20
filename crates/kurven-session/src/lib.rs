@@ -32,6 +32,7 @@ pub mod preview;
 pub mod protocol;
 pub mod sliders;
 pub mod surfaces;
+pub mod thumbnails;
 
 pub use document::{Document, Opened, State};
 pub use edits::Edited;
