@@ -21,6 +21,7 @@
 
 pub mod document;
 pub mod edits;
+pub mod files;
 pub mod frames;
 pub mod headless;
 pub(crate) mod jobs;

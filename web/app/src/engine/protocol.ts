@@ -40,7 +40,10 @@ export type Request =
   | { kind: "depthTolerance"; value: number }
   /** The engine instance's name, given by the Worker at load (module.ts). */
   | { kind: "seed"; nonce: string }
-  | { kind: "open"; name: string }
+  /** `untrusted`: a bundle opened from a file, held to the controls' reach
+   * and opened in a document of its own, so a refusal changes nothing
+   * (Phase 8, step 7; kurven_session::files). */
+  | { kind: "open"; name: string; untrusted?: boolean }
   | { kind: "create"; preset: string }
   | { kind: "createSurface"; preset: string }
   | { kind: "expression"; expression: string }

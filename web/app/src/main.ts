@@ -23,6 +23,8 @@
 //   &size=900x700        the canvas in device pixels, rather than the stage
 //   &slope=0             the preview's slope scale (default 1)
 //   &offscreen=1         draw into a texture, never presented (gpu/view.ts)
+//   &openTimeout=ms      how long opening a bundle from a file may take
+//                        before the engine is restarted (default 120 s)
 
 import "./page/style.css";
 
@@ -37,6 +39,7 @@ import { h } from "./page/dom.ts";
 import { Engine, Latest, quietly } from "./page/engine.ts";
 import { decode, encode, hides, linkOf, restoring } from "./page/link.ts";
 import { type Entry, Picker, Thumbnails } from "./page/picker.ts";
+import { readFile, readFolder, zip } from "./page/bundle.ts";
 
 const query = new URLSearchParams(location.search);
 const app = document.querySelector<HTMLElement>("#app");
@@ -105,6 +108,8 @@ const panel = new Panel({
   exportSVG: () => void exportSVG().catch(quietly),
   cancelExport: () => void client.cancel("the export was cancelled").catch(quietly),
   browse: () => picker.open(),
+  openFiles: (files, folder) => void track(openFiles(files, folder)).catch(quietly),
+  saveBundle: () => void saveBundle().catch(quietly),
 });
 app.replaceChildren(stage, panel.root, picker.dialog, panel.paint.sheet.dialog);
 if (!view.usesGPU) {
@@ -275,6 +280,82 @@ async function exportSVG(): Promise<void> {
     panel.exporting(false);
     indicate();
   }
+}
+
+// MARK: - a .kurven bundle as a file (page/bundle.ts)
+
+let lastSave: { name: string; bytes: Uint8Array } | null = null;
+/** The page's own work under way (a file being read before the engine is
+ * asked), which `settled` waits for too. */
+const working = new Set<Promise<unknown>>();
+function track<T>(work: Promise<T>): Promise<T> {
+  working.add(work);
+  const done = () => working.delete(work);
+  work.then(done, done);
+  return work;
+}
+/** How long an opening may take before the engine is restarted and the
+ * document put back: a bundle can name a function that never returns. */
+const OPEN_TIMEOUT = Number(query.get("openTimeout")) > 0 ? Number(query.get("openTimeout")) : 120_000;
+
+async function openFiles(files: File[], folder: boolean): Promise<void> {
+  panel.fileStatus.textContent = "";
+  let bundle: Bundle;
+  try {
+    bundle = folder ? await readFolder(files) : await readFile(files[0]!);
+  } catch (error) {
+    panel.notice(`This bundle was not opened: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  try {
+    await client.stage(bundle);
+    const reply = await engine.send({ kind: "open", name: bundle.name, untrusted: true }, { timeoutMs: OPEN_TIMEOUT });
+    if (!reply) return;
+    if (!reply.ok) {
+      panel.notice(`This bundle was not opened: ${reply.error ?? "refused"}`);
+      return;
+    }
+    panel.notice(null);
+    panel.fileStatus.textContent = `opened ${bundle.name}`;
+    view.changed();
+  } catch (error) {
+    panel.notice(
+      error instanceof Cancelled
+        ? `This bundle was not opened: it took more than ${OPEN_TIMEOUT / 1000} s, so the engine was restarted and the document put back`
+        : `This bundle was not opened: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    view.changed();
+  }
+}
+
+async function saveBundle(): Promise<void> {
+  // The directory's name in ASCII, which every unzip writes as it is: the
+  // catalog entry's name where there is one, else the title.
+  const st = engine.state;
+  const named = (st?.landscape?.name as string | undefined) || (st?.surface?.name as string | undefined) || st?.title || "";
+  const slug = named.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[_.]+|_+$/g, "");
+  const name = `${slug || "kurven"}.kurven`;
+  const answer = await engine.call({ kind: "save", name });
+  if (!answer) return;
+  if (!answer.reply.ok) {
+    panel.fileStatus.textContent = `not saved: ${answer.reply.error ?? "refused"}`;
+    return;
+  }
+  const paths = (answer.reply.files as string[] | undefined) ?? [];
+  const files = paths.map((path) => {
+    const bytes = answer.arrays[`file:${path}`];
+    if (!(bytes instanceof Uint8Array)) throw new Error(`the save sent no ${path}`);
+    return { path, bytes };
+  });
+  const bytes = zip(name, files);
+  lastSave = { name: `${name}.zip`, bytes };
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: "application/zip" }));
+  const a = h("a", { href: url, download: `${name}.zip` });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  panel.fileStatus.textContent = `saved ${name}.zip: ${files.length} file${files.length === 1 ? "" : "s"}, ${bytes.length.toLocaleString()} bytes`;
 }
 
 // MARK: - input
@@ -478,6 +559,7 @@ window.kurven = {
   /** Every frame wished drawn, every gesture and control sent. */
   settled: async () => {
     for (;;) {
+      while (working.size) await Promise.allSettled([...working]);
       await input.settled();
       await viewports.flush();
       await engine.settled();
@@ -508,6 +590,16 @@ window.kurven = {
     warmed: () => thumbnails.warm((catalog.entries as Entry[] | undefined) ?? []),
     counts: () => ({ ...thumbnails.counts, pictures: thumbnails.pictures.size, failed: [...thumbnails.failed] }),
   },
+  /** A bundle's files as Save writes them (page/bundle.ts), for the lane
+   * to make archives of. */
+  zip: (dir: string, files: { path: string; text: string }[]) => [
+    ...zip(
+      dir,
+      files.map((f) => ({ path: f.path, bytes: new TextEncoder().encode(f.text) })),
+    ),
+  ],
+  /** The last bundle saved, as its archive's bytes. */
+  lastSave: () => (lastSave ? { name: lastSave.name, bytes: [...lastSave.bytes] } : null),
   /** The last SVG exported, as text. */
   lastExport: () => (lastExport ? new TextDecoder().decode(lastExport) : null),
 };

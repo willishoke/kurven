@@ -1,12 +1,14 @@
 //! `kurven-cli session REQUESTS [-o out.svg] [--state S.json] [--edited E.json]
-//! [--stage NAME DIR]...`: the page's protocol run natively. Each line of REQUESTS is one request as
+//! [--stage NAME DIR]... [--save NAME DIR]`: the page's protocol run natively. Each line of REQUESTS is one request as
 //! the page sends it to its Worker (`web/app/src/engine/protocol.ts`), run in
 //! order through the same `Session` the wasm module wraps; a refusal is
 //! printed and the run goes on, as the page goes on. Then the judged strokes
 //! of the document the requests left, as the page's Export writes them
 //! (`{"kind": "bake", "svg": true}`), to `-o`; the state and what is edited
 //! as JSON, when asked. `--stage` stages a bundle directory's files under
-//! NAME first, as the page stages a bundle it opens (an `open` names it).
+//! NAME first, as the page stages a bundle it opens (an `open` names it);
+//! `--save` writes what the page's Save bundle saves (`{"kind": "save"}`)
+//! into DIR, its files at their paths.
 //! The browser lane holds the page's exported SVG to
 //! this, byte for byte (crates/FINDINGS.md, Phase 8).
 
@@ -18,6 +20,7 @@ pub fn session_command(args: &[String]) -> Result<(), String> {
     let mut requests = None;
     let (mut svg, mut state, mut edited) = (None, None, None);
     let mut staged: Vec<(String, String)> = Vec::new();
+    let mut save: Option<(String, String)> = None;
     let mut words = args.iter();
     while let Some(word) = words.next() {
         let mut value = |flag: &str| words.next().cloned().ok_or_else(|| format!("{flag} wants a path"));
@@ -28,6 +31,10 @@ pub fn session_command(args: &[String]) -> Result<(), String> {
             "--stage" => {
                 let name = value("--stage")?;
                 staged.push((name, value("--stage")?));
+            }
+            "--save" => {
+                let name = value("--save")?;
+                save = Some((name, value("--save")?));
             }
             flag if flag.starts_with('-') => return Err(format!("session takes no {flag}")),
             path if requests.is_none() => requests = Some(path.to_string()),
@@ -56,6 +63,27 @@ pub fn session_command(args: &[String]) -> Result<(), String> {
         let reply = json::parse(&session.call(r#"{"kind":"edited"}"#).json).map_err(|e| e.to_string())?;
         let e = reply.get("edited").cloned().unwrap_or(JsonValue::Null);
         std::fs::write(&out, e.canonical()).map_err(|e| format!("{out}: {e}"))?;
+    }
+    if let Some((name, dir)) = save {
+        let request = JsonValue::Object(
+            [("kind".to_string(), json::string("save")), ("name".to_string(), json::string(&name))]
+                .into_iter()
+                .collect(),
+        );
+        let reply = session.call(&request.canonical());
+        let parsed = json::parse(&reply.json).map_err(|e| e.to_string())?;
+        if parsed.get("ok").and_then(JsonValue::as_bool) != Some(true) {
+            let error = parsed.get("error").and_then(JsonValue::as_str).unwrap_or("refused");
+            return Err(format!("save: {error}"));
+        }
+        for (array, bytes) in reply.arrays {
+            let Some(path) = array.strip_prefix("file:") else { continue };
+            let out = std::path::Path::new(&dir).join(path);
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+            }
+            std::fs::write(&out, bytes.into_bytes()).map_err(|e| format!("{}: {e}", out.display()))?;
+        }
     }
     if let Some(out) = svg {
         let reply = session.call(r#"{"kind":"bake","svg":true}"#);

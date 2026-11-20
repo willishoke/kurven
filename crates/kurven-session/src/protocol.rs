@@ -412,6 +412,34 @@ impl Session {
                 d.depth_tolerance = value;
                 none()
             }
+            "open" if o.get("untrusted").and_then(JsonValue::as_bool) == Some(true) => {
+                // A bundle opened from a file (Phase 8, step 7): someone
+                // else's bytes, held to the controls' reach before anything
+                // is built (`files::openable`), and opened in a document of
+                // its own, which takes what an open keeps from this one, put
+                // in this one's place only once it is open. A bundle refused
+                // or that will not open leaves the open document, and what
+                // it can undo, as they were.
+                let name = text(o, "name")?;
+                let Session { document: d, staged, .. } = self;
+                let files = staged.get(name).ok_or_else(|| refuse(format!("no bundle '{name}' staged")))?;
+                let source = kurven_core::bundle::Source::Memory { name, files };
+                crate::files::openable(&source).map_err(|why| refuse(format!("{name} was not opened: {why}")))?;
+                let mut next = Document {
+                    viewport: d.viewport,
+                    mode: d.mode,
+                    draft_resolution: d.draft_resolution,
+                    refine_contours: d.refine_contours,
+                    ..Document::default()
+                };
+                next.load(name, files);
+                next.settle();
+                if let State::Failed(_, why) = next.state() {
+                    return Err(refuse(format!("{name} could not be opened: {why}")));
+                }
+                *d = next;
+                none()
+            }
             "open" => {
                 let name = text(o, "name")?;
                 let Session { document: d, staged, .. } = self;

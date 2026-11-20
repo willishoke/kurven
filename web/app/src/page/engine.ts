@@ -3,12 +3,16 @@
 // The page keeps no state of its own: what it shows is the latest state the
 // engine sent (HANDOFF-web-port.md, Architecture, rule 1).
 
-import { type Answer, Cancelled, type EngineClient } from "../engine/client.ts";
+import { type Answer, Cancelled, type EngineClient, type Options } from "../engine/client.ts";
 import type { DocumentState, Reply, Request, Slider, Truncation, TypedArray } from "../engine/protocol.ts";
 
 /** What a request makes the engine do, for the indicator. */
 function doing(r: Request): string | null {
   switch (r.kind) {
+    case "open":
+      return "opening";
+    case "save":
+      return "saving";
     case "create":
     case "restore":
     case "expression":
@@ -77,8 +81,8 @@ export class Engine {
   }
 
   /** Send a request; the reply, with the state it carries taken in. */
-  async send(request: Request): Promise<Reply | null> {
-    return (await this.call(request))?.reply ?? null;
+  async send(request: Request, options?: Options): Promise<Reply | null> {
+    return (await this.call(request, options))?.reply ?? null;
   }
 
   /** Send an edit and, once answered, call `after` with the reply. A
@@ -107,8 +111,8 @@ export class Engine {
   }
 
   /** `send`, with the arrays the reply carries; null for a stale view. */
-  call(request: Request): Promise<{ reply: Reply; arrays: Record<string, TypedArray> } | null> {
-    const call = this.calling(request);
+  call(request: Request, options?: Options): Promise<{ reply: Reply; arrays: Record<string, TypedArray> } | null> {
+    const call = this.calling(request, options);
     this.pending.add(call);
     void call.then(
       () => this.pending.delete(call),
@@ -117,7 +121,7 @@ export class Engine {
     return call;
   }
 
-  private async calling(request: Request): Promise<{ reply: Reply; arrays: Record<string, TypedArray> } | null> {
+  private async calling(request: Request, options?: Options): Promise<{ reply: Reply; arrays: Record<string, TypedArray> } | null> {
     const what = doing(request);
     const id = this.next++;
     if (what) {
@@ -126,7 +130,7 @@ export class Engine {
     }
     let answer: Answer;
     try {
-      answer = await this.client.request(request);
+      answer = await this.client.request(request, options);
     } finally {
       if (what) {
         this.inFlight.delete(id);

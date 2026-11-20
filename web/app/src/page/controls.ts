@@ -25,6 +25,9 @@ export interface Host {
   cancelExport(): void;
   /** Open the picker: the catalogs as pictures. */
   browse(): void;
+  /** Open a bundle from a file or a folder; save the document as one. */
+  openFiles(files: File[], folder: boolean): void;
+  saveBundle(): void;
 }
 
 type Interval = { lo: number; hi: number };
@@ -236,6 +239,9 @@ export class Panel {
   private readonly polyhedronFacts: HTMLElement;
   private readonly undoButton: HTMLButtonElement;
   private readonly redoButton: HTMLButtonElement;
+  private readonly saveButton: HTMLButtonElement;
+  private readonly fileRow: HTMLElement;
+  readonly fileStatus: HTMLElement;
   private isExporting = false;
 
   constructor(host: Host) {
@@ -421,11 +427,34 @@ export class Panel {
     this.undoButton = h("button", { type: "button", id: "undo", title: "⌘Z" }, "Undo");
     this.redoButton = h("button", { type: "button", id: "redo", title: "⇧⌘Z" }, "Redo");
     this.undoButton.addEventListener("click", () => this.request({ kind: "undo" }));
+    // File: Open… (a bundle saved as a ZIP archive, or a bare manifest),
+    // Open folder… (a bundle's directory), Save bundle… (page/bundle.ts).
+    const fileInput = h("input", { type: "file", id: "open-file", accept: ".zip,.kurven,.json,application/zip", hidden: true });
+    const folderInput = h("input", { type: "file", id: "open-folder", hidden: true });
+    folderInput.setAttribute("webkitdirectory", "");
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files?.length) host.openFiles([...fileInput.files], false);
+      fileInput.value = "";
+    });
+    folderInput.addEventListener("change", () => {
+      if (folderInput.files?.length) host.openFiles([...folderInput.files], true);
+      folderInput.value = "";
+    });
+    const openButton = h("button", { type: "button", id: "open", title: "A .kurven bundle saved as a ZIP archive, or its manifest.json" }, "Open…");
+    openButton.addEventListener("click", () => fileInput.click());
+    const folderButton = h("button", { type: "button", id: "open-folder-button", title: "A .kurven bundle's folder" }, "Open folder…");
+    folderButton.addEventListener("click", () => folderInput.click());
+    this.saveButton = h("button", { type: "button", id: "save", title: "The document as a .kurven bundle, in a ZIP archive" }, "Save bundle…");
+    this.saveButton.addEventListener("click", () => host.saveBundle());
+    this.fileStatus = h("p", { class: "status", id: "file-status", "aria-live": "polite" });
+    this.fileRow = h("div", { class: "buttons file", role: "group", "aria-label": "File" }, openButton, folderButton, this.saveButton, fileInput, folderInput);
     this.redoButton.addEventListener("click", () => this.request({ kind: "redo" }));
     this.root = h(
       "aside",
       { class: "panel", "aria-label": "Controls" },
       h("header", {}, h("h1", {}, "kurven"), this.title),
+      this.fileRow,
+      this.fileStatus,
       h("div", { class: "buttons edit", role: "group", "aria-label": "Edit" }, this.undoButton, this.redoButton),
       this.noticeLine,
       landscape,
@@ -528,6 +557,7 @@ export class Panel {
       const status = this.polyhedron.querySelector<HTMLElement>("#polyhedron-status");
       if (status) status.textContent = state.status.polyhedron ?? "";
     }
+    this.saveButton.disabled = !(state.kind === "landscape" || state.kind === "surface" || state.kind === "polyhedron");
     this.undoButton.disabled = !state.undo.can;
     this.undoButton.textContent = state.undo.name ? `Undo ${state.undo.name}` : "Undo";
     this.redoButton.disabled = !state.redo.can;

@@ -380,3 +380,5 @@ kbd { font-family: var(--mono); font-size: 0.75rem; border: 1px solid var(--rule
 .sheet input[type="number"] { width: 8.5rem; }
 .buttons.end { justify-content: flex-end; margin-top: 10px; }
 .sheet .primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.buttons.file { margin-top: 10px; }
+.buttons.file button { font-size: 0.82rem; padding: 2px 8px; }

@@ -55,7 +55,7 @@
 //!     edits run in order through the session (kurven-session), what it
 //!     saves and bakes written where it says.
 //!
-//! kurven-cli session REQUESTS [-o out.svg] [--state S.json] [--edited E.json] [--stage NAME DIR]...
+//! kurven-cli session REQUESTS [-o out.svg] [--state S.json] [--edited E.json] [--stage NAME DIR]... [--save NAME DIR]
 //!     The page's requests (one JSON object a line, as the page sends them to
 //!     its Worker) run in order through the session, then the judged strokes
 //!     of the document they left written as the page's Export writes them.
@@ -81,7 +81,7 @@ const USAGE: &str = "usage: kurven-cli fixtures <dir>
        kurven-cli surface solid [--kind NAME] [options] [--save B] [-o out.svg]
        kurven-cli scene A.kurven B.kurven [--at X,Y,Z[,S]] ... [--preset NAME] [--no-refine] -o out.svg
        kurven-cli app BUNDLE [edits as the app takes them] [--save B] [--bake S]
-       kurven-cli session REQUESTS [-o out.svg] [--state S.json] [--edited E.json] [--stage NAME DIR]...";
+       kurven-cli session REQUESTS [-o out.svg] [--state S.json] [--edited E.json] [--stage NAME DIR]... [--save NAME DIR]";
 
 /// A command ported from Swift's kurven-cli: Swift's argument reading, and
 /// its exit status 1 with `kurven-cli: <error>` on a refusal.
