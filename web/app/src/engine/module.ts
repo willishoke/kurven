@@ -10,6 +10,7 @@ interface Exports {
   kv_alloc(len: number): number;
   kv_free(ptr: number, len: number): void;
   kv_stage(b: number, bl: number, p: number, pl: number, d: number, dl: number): number;
+  kv_give(n: number, nl: number, d: number, dl: number): number;
   kv_unstage(): void;
   kv_call(ptr: number, len: number): number;
   kv_reply_ptr(): number;
@@ -63,6 +64,20 @@ export class Engine {
       this.wasm.kv_stage(a[0]!, a[1]!, a[2]!, a[3]!, data, bytes.length),
     );
     if (!ok) throw new Error(`could not stage ${bundle}/${path}`);
+  }
+
+  /** Bytes for the next call alone (`kv_give`), taken as `stage` takes a
+   * file's: into memory the module lends and then owns. */
+  give(name: string, bytes: Uint8Array): void {
+    const data = this.wasm.kv_alloc(bytes.length);
+    new Uint8Array(this.wasm.memory.buffer, data, bytes.length).set(bytes);
+    const ok = this.lend([encoder.encode(name)], (a) => this.wasm.kv_give(a[0]!, a[1]!, data, bytes.length));
+    if (!ok) throw new Error(`could not give ${name}`);
+  }
+
+  /** The module's linear memory, in bytes: what this engine holds, at most. */
+  get memoryBytes(): number {
+    return this.wasm.memory.buffer.byteLength;
   }
 
   unstage(): void {
