@@ -336,6 +336,103 @@ checks += 1;
   checks += 2;
 }
 
+// Phase 8, steps 5 to 7: the scenes the page can now make, pooled. Each is
+// baked by the pool and by the page's engine alone, to the same bytes (and
+// the page's engine's are native's: check-web's requests step); a bundle
+// opened from a file is staged under a name of its own and let go of after,
+// as main.ts does, so the helpers follow the journal's unstage rules.
+{
+  let opened = 0;
+  const open = async (name) => {
+    const staged = { ...bundle(join(session, "inputs", `${name}.kurven`)), name: `opened/${++opened}/${name}.kurven` };
+    await client.stage(staged);
+    fresh(await client.request({ kind: "open", name: staged.name, untrusted: true }));
+    fresh(await client.request({ kind: "unstage", name: staged.name }));
+  };
+  const scenes = [
+    [
+      "a torus, its radius, lines and linear curve",
+      async () => {
+        fresh(await client.request({ kind: "createSurface", preset: "torus" }));
+        fresh(await client.request({ kind: "surfaceField", field: "major", value: 2.6 }));
+        fresh(await client.request({ kind: "surfaceLineCount", axis: "around", count: 24 }));
+        fresh(await client.request({ kind: "linearCurve", on: true }));
+      },
+    ],
+    [
+      "sn conformal, with its coordinate curves",
+      async () => {
+        fresh(await client.request({ kind: "createSurface", preset: "sn" }));
+        fresh(await client.request({ kind: "surfaceLines", on: true }));
+        fresh(await client.request({ kind: "surfaceField", field: "conformal", value: 1 }));
+      },
+    ],
+    [
+      "the forced torus, its components swapped",
+      async () => {
+        fresh(await client.request({ kind: "createSurface", preset: "forced" }));
+        fresh(await client.request({ kind: "component", field: "radial", value: 1 }));
+      },
+    ],
+    [
+      "a torus painted with sn, a curve added",
+      async () => {
+        fresh(await client.request({ kind: "createSurface", preset: "torus" }));
+        fresh(await client.request({ kind: "pick", point: [2, 0, 1] }));
+        fresh(await client.request({ kind: "function", expression: "sn(z, 0.64)" }));
+        fresh(await client.request({ kind: "add", name: "surface_u" }));
+      },
+    ],
+    [
+      "sn in relief, opened from a file",
+      async () => {
+        await open("relief");
+        fresh(await client.request({ kind: "surfaceField", field: "relief", value: 0.3 }));
+      },
+    ],
+    [
+      "the picture frame, opened from a file, its strokes and a face hatched",
+      async () => {
+        await open("frame");
+        fresh(await client.request({ kind: "strokes", layer: "hatching", count: 30 }));
+        fresh(await client.request({ kind: "pick", point: [-1.5, 0, 1] }));
+        fresh(await client.request({ kind: "add", name: "hatching" }));
+      },
+    ],
+    [
+      "gamma opened from a file, banded, its band dragged, its graph painted",
+      async () => {
+        await open("gamma");
+        const bands = (h) => ({ kind: "realBands", bands: [{ below: 0, height: h }, { below: 1.5, height: 2 }], beyond: 4 });
+        fresh(await client.request({ kind: "truncation", truncation: bands(3) }));
+        fresh(await client.request({ kind: "drag", control: { slider: "truncation" }, phase: "begin" }));
+        for (const h of [3.2, 3.5]) {
+          fresh(await client.request({ kind: "drag", control: { slider: "truncation" }, phase: "move", truncation: bands(h) }));
+        }
+        fresh(await client.request({ kind: "drag", control: { slider: "truncation" }, phase: "end" }));
+        fresh(await client.request({ kind: "pick", point: [2.5, 0, 1.3293403881791355] }));
+        fresh(await client.request({ kind: "add", name: "graph_v" }));
+      },
+    ],
+  ];
+  for (const [what, make] of scenes) {
+    await make();
+    const t = Date.now();
+    const alone = svgOf(await client.request({ kind: "bake", svg: true }));
+    const together = svgOf(await pool.bake(true));
+    assert.deepEqual(together, alone, `${what}: pooled, the bake alone`);
+    console.log(`  ${what}: pooled as alone, ${Date.now() - t} ms`);
+    checks += 1;
+  }
+  // Of the bundles opened from files, the journal holds the bytes of the
+  // one the document is, alone (those staged by name and never let go of
+  // stay, as the engine keeps them).
+  const fromFiles = client.journal.filter((e) => e.kind === "stage" && e.bundle.name.startsWith("opened/"));
+  assert.deepEqual(fromFiles.map((e) => e.bundle.name), [`opened/${opened}/gamma.kurven`]);
+  checks += 1;
+  fresh(await client.request({ kind: "open", name: gamma }));
+}
+
 // The log is the pool's: trimmed with the journal, and kept by no client
 // that has no pool, a helper's own among them.
 for (let k = 0; k < 120; k++) fresh(await client.request({ kind: "viewport", width: 900 + k, height: 700 }));

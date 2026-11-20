@@ -430,23 +430,35 @@ fn a_link_that_cannot_be_sampled_leaves_the_open_document_and_its_undo() {
     reply(&mut s, r#"{"kind":"truncation","truncation":{"kind":"uniform","height":3.5}}"#);
     let before = reply(&mut s, r#"{"kind":"edited"}"#).get("edited").cloned().unwrap();
     let undo = reply(&mut s, r#"{"kind":"state"}"#).get("state").unwrap().get("undo").cloned().unwrap();
-    // Each end finite, the window's width not: the bound passes it, and
-    // the sampling cannot place a grid on it.
+    // Each end finite and the window's width too (a width that overflows is
+    // refused before, as no interval): the bound passes it, and the
+    // sampling cannot place a grid on it.
     let link = gamma_link(|l| {
         let mut r = l["landscape"].as_object().unwrap().clone();
         r.insert(
             "domain".to_string(),
-            json::parse(r#"{"real":{"lo":-1e308,"hi":1e308},"imag":{"lo":0,"hi":2}}"#).unwrap(),
+            json::parse(r#"{"real":{"lo":-1e307,"hi":1e307},"imag":{"lo":0,"hi":2}}"#).unwrap(),
         );
+        // No hatching, the link's or its request's: a hatching across such a
+        // window is past the strokes' bound.
+        let unhatched = |layers: &JsonValue| {
+            JsonValue::Array(
+                layers
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|x| {
+                        x.get("source").and_then(|s| s.get("kind")).and_then(JsonValue::as_str) != Some("hatching")
+                    })
+                    .cloned()
+                    .collect(),
+            )
+        };
+        let request_layers = unhatched(&r["layers"]);
+        r.insert("layers".to_string(), request_layers);
         l.insert("landscape".to_string(), JsonValue::Object(r));
-        let kept: Vec<JsonValue> = l["layers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|x| x.get("source").and_then(|s| s.get("kind")).and_then(JsonValue::as_str) != Some("hatching"))
-            .cloned()
-            .collect();
-        l.insert("layers".to_string(), JsonValue::Array(kept));
+        let kept = unhatched(&l["layers"]);
+        l.insert("layers".to_string(), kept);
     });
     let r = reply(&mut s, &link);
     assert_eq!(r.get("ok"), Some(&JsonValue::Bool(false)));

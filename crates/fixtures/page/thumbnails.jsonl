@@ -1,0 +1,8 @@
+# The picker's pictures (step 4): the catalog, then a frame at rest and the
+# judged strokes of a function and of each kind of surface.
+{"kind":"catalog"}
+{"kind":"thumbnail","entry":"gamma"}
+{"kind":"thumbnail","entry":"sin","judged":true}
+{"kind":"thumbnail","entry":"surface:torus"}
+{"kind":"thumbnail","entry":"surface:sn","judged":true}
+{"kind":"thumbnail","entry":"surface:forced"}

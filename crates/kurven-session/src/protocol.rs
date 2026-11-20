@@ -327,7 +327,61 @@ impl Session {
                 out.insert("presets".to_string(), JsonValue::Array(catalog.presets.iter().map(|p| p.json()).collect()));
                 out.insert("defaultResolution".to_string(), JsonValue::Int(catalog.default_resolution));
                 out.insert("controls".to_string(), reach::json());
+                // The picker's cells: every function and surface, each with
+                // the key its picture is cached under (`thumbnails.rs`).
+                out.insert(
+                    "entries".to_string(),
+                    JsonValue::Array(crate::thumbnails::Entry::all().iter().map(|e| e.json()).collect()),
+                );
                 Ok((out, Vec::new()))
+            }
+            "thumbnail" => {
+                // A catalog entry's picture for the picker, built in a scene
+                // of its own (the open document is not touched): the frame
+                // the window's preview draws of it at rest, for the page's
+                // GPU, or with `judged` the judged strokes, for a page
+                // without one (`Thumbnails.swift`).
+                let id = text(o, "entry")?;
+                let entry = crate::thumbnails::Entry::named(id).ok_or_else(|| refuse(format!("no entry '{id}'")))?;
+                let thumbnail = crate::thumbnails::draw(&entry).map_err(refused_after)?;
+                let mut out = JsonObject::new();
+                out.insert("key".to_string(), json::string(&crate::thumbnails::key(&entry)));
+                let size = crate::thumbnails::SIZE;
+                if o.get("judged").and_then(JsonValue::as_bool) == Some(true) {
+                    let mut scene = thumbnail.scene;
+                    // A quarter of a drawable pixel, as the window bakes.
+                    scene.resolution = 0.25 * thumbnail.navigator.framing.units_per_pixel;
+                    let options = kurven_bake::BakeOptions::new(size.width.max(size.height));
+                    let bake = kurven_bake::bake(&scene, &options).map_err(|e| refused_after(e.to_string()))?;
+                    let mut arrays = Vec::new();
+                    let styles = stroke_arrays(&bake.strokes, &mut arrays);
+                    out.insert("strokes".to_string(), JsonValue::Array(styles));
+                    out.insert("frame".to_string(), frame_json(&thumbnail.navigator.framing.frame(size)));
+                    return Ok((out, arrays));
+                }
+                let visible: Vec<usize> = (0..thumbnail.scene.layers().len()).collect();
+                let at = crate::preview::Framed {
+                    navigator: thumbnail.navigator,
+                    viewport: size,
+                    mode: PreviewMode::Drawing,
+                };
+                let mut memo = crate::preview::Memo::default();
+                let preview = crate::preview::preview_scene(
+                    &mut memo,
+                    &thumbnail.scene,
+                    at,
+                    &visible,
+                    false,
+                    &self.nonce,
+                    None,
+                    &BTreeSet::new(),
+                    &mut |_, layer, scene, draft| crate::preview::lay_out(layer, scene, draft),
+                );
+                let mut arrays = Vec::new();
+                for (k, v) in preview_json(&preview, &mut arrays) {
+                    out.insert(k, v);
+                }
+                Ok((out, arrays))
             }
             "edited" => {
                 // What is edited now, whole (`Document::edited`): a
@@ -339,7 +393,9 @@ impl Session {
                 Ok((out, Vec::new()))
             }
             "restore" => {
-                // A landscape as a link names it: `edited`'s fields.
+                // A landscape as a link names it: `edited`'s fields, every
+                // number in them finite (`files::every_number_finite`).
+                crate::files::every_number_finite(&JsonValue::Object(o.clone()), "the link").map_err(refuse)?;
                 let request = o.get("landscape").ok_or("wants a 'landscape'")?;
                 let request = LandscapeRequest::from_json(request).map_err(|e| refuse(e.to_string()))?;
                 kurven_math::expression::Expression::compile(&request.expression).map_err(|e| positioned(&e))?;
@@ -367,13 +423,7 @@ impl Session {
                 // keeps from this one, and put in this one's place only once
                 // it holds the landscape: a link that cannot be made leaves
                 // the open document, and what it can undo, as they were.
-                let mut next = Document {
-                    viewport: d.viewport,
-                    mode: d.mode,
-                    draft_resolution: d.draft_resolution,
-                    refine_contours: d.refine_contours,
-                    ..Document::default()
-                };
+                let mut next = d.successor();
                 next.restore_landscape(request, Styling { truncation, layers }, counts);
                 if next.bundle().is_none() {
                     let why = match next.state() {
@@ -393,6 +443,42 @@ impl Session {
                     return Err(refuse(format!("a depth tolerance is a number at least 0, not {value}")));
                 }
                 d.depth_tolerance = value;
+                none()
+            }
+            "unstage" => {
+                // A staged bundle let go of once it is opened or refused
+                // (Phase 8, step 7): the document holds what it read, and a
+                // file's bytes need not stay. Nothing of the document is
+                // touched; a name not staged is let go of already.
+                let name = text(o, "name")?.to_string();
+                self.staged.remove(&name);
+                none()
+            }
+            "open" if o.get("untrusted").and_then(JsonValue::as_bool) == Some(true) => {
+                // A bundle opened from a file (Phase 8, step 7): someone
+                // else's bytes, held to the controls' reach before anything
+                // is built (`files::openable`) and read whole before the
+                // document is touched (`Document::read`), then opened as any
+                // bundle is (`load_read`, what `load` does once the files
+                // are read), so it is the document the same bundle opened by
+                // name gives. A bundle refused, or one that does not read,
+                // leaves the open document, and what it can undo, as they
+                // were.
+                let name = text(o, "name")?;
+                let Session { document: d, staged, .. } = self;
+                let files = staged.get(name).ok_or_else(|| refuse(format!("no bundle '{name}' staged")))?;
+                let source = kurven_core::bundle::Source::Memory { name, files };
+                // Said by the bundle's own name, the last part of the one
+                // it is staged under.
+                let shown = source.name();
+                crate::files::openable(&source).map_err(|why| refuse(format!("{shown} was not opened: {why}")))?;
+                let read = Document::read(&source, d.refine_contours)
+                    .map_err(|why| refuse(format!("{shown} could not be opened: {why}")))?;
+                d.load_read(&source, Ok(read));
+                d.settle();
+                if let State::Failed(_, why) = d.state() {
+                    return Err(refused_after(format!("{shown} could not be opened: {why}")));
+                }
                 none()
             }
             "open" => {
@@ -459,6 +545,93 @@ impl Session {
                     None => none(),
                 }
             }
+            "surfaceField" => {
+                // A surface's number typed, stepped or switched
+                // (SurfaceSection.swift's field, stepper and Conformal
+                // switch): clamped to the control's range, one undo step
+                // named for the control. Refused, touching nothing, for a
+                // field the shape has not or a value the request refuses.
+                let raw = text(o, "field")?;
+                let field = Field::parse(raw).ok_or_else(|| refuse(format!("no field '{raw}'")))?;
+                let value = number(o, "value")?;
+                let request = d.surface_request().ok_or("this is not a surface")?;
+                crate::surface_controls::settable(request, field, value).map_err(refuse)?;
+                d.paint_status = None;
+                d.type_surface_field(field, value);
+                d.settle();
+                match d.paint_status.clone() {
+                    Some(why) => Err(refused_after(why)),
+                    None => none(),
+                }
+            }
+            "surfaceLines" => {
+                // The coordinate curves switched on or off; a plain torus is
+                // its lines and has no switch.
+                let on = o.get("on").and_then(JsonValue::as_bool).ok_or("wants 'on'")?;
+                let request = d.surface_request().ok_or("this is not a surface")?;
+                if matches!(request.shape, kurven_core::surface_request::Shape::Torus { .. }) {
+                    return Err("a plain torus is its lines: they have no switch".into());
+                }
+                d.switch_lines(on);
+                d.settle();
+                none()
+            }
+            "surfaceLineCount" => {
+                // One of the coordinate curves' counts, clamped to 1...200.
+                let around = match text(o, "axis")? {
+                    "around" => true,
+                    "across" => false,
+                    other => return Err(refuse(format!("an axis is around or across, not {other}"))),
+                };
+                let count = integer(o, "count")?;
+                if d.surface_request().and_then(|r| r.lines).is_none() {
+                    return Err("the surface draws no coordinate curves".into());
+                }
+                d.set_line_count(around, count);
+                d.settle();
+                none()
+            }
+            "linearCurve" => {
+                let on = o.get("on").and_then(JsonValue::as_bool).ok_or("wants 'on'")?;
+                d.surface_request().ok_or("this is not a surface")?;
+                d.switch_linear_curve(on);
+                d.settle();
+                none()
+            }
+            "component" => {
+                // The forced torus's radius or height drawn from x, x′ or x″.
+                let field = match text(o, "field")? {
+                    "radial" => Field::Radial,
+                    "axial" => Field::Axial,
+                    other => return Err(refuse(format!("a component is radial or axial, not {other}"))),
+                };
+                let value = integer(o, "value")?;
+                if !(0..=2).contains(&value) {
+                    return Err(refuse(format!("a component is 0, 1 or 2, not {value}")));
+                }
+                if d.surface_request().and_then(|r| r.get(field)).is_none() {
+                    return Err("the surface has no state components".into());
+                }
+                d.choose_component(field, value);
+                d.settle();
+                none()
+            }
+            "periods" => {
+                // The periods "Function…" offers for an expression: the
+                // catalog's rectangle for it (`known`, which a sheet takes
+                // as the expression is typed), and the one it opens with
+                // (`offered`: the painted function's own, the catalog's, or
+                // the surface's). A view: nothing is changed.
+                let expression = text(o, "expression")?;
+                let mut out = JsonObject::new();
+                let pair = |p: (f64, f64)| json::doubles(&[p.0, p.1]);
+                out.insert(
+                    "known".to_string(),
+                    kurven_surfaces::drawing::periods_of(expression).map_or(JsonValue::Null, pair),
+                );
+                out.insert("offered".to_string(), pair(d.function_periods(expression)));
+                Ok((out, Vec::new()))
+            }
             "drag" => {
                 // A slider taken hold of, moved, let go: one undo step.
                 let slider = slider(o)?;
@@ -480,6 +653,21 @@ impl Session {
                         Slider::Light { .. } => {
                             let v = numbers(o, "value", 2)?;
                             slider.set_light(d, v[0], v[1]);
+                        }
+                        Slider::SurfaceField { field, .. }
+                            if o.get("rest").and_then(JsonValue::as_bool) == Some(true) =>
+                        {
+                            // A slider's own value: clamped, then rested at
+                            // its step or a detent within reach.
+                            let value = crate::surface_controls::slid(d, *field, number(o, "value")?);
+                            slider.set(d, value);
+                        }
+                        // A banded truncation's height dragged: the whole
+                        // truncation, as TruncationSection's band rows set it.
+                        Slider::Truncation if o.contains_key("truncation") => {
+                            let t = Truncation::from_json(o.get("truncation").ok_or("wants a 'truncation'")?)
+                                .map_err(|e| refuse(e.to_string()))?;
+                            d.edit_truncation(t, "Truncation");
                         }
                         _ => slider.set(d, number(o, "value")?),
                     },
@@ -611,6 +799,9 @@ impl Session {
                 let l = numbers(o, "direction", 3)?;
                 let name = text(o, "layer")?;
                 with_light(d, name)?;
+                if !crate::files::usable_light(Vec3::new(l[0], l[1], l[2])) {
+                    return Err(refuse("a light is a direction: finite, not zero, and short enough to normalize"));
+                }
                 d.paint_light(Vec3::new(l[0], l[1], l[2]), name);
                 d.settle();
                 none()
@@ -953,6 +1144,8 @@ impl Session {
         );
         o.insert("landscape".to_string(), d.landscape_request().map_or(JsonValue::Null, |r| r.json()));
         o.insert("surface".to_string(), d.surface_request().map_or(JsonValue::Null, |r| r.json()));
+        o.insert("surfaceControls".to_string(), crate::surface_controls::json(d));
+        o.insert("polyhedron".to_string(), d.polyhedron_bundle().map_or(JsonValue::Null, polyhedron_json));
         o.insert("truncation".to_string(), if d.bundle().is_some() { d.truncation().json() } else { JsonValue::Null });
         // The layers as the controls show them: the edited ones, each with
         // what its control reads.
@@ -980,6 +1173,20 @@ impl Session {
                 }
                 if let Some(light) = spec.source.light() {
                     l.insert("light".to_string(), json::doubles(&[light.x, light.y, light.z]));
+                    if let Some((azimuth, elevation)) = light_angles(light) {
+                        l.insert("lightAngles".to_string(), json::doubles(&[azimuth, elevation]));
+                    }
+                }
+                if let Some(axis) = spec.source.plateau_hatch_axis() {
+                    let axis = if axis == DomainAxis::Real { "real" } else { "imag" };
+                    l.insert("axis".to_string(), json::string(axis));
+                }
+                // The drawn layer of that name: how many paths, and whether
+                // it is tested for visibility (the Layers list's count and
+                // "unclipped").
+                if let Some(layer) = d.layers().iter().find(|x| x.spec.name == spec.name) {
+                    l.insert("paths".to_string(), JsonValue::Int(layer.paths.count() as i64));
+                    l.insert("clipped".to_string(), JsonValue::Bool(layer.spec.clipped));
                 }
                 if let LayerSource::Hatching { hatching, .. } = &spec.source {
                     l.insert("spacing".to_string(), JsonValue::Double(hatching.spacing));
@@ -1036,12 +1243,19 @@ impl Session {
                         .iter()
                         .filter_map(|&i| specs.get(i).map(|s| json::string(&s.name)))
                         .collect();
+                    let painted = match d.edited().and_then(|e| e.request).map(|r| r.shape) {
+                        Some(kurven_core::surface_request::Shape::Periodic { expression, .. }) => expression,
+                        _ => String::new(),
+                    };
                     json::object([
                         ("face", json::string(&pick.face.to_string())),
                         ("copy", JsonValue::Int(pick.copy as i64)),
                         ("title", json::string(&d.paint_title(&pick))),
+                        ("caption", json::string(&d.paint_caption(&pick))),
                         ("choices", JsonValue::Array(choices)),
                         ("layers", JsonValue::Array(on)),
+                        ("takesFunction", JsonValue::Bool(d.offers_function(&pick))),
+                        ("expression", json::string(&painted)),
                     ])
                 }
             },
@@ -1149,28 +1363,14 @@ fn gesture(g: &JsonObject) -> Result<Gesture, Refusal> {
     })
 }
 
-/// The most layers a link may carry: the catalog's landscapes have nine.
-const LINK_LAYERS: usize = 64;
-/// The most levels a contour layer of a link may list. Not a control's
-/// reach: a layer lists the levels its landscape chose (forty for a minor
-/// family of the catalog's), which a level slider's count resamples; this
-/// bounds the work a link can ask for.
-const LINK_LEVELS: usize = 1000;
-/// The most seeds a link's slope lines may list, or be spaced to along
-/// the window's longer side; a bound on work, as a strokes slider's top.
-const LINK_SEEDS: f64 = 400.0;
-/// The most bands a link's truncation may have; a bound on work (each is a
-/// riser and its hatching), far past the plates' four.
-const LINK_BANDS: usize = 64;
-
 /// Whether a link asks for no more than the window's controls can: a link
-/// is someone else's text, and the page samples what it says on open.
-/// Each kind of layer a landscape's link can carry is held to a reach
-/// (`sliders::reach`) or a stated bound on work; a kind with none -- a layer
-/// stored as arrays, a parametric surface's or a polyhedron's -- is refused,
-/// as are a window without area, a resolution or a level count past its
-/// slider, and a truncation that is not finite. Refused, touching nothing,
-/// saying which.
+/// is someone else's text, and the page samples what it says on open. Its
+/// resolution and level counts are held to their sliders here; its window,
+/// truncation and layers by `files` under `files::LINK`, the checks a file
+/// opened is held to (each kind of layer to a reach or a stated bound on
+/// work). A kind a landscape's link cannot carry -- a layer stored as
+/// arrays, a parametric surface's or a polyhedron's -- is refused. Refused,
+/// touching nothing, saying which.
 fn linkable(
     request: &LandscapeRequest,
     layers: &[LayerSpec],
@@ -1185,84 +1385,44 @@ fn linkable(
         )));
     }
     let d = request.domain;
-    for (axis, i) in [("Re", d.real), ("Im", d.imag)] {
-        if !(i.lo.is_finite() && i.hi.is_finite() && i.lo < i.hi) {
-            return Err(refuse(format!("a link's window has {axis} from {} to {}, which is no interval", i.lo, i.hi)));
-        }
-    }
+    let link = |why: String| refuse(format!("a link: {why}"));
+    crate::files::window(d.real.lo, d.real.hi, "Re").map_err(link)?;
+    crate::files::window(d.imag.lo, d.imag.hi, "Im").map_err(link)?;
     let (least, most) = reach::LEVEL_COUNTS;
     for (name, &n) in counts {
         if !(least..=most).contains(&n) {
             return Err(refuse(format!("a link's {name} has {n} levels; a level slider reaches {least} to {most}")));
         }
     }
-    let finite = |x: f64| x.is_finite();
-    match truncation {
-        Truncation::None => {}
-        Truncation::Uniform(h) if finite(*h) => {}
-        Truncation::RealBands { bands, beyond }
-            if bands.len() <= LINK_BANDS
-                && bands.iter().all(|b| finite(b.below) && finite(b.height))
-                && !beyond.is_nan() => {}
-        _ => return Err(refuse(format!("a link's truncation is not finite, or has more than {LINK_BANDS} bands"))),
-    }
-    if layers.len() > LINK_LAYERS {
-        return Err(refuse(format!("a link carries {} layers, more than {LINK_LAYERS}", layers.len())));
-    }
-    let reach = d.real.length().max(d.imag.length());
-    let strokes = reach::STROKES.1 as f64;
-    for layer in layers {
-        let name = &layer.name;
-        let fine = match &layer.source {
-            LayerSource::Contour { levels, light, .. } => {
-                if levels.len() > LINK_LEVELS {
-                    return Err(refuse(format!(
-                        "a link's {name} lists {} levels, more than {LINK_LEVELS}",
-                        levels.len()
-                    )));
-                }
-                levels.iter().all(|&x| finite(x)) && light.is_none_or(|l| finite(l.x) && finite(l.y) && finite(l.z))
-            }
-            LayerSource::Hatching { hatching, .. } => {
-                let s = hatching.spacing;
-                if !(finite(s) && s > 0.0 && (reach / s).round() <= strokes) {
-                    return Err(refuse(format!(
-                        "a link's {name} is hatched at a spacing of {s}: more than {strokes} strokes across the \
-                         window, as a strokes slider reaches"
-                    )));
-                }
-                finite(hatching.angle)
-            }
-            LayerSource::WallEdges { edges, base } => {
-                // A landscape's walls are its window's four sides.
-                let mut seen = BTreeSet::new();
-                finite(*base) && edges.len() <= 4 && edges.iter().all(|&e| (0..4).contains(&e) && seen.insert(e))
-            }
-            LayerSource::TruncationEdge { .. } | LayerSource::FoldCurves => true,
-            LayerSource::IntegralCurves { seeds, .. } => {
-                let many = match &seeds.spacing {
-                    kurven_core::manifest::Spacing::Values(_, values) => {
-                        values.len() as f64 > LINK_SEEDS || !values.iter().all(|&x| finite(x))
-                    }
-                    kurven_core::manifest::Spacing::ArcLength(s) => {
-                        !(finite(*s) && *s > 0.0 && reach / s <= LINK_SEEDS)
-                    }
-                };
-                if many {
-                    return Err(refuse(format!(
-                        "a link's {name} is seeded more finely than {LINK_SEEDS} seeds across the window"
-                    )));
-                }
-                finite(seeds.level)
-            }
-            other => {
-                return Err(refuse(format!("a landscape's link carries no {} layer, as {name} is", other.kind())));
-            }
-        };
-        if !fine {
-            return Err(refuse(format!("a link's {name} holds a number that is not finite, or an edge no wall has")));
+    // The request may carry its own styling too, which a sampling reads
+    // where the link's does not replace it: held as the link's is.
+    let carried_by_request = request.layers.as_deref().unwrap_or(&[]);
+    for layer in layers.iter().chain(carried_by_request) {
+        let carried = matches!(
+            layer.source,
+            LayerSource::Contour { .. }
+                | LayerSource::Hatching { .. }
+                | LayerSource::WallEdges { .. }
+                | LayerSource::TruncationEdge { .. }
+                | LayerSource::FoldCurves
+                | LayerSource::IntegralCurves { .. }
+        );
+        if !carried {
+            return Err(refuse(format!(
+                "a landscape's link carries no {} layer, as {} is",
+                layer.source.kind(),
+                layer.name
+            )));
         }
     }
+    let limits = crate::files::LINK;
+    crate::files::truncation(truncation, &limits).map_err(link)?;
+    if let Some(t) = &request.truncation {
+        crate::files::truncation(t, &limits).map_err(link)?;
+    }
+    let extent = kurven_math::swift::max(d.real.length(), d.imag.length());
+    crate::files::layers(layers, extent, &limits).map_err(link)?;
+    crate::files::layers(carried_by_request, extent, &limits).map_err(link)?;
     Ok(())
 }
 
@@ -1280,6 +1440,44 @@ fn presets(d: &Document) -> Vec<kurven_core::manifest::CameraPreset> {
     Vec::new()
 }
 
+/// A light's azimuth round z and elevation over the xy plane, in degrees
+/// (`LightSlider.angles(of:)`).
+/// None for a light with no direction (zero, or too long to normalize),
+/// which nothing that sets a light lets through (`files::usable_light`).
+/// Swift's `simd_normalize` of one is NaN, and its sliders show NaN.
+fn light_angles(light: Vec3) -> Option<(f64, f64)> {
+    if !crate::files::usable_light(light) {
+        return None;
+    }
+    let l = light.normalized();
+    let degrees = 180.0 / core::f64::consts::PI;
+    let angles = (
+        kurven_math::real::atan2(l.y, l.x) * degrees,
+        kurven_math::real::asin(kurven_math::swift::min(kurven_math::swift::max(l.z, -1.0), 1.0)) * degrees,
+    );
+    (angles.0.is_finite() && angles.1.is_finite()).then_some(angles)
+}
+
+/// A polyhedron as the Polyhedron section describes it (Inspector.swift's
+/// `polyhedron(_:)`): what it is, its boundary, and its genus or shells.
+fn polyhedron_json(bundle: &kurven_core::polyhedron_bundle::PolyhedronBundle) -> JsonValue {
+    let solid = bundle.solid();
+    let edges = solid.is_diagonal.iter().filter(|&&d| !d).count();
+    let shape = match solid.genus() {
+        Some(genus) => ("Genus", format!("{genus}{}", if solid.is_convex() { ", convex" } else { ", not convex" })),
+        None => ("Shells", format!("{}, χ = {}", solid.shell_count(), solid.euler_characteristic())),
+    };
+    json::object([
+        ("solid", json::string(&bundle.manifest.provenance.function)),
+        (
+            "boundary",
+            json::string(&format!("{} vertices, {edges} edges, {} faces", solid.vertices.len(), solid.faces.len())),
+        ),
+        ("shapeLabel", json::string(shape.0)),
+        ("shape", json::string(&shape.1)),
+    ])
+}
+
 /// What is edited, as `edited` sends it and `restore` reads it.
 fn edited_json(e: &Edited) -> JsonValue {
     json::object([
@@ -1291,6 +1489,23 @@ fn edited_json(e: &Edited) -> JsonValue {
             JsonValue::Object(e.level_counts.iter().map(|(k, v)| (k.clone(), JsonValue::Int(*v))).collect()),
         ),
     ])
+}
+
+/// Judged strokes as the page draws them: each layer's page-space points
+/// and offsets pushed as arrays, and its style.
+pub(crate) fn stroke_arrays(strokes: &kurven_core::svg::Strokes, arrays: &mut Vec<(String, Array)>) -> Vec<JsonValue> {
+    strokes
+        .layers
+        .iter()
+        .enumerate()
+        .map(|(i, (style, paths))| {
+            let points = paths.vertices.iter().flat_map(|p| [p.x(), p.y()]);
+            let offsets = paths.offsets.iter().map(|&o| o as u32);
+            arrays.push((format!("stroke.{i}.points"), Array::f64(points)));
+            arrays.push((format!("stroke.{i}.offsets"), Array::u32(offsets)));
+            json::object([("width", JsonValue::Double(style.width)), ("color", json::string(&style.color))])
+        })
+        .collect()
 }
 
 /// A pixel grid as the page reads it: `DepthFrame::index`'s terms.

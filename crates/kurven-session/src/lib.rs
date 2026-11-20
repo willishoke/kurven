@@ -23,6 +23,7 @@
 
 pub mod document;
 pub mod edits;
+pub mod files;
 pub mod frames;
 pub mod headless;
 pub(crate) mod jobs;
@@ -34,7 +35,9 @@ pub mod pool;
 pub mod preview;
 pub mod protocol;
 pub mod sliders;
+pub mod surface_controls;
 pub mod surfaces;
+pub mod thumbnails;
 
 pub use document::{Document, Opened, State};
 pub use edits::Edited;

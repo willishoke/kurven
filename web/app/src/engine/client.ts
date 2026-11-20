@@ -30,6 +30,13 @@
 //   `refine`) is its last.
 // - A bundle staged again under its name, every file of the earlier one
 //   among the later's, replaces it, unless an open between reads it.
+// - An `unstage` lets go of a bundle's bytes: a stage of it that a journaled
+//   `open` reads stays (a replay opens it again), with the unstage after it
+//   to let go again once replayed; any other stage of it goes, and the
+//   unstage with it. An opening that wipes the slate drops the stages of
+//   bundles unstaged, but for the one it reads: the journal stages what the
+//   engine holds staged, and of the bundles opened from files, only the one
+//   the document is.
 //
 // A replay keeps the whole journal until it has run: a second cancel during
 // a replay terminates that Worker too and replays the same journal into the
@@ -553,12 +560,32 @@ export class EngineClient {
       return { kept: entry, replaces: false };
     }
     const request = entry.request;
+    /** The bundle a request reads or lets go of, by name. */
+    const names = (r: Request): string | null => (r.kind === "open" || r.kind === "unstage" ? r.name : null);
+    if (request.kind === "unstage") {
+      const name = request.name;
+      const read = j.some((e) => e.kind === "request" && e.request.kind === "open" && e.request.name === name);
+      this.journal = j.filter((e) => read || !(e.kind === "stage" && e.bundle.name === name));
+      if (read) this.journal.push(entry);
+      // Logged either way: a helper that has staged the bundle (pool.ts)
+      // lets go of it too, and one that has not lets go of nothing.
+      return { kept: entry, replaces: false };
+    }
     if (OPENING.has(request.kind) && entry.ok) {
       const lastOf = new Map<string, number>();
       j.forEach((e, i) => {
         if (e.kind === "request" && KEPT_BY_OPEN.has(e.request.kind)) lastOf.set(e.request.kind, i);
       });
-      this.journal = j.filter((e, i) => e.kind === "stage" || lastOf.get(e.request.kind) === i);
+      // A bundle the engine was told to let go of, and that this opening
+      // does not read, is staged for nothing once the open that read it is
+      // dropped; any other stays staged, as the engine keeps it.
+      const unstaged = new Set(j.flatMap((e) => (e.kind === "request" && e.request.kind === "unstage" ? [e.request.name] : [])));
+      const reads = names(request);
+      this.journal = j.filter(
+        (e, i) =>
+          (e.kind === "stage" && (!unstaged.has(e.bundle.name) || e.bundle.name === reads)) ||
+          (e.kind === "request" && lastOf.get(e.request.kind) === i),
+      );
       this.journal.push(entry);
       return { kept: entry, replaces: false };
     }

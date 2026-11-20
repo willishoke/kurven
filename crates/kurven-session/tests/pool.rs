@@ -361,3 +361,170 @@ fn a_piece_asked_before_any_edit_is_refused_after_it() {
         );
     }
 }
+
+/// Phase 8, steps 5 to 7, pooled: the scenes the page can now make, held by
+/// several sessions as a pool's helpers hold them (each replaying the same
+/// requests, a bundle opened from a file staged under its own name and let
+/// go of after), bake through the pool to the bytes the session bakes alone,
+/// and a frame at rest laid out elsewhere is the frame.
+#[test]
+fn the_page_scenes_bake_pooled_as_alone() {
+    let input = |name: &str| format!("{}/../fixtures/swift/session/inputs/{name}.kurven", env!("CARGO_MANIFEST_DIR"));
+    let staged = |s: &mut Session, name: &str, dir: &str| {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            s.stage(name, &file, std::fs::read(&path).unwrap());
+        }
+    };
+    let view = r#"{"kind":"viewport","width":500,"height":400}"#;
+    let scenes: Vec<(&str, Option<&str>, Vec<&str>)> = vec![
+        (
+            "a torus, its radius, lines and linear curve",
+            None,
+            vec![
+                view,
+                r#"{"kind":"createSurface","preset":"torus"}"#,
+                r#"{"kind":"surfaceField","field":"major","value":2.6}"#,
+                r#"{"kind":"surfaceLineCount","axis":"around","count":24}"#,
+                r#"{"kind":"linearCurve","on":true}"#,
+            ],
+        ),
+        (
+            "sn conformal, with its coordinate curves",
+            None,
+            vec![
+                view,
+                r#"{"kind":"createSurface","preset":"sn"}"#,
+                r#"{"kind":"surfaceLines","on":true}"#,
+                r#"{"kind":"surfaceField","field":"conformal","value":1}"#,
+            ],
+        ),
+        (
+            "the forced torus, its components swapped",
+            None,
+            vec![
+                view,
+                r#"{"kind":"createSurface","preset":"forced"}"#,
+                r#"{"kind":"component","field":"radial","value":1}"#,
+            ],
+        ),
+        (
+            "a torus painted with sn, a curve added",
+            None,
+            vec![
+                view,
+                r#"{"kind":"createSurface","preset":"torus"}"#,
+                r#"{"kind":"pick","point":[2,0,1]}"#,
+                r#"{"kind":"function","expression":"sn(z, 0.64)"}"#,
+                r#"{"kind":"add","name":"surface_u"}"#,
+            ],
+        ),
+        (
+            "sn in relief, opened from a file",
+            Some("relief"),
+            vec![
+                view,
+                r#"{"kind":"open","name":"opened/1/relief.kurven","untrusted":true}"#,
+                r#"{"kind":"unstage","name":"opened/1/relief.kurven"}"#,
+                r#"{"kind":"surfaceField","field":"relief","value":0.3}"#,
+            ],
+        ),
+        (
+            "the picture frame, opened from a file, its strokes and a face hatched",
+            Some("frame"),
+            vec![
+                view,
+                r#"{"kind":"open","name":"opened/1/frame.kurven","untrusted":true}"#,
+                r#"{"kind":"unstage","name":"opened/1/frame.kurven"}"#,
+                r#"{"kind":"strokes","layer":"hatching","count":30}"#,
+                r#"{"kind":"pick","point":[-1.5,0,1]}"#,
+                r#"{"kind":"add","name":"hatching"}"#,
+            ],
+        ),
+        (
+            "gamma opened from a file, banded, its band dragged, its graph painted",
+            Some("gamma"),
+            vec![
+                r#"{"kind":"viewport","width":600,"height":450}"#,
+                r#"{"kind":"open","name":"opened/1/gamma.kurven","untrusted":true}"#,
+                r#"{"kind":"unstage","name":"opened/1/gamma.kurven"}"#,
+                r#"{"kind":"truncation","truncation":{"kind":"realBands","bands":[{"below":0,"height":3}],"beyond":4}}"#,
+                r#"{"kind":"drag","control":{"slider":"truncation"},"phase":"begin"}"#,
+                r#"{"kind":"drag","control":{"slider":"truncation"},"phase":"move","truncation":{"kind":"realBands","bands":[{"below":0,"height":3.5},{"below":1.5,"height":2}],"beyond":4}}"#,
+                r#"{"kind":"drag","control":{"slider":"truncation"},"phase":"end"}"#,
+                r#"{"kind":"axis","axis":"imag"}"#,
+            ],
+        ),
+    ];
+    for (what, bundle, requests) in scenes {
+        let mut pool: Vec<Session> = (0..3)
+            .map(|_| {
+                let mut s = Session::new();
+                if let Some(b) = bundle {
+                    staged(&mut s, &format!("opened/1/{b}.kurven"), &input(b));
+                }
+                for r in &requests {
+                    ok(&mut s, r);
+                }
+                s
+            })
+            .collect();
+        let together = pooled(&mut pool, true);
+        let alone = ok(&mut pool[1], r#"{"kind":"bake","svg":true}"#);
+        assert_eq!(together.arrays, alone.arrays, "{what}: pooled, the bake alone");
+    }
+}
+
+/// The edits of steps 5 and 6 each change the fingerprint a pool holds its
+/// helpers to: a piece of a landscape asked before a band is dragged, its
+/// hatching turned or a curve painted on it is refused after; a layout at
+/// rest of a surface asked before one of its fields, its linear curve or a
+/// function painted on it is refused after.
+#[test]
+fn the_page_edits_change_the_fingerprint() {
+    let landscape: [&[&str]; 3] = [
+        &[
+            r#"{"kind":"drag","control":{"slider":"truncation"},"phase":"begin"}"#,
+            r#"{"kind":"drag","control":{"slider":"truncation"},"phase":"move","truncation":{"kind":"realBands","bands":[{"below":0,"height":2.5}],"beyond":3}}"#,
+            r#"{"kind":"drag","control":{"slider":"truncation"},"phase":"end"}"#,
+        ],
+        &[r#"{"kind":"axis","axis":"imag"}"#],
+        &[r#"{"kind":"pick","point":[2.5,0.0,1.3293403881791355]}"#, r#"{"kind":"add","name":"graph_v"}"#],
+    ];
+    for edit in landscape {
+        let mut s = sessions(1, GAMMA).pop().unwrap();
+        let f = reply(&mut s, r#"{"kind":"bakePlan"}"#).get("fingerprint").unwrap().canonical();
+        let piece = format!(r#"{{"kind":"bakePiece","piece":{{"layer":4}},"fingerprint":{f}}}"#);
+        assert_eq!(reply(&mut s, &piece).get("ok"), Some(&JsonValue::Bool(true)), "{edit:?}: before it");
+        for r in edit {
+            ok(&mut s, r);
+        }
+        let r = reply(&mut s, &piece);
+        assert_eq!(r.get("another"), Some(&JsonValue::Bool(true)), "{edit:?}: {r:?}");
+    }
+    let surface: [&[&str]; 4] = [
+        &[r#"{"kind":"surfaceField","field":"major","value":2.5}"#],
+        &[r#"{"kind":"surfaceLineCount","axis":"across","count":9}"#],
+        &[r#"{"kind":"linearCurve","on":true}"#],
+        &[r#"{"kind":"function","expression":"sn(z, 0.64)"}"#],
+    ];
+    for edit in surface {
+        let mut s = sessions(
+            1,
+            &[r#"{"kind":"viewport","width":500,"height":400}"#, r#"{"kind":"createSurface","preset":"torus"}"#],
+        )
+        .pop()
+        .unwrap();
+        let wanted = reply(&mut s, r#"{"kind":"restLayers"}"#);
+        let layer = wanted.get("layers").unwrap().as_array().unwrap()[0].canonical();
+        let f = wanted.get("fingerprint").unwrap().canonical();
+        let layout = format!(r#"{{"kind":"restLayout","layers":[{layer}],"fingerprint":{f}}}"#);
+        assert_eq!(reply(&mut s, &layout).get("ok"), Some(&JsonValue::Bool(true)), "{edit:?}: before it");
+        for r in edit {
+            ok(&mut s, r);
+        }
+        let r = reply(&mut s, &layout);
+        assert_eq!(r.get("another"), Some(&JsonValue::Bool(true)), "{edit:?}: {r:?}");
+    }
+}

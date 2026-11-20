@@ -3,12 +3,16 @@
 // The page keeps no state of its own: what it shows is the latest state the
 // engine sent (HANDOFF-web-port.md, Architecture, rule 1).
 
-import { type Answer, Cancelled, type EngineClient } from "../engine/client.ts";
-import type { DocumentState, Reply, Request, Slider, TypedArray } from "../engine/protocol.ts";
+import { type Answer, Cancelled, type EngineClient, type Options } from "../engine/client.ts";
+import type { DocumentState, Reply, Request, Slider, Truncation, TypedArray } from "../engine/protocol.ts";
 
 /** What a request makes the engine do, for the indicator. */
 function doing(r: Request): string | null {
   switch (r.kind) {
+    case "open":
+      return "opening";
+    case "save":
+      return "saving";
     case "create":
     case "restore":
     case "expression":
@@ -17,14 +21,31 @@ function doing(r: Request): string | null {
       return "sampling";
     case "drag":
       if (r.control.slider === "landscape") return r.phase === "move" ? null : "sampling";
+      if (r.control.slider === "surfaceField") return "building";
       return "restyling";
     case "truncation":
     case "levels":
     case "resetLevels":
       return "restyling";
+    case "createSurface":
+    case "surfaceField":
+    case "surfaceLines":
+    case "surfaceLineCount":
+    case "linearCurve":
+    case "component":
+      return "building";
     case "undo":
     case "redo":
       return "undoing";
+    case "pick":
+      return "picking";
+    case "add":
+    case "remove":
+    case "function":
+    case "strokes":
+    case "axis":
+    case "light":
+      return "painting";
     case "bake":
       return "baking the judged strokes";
     default:
@@ -60,8 +81,8 @@ export class Engine {
   }
 
   /** Send a request; the reply, with the state it carries taken in. */
-  async send(request: Request): Promise<Reply | null> {
-    return (await this.call(request))?.reply ?? null;
+  async send(request: Request, options?: Options): Promise<Reply | null> {
+    return (await this.call(request, options))?.reply ?? null;
   }
 
   /** Send an edit and, once answered, call `after` with the reply. A
@@ -77,14 +98,21 @@ export class Engine {
     );
   }
 
+  /** A look at the document under a view key: not journaled, and a newer
+   * look under the same key supersedes it (null when it did). */
+  async look(request: Request, view: string): Promise<Reply | null> {
+    const answer = await this.client.request(request, { view });
+    return answer.stale ? null : answer.reply;
+  }
+
   /** Wait until every request sent so far, and any it led to, is answered. */
   async settled(): Promise<void> {
     while (this.pending.size) await Promise.allSettled([...this.pending]);
   }
 
   /** `send`, with the arrays the reply carries; null for a stale view. */
-  call(request: Request): Promise<{ reply: Reply; arrays: Record<string, TypedArray> } | null> {
-    const call = this.calling(request);
+  call(request: Request, options?: Options): Promise<{ reply: Reply; arrays: Record<string, TypedArray> } | null> {
+    const call = this.calling(request, options);
     this.pending.add(call);
     void call.then(
       () => this.pending.delete(call),
@@ -93,7 +121,7 @@ export class Engine {
     return call;
   }
 
-  private async calling(request: Request): Promise<{ reply: Reply; arrays: Record<string, TypedArray> } | null> {
+  private async calling(request: Request, options?: Options): Promise<{ reply: Reply; arrays: Record<string, TypedArray> } | null> {
     const what = doing(request);
     const id = this.next++;
     if (what) {
@@ -102,7 +130,7 @@ export class Engine {
     }
     let answer: Answer;
     try {
-      answer = await this.client.request(request);
+      answer = await this.client.request(request, options);
     } finally {
       if (what) {
         this.inFlight.delete(id);
@@ -173,20 +201,24 @@ export class Latest<T> {
 export class SliderDrag {
   private readonly engine: Engine;
   private readonly control: Slider;
-  private readonly moves: Latest<number | [number, number]>;
+  private readonly moves: Latest<number | [number, number] | Truncation>;
   private readonly after: () => void;
   /** Whether the engine took hold of the slider: false when a cancel
    * dropped the begin, and then the drag sends nothing more. */
   private began: Promise<boolean> = Promise.resolve(false);
   active = false;
 
-  constructor(engine: Engine, control: Slider, after: () => void) {
+  /** `rest`: the moves are a surface field's slider values, which the
+   * engine rests at the step or a detent within reach. */
+  constructor(engine: Engine, control: Slider, after: () => void, rest = false) {
     this.engine = engine;
     this.control = control;
     this.after = after;
     this.moves = new Latest(async (value) => {
       if (!(await this.began)) return;
-      await engine.send({ kind: "drag", control, phase: "move", value });
+      // A banded truncation's height moves the whole truncation.
+      const moved = typeof value === "object" && !Array.isArray(value) ? { truncation: value } : { value };
+      await engine.send({ kind: "drag", control, phase: "move", ...moved, ...(rest ? { rest: true } : {}) });
       after();
     });
   }
@@ -206,7 +238,7 @@ export class SliderDrag {
     );
   }
 
-  move(value: number | [number, number]): void {
+  move(value: number | [number, number] | Truncation): void {
     if (!this.active) return;
     this.moves.push(value);
   }

@@ -585,14 +585,7 @@ pub fn bake_assemble(d: &mut Document, o: &JsonObject, mut inputs: BTreeMap<Stri
 /// the viewport's pixel, as the preview's does.
 pub fn bake_reply(d: &Document, strokes: &Strokes, with_svg: bool) -> (JsonObject, Vec<(String, Array)>) {
     let mut arrays = Vec::new();
-    let mut styles = Vec::new();
-    for (i, (style, paths)) in strokes.layers.iter().enumerate() {
-        let points = paths.vertices.iter().flat_map(|p| [p.x(), p.y()]);
-        let offsets = paths.offsets.iter().map(|&o| o as u32);
-        arrays.push((format!("stroke.{i}.points"), Array::f64(points)));
-        arrays.push((format!("stroke.{i}.offsets"), Array::u32(offsets)));
-        styles.push(json::object([("width", JsonValue::Double(style.width)), ("color", json::string(&style.color))]));
-    }
+    let styles = crate::protocol::stroke_arrays(strokes, &mut arrays);
     if with_svg {
         let text = svg::render(strokes, svg::FIGURE_WIDTH, svg::MARGIN, svg::DECIMALS);
         arrays.push(("svg".to_string(), Array::u8(text.into_bytes())));

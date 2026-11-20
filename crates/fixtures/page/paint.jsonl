@@ -1,0 +1,25 @@
+# Step 6: a banded truncation's height dragged; a torus's surface picked, a
+# function painted through the periods offered, a curve added and taken
+# off, undone and redone; a polyhedron's strokes and a face hatched.
+{"kind":"viewport","width":900,"height":700}
+{"kind":"create","preset":"sin"}
+{"kind":"truncation","truncation":{"kind":"realBands","bands":[{"below":0,"height":2}],"beyond":3}}
+{"kind":"drag","control":{"slider":"truncation"},"phase":"begin"}
+{"kind":"drag","control":{"slider":"truncation"},"phase":"move","truncation":{"kind":"realBands","bands":[{"below":0,"height":2.5},{"below":1,"height":4}],"beyond":3}}
+{"kind":"drag","control":{"slider":"truncation"},"phase":"end"}
+{"kind":"bake","svg":true}
+{"kind":"createSurface","preset":"torus"}
+{"kind":"pick","point":[2,0,1]}
+{"kind":"periods","expression":"sn(z, 0.64)"}
+{"kind":"function","expression":"sn(z, 0.64)","periods":[4.3963854350675645,3.6044408458474446]}
+{"kind":"add","name":"surface_u"}
+{"kind":"state"}
+{"kind":"undo"}
+{"kind":"redo"}
+{"kind":"bake","svg":true}
+{"kind":"open","name":"frame.kurven","untrusted":true}
+{"kind":"strokes","layer":"hatching","count":30}
+{"kind":"pick","point":[-1.5,0,1]}
+{"kind":"add","name":"hatching"}
+{"kind":"state"}
+{"kind":"bake","svg":true}

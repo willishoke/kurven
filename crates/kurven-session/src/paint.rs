@@ -142,6 +142,43 @@ impl Document {
         }
     }
 
+    /// What the picked face is, and what a layer added there lies on
+    /// (`paintCaption`).
+    pub fn paint_caption(&mut self, pick: &FacePick) -> String {
+        let count =
+            self.faces_now().map_or(0, |faces| faces.iter().filter(|f| f.id.kind() == pick.face.kind()).count());
+        let tiles = if self.paints_every_tile() { ", on every tile" } else { "" };
+        match pick.face {
+            FaceID::Graph => format!("Picked the graph. A layer added here lies on the graph{tiles}."),
+            FaceID::Plateau { band } => format!(
+                "Picked plateau {band}. A layer added here lies on {}{tiles}.",
+                if count == 1 {
+                    "the whole plateau, wherever |f| reaches the truncation".to_string()
+                } else {
+                    format!("all {count} plateaus")
+                }
+            ),
+            FaceID::Riser { .. } | FaceID::TileBoundaryRiser { .. } => format!(
+                "Picked {pick}. A layer added here lies on {}{tiles}.",
+                if count == 1 { "it".to_string() } else { format!("all {count} risers") }
+            ),
+            FaceID::Wall { edge } => format!(
+                "Picked wall {edge}. A layer added here lies on wall {edge} alone; a layer listed may lie on other \
+                 walls too."
+            ),
+            FaceID::Surface => "Picked the surface, which is one face.".to_string(),
+            FaceID::Solid { face } => {
+                format!("Picked face {face}. Hatching added here lies on all {count} faces of the solid.")
+            }
+        }
+    }
+
+    /// Whether "Function…" is offered on the pick: on a surface whose
+    /// request takes a function painted on it.
+    pub fn offers_function(&self, pick: &FacePick) -> bool {
+        pick.face == FaceID::Surface && self.edited().and_then(|e| e.request).is_some_and(|r| r.takes_function())
+    }
+
     // MARK: - adding
 
     /// What the Add menu offers on the picked face: a contour of each field
@@ -154,8 +191,10 @@ impl Document {
         if !self.is_current() {
             return Vec::new();
         }
-        let (Some(paint), Some(scene)) = (self.edited(), self.scene.clone()) else { return Vec::new() };
-        let faces = self.faces_of(&scene);
+        let (Some(paint), Some(content)) = (self.edited(), self.scene.as_ref().map(|s| s.content())) else {
+            return Vec::new();
+        };
+        let Some(faces) = self.faces_now() else { return Vec::new() };
         let Some(face) = faces.iter().find(|f| f.id == pick.face) else { return Vec::new() };
         let has = |source: &LayerSource| paint.layers.iter().any(|l| l.source == *source);
         let mut choices: Vec<PaintChoice> = Vec::new();
@@ -243,11 +282,11 @@ impl Document {
                 let ceiling = match LandscapeStyle::ceiling(&m.truncation) {
                     Some(c) => c,
                     None => match self.paint_ceiling {
-                        Some((content, value)) if content == scene.content() => value,
+                        Some((held, value)) if held == content => value,
                         _ => {
                             let magnitudes: Vec<f64> = bundle.surface.height.values.iter().map(|&v| v as f64).collect();
                             let value = NativeLandscape::ceiling(&m.truncation, &magnitudes);
-                            self.paint_ceiling = Some((scene.content(), value));
+                            self.paint_ceiling = Some((content, value));
                             value
                         }
                     },

@@ -40,12 +40,43 @@ export type Request =
   | { kind: "depthTolerance"; value: number }
   /** The engine instance's name, given by the Worker at load (module.ts). */
   | { kind: "seed"; nonce: string }
-  | { kind: "open"; name: string }
+  /** `untrusted`: a bundle opened from a file, held to the controls' reach
+   * and opened in a document of its own, so a refusal changes nothing
+   * (Phase 8, step 7; kurven_session::files). */
+  | { kind: "open"; name: string; untrusted?: boolean }
+  /** Let go of a staged bundle once it is opened or refused: the document
+   * holds what it read (Phase 8, step 7). */
+  | { kind: "unstage"; name: string }
   | { kind: "create"; preset: string }
   | { kind: "createSurface"; preset: string }
   | { kind: "expression"; expression: string }
   | { kind: "set"; key: string; value: number }
-  | { kind: "drag"; control: Slider; phase: "begin" | "move" | "end"; value?: number | [number, number] }
+  /** `rest`: a surface field's slider value, which the engine clamps and
+   * rests at its step or a detent within reach (SurfaceSection.swift).
+   * `truncation`: a banded truncation's height dragged, the whole truncation
+   * as its rows set it (TruncationSection.swift). */
+  | {
+      kind: "drag";
+      control: Slider;
+      phase: "begin" | "move" | "end";
+      value?: number | [number, number];
+      rest?: boolean;
+      truncation?: Truncation;
+    }
+  /** A catalog entry's picture for the picker, in a scene of its own: the
+   * preview frame at rest, or with `judged` the judged strokes (Phase 8,
+   * step 4; kurven_session::thumbnails). */
+  | { kind: "thumbnail"; entry: string; judged?: boolean }
+  /** A surface's number typed, stepped or switched, clamped to its control's
+   * reach (Phase 8, step 5; kurven_session::surface_controls). */
+  | { kind: "surfaceField"; field: string; value: number }
+  | { kind: "surfaceLines"; on: boolean }
+  | { kind: "surfaceLineCount"; axis: "around" | "across"; count: number }
+  | { kind: "linearCurve"; on: boolean }
+  | { kind: "component"; field: "radial" | "axial"; value: number }
+  /** The periods "Function…" offers for an expression (Phase 8, step 6): the
+   * catalog's (`known`), and the one the sheet opens with (`offered`). */
+  | { kind: "periods"; expression: string }
   | { kind: "levels"; layer: string; count: number }
   | { kind: "resetLevels"; layer: string }
   | { kind: "strokes"; layer: string; count: number }
@@ -182,7 +213,8 @@ export interface ExpressionAt {
 export type Truncation =
   | { kind: "none" }
   | { kind: "uniform"; height: number }
-  | { kind: "realBands"; bands: { below: number; height: number }[]; beyond: number };
+  /** `beyond` absent: none, everything past the last band drawn as it is. */
+  | { kind: "realBands"; bands: { below: number; height: number }[]; beyond?: number };
 
 /** A control named in a drag. */
 export type Slider =
@@ -212,6 +244,37 @@ export interface ExactCamera {
   unitsPerPixel: number;
 }
 
+/** One number of a surface's request as its control shows it, with the
+ * engine's reach (kurven_session::surface_controls::control). */
+export interface SurfaceRow {
+  field: string;
+  label: string;
+  value: number | null;
+  min: number;
+  max: number;
+  step: number;
+  /** A slider, or only a field and a stepper. */
+  slides: boolean;
+  digits: number;
+  help: string;
+  /** Where the slider rests. */
+  detents: number[];
+}
+
+/** A surface's controls, from the request the controls say. */
+export interface SurfaceControls {
+  kind: string;
+  notes: string | null;
+  rows: SurfaceRow[];
+  components: { radial: number; axial: number } | null;
+  conformal: boolean | null;
+  linesSwitch: boolean;
+  lines: [number, number] | null;
+  lineCounts: { min: number; max: number; step: number };
+  linearCurve: { rows: SurfaceRow[]; description: string } | null;
+  building: boolean;
+}
+
 /** One layer as the controls show it. */
 export interface LayerState {
   name: string;
@@ -223,7 +286,14 @@ export interface LayerState {
   levels?: number;
   strokes?: number;
   light?: [number, number, number];
+  /** The light's azimuth and elevation, in degrees. */
+  lightAngles?: [number, number];
+  /** Which way a plateau hatching runs. */
+  axis?: "real" | "imag";
   spacing?: number;
+  /** The drawn layer's paths, and whether it is tested for visibility. */
+  paths?: number;
+  clipped?: boolean;
 }
 
 /** The document as the page shows it: everything a control reads. */
@@ -234,6 +304,7 @@ export interface DocumentState {
   status: Record<"landscape" | "surface" | "polyhedron" | "paint" | "pick" | "bake", string | null>;
   landscape: Record<string, unknown> | null;
   surface: Record<string, unknown> | null;
+  surfaceControls: SurfaceControls | null;
   truncation: Truncation | null;
   layers: LayerState[];
   levelCounts: Record<string, number>;
@@ -252,9 +323,16 @@ export interface DocumentState {
     face: string;
     copy: number;
     title: string;
+    /** What a layer added here lies on (`paintCaption`). */
+    caption: string;
     choices: { id: string; label: string }[];
     layers: string[];
+    /** Whether "Function…" is offered, and the function painted now. */
+    takesFunction: boolean;
+    expression: string;
   } | null;
+  /** A polyhedron, as its section describes it. */
+  polyhedron: { solid: string; boundary: string; shapeLabel: string; shape: string } | null;
   undo: { can: boolean; name: string | null };
   redo: { can: boolean; name: string | null };
   current: boolean;

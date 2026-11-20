@@ -26,6 +26,8 @@
 //   &size=900x700        the canvas in device pixels, rather than the stage
 //   &slope=0             the preview's slope scale (default 1)
 //   &offscreen=1         draw into a texture, never presented (gpu/view.ts)
+//   &openTimeout=ms      how long opening a bundle from a file may take
+//                        before the engine is restarted (default 120 s)
 //   &pool=4              the pool's helpers (default: a core each but one,
 //                        at most eight; 0: no pool, the page's engine alone)
 
@@ -42,6 +44,8 @@ import { Panel } from "./page/controls.ts";
 import { h } from "./page/dom.ts";
 import { Engine, Latest, quietly } from "./page/engine.ts";
 import { decode, encode, hides, linkOf, restoring } from "./page/link.ts";
+import { type Entry, Picker, Thumbnails } from "./page/picker.ts";
+import { readFile, readFolder, zip } from "./page/bundle.ts";
 
 const query = new URLSearchParams(location.search);
 const app = document.querySelector<HTMLElement>("#app");
@@ -95,6 +99,17 @@ const view = new PreviewView(
   pool,
 );
 
+// The picker's pictures: an engine of their own, started when the picker
+// is first opened, drawn on the window's GPU device (page/picker.ts).
+const thumbnails = new Thumbnails(wasmURL, renderer?.device ?? null);
+const picker = new Picker(thumbnails, (entry: Entry) => {
+  panel.formula.editing = false;
+  panel.formula.clearError();
+  const request: Request =
+    entry.kind === "surface" ? { kind: "createSurface", preset: entry.name } : { kind: "create", preset: entry.name };
+  engine.edit(request, () => view.changed());
+});
+
 const panel = new Panel({
   engine,
   changed: () => view.changed(),
@@ -106,8 +121,11 @@ const panel = new Panel({
     if (pool && !pool.disabled) pool.cancel("the export was cancelled");
     else void client.cancel("the export was cancelled").catch(quietly);
   },
+  browse: () => picker.open(),
+  openFiles: (files, folder) => void track(openFiles(files, folder)).catch(quietly),
+  saveBundle: () => void saveBundle().catch(quietly),
 });
-app.replaceChildren(stage, panel.root);
+app.replaceChildren(stage, panel.root, picker.dialog, panel.paint.sheet.dialog);
 if (!view.usesGPU) {
   // Said where the drawing is: no drafts here, and each frame at rest is the
   // bake (the browser lane reads it as #status, Phase 7's name).
@@ -307,6 +325,99 @@ async function exportSVG(): Promise<void> {
   }
 }
 
+// MARK: - a .kurven bundle as a file (page/bundle.ts)
+
+let lastSave: { name: string; bytes: Uint8Array } | null = null;
+/** Bundles opened from files so far: each is staged under its count. */
+let opened = 0;
+/** The page's own work under way (a file being read before the engine is
+ * asked), which `settled` waits for too. */
+const working = new Set<Promise<unknown>>();
+function track<T>(work: Promise<T>): Promise<T> {
+  working.add(work);
+  const done = () => working.delete(work);
+  work.then(done, done);
+  return work;
+}
+/** How long an opening may take before the engine is restarted and the
+ * document put back: a bundle can name a function that never returns. */
+const OPEN_TIMEOUT = Number(query.get("openTimeout")) > 0 ? Number(query.get("openTimeout")) : 120_000;
+
+async function openFiles(files: File[], folder: boolean): Promise<void> {
+  panel.fileStatus.textContent = "";
+  let bundle: Bundle;
+  try {
+    bundle = folder ? await readFolder(files) : await readFile(files[0]!);
+  } catch (error) {
+    panel.notice(`This bundle was not opened: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  // Each file staged under a name of its own, so no file of one bundle is
+  // read as another's (the engine's staging adds files to a name); the
+  // bundle's own name is the last part, which the title reads.
+  bundle = { ...bundle, name: `opened/${++opened}/${bundle.name}` };
+  try {
+    await client.stage(bundle);
+  } catch (error) {
+    panel.notice(`This bundle was not opened: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  try {
+    const reply = await engine.send({ kind: "open", name: bundle.name, untrusted: true }, { timeoutMs: OPEN_TIMEOUT });
+    if (!reply) return;
+    if (!reply.ok) {
+      panel.notice(`This bundle was not opened: ${reply.error ?? "refused"}`);
+      return;
+    }
+    panel.notice(null);
+    // The bundle's own name, not the one it was staged under.
+    panel.fileStatus.textContent = `opened ${bundle.name.split("/").pop()}`;
+    view.changed();
+  } catch (error) {
+    panel.notice(
+      error instanceof Cancelled
+        ? `This bundle was not opened: it took more than ${OPEN_TIMEOUT / 1000} s, so the engine was restarted and the document put back`
+        : `This bundle was not opened: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    view.changed();
+  } finally {
+    // Opened or refused, the file's bytes are let go of: the document holds
+    // what it read, and the journal keeps an opened bundle's files alone,
+    // for a replay to open again (engine/client.ts).
+    await engine.send({ kind: "unstage", name: bundle.name }).catch(quietly);
+  }
+}
+
+async function saveBundle(): Promise<void> {
+  // The directory's name in ASCII, which every unzip writes as it is: the
+  // catalog entry's name where there is one, else the title.
+  const st = engine.state;
+  const named = (st?.landscape?.name as string | undefined) || (st?.surface?.name as string | undefined) || st?.title || "";
+  const slug = named.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[_.]+|_+$/g, "");
+  const name = `${slug || "kurven"}.kurven`;
+  const answer = await engine.call({ kind: "save", name });
+  if (!answer) return;
+  if (!answer.reply.ok) {
+    panel.fileStatus.textContent = `not saved: ${answer.reply.error ?? "refused"}`;
+    return;
+  }
+  const paths = (answer.reply.files as string[] | undefined) ?? [];
+  const files = paths.map((path) => {
+    const bytes = answer.arrays[`file:${path}`];
+    if (!(bytes instanceof Uint8Array)) throw new Error(`the save sent no ${path}`);
+    return { path, bytes };
+  });
+  const bytes = zip(name, files);
+  lastSave = { name: `${name}.zip`, bytes };
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: "application/zip" }));
+  const a = h("a", { href: url, download: `${name}.zip` });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  panel.fileStatus.textContent = `saved ${name}.zip: ${files.length} file${files.length === 1 ? "" : "s"}, ${bytes.length.toLocaleString()} bytes`;
+}
+
 // MARK: - input
 
 const input = new CanvasInput(engine, canvas, scale, () => view.moved());
@@ -355,6 +466,7 @@ window.addEventListener("keydown", (e) => {
 const catalog = await engine.send({ kind: "catalog" });
 if (!catalog?.ok || !catalog.controls) throw new Error(`the engine gave no catalog: ${catalog?.error ?? "no reply"}`);
 panel.setCatalog((catalog.presets as Preset[] | undefined) ?? [], catalog.controls as Controls);
+picker.setEntries((catalog.entries as Entry[] | undefined) ?? []);
 
 /** Open the link a fragment holds: "none" when it holds none, "refused"
  * when it cannot be read or the engine refuses what it asks for (the page
@@ -508,6 +620,7 @@ window.kurven = {
   /** Every frame wished drawn, every gesture and control sent. */
   settled: async () => {
     for (;;) {
+      while (working.size) await Promise.allSettled([...working]);
       await input.settled();
       await viewports.flush();
       await engine.settled();
@@ -532,6 +645,31 @@ window.kurven = {
   },
   /** The requests a native session replays to hold this document. */
   journal: () => client.journaled,
+  /** The picker: open it, and the pictures as they stand. */
+  picker: {
+    open: () => picker.open(),
+    warmed: () => thumbnails.warm((catalog.entries as Entry[] | undefined) ?? []),
+    counts: () => ({
+      ...thumbnails.counts,
+      pictures: thumbnails.pictures.size,
+      failed: [...thumbnails.failed],
+      engineRunning: thumbnails.engineRunning,
+    }),
+  },
+  /** A bundle's files as Save writes them (page/bundle.ts), for the lane
+   * to make archives of. */
+  zip: (dir: string, files: { path: string; text?: string; base64?: string }[]) => [
+    ...zip(
+      dir,
+      files.map((f) => ({
+        path: f.path,
+        bytes:
+          f.base64 !== undefined ? Uint8Array.from(atob(f.base64), (c) => c.charCodeAt(0)) : new TextEncoder().encode(f.text ?? ""),
+      })),
+    ),
+  ],
+  /** The last bundle saved, as its archive's bytes. */
+  lastSave: () => (lastSave ? { name: lastSave.name, bytes: [...lastSave.bytes] } : null),
   /** The last SVG exported, as text. */
   lastExport: () => (lastExport ? new TextDecoder().decode(lastExport) : null),
 };

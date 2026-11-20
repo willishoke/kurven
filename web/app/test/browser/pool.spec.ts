@@ -40,11 +40,11 @@ async function exported(page: Page): Promise<Buffer> {
   return readFileSync((await download.path())!);
 }
 
-function native(journal: unknown[], info: TestInfo, name: string): Buffer {
+function native(journal: unknown[], info: TestInfo, name: string, extra: string[] = []): Buffer {
   const requests = info.outputPath(`${name}.jsonl`);
   const svg = info.outputPath(`${name}.svg`);
   writeFileSync(requests, journal.map((r) => JSON.stringify(r)).join("\n") + "\n");
-  execFileSync(cli, ["session", requests, "-o", svg], { stdio: ["ignore", "inherit", "inherit"] });
+  execFileSync(cli, ["session", requests, "-o", svg, ...extra], { stdio: ["ignore", "inherit", "inherit"] });
   return readFileSync(svg);
 }
 
@@ -81,6 +81,55 @@ test("Export through a pool of 1, 2 or 4 helpers is the page's engine's bytes an
   expect(Buffer.from(alone).equals(natively), "the page's engine alone: native's bytes").toBe(true);
   const helpers = await page.evaluate(() => (window as any).kurven.pool.clients.length);
   expect(helpers).toBe(4);
+});
+
+test("the page's new scenes through the pool: a bundle opened from a file, banded and painted; a polyhedron; a painted torus", async ({
+  page,
+}, info) => {
+  const inputs = `${root}crates/fixtures/swift/session/inputs/`;
+  await load(page, at(info.project.name, { pool: "2" }));
+  const stagedName = async () =>
+    page.evaluate(() => (window as any).kurven.journal().filter((r: any) => r.kind === "open").pop()?.name as string | undefined);
+  const check = async (name: string, dir: string | null) => {
+    await idle(page);
+    const sizes: Buffer[] = [];
+    for (const size of [2, 1]) {
+      await page.evaluate((n) => (window as any).kurven.pool.resize(n), size);
+      sizes.push(await exported(page));
+    }
+    const journal = await page.evaluate(() => (window as any).kurven.journal());
+    const staged = dir ? await stagedName() : undefined;
+    const natively = native(journal, info, name, staged && dir ? ["--stage", staged, dir] : []);
+    for (const svg of sizes) expect(svg.equals(natively), `${name}: pooled, native's bytes`).toBe(true);
+  };
+  // gamma's folder, a band dragged as its rows drag it, its graph painted.
+  await page.setInputFiles("#open-folder", `${inputs}gamma.kurven`);
+  await idle(page);
+  await page.evaluate(async () => {
+    const k = (window as any).kurven;
+    const bands = (h: number) => ({ kind: "realBands", bands: [{ below: 0, height: h }, { below: 1.5, height: 2 }], beyond: 4 });
+    await k.send({ kind: "truncation", truncation: bands(3) });
+    await k.send({ kind: "drag", control: { slider: "truncation" }, phase: "begin" });
+    await k.send({ kind: "drag", control: { slider: "truncation" }, phase: "move", truncation: bands(3.5) });
+    await k.send({ kind: "drag", control: { slider: "truncation" }, phase: "end" });
+    await k.send({ kind: "pick", point: [2.5, 0, 1.3293403881791355] });
+    await k.send({ kind: "add", name: "graph_v" });
+  });
+  await check("gamma-banded-painted", `${inputs}gamma.kurven`);
+  // The picture frame from its manifest, its hatching's strokes.
+  await page.setInputFiles("#open-file", `${inputs}frame.kurven/manifest.json`);
+  await idle(page);
+  await page.evaluate(() => (window as any).kurven.send({ kind: "strokes", layer: "hatching", count: 30 }));
+  await check("frame", `${inputs}frame.kurven`);
+  // A torus painted with sn, a curve added.
+  await page.evaluate(async () => {
+    const k = (window as any).kurven;
+    await k.send({ kind: "createSurface", preset: "torus" });
+    await k.send({ kind: "pick", point: [2, 0, 1] });
+    await k.send({ kind: "function", expression: "sn(z, 0.64)" });
+    await k.send({ kind: "add", name: "surface_u" });
+  });
+  await check("painted-torus", null);
 });
 
 test("at rest the draft stays, and the helpers' frame at rest is swapped in", async ({ page }, info) => {
