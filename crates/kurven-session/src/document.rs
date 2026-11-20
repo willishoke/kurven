@@ -428,6 +428,15 @@ impl Document {
 
     /// `load`, from wherever the bundle's files are.
     pub fn load_from(&mut self, source: &Source) {
+        let read = Document::read(source, self.refine_contours);
+        self.load_read(source, read);
+    }
+
+    /// `load` of a bundle already read (`read`): what `load_from` does once
+    /// the files are read, so a caller that must know a bundle reads before
+    /// the document is touched (a file the page opens) reads it first and
+    /// then opens exactly as `load` opens.
+    pub fn load_read(&mut self, source: &Source, read: Result<Opened, String>) {
         self.scene = None;
         self.navigator = None;
         self.generation += 1;
@@ -437,7 +446,7 @@ impl Document {
         self.polyhedron_styled = None;
         self.surface_styled = None;
         self.forget_edits();
-        match Document::read(source, self.refine_contours) {
+        match read {
             Ok(Opened::Landscape(bundle)) => self.adopt(bundle, false, false),
             Ok(Opened::Surface(bundle)) => self.adopt_surface_bundle(bundle),
             Ok(Opened::Polyhedron(bundle)) => self.adopt_polyhedron(bundle, false),
@@ -625,6 +634,31 @@ impl Document {
         let navigator = self.fitted_navigator(&scene, &preset);
         self.set_scene(Some(scene.looking(navigator.camera())));
         self.navigator = Some(navigator);
+    }
+
+    /// A new document for this one's place, holding what a document opened
+    /// or started keeps of the one before (`load_from` and `create` reset
+    /// the rest): the viewport, the mode, the draft resolution, whether
+    /// contours are placed by f, the depth tolerance and the bake's
+    /// resolution (until the drawing adopted sets them from its preset), and
+    /// the status lines but the landscape's (which its sampling writes). A
+    /// link's landscape is made in one (`restore`), and put in this one's
+    /// place only once it holds it.
+    pub fn successor(&self) -> Document {
+        Document {
+            viewport: self.viewport,
+            mode: self.mode,
+            draft_resolution: self.draft_resolution,
+            refine_contours: self.refine_contours,
+            depth_tolerance: self.depth_tolerance,
+            bake_resolution: self.bake_resolution,
+            surface_status: self.surface_status.clone(),
+            polyhedron_status: self.polyhedron_status.clone(),
+            paint_status: self.paint_status.clone(),
+            pick_status: self.pick_status.clone(),
+            bake_status: self.bake_status.clone(),
+            ..Document::new()
+        }
     }
 
     // MARK: - navigation

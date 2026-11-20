@@ -78,22 +78,18 @@ impl Document {
     }
 
     /// The scene's faces, made once while its geometry is kept.
-    /// The faces of the scene the document holds, made once while its
-    /// geometry is kept: `faces_of`, borrowing the scene rather than taking
-    /// a copy of it.
-    pub(crate) fn faces_now(&mut self) -> Option<Arc<Vec<Face>>> {
-        let scene = self.scene.as_ref()?;
-        if self.pick_faces.as_ref().map(|(c, _)| *c) != Some(scene.content()) {
-            self.pick_faces = Some((scene.content(), Arc::new(scene.geometry().faces())));
-        }
-        self.pick_faces.as_ref().map(|(_, f)| f.clone())
+    /// The scene's faces, made once while its geometry is kept (Swift's
+    /// `faces(of:)`).
+    pub(crate) fn faces_of(&mut self, scene: &Scene) -> Arc<Vec<Face>> {
+        faces_memo(&mut self.pick_faces, scene)
     }
 
-    pub(crate) fn faces_of(&mut self, scene: &Scene) -> Arc<Vec<Face>> {
-        if self.pick_faces.as_ref().map(|(c, _)| *c) != Some(scene.content()) {
-            self.pick_faces = Some((scene.content(), Arc::new(scene.geometry().faces())));
-        }
-        self.pick_faces.as_ref().map(|(_, f)| f.clone()).unwrap_or_default()
+    /// `faces_of` the scene the document holds, borrowing it rather than
+    /// taking a copy: what the Curves on section's caption and Add menu read
+    /// on every state while a face is picked.
+    pub(crate) fn faces_now(&mut self) -> Option<Arc<Vec<Face>>> {
+        let scene = self.scene.as_ref()?;
+        Some(faces_memo(&mut self.pick_faces, scene))
     }
 
     /// Make the boundary of `pick` on `scene` as a job, drawn over the scene
@@ -262,6 +258,19 @@ impl Cast {
         let z = wa * a.z + wb * b.z + wc * c.z;
         if z.is_finite() && self.depth.is_none_or(|d| z > d) {
             self.depth = Some(z);
+        }
+    }
+}
+
+/// The faces of `scene`, from `memo` while it holds the scene's content,
+/// else made and kept there.
+fn faces_memo(memo: &mut Option<(ContentID, Arc<Vec<Face>>)>, scene: &Scene) -> Arc<Vec<Face>> {
+    match memo {
+        Some((content, faces)) if *content == scene.content() => faces.clone(),
+        _ => {
+            let faces = Arc::new(scene.geometry().faces());
+            *memo = Some((scene.content(), faces.clone()));
+            faces
         }
     }
 }

@@ -370,7 +370,8 @@ async function openFiles(files: File[], folder: boolean): Promise<void> {
       return;
     }
     panel.notice(null);
-    panel.fileStatus.textContent = `opened ${bundle.name}`;
+    // The bundle's own name, not the one it was staged under.
+    panel.fileStatus.textContent = `opened ${bundle.name.split("/").pop()}`;
     view.changed();
   } catch (error) {
     panel.notice(

@@ -132,36 +132,46 @@ export class Thumbnails {
     for (const l of this.listeners) l();
   }
 
-  /** Draw whatever is missing, one at a time, in catalog order. */
-  warm(entries: Entry[]): Promise<void> {
-    if (!this.running) {
-      this.running = this.warming(entries).finally(() => {
-        this.running = null;
-        this.drawing = null;
-        // Every picture drawn or cached (or failed): the engine that drew
-        // them is let go of, and started again if one is wanted later.
-        if (!this.stopping) this.end();
-        this.told();
-      });
-    }
-    return this.running;
+  /** Whether the pictures are wanted: the picker is open. A run of drawing
+   * stops after the picture under way once they are not, and the engine
+   * is let go of; wanted again before that, the run goes on. */
+  private wanted = false;
+  private entries: Entry[] = [];
+
+  private done(): boolean {
+    return this.entries.every((e) => this.pictures.has(e.id) || this.failed.has(e.id));
   }
 
-  /** Whether the picker was closed while pictures were being drawn. */
-  private stopping = false;
+  /** Draw whatever is missing, one at a time, in catalog order. Resolves
+   * once every picture is drawn, cached or failed, or the pictures are no
+   * longer wanted (`stop`). */
+  async warm(entries: Entry[]): Promise<void> {
+    this.wanted = true;
+    this.entries = entries;
+    // A run stopped and not yet over when the picker opens again has
+    // returned or will: wait for it, and start another for what is left.
+    for (;;) {
+      this.running ??= this.warming().finally(() => {
+        this.running = null;
+        this.drawing = null;
+        // Every picture drawn, cached or failed, or none wanted: the engine
+        // that drew them is let go of, and started again if one is wanted
+        // later.
+        if (!this.wanted || this.done()) this.end();
+        this.told();
+      });
+      await this.running;
+      if (!this.wanted || this.done()) return;
+    }
+  }
 
   /** The picker closed: stop after the picture being drawn, and let the
    * engine go. The pictures drawn are kept; the rest wait for the next
    * opening. */
   async stop(): Promise<void> {
-    if (!this.running) {
-      this.end();
-      return;
-    }
-    this.stopping = true;
-    await this.running.catch(() => {});
-    this.stopping = false;
-    this.end();
+    this.wanted = false;
+    if (this.running) await this.running.catch(() => {});
+    if (!this.wanted && !this.running) this.end();
   }
 
   /** Terminate the thumbnails' Worker, if one is running. */
@@ -175,9 +185,9 @@ export class Thumbnails {
     return this.client !== null;
   }
 
-  private async warming(entries: Entry[]): Promise<void> {
-    for (const entry of entries) {
-      if (this.stopping) return;
+  private async warming(): Promise<void> {
+    for (const entry of this.entries) {
+      if (!this.wanted) return;
       if (this.pictures.has(entry.id) || this.failed.has(entry.id)) continue;
       const key = `${entry.thumbnail}.${this.flavour}`;
       const cached = await this.cache.get(key);

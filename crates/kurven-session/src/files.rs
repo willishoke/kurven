@@ -1,47 +1,71 @@
-//! A `.kurven` bundle opened from a file: someone else's bytes, held to what
-//! the controls reach before anything is built from them, as a link is
-//! (`protocol::linkable`). The page's addition (Phase 8, step 7); Swift
-//! opens any bundle a user chooses.
+//! Someone else's description of a drawing, held within bounds before
+//! anything is built from it: a `.kurven` bundle opened from a file (Phase
+//! 8, step 7; Swift opens any bundle a user chooses) and a link
+//! (`protocol::linkable`, step 3). One set of checks serves both, each with
+//! its `Limits`.
 //!
-//! What a bundle can ask for and what bounds it:
+//! What a description can ask for and what bounds it:
 //!
-//! - its bytes, by the page's caps on the file and its entries (a grid or a
-//!   dumped layer is as large as its file);
-//! - a landscape's truncation: finite, at most `LINK_BANDS` bands;
-//! - a parametric surface's request: Swift's `check` (which `SurfaceManifest`
-//!   applies) and, past it, the controls' reach -- the function's samples
-//!   (120 to 1200), the fit's length and harmonics, the trajectory's turns,
-//!   the coordinate curves' counts, the linear curve's turns and strands --
-//!   and at most `MAX_GRID` samples round the ring, a bound on work;
-//! - every layer: at most `LINK_LAYERS`; a contour at most `LINK_LEVELS`
-//!   levels; a hatching at most a strokes slider's 400 lines across the
-//!   bundle's extent (a landscape's window, a solid's box); slope lines at
-//!   most `LINK_SEEDS` seeds; coordinate and linear curves within their
-//!   controls; every number finite.
+//! - a file's bytes, by the page's caps on the file and its entries (a grid
+//!   or a dumped layer is as large as its file);
+//! - a truncation: finite, at most `bands` bands;
+//! - a parametric surface's request: Swift's own bounds (`SurfaceRequest
+//!   ::check`, which reading a `SurfaceManifest` applies: the function's
+//!   samples to 4096, the fit, the harmonics, curves of at most 2^24
+//!   vertices, at most 2^25 samples), as Swift and kurven-cli write and
+//!   read them, so every bundle our tools write opens;
+//! - every layer: at most `layers`; a contour at most `levels` levels, every
+//!   number of its restriction finite and at most `terms` terms; a hatching
+//!   at most `strokes` lines across the drawing's extent (a landscape's
+//!   window, a solid's box, a surface's rectangle); slope lines at most
+//!   `seeds` seeds across it; coordinate and linear curves within Swift's
+//!   vertex bound; every number finite. A solid's hatching reads its tone
+//!   every `step` along each line, which `PolyhedronManifest` holds to
+//!   2^20 readings in all (Swift's bound); no other face reads it.
 //!
+//! A link is held to what the controls reach (`LINK`: a strokes slider's
+//! 400, its seeds' 400); a file to a bound on work ten times that (`FILE`),
+//! since kurven-cli writes hatchings and seeds finer than a slider reaches.
 //! Each refusal says which number and why, and touches nothing.
 
 use kurven_core::bundle::{Source, holds_key_in};
 use kurven_core::manifest::{
-    LayerSource, LayerSpec, Manifest, PolyhedronManifest, Spacing, SurfaceManifest, Truncation,
+    LayerSource, LayerSpec, Manifest, PolyhedronManifest, Restriction, Spacing, SurfaceManifest, Truncation,
 };
-use kurven_core::surface_request::{Field, Shape, SurfaceRequest};
+use kurven_core::surface_request::SurfaceRequest;
 
 use crate::sliders::reach;
-use crate::surface_controls::{LINE_COUNTS, control};
 
-/// The most layers a bundle opened from a file may carry.
-pub const LINK_LAYERS: usize = 64;
-/// The most levels one contour layer may list (a bound on work).
-pub const LINK_LEVELS: usize = 1000;
-/// The most seeds a slope-line layer may list, or be spaced to across the
-/// bundle's extent.
-pub const LINK_SEEDS: f64 = 400.0;
-/// The most bands a truncation may have.
-pub const LINK_BANDS: usize = 64;
+/// How much a description may ask for.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    /// Layers in all.
+    pub layers: usize,
+    /// Levels of one contour layer (the catalog's families list 40 at most).
+    pub levels: usize,
+    /// Terms of one contour's restriction, intersections unfolded.
+    pub terms: usize,
+    /// A hatching's lines across the drawing's extent.
+    pub strokes: f64,
+    /// Slope lines' seeds, listed or spaced across the extent.
+    pub seeds: f64,
+    /// A truncation's bands (the plates have four).
+    pub bands: usize,
+}
+
+/// A link's: what the controls reach.
+pub const LINK: Limits =
+    Limits { layers: 64, levels: 1000, terms: 16, strokes: reach::STROKES.1 as f64, seeds: 400.0, bands: 64 };
+
+/// A file's: a bound on work, ten times a link's strokes and five its
+/// seeds, for what kurven-cli writes past the sliders (`--spacing`,
+/// `--seeds`).
+pub const FILE: Limits = Limits { strokes: 4000.0, seeds: 2000.0, ..LINK };
+
 /// The most samples round a surface's ring a file may ask for: twice what
-/// `kurven-cli surface sn --relief` builds (8192), a bound on work (Swift's
-/// `check` allows 65,536).
+/// `kurven-cli surface sn --relief` builds (8192); Swift's `check` allows
+/// 65,536, and bounds the samples in all by 2^25, which no ring past 8192
+/// with its tube at half meets.
 pub const MAX_GRID: i64 = 16384;
 
 fn finite(x: f64) -> bool {
@@ -57,24 +81,15 @@ pub fn usable_light(l: kurven_core::simd::Vec3) -> bool {
     kurven_core::hatching::Tone::has_direction(l)
 }
 
-/// The coordinate curves' counts within their control (1...200 each).
-pub fn line_counts(u: i64, v: i64) -> Result<(), String> {
-    let (lo, hi, _) = LINE_COUNTS;
-    if (lo..=hi).contains(&u) && (lo..=hi).contains(&v) {
-        Ok(())
-    } else {
-        Err(format!("coordinate curves {u} by {v}; each count reaches {lo} to {hi}"))
-    }
-}
-
 /// Whether the bundle staged as `source` may be opened: its manifest read
-/// as its kind's schema, and every number in it within the controls' reach
-/// or a stated bound on work. Nothing is built.
+/// as its kind's schema, every number in it within `FILE` or Swift's own
+/// bounds, and a camera preset to open at. Nothing is built.
 pub fn openable(source: &Source) -> Result<(), String> {
     if !source.has("manifest.json") {
         return Err("a bundle holds a manifest.json, and this has none".to_string());
     }
     let json = source.manifest_json().map_err(|e| e.to_string())?;
+    every_number_finite(&json, "the manifest")?;
     if holds_key_in(source, "polyhedron").map_err(|e| e.to_string())? {
         let m = PolyhedronManifest::from_json(&json).map_err(|e| e.to_string())?;
         let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
@@ -85,7 +100,7 @@ pub fn openable(source: &Source) -> Result<(), String> {
             }
         }
         let extent = (0..3).map(|k| hi[k] - lo[k]).fold(0.0, kurven_math::swift::max);
-        return layers(&m.layers, extent);
+        return layers(&m.layers, extent, &FILE);
     }
     if holds_key_in(source, "surface").map_err(|e| e.to_string())? {
         let m = SurfaceManifest::from_json(&json).map_err(|e| e.to_string())?;
@@ -97,42 +112,64 @@ pub fn openable(source: &Source) -> Result<(), String> {
         if !(finite(u) && finite(v)) {
             return Err("the surface's parameter rectangle is not finite".to_string());
         }
-        return layers(&m.layers, kurven_math::swift::max(u.abs(), v.abs()));
+        return layers(&m.layers, kurven_math::swift::max(u.abs(), v.abs()), &FILE);
     }
     let m = Manifest::from_json(&json).map_err(|e| e.to_string())?;
-    truncation(&m.truncation)?;
-    // A window is an interval each way, lo below hi: one read the other way
-    // round would measure every spacing against a negative extent.
-    let d = m.domain;
-    for (axis, i) in [("Re", d.real), ("Im", d.imag)] {
-        if !(finite(i.lo) && finite(i.hi) && i.lo < i.hi && finite(i.hi - i.lo)) {
-            return Err(format!("the window has {axis} from {} to {}, which is no interval", i.lo, i.hi));
-        }
+    // Opened, a landscape is fitted to its first preset; one without is a
+    // failure the opening would only find after it had begun.
+    if m.presets.is_empty() {
+        return Err("the landscape declares no camera presets: it has no view to open at".to_string());
     }
-    layers(&m.layers, kurven_math::swift::max(d.real.length(), d.imag.length()))
+    truncation(&m.truncation, &FILE)?;
+    let d = m.domain;
+    window(d.real.lo, d.real.hi, "Re")?;
+    window(d.imag.lo, d.imag.hi, "Im")?;
+    layers(&m.layers, kurven_math::swift::max(d.real.length(), d.imag.length()), &FILE)
 }
 
-fn truncation(t: &Truncation) -> Result<(), String> {
+/// Every number in `json` finite. The reader takes a number past a double's
+/// range (`1e400`) as infinite, which no field of a manifest or a link is
+/// meant to hold: a camera's angle, a tile's matrix, a wall's corner, a
+/// depth tolerance written back into the state as infinite or NaN is a
+/// value the canonical writer refuses -- a trap in the wasm module. So a
+/// description holding one is refused whole, before any field is read.
+pub fn every_number_finite(json: &kurven_core::json::JsonValue, what: &str) -> Result<(), String> {
+    use kurven_core::json::JsonValue;
+    fn walk(v: &JsonValue) -> bool {
+        match v {
+            JsonValue::Double(x) => x.is_finite(),
+            JsonValue::Array(a) => a.iter().all(walk),
+            JsonValue::Object(o) => o.values().all(walk),
+            _ => true,
+        }
+    }
+    if walk(json) { Ok(()) } else { Err(format!("{what} holds a number past a double's range")) }
+}
+
+/// One side of a window: an interval, lo below hi, finite each way. One
+/// read the other way round would measure every spacing against a negative
+/// extent.
+pub fn window(lo: f64, hi: f64, axis: &str) -> Result<(), String> {
+    if finite(lo) && finite(hi) && lo < hi && finite(hi - lo) {
+        Ok(())
+    } else {
+        Err(format!("the window has {axis} from {lo} to {hi}, which is no interval"))
+    }
+}
+
+/// A truncation: finite, at most `limits.bands` bands.
+pub fn truncation(t: &Truncation, limits: &Limits) -> Result<(), String> {
     let ok = match t {
         Truncation::None => true,
         Truncation::Uniform(h) => finite(*h),
         Truncation::RealBands { bands, beyond } => {
-            bands.len() <= LINK_BANDS && bands.iter().all(|b| finite(b.below) && finite(b.height)) && !beyond.is_nan()
+            bands.len() <= limits.bands && bands.iter().all(|b| finite(b.below) && finite(b.height)) && !beyond.is_nan()
         }
     };
-    if ok { Ok(()) } else { Err(format!("the truncation is not finite, or has more than {LINK_BANDS} bands")) }
+    if ok { Ok(()) } else { Err(format!("the truncation is not finite, or has more than {} bands", limits.bands)) }
 }
 
-/// A count within a control's reach.
-fn within(n: f64, field: Field, what: &str) -> Result<(), String> {
-    let c = control(field);
-    if (c.range.0..=c.range.1).contains(&n) {
-        Ok(())
-    } else {
-        Err(format!("the surface's {what} is {n}; its control reaches {} to {}", c.range.0, c.range.1))
-    }
-}
-
+/// A surface's request, past Swift's `check`: its ring within `MAX_GRID`.
 fn surface(r: &SurfaceRequest) -> Result<(), String> {
     if !(8..=MAX_GRID).contains(&r.grid) {
         return Err(format!(
@@ -140,83 +177,93 @@ fn surface(r: &SurfaceRequest) -> Result<(), String> {
             r.grid
         ));
     }
-    match &r.shape {
-        Shape::Sn { grid, .. } | Shape::Periodic { grid, .. } | Shape::Relief { grid, .. } => {
-            within(*grid as f64, Field::Grid, "function's samples")?;
+    Ok(())
+}
+
+/// A contour's restriction: every bound finite, and no more than
+/// `limits.terms` terms, intersections unfolded.
+fn restriction(r: &Restriction, limits: &Limits) -> Result<(), String> {
+    fn walk(r: &Restriction, terms: &mut usize) -> bool {
+        *terms += 1;
+        match r {
+            Restriction::All | Restriction::Footprint | Restriction::BelowTruncation => true,
+            Restriction::Band { lo, hi, .. } => finite(*lo) && finite(*hi),
+            Restriction::Intersection(all) => all.iter().all(|r| walk(r, terms)),
         }
-        Shape::Forced { fit, harmonics, turns, .. } => {
-            within(*fit, Field::Fit, "fit length")?;
-            within(*harmonics as f64, Field::Harmonics, "harmonics")?;
-            within(*turns as f64, Field::TrajectoryTurns, "trajectory's turns")?;
-        }
-        Shape::Torus { .. } => {}
     }
-    if let Some((u, v)) = r.lines {
-        line_counts(u, v).map_err(|why| format!("the surface asks for {why}"))?;
+    let mut terms = 0;
+    if !walk(r, &mut terms) {
+        return Err("a band of its restriction is not finite".to_string());
     }
-    if let Some(w) = r.linear_curves {
-        if !finite(w.slope) {
-            return Err("the linear curve's slope is not finite".to_string());
-        }
-        within(w.turns as f64, Field::Turns, "linear curve's turns")?;
-        within(w.count as f64, Field::Strands, "linear curve's strands")?;
+    if terms > limits.terms {
+        return Err(format!("its restriction has {terms} terms, more than {}", limits.terms));
     }
     Ok(())
 }
 
-/// Every layer within a bound, against `extent`, the longest side of what
+/// Every layer within `limits`, against `extent`, the longest side of what
 /// its spacings are measured across.
-pub fn layers(specs: &[LayerSpec], extent: f64) -> Result<(), String> {
+pub fn layers(specs: &[LayerSpec], extent: f64, limits: &Limits) -> Result<(), String> {
     if !(finite(extent) && extent >= 0.0) {
         return Err(format!("the drawing's extent is {extent}, which is no length"));
     }
-    if specs.len() > LINK_LAYERS {
-        return Err(format!("the bundle carries {} layers, more than {LINK_LAYERS}", specs.len()));
+    if specs.len() > limits.layers {
+        return Err(format!("it carries {} layers, more than {}", specs.len(), limits.layers));
     }
-    let strokes = reach::STROKES.1 as f64;
+    let vertices = SurfaceRequest::MAX_VERTICES;
     for layer in specs {
         let name = &layer.name;
         let fine = match &layer.source {
             LayerSource::File { .. } | LayerSource::TruncationEdge { .. } | LayerSource::FoldCurves => true,
             LayerSource::Trajectory | LayerSource::Edges => true,
-            LayerSource::Contour { levels, light, .. } => {
-                if levels.len() > LINK_LEVELS {
-                    return Err(format!("{name} lists {} levels, more than {LINK_LEVELS}", levels.len()));
+            LayerSource::Contour { levels, light, restriction: r, .. } => {
+                if levels.len() > limits.levels {
+                    return Err(format!("{name} lists {} levels, more than {}", levels.len(), limits.levels));
                 }
+                restriction(r, limits).map_err(|why| format!("{name}: {why}"))?;
                 levels.iter().all(|&x| finite(x)) && light.is_none_or(usable_light)
             }
             LayerSource::Hatching { hatching, .. } => {
                 let s = hatching.spacing;
-                if !(finite(s) && s > 0.0 && (extent / s).round() <= strokes) {
+                if !(finite(s) && s > 0.0 && (extent / s).round() <= limits.strokes) {
                     return Err(format!(
-                        "{name} is hatched at a spacing of {s}: more than {strokes} strokes across the drawing, as a \
-                         strokes slider reaches"
+                        "{name} is hatched at a spacing of {s}: more than {} strokes across the drawing",
+                        limits.strokes
                     ));
                 }
-                finite(hatching.angle)
+                finite(hatching.angle) && finite(hatching.step)
             }
             LayerSource::WallEdges { edges, base } => {
                 let mut seen = std::collections::BTreeSet::new();
                 finite(*base) && edges.len() <= 4 && edges.iter().all(|&e| (0..4).contains(&e) && seen.insert(e))
             }
+            // Swift's bound on a surface's curves (`check`): a count of
+            // curves, or of a linear curve's turns and strands, past 2^24
+            // vertices of a layer is past what one holds.
             LayerSource::CoordinateCurves { u, v } => {
-                line_counts(*u, *v).map_err(|why| format!("{name} draws {why}"))?;
+                if !((1..=vertices).contains(u) && (1..=vertices).contains(v)) {
+                    return Err(format!("{name} draws {u} by {v} coordinate curves, past {vertices}"));
+                }
                 true
             }
             LayerSource::LinearCurves { slope, turns, count } => {
-                within(*turns as f64, Field::Turns, "linear curve's turns")?;
-                within(*count as f64, Field::Strands, "linear curve's strands")?;
+                if !((1..=vertices).contains(turns)
+                    && (1..=vertices).contains(count)
+                    && (*turns as f64) * (*count as f64) <= vertices as f64)
+                {
+                    return Err(format!("{name} draws {count} strands of {turns} turns, past {vertices} vertices"));
+                }
                 finite(*slope)
             }
             LayerSource::IntegralCurves { seeds, .. } => {
                 let many = match &seeds.spacing {
                     Spacing::Values(_, values) => {
-                        values.len() as f64 > LINK_SEEDS || !values.iter().all(|&x| finite(x))
+                        values.len() as f64 > limits.seeds || !values.iter().all(|&x| finite(x))
                     }
-                    Spacing::ArcLength(s) => !(finite(*s) && *s > 0.0 && extent / s <= LINK_SEEDS),
+                    Spacing::ArcLength(s) => !(finite(*s) && *s > 0.0 && extent / s <= limits.seeds),
                 };
                 if many {
-                    return Err(format!("{name} is seeded more finely than {LINK_SEEDS} seeds across the drawing"));
+                    return Err(format!("{name} is seeded more finely than {} seeds across the drawing", limits.seeds));
                 }
                 finite(seeds.level)
             }

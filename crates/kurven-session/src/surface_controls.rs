@@ -129,39 +129,72 @@ pub fn own_slope(document: &Document) -> Option<f64> {
     document.surface_drawing().and_then(|d| d.torus()).map(|t| t.rotation_number())
 }
 
-/// The rotation number's convergents within the turns slider's range.
-fn convergents(document: &Document) -> Vec<Convergent> {
-    own_slope(document).map(|x| ContinuedFraction::convergents(x, 600, 1e-12)).unwrap_or_default()
+/// What a forced torus's sliders rest at, read once: the trajectory's own
+/// slope Ω/ω and its convergents within the turns slider's range. Empty on
+/// any other surface.
+pub struct Rests {
+    own: Option<f64>,
+    convergents: Vec<Convergent>,
 }
 
-/// Where a slider rests: the slope's, on a forced torus, the rotation number
-/// and its convergents -- the closed linear curves the trajectory is nearly;
-/// on any other torus every fraction with a denominator up to eight. The
-/// trajectory's turns: the convergents' denominators.
-pub fn detents(document: &Document, field: Field) -> Vec<f64> {
-    match field {
-        Field::Slope => {
-            if let Some(own) = own_slope(document) {
-                let mut out = vec![own];
-                out.extend(convergents(document).iter().map(|c| c.value()));
-                return out;
-            }
-            let mut out: Vec<f64> = Vec::new();
-            for q in 1..=8i64 {
-                for p in 0..=(2 * q) {
-                    if q == 1 || p % q != 0 {
-                        let x = p as f64 / q as f64;
-                        if !out.iter().any(|&y| (y - x).abs() < 1e-12) {
-                            out.push(x);
+impl Rests {
+    pub fn of(document: &Document) -> Rests {
+        let own = own_slope(document);
+        Rests { own, convergents: own.map(|x| ContinuedFraction::convergents(x, 600, 1e-12)).unwrap_or_default() }
+    }
+
+    /// Where a slider rests: the slope's, on a forced torus, the rotation
+    /// number and its convergents -- the closed linear curves the
+    /// trajectory is nearly; on any other torus every fraction with a
+    /// denominator up to eight. The trajectory's turns: the convergents'
+    /// denominators.
+    pub fn detents(&self, field: Field) -> Vec<f64> {
+        match field {
+            Field::Slope => {
+                if let Some(own) = self.own {
+                    let mut out = vec![own];
+                    out.extend(self.convergents.iter().map(|c| c.value()));
+                    return out;
+                }
+                let mut out: Vec<f64> = Vec::new();
+                for q in 1..=8i64 {
+                    for p in 0..=(2 * q) {
+                        if q == 1 || p % q != 0 {
+                            let x = p as f64 / q as f64;
+                            if !out.iter().any(|&y| (y - x).abs() < 1e-12) {
+                                out.push(x);
+                            }
                         }
                     }
                 }
+                out
             }
-            out
+            Field::TrajectoryTurns => self.convergents.iter().map(|c| c.q as f64).filter(|&q| q >= 2.0).collect(),
+            _ => Vec::new(),
         }
-        Field::TrajectoryTurns => convergents(document).iter().map(|c| c.q as f64).filter(|&q| q >= 2.0).collect(),
-        _ => Vec::new(),
     }
+
+    /// The linear curve, in words (`describe`).
+    pub fn describe(&self, w: &LinearCurves) -> String {
+        let strands = if w.count == 1 { "One strand".to_string() } else { format!("{} strands", w.count) };
+        if let Some(own) = self.own
+            && (w.slope - own).abs() < 1e-12
+        {
+            return format!("{strands} at the trajectory's own Ω/ω, {own:.6}: open, {} turns.", w.turns);
+        }
+        if let Some(q) = w.closes() {
+            let p = (w.slope * q as f64).round() as i64;
+            let convergent = self.convergents.iter().any(|c| c.p == p && c.q == q);
+            let closes = if q == 1 { "closes after one turn.".to_string() } else { format!("closes after {q} turns.") };
+            return format!("{strands} at {p}/{q}{}: {closes}", if convergent { ", a convergent of Ω/ω" } else { "" });
+        }
+        format!("{strands}, open: {} turns.", w.turns)
+    }
+}
+
+/// `Rests::detents` for one field.
+pub fn detents(document: &Document, field: Field) -> Vec<f64> {
+    Rests::of(document).detents(field)
 }
 
 /// How close to a detent a slider value lands on it: a pixel or two of a
@@ -205,21 +238,9 @@ pub fn typed(field: Field, x: f64) -> f64 {
     kurven_math::swift::min(kurven_math::swift::max(x, ctl.range.0), ctl.range.1)
 }
 
-/// The linear curve, in words (`describe`).
+/// `Rests::describe` for the document's surface.
 pub fn describe(document: &Document, w: &LinearCurves) -> String {
-    let strands = if w.count == 1 { "One strand".to_string() } else { format!("{} strands", w.count) };
-    if let Some(own) = own_slope(document)
-        && (w.slope - own).abs() < 1e-12
-    {
-        return format!("{strands} at the trajectory's own Ω/ω, {own:.6}: open, {} turns.", w.turns);
-    }
-    if let Some(q) = w.closes() {
-        let p = (w.slope * q as f64).round() as i64;
-        let convergent = convergents(document).iter().any(|c| c.p == p && c.q == q);
-        let closes = if q == 1 { "closes after one turn.".to_string() } else { format!("closes after {q} turns.") };
-        return format!("{strands} at {p}/{q}{}: {closes}", if convergent { ", a convergent of Ω/ω" } else { "" });
-    }
-    format!("{strands}, open: {} turns.", w.turns)
+    Rests::of(document).describe(w)
 }
 
 impl Document {
@@ -280,7 +301,7 @@ impl Document {
 }
 
 /// One field's row, as the page builds its control.
-fn row(document: &Document, request: &SurfaceRequest, field: Field) -> JsonValue {
+fn row(rests: &Rests, request: &SurfaceRequest, field: Field) -> JsonValue {
     let ctl = control(field);
     json::object([
         ("field", json::string(field.raw())),
@@ -292,7 +313,7 @@ fn row(document: &Document, request: &SurfaceRequest, field: Field) -> JsonValue
         ("slides", JsonValue::Bool(ctl.slides)),
         ("digits", JsonValue::Int(ctl.digits)),
         ("help", json::string(ctl.help)),
-        ("detents", json::doubles(&detents(document, field))),
+        ("detents", json::doubles(&rests.detents(field))),
     ])
 }
 
@@ -301,13 +322,15 @@ fn row(document: &Document, request: &SurfaceRequest, field: Field) -> JsonValue
 /// sn's switch, the coordinate curves and the linear curve.
 pub fn json(document: &Document) -> JsonValue {
     let Some(request) = document.surface_request() else { return JsonValue::Null };
+    // The forced torus's convergents, read once for every row.
+    let rests = Rests::of(document);
     let notes = SurfacePreset::named(&request.name).map(|p| p.notes);
     let rows: Vec<JsonValue> = request
         .fields()
         .into_iter()
         .filter(|f| !matches!(f, Field::Radial | Field::Axial))
         .filter(|&f| request.get(f).is_some())
-        .map(|f| row(document, request, f))
+        .map(|f| row(&rests, request, f))
         .collect();
     let components = match request.shape {
         Shape::Forced { radial, axial, .. } => {
@@ -322,10 +345,10 @@ pub fn json(document: &Document) -> JsonValue {
             (
                 "rows",
                 JsonValue::Array(
-                    SurfaceRequest::LINEAR_CURVE_FIELDS.iter().map(|&f| row(document, request, f)).collect(),
+                    SurfaceRequest::LINEAR_CURVE_FIELDS.iter().map(|&f| row(&rests, request, f)).collect(),
                 ),
             ),
-            ("description", json::string(&describe(document, &w))),
+            ("description", json::string(&rests.describe(&w))),
         ])
     });
     json::object([

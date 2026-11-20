@@ -393,7 +393,9 @@ impl Session {
                 Ok((out, Vec::new()))
             }
             "restore" => {
-                // A landscape as a link names it: `edited`'s fields.
+                // A landscape as a link names it: `edited`'s fields, every
+                // number in them finite (`files::every_number_finite`).
+                crate::files::every_number_finite(&JsonValue::Object(o.clone()), "the link").map_err(refuse)?;
                 let request = o.get("landscape").ok_or("wants a 'landscape'")?;
                 let request = LandscapeRequest::from_json(request).map_err(|e| refuse(e.to_string()))?;
                 kurven_math::expression::Expression::compile(&request.expression).map_err(|e| positioned(&e))?;
@@ -421,13 +423,7 @@ impl Session {
                 // keeps from this one, and put in this one's place only once
                 // it holds the landscape: a link that cannot be made leaves
                 // the open document, and what it can undo, as they were.
-                let mut next = Document {
-                    viewport: d.viewport,
-                    mode: d.mode,
-                    draft_resolution: d.draft_resolution,
-                    refine_contours: d.refine_contours,
-                    ..Document::default()
-                };
+                let mut next = d.successor();
                 next.restore_landscape(request, Styling { truncation, layers }, counts);
                 if next.bundle().is_none() {
                     let why = match next.state() {
@@ -461,11 +457,13 @@ impl Session {
             "open" if o.get("untrusted").and_then(JsonValue::as_bool) == Some(true) => {
                 // A bundle opened from a file (Phase 8, step 7): someone
                 // else's bytes, held to the controls' reach before anything
-                // is built (`files::openable`), and opened in a document of
-                // its own, which takes what an open keeps from this one, put
-                // in this one's place only once it is open. A bundle refused
-                // or that will not open leaves the open document, and what
-                // it can undo, as they were.
+                // is built (`files::openable`) and read whole before the
+                // document is touched (`Document::read`), then opened as any
+                // bundle is (`load_read`, what `load` does once the files
+                // are read), so it is the document the same bundle opened by
+                // name gives. A bundle refused, or one that does not read,
+                // leaves the open document, and what it can undo, as they
+                // were.
                 let name = text(o, "name")?;
                 let Session { document: d, staged, .. } = self;
                 let files = staged.get(name).ok_or_else(|| refuse(format!("no bundle '{name}' staged")))?;
@@ -474,19 +472,13 @@ impl Session {
                 // it is staged under.
                 let shown = source.name();
                 crate::files::openable(&source).map_err(|why| refuse(format!("{shown} was not opened: {why}")))?;
-                let mut next = Document {
-                    viewport: d.viewport,
-                    mode: d.mode,
-                    draft_resolution: d.draft_resolution,
-                    refine_contours: d.refine_contours,
-                    ..Document::default()
-                };
-                next.load(name, files);
-                next.settle();
-                if let State::Failed(_, why) = next.state() {
-                    return Err(refuse(format!("{shown} could not be opened: {why}")));
+                let read = Document::read(&source, d.refine_contours)
+                    .map_err(|why| refuse(format!("{shown} could not be opened: {why}")))?;
+                d.load_read(&source, Ok(read));
+                d.settle();
+                if let State::Failed(_, why) = d.state() {
+                    return Err(refused_after(format!("{shown} could not be opened: {why}")));
                 }
-                *d = next;
                 none()
             }
             "open" => {
@@ -1371,28 +1363,14 @@ fn gesture(g: &JsonObject) -> Result<Gesture, Refusal> {
     })
 }
 
-/// The most layers a link may carry: the catalog's landscapes have nine.
-const LINK_LAYERS: usize = 64;
-/// The most levels a contour layer of a link may list. Not a control's
-/// reach: a layer lists the levels its landscape chose (forty for a minor
-/// family of the catalog's), which a level slider's count resamples; this
-/// bounds the work a link can ask for.
-const LINK_LEVELS: usize = 1000;
-/// The most seeds a link's slope lines may list, or be spaced to along
-/// the window's longer side; a bound on work, as a strokes slider's top.
-const LINK_SEEDS: f64 = 400.0;
-/// The most bands a link's truncation may have; a bound on work (each is a
-/// riser and its hatching), far past the plates' four.
-const LINK_BANDS: usize = 64;
-
 /// Whether a link asks for no more than the window's controls can: a link
-/// is someone else's text, and the page samples what it says on open.
-/// Each kind of layer a landscape's link can carry is held to a reach
-/// (`sliders::reach`) or a stated bound on work; a kind with none -- a layer
-/// stored as arrays, a parametric surface's or a polyhedron's -- is refused,
-/// as are a window without area, a resolution or a level count past its
-/// slider, and a truncation that is not finite. Refused, touching nothing,
-/// saying which.
+/// is someone else's text, and the page samples what it says on open. Its
+/// resolution and level counts are held to their sliders here; its window,
+/// truncation and layers by `files` under `files::LINK`, the checks a file
+/// opened is held to (each kind of layer to a reach or a stated bound on
+/// work). A kind a landscape's link cannot carry -- a layer stored as
+/// arrays, a parametric surface's or a polyhedron's -- is refused. Refused,
+/// touching nothing, saying which.
 fn linkable(
     request: &LandscapeRequest,
     layers: &[LayerSpec],
@@ -1407,84 +1385,44 @@ fn linkable(
         )));
     }
     let d = request.domain;
-    for (axis, i) in [("Re", d.real), ("Im", d.imag)] {
-        if !(i.lo.is_finite() && i.hi.is_finite() && i.lo < i.hi) {
-            return Err(refuse(format!("a link's window has {axis} from {} to {}, which is no interval", i.lo, i.hi)));
-        }
-    }
+    let link = |why: String| refuse(format!("a link: {why}"));
+    crate::files::window(d.real.lo, d.real.hi, "Re").map_err(link)?;
+    crate::files::window(d.imag.lo, d.imag.hi, "Im").map_err(link)?;
     let (least, most) = reach::LEVEL_COUNTS;
     for (name, &n) in counts {
         if !(least..=most).contains(&n) {
             return Err(refuse(format!("a link's {name} has {n} levels; a level slider reaches {least} to {most}")));
         }
     }
-    let finite = |x: f64| x.is_finite();
-    match truncation {
-        Truncation::None => {}
-        Truncation::Uniform(h) if finite(*h) => {}
-        Truncation::RealBands { bands, beyond }
-            if bands.len() <= LINK_BANDS
-                && bands.iter().all(|b| finite(b.below) && finite(b.height))
-                && !beyond.is_nan() => {}
-        _ => return Err(refuse(format!("a link's truncation is not finite, or has more than {LINK_BANDS} bands"))),
-    }
-    if layers.len() > LINK_LAYERS {
-        return Err(refuse(format!("a link carries {} layers, more than {LINK_LAYERS}", layers.len())));
-    }
-    let reach = d.real.length().max(d.imag.length());
-    let strokes = reach::STROKES.1 as f64;
-    for layer in layers {
-        let name = &layer.name;
-        let fine = match &layer.source {
-            LayerSource::Contour { levels, light, .. } => {
-                if levels.len() > LINK_LEVELS {
-                    return Err(refuse(format!(
-                        "a link's {name} lists {} levels, more than {LINK_LEVELS}",
-                        levels.len()
-                    )));
-                }
-                levels.iter().all(|&x| finite(x)) && light.is_none_or(crate::files::usable_light)
-            }
-            LayerSource::Hatching { hatching, .. } => {
-                let s = hatching.spacing;
-                if !(finite(s) && s > 0.0 && (reach / s).round() <= strokes) {
-                    return Err(refuse(format!(
-                        "a link's {name} is hatched at a spacing of {s}: more than {strokes} strokes across the \
-                         window, as a strokes slider reaches"
-                    )));
-                }
-                finite(hatching.angle)
-            }
-            LayerSource::WallEdges { edges, base } => {
-                // A landscape's walls are its window's four sides.
-                let mut seen = BTreeSet::new();
-                finite(*base) && edges.len() <= 4 && edges.iter().all(|&e| (0..4).contains(&e) && seen.insert(e))
-            }
-            LayerSource::TruncationEdge { .. } | LayerSource::FoldCurves => true,
-            LayerSource::IntegralCurves { seeds, .. } => {
-                let many = match &seeds.spacing {
-                    kurven_core::manifest::Spacing::Values(_, values) => {
-                        values.len() as f64 > LINK_SEEDS || !values.iter().all(|&x| finite(x))
-                    }
-                    kurven_core::manifest::Spacing::ArcLength(s) => {
-                        !(finite(*s) && *s > 0.0 && reach / s <= LINK_SEEDS)
-                    }
-                };
-                if many {
-                    return Err(refuse(format!(
-                        "a link's {name} is seeded more finely than {LINK_SEEDS} seeds across the window"
-                    )));
-                }
-                finite(seeds.level)
-            }
-            other => {
-                return Err(refuse(format!("a landscape's link carries no {} layer, as {name} is", other.kind())));
-            }
-        };
-        if !fine {
-            return Err(refuse(format!("a link's {name} holds a number that is not finite, or an edge no wall has")));
+    // The request may carry its own styling too, which a sampling reads
+    // where the link's does not replace it: held as the link's is.
+    let carried_by_request = request.layers.as_deref().unwrap_or(&[]);
+    for layer in layers.iter().chain(carried_by_request) {
+        let carried = matches!(
+            layer.source,
+            LayerSource::Contour { .. }
+                | LayerSource::Hatching { .. }
+                | LayerSource::WallEdges { .. }
+                | LayerSource::TruncationEdge { .. }
+                | LayerSource::FoldCurves
+                | LayerSource::IntegralCurves { .. }
+        );
+        if !carried {
+            return Err(refuse(format!(
+                "a landscape's link carries no {} layer, as {} is",
+                layer.source.kind(),
+                layer.name
+            )));
         }
     }
+    let limits = crate::files::LINK;
+    crate::files::truncation(truncation, &limits).map_err(link)?;
+    if let Some(t) = &request.truncation {
+        crate::files::truncation(t, &limits).map_err(link)?;
+    }
+    let extent = kurven_math::swift::max(d.real.length(), d.imag.length());
+    crate::files::layers(layers, extent, &limits).map_err(link)?;
+    crate::files::layers(carried_by_request, extent, &limits).map_err(link)?;
     Ok(())
 }
 

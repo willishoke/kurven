@@ -102,7 +102,8 @@ test("a bundle's folder opened and edited; saved, the native files; reopened, th
   let s = await state(page);
   expect(s.kind).toBe("landscape");
   await expect(page.locator("#notice")).toBeHidden();
-  await expect(page.locator("#file-status")).toContainText("gamma.kurven");
+  // Said by the bundle's own name, not the one it was staged under.
+  await expect(page.locator("#file-status")).toHaveText("opened gamma.kurven");
   // An edit, then Export: the native bytes, the folder staged natively.
   await page.check('input[name="truncation"][value="uniform"]');
   await idle(page);
@@ -129,6 +130,18 @@ test("a bundle's folder opened and edited; saved, the native files; reopened, th
   expect(Object.keys(saved).sort()).toEqual(Object.keys(reference).sort());
   for (const [path, bytes] of Object.entries(reference)) expect(saved[path]!.equals(bytes), path).toBe(true);
   expect(Object.keys(saved)).toContain(`${name}/manifest.json`);
+  // A bundle our own tools write past the sliders opens: sn sampled at
+  // 2048 (the Samples slider stops at 1200; Swift's check at 4096).
+  const written = join(mkdtempSync(join(info.outputPath(), "cli-")), "sn-2048.kurven");
+  execFileSync(cli, ["surface", "sn", "--grid", "2048", "--save", written], { stdio: ["ignore", "inherit", "inherit"] });
+  const other = await page.context().newPage();
+  await load(other, at(info.project.name));
+  await other.setInputFiles("#open-folder", written);
+  await idle(other);
+  const sn = await state(other);
+  expect(sn.kind, await other.locator("#notice").textContent()).toBe("surface");
+  expect(sn.surface.shape.grid).toBe(2048);
+  await other.close();
 
   // The archive opened in a fresh page: the same drawing, byte for byte.
   const fresh = await page.context().newPage();

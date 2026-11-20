@@ -122,3 +122,29 @@ test("the picker draws every entry, leaves the document alone, and chooses", asy
   expect(again.engineRunning).toBe(false);
   await second.close();
 });
+
+test("the picker closed and opened again mid-draw goes on drawing to the end", async ({ page }, info) => {
+  test.setTimeout(900_000);
+  await load(page, at(info.project.name));
+  await page.click("#browse");
+  const total = await page.locator("#picker .cell").count();
+  // Some pictures drawn, not all: close, and open again at once.
+  await page.waitForFunction(() => (window as any).kurven.picker.counts().pictures >= 1, null, { timeout: 300_000 });
+  const midway = await page.evaluate(() => (window as any).kurven.picker.counts());
+  expect(midway.pictures).toBeLessThan(total);
+  await page.click("#picker-cancel");
+  await expect(page.locator("#picker")).toBeHidden();
+  await page.click("#browse");
+  await expect(page.locator("#picker")).toBeVisible();
+  // Every cell drawn, none spinning, and the engine let go of after.
+  await page.waitForFunction((n) => (window as any).kurven.picker.counts().pictures === n, total, { timeout: 600_000 });
+  await expect(page.locator('#picker .picture[data-state="waiting"]')).toHaveCount(0);
+  const counts = await page.evaluate(() => (window as any).kurven.picker.counts());
+  expect(counts.failed).toEqual([]);
+  await page.waitForFunction(() => !(window as any).kurven.picker.counts().engineRunning, null, { timeout: 30_000 });
+  // Closed and opened again once all are drawn: nothing to draw, no engine.
+  await page.click("#picker-cancel");
+  await page.click("#browse");
+  await page.evaluate(() => (window as any).kurven.picker.warmed());
+  expect((await page.evaluate(() => (window as any).kurven.picker.counts())).engineRunning).toBe(false);
+});

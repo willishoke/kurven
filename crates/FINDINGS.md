@@ -3966,3 +3966,80 @@ missing fixture fails on this Mac first.
   make a piece asked before them refused after, and that a torus's radius,
   its lines' count, its linear curve and a function painted on it each make
   a layout at rest asked before them refused after.
+
+## 2026-11-19 · Second review of PR #77: one set of bounds, an open as by name
+
+Ten findings, each checked against the code:
+
+1. **A hatching's `step`.** Rejected, with tests. The step is read only on
+   a solid's faces (a line's tone, every `step` along it), and Swift's
+   `PolyhedronManifest` already bounds those readings to 2^20 in all ("the
+   hatchings would read their tones 2.42e+06 times, more than the 1048576
+   a polyhedron's hatchings read": the frame's hatching at a step of 0.0008
+   is refused, tested). A landscape's hatching, which is all a link holds,
+   may carry no step at all: its schema refuses one ("a line is its two
+   ends on a wall or a riser ... so schema 3 writes none"; a link with its
+   walls' step at a millionth of the spacing is refused, touching nothing,
+   tested); and a surface's hatching runs along its grid, not read every
+   step. So no step reaches a reading the schema does not bound.
+2. **The picker reopened while stopping.** Fixed. `warm` handed back the
+   run that was stopping, and nothing warmed again. Now the pictures are
+   *wanted* while the picker is open: a run stops after the picture under
+   way once they are not, `warm` waits for a run under way and starts
+   another for what is left, and the engine is let go of only when no
+   picture is wanted or none is left. Tested by closing and opening again
+   mid-draw (every cell drawn, none spinning, the engine let go of after);
+   on the old code the same test waits forever.
+3. **An untrusted open built its own document.** Fixed, more simply than a
+   successor: `load_from` is now `read` then `load_read`, and an untrusted
+   open checks `openable`, reads the bundle whole (`Document::read`,
+   refused touching nothing if it does not read) and then opens it with
+   `load_read`, exactly as an open by name does. Tested: gamma, sn and the
+   frame opened from a file after a session set the depth tolerance, the
+   bake's resolution, the mode, the refinement, the draft resolution, the
+   viewport, a pick's status and an edit to undo give the very state the
+   same bundle opened by name gives. (Either way the depth tolerance and the
+   bake's resolution are then the bundle's first preset's, as Swift's
+   adoption sets them; neither path keeps the session's.) `openable` now
+   also refuses a landscape without a camera preset, the one failure the
+   adoption itself finds. A link's landscape is still made apart, since its
+   sampling can fail, in `Document::successor`, which keeps what `create`
+   keeps (the viewport, the mode, the draft resolution, the refinement,
+   the depth tolerance, the bake's resolution and the status lines but the
+   landscape's): tested against `create` after the same settings.
+4. **A restriction's bands.** Fixed, and more than the finding. A
+   restriction's terms are checked (finite, at most 16 with intersections
+   unfolded), in files and links. Checking it turned up the wider hole: the
+   JSON reader takes a number past a double's range (`1e400`) as infinite,
+   and an infinite camera angle, tile matrix entry, wall corner or depth
+   tolerance in a manifest was written back into the state, where the
+   canonical writer refuses it -- a trap in the wasm module. Every number of
+   every fixture manifest replaced in turn by `1e400` trapped the engine at
+   60 places (the presets and the occluder). A manifest, and a link, holding
+   any number past a double's range is now refused whole before a field is
+   read (`files::every_number_finite`); the same replacement by `1e400`,
+   `1e300`, `-1e300` and `0` traps none of them. The link allow-list also
+   holds the layers and truncation its request carries, which it did not.
+5. **A function's samples held to the slider.** Fixed. A file's surface is
+   held to Swift's own bounds (`SurfaceRequest::check`, which reading the
+   manifest applies: the function's samples to 4096, curves of at most
+   2^24 vertices, the fit, the harmonics), not the sliders', so a bundle
+   `kurven-cli surface sn --grid 2048` writes opens (tested natively and in
+   the browser lane with the CLI's own bundle), as does a torus with 300 by
+   150 coordinate curves. The same mismatch held a file's hatchings and
+   slope lines to a slider's 400 across, where kurven-cli writes finer
+   (`--spacing`, `--seeds`): a file is held to a bound on work instead,
+   4000 strokes and 2000 seeds across (`files::FILE`), a link still to the
+   sliders (`files::LINK`).
+6. **The status line's name.** Fixed: "opened gamma.kurven", the bundle's
+   own name (tested).
+7. **Two copies of the bounds.** Fixed: `files` holds the one set of checks
+   with `Limits` (`LINK`, `FILE`); `linkable` keeps only the link's own
+   (resolution, level counts, which kinds a link carries) and calls
+   `files::window`, `files::truncation` and `files::layers`.
+8. **The document builder.** `Document::successor` (3).
+9. **faces_now.** Fixed: one memo (`faces_memo`) behind `faces_of` and
+   `faces_now`, each with its own comment.
+10. **Convergents per reply.** Fixed: `Rests` reads the forced torus's own
+    slope and its convergents once, and every row, the detents and the
+    description read them from it.
