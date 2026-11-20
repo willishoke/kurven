@@ -101,7 +101,9 @@ const panel = new Panel({
   moved: () => view.moved(),
   exportSVG: () => void exportSVG().catch(quietly),
   cancelExport: () => {
-    if (pool) pool.cancel("the export was cancelled");
+    // The pool's export alone; a bake on the page's engine (no pool, or one
+    // switched off) is cancelled as a hung request is.
+    if (pool && !pool.disabled) pool.cancel("the export was cancelled");
     else void client.cancel("the export was cancelled").catch(quietly);
   },
 });
@@ -246,8 +248,16 @@ let lastExport: Uint8Array | null = null;
 /** The judged strokes with the SVG, baked by the pool, the state they leave
  * (the bake's status) taken in as any reply's is. */
 async function baked(): Promise<{ reply: Reply; arrays: Record<string, TypedArray> } | null> {
-  if (!pool) return null;
-  const answer = await pool.bake(true);
+  if (!pool || pool.disabled) return engine.call({ kind: "bake", svg: true });
+  let answer;
+  try {
+    answer = await pool.bake(true);
+  } catch (error) {
+    if (error instanceof Cancelled) throw error;
+    // The pool failed (it said why on the console): the page's engine bakes
+    // alone, the same bytes.
+    return engine.call({ kind: "bake", svg: true });
+  }
   if (answer.stale) return null;
   if (answer.reply.state) engine.take(answer.reply.state, { kind: "bake", svg: true });
   return answer;
@@ -260,7 +270,7 @@ async function exportSVG(): Promise<void> {
   panel.exportStatus.textContent = "";
   indicate();
   try {
-    const answer = pool ? await baked() : await engine.call({ kind: "bake", svg: true });
+    const answer = await baked();
     if (!answer) return;
     const { reply, arrays } = answer;
     if (!reply.ok) {

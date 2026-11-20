@@ -239,6 +239,103 @@ await assert.rejects(pool.bake(true), (error) => error instanceof Cancelled);
 client.request = assemble;
 checks += 1;
 
+// A layout a helper refuses (its document in doubt): it is brought back
+// and asked again, and the frame at rest is laid out all the same.
+{
+  const victim = pool.clients[0];
+  const asked = victim.request.bind(victim);
+  let refusedOnce = false;
+  victim.request = async (request, options) => {
+    if (request.kind === "restLayout" && !refusedOnce) {
+      refusedOnce = true;
+      return { stale: false, reply: { ok: false, touched: false, error: "no layer shown", arrays: [] }, arrays: {} };
+    }
+    return asked(request, options);
+  };
+  fresh(await client.request({ kind: "gesture", gesture: { kind: "orbit", delta: [-3, 1] } }));
+  const preview = fresh(await client.request({ kind: "preview", draft: true }));
+  const holding = { content: preview.reply.content, layers: preview.reply.layers.map((l) => l.key) };
+  const reissued = pool.reissued;
+  const again = await pool.layOutRest(holding, () => true);
+  victim.request = asked;
+  assert.ok(refusedOnce && again && again.laid.length > 0, "laid out after a refusal");
+  assert.ok(pool.reissued > reissued, "the refused layout asked again");
+  checks += 2;
+}
+
+// A resize mid-bake: the helpers closed give back their shares, those left
+// take them, and the bake is the same bytes.
+{
+  pool.resize(4);
+  const reference = svgOf(await client.request({ kind: "bake", svg: true }));
+  const warm = svgOf(await pool.bake(true));
+  assert.deepEqual(warm, reference);
+  const shrinking = pool.bake(true);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  pool.resize(1);
+  assert.deepEqual(svgOf(await shrinking), reference, "resized to one mid-bake");
+  assert.equal(pool.clients.length, 1);
+  pool.resize(4);
+  checks += 2;
+}
+
+// Export's cancel abandons the export alone: a frame at rest waiting
+// behind it is laid out.
+{
+  const preview = fresh(await client.request({ kind: "preview", draft: true }));
+  const holding = { content: preview.reply.content, layers: preview.reply.layers.map((l) => l.key) };
+  const exporting = pool.bake(true);
+  const resting = pool.layOutRest(holding, () => true);
+  setTimeout(() => pool.cancel("cancel the export"), 30);
+  await assert.rejects(exporting, (error) => error instanceof Cancelled);
+  const laidOut = await resting;
+  assert.ok(laidOut && laidOut.laid.length > 0, "the frame at rest went on");
+  checks += 2;
+}
+
+// An export does not wait for a frame at rest no longer wanted: its shares
+// in flight are cancelled and the export starts.
+{
+  const preview = fresh(await client.request({ kind: "preview", draft: true }));
+  const holding = { content: preview.reply.content, layers: preview.reply.layers.map((l) => l.key) };
+  // Each layout held back a second, so the frame at rest is in flight when
+  // the export is asked for.
+  const asks = pool.clients.map((c) => c.request.bind(c));
+  pool.clients.forEach((c, i) => {
+    c.request = async (request, options) => {
+      if (request.kind === "restLayout") await new Promise((resolve) => setTimeout(resolve, 1000));
+      return asks[i](request, options);
+    };
+  });
+  let wantedRest = true;
+  const resting = pool.layOutRest(holding, () => wantedRest);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  wantedRest = false;
+  const reference = svgOf(await client.request({ kind: "bake", svg: true }));
+  const asked = Date.now();
+  const exported = svgOf(await pool.bake(true));
+  const took = Date.now() - asked;
+  pool.clients.forEach((c, i) => (c.request = asks[i]));
+  assert.deepEqual(exported, reference);
+  const rest = await resting.catch((error) => (error instanceof Cancelled ? "cancelled" : error));
+  assert.ok(rest === null || rest === "cancelled", `the overtaken frame at rest: ${rest}`);
+  console.log(`  an export behind a frame at rest no longer wanted: ${took} ms`);
+  checks += 2;
+}
+
+// A plan of one piece -- a surface -- is baked by the primary, not shared.
+{
+  const torus = join(session, "inputs", "torus.kurven");
+  await client.stage(bundle(torus));
+  fresh(await client.request({ kind: "open", name: torus }));
+  const alone = fresh(await client.request({ kind: "bake", svg: true }));
+  const answer = fresh(await pool.bake(true));
+  assert.equal(answer.reply.baked, true, "baked by the primary");
+  assert.deepEqual(Buffer.from(answer.arrays.svg), Buffer.from(alone.arrays.svg));
+  fresh(await client.request({ kind: "open", name: gamma }));
+  checks += 2;
+}
+
 // The log is the pool's: trimmed with the journal, and kept by no client
 // that has no pool, a helper's own among them.
 for (let k = 0; k < 120; k++) fresh(await client.request({ kind: "viewport", width: 900 + k, height: 700 }));
@@ -257,6 +354,27 @@ checks += 4;
 // What each engine holds: the module's linear memory after gamma.
 const memory = [client.memory, ...pool.clients.map((c) => c.memory)];
 console.log(`  linear memory per engine: ${memory.map((m) => (m / 2 ** 20).toFixed(0)).join(", ")} MiB`);
+
+// A pool that keeps failing is switched off for the session, and said so;
+// its callers bake on the primary (main.ts's `baked`, the view's `making`).
+{
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+  const broken = (c) => {
+    c.request = (request, options) =>
+      request.kind === "bakePiece" ? Promise.reject(new Error("a helper that will not bake")) : EngineClient.prototype.request.call(c, request, options);
+  };
+  for (let n = 1; n <= 3; n++) {
+    for (const c of pool.clients) broken(c);
+    await assert.rejects(pool.bake(true), /will not bake/);
+    assert.equal(pool.disabled, n === 3, `after ${n} failures`);
+  }
+  console.warn = warn;
+  assert.ok(warnings.some((w) => w.includes("switched off")), "said on the console");
+  assert.equal(pool.clients.length, 0, "its helpers closed");
+  checks += 4;
+}
 
 pool.close();
 client.close();

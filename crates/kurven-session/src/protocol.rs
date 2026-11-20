@@ -834,7 +834,7 @@ impl Session {
             // The judged strokes shared among a pool of engines holding this
             // document (`pool.rs`): the plan, one piece, and the pieces put
             // together, which answers as `bake` does.
-            "bakePlan" => Ok(crate::pool::bake_plan(d)?),
+            "bakePlan" => Ok(crate::pool::bake_plan(d, o)?),
             "bakePiece" => Ok(crate::pool::bake_piece(d, o)?),
             "bakeAssemble" => Ok(crate::pool::bake_assemble(d, o, std::mem::take(&mut self.inputs))?),
             // The frame at rest shared likewise: the layers it would lay

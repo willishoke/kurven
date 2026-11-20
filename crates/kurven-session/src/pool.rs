@@ -32,15 +32,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use kurven_bake::BakeOptions;
 use kurven_bake::pieces::{self, Baked, Piece};
+use kurven_core::hatching::FaceSelector;
 use kurven_core::json::{self, JsonObject, JsonValue};
 use kurven_core::manifest::CameraPreset;
+use kurven_core::manifest::LayerSource;
 use kurven_core::polyline::PolylineSet;
 use kurven_core::scene::{Scene, SceneGeometry};
 use kurven_core::spaces::P3;
 use kurven_core::svg::{self, Strokes, Style};
 
 use crate::document::Document;
-use crate::preview::{Laid, content_key, curves_key, fnv, is_tested_exactly, lay_out, rest_key};
+use crate::preview::{Laid, content_key, curves_key, is_tested_exactly, lay_out, rest_key};
 use crate::protocol::Array;
 
 /// About how many vertices of a landscape's layer one piece of a bake tests:
@@ -194,63 +196,196 @@ impl Document {
         Some(self.fingerprinted(1, &scene, &[self.bake_resolution as u64, self.depth_tolerance.to_bits()]))
     }
 
-    /// `scene`'s fingerprint with `extra`, remembered in slot `slot` for what
-    /// it was hashed for: the scene's content and curves (counted per
-    /// process, and new whenever its geometry or curves are), its camera,
-    /// depth tolerance and resolution, and `extra`. A pool asks for it every
-    /// rest and every piece; hashing cn's grid and curves each time was the
-    /// cost of the ask.
+    /// `scene`'s fingerprint with `extra`: its camera, depth tolerance,
+    /// resolution and mode, `extra`, and the hash of everything else the
+    /// bake and the layouts read (`content_hash`). That hash is the cost, and
+    /// is remembered in slot `slot` for what it was hashed for: the scene's
+    /// content and curves -- counted per process, and new whenever a scene's
+    /// geometry or curves are, since a scene is only ever made anew
+    /// (`Scene::heightfield_scene`, `drawing`, `looking` keeping both but
+    /// changing only the camera) -- and the open bundle's manifest, which
+    /// names the function behind the refiner. A camera move rehashes nothing.
     fn fingerprinted(&self, slot: usize, scene: &Scene, extra: &[u64]) -> String {
-        let mut key = vec![scene.content().raw(), scene.curves().raw()];
-        key.extend(scene.camera.view.m.columns.iter().flat_map(|c| c.to_array()).map(f64::to_bits));
-        key.push(u64::from(scene.camera.is_perspective()));
-        key.extend([scene.depth_tolerance.to_bits(), scene.resolution.to_bits()]);
-        key.extend_from_slice(extra);
-        let mut memo = self.preview_memo.fingerprints.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some((k, f)) = &memo[slot]
-            && *k == key
-        {
-            return f.clone();
+        let manifest = self.open_manifest();
+        let mut key = Hasher::new();
+        key.text(&manifest);
+        let key = vec![scene.content().raw(), scene.curves().raw(), key.0];
+        let content = {
+            let mut memo = self.preview_memo.fingerprints.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            match &memo[slot] {
+                Some((k, f)) if *k == key => f.clone(),
+                _ => {
+                    let f = format!("{:016x}", content_hash(scene, &manifest));
+                    memo[slot] = Some((key, f.clone()));
+                    f
+                }
+            }
+        };
+        let mut h = Hasher::new();
+        h.f64s(scene.camera.view.m.columns.iter().flat_map(|c| c.to_array()));
+        h.debug(&scene.camera.projection);
+        h.f64s([scene.depth_tolerance, scene.resolution]);
+        h.debug(&scene.mode);
+        for &w in extra {
+            h.word(w);
         }
-        let f = fingerprint(scene, extra);
-        memo[slot] = Some((key, f.clone()));
-        f
+        h.text(&content);
+        format!("{:016x}", h.0)
+    }
+
+    /// The open bundle's manifest, canonical, with whether a refiner is
+    /// attached to it: what the scene's function, which no value of the
+    /// scene shows (a refiner is closures), is built from.
+    fn open_manifest(&self) -> String {
+        if let Some(b) = self.bundle() {
+            return format!("landscape {} {}", b.refine.is_some(), b.manifest.json().canonical());
+        }
+        if let Some(b) = self.surface_bundle() {
+            return format!("surface {}", b.manifest.json().canonical());
+        }
+        if let Some(b) = self.polyhedron_bundle() {
+            return format!("polyhedron {}", b.manifest.json().canonical());
+        }
+        String::new()
     }
 }
 
-/// A scene's fingerprint, hashed afresh.
-fn fingerprint(scene: &Scene, extra: &[u64]) -> String {
-    let mut words: Vec<u64> = Vec::new();
-    words.extend(scene.camera.view.m.columns.iter().flat_map(|c| c.to_array()).map(f64::to_bits));
-    words.push(u64::from(scene.camera.is_perspective()));
-    words.push(scene.depth_tolerance.to_bits());
-    words.push(scene.resolution.to_bits());
-    words.extend_from_slice(extra);
+/// FNV-1a over bytes (the preview's keys' hash, `preview::fnv`, over words),
+/// fed values, text and `Debug` renderings without building them whole.
+struct Hasher(u64);
+
+impl Hasher {
+    fn new() -> Hasher {
+        Hasher(0xcbf2_9ce4_8422_2325)
+    }
+
+    fn bytes(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 ^= u64::from(b);
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    fn word(&mut self, w: u64) {
+        self.bytes(&w.to_le_bytes());
+    }
+
+    fn f64s(&mut self, xs: impl IntoIterator<Item = f64>) {
+        for x in xs {
+            self.word(x.to_bits());
+        }
+    }
+
+    /// Text, its length first, so two texts run together hash apart.
+    fn text(&mut self, s: &str) {
+        self.word(s.len() as u64);
+        self.bytes(s.as_bytes());
+    }
+
+    /// A value's `Debug` rendering: Rust writes a double's shortest
+    /// round trip, so it is the value to the bit.
+    fn debug(&mut self, v: &dyn std::fmt::Debug) {
+        use std::fmt::Write;
+        let _ = write!(self, "{v:?}");
+        self.bytes(b"|");
+    }
+
+    fn grid(&mut self, g: &kurven_core::grid::Grid2D<f32>) {
+        self.word(g.width as u64);
+        self.word(g.height as u64);
+        self.f64s([g.domain.real.lo, g.domain.real.hi, g.domain.imag.lo, g.domain.imag.hi]);
+        for &v in g.values.iter() {
+            self.bytes(&v.to_bits().to_le_bytes());
+        }
+    }
+
+    fn points<S>(&mut self, ps: &[P3<S>]) {
+        self.word(ps.len() as u64);
+        self.f64s(ps.iter().flat_map(|p| [p.x(), p.y(), p.z()]));
+    }
+}
+
+impl std::fmt::Write for Hasher {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.bytes(s.as_bytes());
+        Ok(())
+    }
+}
+
+/// Everything of a scene the bake and the layouts read but its camera, its
+/// depth tolerance and its resolution, with the open bundle's manifest
+/// (`Document::open_manifest`), hashed: each layer whole -- its spec as a
+/// manifest writes it (its source: the field and levels, a hatching's
+/// spacing, angle, tone and the faces it lies on, the clip), its curves and
+/// their surface coordinates -- and the geometry whole: a landscape's grids,
+/// truncation, occluder, tiles, region, step, walls and refiner; a
+/// parametric surface's grid, axes, outward side and neighbourhood; a
+/// solid as it is.
+fn content_hash(scene: &Scene, manifest: &str) -> u64 {
+    let mut h = Hasher::new();
+    h.text(manifest);
+    h.word(scene.layers().len() as u64);
     for layer in scene.layers() {
-        words.push(fnv(layer.spec.name.bytes().map(u64::from)));
-        words.push(u64::from(layer.spec.clipped));
-        words.push(layer.spec.width.to_bits());
-        words.push(fnv(layer.spec.color.bytes().map(u64::from)));
-        words.push(layer.paths.vertices.len() as u64);
-        words.extend(layer.paths.offsets.iter().map(|&o| o as u64));
-        words.extend(layer.paths.vertices.iter().flat_map(|p| [p.x(), p.y(), p.z()]).map(f64::to_bits));
+        h.text(&layer.spec.json().canonical());
+        h.points(&layer.paths.vertices);
+        h.word(layer.paths.offsets.len() as u64);
+        for &o in &layer.paths.offsets {
+            h.word(o as u64);
+        }
+        match &layer.paths.coords {
+            Some(c) => {
+                h.word(c.len() as u64 + 1);
+                h.f64s(c.iter().flat_map(|q| [q.x(), q.y()]));
+            }
+            None => h.word(0),
+        }
     }
     match scene.geometry() {
-        SceneGeometry::Heightfield(h) => {
-            let g = &*h.surface.height;
-            words.extend([g.width as u64, g.height as u64]);
-            words.extend([g.domain.real.lo, g.domain.real.hi, g.domain.imag.lo, g.domain.imag.hi].map(f64::to_bits));
-            words.extend(g.values.iter().map(|&v| u64::from(v.to_bits())));
-            words.extend(h.occluder.vertices.iter().flat_map(|p| [p.x(), p.y(), p.z()]).map(f64::to_bits));
+        SceneGeometry::Heightfield(hf) => {
+            h.bytes(b"heightfield");
+            h.grid(&hf.surface.height);
+            match &hf.surface.phase {
+                Some(p) => {
+                    h.word(1);
+                    h.grid(p);
+                }
+                None => h.word(0),
+            }
+            h.text(&hf.surface.truncation.json().canonical());
+            h.word(u64::from(hf.surface.cached));
+            h.points(&hf.occluder.vertices);
+            h.word(hf.occluder.triangles.len() as u64);
+            for t in &hf.occluder.triangles {
+                h.bytes(&[t[0].to_le_bytes(), t[1].to_le_bytes(), t[2].to_le_bytes()].concat());
+            }
+            h.debug(&hf.tiles);
+            h.debug(&hf.region);
+            h.word(hf.step as u64);
+            h.debug(&hf.walls);
+            match &hf.refine {
+                Some(r) => {
+                    h.word(1);
+                    h.f64s([r.tolerance]);
+                    let parts = [r.rings.is_some(), r.magnitude.is_some(), r.phase.is_some(), r.zero.is_some()];
+                    for part in parts {
+                        h.word(u64::from(part));
+                    }
+                }
+                None => h.word(0),
+            }
         }
         SceneGeometry::Parametric(s) => {
-            words.extend(s.positions.iter().flat_map(|p| [p.x(), p.y(), p.z()]).map(f64::to_bits));
+            h.bytes(b"parametric");
+            h.points(&s.positions);
+            h.debug(s);
+            h.word(u64::from(s.second_order_jet.is_some()));
         }
         SceneGeometry::Solid(s) => {
-            words.extend(s.vertices.iter().flat_map(|p| [p.x(), p.y(), p.z()]).map(f64::to_bits));
+            h.bytes(b"solid");
+            h.debug(s);
         }
     }
-    format!("{:016x}", fnv(words))
+    h.0
 }
 
 // MARK: - the shares as messages
@@ -269,10 +404,11 @@ pub fn piece_json(piece: &Piece, weight: usize) -> JsonValue {
         Piece::Layer(i) => {
             o.insert("layer".to_string(), JsonValue::Int(i as i64));
         }
-        Piece::Paths { layer, from, to } => {
+        Piece::Paths { layer, from, to, of } => {
             o.insert("layer".to_string(), JsonValue::Int(layer as i64));
             o.insert("from".to_string(), JsonValue::Int(from as i64));
             o.insert("to".to_string(), JsonValue::Int(to as i64));
+            o.insert("of".to_string(), JsonValue::Int(of as i64));
         }
     }
     o.insert("weight".to_string(), JsonValue::Int(weight as i64));
@@ -294,34 +430,63 @@ pub fn piece_of(v: &JsonValue) -> Result<Piece, String> {
     if v.get("whole").and_then(JsonValue::as_bool) == Some(true) {
         return Ok(Piece::Whole);
     }
-    match (index("layer")?, index("from")?, index("to")?) {
-        (Some(layer), Some(from), Some(to)) => Ok(Piece::Paths { layer, from, to }),
-        (Some(layer), None, None) => Ok(Piece::Layer(layer)),
-        _ => Err("a piece is {whole}, {layer} or {layer, from, to}".to_string()),
+    match (index("layer")?, index("from")?, index("to")?, index("of")?) {
+        (Some(layer), Some(from), Some(to), Some(of)) => Ok(Piece::Paths { layer, from, to, of }),
+        (Some(layer), None, None, None) => Ok(Piece::Layer(layer)),
+        _ => Err("a piece is {whole}, {layer} or {layer, from, to, of}".to_string()),
     }
 }
 
 /// The plan, each piece with its weight.
-pub fn bake_plan(d: &mut Document) -> Shared {
+///
+/// With `bakeAlone`, a plan of one piece (a surface, a solid, an outline
+/// asked for: nothing a pool can share) is not answered as a plan but baked
+/// here, the reply `bake`'s with `baked` true: a helper would replay the
+/// document, bake the same piece and send it back to be put together, for
+/// nothing.
+pub fn bake_plan(d: &mut Document, o: &JsonObject) -> Shared {
     let plan = d.bake_plan()?;
+    if plan.len() == 1 && o.get("bakeAlone").and_then(JsonValue::as_bool) == Some(true) {
+        let strokes = d.bake()?;
+        let (mut out, arrays) = bake_reply(d, &strokes, o.get("svg").and_then(JsonValue::as_bool) == Some(true));
+        out.insert("baked".to_string(), JsonValue::Bool(true));
+        return Ok((out, arrays));
+    }
     let scene = d.framed_scene().ok_or("nothing to bake")?;
-    let largest = scene.layers().iter().map(|l| l.paths.vertices.len()).max().unwrap_or(0);
     let weight = |p: &Piece| match *p {
-        Piece::Paths { layer, from, to } => {
-            let o = &scene.layers()[layer].paths.offsets;
-            o[to] - o[from]
-        }
-        Piece::Layer(i) => {
-            let l = &scene.layers()[i];
-            if l.spec.clipped { l.paths.vertices.len().max(largest) } else { 0 }
-        }
-        Piece::Whole => largest,
+        Piece::Paths { layer, from, to, .. } => weight(&scene, layer, Some((from, to))),
+        Piece::Layer(i) => weight(&scene, i, None),
+        Piece::Whole => scene.layers().iter().map(|l| l.paths.vertices.len()).sum(),
     };
     let mut out = JsonObject::new();
     out.insert("pieces".to_string(), JsonValue::Array(plan.iter().map(|p| piece_json(p, weight(p))).collect()));
     out.insert("fingerprint".to_string(), d.bake_fingerprint().map_or(JsonValue::Null, |f| json::string(&f)));
     out.insert("frame".to_string(), frame_of(d));
     Ok((out, Vec::new()))
+}
+
+/// How much testing a share of layer `i` is, for handing out the heaviest
+/// first, one rule for the bake's pieces and the frame at rest's layers:
+/// the vertices of paths `range`, or of the whole layer; a layer whose
+/// curves are derived for the camera (the fold curves, a hatching on the
+/// graph), whose curves are not known until derived, weighs at least what
+/// the scene's largest layer does; an unclipped layer, drawn as it comes,
+/// nothing.
+fn weight(scene: &Scene, i: usize, range: Option<(usize, usize)>) -> usize {
+    let layer = &scene.layers()[i];
+    let offsets = &layer.paths.offsets;
+    if let Some((from, to)) = range {
+        return offsets[to] - offsets[from];
+    }
+    if !layer.spec.clipped {
+        return 0;
+    }
+    let derived = matches!(
+        layer.spec.source,
+        LayerSource::FoldCurves | LayerSource::Hatching { faces: FaceSelector::Graph { .. }, .. }
+    );
+    let own = layer.paths.vertices.len();
+    if derived { own.max(scene.layers().iter().map(|l| l.paths.vertices.len()).max().unwrap_or(0)) } else { own }
 }
 
 /// The frame that maps a page point to the viewport's pixel, as the
@@ -397,6 +562,11 @@ pub fn bake_assemble(d: &mut Document, o: &JsonObject, mut inputs: BTreeMap<Stri
         }
         baked.push(layers);
     }
+    if !snapshot {
+        // Of this document: every layer of its framed scene drawn.
+        let layers = d.framed_scene().map(|s| s.layers().len());
+        pieces::covers(&plan, layers)?;
+    }
     let strokes = pieces::assemble(&plan, baked)?;
     let (mut out, arrays) = bake_reply(d, &strokes, o.get("svg").and_then(JsonValue::as_bool) == Some(true));
     if snapshot {
@@ -439,15 +609,7 @@ pub fn bake_reply(d: &Document, strokes: &Strokes, with_svg: bool) -> (JsonObjec
 pub fn rest_layers(d: &Document, nonce: &str, have: &BTreeSet<String>) -> Shared {
     let layers = d.rest_layers(nonce, have);
     let scene = d.shown_scene().ok_or("nothing shown")?;
-    let largest = scene.layers().iter().map(|l| l.paths.vertices.len()).max().unwrap_or(0);
-    let weights: Vec<i64> = layers
-        .iter()
-        .map(|&i| {
-            let l = &scene.layers()[i];
-            let derived = matches!(l.spec.source, kurven_core::manifest::LayerSource::FoldCurves);
-            (if derived { largest.max(l.paths.vertices.len()) } else { l.paths.vertices.len() }) as i64
-        })
-        .collect();
+    let weights: Vec<i64> = layers.iter().map(|&i| weight(&scene, i, None) as i64).collect();
     let mut out = JsonObject::new();
     out.insert("layers".to_string(), json::ints(&layers.iter().map(|&i| i as i64).collect::<Vec<_>>()));
     out.insert("weights".to_string(), json::ints(&weights));
@@ -543,4 +705,113 @@ fn polylines<S>(points: Vec<f64>, offsets: Vec<usize>) -> Result<PolylineSet<S>,
     }
     let vertices = whole.iter().map(|c| P3::new(c[0], c[1], c[2])).collect();
     Ok(PolylineSet::new(vertices, offsets, None))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kurven_core::manifest::{LayerSource, Region};
+    use kurven_core::polyline::Layer;
+
+    /// gamma at 160 samples, framed: a landscape with hatching, walls, a
+    /// region, tiles and a refiner.
+    fn gamma() -> Scene {
+        let mut s = crate::protocol::Session::new();
+        for r in [r#"{"kind":"create","preset":"gamma"}"#, r#"{"kind":"set","key":"res","value":160}"#] {
+            assert!(s.call(r).json.contains(r#""ok":true"#), "{r}");
+        }
+        s.document.framed_scene().unwrap()
+    }
+
+    fn rebuilt(scene: &Scene, change: impl FnOnce(&mut kurven_core::scene::Heightfield)) -> Scene {
+        let mut h = scene.heightfield().unwrap().clone();
+        change(&mut h);
+        Scene::heightfield_scene(
+            h.surface,
+            h.occluder,
+            h.tiles,
+            h.region,
+            h.step,
+            scene.layers().to_vec(),
+            scene.camera,
+            scene.mode,
+            scene.depth_tolerance,
+            h.refine,
+            h.walls,
+        )
+    }
+
+    /// Each input the bake reads, changed alone, changes the content's hash;
+    /// the same scene rebuilt, with new content and curves, does not.
+    #[test]
+    fn every_input_of_the_bake_changes_the_fingerprint() {
+        let scene = gamma();
+        let base = content_hash(&scene, "");
+        assert_eq!(content_hash(&rebuilt(&scene, |_| {}), ""), base, "the same inputs, the same hash");
+        assert_ne!(content_hash(&scene, "another manifest"), base, "the manifest");
+        let hatched =
+            scene.layers().iter().position(|l| matches!(l.spec.source, LayerSource::Hatching { .. })).unwrap();
+        let with = |change: &dyn Fn(&mut Layer)| {
+            let mut layers = scene.layers().to_vec();
+            change(&mut layers[hatched]);
+            content_hash(&scene.drawing(layers), "")
+        };
+        let changed: Vec<(&str, u64)> = vec![
+            (
+                "a hatching's spacing, its paths kept",
+                with(&|l| {
+                    if let LayerSource::Hatching { hatching, .. } = &mut l.spec.source {
+                        hatching.spacing *= 1.5;
+                    }
+                }),
+            ),
+            (
+                "a hatching's angle",
+                with(&|l| {
+                    if let LayerSource::Hatching { hatching, .. } = &mut l.spec.source {
+                        hatching.angle += 0.1;
+                    }
+                }),
+            ),
+            ("a layer's clip", with(&|l| l.spec.clipped = !l.spec.clipped)),
+            (
+                "surface coordinates on the curves",
+                with(&|l| {
+                    let n = l.paths.vertices.len();
+                    l.paths.coords = Some(vec![kurven_core::spaces::P2::new(0.0, 0.0); n]);
+                }),
+            ),
+            ("no refiner", content_hash(&rebuilt(&scene, |h| h.refine = None), "")),
+            ("no walls", content_hash(&rebuilt(&scene, |h| h.walls = kurven_core::manifest::Walls::None), "")),
+            ("a tile more", content_hash(&rebuilt(&scene, |h| h.tiles.push(h.tiles[0])), "")),
+            (
+                "a tile moved",
+                content_hash(
+                    &rebuilt(&scene, |h| {
+                        h.tiles[0].tx += 1.0;
+                    }),
+                    "",
+                ),
+            ),
+            (
+                "another region",
+                content_hash(
+                    &rebuilt(&scene, |h| {
+                        h.region = match (&h.region, &h.walls) {
+                            (Region::Full, kurven_core::manifest::Walls::Perimeter { perimeter, .. }) => {
+                                Region::Inside(perimeter.clone())
+                            }
+                            _ => Region::Full,
+                        }
+                    }),
+                    "",
+                ),
+            ),
+            ("the step", content_hash(&rebuilt(&scene, |h| h.step += 1), "")),
+            ("the cache flag", content_hash(&rebuilt(&scene, |h| h.surface.cached = !h.surface.cached), "")),
+        ];
+        for (what, hash) in changed {
+            assert_ne!(hash, base, "{what}");
+        }
+    }
 }

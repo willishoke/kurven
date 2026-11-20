@@ -99,8 +99,12 @@ export interface Options {
   timeoutMs?: number;
   /** Typed arrays given to this request alone, by name (`kv_give`): another
    * engine's answer, which the request reads back to the bit. Copied as
-   * sent, so the caller keeps its own. */
+   * sent, so the caller keeps its own, unless `transfer`. */
   inputs?: Record<string, TypedArray>;
+  /** The inputs are the caller's to give away: each array that is the whole
+   * of its buffer is transferred to the Worker, not copied, and is empty
+   * after. For arrays the caller does not read again. */
+  transfer?: boolean;
 }
 
 /** The document as the client's engine holds it at one moment, for another
@@ -445,10 +449,16 @@ export class EngineClient {
       this.post({ type: "stage", id: p.id, bundle: { name: p.work.bundle.name, files } }, files.map((f) => f.bytes));
     } else {
       const given = Object.entries(p.options.inputs ?? {});
-      const inputs = given.map(([name, a]) => ({
-        name,
-        bytes: (a.buffer as ArrayBuffer).slice(a.byteOffset, a.byteOffset + a.byteLength),
-      }));
+      const seen = new Set<ArrayBufferLike>();
+      const inputs = given.map(([name, a]) => {
+        const whole = a.byteOffset === 0 && a.byteLength === a.buffer.byteLength && !seen.has(a.buffer);
+        seen.add(a.buffer);
+        const bytes =
+          p.options.transfer && whole && a.buffer instanceof ArrayBuffer
+            ? a.buffer
+            : (a.buffer as ArrayBuffer).slice(a.byteOffset, a.byteOffset + a.byteLength);
+        return { name, bytes };
+      });
       this.post(
         { type: "request", id: p.id, request: p.work.request, ...(inputs.length ? { inputs } : {}) },
         inputs.map((i) => i.bytes),

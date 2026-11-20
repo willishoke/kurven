@@ -156,6 +156,10 @@ fn a_surface_or_a_solid_is_one_piece_and_bakes_as_bake_does() {
         let together = pooled(&mut pool, true);
         let alone = ok(&mut pool[1], r#"{"kind":"bake","svg":true}"#);
         assert_eq!(together.arrays, alone.arrays);
+        // Nothing to share: asked to, the plan's engine bakes it itself.
+        let baked = ok(&mut pool[2], r#"{"kind":"bakePlan","bakeAlone":true,"svg":true}"#);
+        assert!(baked.json.contains(r#""baked":true"#));
+        assert_eq!(baked.arrays, alone.arrays);
     }
 }
 
@@ -326,4 +330,34 @@ fn a_bake_refused_before_its_pieces_is_refused_as_the_bake_is() {
     assert_eq!(planned.get("ok"), Some(&JsonValue::Bool(false)));
     assert_eq!(planned.get("error"), alone.get("error"));
     assert_eq!(planned.get("state"), alone.get("state"), "the bake's status, said as bake says it");
+}
+
+/// Each edit a slider or a switch makes changes the bake's fingerprint, so
+/// a piece asked of the document before it is refused as of another: a cap
+/// hatching's and a wall hatching's strokes, a level count, the refinement,
+/// the truncation, the depth tolerance and the bake's resolution.
+#[test]
+fn a_piece_asked_before_any_edit_is_refused_after_it() {
+    for edit in [
+        r#"{"kind":"strokes","layer":"plateau_hatch","count":60}"#,
+        r#"{"kind":"strokes","layer":"wall_hatch","count":60}"#,
+        r#"{"kind":"levels","layer":"mag_major","count":4}"#,
+        r#"{"kind":"refine","on":false}"#,
+        r#"{"kind":"truncation","truncation":{"kind":"uniform","height":3.25}}"#,
+        r#"{"kind":"depthTolerance","value":0.03}"#,
+        r#"{"kind":"bakeResolution","value":3000}"#,
+    ] {
+        let mut s = sessions(1, GAMMA).pop().unwrap();
+        let f = reply(&mut s, r#"{"kind":"bakePlan"}"#).get("fingerprint").unwrap().canonical();
+        let piece = format!(r#"{{"kind":"bakePiece","piece":{{"layer":4}},"fingerprint":{f}}}"#);
+        assert_eq!(reply(&mut s, &piece).get("ok"), Some(&JsonValue::Bool(true)), "{edit}: before it");
+        ok(&mut s, edit);
+        let r = reply(&mut s, &piece);
+        assert_eq!(
+            r.get("another"),
+            Some(&JsonValue::Bool(true)),
+            "{edit}: {}",
+            r.get("error").map(|e| e.canonical()).unwrap_or_default()
+        );
+    }
 }

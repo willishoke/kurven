@@ -91,7 +91,9 @@ export type Request =
    * the pieces a bake splits into, one piece baked, and the pieces put
    * together, its arrays given as inputs, which answers as `bake` does (or
    * `failed`: a piece's refusal, said as the bake's status). */
-  | { kind: "bakePlan" }
+  /** `bakeAlone`: a plan of one piece is baked by the engine planning it,
+   * the reply `bake`'s with `baked` true. */
+  | { kind: "bakePlan"; bakeAlone?: boolean; svg?: boolean }
   /** `fingerprint`: the plan's document; a helper holding another refuses
    * the share as such (the reply's `another`). */
   | { kind: "bakePiece"; piece: Piece; fingerprint: string }
