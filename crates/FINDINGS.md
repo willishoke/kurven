@@ -3480,3 +3480,105 @@ of what was asked, it says so below.
 
 Both gates were green after the fixes; the counts are in the report of this
 round.
+
+## 2026-11-19 · Second review of PR #76: the whole document fingerprinted, the primary as fallback
+
+A second code review gave ten more findings. Each was checked against the
+code; all ten were real, and all ten are fixed. None was rejected.
+
+1. **The fingerprint left inputs out.** Each layer's source (a hatching's
+   spacing, angle, tone and faces), the curves' surface coordinates, and the
+   heightfield's refiner, walls, tiles, region and step were not hashed. A
+   helper one hatching-slider move behind would have passed the check. Now
+   `content_hash` hashes every input the bake and the layouts read: each
+   layer's spec as a manifest writes it (`LayerSpec::json`), its curves and
+   coordinates; a landscape's grids of |f| and arg f, truncation, cache flag,
+   occluder (vertices and triangles), tiles, region, step, walls and
+   refiner; a parametric surface's grid, axes, outward side, neighbourhood
+   and jet; a solid whole (its derived `Debug`, every field).
+
+   A refiner is closures, so no value of the scene names its function. The
+   open bundle's manifest, from which the refiner is built (`Document::read`,
+   `refiner_for_bundle`), is hashed for it, with whether one is attached.
+   The finding asked whether the fingerprint could simply be derived from
+   the scene's `Debug`; it cannot. `ContourRefine`'s, `ParametricSurface`'s
+   and `Mesh`'s `Debug` print a summary (a tolerance, the axes, the counts),
+   and the scene's per-process `ContentID`s and fold memo would differ
+   between engines holding the same document.
+
+   **The cache key.** The costly part is cached on the scene's content and
+   curves and the manifest's hash; the camera, depth tolerance, resolution,
+   mode and the bake's options are hashed on every ask, so a camera move
+   rehashes nothing. A scene's fields are private and only its constructors
+   make one, each minting new IDs: `heightfield_scene` and the others mint
+   both, `drawing` keeps the content (the geometry is the same) and mints the
+   curves, `looking` keeps both and changes only the camera. So the key
+   changes with every input hashed.
+
+   **Tests.** `pool::tests::every_input_of_the_bake_changes_the_fingerprint`
+   changes each input alone on gamma (a hatching's spacing and angle with
+   its paths kept, a clip, coordinates, the refiner, the walls, a tile more,
+   a tile moved, the region, the step, the cache flag, the manifest) and
+   requires a new hash. The same scene rebuilt, with new IDs, keeps it.
+   `a_piece_asked_before_any_edit_is_refused_after_it` asks a piece of the
+   document before each edit and requires it refused after: a cap
+   hatching's strokes, a wall hatching's, a level count, the refinement, the
+   truncation, the depth tolerance, the bake's resolution.
+2. **A failing pool failed the frame at rest and Export.** Now a job that
+   fails for the pool's own reasons is said on the console and done by the
+   primary: the view lays out the frame at rest (or bakes, without WebGPU)
+   on the page's engine, and Export bakes there, the same bytes. After three
+   failures in a row the pool is switched off for the session
+   (`EnginePool.disabled`), its helpers closed, said on the console, and the
+   page runs as with `?pool=0`. Tested: three bakes whose helpers will not
+   bake switch the pool off, said so, its helpers closed.
+3. **A refused layout left the draft up.** A layout a helper refuses now
+   marks it, brings it back from the primary's journal, and asks it again
+   within the same frame at rest. Past its tries the job fails, and the
+   primary lays out the frame (point 2). Tested with a helper that refuses
+   its first layout.
+4. **Export's cancel abandoned every job.** Jobs now say what they are for
+   (`export` or `rest`); Cancel abandons the export's alone and restarts
+   only the helpers holding its shares. Tested: a frame at rest waiting
+   behind a cancelled export is laid out.
+5. **A resize closed helpers in the middle of their shares.** A closed
+   helper now gives back the share it holds (no try counted) and takes no
+   more; the helpers left take them. Tested: a pool of four resized to one
+   in the middle of a bake gives the same bytes.
+6. **Export waited behind an unwanted frame at rest.** An export asked for
+   while a frame at rest that is no longer wanted runs or waits now abandons
+   it and restarts the helpers holding its shares, rather than wait for them
+   (cn's fold curves, about 2 s). Tested with layouts held back a second: the
+   export is the same bytes, 0.7 s later, and the frame at rest ends without
+   drawing.
+7. **A one-piece plan used the pool for nothing.** A surface, a solid, or a
+   bake with an outline asked for has nothing to share. `bakePlan` with
+   `bakeAlone` now bakes a plan of one piece on the primary and answers as
+   `bake` does, with `baked`. Tested natively on sn and the torus, and under
+   Node on the torus bundle, the same bytes. The first frame at rest on cn
+   does not wait for eight helpers: a job makes only as many helpers as it
+   has shares (cn's frame at rest three: the walls' two layers and the fold
+   curves), and each starts its share once its own replay is done, with no
+   wait for the others.
+8. **Inputs were copied before transfer.** A request may now transfer its
+   inputs (`Options.transfer`): each array that is the whole of its buffer is
+   transferred, not copied. The pool does so for the pieces it assembles and
+   the view for the layouts it serves, neither of which is read again; other
+   callers keep the copy.
+9. **The two kinds of share were weighed by different rules.** There is now
+   one rule (`pool::weight`): a range of paths weighs its vertices; a whole
+   layer its vertices; a layer derived for the camera (the fold curves, a
+   hatching on the graph) at least what the largest layer does; an unclipped
+   layer nothing. Before, a hatching on the graph was weighed by its carried
+   vertices at rest (none) and every whole layer as the largest in the bake.
+10. **A plan that left paths out was put together.** `Piece::Paths` now
+    carries its layer's path count (`of`); a helper refuses a piece whose
+    count is not its layer's. `pieces::covers` refuses a plan that is not
+    each layer in turn from the first, whole or as pieces running from its
+    first path to its `of`th with no gap or overlap, or that has a whole bake
+    with anything else; and, where the assembling engine still holds the
+    plan's document, one that draws fewer layers than the scene. `assemble`
+    refuses an uncovered plan. Tested on eight bad plans (the last piece
+    short, a gap, an overlap, a layer not from its first path, out of turn,
+    twice, a whole bake with more, counts that disagree) and a layer left
+    out.
