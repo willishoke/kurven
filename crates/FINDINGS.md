@@ -3196,3 +3196,246 @@ run (a long fragment "refused in 408 s") were the machine asleep
 (`pmset -g log`: DarkWake), the same test refusing in 0.4 s awake. Export
 and the link's round trip are the same bytes as natively in all three
 projects. check-web green.
+
+## 2026-11-19 · Phase 8, step 4: the picker
+
+`kurven_session::thumbnails` is Thumbnails.swift's engine half: each catalog
+entry (`Entry`, Gallery.swift's `GalleryEntry`: the functions, then the
+surfaces) built as Swift builds it -- a function sampled at 220 along its
+longer side and hatched at a twenty-second of its window, fitted to its exact
+bounds (`view_bounds`, falling back to the quick ones); a surface on a grid of
+256 round its ring, the forced trajectory a quarter as long, fitted to its
+quick bounds -- the camera it opens at fitted to 440 by 300. The protocol's
+`thumbnail` request answers the frame the window's preview draws of it at
+rest, every layer shown, in the drawing mode, or with `judged` its judged
+strokes, for a page without WebGPU. Nothing of the open document is touched:
+`Document::preview` is split so `preview::preview_scene` draws any scene from
+a navigator, viewport and mode, with a memo of its own. The `catalog` reply
+lists the entries, each with the key its picture is cached under: the id and
+FNV-1a of what would change the picture, as Swift's `cache(for:)` hashes it.
+
+The page's picker (`page/picker.ts`) is Gallery.swift: a dialog, a filter
+over name, label, formula and notes, the two groups, each cell its picture,
+label and formula, the notes as its title; Browse... beside the dropdown and
+in the Surface section opens it. The pictures come from a second engine, a
+Worker of their own started the first time the picker opens, one at a time
+in catalog order, so the document's engine is never behind them (Swift draws
+them one at a time on a detached task for the same reason). Each frame is
+drawn by a second `PreviewRenderer` on the window's device into a 440 by 300
+texture (or, without WebGPU, the judged strokes on a 2D canvas), read back,
+and cached as a PNG in IndexedDB under the engine's key and the kind of
+picture; shown at half size, as Swift shows its own.
+
+Native times, one thread (`tests/thumbnails.rs`, ignored): preview 28 ms
+(sqrt) to 695 ms (cn) and 1,038 ms (the forced torus, its fit), 4.1 s for
+all seventeen; judged strokes 77 ms to 4.8 s (cn). In Chromium on Metal the
+picker test draws all seventeen and checks them in 13 s; a second page reads
+all seventeen from the cache and draws none.
+
+Differences from Swift, by construction: Swift's cache key spells numbers as
+Swift prints them and the port as Rust's `{:?}` does, and its style counter
+starts again at 1 (another renderer draws the pictures): the caches are not
+shared and need not be. The judged pictures are baked at the window's
+quarter pixel; the preview pictures, as Swift's, from a scene whose
+resolution is Swift's default.
+
+## 2026-11-19 · Phase 8, step 5: surfaces and their controls
+
+`kurven_session::surface_controls` is SurfaceSection.swift's model: each
+field's label, reach, step, whether it slides (a refit's two do not), its
+digits and help (`control`); where a slider rests (`detents`: the slope at
+fractions with denominators up to eight, or on a forced torus at its own
+rotation number Ω/ω and its convergents; the trajectory's turns at the
+convergents' denominators), `quantize` as Swift's (the first nearest detent
+within reach, else the step); the linear curve described in words; and the
+edits the section's switches and pickers make, each one undo step named for
+the control: the coordinate curves on at 36 by 18 ("Coordinate Curves"),
+their counts clamped to 1...200 ("Lines Around", "Lines Across"), the
+linear curve on at the trajectory's own slope or 2/5 for 24 turns ("Linear
+curve"), a forced torus's components swapped when the other's is chosen
+("Radius from", "Height from"). The state carries it (`surfaceControls`);
+the protocol takes `surfaceField` (a number typed, stepped or switched,
+clamped to the reach as Swift's binding clamps it), `surfaceLines`,
+`surfaceLineCount`, `linearCurve`, `component`, and a drag's move with
+`rest`, which the engine rests at the step or a detent.
+
+The page's Surface section (`page/surface.ts`) builds its rows from the
+state: per number a slider (min, max and step the engine's) and a field
+whose arrows are the stepper, or a field alone; the components as segmented
+x, x′, x″; Conformal; the coordinate curves' switch and counts; the linear
+curve and its description; Browse...; the status. torus, sn and the forced
+torus come from the picker (and `?surface=`); `periodic` from painting a
+function (step 6) or a bundle; sn in relief from a bundle (step 7), as in
+Swift, whose catalog has no relief.
+
+Tests: `tests/surface_controls.rs` (the rows and reach, a value clamped, the
+slope rested at 2/3, 3/5 and the step, quantize's ties, sn's switches, the
+forced torus's components, convergents and own slope); `surface.spec.ts`
+(a torus dragged, typed past its reach, counted, its linear curve on and its
+slope dragged, undone; sn's curves, modulus dragged, conformal; a periodic
+function's samples; sn in relief opened, its relief typed, clamped, undone),
+each document's Export held to `kurven-cli session` on the page's journal,
+byte for byte. `kurven-cli session --stage NAME DIR` stages a bundle first.
+
+## 2026-11-19 · Phase 8, step 6: bands, picking and painting, undo, polyhedra
+
+- **Banded truncation** (TruncationSection.swift's band rows): "Per band of
+  Re" starts one band at the window's middle and a beyond at the current
+  height, as Swift's `apply(.bands)`; each band's threshold, its height
+  slider (to max(3 h, 10), from the engine's least) and a way to take it
+  off; Beyond; Add a band. A height dragged is one undo step,
+  "Truncation": the protocol's truncation drag takes the whole truncation
+  as a move (`truncation`), as Swift's slider writes `.realBands(next, ...)`.
+- **Picking**: a click held still on the drawing sends `pick` at its pixel,
+  after the gestures before it (GestureView's mouseUp; a click that orbits,
+  or a second click, picks nothing). The engine casts the pixel as Phase 6
+  made it do.
+- **Curves on** (PaintSection.swift): `paint_caption` ported (Swift's
+  `paintCaption`); the layers on the face with their paths, own controls and
+  a way to take each off; the Add menu (offered once the drawing is the one
+  asked for); Function... where `offers_function`, a sheet with the
+  expression and its periods: the `periods` request, a view, gives the
+  catalog's rectangle as the expression is typed (`known`) and the one the
+  sheet opens with (`offered`), as Swift's sheet; Paint refused stays in the
+  sheet and says why.
+- **A layer's controls** (LayerControls), shared by the Layers list and
+  Curves on: levels, strokes (2...400), the plateau hatching's axis, a
+  light's azimuth and elevation (the engine sends the angles,
+  `LightSlider.angles(of:)`). The Layers list shows each layer's paths and
+  "unclipped", as Inspector.swift's `layerList`.
+- **Undo and Redo** as buttons named for the step, beside ⌘Z and ⇧⌘Z.
+- **Polyhedra**: the Polyhedron section (its solid, boundary, genus or
+  shells, from the engine) and a hatching's strokes; opened from a file
+  (step 7), as in Swift.
+
+Tests: `tests/paint_page.rs` (the caption and Function... on a torus, the
+periods, a painted function offered back, a band's height dragged as one
+step and undone whole, a polyhedron's facts, paths and an axis in the
+state); `paint.spec.ts` (bands by their rows; the surface picked by a click,
+an orbit that picks nothing, sn's periods coming with its name, a bad
+function refused in the sheet, a curve added, its levels stepped, taken off,
+undone and redone by the buttons; the picture frame's strokes dragged and a
+face of it hatched), every Export the native bytes.
+
+## 2026-11-19 · Phase 8, step 7: a .kurven bundle as a file
+
+A bundle is a directory, which a browser can neither download nor be handed
+as one file. **Decision**: Save bundle writes its files into a ZIP archive
+under the bundle's directory name (`gamma.kurven.zip` holding
+`gamma.kurven/manifest.json`, `height.npy`, `phase.npy`: unzipped, the
+bundle Swift's app and kurven-cli open), stored, dated 1980-01-01, so one
+bundle always writes the same bytes; the directory's name is the catalog
+entry's name, or the title, in ASCII (macOS's `unzip` cannot write a
+non-ASCII name). Open takes such an archive (stored or deflated), a bare
+manifest.json (a surface's or a polyhedron's whole bundle), or a bundle's
+folder (`webkitdirectory`). A desktop wrapper can open and save directories
+with the same requests: the archive is the page's (`page/bundle.ts`), the
+bounds and the atomic open the engine's.
+
+**A file is untrusted input.** The page reads it within bounds before the
+engine sees it: the archive at most 160 MB, at most 64 entries, each at most
+64 MB and 128 MB in all unpacked (a 2000-sample landscape's two grids are
+64 MB), a deflated entry inflated as a stream and stopped past its cap, each
+CRC checked; no encryption, no ZIP64, no path that climbs out, a single top
+directory taken as the bundle's. The engine then holds the manifest to the
+controls' reach before anything is built (`kurven_session::files::openable`,
+parsing the manifest of its kind alone): a landscape's truncation finite and
+at most 64 bands; a surface's request past Swift's `check` within the
+controls (the function's samples 120 to 1200, the fit, the harmonics, the
+trajectory's turns, the coordinate curves 1 to 200, the linear curve's turns
+and strands) and its ring at most 16,384 samples (twice what `kurven-cli
+surface sn --relief` builds: the relief fixture is 8192; Swift allows
+65,536); at most 64 layers, 1000 levels a contour, 400 strokes of a hatching
+or 400 seeds of slope lines across the drawing's extent (a landscape's
+window, a solid's box, a surface's rectangle), coordinate and linear curves
+within their controls, every number finite. The protocol's `open` with
+`untrusted` opens it in a document of its own, which takes what an open
+keeps (viewport, mode, draft resolution, refinement), put in place only once
+open: a refusal or a bundle that will not read touches nothing (`touched`
+false, so the client journals no open), and the document and its undo
+history stay. An opening that runs past two minutes -- a function that never
+returns, `besseli(1e12, z)` painted on a torus -- is cancelled by the
+client: the engine is restarted and the journal replayed, so the document is
+the one before. The bytes of a refused bundle stay staged (the client
+journals a stage when the engine takes it), which costs memory until the
+next restart and nothing else.
+
+Tests: `tests/files.rs` (all eight session inputs open from a file; nine
+refusals -- no manifest, not JSON, the wrong schema, 2000 levels, a hatching
+too fine, a ring of 60,000, sn's samples at 3000, coordinate curves at 5000,
+a hundred bands -- each touching nothing, the undo after them undoing the
+edit before); `files.spec.ts` (gamma's folder opened and edited, its Export
+the native bytes; Save bundle's archive holding exactly the files
+`kurven-cli session --save` writes, byte for byte, and opened in a fresh
+page to the same drawing; sn in relief and the cube from their manifests;
+noise, a garbage manifest, an archive without a manifest, one that climbs
+out, 2000 levels, a ring of 60,000, each refused and said with the document
+unchanged; a function that never returns cancelled after the page's
+`openTimeout`, the engine restarted once, the document and its undo as
+before).
+
+## 2026-11-19 · Steps 4 to 7: the engine's answers, natively and in wasm
+
+`crates/fixtures/page/*.jsonl` are the requests the page sends in steps 4
+to 7: the catalog and six thumbnails (frames at rest and judged strokes, a
+function and each kind of surface), a surface's controls, a band dragged, a
+face picked and painted, a polyhedron's strokes and a face hatched, bundles
+opened from files (one refused) and saved. check-web runs each through
+`kurven-cli session --replies` and through the page's module under Node
+(`kurven-wasm/requests.mjs`) and requires every reply, JSON and arrays, to
+be the same bytes: 198 files, identical. The browser lane holds every new
+kind of drawing the page can now make -- a torus with its lines and linear
+curve, sn conformal, a periodic function, sn in relief, the picture frame,
+the cube, a banded truncation, a painted torus, a landscape opened from a
+folder and from a saved archive -- to `kurven-cli session` on the page's
+journal, byte for byte, in every project.
+
+## 2026-11-19 · Where the Swift looks wrong (steps 4 to 7, ported as it is)
+
+- **A surface value refused is said nowhere visible.** `SurfaceFieldSlider
+  .set` writes the refusal to `paintStatus`, which only the Curves on
+  section shows, and only while a face is picked; with nothing picked a
+  refused relief or radius just does not move. The page also says it in the
+  Surface section's status line (a view's detail).
+- **The fold curves' count is 0.** The Layers list shows each layer's
+  `paths.count`; a fold layer carries no paths (its curves are traced for
+  each camera), so it always reads 0, in Swift and here.
+- **Two controls named "Turns".** On a forced torus with a linear curve, the
+  trajectory's turns and the linear curve's turns are both labelled
+  "Turns", and so are their undo steps.
+
+## 2026-11-19 · Phase 8 status (steps 4 to 7)
+
+**Done**: the picker, surfaces and their controls, banded truncation,
+picking with Curves on, painting a function, undo and redo, polyhedra and
+their hatching, and `.kurven` bundles opened and saved as files, each with
+its engine half natively tested, its requests byte-identical in wasm, and a
+Playwright spec (`picker`, `surface`, `paint`, `files`) whose Exports are
+the native bytes. **Protocol additions**: `thumbnail`, the `catalog` reply's
+`entries`; `surfaceField`, `surfaceLines`, `surfaceLineCount`,
+`linearCurve`, `component`, a drag's `rest` and a truncation drag's
+`truncation`; `periods`; `open` with `untrusted`; in the state,
+`surfaceControls`, `polyhedron`, the pick's `caption`, `takesFunction` and
+`expression`, each layer's `paths`, `clipped`, `lightAngles` and `axis`.
+`kurven-cli session` gained `--stage`, `--save`, `--replies` and comments.
+
+**The gate**: check-web green (its new step: 198 reply files of the
+page's requests byte-identical, native and the page's wasm; the goldens,
+the session's 28 scripts and 87 files unchanged). The browser lane
+(`KURVEN_PORT=4191 scripts/check-browser.sh`: another agent's lane held the
+default port 4175, so the port is an environment variable worth knowing):
+100 passed, 11 skipped by design, 20.2 minutes under `caffeinate`, the four
+new specs passing in swiftshader (offscreen), gpu (Metal) and fallback. The
+picker drew all seventeen pictures in 14 s on Metal, 24 s on SwiftShader and
+66 s without WebGPU (judged strokes, cn's 4.8 s natively the longest). The
+phone-width test now tabs through Browse..., which sits under the
+dropdown's notes as in LandscapeSection.swift; Swift's File and Edit menus
+are a section after Export.
+
+**Not done**: a link to a surface or a polyhedron (both still write none;
+`linkable` is unchanged, so a link stays a landscape's); double-click to
+retarget (Swift's mouseDown with two clicks: the engine would need the
+world point under a pixel as a request); the Camera section's Perspective
+switch and azimuth and elevation fields, the Visibility section's depth
+tolerance field, the Bundle section's provenance, Swift's literal sliders.
+The new specs have run on this Mac only, not on Linux or in CI.
