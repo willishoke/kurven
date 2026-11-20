@@ -16,6 +16,8 @@
 use std::fmt;
 use std::sync::Arc;
 
+pub mod pieces;
+
 use kurven_core::depth::DepthFrame;
 use kurven_core::depth_pass;
 use kurven_core::hatching::FaceSelector;

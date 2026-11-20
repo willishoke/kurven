@@ -37,9 +37,10 @@ export function serve(port: Port): void {
           return;
         case "request": {
           if (!engine) throw new Error("the engine is not loaded");
+          for (const input of message.inputs ?? []) engine.give(input.name, new Uint8Array(input.bytes));
           const { reply, arrays } = engine.call(message.request);
           const transfer = Object.values(arrays).map((a) => a.buffer as ArrayBuffer);
-          send({ type: "reply", id: message.id, reply, arrays }, transfer);
+          send({ type: "reply", id: message.id, reply, arrays, memory: engine.memoryBytes }, transfer);
           return;
         }
       }

@@ -3196,3 +3196,389 @@ run (a long fragment "refused in 408 s") were the machine asleep
 (`pmset -g log`: DarkWake), the same test refusing in 0.4 s awake. Export
 and the link's round trip are the same bytes as natively in all three
 projects. check-web green.
+
+## 2026-11-19 · A pool of Workers: the draft at rest, the judged strokes for Export
+
+The owner's decision on speed (Phase 6, "Interactive timings", options 1 and
+2 together): a pool of Workers, and the judged strokes for Export alone.
+
+**The engine's side** (`kurven_session::pool`, `kurven_bake::pieces`). Nothing
+in it knows what an engine is or how a share travels, so a desktop host can
+run the same shares on threads, each thread a `Session` replaying the same
+requests (`kurven-session/tests/pool.rs` does that with sessions in turn).
+
+- **The bake splits at path boundaries.** Swift spreads a bake over its cores
+  inside `Heightfield.visibleRuns` (Scene.swift): every vertex of a layer on
+  a thread, four at a time, each thread with a traversal forked for it
+  (`parallelMap(_:chunk:worker:_:)`), then every fold crossing, then every
+  place a run turns, put back in the order the items went in. Each of those
+  items belongs to one path, and no path's runs read another's, so a
+  landscape layer's runs are its paths' runs put end to end. `plan` cuts each
+  carried, clipped landscape layer into pieces of whole paths, about 1,024
+  vertices each, never a piece of no vertices (`visible_curves` passes an
+  empty set through as it is, where the layer's runs drop vertexless paths).
+  A layer derived for the camera (the fold curves, a hatching on the graph)
+  is one piece, its stages being serial between them; an unclipped or empty
+  layer is one piece; a scene that is not a landscape, or an outline asked
+  for, is one piece, the bake itself. `assemble` puts the pieces' strokes
+  together in the plan's order. Workers cannot hand each other a vertex at a
+  time, so the seam is Swift's, gathered into pieces a Worker is sent whole.
+  The forked tests answer as the ones they were forked from, which is what
+  lets Swift's split vary with its thread count; here it lets the pieces vary
+  with the pool.
+- **Requests**, additive in `protocol.rs`: `bakePlan` (the pieces, each with
+  its weight in vertices, refused as `bake` refuses and said in the bake's
+  status), `bakePiece` (one piece's stroke layers: colours in the JSON;
+  widths, points x y z and offsets as f64 and u32 arrays), `bakeAssemble`
+  (the pieces given back, answering as `bake` does, SVG and all; or `failed`,
+  a piece's refusal said as the status); `restLayers` (the tested layers a
+  frame at rest would lay out holding `have`, with weights, and the
+  document's fingerprint), `restLayout` (some of them laid out as
+  `preview::lay_out` lays them out, with the fingerprint), and `preview`
+  given `laid` and `fingerprint` (served under this engine's keys,
+  `Document::preview_laying` taking the given layout where `preview` asks
+  `lay_out`; refused when the fingerprint is not this document's). Arrays go
+  back into an engine with `Session::give` (`kv_give`), for the next request
+  alone, and are read back to the bit; nothing goes through JSON numbers (the
+  page's `JSON.stringify` writes -0 as 0).
+- **The fingerprint** (`Document::layout_fingerprint`) hashes what a frame at
+  rest's layouts are a function of: the shown scene's camera, depth tolerance
+  and resolution, every layer's curves, and the surface (a landscape's grid,
+  window and occluder; a parametric surface's positions; a solid's
+  vertices). It does not hash `ContentID`s, which are counted per process:
+  two sessions in one process give the same scene different content keys.
+
+**The page's side** (`web/app/src/engine/pool.ts`). The primary is the page's
+own engine: it takes every edit and draws every draft. Helpers are engines of
+their own, each in a Worker of its own, made when a job first needs them. A
+helper holds the document by replaying the primary's journal, as a restarted
+Worker does, and then catches up on the primary's **log** (client.ts):
+everything the client recorded, in order, each entry marked when it took the
+place of the one before (a camera, a slider's move, a setting set outright).
+Catching up applies the log since the helper's place, leaving out each entry
+a later one took the place of. That is exact by compaction's own claim: the
+new entry where the old one was leaves the document both leave. Where the log
+no longer reaches back (the journal was cut, `JournalTruncated`) or is longer
+than the journal, the helper is given the journal (`adopt`: its Worker
+restarted and the journal replayed).
+
+One job runs at a time. Its shares are handed out heaviest first, each to the
+helper that comes free first, and put back by the primary in the plan's
+order, so the bytes do not depend on the pool's size or on which helper
+finished first. A helper whose Worker dies (a trap, a timeout, a cancel) is
+restarted by its client, which replays its journal (the job's document), and
+its share is handed out again, twice at most. A job asked whether it is
+still wanted stops handing out shares once it is not, and lets those in
+flight finish. Export's Cancel abandons every job, running or waiting,
+restarts the helpers with a share in flight, and leaves the page's engine
+alone (before, a cancel restarted the one engine and replayed its whole
+document).
+
+Size: a helper for every core but the page's own, at most eight
+(`poolSize(navigator.hardwareConcurrency)`). `?pool=N` sets it, and `?pool=0`
+is the page's engine alone, as before. Eight because cn gains little past it
+(below) and every helper holds a copy of the document.
+
+**At rest.** With WebGPU the draft stays on the canvas at rest. The tested
+layers of the frame at rest are laid out by the helpers, a layer each, and
+served by the primary from them in a few milliseconds, under its own keys.
+The renderer's holdings stay the primary's: a helper's keys start with its
+own nonce, and drawing a helper's frames would make the renderer let go of
+the primary's resources and take them back at every rest. An epoch, bumped by
+every move and change, drops a frame at rest that a move overtook, and a
+layout given to a primary whose document moved on is refused by its
+fingerprint. A draft waits for neither. Without WebGPU (`fallback`) the
+judged strokes at rest are the pool's bake, redrawn at rest, a stale one
+dropped the same way.
+
+**The background frame at rest is kept**, for these reasons:
+
+- It is what Swift's window does: drafts while moving, `layOut(draft:
+  false)` on another thread at rest, swapped in.
+- It costs the hand nothing: it runs on the helpers, and the primary only
+  serves it.
+- It keeps the draft's known defects off the picture at rest: folds traced
+  on the grid, which dash on a steep graph where vertices fall either side of
+  the surface (`lay_out`'s comment); wall strokes depth-tested where a wall is
+  edge-on; sn's nearly edge-on outline (the draft draws 99.5% of the pixels
+  the frame at rest draws, `surfaces.spec.ts`).
+- It keeps Phase 7's gate meaning what it says: the preview at rest against
+  the judged strokes.
+
+Computing the judged strokes themselves in the background was not done. cn's
+take 4.9 s on eight helpers and 34 s on one, for a frame at rest that already
+passes the gate at Swift's thresholds.
+
+## 2026-11-19 · Pool timings: the draft at rest, Export at 1, 2, 4 and 8 helpers
+
+Measured in Chrome for Testing 153 (Playwright's) on the Mac's own GPU (the
+`gpu` project). This machine has 18 cores (`navigator.hardwareConcurrency`
+18), so the default pool is eight helpers. The module is the page's
+(opt-level 3). Each pooled bake was run twice and the second taken, the
+helpers caught up (`pool.spec.ts`'s measurement, `KURVEN_MEASURE=1`):
+
+| Export (the pooled bake with the SVG) | 1 helper | 2 | 4 | 8 | the page's engine alone |
+|---|---|---|---|---|---|
+| gamma, the catalog's, at 600 | 2.75 s | 1.45 s | 0.77 s | 0.47 s | 2.74 s |
+| cn, the catalog's, at 600 | 33.85 s | 17.58 s | 9.04 s | 4.90 s | 34.27 s |
+
+Every size wrote the same bytes, and the same bytes as the page's engine
+alone (gamma 149,334 bytes, cn 813,716). A pool of one takes the page's
+engine's time to within 1%: the pieces cost nothing extra, natively either
+(cn's pieces take 23.6 s in all against the bake's 23.1 s; building the
+traversal once a piece takes a few milliseconds). Eight helpers are 6.9 times
+one on cn and 5.9 on gamma. cn's floor is its fold curves, one piece of 1.4 s
+natively and about 2 s in a Worker, and the last pieces handed out.
+
+**At rest**, cn at 600, eight helpers, Metal: a camera move's draft is drawn
+24 ms after it (engine 16 ms, GPU 3 to 7 ms) and kept at rest; the helpers
+start at the rest timer, 0.25 s after the last move; the frame at rest is
+swapped in 1.8 s after the move (its fold curves laid out on one helper,
+about 1.5 s, then served). On one engine the frame at rest held the engine
+for 2.2 s, and a draft asked meanwhile was drawn 2.7 to 2.8 s later on Metal
+and 5.5 s on SwiftShader (the entry "What a slow frame at rest forces").
+Now that draft is drawn 109 ms later on Metal and 1.3 s later on SwiftShader
+(whose draft is 1.4 s of GPU on its own), and `page.spec.ts` holds it under
+1.5 s and 4.5 s. preview.spec.ts's frame times: cn's frame at rest 1.54 s
+from wish to drawn on Metal (2.2 s before, all of it on the page's engine),
+sn's 80 ms. Without WebGPU cn's judged strokes at rest are 4.9 s (35 to 46 s
+before).
+
+**Memory**, the module's linear memory per engine after the measurement:
+gamma 15 MiB for the page's engine (which also drew every frame), 12 MiB for
+the first helper and 8 MiB for each of the rest; cn 34, 27 and 21 MiB. A
+Worker's own JavaScript heap comes on top and was not measured. Linear memory
+never shrinks, so the page's engine and the first helper, which do the most,
+hold the most.
+
+**CI.** ubuntu-latest has 4 cores, so the page there makes 3 helpers. The
+browser lane's CI projects (`swiftshader`, `fallback`) run the pool, and the
+fallback's frame at rest is the pool's bake. Not measured there.
+
+Under Node (`pool.test.mjs`, in check-web), on the session fixture's gamma
+(160 samples) truncated at 3: a pool of 1 in 0.67 s, 2 in 0.38 s, 4 in
+0.28 s.
+
+## 2026-11-19 · Swift and the pool
+
+No Swift oddity turned up in this lane. The pool rests on Swift's own claim
+for its threads in `parallelMap(_:chunk:worker:_:)`: each thread's forked
+worker answers as the one it was forked from, chunks are handed out as
+threads come free, and results are put back in order. It held here: every
+split tried gives the bake's strokes to the bit (`kurven-session/tests/
+pool.rs`: gamma and the cubic cut into pieces of 1, 7, 300 and 2,048
+vertices and whole, baked last piece first; pools of 1, 2, 3 and 5 sessions;
+the browser lane's pools of 1, 2, 4 and 8 on cn and gamma).
+
+One thing Swift does that the pool does not: Swift's window lays out its
+frame at rest with every core, the folds included (the fold placer's stages
+in parallel). The pool lays out a layer per helper, so cn's fold curves are
+one helper's 1.5 s. Splitting the fold placer's stages across Workers would
+take a round trip per stage (rows, vertices, crossings, chords, ends); it was
+not done.
+
+## 2026-11-19 · The pool's gate, and what was run
+
+- **check-web** gains "the pool of engines under Node" (`web/app/test/
+  pool.test.mjs`, against the check's module and the page's): pools of 1, 2
+  and 4 bake the bytes the page's engine bakes alone and the bytes the native
+  session wrote (gamma-truncation), every stroke array too; helpers catch up
+  on sixty gestures and a drag's moves; a helper whose Worker is terminated
+  while its piece is posted is restarted and the piece handed out again; a
+  cancel ends a bake with `Cancelled` and the next bakes; a bake no longer
+  wanted is stale; a frame at rest served from the helpers' layouts is the
+  primary's own, and refused once the primary's camera moves. Natively,
+  `kurven-session/tests/pool.rs` (five tests, above). The Worker protocol
+  test is unchanged and passes with the client's additions (inputs, the log,
+  `snapshot`, `adopt`).
+- **The browser lane** gains `pool.spec.ts`: Export of a typed expression
+  through pools of 2, 1 and 4 is native's bytes (`kurven-cli session` on the
+  page's journal) and the page's engine's alone, in every project; at rest
+  the draft stays and the helpers' frame at rest is swapped in (WebGPU
+  projects). `page.spec.ts`'s slow frame at rest now asks that a draft not
+  wait for it, and holds the engine with a frame at rest of its own to keep
+  testing that gestures given meanwhile go as one request. The whole lane:
+  75 passed, 15 skipped by design, 10.3 minutes (11.8 before), run under
+  `caffeinate`. Every coverage figure is the one before: the frame at rest
+  is the same strokes, laid out elsewhere.
+- **Not run**: the lane on Linux or in CI; the measurement test there.
+
+## 2026-11-19 · Review of PR #76: shares name their document, drifted helpers come back
+
+A code review gave ten findings. Each was checked against the code; all ten
+were real, and all ten are fixed. None was rejected. Where a fix stops short
+of what was asked, it says so below.
+
+1. **A helper that drifted was never brought back.** It is now. Every share
+   names the fingerprint of the document it was asked of: `bakePiece` and
+   `bakeAssemble` the bake's (`Document::bake_fingerprint`: the framed scene,
+   the depth tolerance, the bake's resolution), and `restLayout` the frame at
+   rest's. An engine holding another document refuses the share with
+   `another: true`. The pool then marks the helper (`dirty`), restarts it and
+   replays the primary's journal into it (`adopt`), and hands the share out
+   again, twice at most. A helper is marked the same way when a share fails
+   other than by a cancel or a dead Worker (a replay cut short,
+   `JournalTruncated`, among them), and when it refuses a layout. Tested in
+   `pool.test.mjs`: every helper's document changed behind the pool's back,
+   then one helper's, then a frame at rest with every helper drifted; each
+   time the bytes or the frame are the primary's. `JournalTruncated` itself
+   is not forced in a test: it takes the same path as any failure that is not
+   a cancel.
+2. **The log grew without bound.** A client now keeps the log only once a
+   pool asks it to (`keepLog`), so without a pool (`?pool=0`) and on a
+   helper's own client nothing is logged. It is trimmed with the journal to
+   twice the journal's length plus sixteen: a helper further behind than that
+   replays the journal rather than catch up, so nothing older is of use.
+   Tested: 120 viewports and a 40-move drag leave the log within the bound,
+   the helpers' logs empty, and a client with no pool logs nothing.
+3. **An assembly after the document moved on mixed two documents.** The
+   pieces are all of the plan's document, since a piece of another is
+   refused. The decision is to **export the plan's document consistently**,
+   as one engine's bake, asked before an edit, baked the document as it was.
+   `bakeAssemble` carries the plan's fingerprint and frame. When the primary
+   still holds that document the reply is `bake`'s. When it has moved on,
+   the strokes and SVG are the plan's document's, the frame is the plan's,
+   the reply says `snapshot`, and the bake's status says "of the document as
+   it was when the bake was asked". The page downloads it, and its status
+   line says so. Tested natively: a move and a truncation between the pieces
+   and the assembly give the bytes and frame of the bake before them.
+4. **A cancel during assembly still downloaded the SVG.** The bake now
+   rejects with `Cancelled` when the job was abandoned while the primary put
+   the pieces together, and the page writes nothing. Tested.
+5. **Every refusal of a given layout was swallowed.** Now only a frame that a
+   move overtook (the epoch moved) is let go quietly. Any other refusal is
+   logged, counted (`view.fallbacks`), and the frame at rest is laid out by
+   the page's engine itself, so the rest still refines.
+6. **A refused piece reported the first refusal in time.** It now reports the
+   first in plan order. Once a piece at index k is refused, no piece after k
+   is handed out, those before it still are, and the lowest refused index is
+   reported. Tested with two pieces refused on purpose, the later one
+   answering first: the bake reports the earlier, as its status too. No real
+   piece can be refused today: the port constructs no `PortRefusal`, and a
+   piece of another scene is refused as of another document. So the
+   equivalence with the single engine is tested on the refusals that do
+   happen, before the pieces: a perspective camera gives the same error and
+   the same status pooled and alone (natively and under Node).
+7. **`rest_layers` ran a whole preview.** It is now keys alone: for each shown
+   layer tested for the camera, its key at rest (`preview::rest_key`, which
+   `preview` itself now uses for the same keys) against what the page holds.
+   It builds no resources, lays out nothing, and leaves the preview's memo
+   alone. Tested: holding the frame at rest's keys it wants none, holding
+   none it wants exactly the tested layers.
+8. **The fingerprint was rehashed on every ask.** It is now cached per slot
+   (the frame at rest's, the bake's), keyed on the scene's content and
+   curves, its camera, depth tolerance and resolution, and the bake's
+   resolution. A `ContentID` is counted per process and is new whenever a
+   scene's geometry or curves are (the preview's keys rest on the same
+   claim), so the key changes whenever what is hashed can.
+9. **Two copies of the bake's preconditions, and of `have`'s parsing.**
+   `Document::bake` now asks the same `bake_inputs_said` the plan does, and
+   both `preview` and `restLayers` read what the page holds with one parser
+   (`holdings`).
+10. **A pool of at least one helper on a one-core machine.** `poolSize` is 0
+    for one core or none reported, so the page runs on its own engine.
+
+Both gates were green after the fixes; the counts are in the report of this
+round.
+
+## 2026-11-19 · Second review of PR #76: the whole document fingerprinted, the primary as fallback
+
+A second code review gave ten more findings. Each was checked against the
+code; all ten were real, and all ten are fixed. None was rejected.
+
+1. **The fingerprint left inputs out.** Each layer's source (a hatching's
+   spacing, angle, tone and faces), the curves' surface coordinates, and the
+   heightfield's refiner, walls, tiles, region and step were not hashed. A
+   helper one hatching-slider move behind would have passed the check. Now
+   `content_hash` hashes every input the bake and the layouts read: each
+   layer's spec as a manifest writes it (`LayerSpec::json`), its curves and
+   coordinates; a landscape's grids of |f| and arg f, truncation, cache flag,
+   occluder (vertices and triangles), tiles, region, step, walls and
+   refiner; a parametric surface's grid, axes, outward side, neighbourhood
+   and jet; a solid whole (its derived `Debug`, every field).
+
+   A refiner is closures, so no value of the scene names its function. The
+   open bundle's manifest, from which the refiner is built (`Document::read`,
+   `refiner_for_bundle`), is hashed for it, with whether one is attached.
+   The finding asked whether the fingerprint could simply be derived from
+   the scene's `Debug`; it cannot. `ContourRefine`'s, `ParametricSurface`'s
+   and `Mesh`'s `Debug` print a summary (a tolerance, the axes, the counts),
+   and the scene's per-process `ContentID`s and fold memo would differ
+   between engines holding the same document.
+
+   **The cache key.** The costly part is cached on the scene's content and
+   curves and the manifest's hash; the camera, depth tolerance, resolution,
+   mode and the bake's options are hashed on every ask, so a camera move
+   rehashes nothing. A scene's fields are private and only its constructors
+   make one, each minting new IDs: `heightfield_scene` and the others mint
+   both, `drawing` keeps the content (the geometry is the same) and mints the
+   curves, `looking` keeps both and changes only the camera. So the key
+   changes with every input hashed.
+
+   **Tests.** `pool::tests::every_input_of_the_bake_changes_the_fingerprint`
+   changes each input alone on gamma (a hatching's spacing and angle with
+   its paths kept, a clip, coordinates, the refiner, the walls, a tile more,
+   a tile moved, the region, the step, the cache flag, the manifest) and
+   requires a new hash. The same scene rebuilt, with new IDs, keeps it.
+   `a_piece_asked_before_any_edit_is_refused_after_it` asks a piece of the
+   document before each edit and requires it refused after: a cap
+   hatching's strokes, a wall hatching's, a level count, the refinement, the
+   truncation, the depth tolerance, the bake's resolution.
+2. **A failing pool failed the frame at rest and Export.** Now a job that
+   fails for the pool's own reasons is said on the console and done by the
+   primary: the view lays out the frame at rest (or bakes, without WebGPU)
+   on the page's engine, and Export bakes there, the same bytes. After three
+   failures in a row the pool is switched off for the session
+   (`EnginePool.disabled`), its helpers closed, said on the console, and the
+   page runs as with `?pool=0`. Tested: three bakes whose helpers will not
+   bake switch the pool off, said so, its helpers closed.
+3. **A refused layout left the draft up.** A layout a helper refuses now
+   marks it, brings it back from the primary's journal, and asks it again
+   within the same frame at rest. Past its tries the job fails, and the
+   primary lays out the frame (point 2). Tested with a helper that refuses
+   its first layout.
+4. **Export's cancel abandoned every job.** Jobs now say what they are for
+   (`export` or `rest`); Cancel abandons the export's alone and restarts
+   only the helpers holding its shares. Tested: a frame at rest waiting
+   behind a cancelled export is laid out.
+5. **A resize closed helpers in the middle of their shares.** A closed
+   helper now gives back the share it holds (no try counted) and takes no
+   more; the helpers left take them. Tested: a pool of four resized to one
+   in the middle of a bake gives the same bytes.
+6. **Export waited behind an unwanted frame at rest.** An export asked for
+   while a frame at rest that is no longer wanted runs or waits now abandons
+   it and restarts the helpers holding its shares, rather than wait for them
+   (cn's fold curves, about 2 s). Tested with layouts held back a second: the
+   export is the same bytes, 0.7 s later, and the frame at rest ends without
+   drawing.
+7. **A one-piece plan used the pool for nothing.** A surface, a solid, or a
+   bake with an outline asked for has nothing to share. `bakePlan` with
+   `bakeAlone` now bakes a plan of one piece on the primary and answers as
+   `bake` does, with `baked`. Tested natively on sn and the torus, and under
+   Node on the torus bundle, the same bytes. The first frame at rest on cn
+   does not wait for eight helpers: a job makes only as many helpers as it
+   has shares (cn's frame at rest three: the walls' two layers and the fold
+   curves), and each starts its share once its own replay is done, with no
+   wait for the others.
+8. **Inputs were copied before transfer.** A request may now transfer its
+   inputs (`Options.transfer`): each array that is the whole of its buffer is
+   transferred, not copied. The pool does so for the pieces it assembles and
+   the view for the layouts it serves, neither of which is read again; other
+   callers keep the copy.
+9. **The two kinds of share were weighed by different rules.** There is now
+   one rule (`pool::weight`): a range of paths weighs its vertices; a whole
+   layer its vertices; a layer derived for the camera (the fold curves, a
+   hatching on the graph) at least what the largest layer does; an unclipped
+   layer nothing. Before, a hatching on the graph was weighed by its carried
+   vertices at rest (none) and every whole layer as the largest in the bake.
+10. **A plan that left paths out was put together.** `Piece::Paths` now
+    carries its layer's path count (`of`); a helper refuses a piece whose
+    count is not its layer's. `pieces::covers` refuses a plan that is not
+    each layer in turn from the first, whole or as pieces running from its
+    first path to its `of`th with no gap or overlap, or that has a whole bake
+    with anything else; and, where the assembling engine still holds the
+    plan's document, one that draws fewer layers than the scene. `assemble`
+    refuses an uncovered plan. Tested on eight bad plans (the last piece
+    short, a gap, an overlap, a layer not from its first path, out of turn,
+    twice, a whole bake with more, counts that disagree) and a layer left
+    out.

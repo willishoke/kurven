@@ -4,12 +4,22 @@
 // rest, whose tested strokes the engine lays out for the camera. Without
 // WebGPU it draws the judged strokes at rest and nothing in between.
 //
+// With a pool of engines (engine/pool.ts), as Swift's window does with its
+// threads: the draft stays on the canvas at rest, and the frame at rest is
+// laid out off the page's engine, by the pool's helpers, and swapped in when
+// it is ready, unless the camera or a control has moved since (an epoch,
+// bumped by every move, says so), so a draft is never kept waiting behind
+// it. Without WebGPU the judged strokes at rest are baked by the pool the
+// same way. Without a pool the page's engine lays out the frame at rest
+// itself, and whatever is asked meanwhile waits for it.
+//
 // One frame is asked of the engine at a time, and what the page holds is
 // read as the ask is sent, so the engine never leaves out a layer the page
 // let go of meanwhile; a newer wish while one is in flight replaces any
 // waiting one (Swift's `pump`: one job in flight, the latest wins).
 
-import type { EngineClient } from "../engine/client.ts";
+import { type Answer, Cancelled, type EngineClient } from "../engine/client.ts";
+import type { EnginePool, RestLayout } from "../engine/pool.ts";
 import type { Reply, TypedArray } from "../engine/protocol.ts";
 import { drawJudged, type Judged } from "./fallback.ts";
 import type { Arrays, PreviewFrame } from "./frame.ts";
@@ -36,6 +46,17 @@ export interface Pixels {
 }
 
 export type Wish = "draft" | "rest";
+
+/** What the pool made for a frame at rest, for the page's engine to serve:
+ * the layouts of its tested layers, or (without WebGPU) the judged strokes. */
+type Made = { laid: RestLayout } | { judged: Extract<Answer, { stale: false }> };
+
+/** A frame at rest whose making the camera or a control overtook. */
+class Overtaken extends Error {}
+
+/** What a frame at rest was made from, when it was wished, and whether it
+ * is still the one wanted. */
+type Given = { made: Made; started: number; current: () => boolean };
 
 export class PreviewView {
   readonly canvas: HTMLCanvasElement;
@@ -64,6 +85,21 @@ export class PreviewView {
   /** The frame being computed and drawn now, if any: what the page's
    * indicator says while a slow frame at rest blocks the engine. */
   working: Wish | null = null;
+  /** The pool making the frame at rest, if the page has one. */
+  readonly pool: EnginePool | null;
+  /** Bumped by every move and change: a frame at rest made for an older
+   * epoch is not drawn. */
+  private epoch = 0;
+  /** The frame at rest being made by the pool, and whether another is wished
+   * once it is done. */
+  private refining: Promise<void> | null = null;
+  private refineAgain = false;
+  /** When the frame at rest now being made by the pool was wished. */
+  refiningSince: number | null = null;
+  /** Frames at rest the page's engine made itself because the pool could
+   * not (it failed, or the page's engine refused the helpers' layouts for
+   * another reason than a move). */
+  fallbacks = 0;
 
   /** Where an offscreen frame is drawn, when the canvas is not (`offscreen`). */
   private target: GPUTexture | null = null;
@@ -82,7 +118,9 @@ export class PreviewView {
     renderer: PreviewRenderer | null,
     options = DEFAULT_OPTIONS,
     offscreen = false,
+    pool: EnginePool | null = null,
   ) {
+    this.pool = pool;
     this.offscreen = offscreen;
     this.client = client;
     this.canvas = canvas;
@@ -131,6 +169,7 @@ export class PreviewView {
   /** The camera or a control moved: a draft now, and the frame at rest once
    * nothing has moved for a quarter second. */
   moved(): void {
+    this.epoch++;
     if (this.renderer) this.want("draft");
     if (this.idle) clearTimeout(this.idle);
     this.idle = setTimeout(() => {
@@ -142,6 +181,10 @@ export class PreviewView {
   /** Something changed that is not motion -- a mode, a layer shown -- and
    * the frame at rest is wanted again. */
   changed(): void {
+    this.epoch++;
+    // With a pool the frame at rest comes later, off the page's engine: a
+    // draft shows the change now.
+    if (this.renderer && this.pooled) this.want("draft");
     this.want("rest");
   }
 
@@ -160,7 +203,84 @@ export class PreviewView {
     const wish: Wish | null = this.waiting.draft ? "draft" : this.waiting.rest ? "rest" : null;
     if (!wish) return;
     this.waiting[wish] = false;
+    if (wish === "rest" && this.pooled) {
+      this.refine();
+      return;
+    }
     void this.exclusive(() => this.draw(wish)).catch((error: unknown) => console.error("kurven preview:", error));
+  }
+
+  /** The frame at rest, made by the pool in the background: one at a time,
+   * a wish meanwhile made once the one in flight is done. */
+  private refine(): void {
+    if (this.refining) {
+      this.refineAgain = true;
+      return;
+    }
+    this.refiningSince = performance.now();
+    this.setWorking(this.working);
+    this.refining = this.making()
+      .then(
+        () => undefined,
+        (error: unknown) => console.error("kurven preview:", error),
+      )
+      .finally(() => {
+        this.refining = null;
+        this.refiningSince = null;
+        this.setWorking(this.working);
+        if (this.refineAgain) {
+          this.refineAgain = false;
+          this.refine();
+        }
+      });
+  }
+
+  /** Make the frame at rest with the pool and draw it, if nothing has moved
+   * since it was wished; the timing of the frame drawn, or null. */
+  private async making(onPixels?: (p: Pixels) => void, read = false): Promise<Timing | null> {
+    const pool = this.pool;
+    if (!pool) throw new Error("no pool");
+    const epoch = this.epoch;
+    const current = () => this.epoch === epoch;
+    const started = performance.now();
+    let made: Made;
+    try {
+      if (this.renderer) {
+        const laid = await pool.layOutRest(this.renderer.holds(), current);
+        if (!laid) return null;
+        made = { laid };
+      } else {
+        const answer = await pool.bake(false, current, "rest");
+        if (answer.stale) return null;
+        made = { judged: answer };
+      }
+    } catch (error) {
+      // Cancelled (an export overtook a frame at rest no longer wanted):
+      // let go. The pool failed: the page's engine makes the frame itself,
+      // as without a pool, unless a move overtook it meanwhile.
+      if (error instanceof Cancelled || !current()) return null;
+      this.fallbacks++;
+      console.warn("kurven: the pool could not make the frame at rest; the page's engine makes it:", error);
+      try {
+        return await this.exclusive(async () => {
+          if (!current()) throw new Overtaken();
+          return this.draw("rest", onPixels, read);
+        });
+      } catch (fallen) {
+        if (fallen instanceof Overtaken) return null;
+        throw fallen;
+      }
+    }
+    if (!current()) return null;
+    try {
+      return await this.exclusive(async () => {
+        if (!current()) throw new Overtaken();
+        return this.draw("rest", onPixels, read, { made, started, current });
+      });
+    } catch (error) {
+      if (error instanceof Overtaken) return null;
+      throw error;
+    }
   }
 
   /** Run `job` when no other frame is in flight, as the one in flight. */
@@ -211,15 +331,27 @@ export class PreviewView {
 
   /** Wait for every frame wished so far to be drawn. */
   async settled(): Promise<void> {
-    while (this.inFlight || this.waiting.draft || this.waiting.rest || this.idle) {
+    while (this.inFlight || this.waiting.draft || this.waiting.rest || this.idle || this.refining) {
       if (this.idle) {
         clearTimeout(this.idle);
         this.idle = null;
         this.want("rest");
       }
       if (this.inFlight) await this.inFlight;
-      else this.pump();
+      else if (this.waiting.draft || this.waiting.rest) this.pump();
+      else if (this.refining) await this.refining;
     }
+  }
+
+  /** Whether the frame at rest is the pool's to make: there is one, and it
+   * has not been switched off. */
+  private get pooled(): boolean {
+    return this.pool !== null && !this.pool.disabled;
+  }
+
+  /** Whether the pool is making a frame at rest. */
+  get isRefining(): boolean {
+    return this.refining !== null;
   }
 
   /** Draw a frame now, after what is wished, through the same one-at-a-time
@@ -227,6 +359,14 @@ export class PreviewView {
   async drawNow(wish: Wish, read = false): Promise<{ timing: Timing; pixels: Pixels | null }> {
     await this.settled();
     let pixels: Pixels | null = null;
+    if (wish === "rest" && this.pooled) {
+      // Made by the pool, as at every rest; nothing moves meanwhile.
+      const timing = await this.making((p) => {
+        pixels = p;
+      }, read);
+      if (!timing) throw new Error("the frame at rest was overtaken");
+      return { timing, pixels };
+    }
     const timing = await this.exclusive(() =>
       this.draw(
         wish,
@@ -239,17 +379,29 @@ export class PreviewView {
     return { timing, pixels };
   }
 
-  private async draw(wish: Wish, onPixels?: (p: Pixels) => void, read = false): Promise<Timing> {
+  private async draw(
+    wish: Wish,
+    onPixels?: (p: Pixels) => void,
+    read = false,
+    given?: Given,
+  ): Promise<Timing> {
     this.setWorking(wish);
     try {
-      return await this.drawFrame(wish, onPixels, read);
+      return await this.drawFrame(wish, onPixels, read, given);
     } finally {
       this.setWorking(null);
     }
   }
 
-  private async drawFrame(wish: Wish, onPixels?: (p: Pixels) => void, read = false): Promise<Timing> {
-    const started = performance.now();
+  /** Draw a frame: asked of the page's engine, or, at rest with a pool, from
+   * what the pool made (`given`), timed from when it was wished. */
+  private async drawFrame(
+    wish: Wish,
+    onPixels?: (p: Pixels) => void,
+    read = false,
+    given?: Given,
+  ): Promise<Timing> {
+    const started = given?.started ?? performance.now();
     let timing: Timing;
     if (this.renderer) {
       const renderer = this.renderer;
@@ -261,8 +413,29 @@ export class PreviewView {
         renderer.forget();
       }
       const have = renderer.holds();
-      const answer = await this.client.request({ kind: "preview", draft: wish === "draft", have });
+      const laid = given && "laid" in given.made ? given.made.laid : null;
+      let answer = await this.client.request(
+        {
+          kind: "preview",
+          draft: wish === "draft",
+          have,
+          ...(laid ? { laid: laid.laid, fingerprint: laid.fingerprint } : {}),
+        },
+        laid ? { inputs: laid.inputs, transfer: true } : {},
+      );
       if (answer.stale) throw new Error("a preview frame went stale");
+      if (!answer.reply.ok && laid) {
+        // Overtaken by a move or a change since: its own frame at rest
+        // follows, and this one is let go quietly.
+        if (given && !given.current()) throw new Overtaken();
+        // Refused for another reason (the page's engine holds another
+        // document than the helpers laid out, for no move the page made):
+        // said, and the frame at rest laid out by the page's engine itself.
+        this.fallbacks++;
+        console.warn(`kurven: the helpers' frame at rest was refused (${answer.reply.error ?? "refused"}); laid out here`);
+        answer = await this.client.request({ kind: "preview", draft: false, have });
+        if (answer.stale) throw new Error("a preview frame went stale");
+      }
       const { reply, arrays } = answer;
       if (!reply.ok) throw new Error(`preview: ${reply.error ?? "refused"}`);
       const engineMs = performance.now() - started;
@@ -285,7 +458,8 @@ export class PreviewView {
       if (wish === "draft") {
         return { kind: "draft", engineMs: 0, drawMs: 0, totalMs: 0, bytes: 0 };
       }
-      const answer = await this.client.request({ kind: "bake" }, { view: "judged" });
+      const answer =
+        given && "judged" in given.made ? given.made.judged : await this.client.request({ kind: "bake" }, { view: "judged" });
       if (answer.stale) throw new Error("the judged strokes went stale");
       const { reply, arrays } = answer;
       if (!reply.ok) throw new Error(`bake: ${reply.error ?? "refused"}`);

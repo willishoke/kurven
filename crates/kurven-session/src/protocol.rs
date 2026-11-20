@@ -29,7 +29,6 @@ use kurven_core::scene::PreviewMode;
 use kurven_core::simd::{Vec2, Vec3};
 use kurven_core::spaces::{Angle, P2, P3};
 use kurven_core::surface_request::{Field, surface_key};
-use kurven_core::svg;
 use kurven_landscape::catalog::{Catalog, LandscapeRequest};
 use kurven_surfaces::drawing::SurfacePreset;
 
@@ -98,6 +97,9 @@ pub struct Session {
     /// Worker seeds it at load (`seed`), so a key held from an earlier
     /// Worker cannot name a scene of this one. Empty natively.
     nonce: String,
+    /// Bytes given for the next request alone (`give`): the shares of a
+    /// pool's work another engine computed (`pool.rs`). Dropped after it.
+    inputs: BTreeMap<String, Vec<u8>>,
 }
 
 /// Why a request was refused, and whether it had reached the document
@@ -145,6 +147,31 @@ impl From<String> for Refusal {
     fn from(s: String) -> Refusal {
         refuse(s)
     }
+}
+
+/// A pool's share refused (`pool.rs`): one asked of another document says
+/// so (`another`), for the pool to bring its engine to the document again.
+impl From<crate::pool::Refused> for Refusal {
+    fn from(r: crate::pool::Refused) -> Refusal {
+        let mut refusal = refuse(r.message);
+        if r.another {
+            refusal.detail.insert("another".to_string(), JsonValue::Bool(true));
+        }
+        refusal
+    }
+}
+
+/// What a frame's request says the page holds (`have`): the content's key
+/// and the layers' keys.
+fn holdings(o: &JsonObject) -> (Option<&str>, BTreeSet<String>) {
+    let have = o.get("have").and_then(JsonValue::as_object);
+    let content = have.and_then(|h| h.get("content")).and_then(JsonValue::as_str);
+    let keys = have
+        .and_then(|h| h.get("layers"))
+        .and_then(JsonValue::as_array)
+        .map(|a| a.iter().filter_map(|k| k.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    (content, keys)
 }
 
 impl From<&str> for Refusal {
@@ -238,6 +265,14 @@ impl Session {
         self.staged.clear();
     }
 
+    /// Give the next request the bytes `bytes` under `name`, as its input:
+    /// a typed array another engine of a pool answered with, which the
+    /// request reads back to the bit (`bakeAssemble`, `preview` given
+    /// layouts). Whatever the next request does not read is dropped with it.
+    pub fn give(&mut self, name: &str, bytes: Vec<u8>) {
+        self.inputs.insert(name.to_string(), bytes);
+    }
+
     /// Answer one request.
     pub fn call(&mut self, request: &str) -> Reply {
         let parsed = json::parse(request);
@@ -247,6 +282,7 @@ impl Session {
             Ok(_) => Err(refuse("a request is a JSON object")),
             Err(error) => Err(refuse(format!("not JSON: {error}"))),
         };
+        self.inputs.clear();
         let (mut o, arrays) = match answer {
             Ok((mut o, arrays)) => {
                 o.insert("ok".to_string(), JsonValue::Bool(true));
@@ -723,14 +759,24 @@ impl Session {
                 // and each layer's segments, under keys, and the uniforms.
                 // What the page says it holds (`have`) is not sent again.
                 let draft = o.get("draft").and_then(JsonValue::as_bool).unwrap_or(true);
-                let have = o.get("have").and_then(JsonValue::as_object);
-                let content = have.and_then(|h| h.get("content")).and_then(JsonValue::as_str);
-                let keys: BTreeSet<String> = have
-                    .and_then(|h| h.get("layers"))
-                    .and_then(JsonValue::as_array)
-                    .map(|a| a.iter().filter_map(|k| k.as_str().map(str::to_string)).collect())
-                    .unwrap_or_default();
-                let Some(preview) = self.document.preview(draft, &self.nonce, content, &keys) else {
+                let (content, keys) = holdings(o);
+                // Layouts at rest another engine of a pool laid out
+                // (`pool.rs`), served here under this engine's keys.
+                let given = crate::pool::given_layout(&self.document, o, std::mem::take(&mut self.inputs))?;
+                let preview = match given {
+                    Some(mut given) => self.document.preview_laying(
+                        draft,
+                        &self.nonce,
+                        content,
+                        &keys,
+                        &mut |i, layer, scene, draft| match given.remove(&i) {
+                            Some(laid) if !draft => laid,
+                            _ => crate::preview::lay_out(layer, scene, draft),
+                        },
+                    ),
+                    None => self.document.preview(draft, &self.nonce, content, &keys),
+                };
+                let Some(preview) = preview else {
                     return Err(refuse("nothing to preview"));
                 };
                 let mut arrays = Vec::new();
@@ -782,29 +828,19 @@ impl Session {
                 // page-space points and its offsets, and the SVG when asked.
                 // The frame maps a page point to the viewport's pixel, as the
                 // preview's does.
-                let frame = d.navigator.map(|n| n.framing.frame(d.viewport));
                 let strokes = d.bake().map_err(refuse)?;
-                let mut arrays = Vec::new();
-                let mut styles = Vec::new();
-                for (i, (style, paths)) in strokes.layers.iter().enumerate() {
-                    let points = paths.vertices.iter().flat_map(|p| [p.x(), p.y()]);
-                    let offsets = paths.offsets.iter().map(|&o| o as u32);
-                    arrays.push((format!("stroke.{i}.points"), Array::f64(points)));
-                    arrays.push((format!("stroke.{i}.offsets"), Array::u32(offsets)));
-                    styles.push(json::object([
-                        ("width", JsonValue::Double(style.width)),
-                        ("color", json::string(&style.color)),
-                    ]));
-                }
-                if o.get("svg").and_then(JsonValue::as_bool) == Some(true) {
-                    let text = svg::render(&strokes, svg::FIGURE_WIDTH, svg::MARGIN, svg::DECIMALS);
-                    arrays.push(("svg".to_string(), Array::u8(text.into_bytes())));
-                }
-                let mut out = JsonObject::new();
-                out.insert("strokes".to_string(), JsonValue::Array(styles));
-                out.insert("frame".to_string(), frame.as_ref().map_or(JsonValue::Null, frame_json));
-                Ok((out, arrays))
+                Ok(crate::pool::bake_reply(d, &strokes, o.get("svg").and_then(JsonValue::as_bool) == Some(true)))
             }
+            // The judged strokes shared among a pool of engines holding this
+            // document (`pool.rs`): the plan, one piece, and the pieces put
+            // together, which answers as `bake` does.
+            "bakePlan" => Ok(crate::pool::bake_plan(d, o)?),
+            "bakePiece" => Ok(crate::pool::bake_piece(d, o)?),
+            "bakeAssemble" => Ok(crate::pool::bake_assemble(d, o, std::mem::take(&mut self.inputs))?),
+            // The frame at rest shared likewise: the layers it would lay
+            // out, holding what `have` holds, and some of them laid out.
+            "restLayers" => Ok(crate::pool::rest_layers(&self.document, &self.nonce, &holdings(o).1)?),
+            "restLayout" => Ok(crate::pool::rest_layout(d, o)?),
             "grids" => {
                 // What the draft preview draws the surface from: a
                 // landscape's grids of |f| and arg f, a parametric surface's
@@ -1258,7 +1294,7 @@ fn edited_json(e: &Edited) -> JsonValue {
 }
 
 /// A pixel grid as the page reads it: `DepthFrame::index`'s terms.
-fn frame_json(f: &DepthFrame) -> JsonValue {
+pub(crate) fn frame_json(f: &DepthFrame) -> JsonValue {
     json::object([
         ("axis0", json::doubles(&[f.axis0.lo, f.axis0.hi])),
         ("axis1", json::doubles(&[f.axis1.lo, f.axis1.hi])),

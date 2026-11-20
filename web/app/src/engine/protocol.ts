@@ -76,14 +76,51 @@ export type Request =
   | { kind: "frame"; draft: boolean }
   /** A frame of the preview for the page's GPU (kurven_session::preview,
    * src/gpu/frame.ts): what it holds under `have` is not sent again. */
-  | { kind: "preview"; draft: boolean; have?: { content?: string; layers?: string[] } }
+  | {
+      kind: "preview";
+      draft: boolean;
+      have?: { content?: string; layers?: string[] };
+      /** Layouts at rest another engine of the pool laid out (`restLayout`),
+       * their arrays given as the request's inputs, and the fingerprint of
+       * the document they are of (kurven_session::pool). */
+      laid?: Laid[];
+      fingerprint?: string;
+    }
   | { kind: "bake"; svg?: boolean }
+  /** The judged strokes shared among a pool of engines (kurven_session::pool):
+   * the pieces a bake splits into, one piece baked, and the pieces put
+   * together, its arrays given as inputs, which answers as `bake` does (or
+   * `failed`: a piece's refusal, said as the bake's status). */
+  /** `bakeAlone`: a plan of one piece is baked by the engine planning it,
+   * the reply `bake`'s with `baked` true. */
+  | { kind: "bakePlan"; bakeAlone?: boolean; svg?: boolean }
+  /** `fingerprint`: the plan's document; a helper holding another refuses
+   * the share as such (the reply's `another`). */
+  | { kind: "bakePiece"; piece: Piece; fingerprint: string }
+  /** `fingerprint` and `frame`: the plan's; put together after the document
+   * moved on, the reply says `snapshot`. */
+  | { kind: "bakeAssemble"; svg?: boolean; plan: Piece[]; colors: string[][]; fingerprint: string; frame: unknown }
+  | { kind: "bakeAssemble"; failed: string }
+  /** The frame at rest shared likewise: the layers it would lay out, holding
+   * what `have` holds, and some of them laid out. */
+  | { kind: "restLayers"; have?: { content?: string; layers?: string[] } }
+  | { kind: "restLayout"; layers: number[]; fingerprint: string }
   /** The shown surface's coordinate image by the CPU rasterizer, with the
    * frame, view and clip the GPU renders the same image by. */
   | { kind: "surfaceImage"; resolution: number }
   | { kind: "grids" }
   | { kind: "save"; name: string }
   | { kind: "headless"; args: string[] };
+
+/** A share of a bake (kurven_bake::pieces::Piece): the whole bake, a layer
+ * whole, or paths `from..to` of a layer. */
+export type Piece = { whole: true } | { layer: number } | { layer: number; from: number; to: number };
+
+/** A layout at rest as `restLayout` describes it. */
+export interface Laid {
+  layer: number;
+  refusal: string | null;
+}
 
 /** What is edited (kurven_session::edits::Edited): a landscape's request,
  * the styling it is drawn with -- its layers as a manifest describes them
@@ -254,13 +291,16 @@ export type ToWorker =
   | { type: "init"; wasm: ArrayBuffer | string }
   | { type: "stage"; id: number; bundle: Bundle }
   | { type: "unstage" }
-  | { type: "request"; id: number; request: Request };
+  /** `inputs`: typed arrays given to this request alone (`kv_give`), the
+   * shares of a pool's work another Worker answered with. */
+  | { type: "request"; id: number; request: Request; inputs?: { name: string; bytes: ArrayBuffer }[] };
 
 /** Worker to page. */
 export type FromWorker =
   | { type: "ready" }
   | { type: "staged"; id: number }
-  | { type: "reply"; id: number; reply: Reply; arrays: Record<string, TypedArray> }
+  /** `memory`: the module's linear memory after the request, in bytes. */
+  | { type: "reply"; id: number; reply: Reply; arrays: Record<string, TypedArray>; memory?: number }
   /** A stage or a request that threw (`id`), or the engine that would not
    * load (`id` null). `trap`: the module trapped (it aborts on a panic) and
    * is gone with what it held; otherwise only that message failed. */

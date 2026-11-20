@@ -9,11 +9,14 @@
 // (the judged strokes, the native bake's bytes), and the whole state in the
 // URL's fragment (page/link.ts).
 //
-// The engine is one Worker: a frame at rest (cn's folds and walls, about
-// 2.2 s) holds it, and whatever the page asks meanwhile waits behind it.
-// The page says so (the indicator over the canvas) and never waits itself:
-// controls and gestures are coalesced, so a hand that keeps moving costs one
-// request behind, never a queue (crates/FINDINGS.md, Phase 8).
+// The page's engine is one Worker, which takes every edit and draws every
+// draft; the slow work is a pool's (engine/pool.ts): helpers, each an engine
+// in a Worker of its own holding the same document, lay out the frame at
+// rest in the background while the draft stays on the canvas, and bake the
+// judged strokes Export writes, the same bytes as one engine bakes. The page
+// says what is in flight (the indicator over the canvas) and never waits
+// itself: controls and gestures are coalesced, so a hand that keeps moving
+// costs one request behind, never a queue (crates/FINDINGS.md, Phase 8).
 //
 // The query, for the browser lane and for looking:
 //
@@ -23,11 +26,14 @@
 //   &size=900x700        the canvas in device pixels, rather than the stage
 //   &slope=0             the preview's slope scale (default 1)
 //   &offscreen=1         draw into a texture, never presented (gpu/view.ts)
+//   &pool=4              the pool's helpers (default: a core each but one,
+//                        at most eight; 0: no pool, the page's engine alone)
 
 import "./page/style.css";
 
 import { browserWorker, Cancelled, EngineClient, VIEWS } from "./engine/client.ts";
-import type { Bundle, Controls, DocumentState, Edited, Preset, Request } from "./engine/protocol.ts";
+import { EnginePool, poolSize } from "./engine/pool.ts";
+import type { Bundle, Controls, DocumentState, Edited, Preset, Reply, Request, TypedArray } from "./engine/protocol.ts";
 import { DEFAULT_OPTIONS, PreviewRenderer, Unsupported } from "./gpu/renderer.ts";
 import { probeLayout } from "./gpu/layout.ts";
 import { PreviewView, type Timing } from "./gpu/view.ts";
@@ -50,8 +56,11 @@ const indicatorText = h("span", { id: "indicator-text" });
 const indicator = h("div", { class: "indicator", id: "indicator", role: "status", "aria-live": "polite" }, h("span", { class: "dot" }), indicatorText);
 const stage = h("main", { class: fixed ? "stage fixed" : "stage" }, canvas, indicator);
 
-const client = new EngineClient(browserWorker, `${import.meta.env.BASE_URL}kurven_wasm.wasm`);
+const wasmURL = `${import.meta.env.BASE_URL}kurven_wasm.wasm`;
+const client = new EngineClient(browserWorker, wasmURL);
 const engine = new Engine(client);
+const helpers = query.has("pool") ? Number(query.get("pool")) : poolSize(navigator.hardwareConcurrency);
+const pool = Number.isInteger(helpers) && helpers > 0 ? new EnginePool(client, browserWorker, wasmURL, helpers) : null;
 
 /** Why the page draws without WebGPU, if it does. */
 let fallbackReason: string | null = null;
@@ -83,6 +92,7 @@ const view = new PreviewView(
     slopeScale: slope !== null ? Number(slope) : DEFAULT_OPTIONS.slopeScale,
   },
   query.get("offscreen") === "1",
+  pool,
 );
 
 const panel = new Panel({
@@ -90,7 +100,12 @@ const panel = new Panel({
   changed: () => view.changed(),
   moved: () => view.moved(),
   exportSVG: () => void exportSVG().catch(quietly),
-  cancelExport: () => void client.cancel("the export was cancelled").catch(quietly),
+  cancelExport: () => {
+    // The pool's export alone; a bake on the page's engine (no pool, or one
+    // switched off) is cancelled as a hung request is.
+    if (pool && !pool.disabled) pool.cancel("the export was cancelled");
+    else void client.cancel("the export was cancelled").catch(quietly);
+  },
 });
 app.replaceChildren(stage, panel.root);
 if (!view.usesGPU) {
@@ -148,9 +163,16 @@ function indicate(): void {
   const now = performance.now();
   let text: string;
   let busy = true;
-  if (exporting) text = `exporting: baking the judged strokes… ${seconds(now - exporting.started)}`;
+  const workers = pool ? ` on ${pool.size} Worker${pool.size === 1 ? "" : "s"}` : "";
+  if (exporting) text = `exporting: baking the judged strokes${workers}… ${seconds(now - exporting.started)}`;
   else if (engine.busy.length) text = `${engine.busy[engine.busy.length - 1]}…`;
-  else if (view.working === "rest") {
+  else if (view.refiningSince !== null && view.working !== "draft") {
+    // The draft is on the canvas; the frame at rest is being made off the
+    // page's engine, which a move or an edit does not wait for.
+    text = view.usesGPU
+      ? `at rest: testing the folds and walls${workers}… ${seconds(now - view.refiningSince)}`
+      : `at rest: baking the judged strokes${workers}… ${seconds(now - view.refiningSince)}`;
+  } else if (view.working === "rest") {
     text = view.usesGPU
       ? `drawing at rest: testing the folds and walls… ${seconds(now - restStarted)}`
       : `drawing the judged strokes… ${seconds(now - restStarted)}`;
@@ -223,6 +245,24 @@ engine.onState((state: DocumentState, request: Request) => {
 
 let lastExport: Uint8Array | null = null;
 
+/** The judged strokes with the SVG, baked by the pool, the state they leave
+ * (the bake's status) taken in as any reply's is. */
+async function baked(): Promise<{ reply: Reply; arrays: Record<string, TypedArray> } | null> {
+  if (!pool || pool.disabled) return engine.call({ kind: "bake", svg: true });
+  let answer;
+  try {
+    answer = await pool.bake(true);
+  } catch (error) {
+    if (error instanceof Cancelled) throw error;
+    // The pool failed (it said why on the console): the page's engine bakes
+    // alone, the same bytes.
+    return engine.call({ kind: "bake", svg: true });
+  }
+  if (answer.stale) return null;
+  if (answer.reply.state) engine.take(answer.reply.state, { kind: "bake", svg: true });
+  return answer;
+}
+
 async function exportSVG(): Promise<void> {
   if (exporting) return;
   exporting = { started: performance.now() };
@@ -230,7 +270,7 @@ async function exportSVG(): Promise<void> {
   panel.exportStatus.textContent = "";
   indicate();
   try {
-    const answer = await engine.call({ kind: "bake", svg: true });
+    const answer = await baked();
     if (!answer) return;
     const { reply, arrays } = answer;
     if (!reply.ok) {
@@ -248,10 +288,14 @@ async function exportSVG(): Promise<void> {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
     const took = seconds(performance.now() - exporting.started);
+    // Put together after an edit or a move, the bake's status says it is of
+    // the document as it was when Export was clicked, as one engine's was.
     panel.exportStatus.textContent = `${engine.state?.status.bake ?? ""} → ${name}, ${svg.length.toLocaleString()} bytes, in ${took}`;
   } catch (error) {
     if (error instanceof Cancelled) {
-      panel.exportStatus.textContent = "cancelled: the engine was restarted and the document replayed";
+      panel.exportStatus.textContent = pool
+        ? "cancelled: the pool's helpers were restarted, the page's engine untouched"
+        : "cancelled: the engine was restarted and the document replayed";
       view.changed();
     } else {
       panel.exportStatus.textContent = `export failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -418,6 +462,7 @@ window.kurven = {
   view,
   engine,
   client,
+  pool,
   input,
   usesGPU: view.usesGPU,
   fallbackReason,
