@@ -12,7 +12,9 @@
 //! reads the reply at `kv_reply_ptr()` and its typed arrays, the `i`th at
 //! `kv_array_ptr(i)` for `kv_array_len(i)` bytes, little-endian. The bytes
 //! stay until the next call; a host copies them out (`ArrayBuffer.slice`),
-//! and the copy is what a Worker transfers to the page.
+//! and the copy is what a Worker transfers to the page. Bytes another
+//! Worker answered with go back in for the next call alone with `kv_give`
+//! (a pool's shares, `kurven_session::pool`).
 //!
 //! **The port's golden sets** ([`kurven_golden::all`]), so the check can run
 //! them under Node and require the bytes native writes: a host calls
@@ -102,6 +104,22 @@ pub unsafe extern "C" fn kv_stage(
         return 0;
     };
     with_session(|session, _| session.stage(bundle, path, data));
+    1
+}
+
+/// Give the next request the bytes at `data` under `name`, as its input
+/// (`Session::give`): a typed array another Worker of the pool answered
+/// with. Taken as `kv_stage` takes a file's bytes: `data` must be what
+/// `kv_alloc` lent, and the session owns it after.
+///
+/// # Safety
+/// Each pointer and length must lie in memory the host wrote; `data` and
+/// `data_len` a pair `kv_alloc` returned, not freed after.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kv_give(name: *const u8, name_len: usize, data: *mut u8, data_len: usize) -> u32 {
+    let data = unsafe { taken(data, data_len) };
+    let Ok(name) = std::str::from_utf8(unsafe { bytes(name, name_len) }) else { return 0 };
+    with_session(|session, _| session.give(name, data));
     1
 }
 

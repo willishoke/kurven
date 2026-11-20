@@ -383,7 +383,7 @@ pub fn color(hex: &str) -> [f32; 4] {
 }
 
 /// FNV-1a over words: the one hash the keys use.
-fn fnv(words: impl IntoIterator<Item = u64>) -> u64 {
+pub(crate) fn fnv(words: impl IntoIterator<Item = u64>) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for x in words {
         for b in x.to_le_bytes() {
@@ -522,6 +522,25 @@ impl Document {
         nonce: &str,
         have_content: Option<&str>,
         have: &BTreeSet<String>,
+    ) -> Option<Preview> {
+        self.preview_laying(draft, nonce, have_content, have, &mut |_, layer, scene, draft| {
+            lay_out(layer, scene, draft)
+        })
+    }
+
+    /// `preview`, each layer the frame sends laid out by `lay`, given the
+    /// layer's place, the layer, the scene and whether a draft, in place of
+    /// `lay_out`: what lets a pool of engines lay out the tested layers of a
+    /// frame at rest elsewhere and this one serve them under its own keys
+    /// (`pool.rs`). `lay` is asked exactly where `preview` would ask
+    /// `lay_out`, so with `lay_out` it is `preview`.
+    pub fn preview_laying(
+        &mut self,
+        draft: bool,
+        nonce: &str,
+        have_content: Option<&str>,
+        have: &BTreeSet<String>,
+        lay: &mut dyn FnMut(usize, &Layer, &Scene, bool) -> Laid,
     ) -> Option<Preview> {
         let scene = self.shown_scene()?;
         let navigator = self.navigator?;
@@ -689,7 +708,7 @@ impl Document {
                 base(key, Pipeline::Stroke, tolerance)
             };
             if shown && !have.contains(&draw.key) {
-                let laid = lay_out(layer, &scene, if parametric.is_some() { lines_draft } else { draft });
+                let laid = lay(i, layer, &scene, if parametric.is_some() { lines_draft } else { draft });
                 if let Some(refusal) = laid.refusal {
                     self.preview_memo.refused.insert(draw.key.clone(), refusal);
                 }
