@@ -412,6 +412,15 @@ impl Session {
                 d.depth_tolerance = value;
                 none()
             }
+            "unstage" => {
+                // A staged bundle let go of once it is opened or refused
+                // (Phase 8, step 7): the document holds what it read, and a
+                // file's bytes need not stay. Nothing of the document is
+                // touched; a name not staged is let go of already.
+                let name = text(o, "name")?.to_string();
+                self.staged.remove(&name);
+                none()
+            }
             "open" if o.get("untrusted").and_then(JsonValue::as_bool) == Some(true) => {
                 // A bundle opened from a file (Phase 8, step 7): someone
                 // else's bytes, held to the controls' reach before anything
@@ -424,7 +433,10 @@ impl Session {
                 let Session { document: d, staged, .. } = self;
                 let files = staged.get(name).ok_or_else(|| refuse(format!("no bundle '{name}' staged")))?;
                 let source = kurven_core::bundle::Source::Memory { name, files };
-                crate::files::openable(&source).map_err(|why| refuse(format!("{name} was not opened: {why}")))?;
+                // Said by the bundle's own name, the last part of the one
+                // it is staged under.
+                let shown = source.name();
+                crate::files::openable(&source).map_err(|why| refuse(format!("{shown} was not opened: {why}")))?;
                 let mut next = Document {
                     viewport: d.viewport,
                     mode: d.mode,
@@ -435,7 +447,7 @@ impl Session {
                 next.load(name, files);
                 next.settle();
                 if let State::Failed(_, why) = next.state() {
-                    return Err(refuse(format!("{name} could not be opened: {why}")));
+                    return Err(refuse(format!("{shown} could not be opened: {why}")));
                 }
                 *d = next;
                 none()
@@ -758,6 +770,9 @@ impl Session {
                 let l = numbers(o, "direction", 3)?;
                 let name = text(o, "layer")?;
                 with_light(d, name)?;
+                if !crate::files::usable_light(Vec3::new(l[0], l[1], l[2])) {
+                    return Err(refuse("a light is a direction: finite, not zero, and short enough to normalize"));
+                }
                 d.paint_light(Vec3::new(l[0], l[1], l[2]), name);
                 d.settle();
                 none()
@@ -1119,8 +1134,9 @@ impl Session {
                 }
                 if let Some(light) = spec.source.light() {
                     l.insert("light".to_string(), json::doubles(&[light.x, light.y, light.z]));
-                    let (azimuth, elevation) = light_angles(light);
-                    l.insert("lightAngles".to_string(), json::doubles(&[azimuth, elevation]));
+                    if let Some((azimuth, elevation)) = light_angles(light) {
+                        l.insert("lightAngles".to_string(), json::doubles(&[azimuth, elevation]));
+                    }
                 }
                 if let Some(axis) = spec.source.plateau_hatch_axis() {
                     let axis = if axis == DomainAxis::Real { "real" } else { "imag" };
@@ -1380,7 +1396,7 @@ fn linkable(
                         levels.len()
                     )));
                 }
-                levels.iter().all(|&x| finite(x)) && light.is_none_or(|l| finite(l.x) && finite(l.y) && finite(l.z))
+                levels.iter().all(|&x| finite(x)) && light.is_none_or(crate::files::usable_light)
             }
             LayerSource::Hatching { hatching, .. } => {
                 let s = hatching.spacing;
@@ -1441,13 +1457,20 @@ fn presets(d: &Document) -> Vec<kurven_core::manifest::CameraPreset> {
 
 /// A light's azimuth round z and elevation over the xy plane, in degrees
 /// (`LightSlider.angles(of:)`).
-fn light_angles(light: Vec3) -> (f64, f64) {
+/// None for a light with no direction (zero, or too long to normalize),
+/// which nothing that sets a light lets through (`files::usable_light`).
+/// Swift's `simd_normalize` of one is NaN, and its sliders show NaN.
+fn light_angles(light: Vec3) -> Option<(f64, f64)> {
+    if !crate::files::usable_light(light) {
+        return None;
+    }
     let l = light.normalized();
     let degrees = 180.0 / core::f64::consts::PI;
-    (
+    let angles = (
         kurven_math::real::atan2(l.y, l.x) * degrees,
         kurven_math::real::asin(kurven_math::swift::min(kurven_math::swift::max(l.z, -1.0), 1.0)) * degrees,
-    )
+    );
+    (angles.0.is_finite() && angles.1.is_finite()).then_some(angles)
 }
 
 /// A polyhedron as the Polyhedron section describes it (Inspector.swift's

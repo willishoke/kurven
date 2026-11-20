@@ -44,6 +44,9 @@ export type Request =
    * and opened in a document of its own, so a refusal changes nothing
    * (Phase 8, step 7; kurven_session::files). */
   | { kind: "open"; name: string; untrusted?: boolean }
+  /** Let go of a staged bundle once it is opened or refused: the document
+   * holds what it read (Phase 8, step 7). */
+  | { kind: "unstage"; name: string }
   | { kind: "create"; preset: string }
   | { kind: "createSurface"; preset: string }
   | { kind: "expression"; expression: string }

@@ -78,6 +78,17 @@ impl Document {
     }
 
     /// The scene's faces, made once while its geometry is kept.
+    /// The faces of the scene the document holds, made once while its
+    /// geometry is kept: `faces_of`, borrowing the scene rather than taking
+    /// a copy of it.
+    pub(crate) fn faces_now(&mut self) -> Option<Arc<Vec<Face>>> {
+        let scene = self.scene.as_ref()?;
+        if self.pick_faces.as_ref().map(|(c, _)| *c) != Some(scene.content()) {
+            self.pick_faces = Some((scene.content(), Arc::new(scene.geometry().faces())));
+        }
+        self.pick_faces.as_ref().map(|(_, f)| f.clone())
+    }
+
     pub(crate) fn faces_of(&mut self, scene: &Scene) -> Arc<Vec<Face>> {
         if self.pick_faces.as_ref().map(|(c, _)| *c) != Some(scene.content()) {
             self.pick_faces = Some((scene.content(), Arc::new(scene.geometry().faces())));

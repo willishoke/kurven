@@ -167,6 +167,21 @@ test("a face picked, curves on it, a function painted, undo and redo", async ({ 
   await idle(page);
   expect((await state(page)).picked?.face).toBe("surface");
   await click(page, await pixelOf(page, [2, 0, 1]));
+  // A double click picks once: its second click is not a pick.
+  const pixel = await pixelOf(page, [2, 0, 1]);
+  await page.evaluate(() => {
+    const k = (window as any).kurven;
+    k.picks = 0;
+    const request = k.client.request.bind(k.client);
+    k.client.request = (r: any, o: any) => {
+      if (r.kind === "pick") k.picks++;
+      return request(r, o);
+    };
+  });
+  const canvasBox = (await page.locator("#preview").boundingBox())!;
+  await page.mouse.dblclick(canvasBox.x + pixel[0], canvasBox.y + pixel[1]);
+  await idle(page);
+  expect(await page.evaluate(() => (window as any).kurven.picks)).toBe(1);
 
   // Function…: sn's periods come with it; painted, the surface is periodic.
   await page.click("#paint-function");

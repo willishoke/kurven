@@ -8,7 +8,7 @@
 // undo history left as they were.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, type Page, type TestInfo, test } from "@playwright/test";
@@ -69,6 +69,22 @@ function unzipped(archive: string, dir: string): Record<string, Buffer> {
   return out;
 }
 
+/** The name the page staged the bundle it opened under: its journal's
+ * `open` names it (each file is staged under a name of its own). */
+function openedName(journal: any[]): string {
+  const open = journal.filter((r) => r.kind === "open").pop();
+  if (!open) throw new Error("the journal opens nothing");
+  return open.name;
+}
+
+/** How many bundles the page's journal keeps the bytes of. */
+async function stagedInJournal(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const c = (window as any).kurven.client;
+    return c.journalLength - c.journaled.length;
+  });
+}
+
 /** What the document is, for "nothing changed": the state but its status
  * lines, which are messages. */
 async function document(page: Page): Promise<unknown> {
@@ -86,7 +102,7 @@ test("a bundle's folder opened and edited; saved, the native files; reopened, th
   let s = await state(page);
   expect(s.kind).toBe("landscape");
   await expect(page.locator("#notice")).toBeHidden();
-  await expect(page.locator("#file-status")).toHaveText("opened gamma.kurven");
+  await expect(page.locator("#file-status")).toContainText("gamma.kurven");
   // An edit, then Export: the native bytes, the folder staged natively.
   await page.check('input[name="truncation"][value="uniform"]');
   await idle(page);
@@ -97,7 +113,9 @@ test("a bundle's folder opened and edited; saved, the native files; reopened, th
   expect(s.truncation).toEqual({ kind: "uniform", height: 4 });
   const journal = await page.evaluate(() => (window as any).kurven.journal());
   const svg = await exported(page);
-  expect(svg.equals(native(journal, info, "folder", ["--stage", "gamma.kurven", gamma]))).toBe(true);
+  const staged = openedName(journal);
+  expect(staged).toMatch(/\/gamma\.kurven$/);
+  expect(svg.equals(native(journal, info, "folder", ["--stage", staged, gamma]))).toBe(true);
 
   // Save bundle: an archive of the bundle's directory, its files the native save's.
   const [download] = await Promise.all([page.waitForEvent("download"), page.click("#save")]);
@@ -106,7 +124,7 @@ test("a bundle's folder opened and edited; saved, the native files; reopened, th
   const name = download.suggestedFilename().replace(/\.zip$/, "");
   const saved = unzipped(archive, mkdtempSync(join(info.outputPath(), "saved-")));
   const nativeDir = mkdtempSync(join(info.outputPath(), "native-"));
-  native(journal, info, "save", ["--stage", "gamma.kurven", gamma, "--save", name, nativeDir]);
+  native(journal, info, "save", ["--stage", staged, gamma, "--save", name, nativeDir]);
   const reference = Object.fromEntries(readdirSync(nativeDir).map((f) => [`${name}/${f}`, readFileSync(join(nativeDir, f))]));
   expect(Object.keys(saved).sort()).toEqual(Object.keys(reference).sort());
   for (const [path, bytes] of Object.entries(reference)) expect(saved[path]!.equals(bytes), path).toBe(true);
@@ -135,7 +153,10 @@ test("a surface and a polyhedron open from their manifests and archives", async 
     const journal = await page.evaluate(() => (window as any).kurven.journal());
     const svg = await exported(page);
     // A bare manifest is staged as `<name>.kurven`.
-    expect(svg.equals(native(journal, info, bundle, ["--stage", "manifest.kurven", `${inputs}${bundle}.kurven`]))).toBe(true);
+    const staged = openedName(journal);
+    expect(svg.equals(native(journal, info, bundle, ["--stage", staged, `${inputs}${bundle}.kurven`]))).toBe(true);
+    // The journal keeps the bytes of the bundle the document is, alone.
+    expect(await stagedInJournal(page)).toBe(1);
   }
 });
 
@@ -175,6 +196,8 @@ test("untrusted files are refused, and the document and its undo history stay", 
     await expect(page.locator("#notice")).toBeVisible();
     await expect(page.locator("#notice")).toContainText(says);
     expect(await document(page), file).toEqual(before);
+    // A refused file's bytes are let go of, in the engine and the journal.
+    expect(await stagedInJournal(page), file).toBe(0);
   }
   // A function that never returns: the opening times out, the engine is
   // restarted and the document replayed as it was.
@@ -189,4 +212,34 @@ test("untrusted files are refused, and the document and its undo history stay", 
   await page.click("#undo");
   await idle(page);
   expect((await state(page)).truncation.kind).not.toBe("none");
+});
+
+test("a second archive of the same name reads none of the first's files", async ({ page }, info) => {
+  await load(page, at(info.project.name));
+  const dir = mkdtempSync(join(info.outputPath(), "two-"));
+  const gamma = `${inputs}gamma.kurven`;
+  // The first: gamma whole, opened.
+  const files = readdirSync(gamma).map((f) => ({ path: f, base64: readFileSync(join(gamma, f)).toString("base64") }));
+  const zipOf = async (entries: { path: string; base64: string }[], file: string) => {
+    const bytes: number[] = await page.evaluate(([entries]) => (window as any).kurven.zip("gamma.kurven", entries), [entries] as const);
+    mkdirSync(join(dir, file, ".."), { recursive: true });
+    writeFileSync(join(dir, file), Buffer.from(bytes));
+    return join(dir, file);
+  };
+  const whole = await zipOf(files, "first/gamma.kurven.zip");
+  await page.setInputFiles("#open-file", whole);
+  await idle(page);
+  expect((await state(page)).kind).toBe("landscape");
+  await page.check('input[name="truncation"][value="none"]');
+  await idle(page);
+  const before = await document(page);
+  // The second, of the same file name, without phase.npy, which its
+  // manifest names: refused, as it would not be had the first's phase.npy
+  // still been staged under the name.
+  const lacking = await zipOf(files.filter((f) => f.path !== "phase.npy"), "second/gamma.kurven.zip");
+  await page.setInputFiles("#open-file", lacking);
+  await idle(page);
+  await expect(page.locator("#notice")).toContainText("could not be opened");
+  expect(await document(page)).toEqual(before);
+  expect(await stagedInJournal(page)).toBe(1);
 });

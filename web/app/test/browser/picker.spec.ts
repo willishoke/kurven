@@ -69,6 +69,8 @@ test("the picker draws every entry, leaves the document alone, and chooses", asy
   const counts = await page.evaluate(() => (window as any).kurven.picker.counts());
   expect(counts.failed).toEqual([]);
   expect(counts.pictures).toBe(ids.length);
+  // Every picture drawn: the engine that drew them is let go of.
+  expect(counts.engineRunning).toBe(false);
   console.log(`${info.project.name}: ${counts.drawn} drawn, ${counts.cached} from the cache`);
   // Every picture is the drawing: ink on paper, at the engine's 440 by 300.
   for (const id of ids) {
@@ -116,5 +118,7 @@ test("the picker draws every entry, leaves the document alone, and chooses", asy
   const again = await second.evaluate(() => (window as any).kurven.picker.counts());
   expect(again.drawn).toBe(0);
   expect(again.cached).toBe(ids.length);
+  // All from the cache: no engine was started for them.
+  expect(again.engineRunning).toBe(false);
   await second.close();
 });

@@ -138,14 +138,46 @@ export class Thumbnails {
       this.running = this.warming(entries).finally(() => {
         this.running = null;
         this.drawing = null;
+        // Every picture drawn or cached (or failed): the engine that drew
+        // them is let go of, and started again if one is wanted later.
+        if (!this.stopping) this.end();
         this.told();
       });
     }
     return this.running;
   }
 
+  /** Whether the picker was closed while pictures were being drawn. */
+  private stopping = false;
+
+  /** The picker closed: stop after the picture being drawn, and let the
+   * engine go. The pictures drawn are kept; the rest wait for the next
+   * opening. */
+  async stop(): Promise<void> {
+    if (!this.running) {
+      this.end();
+      return;
+    }
+    this.stopping = true;
+    await this.running.catch(() => {});
+    this.stopping = false;
+    this.end();
+  }
+
+  /** Terminate the thumbnails' Worker, if one is running. */
+  private end(): void {
+    this.client?.close();
+    this.client = null;
+  }
+
+  /** Whether the thumbnails' Worker is running. */
+  get engineRunning(): boolean {
+    return this.client !== null;
+  }
+
   private async warming(entries: Entry[]): Promise<void> {
     for (const entry of entries) {
+      if (this.stopping) return;
       if (this.pictures.has(entry.id) || this.failed.has(entry.id)) continue;
       const key = `${entry.thumbnail}.${this.flavour}`;
       const cached = await this.cache.get(key);
@@ -251,6 +283,8 @@ export class Picker {
       ),
       this.grid,
     );
+    // Closed, the pictures' engine is let go of once the one being drawn is.
+    this.dialog.addEventListener("close", () => void this.thumbnails.stop());
     // A click on the backdrop dismisses, as a sheet's Cancel does.
     this.dialog.addEventListener("click", (e) => {
       if (e.target === this.dialog) this.dialog.close();

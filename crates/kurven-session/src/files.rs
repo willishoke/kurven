@@ -48,6 +48,25 @@ fn finite(x: f64) -> bool {
     x.is_finite()
 }
 
+/// Whether a light is a direction to normalize: not zero, not infinite,
+/// its squared length a positive number (`Tone::has_direction`, which a
+/// manifest's and a link's isophote are read by). A light without one has
+/// no direction to read an isophote or a tone under, and its sliders'
+/// angles would be NaN.
+pub fn usable_light(l: kurven_core::simd::Vec3) -> bool {
+    kurven_core::hatching::Tone::has_direction(l)
+}
+
+/// The coordinate curves' counts within their control (1...200 each).
+pub fn line_counts(u: i64, v: i64) -> Result<(), String> {
+    let (lo, hi, _) = LINE_COUNTS;
+    if (lo..=hi).contains(&u) && (lo..=hi).contains(&v) {
+        Ok(())
+    } else {
+        Err(format!("coordinate curves {u} by {v}; each count reaches {lo} to {hi}"))
+    }
+}
+
 /// Whether the bundle staged as `source` may be opened: its manifest read
 /// as its kind's schema, and every number in it within the controls' reach
 /// or a stated bound on work. Nothing is built.
@@ -71,13 +90,25 @@ pub fn openable(source: &Source) -> Result<(), String> {
     if holds_key_in(source, "surface").map_err(|e| e.to_string())? {
         let m = SurfaceManifest::from_json(&json).map_err(|e| e.to_string())?;
         surface(&m.surface)?;
-        // A surface's curves are spaced across its parameter rectangle.
+        // A surface's curves are spaced across its parameter rectangle,
+        // whose sides a periodic function's periods give, which may be
+        // negative: measured as lengths.
         let (u, v) = kurven_surfaces::drawing::SurfaceRequestExt::rectangle(&m.surface);
-        return layers(&m.layers, kurven_math::swift::max(u, v));
+        if !(finite(u) && finite(v)) {
+            return Err("the surface's parameter rectangle is not finite".to_string());
+        }
+        return layers(&m.layers, kurven_math::swift::max(u.abs(), v.abs()));
     }
     let m = Manifest::from_json(&json).map_err(|e| e.to_string())?;
     truncation(&m.truncation)?;
+    // A window is an interval each way, lo below hi: one read the other way
+    // round would measure every spacing against a negative extent.
     let d = m.domain;
+    for (axis, i) in [("Re", d.real), ("Im", d.imag)] {
+        if !(finite(i.lo) && finite(i.hi) && i.lo < i.hi && finite(i.hi - i.lo)) {
+            return Err(format!("the window has {axis} from {} to {}, which is no interval", i.lo, i.hi));
+        }
+    }
     layers(&m.layers, kurven_math::swift::max(d.real.length(), d.imag.length()))
 }
 
@@ -121,10 +152,7 @@ fn surface(r: &SurfaceRequest) -> Result<(), String> {
         Shape::Torus { .. } => {}
     }
     if let Some((u, v)) = r.lines {
-        let (lo, hi, _) = LINE_COUNTS;
-        if !((lo..=hi).contains(&u) && (lo..=hi).contains(&v)) {
-            return Err(format!("the surface's coordinate curves are {u} by {v}; each count reaches {lo} to {hi}"));
-        }
+        line_counts(u, v).map_err(|why| format!("the surface asks for {why}"))?;
     }
     if let Some(w) = r.linear_curves {
         if !finite(w.slope) {
@@ -139,6 +167,9 @@ fn surface(r: &SurfaceRequest) -> Result<(), String> {
 /// Every layer within a bound, against `extent`, the longest side of what
 /// its spacings are measured across.
 pub fn layers(specs: &[LayerSpec], extent: f64) -> Result<(), String> {
+    if !(finite(extent) && extent >= 0.0) {
+        return Err(format!("the drawing's extent is {extent}, which is no length"));
+    }
     if specs.len() > LINK_LAYERS {
         return Err(format!("the bundle carries {} layers, more than {LINK_LAYERS}", specs.len()));
     }
@@ -152,7 +183,7 @@ pub fn layers(specs: &[LayerSpec], extent: f64) -> Result<(), String> {
                 if levels.len() > LINK_LEVELS {
                     return Err(format!("{name} lists {} levels, more than {LINK_LEVELS}", levels.len()));
                 }
-                levels.iter().all(|&x| finite(x)) && light.is_none_or(|l| finite(l.x) && finite(l.y) && finite(l.z))
+                levels.iter().all(|&x| finite(x)) && light.is_none_or(usable_light)
             }
             LayerSource::Hatching { hatching, .. } => {
                 let s = hatching.spacing;
@@ -169,10 +200,7 @@ pub fn layers(specs: &[LayerSpec], extent: f64) -> Result<(), String> {
                 finite(*base) && edges.len() <= 4 && edges.iter().all(|&e| (0..4).contains(&e) && seen.insert(e))
             }
             LayerSource::CoordinateCurves { u, v } => {
-                let (lo, hi, _) = LINE_COUNTS;
-                if !((lo..=hi).contains(u) && (lo..=hi).contains(v)) {
-                    return Err(format!("{name} draws {u} by {v} coordinate curves; each count reaches {lo} to {hi}"));
-                }
+                line_counts(*u, *v).map_err(|why| format!("{name} draws {why}"))?;
                 true
             }
             LayerSource::LinearCurves { slope, turns, count } => {

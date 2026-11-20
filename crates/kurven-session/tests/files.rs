@@ -122,6 +122,36 @@ fn a_bundle_refused_leaves_the_document_and_its_undo_alone() {
         ),
         ("lines", changed("torus", |m| set(m, &["surface", "lines", "u"], JsonValue::Int(5000))), "coordinate curves"),
         (
+            // An isophote under a light with no direction: refused as the
+            // schema reads it (`Tone::has_direction`), touching nothing.
+            "light",
+            changed("torus", |m| {
+                let mut layers = m.get("layers").and_then(JsonValue::as_array).unwrap().to_vec();
+                layers.push(
+                    json::parse(
+                        r##"{"clipped":true,"color":"#000000","heightPolicy":"surface","name":"surface_isophote",
+                        "role":"scaffold","width":0.2,"source":{"faces":{"kind":"surface"},"field":"isophote",
+                        "kind":"contour","levels":[0.0],"light":[0.0,0.0,0.0],"restriction":{"kind":"all"}}}"##,
+                    )
+                    .unwrap(),
+                );
+                set(m, &["layers"], JsonValue::Array(layers));
+            }),
+            "not all zero",
+        ),
+        (
+            // A window read the wrong way round: a negative extent would let
+            // any spacing through.
+            "window",
+            changed("gamma", |m| {
+                let lo = m.get("domain").unwrap().get("real").unwrap().get("lo").unwrap().clone();
+                let hi = m.get("domain").unwrap().get("real").unwrap().get("hi").unwrap().clone();
+                set(m, &["domain", "real", "lo"], hi);
+                set(m, &["domain", "real", "hi"], lo);
+            }),
+            "no interval",
+        ),
+        (
             "bands",
             changed("banded", |m| {
                 let bands: Vec<JsonValue> = (0..100)
@@ -144,4 +174,48 @@ fn a_bundle_refused_leaves_the_document_and_its_undo_alone() {
     // And the undo still undoes the edit before.
     let r = call(&mut s, r#"{"kind":"undo"}"#);
     assert_ne!(r.get("state").unwrap().get("truncation"), before.get("truncation"));
+}
+
+#[test]
+fn a_light_with_no_direction_is_refused_by_request_and_by_link() {
+    let mut s = Session::new();
+    call(&mut s, r#"{"kind":"createSurface","preset":"torus"}"#);
+    call(&mut s, r#"{"kind":"pick","point":[2,0,1]}"#);
+    let r = call(&mut s, r#"{"kind":"add","name":"surface_isophote"}"#);
+    assert_eq!(r.get("ok"), Some(&JsonValue::Bool(true)), "{r:?}");
+    let before = call(&mut s, r#"{"kind":"state"}"#).get("state").unwrap().clone();
+    for direction in ["[0,0,0]", "[1e-200,0,0]", "[1e200,1e200,1e200]"] {
+        let r = call(&mut s, &format!(r#"{{"kind":"light","layer":"surface_isophote","direction":{direction}}}"#));
+        assert_eq!(r.get("ok"), Some(&JsonValue::Bool(false)), "{direction}");
+        assert_eq!(r.get("touched"), Some(&JsonValue::Bool(false)), "{direction}");
+        assert_eq!(r.get("state"), Some(&before), "{direction}");
+    }
+    // The isophote's sliders read its angles.
+    let layers = before.get("layers").and_then(JsonValue::as_array).unwrap();
+    let iso = layers.iter().find(|l| l.get("name").and_then(JsonValue::as_str) == Some("surface_isophote")).unwrap();
+    assert_eq!(iso.get("lightAngles").and_then(JsonValue::as_array).map(|a| a.len()), Some(2));
+}
+
+/// Review of PR #77, finding 3, rejected: a wall's hatching is vertical
+/// strokes spaced along the wall (`wall_hatch_lines`: `stroke_count(edge
+/// length, spacing)`), each its two ends, so the truncation's height moves
+/// where each stroke ends and not how many there are. The window's extent
+/// bounds their count, which `openable` holds to 400 across.
+#[test]
+fn a_walls_hatching_counts_strokes_along_the_wall_however_tall() {
+    let paths = |height: f64| {
+        let mut s = Session::new();
+        let bundle = changed("gamma", |m| {
+            set(m, &["truncation"], json::parse(&format!(r#"{{"kind":"uniform","height":{height}}}"#)).unwrap())
+        });
+        stage(&mut s, "gamma", &bundle);
+        let r = open(&mut s, "gamma");
+        assert_eq!(r.get("ok"), Some(&JsonValue::Bool(true)), "{height}: {r:?}");
+        let layers = r.get("state").unwrap().get("layers").and_then(JsonValue::as_array).unwrap().to_vec();
+        let wall = layers.iter().find(|l| l.get("name").and_then(JsonValue::as_str) == Some("wall_hatch")).unwrap();
+        wall.get("paths").and_then(JsonValue::as_i64).unwrap()
+    };
+    let low = paths(5.0);
+    assert!(low > 10, "{low}");
+    assert_eq!(paths(1e7), low);
 }

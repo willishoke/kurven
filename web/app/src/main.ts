@@ -285,6 +285,8 @@ async function exportSVG(): Promise<void> {
 // MARK: - a .kurven bundle as a file (page/bundle.ts)
 
 let lastSave: { name: string; bytes: Uint8Array } | null = null;
+/** Bundles opened from files so far: each is staged under its count. */
+let opened = 0;
 /** The page's own work under way (a file being read before the engine is
  * asked), which `settled` waits for too. */
 const working = new Set<Promise<unknown>>();
@@ -307,8 +309,17 @@ async function openFiles(files: File[], folder: boolean): Promise<void> {
     panel.notice(`This bundle was not opened: ${error instanceof Error ? error.message : String(error)}`);
     return;
   }
+  // Each file staged under a name of its own, so no file of one bundle is
+  // read as another's (the engine's staging adds files to a name); the
+  // bundle's own name is the last part, which the title reads.
+  bundle = { ...bundle, name: `opened/${++opened}/${bundle.name}` };
   try {
     await client.stage(bundle);
+  } catch (error) {
+    panel.notice(`This bundle was not opened: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  try {
     const reply = await engine.send({ kind: "open", name: bundle.name, untrusted: true }, { timeoutMs: OPEN_TIMEOUT });
     if (!reply) return;
     if (!reply.ok) {
@@ -325,6 +336,11 @@ async function openFiles(files: File[], folder: boolean): Promise<void> {
         : `This bundle was not opened: ${error instanceof Error ? error.message : String(error)}`,
     );
     view.changed();
+  } finally {
+    // Opened or refused, the file's bytes are let go of: the document holds
+    // what it read, and the journal keeps an opened bundle's files alone,
+    // for a replay to open again (engine/client.ts).
+    await engine.send({ kind: "unstage", name: bundle.name }).catch(quietly);
   }
 }
 
@@ -588,14 +604,23 @@ window.kurven = {
   picker: {
     open: () => picker.open(),
     warmed: () => thumbnails.warm((catalog.entries as Entry[] | undefined) ?? []),
-    counts: () => ({ ...thumbnails.counts, pictures: thumbnails.pictures.size, failed: [...thumbnails.failed] }),
+    counts: () => ({
+      ...thumbnails.counts,
+      pictures: thumbnails.pictures.size,
+      failed: [...thumbnails.failed],
+      engineRunning: thumbnails.engineRunning,
+    }),
   },
   /** A bundle's files as Save writes them (page/bundle.ts), for the lane
    * to make archives of. */
-  zip: (dir: string, files: { path: string; text: string }[]) => [
+  zip: (dir: string, files: { path: string; text?: string; base64?: string }[]) => [
     ...zip(
       dir,
-      files.map((f) => ({ path: f.path, bytes: new TextEncoder().encode(f.text) })),
+      files.map((f) => ({
+        path: f.path,
+        bytes:
+          f.base64 !== undefined ? Uint8Array.from(atob(f.base64), (c) => c.charCodeAt(0)) : new TextEncoder().encode(f.text ?? ""),
+      })),
     ),
   ],
   /** The last bundle saved, as its archive's bytes. */

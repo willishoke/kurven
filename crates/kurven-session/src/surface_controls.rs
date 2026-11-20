@@ -188,10 +188,14 @@ pub fn quantize(x: f64, step: f64, detents: &[f64], reach: f64) -> f64 {
 
 /// A slider's raw value as the slider sets it: clamped to the control's
 /// range, then to its step or a detent within reach.
+///
+/// As Swift's, a detent is taken even where it lies outside the range: the
+/// slider's `set` does not clamp what `quantize` returns. No detent the
+/// catalog's surfaces have lies outside (fractions up to 2 and a forced
+/// torus's convergents of Ω/ω ≈ 0.42, denominators up to 600), and a value
+/// the request refuses is refused there (crates/FINDINGS.md).
 pub fn slid(document: &Document, field: Field, x: f64) -> f64 {
-    let ctl = control(field);
-    let x = kurven_math::swift::min(kurven_math::swift::max(x, ctl.range.0), ctl.range.1);
-    quantize(x, ctl.step, &detents(document, field), detent_reach(field))
+    quantize(typed(field, x), control(field).step, &detents(document, field), detent_reach(field))
 }
 
 /// A value typed or stepped, as the field's binding sets it: clamped to the

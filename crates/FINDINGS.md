@@ -3439,3 +3439,91 @@ world point under a pixel as a request); the Camera section's Perspective
 switch and azimuth and elevation fields, the Visibility section's depth
 tolerance field, the Bundle section's provenance, Swift's literal sliders.
 The new specs have run on this Mac only, not on Linux or in CI.
+
+## 2026-11-19 · Review of PR #77: untrusted files, staging, the light, clicks
+
+Ten findings of a /code-review pass, each checked against the code:
+
+1. **A light with no direction.** Fixed where it was real. A manifest's and
+   a link's isophote are read by the schema, which already refuses a light
+   with no direction (`Tone::has_direction`: squared length positive and
+   finite), so a file or a link with a zero light was refused all along
+   (now tested: the file is refused and the document unchanged). The
+   `light` request was not: `[0, 0, 0]` was set on the layer, and the
+   state's `lightAngles` normalized it to NaN, which the canonical writer
+   asserts on, a trap in wasm. The request now refuses a light without a
+   direction, touching nothing (zero, one whose length underflows, one
+   whose length overflows); `light_angles` is total (no angles for such a
+   light, and none that are not finite); `files::usable_light` is
+   `Tone::has_direction`, and the link allow-list uses it too. Swift's
+   `simd_normalize` of a zero light is NaN, and its sliders would show NaN.
+2. **An unordered window.** Fixed. `openable` measured spacings against
+   max(real.length, imag.length) of a domain the schema reads without
+   ordering it; a window read lo > hi gave a negative extent, which every
+   spacing bound passes. A landscape file's window must now be lo < hi,
+   finite, each way; a surface's rectangle is measured by the absolute
+   value of its sides (a periodic function's periods may be negative) and
+   must be finite; `layers` refuses an extent that is not a length. The
+   link allow-list already refuses a window that is not lo < hi, finite,
+   so its bounds had no sign hole; the polyhedron's extent is a box's,
+   never negative.
+3. **Wall and riser hatching against an unbounded height.** Rejected. A
+   wall's or a riser's hatching is vertical strokes (its angle is held to
+   π/2) spaced *along* the wall or the riser: `wall_hatch_lines` and
+   `riser_hatch_lines` take `stroke_count(length, spacing)` of the edge's
+   or the riser's horizontal length, and each stroke is its two ends, so
+   the truncation's height moves where a stroke ends and not how many
+   there are. The window's extent bounds the count, which `openable` and
+   the link allow-list already hold to 400 across. Held by a test: gamma's
+   wall hatching opened at a truncation of 5 and of 1e7 draws the same
+   number of paths. A truncation height has no upper reach in Swift (its
+   slider tops out at max(3 h, 10) and its field takes any height), so
+   there is no control's reach to hold one to.
+4. **Staging under a name merges.** Fixed. The engine adds a staged
+   bundle's files to whatever is staged under its name, so a second
+   gamma.kurven.zip lacking phase.npy read the first's. Each file is now
+   staged under a name of its own (`opened/N/gamma.kurven`; the title and
+   the refusals read the last part), and the engine lets go of it after
+   the open (5). Tested: a second archive of the same file name without
+   phase.npy is refused, the document unchanged.
+5. **Opened bytes kept until the page closes.** Fixed. After every open
+   from a file, opened or refused, the page sends `unstage` (a new request:
+   the engine drops the staged bundle; the document holds what it read).
+   **The approach for the journal**: it keeps the raw staged files of the
+   bundle the document is, and of no other. A replay needs them to open
+   that document again, and a canonical bundle saved from it would be as
+   large (a landscape's two grids), so the compact form is the one bundle,
+   not every bundle ever opened. In the client (`engine/client.ts`,
+   `record`): an `unstage` drops the stages of its name unless a journaled
+   `open` reads them, in which case it is kept after them, so a replay lets
+   go of the bytes again; an opening that wipes the slate drops the stages
+   its dropped requests read. The browser lane checks that the journal
+   holds one bundle's bytes after each open and none after a refusal.
+6. **paint_caption cloned the scene.** Fixed: `faces_now` borrows the
+   document's scene (the caption and the Add menu both use it now).
+7. **The double click and the drag.** Fixed in part. A pointer event's
+   `detail` is always 0, so a double click picked twice; the page now picks
+   on the `click` event, the first of its count (a test counts one pick
+   for a double click). The threshold is Swift's: any move of the mouse
+   with its button down is a drag (AppKit's `mouseDragged`; GestureView has
+   no threshold), so a mouse or a pen keeps that; a finger, which Swift has
+   none of, may stray 6 CSS pixels and still pick.
+8. **A detent outside the range.** Kept, as Swift: the slider's `set` takes
+   what `quantize` returns, unclamped. No detent of the catalog's surfaces
+   lies outside its range (fractions up to 2; the forced torus's Ω/ω ≈ 0.42
+   and its convergents, denominators up to 600), and a value the request
+   refuses is refused there. Recorded below as a Swift oddity.
+9. **The thumbnails' Worker never ended.** Fixed: it is closed once every
+   picture is drawn, cached or failed, and when the picker closes (after
+   the picture being drawn); a later opening starts one again. Tested: the
+   engine is not running after the pictures are drawn, nor on a page that
+   read them all from the cache.
+10. **Duplicated checks.** Fixed: `files::line_counts` is the one check of
+    the coordinate curves' counts, and `slid` clamps through `typed`.
+
+Where the Swift looks wrong: **a slider's detent is not clamped to its
+range** (SurfaceSection's `quantize` result goes to `set` as it is), so a
+forced torus whose rotation number lay past 2 would rest its Slope slider
+outside the slider's own range; ported as it is.
+
+Gates after the review: below, in the status entry's place, as run.

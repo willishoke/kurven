@@ -145,10 +145,8 @@ impl Document {
     /// What the picked face is, and what a layer added there lies on
     /// (`paintCaption`).
     pub fn paint_caption(&mut self, pick: &FacePick) -> String {
-        let count = match self.scene.clone() {
-            Some(scene) => self.faces_of(&scene).iter().filter(|f| f.id.kind() == pick.face.kind()).count(),
-            None => 0,
-        };
+        let count =
+            self.faces_now().map_or(0, |faces| faces.iter().filter(|f| f.id.kind() == pick.face.kind()).count());
         let tiles = if self.paints_every_tile() { ", on every tile" } else { "" };
         match pick.face {
             FaceID::Graph => format!("Picked the graph. A layer added here lies on the graph{tiles}."),
@@ -193,8 +191,10 @@ impl Document {
         if !self.is_current() {
             return Vec::new();
         }
-        let (Some(paint), Some(scene)) = (self.edited(), self.scene.clone()) else { return Vec::new() };
-        let faces = self.faces_of(&scene);
+        let (Some(paint), Some(content)) = (self.edited(), self.scene.as_ref().map(|s| s.content())) else {
+            return Vec::new();
+        };
+        let Some(faces) = self.faces_now() else { return Vec::new() };
         let Some(face) = faces.iter().find(|f| f.id == pick.face) else { return Vec::new() };
         let has = |source: &LayerSource| paint.layers.iter().any(|l| l.source == *source);
         let mut choices: Vec<PaintChoice> = Vec::new();
@@ -282,11 +282,11 @@ impl Document {
                 let ceiling = match LandscapeStyle::ceiling(&m.truncation) {
                     Some(c) => c,
                     None => match self.paint_ceiling {
-                        Some((content, value)) if content == scene.content() => value,
+                        Some((held, value)) if held == content => value,
                         _ => {
                             let magnitudes: Vec<f64> = bundle.surface.height.values.iter().map(|&v| v as f64).collect();
                             let value = NativeLandscape::ceiling(&m.truncation, &magnitudes);
-                            self.paint_ceiling = Some((scene.content(), value));
+                            self.paint_ceiling = Some((content, value));
                             value
                         }
                     },
