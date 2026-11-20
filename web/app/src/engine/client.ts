@@ -33,10 +33,10 @@
 // - An `unstage` lets go of a bundle's bytes: a stage of it that a journaled
 //   `open` reads stays (a replay opens it again), with the unstage after it
 //   to let go again once replayed; any other stage of it goes, and the
-//   unstage with it. An opening that wipes the slate drops the stages its
-//   dropped requests read (an `open` or `unstage` of their name) and that it
-//   does not read itself, so the journal holds the bytes of the bundle the
-//   document is, and of none it was before.
+//   unstage with it. An opening that wipes the slate drops the stages of
+//   bundles unstaged, but for the one it reads: the journal stages what the
+//   engine holds staged, and of the bundles opened from files, only the one
+//   the document is.
 //
 // A replay keeps the whole journal until it has run: a second cancel during
 // a replay terminates that Worker too and replays the same journal into the
@@ -453,12 +453,16 @@ export class EngineClient {
       j.forEach((e, i) => {
         if (e.kind === "request" && KEPT_BY_OPEN.has(e.request.kind)) lastOf.set(e.request.kind, i);
       });
-      const kept = j.filter((e, i) => e.kind === "stage" || lastOf.get(e.request.kind) === i);
-      const used = new Set(
-        j.flatMap((e) => (e.kind === "request" && !kept.includes(e) && names(e.request) !== null ? [names(e.request)!] : [])),
-      );
+      // A bundle the engine was told to let go of, and that this opening
+      // does not read, is staged for nothing once the open that read it is
+      // dropped; any other stays staged, as the engine keeps it.
+      const unstaged = new Set(j.flatMap((e) => (e.kind === "request" && e.request.kind === "unstage" ? [e.request.name] : [])));
       const reads = names(request);
-      this.journal = kept.filter((e) => e.kind !== "stage" || !used.has(e.bundle.name) || e.bundle.name === reads);
+      this.journal = j.filter(
+        (e, i) =>
+          (e.kind === "stage" && (!unstaged.has(e.bundle.name) || e.bundle.name === reads)) ||
+          (e.kind === "request" && lastOf.get(e.request.kind) === i),
+      );
       this.journal.push(entry);
       return;
     }

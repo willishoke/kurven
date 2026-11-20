@@ -3497,8 +3497,11 @@ Ten findings of a /code-review pass, each checked against the code:
    `record`): an `unstage` drops the stages of its name unless a journaled
    `open` reads them, in which case it is kept after them, so a replay lets
    go of the bytes again; an opening that wipes the slate drops the stages
-   its dropped requests read. The browser lane checks that the journal
-   holds one bundle's bytes after each open and none after a refusal.
+   of bundles unstaged, but for the one it reads. A bundle never unstaged
+   stays journaled as it stays staged (the engine keeps it, and a later
+   open may read it: the Worker test's opens of gamma after the torus).
+   The browser lane checks that the journal holds one bundle's bytes after
+   each open and none after a refusal.
 6. **paint_caption cloned the scene.** Fixed: `faces_now` borrows the
    document's scene (the caption and the Add menu both use it now).
 7. **The double click and the drag.** Fixed in part. A pointer event's
