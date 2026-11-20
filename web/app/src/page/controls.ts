@@ -280,8 +280,11 @@ export class Panel {
       "section",
       { "aria-labelledby": "h-landscape", id: "landscape-section" },
       h("h2", { id: "h-landscape" }, "Landscape"),
-      h("div", { class: "row function" }, h("label", { class: "label", for: "function" }, "Function"), h("div", { class: "pick" }, this.fn, browse)),
+      h("div", { class: "row" }, h("label", { class: "label", for: "function" }, "Function"), this.fn),
       this.notes,
+      // The dropdown is faster for someone who knows the name; the picker
+      // answers the question a name cannot (LandscapeSection.swift).
+      h("div", { class: "buttons" }, browse),
       this.formula.root,
       this.re.root,
       this.im.root,
@@ -453,9 +456,6 @@ export class Panel {
       "aside",
       { class: "panel", "aria-label": "Controls" },
       h("header", {}, h("h1", {}, "kurven"), this.title),
-      this.fileRow,
-      this.fileStatus,
-      h("div", { class: "buttons edit", role: "group", "aria-label": "Edit" }, this.undoButton, this.redoButton),
       this.noticeLine,
       landscape,
       this.surface.root,
@@ -465,6 +465,15 @@ export class Panel {
       this.paint.root,
       layers,
       exporting,
+      // Swift's File and Edit menus: Open…, Save Bundle…, Undo and Redo.
+      h(
+        "section",
+        { "aria-labelledby": "h-file", id: "file-section" },
+        h("h2", { id: "h-file" }, "File"),
+        this.fileRow,
+        this.fileStatus,
+        h("div", { class: "buttons edit", role: "group", "aria-label": "Edit" }, this.undoButton, this.redoButton),
+      ),
     );
   }
 

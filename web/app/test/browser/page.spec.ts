@@ -441,6 +441,9 @@ test("at phone width: the drawing the full width, the controls under it, nothing
   await page.locator("#preview").focus();
   await page.keyboard.press("Tab");
   expect(await page.evaluate(() => document.activeElement?.id)).toBe("function");
+  // Browse..., under the dropdown as in LandscapeSection.swift (step 4).
+  await page.keyboard.press("Tab");
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe("browse");
   await page.keyboard.press("Tab");
   expect(await page.evaluate(() => document.activeElement?.id)).toBe("formula");
 });

@@ -285,8 +285,6 @@ kbd { font-family: var(--mono); font-size: 0.75rem; border: 1px solid var(--rule
 .draft-note { color: var(--muted); font-size: 0.82rem; font-style: italic; margin: 4px 0 0; }
 .formula input[data-draft="true"] { border-style: dashed; }
 
-/* The function row: the dropdown and the way to the picker beside it. */
-.row.function .pick { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.35rem; }
 .check { display: flex; align-items: center; gap: 0.45rem; margin: 6px 0; font-size: 0.92rem; cursor: pointer; }
 .pair { display: flex; align-items: center; gap: 0.35rem; }
 .pair .times { color: var(--muted); }
@@ -380,5 +378,5 @@ kbd { font-family: var(--mono); font-size: 0.75rem; border: 1px solid var(--rule
 .sheet input[type="number"] { width: 8.5rem; }
 .buttons.end { justify-content: flex-end; margin-top: 10px; }
 .sheet .primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
-.buttons.file { margin-top: 10px; }
+.buttons.file { margin-top: 2px; }
 .buttons.file button { font-size: 0.82rem; padding: 2px 8px; }
